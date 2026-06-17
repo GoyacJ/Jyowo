@@ -431,10 +431,7 @@ Token: ${config.github.token:secret}
         .expect("render should resolve secret");
 
     assert!(rendered.content.contains("s3cr3t"));
-    assert_eq!(
-        SecretString::new("s3cr3t".to_owned()).expose_secret(),
-        "s3cr3t"
-    );
+    assert_eq!(SecretString::new("s3cr3t".into()).expose_secret(), "s3cr3t");
 }
 
 #[tokio::test]
@@ -625,7 +622,7 @@ impl SkillConfigResolver for SecretResolver {
         &self,
         _key: &str,
     ) -> Result<SecretString, harness_skill::ConfigResolveError> {
-        Ok(SecretString::new("s3cr3t".to_owned()))
+        Ok(SecretString::new("s3cr3t".into()))
     }
 }
 

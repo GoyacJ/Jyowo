@@ -43,13 +43,13 @@ axum = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 ring = { workspace = true, optional = true }
 reqwest-eventsource = { workspace = true, optional = true }
-reqwest-eventsource-client = { package = "reqwest", version = "0.12", default-features = false, features = [
+reqwest-eventsource-client = { package = "reqwest", version = "0.13.4", default-features = false, features = [
   "json",
-  "rustls-tls",
+  "rustls",
   "stream",
 ], optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
 
 [dev-dependencies]
-parking_lot = "0.12"
-wiremock = "0.6"
+parking_lot = "0.12.5"
+wiremock = "0.6.5"

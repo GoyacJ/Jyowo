@@ -39,7 +39,7 @@ blake3 = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
-parking_lot = "0.12"
+parking_lot = "0.12.5"
 
 [dev-dependencies]
 tempfile = { workspace = true }

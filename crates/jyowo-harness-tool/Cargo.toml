@@ -29,7 +29,7 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
 globset = { workspace = true }
-parking_lot = "0.12"
+parking_lot = "0.12.5"
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -3,8 +3,7 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::str::FromStr;
 
-use schemars::schema::{InstanceType, Schema, SchemaObject};
-use schemars::{gen::SchemaGenerator, JsonSchema};
+use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
@@ -120,15 +119,14 @@ impl<'de, Scope> Deserialize<'de> for TypedUlid<Scope> {
 }
 
 impl<Scope> JsonSchema for TypedUlid<Scope> {
-    fn schema_name() -> String {
-        "TypedUlid".to_owned()
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "TypedUlid".into()
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        Schema::Object(SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
-            format: Some("ulid".to_owned()),
-            ..SchemaObject::default()
+        json_schema!({
+            "type": "string",
+            "format": "ulid"
         })
     }
 }

@@ -158,7 +158,7 @@ impl MockCredentialSource {
         self.insert(
             key,
             CredentialValue {
-                secret: SecretString::new(secret.into().into()),
+                secret: SecretString::new(secret.into().into_boxed_str()),
                 metadata: CredentialMetadata::default(),
             },
         )

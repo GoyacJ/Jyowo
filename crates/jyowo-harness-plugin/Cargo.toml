@@ -32,7 +32,7 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
 jsonschema = { workspace = true }
-parking_lot = "0.12"
+parking_lot = "0.12.5"
 ring = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }
@@ -42,5 +42,5 @@ tokio = { workspace = true }
 yaml-rust2 = { workspace = true }
 
 [dev-dependencies]
-base64 = "0.22"
+base64 = "0.22.1"
 tempfile = { workspace = true }

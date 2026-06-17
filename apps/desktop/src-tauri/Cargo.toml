@@ -20,6 +20,7 @@ tauri-build = { workspace = true, features = [] }
 jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false }
 serde = { workspace = true }
 tauri = { workspace = true, features = [] }
+tauri-plugin-store = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
