@@ -1,0 +1,874 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::ids::*;
+
+#[non_exhaustive]
+#[derive(
+    Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema, strum::EnumDiscriminants,
+)]
+#[strum_discriminants(
+    name(DecisionDiscriminant),
+    derive(Hash, Serialize, Deserialize, JsonSchema)
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Decision {
+    AllowOnce,
+    AllowSession,
+    AllowPermanent,
+    DenyOnce,
+    DenyPermanent,
+    Escalate,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    Default,
+    Plan,
+    AcceptEdits,
+    BypassPermissions,
+    DontAsk,
+    Auto,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Info,
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustLevel {
+    AdminTrusted,
+    UserControlled,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EndReason {
+    Completed,
+    MaxIterationsReached,
+    TokenBudgetExhausted,
+    BudgetExhausted(BudgetKind),
+    Interrupted,
+    Cancelled { initiator: CancelInitiator },
+    Error(String),
+    Compacted,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelInitiator {
+    User,
+    Parent,
+    System { reason: String },
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    EndTurn,
+    ToolUse,
+    MaxIterations,
+    Interrupt,
+    Error(String),
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeferPolicy {
+    AlwaysLoad,
+    AutoDefer,
+    ForceDefer,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSearchMode {
+    Always,
+    Auto {
+        ratio: f32,
+        min_absolute_tokens: u32,
+    },
+    Disabled,
+}
+
+impl ToolSearchMode {
+    #[must_use]
+    pub fn min_absolute_tokens(&self) -> u32 {
+        match self {
+            Self::Auto {
+                min_absolute_tokens,
+                ..
+            } => *min_absolute_tokens,
+            Self::Always | Self::Disabled => 0,
+        }
+    }
+}
+
+impl Default for ToolSearchMode {
+    fn default() -> Self {
+        Self::Auto {
+            ratio: 0.10,
+            min_absolute_tokens: 4_000,
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSearchQueryKind {
+    Select,
+    Keyword,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolGroup {
+    FileSystem,
+    Search,
+    Network,
+    Shell,
+    Agent,
+    Coordinator,
+    Memory,
+    Clarification,
+    Meta,
+    Custom(String),
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionScope {
+    ExactCommand {
+        command: String,
+        cwd: Option<PathBuf>,
+    },
+    ExactArgs(Value),
+    ToolName(String),
+    Category(String),
+    PathPrefix(PathBuf),
+    GlobPattern(String),
+    ExecuteCodeScript {
+        script_hash: [u8; 32],
+    },
+    Any,
+}
+
+#[non_exhaustive]
+#[derive(
+    Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema, strum::EnumDiscriminants,
+)]
+#[strum_discriminants(
+    name(DecidedByDiscriminant),
+    derive(Hash, Serialize, Deserialize, JsonSchema)
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DecidedBy {
+    User,
+    Rule {
+        rule_id: String,
+    },
+    DefaultMode,
+    Broker {
+        broker_id: String,
+    },
+    Hook {
+        handler_id: String,
+    },
+    Timeout {
+        default: Decision,
+    },
+    ParentForwarded {
+        parent_session_id: SessionId,
+        original_decided_by: Box<DecidedBy>,
+    },
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCapability {
+    SubagentRunner,
+    TodoStore,
+    RunCanceller,
+    ClarifyChannel,
+    UserMessenger,
+    BlobReader,
+    OffloadedBlobAuthorizer,
+    HookEmitter,
+    SkillRegistry,
+    ContextPatchSink,
+    EmbeddedToolDispatcher,
+    CodeRuntime,
+    Custom(String),
+}
+
+impl fmt::Display for ToolCapability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SubagentRunner => f.write_str("subagent_runner"),
+            Self::TodoStore => f.write_str("todo_store"),
+            Self::RunCanceller => f.write_str("run_canceller"),
+            Self::ClarifyChannel => f.write_str("clarify_channel"),
+            Self::UserMessenger => f.write_str("user_messenger"),
+            Self::BlobReader => f.write_str("blob_reader"),
+            Self::OffloadedBlobAuthorizer => f.write_str("offloaded_blob_authorizer"),
+            Self::HookEmitter => f.write_str("hook_emitter"),
+            Self::SkillRegistry => f.write_str("skill_registry"),
+            Self::ContextPatchSink => f.write_str("context_patch_sink"),
+            Self::EmbeddedToolDispatcher => f.write_str("embedded_tool_dispatcher"),
+            Self::CodeRuntime => f.write_str("code_runtime"),
+            Self::Custom(value) => write!(f, "custom:{value}"),
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolOrigin {
+    Builtin,
+    Plugin {
+        plugin_id: PluginId,
+        trust: TrustLevel,
+    },
+    Mcp(McpOrigin),
+    Skill(SkillOrigin),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct McpOrigin {
+    pub server_id: McpServerId,
+    pub upstream_name: String,
+    pub server_meta: BTreeMap<String, Value>,
+    pub server_source: McpServerSource,
+    pub server_trust: TrustLevel,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerSource {
+    Workspace,
+    User,
+    Project,
+    Policy,
+    Plugin(PluginId),
+    Dynamic { registered_by: String },
+    Managed { registry_url: String },
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct SkillOrigin {
+    pub skill_id: SkillId,
+    pub skill_name: String,
+    pub source_kind: SkillSourceKind,
+    pub trust: TrustLevel,
+}
+
+#[derive(
+    Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, JsonSchema,
+)]
+pub struct SkillId(pub String);
+
+#[derive(
+    Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, JsonSchema,
+)]
+pub struct PluginId(pub String);
+
+#[derive(
+    Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, JsonSchema,
+)]
+pub struct McpServerId(pub String);
+
+pub type ToolName = String;
+pub type SemverString = String;
+pub type ToolLoadingBackendName = String;
+
+#[derive(
+    Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, JsonSchema,
+)]
+pub struct ModelProvider(pub String);
+
+#[derive(
+    Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, JsonSchema,
+)]
+pub struct UlidString(pub String);
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillSourceKind {
+    Bundled,
+    Workspace,
+    User,
+    Plugin(PluginId),
+    Mcp(McpServerId),
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShadowReason {
+    BuiltinWins,
+    HigherTrust,
+    Duplicate,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderRestriction {
+    All,
+    Allowlist(BTreeSet<ModelProvider>),
+    Denylist(BTreeSet<ModelProvider>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ResultBudget {
+    pub metric: BudgetMetric,
+    pub limit: u64,
+    pub on_overflow: OverflowAction,
+    pub preview_head_chars: u32,
+    pub preview_tail_chars: u32,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetMetric {
+    Chars,
+    Bytes,
+    Lines,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OverflowAction {
+    Truncate,
+    Offload,
+    Reject,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct OverflowMetadata {
+    pub blob_ref: crate::BlobRef,
+    pub head_chars: u32,
+    pub tail_chars: u32,
+    pub original_size: u64,
+    pub original_metric: BudgetMetric,
+    pub effective_limit: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ToolProperties {
+    pub is_concurrency_safe: bool,
+    pub is_read_only: bool,
+    pub is_destructive: bool,
+    pub long_running: Option<LongRunningPolicy>,
+    pub defer_policy: DeferPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LongRunningPolicy {
+    pub stall_threshold: Duration,
+    pub hard_timeout: Duration,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DenyReason {
+    UserDenied,
+    RuleDenied,
+    DefaultModeDenied,
+    HookBlocked { handler_id: String },
+    SubagentBlocked,
+    PolicyDenied,
+    Other(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ToolErrorPayload {
+    pub code: String,
+    pub message: String,
+    pub retriable: bool,
+}
+
+#[non_exhaustive]
+#[derive(
+    Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKind {
+    UserPreference,
+    Feedback,
+    ProjectFact,
+    Reference,
+    AgentSelfNote,
+    Custom(String),
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryVisibility {
+    Private { session_id: SessionId },
+    User { user_id: String },
+    Team { team_id: TeamId },
+    Tenant,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryWriteAction {
+    AppendSection { section: String },
+    ReplaceSection { section: String },
+    DeleteSection { section: String },
+    Upsert,
+    Forget,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemorySource {
+    UserInput,
+    AgentDerived,
+    SubagentDerived { child_session: SessionId },
+    ExternalRetrieval,
+    Imported,
+    Consolidated { from: Vec<MemoryId> },
+}
+
+#[non_exhaustive]
+#[derive(
+    Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreatCategory {
+    PromptInjection,
+    Exfiltration,
+    Backdoor,
+    Credential,
+    Malicious,
+    SpecialToken,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreatAction {
+    Warn,
+    Redact,
+    Block,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreatDirection {
+    OnWrite,
+    OnRecall,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryRecallDegradedReason {
+    Timeout,
+    ProviderError(String),
+    RecordTooLarge,
+    VisibilityViolation,
+    ScannerBlocked,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecallSkipReason {
+    NoExternalProvider,
+    PolicyDecidedSkip,
+    DeadlineZero,
+    Cancelled,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TakesEffect {
+    CurrentSession,
+    NextSession,
+    AfterReloadWith { session_id: SessionId },
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OverflowStrategy {
+    SectionTruncated {
+        kept_sections: u32,
+        dropped_sections: u32,
+    },
+    HeadOnly {
+        kept_chars: u32,
+    },
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxMode {
+    None,
+    OsLevel(LocalIsolationTag),
+    Container,
+    Remote,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalIsolationTag {
+    None,
+    Bubblewrap,
+    Seatbelt,
+    JobObject,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxScope {
+    WorkspaceOnly,
+    WorkspacePlus(Vec<PathBuf>),
+    Unrestricted,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkAccess {
+    None,
+    LoopbackOnly,
+    AllowList(Vec<HostRule>),
+    Unrestricted,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct HostRule {
+    pub pattern: String,
+    pub ports: Option<Vec<u16>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ResourceLimits {
+    pub max_memory_bytes: Option<u64>,
+    pub max_cpu_cores: Option<f32>,
+    pub max_pids: Option<u32>,
+    pub max_wall_clock_ms: Option<u64>,
+    pub max_open_files: Option<u32>,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceAccess {
+    None,
+    ReadOnly,
+    ReadWrite {
+        allowed_writable_subpaths: Vec<PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SandboxPolicy {
+    pub mode: SandboxMode,
+    pub scope: SandboxScope,
+    pub network: NetworkAccess,
+    pub resource_limits: ResourceLimits,
+    pub denied_host_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct ExecFingerprint(pub [u8; 32]);
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum KillScope {
+    Process,
+    ProcessGroup,
+    SessionLeader,
+}
+
+#[non_exhaustive]
+#[derive(
+    Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionSnapshotKind {
+    FilesystemImage,
+    ShellState,
+    ContainerImage,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellKind {
+    System,
+    Bash(PathBuf),
+    Zsh(PathBuf),
+    PowerShell,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleSource {
+    User,
+    Workspace,
+    Project,
+    Local,
+    Flag,
+    Policy,
+    CliArg,
+    Command,
+    Session,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, strum::EnumDiscriminants)]
+#[strum_discriminants(
+    name(PermissionSubjectDiscriminant),
+    derive(Hash, Serialize, Deserialize, JsonSchema)
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionSubject {
+    ToolInvocation {
+        tool: String,
+        input: Value,
+    },
+    CommandExec {
+        command: String,
+        argv: Vec<String>,
+        cwd: Option<PathBuf>,
+        fingerprint: Option<ExecFingerprint>,
+    },
+    FileWrite {
+        path: PathBuf,
+        bytes_preview: Vec<u8>,
+    },
+    FileDelete {
+        path: PathBuf,
+    },
+    NetworkAccess {
+        host: String,
+        port: Option<u16>,
+    },
+    DangerousCommand {
+        command: String,
+        pattern_id: String,
+        severity: Severity,
+    },
+    McpToolCall {
+        server: String,
+        tool: String,
+        input: Value,
+    },
+    Custom {
+        kind: String,
+        payload: Value,
+    },
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractivityLevel {
+    FullyInteractive,
+    NoInteractive,
+    DeferredInteractive,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackPolicy {
+    AskUser,
+    DenyAll,
+    AllowReadOnly,
+    ClosestMatchingRule,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TimeoutPolicy {
+    pub deadline_ms: u64,
+    pub default_on_timeout: Decision,
+    pub heartbeat_interval_ms: Option<u64>,
+}
+
+pub const TOOL_NAME_PATTERN: &str = r"^[a-zA-Z0-9_-]{1,64}$";
+
+#[derive(Debug, thiserror::Error)]
+pub enum ToolNameError {
+    #[error("tool name `{0}` violates `{TOOL_NAME_PATTERN}`")]
+    Invalid(String),
+    #[error("mcp namespace separator `__` is reserved; got `{0}`")]
+    ReservedSeparator(String),
+}
+
+pub fn validate_tool_name(name: &str) -> Result<(), ToolNameError> {
+    let valid_chars = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if name.is_empty() || name.len() > 64 || !valid_chars {
+        return Err(ToolNameError::Invalid(name.to_owned()));
+    }
+    if name.contains("__") {
+        return Err(ToolNameError::ReservedSeparator(name.to_owned()));
+    }
+    Ok(())
+}
+
+pub fn canonical_mcp_tool_name(server: &str, tool: &str) -> Result<String, ToolNameError> {
+    validate_tool_name(server)?;
+    validate_tool_name(tool)?;
+    Ok(format!("mcp__{server}__{tool}"))
+}
+
+pub fn parse_canonical_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix("mcp__")?;
+    rest.split_once("__")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SteeringMessage {
+    pub id: SteeringId,
+    pub session_id: SessionId,
+    pub run_id: Option<RunId>,
+    pub kind: SteeringKind,
+    pub priority: SteeringPriority,
+    pub body: SteeringBody,
+    pub queued_at: DateTime<Utc>,
+    pub correlation_id: Option<CorrelationId>,
+    pub source: SteeringSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SteeringRequest {
+    pub kind: SteeringKind,
+    pub body: SteeringBody,
+    pub priority: Option<SteeringPriority>,
+    pub correlation_id: Option<CorrelationId>,
+    pub source: SteeringSource,
+}
+
+#[non_exhaustive]
+#[derive(
+    Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SteeringKind {
+    Append,
+    Replace,
+    NudgeOnly,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SteeringBody {
+    Text(String),
+    Structured {
+        instruction: String,
+        addenda: BTreeMap<String, Value>,
+    },
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SteeringPriority {
+    Normal,
+    High,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SteeringSource {
+    User,
+    Plugin { plugin_id: PluginId },
+    AutoMonitor { rule_id: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SteeringPolicy {
+    pub capacity: usize,
+    pub ttl_ms: u64,
+    pub overflow: SteeringOverflow,
+    pub dedup_window_ms: u64,
+}
+
+impl Default for SteeringPolicy {
+    fn default() -> Self {
+        Self {
+            capacity: 8,
+            ttl_ms: 60_000,
+            overflow: SteeringOverflow::DropOldest,
+            dedup_window_ms: 1_500,
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SteeringOverflow {
+    DropOldest,
+    DropNewest,
+    BackPressure,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetKind {
+    SoftBudget,
+    HardBudget,
+    PerTurnTokens,
+    PerSessionTokens,
+    PerToolMaxChars { tool_name: String },
+    Tokens,
+    ToolCalls,
+    WallClock,
+    Cost,
+}

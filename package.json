@@ -1,0 +1,21 @@
+{
+  "name": "jyowo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev": "pnpm -C apps/desktop tauri dev",
+    "build": "pnpm -C apps/desktop tauri build",
+    "check:rust": "cargo fmt --all --check && cargo check --workspace && cargo test --workspace",
+    "check:desktop": "pnpm -C apps/desktop typecheck && pnpm -C apps/desktop test && pnpm -C apps/desktop build",
+    "check": "pnpm check:desktop && pnpm check:rust",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1"
+  }
+}

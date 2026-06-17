@@ -1,0 +1,57 @@
+use harness_contracts::{ThreatCategory, TrustLevel};
+
+use crate::SkillPlatform;
+
+#[derive(Debug, thiserror::Error)]
+pub enum SkillError {
+    #[error("parse frontmatter: {0}")]
+    ParseFrontmatter(String),
+    #[error("missing required parameter: {0}")]
+    MissingParam(String),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("duplicate name: {0}")]
+    Duplicate(String),
+    #[error("threat detected: pattern={pattern_id} category={category:?}")]
+    ThreatDetected {
+        pattern_id: String,
+        category: ThreatCategory,
+    },
+    #[error("platform mismatch: required={required:?}")]
+    PlatformMismatch { required: Vec<SkillPlatform> },
+    #[error("hook transport not permitted for trust={trust:?}")]
+    HookTransportNotPermitted { trust: TrustLevel },
+    #[error("name too long: {0} > 64")]
+    NameTooLong(usize),
+    #[error("description too long: {0} > 1024")]
+    DescriptionTooLong(usize),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RenderError {
+    #[error("missing required parameter: {0}")]
+    MissingParam(String),
+    #[error("invalid parameter `{name}`: expected {expected}")]
+    InvalidParam {
+        name: String,
+        expected: &'static str,
+    },
+    #[error("unknown config key: {0}")]
+    UnknownConfigKey(String),
+    #[error("config resolve: {0}")]
+    ConfigResolve(#[from] ConfigResolveError),
+    #[error("shell not allowed: {0}")]
+    ShellNotAllowed(String),
+    #[error("shell exec: {0}")]
+    ShellExec(#[from] std::io::Error),
+    #[error("skill not visible: {0}")]
+    SkillNotVisible(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigResolveError {
+    #[error("unknown config key: {0}")]
+    UnknownKey(String),
+    #[error("{0}")]
+    Message(String),
+}

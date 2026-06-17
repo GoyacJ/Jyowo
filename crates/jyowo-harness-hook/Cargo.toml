@@ -1,0 +1,33 @@
+[package]
+name = "jyowo-harness-hook"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+name = "harness_hook"
+doctest = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+in-process = []
+exec = ["tokio/io-util", "tokio/process"]
+http = ["dep:reqwest"]
+
+[dependencies]
+jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+parking_lot = "0.12"
+reqwest = { workspace = true, optional = true }

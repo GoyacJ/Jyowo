@@ -1,0 +1,46 @@
+[package]
+name = "jyowo-harness-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+name = "harness_plugin"
+doctest = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+dynamic-load = []
+# Compatibility alias only. Manifest signature verification is always compiled.
+manifest-sign = []
+# Explicit unsupported boundary loader for M5; no Wasm runtime is linked.
+wasm-runtime = []
+
+[dependencies]
+jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-hook = { path = "../jyowo-harness-hook" }
+jyowo-harness-memory = { path = "../jyowo-harness-memory" }
+jyowo-harness-mcp = { path = "../jyowo-harness-mcp" }
+jyowo-harness-skill = { path = "../jyowo-harness-skill" }
+jyowo-harness-tool = { path = "../jyowo-harness-tool" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+jsonschema = { workspace = true }
+parking_lot = "0.12"
+ring = { workspace = true }
+semver = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+yaml-rust2 = { workspace = true }
+
+[dev-dependencies]
+base64 = "0.22"
+tempfile = { workspace = true }

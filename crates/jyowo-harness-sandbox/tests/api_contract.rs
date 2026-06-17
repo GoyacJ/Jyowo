@@ -1,0 +1,452 @@
+use std::collections::BTreeSet;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
+use std::time::Instant;
+
+use async_trait::async_trait;
+use harness_contracts::{
+    Event, KillScope, RedactRules, Redactor, SandboxBackendFailurePhase, SandboxError,
+};
+use harness_sandbox::{
+    execute_with_lifecycle, restore_with_lifecycle, shutdown_with_lifecycle,
+    snapshot_with_lifecycle, ActivityHandle, EventSink, ExecContext, ExecOutcome, ExecSpec,
+    ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
+};
+
+#[derive(Default)]
+struct NullSink;
+
+impl EventSink for NullSink {
+    fn emit(&self, _event: Event) -> Result<(), SandboxError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct RecordingSink {
+    events: Mutex<Vec<Event>>,
+}
+
+impl RecordingSink {
+    fn events(&self) -> Vec<Event> {
+        self.events.lock().expect("events lock should work").clone()
+    }
+}
+
+impl EventSink for RecordingSink {
+    fn emit(&self, event: Event) -> Result<(), SandboxError> {
+        self.events
+            .lock()
+            .expect("events lock should work")
+            .push(event);
+        Ok(())
+    }
+}
+
+struct SecretRedactor;
+
+impl Redactor for SecretRedactor {
+    fn redact(&self, input: &str, _rules: &RedactRules) -> String {
+        input.replace("secret", "[MASK]")
+    }
+}
+
+struct TestActivity {
+    wait_error: Option<SandboxError>,
+}
+
+#[async_trait]
+impl ActivityHandle for TestActivity {
+    async fn wait(&self) -> Result<ExecOutcome, SandboxError> {
+        if let Some(error) = &self.wait_error {
+            return Err(error.clone());
+        }
+        Ok(ExecOutcome::default())
+    }
+
+    async fn kill(&self, _signal: i32, _scope: KillScope) -> Result<(), SandboxError> {
+        Ok(())
+    }
+
+    fn touch(&self) {}
+
+    fn last_activity(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+struct TestBackend {
+    id: String,
+    after_execute_count: Arc<AtomicUsize>,
+    execute_error: Option<SandboxError>,
+    wait_error: Option<SandboxError>,
+    after_execute_error: Option<SandboxError>,
+    snapshot_error: Option<SandboxError>,
+    restore_error: Option<SandboxError>,
+    shutdown_error: Option<SandboxError>,
+}
+
+#[async_trait]
+impl SandboxBackend for TestBackend {
+    fn backend_id(&self) -> &str {
+        &self.id
+    }
+
+    fn capabilities(&self) -> SandboxCapabilities {
+        SandboxCapabilities {
+            snapshot_kinds: BTreeSet::default(),
+            ..SandboxCapabilities::default()
+        }
+    }
+
+    async fn execute(
+        &self,
+        _spec: ExecSpec,
+        _ctx: ExecContext,
+    ) -> Result<ProcessHandle, SandboxError> {
+        if let Some(error) = &self.execute_error {
+            return Err(error.clone());
+        }
+        Ok(ProcessHandle {
+            pid: Some(42),
+            stdout: None,
+            stderr: None,
+            stdin: None,
+            cwd_marker: None,
+            activity: Arc::new(TestActivity {
+                wait_error: self.wait_error.clone(),
+            }),
+        })
+    }
+
+    async fn after_execute(
+        &self,
+        _outcome: &ExecOutcome,
+        _ctx: &ExecContext,
+    ) -> Result<(), SandboxError> {
+        self.after_execute_count.fetch_add(1, Ordering::SeqCst);
+        if let Some(error) = &self.after_execute_error {
+            return Err(error.clone());
+        }
+        Ok(())
+    }
+
+    async fn snapshot_session(
+        &self,
+        _spec: &SnapshotSpec,
+    ) -> Result<SessionSnapshotFile, SandboxError> {
+        if let Some(error) = &self.snapshot_error {
+            return Err(error.clone());
+        }
+        Ok(SessionSnapshotFile::default())
+    }
+
+    async fn restore_session(&self, _snapshot: &SessionSnapshotFile) -> Result<(), SandboxError> {
+        if let Some(error) = &self.restore_error {
+            return Err(error.clone());
+        }
+        Ok(())
+    }
+
+    async fn shutdown(&self) -> Result<(), SandboxError> {
+        if let Some(error) = &self.shutdown_error {
+            return Err(error.clone());
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn sandbox_backend_is_object_safe_and_has_noop_hooks() {
+    let after_execute_count = Arc::new(AtomicUsize::new(0));
+    let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
+        id: "test".to_owned(),
+        after_execute_count: after_execute_count.clone(),
+        execute_error: None,
+        wait_error: None,
+        after_execute_error: None,
+        snapshot_error: None,
+        restore_error: None,
+        shutdown_error: None,
+    });
+    let spec = ExecSpec::default();
+    let ctx = ExecContext::for_test(Arc::new(NullSink));
+
+    backend.before_execute(&spec, &ctx).await.unwrap();
+    let handle = backend.execute(spec, ctx.clone()).await.unwrap();
+    let outcome = handle.activity.wait().await.unwrap();
+    backend.after_execute(&outcome, &ctx).await.unwrap();
+
+    assert_eq!(handle.pid, Some(42));
+    assert_eq!(outcome.stdout_bytes_observed, 0);
+    assert_eq!(after_execute_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn execute_with_lifecycle_runs_after_execute_once_when_wait_completes() {
+    let after_execute_count = Arc::new(AtomicUsize::new(0));
+    let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
+        id: "test".to_owned(),
+        after_execute_count: after_execute_count.clone(),
+        execute_error: None,
+        wait_error: None,
+        after_execute_error: None,
+        snapshot_error: None,
+        restore_error: None,
+        shutdown_error: None,
+    });
+    let ctx = ExecContext::for_test(Arc::new(NullSink));
+
+    let handle = execute_with_lifecycle(backend, ExecSpec::default(), ctx)
+        .await
+        .expect("execute should succeed");
+    let first = handle.activity.wait().await.expect("wait should succeed");
+    let second = handle
+        .activity
+        .wait()
+        .await
+        .expect("second wait should return cached outcome");
+
+    assert_eq!(first, second);
+    assert_eq!(after_execute_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn execute_with_lifecycle_emits_backend_failure_when_execute_fails() {
+    let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
+        id: "test".to_owned(),
+        after_execute_count: Arc::new(AtomicUsize::new(0)),
+        execute_error: Some(SandboxError::Message("spawn secret failed".to_owned())),
+        wait_error: None,
+        after_execute_error: None,
+        snapshot_error: None,
+        restore_error: None,
+        shutdown_error: None,
+    });
+    let sink = Arc::new(RecordingSink::default());
+    let mut ctx = ExecContext::for_test(sink.clone());
+    ctx.redactor = Arc::new(SecretRedactor);
+
+    let error = match execute_with_lifecycle(backend, ExecSpec::default(), ctx).await {
+        Ok(_) => panic!("execute failure should be returned"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.to_string(), "spawn secret failed");
+    assert!(sink.events().iter().any(|event| {
+        matches!(
+            event,
+            Event::SandboxBackendFailed(failed)
+                if failed.backend_id == "test"
+                    && failed.phase == SandboxBackendFailurePhase::Execute
+                    && failed.error.to_string() == "spawn [MASK] failed"
+        )
+    }));
+}
+
+#[tokio::test]
+async fn execute_with_lifecycle_emits_backend_failure_when_wait_fails() {
+    let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
+        id: "test".to_owned(),
+        after_execute_count: Arc::new(AtomicUsize::new(0)),
+        execute_error: None,
+        wait_error: Some(SandboxError::ResourceLimitExceeded {
+            limit: "memory".to_owned(),
+            detail: "wait secret failed".to_owned(),
+        }),
+        after_execute_error: None,
+        snapshot_error: None,
+        restore_error: None,
+        shutdown_error: None,
+    });
+    let sink = Arc::new(RecordingSink::default());
+    let mut ctx = ExecContext::for_test(sink.clone());
+    ctx.redactor = Arc::new(SecretRedactor);
+
+    let handle = execute_with_lifecycle(backend, ExecSpec::default(), ctx)
+        .await
+        .expect("execute should succeed");
+    let error = handle
+        .activity
+        .wait()
+        .await
+        .expect_err("wait failure should be returned");
+
+    assert!(error.to_string().contains("secret"));
+    assert!(sink.events().iter().any(|event| {
+        matches!(
+            event,
+            Event::SandboxBackendFailed(failed)
+                if failed.backend_id == "test"
+                    && failed.phase == SandboxBackendFailurePhase::Wait
+                    && failed.error.to_string().contains("[MASK]")
+                    && !failed.error.to_string().contains("secret")
+        )
+    }));
+}
+
+#[tokio::test]
+async fn execute_with_lifecycle_emits_post_execution_failure_without_rewriting_outcome() {
+    let after_execute_count = Arc::new(AtomicUsize::new(0));
+    let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
+        id: "test".to_owned(),
+        after_execute_count: after_execute_count.clone(),
+        execute_error: None,
+        wait_error: None,
+        after_execute_error: Some(SandboxError::Message("cleanup failed".to_owned())),
+        snapshot_error: None,
+        restore_error: None,
+        shutdown_error: None,
+    });
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = ExecContext::for_test(sink.clone());
+
+    let handle = execute_with_lifecycle(backend, ExecSpec::default(), ctx)
+        .await
+        .expect("execute should succeed");
+    let outcome = handle.activity.wait().await.expect("wait should succeed");
+
+    assert_eq!(outcome.stdout_bytes_observed, 0);
+    assert_eq!(after_execute_count.load(Ordering::SeqCst), 1);
+    assert!(sink.events().iter().any(|event| {
+        matches!(
+            event,
+            Event::SandboxPostExecutionFailed(failed)
+                if failed.backend_id == "test" && failed.error.to_string() == "cleanup failed"
+        )
+    }));
+}
+
+#[tokio::test]
+async fn execute_with_lifecycle_redacts_post_execution_failure_event() {
+    let after_execute_count = Arc::new(AtomicUsize::new(0));
+    let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
+        id: "test".to_owned(),
+        after_execute_count,
+        execute_error: None,
+        wait_error: None,
+        after_execute_error: Some(SandboxError::WorkspaceSyncFailed {
+            direction: "pull".to_owned(),
+            program: "rsync".to_owned(),
+            detail: "cleanup secret failed".to_owned(),
+        }),
+        snapshot_error: None,
+        restore_error: None,
+        shutdown_error: None,
+    });
+    let sink = Arc::new(RecordingSink::default());
+    let mut ctx = ExecContext::for_test(sink.clone());
+    ctx.redactor = Arc::new(SecretRedactor);
+
+    let handle = execute_with_lifecycle(backend, ExecSpec::default(), ctx)
+        .await
+        .expect("execute should succeed");
+    handle.activity.wait().await.expect("wait should succeed");
+
+    assert!(sink.events().iter().any(|event| {
+        matches!(
+            event,
+            Event::SandboxPostExecutionFailed(failed)
+                if failed.error.to_string().contains("[MASK]")
+                    && !failed.error.to_string().contains("secret")
+        )
+    }));
+}
+
+#[tokio::test]
+async fn snapshot_with_lifecycle_emits_backend_failure_when_snapshot_fails() {
+    let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
+        id: "test".to_owned(),
+        after_execute_count: Arc::new(AtomicUsize::new(0)),
+        execute_error: None,
+        wait_error: None,
+        after_execute_error: None,
+        snapshot_error: Some(SandboxError::Message("snapshot secret failed".to_owned())),
+        restore_error: None,
+        shutdown_error: None,
+    });
+    let sink = Arc::new(RecordingSink::default());
+    let mut ctx = ExecContext::for_test(sink.clone());
+    ctx.redactor = Arc::new(SecretRedactor);
+
+    let error = snapshot_with_lifecycle(backend, &SnapshotSpec::default(), &ctx)
+        .await
+        .expect_err("snapshot failure should be returned");
+
+    assert_eq!(error.to_string(), "snapshot secret failed");
+    assert!(sink.events().iter().any(|event| {
+        matches!(
+            event,
+            Event::SandboxBackendFailed(failed)
+                if failed.backend_id == "test"
+                    && failed.phase == SandboxBackendFailurePhase::Snapshot
+                    && failed.error.to_string() == "snapshot [MASK] failed"
+        )
+    }));
+}
+
+#[tokio::test]
+async fn restore_with_lifecycle_emits_backend_failure_when_restore_fails() {
+    let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
+        id: "test".to_owned(),
+        after_execute_count: Arc::new(AtomicUsize::new(0)),
+        execute_error: None,
+        wait_error: None,
+        after_execute_error: None,
+        snapshot_error: None,
+        restore_error: Some(SandboxError::Message("restore secret failed".to_owned())),
+        shutdown_error: None,
+    });
+    let sink = Arc::new(RecordingSink::default());
+    let mut ctx = ExecContext::for_test(sink.clone());
+    ctx.redactor = Arc::new(SecretRedactor);
+
+    let error = restore_with_lifecycle(backend, &SessionSnapshotFile::default(), &ctx)
+        .await
+        .expect_err("restore failure should be returned");
+
+    assert_eq!(error.to_string(), "restore secret failed");
+    assert!(sink.events().iter().any(|event| {
+        matches!(
+            event,
+            Event::SandboxBackendFailed(failed)
+                if failed.backend_id == "test"
+                    && failed.phase == SandboxBackendFailurePhase::Restore
+                    && failed.error.to_string() == "restore [MASK] failed"
+        )
+    }));
+}
+
+#[tokio::test]
+async fn shutdown_with_lifecycle_emits_backend_failure_when_shutdown_fails() {
+    let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
+        id: "test".to_owned(),
+        after_execute_count: Arc::new(AtomicUsize::new(0)),
+        execute_error: None,
+        wait_error: None,
+        after_execute_error: None,
+        snapshot_error: None,
+        restore_error: None,
+        shutdown_error: Some(SandboxError::Message("shutdown secret failed".to_owned())),
+    });
+    let sink = Arc::new(RecordingSink::default());
+    let mut ctx = ExecContext::for_test(sink.clone());
+    ctx.redactor = Arc::new(SecretRedactor);
+
+    let error = shutdown_with_lifecycle(backend, &ctx)
+        .await
+        .expect_err("shutdown failure should be returned");
+
+    assert_eq!(error.to_string(), "shutdown secret failed");
+    assert!(sink.events().iter().any(|event| {
+        matches!(
+            event,
+            Event::SandboxBackendFailed(failed)
+                if failed.backend_id == "test"
+                    && failed.phase == SandboxBackendFailurePhase::Shutdown
+                    && failed.error.to_string() == "shutdown [MASK] failed"
+        )
+    }));
+}

@@ -1,0 +1,45 @@
+[package]
+name = "jyowo-harness-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+name = "harness_sandbox"
+doctest = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+local = []
+local-sandbox = ["local"]
+local-bubblewrap = ["local"]
+local-seatbelt = ["local"]
+local-jobobject = ["local"]
+docker = []
+docker-sandbox = ["docker"]
+ssh = []
+ssh-sandbox = ["ssh"]
+noop = []
+code-runtime = []
+
+[dependencies]
+jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+async-trait = { workspace = true }
+blake3 = "1"
+bytes = { workspace = true }
+chrono = { workspace = true }
+command-fds = { version = "0.3.3", features = ["tokio"] }
+futures = { workspace = true }
+os_pipe = "1"
+parking_lot = "0.12"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tar = "0.4"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "process"] }
+tokio-util = { workspace = true, features = ["io"] }

@@ -1,0 +1,34 @@
+[package]
+name = "jyowo-harness-tool-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+name = "harness_tool_search"
+doctest = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+backend-anthropic = []
+backend-inline = []
+scorer-default = []
+
+[dependencies]
+jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-model = { path = "../jyowo-harness-model" }
+jyowo-harness-tool = { path = "../jyowo-harness-tool" }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }

@@ -1,0 +1,159 @@
+[package]
+name = "jyowo-harness-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+name = "jyowo_harness_sdk"
+doctest = false
+
+[[example]]
+name = "quickstart"
+required-features = ["testing"]
+
+[lints]
+workspace = true
+
+[features]
+default = [
+  "sqlite-store",
+  "jsonl-store",
+  "local-sandbox",
+  "interactive-permission",
+  "mcp-stdio",
+  "provider-anthropic",
+  "tool-search",
+  "steering-queue",
+  "observability-redactor",
+  "builtin-toolset",
+]
+sqlite-store = ["jyowo-harness-journal/sqlite"]
+jsonl-store = ["jyowo-harness-journal/jsonl"]
+in-memory-store = ["jyowo-harness-journal/in-memory"]
+blob-file = ["jyowo-harness-journal/blob-file"]
+blob-sqlite = ["jyowo-harness-journal/blob-sqlite"]
+provider-openai = ["jyowo-harness-model/openai"]
+provider-anthropic = ["jyowo-harness-model/anthropic"]
+provider-gemini = ["jyowo-harness-model/gemini"]
+provider-openrouter = ["jyowo-harness-model/openrouter"]
+provider-bedrock = ["jyowo-harness-model/bedrock"]
+provider-codex = ["jyowo-harness-model/codex"]
+provider-local-llama = ["jyowo-harness-model/local-llama"]
+provider-deepseek = ["jyowo-harness-model/deepseek"]
+provider-minimax = ["jyowo-harness-model/minimax"]
+provider-qwen = ["jyowo-harness-model/qwen"]
+provider-doubao = ["jyowo-harness-model/doubao"]
+provider-zhipu = ["jyowo-harness-model/zhipu"]
+provider-km = ["jyowo-harness-model/km"]
+all-providers = [
+  "provider-openai",
+  "provider-anthropic",
+  "provider-gemini",
+  "provider-openrouter",
+  "provider-bedrock",
+  "provider-codex",
+  "provider-local-llama",
+  "provider-deepseek",
+  "provider-minimax",
+  "provider-qwen",
+  "provider-doubao",
+  "provider-zhipu",
+  "provider-km",
+]
+local-sandbox = ["jyowo-harness-sandbox/local"]
+docker-sandbox = ["jyowo-harness-sandbox/docker"]
+ssh-sandbox = ["jyowo-harness-sandbox/ssh"]
+noop-sandbox = ["jyowo-harness-sandbox/noop"]
+mcp-stdio = ["jyowo-harness-mcp/stdio"]
+mcp-http = ["jyowo-harness-mcp/http"]
+mcp-websocket = ["jyowo-harness-mcp/websocket"]
+mcp-sse = ["jyowo-harness-mcp/sse"]
+mcp-in-process = ["jyowo-harness-mcp/in-process"]
+mcp-server-adapter = ["jyowo-harness-mcp/server-adapter"]
+interactive-permission = ["jyowo-harness-permission/interactive"]
+stream-permission = ["jyowo-harness-permission/stream"]
+rule-engine-permission = ["jyowo-harness-permission/rule-engine"]
+memory-builtin = ["jyowo-harness-memory/builtin", "jyowo-harness-memory/threat-scanner"]
+memory-external-slot = [
+  "jyowo-harness-memory/external-slot",
+  "jyowo-harness-memory/threat-scanner",
+  "jyowo-harness-context/recall-memory",
+]
+memory-consolidation = [
+  "memory-external-slot",
+  "jyowo-harness-memory/consolidation",
+]
+agents-subagent = ["dep:jyowo-harness-subagent", "jyowo-harness-engine/subagent-tool"]
+agents-team = ["agents-subagent", "dep:jyowo-harness-team"]
+observability-replay = ["jyowo-harness-observability/replay"]
+observability-otel = ["jyowo-harness-observability/otel"]
+observability-prometheus = ["jyowo-harness-observability/prometheus"]
+observability-redactor = ["jyowo-harness-observability/redactor"]
+plugin-dynamic-load = ["jyowo-harness-plugin/dynamic-load"]
+plugin-manifest-sign = ["plugin-dynamic-load", "jyowo-harness-plugin/manifest-sign"]
+builtin-toolset = ["jyowo-harness-tool/builtin-toolset"]
+tool-search = ["dep:jyowo-harness-tool-search", "tool-loading-anthropic", "tool-loading-inline"]
+tool-loading-anthropic = ["dep:jyowo-harness-tool-search", "jyowo-harness-tool-search/backend-anthropic"]
+tool-loading-inline = ["dep:jyowo-harness-tool-search", "jyowo-harness-tool-search/backend-inline"]
+tool-search-default-scorer = ["dep:jyowo-harness-tool-search", "jyowo-harness-tool-search/scorer-default"]
+skill-tools = ["jyowo-harness-tool/skill-tools"]
+programmatic-tool-calling = [
+  "jyowo-harness-engine/programmatic-tool-calling",
+  "jyowo-harness-tool/programmatic-tool-calling",
+  "jyowo-harness-sandbox/code-runtime",
+]
+steering-queue = [
+  "jyowo-harness-session/steering",
+  "jyowo-harness-engine/steering",
+]
+testing = [
+  "in-memory-store",
+  "memory-consolidation",
+  "memory-external-slot",
+  "noop-sandbox",
+  "rule-engine-permission",
+  "stream-permission",
+  "skill-tools",
+  "jyowo-harness-session/hot-reload-fork",
+  "jyowo-harness-journal/mock",
+  "jyowo-harness-permission/mock",
+  "jyowo-harness-model/mock",
+]
+
+[dependencies]
+jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-context = { path = "../jyowo-harness-context" }
+jyowo-harness-engine = { path = "../jyowo-harness-engine" }
+jyowo-harness-hook = { path = "../jyowo-harness-hook", features = ["exec", "http"] }
+jyowo-harness-journal = { path = "../jyowo-harness-journal" }
+jyowo-harness-mcp = { path = "../jyowo-harness-mcp" }
+jyowo-harness-memory = { path = "../jyowo-harness-memory" }
+jyowo-harness-model = { path = "../jyowo-harness-model" }
+jyowo-harness-observability = { path = "../jyowo-harness-observability" }
+jyowo-harness-permission = { path = "../jyowo-harness-permission" }
+jyowo-harness-plugin = { path = "../jyowo-harness-plugin" }
+jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox" }
+jyowo-harness-session = { path = "../jyowo-harness-session" }
+jyowo-harness-skill = { path = "../jyowo-harness-skill" }
+jyowo-harness-subagent = { path = "../jyowo-harness-subagent", optional = true }
+jyowo-harness-team = { path = "../jyowo-harness-team", optional = true }
+jyowo-harness-tool = { path = "../jyowo-harness-tool" }
+jyowo-harness-tool-search = { path = "../jyowo-harness-tool-search", optional = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+parking_lot = "0.12"
+serde = { workspace = true }
+serde_json = { workspace = true }
+secrecy = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+semver = { workspace = true }
+tokio = { workspace = true }

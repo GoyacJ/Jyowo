@@ -1,0 +1,30 @@
+[package]
+name = "jyowo-desktop-shell"
+version.workspace = true
+description = "Jyowo desktop shell"
+authors = ["Jyowo"]
+license.workspace = true
+repository = ""
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "jyowo_desktop_shell"
+crate-type = ["staticlib", "cdylib", "rlib"]
+doctest = false
+
+[build-dependencies]
+tauri-build = { workspace = true, features = [] }
+
+[dependencies]
+jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false }
+serde = { workspace = true }
+tauri = { workspace = true, features = [] }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

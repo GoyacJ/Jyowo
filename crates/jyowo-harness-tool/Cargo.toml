@@ -1,0 +1,41 @@
+[package]
+name = "jyowo-harness-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+name = "harness_tool"
+doctest = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+skill-tools = []
+builtin-toolset = ["jyowo-harness-permission/dangerous"]
+programmatic-tool-calling = ["builtin-toolset", "jyowo-harness-sandbox/code-runtime"]
+
+[dependencies]
+jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-permission = { path = "../jyowo-harness-permission" }
+jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox" }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+globset = { workspace = true }
+parking_lot = "0.12"
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,667 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use futures::stream;
+use harness_contracts::{
+    BlobError, BlobMeta, BlobRef, BlobStore, BudgetMetric, CapabilityRegistry, Decision, Event,
+    FallbackPolicy, InteractivityLevel, OverflowAction, PermissionMode, ProviderRestriction,
+    ResultBudget, TenantId, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
+    ToolResult, ToolResultPart, ToolUseId, TrustLevel,
+};
+use harness_permission::{
+    PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest, RuleSnapshot,
+};
+use harness_tool::{
+    InterruptToken, OrchestratorContext, Tool, ToolCall, ToolContext, ToolEvent, ToolEventEmitter,
+    ToolOrchestrator, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolSearchMode,
+    ValidationError,
+};
+use parking_lot::Mutex;
+use serde_json::{json, Value};
+
+#[tokio::test]
+async fn result_under_budget_is_returned_without_overflow() {
+    let (pool, call) = pool_with_tool(
+        "under",
+        budget(10, OverflowAction::Offload),
+        vec![ToolEvent::Final(ToolResult::Text("small".to_owned()))],
+    )
+    .await;
+    let blob_store = Arc::new(RecordingBlobStore::default());
+    let emitter = Arc::new(RecordingEmitter::default());
+
+    let results = dispatch(pool, call, Some(blob_store.clone()), emitter.clone()).await;
+
+    assert!(matches!(results[0].result, Ok(ToolResult::Text(ref text)) if text == "small"));
+    assert_eq!(results[0].overflow, None);
+    assert!(blob_store.puts().is_empty());
+    assert!(emitter.events().is_empty());
+}
+
+#[tokio::test]
+async fn reject_budget_returns_result_too_large() {
+    let (pool, call) = pool_with_tool(
+        "reject",
+        budget(3, OverflowAction::Reject),
+        vec![ToolEvent::Final(ToolResult::Text("too long".to_owned()))],
+    )
+    .await;
+
+    let results = dispatch(pool, call, None, Arc::new(RecordingEmitter::default())).await;
+
+    assert!(matches!(
+        results[0].result,
+        Err(ToolError::ResultTooLarge {
+            original: 8,
+            limit: 3,
+            metric: BudgetMetric::Chars
+        })
+    ));
+    assert_eq!(results[0].overflow, None);
+}
+
+#[tokio::test]
+async fn truncate_budget_returns_truncated_text_without_blob() {
+    let (pool, call) = pool_with_tool(
+        "truncate",
+        budget(4, OverflowAction::Truncate),
+        vec![ToolEvent::Final(ToolResult::Text("abcdef".to_owned()))],
+    )
+    .await;
+    let blob_store = Arc::new(RecordingBlobStore::default());
+
+    let results = dispatch(
+        pool,
+        call,
+        Some(blob_store.clone()),
+        Arc::new(RecordingEmitter::default()),
+    )
+    .await;
+
+    assert!(matches!(results[0].result, Ok(ToolResult::Text(ref text)) if text == "abcd"));
+    assert_eq!(results[0].overflow, None);
+    assert!(blob_store.puts().is_empty());
+}
+
+#[tokio::test]
+async fn offload_budget_writes_full_text_and_returns_preview_with_metadata() {
+    let (pool, call) = pool_with_tool(
+        "offload",
+        budget(5, OverflowAction::Offload),
+        vec![ToolEvent::Final(ToolResult::Text("abcdefghij".to_owned()))],
+    )
+    .await;
+    let blob_store = Arc::new(RecordingBlobStore::default());
+    let emitter = Arc::new(RecordingEmitter::default());
+
+    let results = dispatch(pool, call, Some(blob_store.clone()), emitter.clone()).await;
+
+    let Ok(ToolResult::Mixed(parts)) = &results[0].result else {
+        panic!("expected mixed offload result: {:?}", results[0].result);
+    };
+    assert_eq!(
+        parts[0],
+        ToolResultPart::Text {
+            text: "ab".to_owned()
+        }
+    );
+    assert!(
+        matches!(parts[1], ToolResultPart::Blob { ref summary, .. } if summary.as_deref() == Some("tool result exceeded budget; content was offloaded"))
+    );
+    assert_eq!(
+        parts[2],
+        ToolResultPart::Text {
+            text: "ij".to_owned()
+        }
+    );
+
+    let overflow = results[0].overflow.as_ref().expect("overflow metadata");
+    assert_eq!(overflow.original_size, 10);
+    assert_eq!(overflow.original_metric, BudgetMetric::Chars);
+    assert_eq!(overflow.effective_limit, 5);
+    assert_eq!(overflow.head_chars, 2);
+    assert_eq!(overflow.tail_chars, 2);
+
+    let puts = blob_store.puts();
+    assert_eq!(puts.len(), 1);
+    assert_eq!(puts[0].0, Bytes::from_static(b"abcdefghij"));
+
+    let events = emitter.events();
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0], Event::ToolResultOffloaded(event) if event.original_size == 10 && event.effective_limit == 5)
+    );
+}
+
+#[tokio::test]
+async fn offload_budget_reports_blob_failures() {
+    let (pool, call) = pool_with_tool(
+        "offload_fail",
+        budget(5, OverflowAction::Offload),
+        vec![ToolEvent::Final(ToolResult::Text("abcdefghij".to_owned()))],
+    )
+    .await;
+    let blob_store = Arc::new(RecordingBlobStore::failing());
+
+    let results = dispatch(
+        pool,
+        call,
+        Some(blob_store),
+        Arc::new(RecordingEmitter::default()),
+    )
+    .await;
+
+    assert!(matches!(
+        results[0].result,
+        Err(ToolError::OffloadFailed(ref message)) if message.contains("backend")
+    ));
+}
+
+#[tokio::test]
+async fn text_partials_are_combined_with_final_before_budgeting() {
+    let (pool, call) = pool_with_tool(
+        "partials",
+        budget(4, OverflowAction::Reject),
+        vec![
+            ToolEvent::Partial(harness_contracts::MessagePart::Text("abc".to_owned())),
+            ToolEvent::Final(ToolResult::Text("de".to_owned())),
+        ],
+    )
+    .await;
+
+    let results = dispatch(pool, call, None, Arc::new(RecordingEmitter::default())).await;
+
+    assert!(matches!(
+        results[0].result,
+        Err(ToolError::ResultTooLarge {
+            original: 5,
+            limit: 4,
+            metric: BudgetMetric::Chars
+        })
+    ));
+}
+
+async fn dispatch(
+    pool: ToolPool,
+    call: ToolCall,
+    blob_store: Option<Arc<dyn BlobStore>>,
+    event_emitter: Arc<dyn ToolEventEmitter>,
+) -> Vec<harness_tool::ToolResultEnvelope> {
+    ToolOrchestrator::default()
+        .dispatch(
+            vec![call],
+            orchestrator_ctx(pool, blob_store, event_emitter),
+        )
+        .await
+}
+
+async fn pool_with_tool(
+    name: &str,
+    budget: ResultBudget,
+    events: Vec<ToolEvent>,
+) -> (ToolPool, ToolCall) {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(harness_tool::BuiltinToolset::Empty)
+        .with_tool(Box::new(BudgetTool {
+            descriptor: descriptor(name, budget),
+            events,
+        }))
+        .build()
+        .unwrap();
+    let pool = ToolPool::assemble(
+        &registry.snapshot(),
+        &ToolPoolFilter::default(),
+        &ToolSearchMode::Disabled,
+        &ToolPoolModelProfile::default(),
+        &harness_tool::SchemaResolverContext {
+            run_id: harness_contracts::RunId::new(),
+            session_id: harness_contracts::SessionId::new(),
+            tenant_id: TenantId::SINGLE,
+        },
+    )
+    .await
+    .unwrap();
+    (
+        pool,
+        ToolCall {
+            tool_use_id: ToolUseId::new(),
+            tool_name: name.to_owned(),
+            input: json!({}),
+        },
+    )
+}
+
+fn budget(limit: u64, on_overflow: OverflowAction) -> ResultBudget {
+    ResultBudget {
+        metric: BudgetMetric::Chars,
+        limit,
+        on_overflow,
+        preview_head_chars: 2,
+        preview_tail_chars: 2,
+    }
+}
+
+fn budget_with_metric(
+    metric: BudgetMetric,
+    limit: u64,
+    on_overflow: OverflowAction,
+) -> ResultBudget {
+    ResultBudget {
+        metric,
+        limit,
+        on_overflow,
+        preview_head_chars: 2,
+        preview_tail_chars: 2,
+    }
+}
+
+#[tokio::test]
+async fn reject_budget_stops_on_oversized_partial_before_consuming_later_events() {
+    let (pool, call) = pool_with_tool(
+        "partial_reject",
+        budget(3, OverflowAction::Reject),
+        vec![
+            ToolEvent::Partial(harness_contracts::MessagePart::Text("abcd".to_owned())),
+            ToolEvent::Error(ToolError::Message("later event was consumed".to_owned())),
+        ],
+    )
+    .await;
+
+    let results = dispatch(pool, call, None, Arc::new(RecordingEmitter::default())).await;
+
+    assert!(matches!(
+        results[0].result,
+        Err(ToolError::ResultTooLarge {
+            original: 4,
+            limit: 3,
+            metric: BudgetMetric::Chars
+        })
+    ));
+}
+
+#[tokio::test]
+async fn truncate_budget_stops_on_oversized_partial_before_consuming_later_events() {
+    let (pool, call) = pool_with_tool(
+        "partial_truncate",
+        budget(3, OverflowAction::Truncate),
+        vec![
+            ToolEvent::Partial(harness_contracts::MessagePart::Text("abcdef".to_owned())),
+            ToolEvent::Error(ToolError::Message("later event was consumed".to_owned())),
+        ],
+    )
+    .await;
+
+    let results = dispatch(pool, call, None, Arc::new(RecordingEmitter::default())).await;
+
+    assert!(matches!(results[0].result, Ok(ToolResult::Text(ref text)) if text == "abc"));
+}
+
+#[tokio::test]
+async fn offload_budget_stops_on_oversized_partial_before_consuming_later_events() {
+    let (pool, call) = pool_with_tool(
+        "partial_offload",
+        budget(3, OverflowAction::Offload),
+        vec![
+            ToolEvent::Partial(harness_contracts::MessagePart::Text("abcdef".to_owned())),
+            ToolEvent::Error(ToolError::Message("later event was consumed".to_owned())),
+        ],
+    )
+    .await;
+    let blob_store = Arc::new(RecordingBlobStore::default());
+    let emitter = Arc::new(RecordingEmitter::default());
+
+    let results = dispatch(pool, call, Some(blob_store.clone()), emitter.clone()).await;
+
+    let Ok(ToolResult::Mixed(parts)) = &results[0].result else {
+        panic!("expected mixed offload result: {:?}", results[0].result);
+    };
+    assert!(
+        matches!(parts.get(1), Some(ToolResultPart::Blob { ref summary, .. }) if summary.as_deref() == Some("tool result exceeded budget; content was offloaded"))
+    );
+    assert_eq!(results[0].overflow.as_ref().unwrap().original_size, 6);
+    assert_eq!(blob_store.puts()[0].0, Bytes::from_static(b"abcdef"));
+    assert_eq!(emitter.events().len(), 1);
+}
+
+#[tokio::test]
+async fn offload_budget_includes_prior_partials_and_overflowing_partial_in_blob() {
+    let (pool, call) = pool_with_tool(
+        "partial_offload_all_received",
+        budget(5, OverflowAction::Offload),
+        vec![
+            ToolEvent::Partial(harness_contracts::MessagePart::Text("abc".to_owned())),
+            ToolEvent::Partial(harness_contracts::MessagePart::Text("def".to_owned())),
+            ToolEvent::Error(ToolError::Message("later event was consumed".to_owned())),
+        ],
+    )
+    .await;
+    let blob_store = Arc::new(RecordingBlobStore::default());
+    let emitter = Arc::new(RecordingEmitter::default());
+
+    let results = dispatch(pool, call, Some(blob_store.clone()), emitter.clone()).await;
+
+    assert!(matches!(results[0].result, Ok(ToolResult::Mixed(_))));
+    assert_eq!(results[0].overflow.as_ref().unwrap().original_size, 6);
+    assert_eq!(blob_store.puts()[0].0, Bytes::from_static(b"abcdef"));
+    assert_eq!(emitter.events().len(), 1);
+}
+
+#[tokio::test]
+async fn non_text_partials_are_rejected_instead_of_silently_dropped() {
+    let blob_ref = harness_contracts::BlobRef {
+        id: harness_contracts::BlobId::new(),
+        size: 0,
+        content_hash: [0; 32],
+        content_type: Some("image/png".to_owned()),
+    };
+    let (pool, call) = pool_with_tool(
+        "partial_image",
+        budget(100, OverflowAction::Reject),
+        vec![ToolEvent::Partial(harness_contracts::MessagePart::Image {
+            mime_type: "image/png".to_owned(),
+            blob_ref,
+        })],
+    )
+    .await;
+
+    let results = dispatch(pool, call, None, Arc::new(RecordingEmitter::default())).await;
+
+    assert!(matches!(
+        results[0].result,
+        Err(ToolError::Message(ref message)) if message == "non-text tool partials are not supported"
+    ));
+}
+
+#[tokio::test]
+async fn truncate_respects_byte_budget_on_utf8_boundary() {
+    let (pool, call) = pool_with_tool(
+        "truncate_bytes",
+        budget_with_metric(BudgetMetric::Bytes, 4, OverflowAction::Truncate),
+        vec![ToolEvent::Final(ToolResult::Text("ééé".to_owned()))],
+    )
+    .await;
+
+    let results = dispatch(pool, call, None, Arc::new(RecordingEmitter::default())).await;
+
+    assert!(matches!(results[0].result, Ok(ToolResult::Text(ref text)) if text == "éé"));
+}
+
+#[tokio::test]
+async fn truncate_respects_line_budget() {
+    let (pool, call) = pool_with_tool(
+        "truncate_lines",
+        budget_with_metric(BudgetMetric::Lines, 2, OverflowAction::Truncate),
+        vec![ToolEvent::Final(ToolResult::Text(
+            "one\ntwo\nthree".to_owned(),
+        ))],
+    )
+    .await;
+
+    let results = dispatch(pool, call, None, Arc::new(RecordingEmitter::default())).await;
+
+    assert!(matches!(results[0].result, Ok(ToolResult::Text(ref text)) if text == "one\ntwo"));
+}
+
+#[tokio::test]
+async fn line_budget_counts_blank_partial_append() {
+    let (pool, call) = pool_with_tool(
+        "line_partial_blank",
+        budget_with_metric(BudgetMetric::Lines, 1, OverflowAction::Reject),
+        vec![
+            ToolEvent::Partial(harness_contracts::MessagePart::Text("one\n".to_owned())),
+            ToolEvent::Partial(harness_contracts::MessagePart::Text("\n".to_owned())),
+        ],
+    )
+    .await;
+
+    let results = dispatch(pool, call, None, Arc::new(RecordingEmitter::default())).await;
+
+    assert!(matches!(
+        results[0].result,
+        Err(ToolError::ResultTooLarge {
+            original: 2,
+            limit: 1,
+            metric: BudgetMetric::Lines
+        })
+    ));
+}
+
+#[tokio::test]
+async fn text_partials_are_prepended_to_all_final_mixed_parts() {
+    let (pool, call) = pool_with_tool(
+        "partials_mixed",
+        budget(100, OverflowAction::Reject),
+        vec![
+            ToolEvent::Partial(harness_contracts::MessagePart::Text("prefix".to_owned())),
+            ToolEvent::Final(ToolResult::Mixed(vec![
+                ToolResultPart::Text {
+                    text: "body".to_owned(),
+                },
+                ToolResultPart::Code {
+                    language: "text".to_owned(),
+                    text: "code".to_owned(),
+                },
+            ])),
+        ],
+    )
+    .await;
+
+    let results = dispatch(pool, call, None, Arc::new(RecordingEmitter::default())).await;
+
+    assert!(matches!(
+        &results[0].result,
+        Ok(ToolResult::Mixed(parts))
+            if parts == &vec![
+                ToolResultPart::Text {
+                    text: "prefix".to_owned()
+                },
+                ToolResultPart::Text {
+                    text: "body".to_owned()
+                },
+                ToolResultPart::Code {
+                    language: "text".to_owned(),
+                    text: "code".to_owned()
+                }
+            ]
+    ));
+}
+
+fn descriptor(name: &str, budget: ResultBudget) -> ToolDescriptor {
+    ToolDescriptor {
+        name: name.to_owned(),
+        display_name: name.to_owned(),
+        description: "budget test tool".to_owned(),
+        category: "test".to_owned(),
+        group: ToolGroup::Custom("test".to_owned()),
+        version: "0.0.1".to_owned(),
+        input_schema: json!({ "type": "object" }),
+        output_schema: None,
+        dynamic_schema: false,
+        properties: ToolProperties {
+            is_concurrency_safe: true,
+            is_read_only: true,
+            is_destructive: false,
+            long_running: None,
+            defer_policy: harness_contracts::DeferPolicy::AlwaysLoad,
+        },
+        trust_level: TrustLevel::AdminTrusted,
+        required_capabilities: vec![],
+        budget,
+        provider_restriction: ProviderRestriction::All,
+        origin: ToolOrigin::Builtin,
+        search_hint: None,
+    }
+}
+
+#[derive(Clone)]
+struct BudgetTool {
+    descriptor: ToolDescriptor,
+    events: Vec<ToolEvent>,
+}
+
+#[async_trait]
+impl Tool for BudgetTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn validate(&self, _input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
+        Ok(())
+    }
+
+    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
+        PermissionCheck::Allowed
+    }
+
+    async fn execute(
+        &self,
+        _input: Value,
+        _ctx: ToolContext,
+    ) -> Result<harness_tool::ToolStream, ToolError> {
+        Ok(Box::pin(stream::iter(self.events.clone())))
+    }
+}
+
+fn orchestrator_ctx(
+    pool: ToolPool,
+    blob_store: Option<Arc<dyn BlobStore>>,
+    event_emitter: Arc<dyn ToolEventEmitter>,
+) -> OrchestratorContext {
+    let broker: Arc<dyn PermissionBroker> = Arc::new(AllowBroker);
+    let run_id = harness_contracts::RunId::new();
+    let session_id = harness_contracts::SessionId::new();
+    OrchestratorContext {
+        pool,
+        tool_context: ToolContext {
+            tool_use_id: ToolUseId::new(),
+            run_id,
+            session_id,
+            tenant_id: TenantId::SINGLE,
+            correlation_id: harness_contracts::CorrelationId::new(),
+            agent_id: harness_contracts::AgentId::from_u128(1),
+            subagent_depth: 0,
+            workspace_root: std::env::temp_dir(),
+            sandbox: None,
+            permission_broker: broker,
+            cap_registry: Arc::new(CapabilityRegistry::default()),
+            interrupt: InterruptToken::default(),
+            parent_run: None,
+        },
+        permission_context: PermissionContext {
+            permission_mode: PermissionMode::Default,
+            previous_mode: None,
+            session_id,
+            tenant_id: TenantId::SINGLE,
+            interactivity: InteractivityLevel::FullyInteractive,
+            timeout_policy: None,
+            fallback_policy: FallbackPolicy::DenyAll,
+            rule_snapshot: Arc::new(RuleSnapshot {
+                rules: vec![],
+                generation: 0,
+                built_at: chrono::Utc::now(),
+            }),
+            hook_overrides: vec![],
+        },
+        blob_store,
+        event_emitter,
+    }
+}
+
+#[derive(Debug)]
+struct AllowBroker;
+
+#[async_trait]
+impl PermissionBroker for AllowBroker {
+    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+        Decision::AllowOnce
+    }
+
+    async fn persist(
+        &self,
+        _decision: harness_permission::PersistedDecision,
+    ) -> Result<(), harness_contracts::PermissionError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct RecordingBlobStore {
+    puts: Mutex<Vec<(Bytes, BlobMeta)>>,
+    fail: bool,
+}
+
+impl RecordingBlobStore {
+    fn failing() -> Self {
+        Self {
+            puts: Mutex::new(Vec::new()),
+            fail: true,
+        }
+    }
+
+    fn puts(&self) -> Vec<(Bytes, BlobMeta)> {
+        self.puts.lock().clone()
+    }
+}
+
+#[async_trait]
+impl BlobStore for RecordingBlobStore {
+    fn store_id(&self) -> &'static str {
+        "recording"
+    }
+
+    async fn put(
+        &self,
+        _tenant: TenantId,
+        bytes: Bytes,
+        meta: BlobMeta,
+    ) -> Result<BlobRef, BlobError> {
+        if self.fail {
+            return Err(BlobError::Backend("backend down".to_owned()));
+        }
+        self.puts.lock().push((bytes, meta.clone()));
+        Ok(BlobRef {
+            id: harness_contracts::BlobId::new(),
+            size: meta.size,
+            content_hash: meta.content_hash,
+            content_type: meta.content_type,
+        })
+    }
+
+    async fn get(
+        &self,
+        _tenant: TenantId,
+        _blob: &BlobRef,
+    ) -> Result<futures::stream::BoxStream<'static, Bytes>, BlobError> {
+        Err(BlobError::NotFound(harness_contracts::BlobId::new()))
+    }
+
+    async fn head(
+        &self,
+        _tenant: TenantId,
+        _blob: &BlobRef,
+    ) -> Result<Option<BlobMeta>, BlobError> {
+        Ok(None)
+    }
+
+    async fn delete(&self, _tenant: TenantId, _blob: &BlobRef) -> Result<(), BlobError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct RecordingEmitter {
+    events: Mutex<Vec<Event>>,
+}
+
+impl RecordingEmitter {
+    fn events(&self) -> Vec<Event> {
+        self.events.lock().clone()
+    }
+}
+
+impl ToolEventEmitter for RecordingEmitter {
+    fn emit(&self, event: Event) {
+        self.events.lock().push(event);
+    }
+}

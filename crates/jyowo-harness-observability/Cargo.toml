@@ -1,0 +1,49 @@
+[package]
+name = "jyowo-harness-observability"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+name = "harness_observability"
+doctest = false
+
+[lints]
+workspace = true
+
+[features]
+default = ["redactor"]
+replay = ["dep:futures", "dep:serde_json", "tokio/io-util"]
+otel = [
+  "dep:opentelemetry",
+  "dep:opentelemetry-otlp",
+  "dep:opentelemetry_sdk",
+  "dep:tracing-opentelemetry",
+]
+prometheus = []
+redactor = ["dep:regex"]
+
+[dependencies]
+jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-journal = { path = "../jyowo-harness-journal" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+parking_lot = "0.12"
+regex = { workspace = true, optional = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+[dev-dependencies]
+futures = { workspace = true }
+jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["jsonl", "sqlite", "in-memory"] }

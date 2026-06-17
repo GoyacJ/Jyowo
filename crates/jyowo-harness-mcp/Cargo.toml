@@ -1,0 +1,55 @@
+[package]
+name = "jyowo-harness-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+name = "harness_mcp"
+doctest = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+stdio = ["tokio/io-util", "tokio/process"]
+http = ["dep:reqwest"]
+websocket = ["dep:tokio-tungstenite", "tokio/net"]
+sse = ["dep:reqwest", "dep:reqwest-eventsource", "dep:reqwest-eventsource-client"]
+in-process = []
+server-adapter = ["dep:axum", "tokio/io-std", "tokio/io-util"]
+oauth = ["dep:jsonwebtoken", "dep:reqwest", "dep:ring"]
+
+[dependencies]
+jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-tool = { path = "../jyowo-harness-tool" }
+async-trait = { workspace = true }
+async-stream = { workspace = true }
+blake3 = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+jsonschema = { workspace = true }
+jsonwebtoken = { workspace = true, optional = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true, features = ["codec"] }
+axum = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+ring = { workspace = true, optional = true }
+reqwest-eventsource = { workspace = true, optional = true }
+reqwest-eventsource-client = { package = "reqwest", version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+  "stream",
+], optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+
+[dev-dependencies]
+parking_lot = "0.12"
+wiremock = "0.6"

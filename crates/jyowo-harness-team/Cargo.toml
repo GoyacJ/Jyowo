@@ -1,0 +1,42 @@
+[package]
+name = "jyowo-harness-team"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+name = "harness_team"
+doctest = false
+
+[lints]
+workspace = true
+
+[features]
+default = ["coordinator-worker", "peer-to-peer"]
+coordinator-worker = []
+peer-to-peer = []
+role-routed = []
+
+[dependencies]
+jyowo-harness-budget = { path = "../jyowo-harness-budget" }
+jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-journal = { path = "../jyowo-harness-journal" }
+jyowo-harness-memory = { path = "../jyowo-harness-memory" }
+jyowo-harness-model = { path = "../jyowo-harness-model" }
+jyowo-harness-session = { path = "../jyowo-harness-session" }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+regex = { workspace = true }
+parking_lot = "0.12"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["in-memory"] }

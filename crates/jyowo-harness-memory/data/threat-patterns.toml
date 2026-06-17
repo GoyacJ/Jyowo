@@ -1,0 +1,209 @@
+[[patterns]]
+id = "prompt_injection_ignore_previous"
+expression = '''(?i)\bignore\s+(?:all\s+)?previous\s+instructions?\b'''
+category = "prompt_injection"
+severity = "critical"
+action = "block"
+
+[[patterns]]
+id = "prompt_injection_reveal_system_prompt"
+expression = '''(?i)\breveal\s+(?:the\s+)?system\s+prompt\b'''
+category = "prompt_injection"
+severity = "critical"
+action = "block"
+
+[[patterns]]
+id = "prompt_injection_disregard_developer"
+expression = '''(?i)\bdisregard\s+(?:the\s+)?(?:developer|system)\s+message\b'''
+category = "prompt_injection"
+severity = "high"
+action = "block"
+
+[[patterns]]
+id = "prompt_injection_override_rules"
+expression = '''(?i)\boverride\s+(?:all\s+)?(?:safety\s+)?rules\b'''
+category = "prompt_injection"
+severity = "high"
+action = "block"
+
+[[patterns]]
+id = "prompt_injection_jailbreak"
+expression = '''(?i)\bjailbreak\s+mode\b'''
+category = "prompt_injection"
+severity = "high"
+action = "block"
+
+[[patterns]]
+id = "exfiltration_send_secrets"
+expression = '''(?i)\bsend\s+(?:all\s+)?(?:secrets|credentials|tokens)\s+to\b'''
+category = "exfiltration"
+severity = "critical"
+action = "block"
+
+[[patterns]]
+id = "exfiltration_post_env"
+expression = '''(?i)\bpost\s+(?:the\s+)?(?:env|environment)\s+(?:vars|variables)\b'''
+category = "exfiltration"
+severity = "critical"
+action = "block"
+
+[[patterns]]
+id = "exfiltration_curl_secret"
+expression = '''(?i)\bcurl\b.{0,80}\b(?:secret|token|credential)s?\b'''
+category = "exfiltration"
+severity = "high"
+action = "block"
+
+[[patterns]]
+id = "exfiltration_upload_ssh"
+expression = '''(?i)\bupload\b.{0,80}\b\.ssh\b'''
+category = "exfiltration"
+severity = "high"
+action = "block"
+
+[[patterns]]
+id = "exfiltration_print_private_key"
+expression = '''(?i)\bprint\s+(?:the\s+)?private\s+key\b'''
+category = "exfiltration"
+severity = "critical"
+action = "block"
+
+[[patterns]]
+id = "backdoor_cron_persistence"
+expression = '''(?i)\bcron\b.{0,80}\b(?:backdoor|persistence)\b'''
+category = "backdoor"
+severity = "high"
+action = "warn"
+
+[[patterns]]
+id = "backdoor_authorized_keys"
+expression = '''(?i)\bauthorized_keys\b.{0,80}\b(?:append|add|inject)\b'''
+category = "backdoor"
+severity = "high"
+action = "warn"
+
+[[patterns]]
+id = "backdoor_persistence_agent"
+expression = '''(?i)\bpersistence\s+(?:agent|daemon|service)\b'''
+category = "backdoor"
+severity = "high"
+action = "warn"
+
+[[patterns]]
+id = "backdoor_hidden_admin"
+expression = '''(?i)\bhidden\s+(?:admin|administrator|user)\b'''
+category = "backdoor"
+severity = "high"
+action = "warn"
+
+[[patterns]]
+id = "backdoor_startup_script"
+expression = '''(?i)\bstartup\s+script\b.{0,80}\b(?:payload|persistence)\b'''
+category = "backdoor"
+severity = "high"
+action = "warn"
+
+[[patterns]]
+id = "credential_api_key"
+expression = '''(?i)\bapi[_-]?key\s*[:=]\s*[A-Za-z0-9_\-]{16,}\b'''
+category = "credential"
+severity = "high"
+action = "redact"
+
+[[patterns]]
+id = "credential_secret_assignment"
+expression = '''(?i)\bsecret\s*[:=]\s*[A-Za-z0-9_\-]{8,}\b'''
+category = "credential"
+severity = "high"
+action = "redact"
+
+[[patterns]]
+id = "credential_bearer_token"
+expression = '''(?i)\bbearer\s+[A-Za-z0-9._\-]{20,}\b'''
+category = "credential"
+severity = "high"
+action = "redact"
+
+[[patterns]]
+id = "credential_private_key_block"
+expression = '''-----BEGIN\s+(?:RSA\s+|OPENSSH\s+|EC\s+)?PRIVATE\s+KEY-----'''
+category = "credential"
+severity = "critical"
+action = "redact"
+
+[[patterns]]
+id = "credential_password_assignment"
+expression = '''(?i)\bpassword\s*[:=]\s*[^\s]{8,}'''
+category = "credential"
+severity = "medium"
+action = "redact"
+
+[[patterns]]
+id = "malicious_reverse_shell"
+expression = '''(?i)\breverse\s+shell\b'''
+category = "malicious"
+severity = "high"
+action = "warn"
+
+[[patterns]]
+id = "malicious_rm_rf_root"
+expression = '''(?i)\brm\s+-rf\s+/\b'''
+category = "malicious"
+severity = "critical"
+action = "warn"
+
+[[patterns]]
+id = "malicious_netcat_exec"
+expression = '''(?i)\bnc\s+-e\s+/bin/(?:sh|bash)\b'''
+category = "malicious"
+severity = "high"
+action = "warn"
+
+[[patterns]]
+id = "malicious_chmod_suid"
+expression = '''(?i)\bchmod\s+u\+s\b'''
+category = "malicious"
+severity = "high"
+action = "warn"
+
+[[patterns]]
+id = "malicious_shell_payload"
+expression = '''(?i)\b(?:bash|sh)\s+-i\s+>&\s*/dev/tcp/'''
+category = "malicious"
+severity = "high"
+action = "warn"
+
+[[patterns]]
+id = "special_token_memory_context_open"
+expression = '''(?i)<memory-context>'''
+category = "special_token"
+severity = "medium"
+action = "redact"
+
+[[patterns]]
+id = "special_token_memory_context_close"
+expression = '''(?i)</memory-context>'''
+category = "special_token"
+severity = "medium"
+action = "redact"
+
+[[patterns]]
+id = "special_token_system_open"
+expression = '''(?i)<system>'''
+category = "special_token"
+severity = "medium"
+action = "redact"
+
+[[patterns]]
+id = "special_token_system_close"
+expression = '''(?i)</system>'''
+category = "special_token"
+severity = "medium"
+action = "redact"
+
+[[patterns]]
+id = "special_token_tool_result"
+expression = '''(?i)</?tool_result>'''
+category = "special_token"
+severity = "low"
+action = "redact"

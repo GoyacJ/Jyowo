@@ -1,0 +1,39 @@
+[package]
+name = "jyowo-harness-subagent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+name = "harness_subagent"
+doctest = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[dependencies]
+jyowo-harness-budget = { path = "../jyowo-harness-budget" }
+jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-journal = { path = "../jyowo-harness-journal" }
+jyowo-harness-model = { path = "../jyowo-harness-model" }
+jyowo-harness-permission = { path = "../jyowo-harness-permission" }
+jyowo-harness-session = { path = "../jyowo-harness-session" }
+jyowo-harness-tool = { path = "../jyowo-harness-tool" }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["in-memory"] }
+tempfile = { workspace = true }

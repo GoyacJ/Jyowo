@@ -1,0 +1,554 @@
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+use std::sync::Arc;
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+use serde::de::DeserializeOwned;
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+use serde::Deserialize;
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+use serde_json::{json, Value};
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+use harness_contracts::PermissionMode;
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+use crate::{
+    elicitation_from_jsonrpc_error, handle_jsonrpc_elicitation_error, ElicitationHandler,
+    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpError, McpPrompt, McpPromptMessages,
+    McpResource, McpResourceContents, McpToolDescriptor, McpToolResult,
+};
+
+#[cfg(feature = "http")]
+mod http;
+#[cfg(feature = "in-process")]
+mod in_process;
+#[cfg(feature = "sse")]
+mod sse;
+#[cfg(feature = "stdio")]
+mod stdio;
+#[cfg(feature = "websocket")]
+mod websocket;
+
+#[cfg(feature = "http")]
+pub use http::HttpTransport;
+#[cfg(feature = "in-process")]
+pub use in_process::InProcessTransport;
+#[cfg(feature = "sse")]
+pub use sse::SseTransport;
+#[cfg(feature = "stdio")]
+pub use stdio::StdioTransport;
+#[cfg(feature = "websocket")]
+pub use websocket::WebsocketTransport;
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+#[derive(Debug, Deserialize)]
+struct ListToolsResult {
+    tools: Vec<McpToolDescriptor>,
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+#[derive(Debug, Deserialize)]
+struct ListResourcesResult {
+    resources: Vec<McpResource>,
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+#[derive(Debug, Deserialize)]
+struct ReadResourceResult {
+    contents: Vec<McpResourceContents>,
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+#[derive(Debug, Deserialize)]
+struct ListPromptsResult {
+    prompts: Vec<McpPrompt>,
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) struct JsonRpcPeer {
+    next_id: AtomicU64,
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+impl JsonRpcPeer {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+        }
+    }
+
+    pub(crate) fn request(&self, method: &str, params: Option<Value>) -> JsonRpcRequest {
+        JsonRpcRequest::new(
+            json!(self.next_id.fetch_add(1, Ordering::SeqCst)),
+            method,
+            params,
+        )
+    }
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn initialized_notification() -> JsonRpcNotification {
+    JsonRpcNotification::new("notifications/initialized", None)
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn initialize_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
+    peer.request(
+        "initialize",
+        Some(json!({
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {
+                "name": env!("CARGO_PKG_NAME"),
+                "version": env!("CARGO_PKG_VERSION"),
+            }
+        })),
+    )
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn list_tools_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
+    peer.request("tools/list", Some(json!({})))
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn call_tool_request(peer: &JsonRpcPeer, name: &str, args: Value) -> JsonRpcRequest {
+    peer.request(
+        "tools/call",
+        Some(json!({
+            "name": name,
+            "arguments": args,
+        })),
+    )
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn list_resources_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
+    peer.request("resources/list", Some(json!({})))
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn read_resource_request(peer: &JsonRpcPeer, uri: &str) -> JsonRpcRequest {
+    peer.request("resources/read", Some(json!({ "uri": uri })))
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn subscribe_resource_request(peer: &JsonRpcPeer, uri: &str) -> JsonRpcRequest {
+    peer.request("resources/subscribe", Some(json!({ "uri": uri })))
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn unsubscribe_resource_request(peer: &JsonRpcPeer, uri: &str) -> JsonRpcRequest {
+    peer.request("resources/unsubscribe", Some(json!({ "uri": uri })))
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn list_prompts_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
+    peer.request("prompts/list", Some(json!({})))
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn get_prompt_request(peer: &JsonRpcPeer, name: &str, args: Value) -> JsonRpcRequest {
+    peer.request(
+        "prompts/get",
+        Some(json!({
+            "name": name,
+            "arguments": args,
+        })),
+    )
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn decode_list_tools(
+    response: JsonRpcResponse,
+) -> Result<Vec<McpToolDescriptor>, McpError> {
+    Ok(decode_success::<ListToolsResult>(response)?.tools)
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn decode_list_resources(
+    response: JsonRpcResponse,
+) -> Result<Vec<McpResource>, McpError> {
+    Ok(decode_success::<ListResourcesResult>(response)?.resources)
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn decode_read_resource(
+    response: JsonRpcResponse,
+) -> Result<McpResourceContents, McpError> {
+    decode_success::<ReadResourceResult>(response)?
+        .contents
+        .into_iter()
+        .next()
+        .ok_or_else(|| McpError::InvalidResponse("resources/read returned no contents".into()))
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn decode_empty_result(response: JsonRpcResponse) -> Result<(), McpError> {
+    let _: Value = decode_success(response)?;
+    Ok(())
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn decode_list_prompts(response: JsonRpcResponse) -> Result<Vec<McpPrompt>, McpError> {
+    Ok(decode_success::<ListPromptsResult>(response)?.prompts)
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn decode_prompt_messages(
+    response: JsonRpcResponse,
+) -> Result<McpPromptMessages, McpError> {
+    decode_success(response)
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn decode_tool_result(response: JsonRpcResponse) -> Result<McpToolResult, McpError> {
+    decode_success(response)
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn decode_success<T>(response: JsonRpcResponse) -> Result<T, McpError>
+where
+    T: DeserializeOwned,
+{
+    if let Some(error) = response.error {
+        if let Some(request) = elicitation_from_jsonrpc_error(&error) {
+            let detail = request
+                .detail
+                .as_deref()
+                .map(|detail| format!(": {detail}"))
+                .unwrap_or_default();
+            return Err(McpError::Elicitation(format!(
+                "mcp server {} requires elicitation for {}{}",
+                request.server_id.0, request.subject, detail
+            )));
+        }
+        return Err(McpError::Protocol(format!(
+            "{} ({})",
+            error.message, error.code
+        )));
+    }
+
+    let result = response
+        .result
+        .ok_or_else(|| McpError::InvalidResponse("missing result field".into()))?;
+    serde_json::from_value(result).map_err(|error| McpError::InvalidResponse(error.to_string()))
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) async fn continue_after_elicitation_response(
+    response: &JsonRpcResponse,
+    request: &JsonRpcRequest,
+    peer: &JsonRpcPeer,
+    handler: Option<&Arc<dyn ElicitationHandler>>,
+    permission_mode: PermissionMode,
+) -> Result<Option<JsonRpcRequest>, McpError> {
+    let Some(error) = response.error.as_ref() else {
+        return Ok(None);
+    };
+    let Some(handler) = handler else {
+        return Ok(None);
+    };
+    let value = handle_jsonrpc_elicitation_error(error, permission_mode, Arc::clone(handler))
+        .await
+        .map_err(|error| McpError::Elicitation(error.to_string()))?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    continue_tool_call_after_elicitation(request, value, peer).map(Some)
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn continue_tool_call_after_elicitation(
+    request: &JsonRpcRequest,
+    value: Value,
+    peer: &JsonRpcPeer,
+) -> Result<JsonRpcRequest, McpError> {
+    if request.method != "tools/call" {
+        return Err(McpError::Elicitation(format!(
+            "elicitation continuation is not supported for {}",
+            request.method
+        )));
+    }
+    let Value::Object(resolved) = value else {
+        return Err(McpError::Elicitation(
+            "elicitation handler returned non-object value".to_owned(),
+        ));
+    };
+    let mut params = request
+        .params
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let Some(params_obj) = params.as_object_mut() else {
+        return Err(McpError::Elicitation(
+            "tools/call params are not an object".to_owned(),
+        ));
+    };
+    let arguments = params_obj
+        .entry("arguments")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(arguments_obj) = arguments.as_object_mut() else {
+        return Err(McpError::Elicitation(
+            "tools/call arguments are not an object".to_owned(),
+        ));
+    };
+    for (key, value) in resolved {
+        arguments_obj.insert(key, value);
+    }
+    Ok(peer.request("tools/call", Some(params)))
+}
+
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
+pub(crate) fn response_key(id: &Value) -> String {
+    serde_json::to_string(id).expect("json-rpc ids should serialize")
+}
+
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
+pub(crate) fn notification_change(
+    method: &str,
+    params: Option<&Value>,
+) -> Option<crate::McpChange> {
+    match method {
+        "tools/list_changed" | "notifications/tools/list_changed" => {
+            Some(crate::McpChange::ToolsListChanged)
+        }
+        "resources/list_changed" | "notifications/resources/list_changed" => {
+            Some(crate::McpChange::ResourcesListChanged)
+        }
+        "resources/updated" | "notifications/resources/updated" => params
+            .and_then(|params| params.get("uri"))
+            .and_then(Value::as_str)
+            .map(|uri| crate::McpChange::ResourceUpdated {
+                uri: uri.to_owned(),
+            }),
+        "prompts/list_changed" | "notifications/prompts/list_changed" => {
+            Some(crate::McpChange::PromptsListChanged)
+        }
+        "notifications/cancelled" => Some(crate::McpChange::Cancelled {
+            request_id: params
+                .and_then(|params| params.get("requestId").or_else(|| params.get("request_id")))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            reason: params
+                .and_then(|params| params.get("reason"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        }),
+        "notifications/progress" => Some(crate::McpChange::Progress {
+            progress_token: params
+                .and_then(|params| {
+                    params
+                        .get("progressToken")
+                        .or_else(|| params.get("progress_token"))
+                })
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            progress: params
+                .and_then(|params| params.get("progress"))
+                .and_then(Value::as_f64),
+            total: params
+                .and_then(|params| params.get("total"))
+                .and_then(Value::as_f64),
+            message: params
+                .and_then(|params| params.get("message"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
+pub(crate) fn tool_call_event_from_change(
+    request_key: &str,
+    change: crate::McpChange,
+) -> Option<crate::McpToolCallEvent> {
+    match change {
+        crate::McpChange::Progress {
+            progress_token,
+            progress,
+            total,
+            message,
+        } if progress_token.as_deref() == Some(request_key) => {
+            Some(crate::McpToolCallEvent::Progress {
+                progress_token,
+                progress,
+                total,
+                message,
+            })
+        }
+        crate::McpChange::Cancelled { request_id, reason }
+            if request_id.as_deref() == Some(request_key) =>
+        {
+            Some(crate::McpToolCallEvent::Cancelled { request_id, reason })
+        }
+        _ => None,
+    }
+}

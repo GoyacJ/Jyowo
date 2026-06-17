@@ -1,0 +1,44 @@
+[package]
+name = "jyowo-harness-context"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+name = "harness_context"
+doctest = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+anthropic-cache = []
+compact-aux-llm = []
+recall-memory = [
+  "jyowo-harness-memory/builtin",
+  "jyowo-harness-memory/external-slot",
+  "jyowo-harness-memory/threat-scanner",
+]
+
+[dependencies]
+jyowo-harness-budget = { path = "../jyowo-harness-budget" }
+jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-journal = { path = "../jyowo-harness-journal" }
+jyowo-harness-memory = { path = "../jyowo-harness-memory" }
+jyowo-harness-model = { path = "../jyowo-harness-model" }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+parking_lot = "0.12"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

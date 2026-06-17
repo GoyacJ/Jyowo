@@ -1,0 +1,611 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use async_trait::async_trait;
+use harness_contracts::{
+    ManifestValidationFailure as EventManifestValidationFailure, SchemaVersionRange,
+};
+use ring::digest;
+use serde_json::{Map, Number, Value};
+use yaml_rust2::{Yaml, YamlLoader};
+
+use crate::{
+    DiscoverySource, ManifestLoadReport, ManifestLoaderError, ManifestOrigin, ManifestRecord,
+    ManifestSigner, ManifestValidationFailure, PluginManifest, PluginManifestLoader,
+};
+
+#[derive(Debug, Default, Clone)]
+pub struct FileManifestLoader;
+
+#[async_trait]
+impl PluginManifestLoader for FileManifestLoader {
+    async fn enumerate(
+        &self,
+        source: &DiscoverySource,
+    ) -> Result<Vec<ManifestRecord>, ManifestLoaderError> {
+        let report = self.load_report(source).await?;
+        if let Some(failure) = report.failures.into_iter().next() {
+            return Err(ManifestLoaderError::Validation(failure));
+        }
+        Ok(report.records)
+    }
+
+    async fn load_report(
+        &self,
+        source: &DiscoverySource,
+    ) -> Result<ManifestLoadReport, ManifestLoaderError> {
+        let Some(root) = source_root(source) else {
+            return Ok(ManifestLoadReport::default());
+        };
+
+        let plugin_root = plugin_root(source, root);
+        if !plugin_root.exists() {
+            return Ok(ManifestLoadReport::default());
+        }
+
+        let mut entries = fs::read_dir(&plugin_root)
+            .map_err(|error| ManifestLoaderError::Io(error.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| ManifestLoaderError::Io(error.to_string()))?;
+        entries.sort_by_key(|entry| entry.path());
+
+        let mut records = Vec::new();
+        let mut failures = Vec::new();
+        for entry in entries {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(manifest_path) = manifest_path(&path) else {
+                continue;
+            };
+            match read_manifest(&manifest_path) {
+                Ok(record) => records.push(record),
+                Err(ManifestLoaderError::Validation(failure)) => failures.push(failure),
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(ManifestLoadReport { records, failures })
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InlineManifestLoader {
+    records: Vec<ManifestRecord>,
+}
+
+impl InlineManifestLoader {
+    pub fn new(records: Vec<ManifestRecord>) -> Self {
+        Self { records }
+    }
+}
+
+#[async_trait]
+impl PluginManifestLoader for InlineManifestLoader {
+    async fn enumerate(
+        &self,
+        source: &DiscoverySource,
+    ) -> Result<Vec<ManifestRecord>, ManifestLoaderError> {
+        if matches!(source, DiscoverySource::Inline) {
+            Ok(self.records.clone())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+}
+
+fn source_root(source: &DiscoverySource) -> Option<&Path> {
+    match source {
+        DiscoverySource::Workspace(path)
+        | DiscoverySource::User(path)
+        | DiscoverySource::Project(path) => Some(path.as_path()),
+        DiscoverySource::CargoExtension | DiscoverySource::Inline => None,
+    }
+}
+
+fn plugin_root(source: &DiscoverySource, root: &Path) -> PathBuf {
+    match source {
+        DiscoverySource::Workspace(_) => {
+            let standard = root.join("data/plugins");
+            if standard.exists() {
+                standard
+            } else {
+                root.to_path_buf()
+            }
+        }
+        DiscoverySource::User(_) | DiscoverySource::Project(_) => {
+            let standard = root.join(".jyowo/plugins");
+            if standard.exists() {
+                standard
+            } else {
+                root.to_path_buf()
+            }
+        }
+        DiscoverySource::CargoExtension | DiscoverySource::Inline => root.to_path_buf(),
+    }
+}
+
+fn manifest_path(plugin_dir: &Path) -> Option<PathBuf> {
+    ["plugin.json", "plugin.yaml", "plugin.yml"]
+        .into_iter()
+        .map(|name| plugin_dir.join(name))
+        .find(|path| path.is_file())
+}
+
+fn read_manifest(path: &Path) -> Result<ManifestRecord, ManifestLoaderError> {
+    let bytes = fs::read(path).map_err(|error| ManifestLoaderError::Io(error.to_string()))?;
+    let raw_hash = sha256(&bytes);
+    let origin = ManifestOrigin::File {
+        path: path.to_path_buf(),
+    };
+    let manifest = parse_manifest(path, &bytes, raw_hash, origin.clone())?;
+    let canonical_hash = canonical_manifest_hash(&manifest, raw_hash, &origin)?;
+
+    ManifestRecord::new(manifest.clone(), origin, canonical_hash).map_err(|error| {
+        validation_error(
+            None,
+            Some(manifest.name.to_string()),
+            Some(manifest.version.to_string()),
+            raw_hash,
+            EventManifestValidationFailure::SchemaViolation {
+                json_pointer: String::new(),
+                details: format!("manifest basic validation failed: {error}"),
+            },
+            format!("manifest basic validation failed: {error}"),
+        )
+    })
+}
+
+fn canonical_manifest_hash(
+    manifest: &PluginManifest,
+    raw_hash: [u8; 32],
+    origin: &ManifestOrigin,
+) -> Result<[u8; 32], ManifestLoaderError> {
+    let canonical = ManifestSigner::canonical_payload(manifest).map_err(|error| {
+        validation_error(
+            Some(origin.clone()),
+            Some(manifest.name.to_string()),
+            Some(manifest.version.to_string()),
+            raw_hash,
+            EventManifestValidationFailure::SchemaViolation {
+                json_pointer: String::new(),
+                details: format!("manifest canonicalization failed: {error}"),
+            },
+            format!("manifest canonicalization failed: {error}"),
+        )
+    })?;
+    Ok(sha256(&canonical))
+}
+
+fn parse_manifest(
+    path: &Path,
+    bytes: &[u8],
+    raw_hash: [u8; 32],
+    origin: ManifestOrigin,
+) -> Result<PluginManifest, ManifestLoaderError> {
+    let extension = path.extension().and_then(std::ffi::OsStr::to_str);
+    match extension {
+        Some("json") => {
+            let value = serde_json::from_slice(bytes).map_err(|error| {
+                validation_error(
+                    Some(origin.clone()),
+                    partial_json_string(bytes, "name"),
+                    partial_json_string(bytes, "version"),
+                    raw_hash,
+                    EventManifestValidationFailure::SyntaxError {
+                        details: format!("json parse failed: {error}"),
+                    },
+                    format!("json parse failed: {error}"),
+                )
+            })?;
+            decode_manifest_value(
+                value,
+                raw_hash,
+                origin,
+                partial_json_string(bytes, "name"),
+                partial_json_string(bytes, "version"),
+            )
+        }
+        Some("yaml" | "yml") => {
+            let text = std::str::from_utf8(bytes).map_err(|error| {
+                validation_error(
+                    Some(origin.clone()),
+                    None,
+                    None,
+                    raw_hash,
+                    EventManifestValidationFailure::SyntaxError {
+                        details: format!("yaml utf8 failed: {error}"),
+                    },
+                    format!("yaml utf8 failed: {error}"),
+                )
+            })?;
+            let docs = YamlLoader::load_from_str(text).map_err(|error| {
+                validation_error(
+                    Some(origin.clone()),
+                    partial_yaml_string(text, "name"),
+                    partial_yaml_string(text, "version"),
+                    raw_hash,
+                    EventManifestValidationFailure::SyntaxError {
+                        details: format!("yaml parse failed: {error}"),
+                    },
+                    format!("yaml parse failed: {error}"),
+                )
+            })?;
+            let Some(document) = docs.first() else {
+                return Err(validation_error(
+                    Some(origin),
+                    None,
+                    None,
+                    raw_hash,
+                    EventManifestValidationFailure::SyntaxError {
+                        details: "yaml document is empty".to_owned(),
+                    },
+                    "yaml document is empty".to_owned(),
+                ));
+            };
+            let value = yaml_to_json(document).map_err(|details| {
+                validation_error(
+                    Some(origin.clone()),
+                    None,
+                    None,
+                    raw_hash,
+                    EventManifestValidationFailure::SchemaViolation {
+                        json_pointer: String::new(),
+                        details: format!("yaml convert failed: {details}"),
+                    },
+                    format!("yaml convert failed: {details}"),
+                )
+            })?;
+            decode_manifest_value(
+                value,
+                raw_hash,
+                origin,
+                partial_yaml_string(text, "name"),
+                partial_yaml_string(text, "version"),
+            )
+        }
+        _ => Err(validation_error(
+            Some(origin),
+            None,
+            None,
+            raw_hash,
+            EventManifestValidationFailure::SchemaViolation {
+                json_pointer: String::new(),
+                details: "unsupported manifest extension".to_owned(),
+            },
+            "unsupported manifest extension".to_owned(),
+        )),
+    }
+}
+
+fn decode_manifest_value(
+    value: Value,
+    raw_hash: [u8; 32],
+    origin: ManifestOrigin,
+    partial_name: Option<String>,
+    partial_version: Option<String>,
+) -> Result<PluginManifest, ManifestLoaderError> {
+    match value.get("manifest_schema_version") {
+        Some(Value::Number(number)) => {
+            let Some(version) = number
+                .as_u64()
+                .and_then(|version| u32::try_from(version).ok())
+            else {
+                return Err(schema_violation(
+                    origin,
+                    partial_name,
+                    partial_version,
+                    raw_hash,
+                    "/manifest_schema_version",
+                    "manifest_schema_version must be a u32",
+                ));
+            };
+            if version > crate::SUPPORTED_MANIFEST_SCHEMA_VERSION {
+                return Err(validation_error(
+                    Some(origin),
+                    partial_name,
+                    partial_version,
+                    raw_hash,
+                    EventManifestValidationFailure::UnsupportedSchemaVersion {
+                        found: version,
+                        supported: SchemaVersionRange {
+                            min: 1,
+                            max: crate::SUPPORTED_MANIFEST_SCHEMA_VERSION,
+                        },
+                    },
+                    format!(
+                        "unsupported manifest_schema_version {version}; supported 1..={}",
+                        crate::SUPPORTED_MANIFEST_SCHEMA_VERSION
+                    ),
+                ));
+            }
+        }
+        Some(_) => {
+            return Err(schema_violation(
+                origin,
+                partial_name,
+                partial_version,
+                raw_hash,
+                "/manifest_schema_version",
+                "manifest_schema_version must be an integer",
+            ));
+        }
+        None => {}
+    }
+
+    validate_manifest_schema(
+        &value,
+        &origin,
+        partial_name.as_ref(),
+        partial_version.as_ref(),
+        raw_hash,
+    )?;
+    serde_json::from_value(value).map_err(|error| {
+        validation_error(
+            Some(origin),
+            partial_name,
+            partial_version,
+            raw_hash,
+            EventManifestValidationFailure::SchemaViolation {
+                json_pointer: String::new(),
+                details: format!("manifest decode failed: {error}"),
+            },
+            format!("manifest decode failed: {error}"),
+        )
+    })
+}
+
+fn validate_manifest_schema(
+    value: &Value,
+    origin: &ManifestOrigin,
+    partial_name: Option<&String>,
+    partial_version: Option<&String>,
+    raw_hash: [u8; 32],
+) -> Result<(), ManifestLoaderError> {
+    let schema = manifest_schema();
+    let validator = jsonschema::validator_for(&schema).map_err(|error| {
+        validation_error(
+            Some(origin.clone()),
+            partial_name.cloned(),
+            partial_version.cloned(),
+            raw_hash,
+            EventManifestValidationFailure::SchemaViolation {
+                json_pointer: String::new(),
+                details: format!("manifest schema cannot compile: {error}"),
+            },
+            format!("manifest schema cannot compile: {error}"),
+        )
+    })?;
+    if validator.is_valid(value) {
+        return Ok(());
+    }
+    let details = validator.iter_errors(value).next().map_or_else(
+        || "manifest schema violation".to_owned(),
+        |error| error.to_string(),
+    );
+    Err(validation_error(
+        Some(origin.clone()),
+        partial_name.cloned(),
+        partial_version.cloned(),
+        raw_hash,
+        EventManifestValidationFailure::SchemaViolation {
+            json_pointer: String::new(),
+            details: details.clone(),
+        },
+        details,
+    ))
+}
+
+fn manifest_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "manifest_schema_version": { "type": "integer", "minimum": 1 },
+            "name": { "type": "string" },
+            "version": { "type": "string" },
+            "trust_level": { "type": "string", "enum": ["admin_trusted", "user_controlled"] },
+            "description": { "type": ["string", "null"] },
+            "authors": { "type": "array", "items": { "type": "string" } },
+            "repository": { "type": ["string", "null"] },
+            "signature": {
+                "type": ["object", "null"],
+                "additionalProperties": false,
+                "properties": {
+                    "algorithm": { "type": "string", "enum": ["ed25519", "rsa_pkcs1_sha256"] },
+                    "signer": { "type": "string" },
+                    "signature": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+                    "timestamp": { "type": "string" }
+                },
+                "required": ["algorithm", "signer", "signature", "timestamp"]
+            },
+            "capabilities": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "tools": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "name": { "type": "string" },
+                                "destructive": { "type": "boolean" }
+                            },
+                            "required": ["name"]
+                        }
+                    },
+                    "skills": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": { "name": { "type": "string" } },
+                            "required": ["name"]
+                        }
+                    },
+                    "hooks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": { "name": { "type": "string" } },
+                            "required": ["name"]
+                        }
+                    },
+                    "mcp_servers": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": { "name": { "type": "string" } },
+                            "required": ["name"]
+                        }
+                    },
+                    "steering": { "type": "boolean" },
+                    "custom_toolsets": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": { "name": { "type": "string" } },
+                            "required": ["name"]
+                        }
+                    },
+                    "memory_provider": {
+                        "type": ["object", "null"],
+                        "additionalProperties": false,
+                        "properties": { "name": { "type": "string" } },
+                        "required": ["name"]
+                    },
+                    "coordinator_strategy": {
+                        "type": ["object", "null"],
+                        "additionalProperties": false,
+                        "properties": { "name": { "type": "string" } },
+                        "required": ["name"]
+                    },
+                    "configuration_schema": {}
+                }
+            },
+            "dependencies": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "name": { "type": "string" },
+                        "version_req": { "type": "string" },
+                        "kind": { "type": "string", "enum": ["required", "optional"] }
+                    },
+                    "required": ["name"]
+                }
+            },
+            "min_harness_version": { "type": "string" }
+        },
+        "required": ["name", "version", "trust_level"]
+    })
+}
+
+fn yaml_to_json(yaml: &Yaml) -> Result<Value, String> {
+    match yaml {
+        Yaml::Real(value) => value
+            .parse::<f64>()
+            .ok()
+            .and_then(Number::from_f64)
+            .map(Value::Number)
+            .ok_or_else(|| format!("invalid real value: {value}")),
+        Yaml::Integer(value) => Ok(Value::Number(Number::from(*value))),
+        Yaml::String(value) => Ok(Value::String(value.clone())),
+        Yaml::Boolean(value) => Ok(Value::Bool(*value)),
+        Yaml::Array(values) => values
+            .iter()
+            .map(yaml_to_json)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        Yaml::Hash(hash) => {
+            let mut object = Map::new();
+            for (key, value) in hash {
+                let Yaml::String(key) = key else {
+                    return Err("yaml object keys must be strings".to_owned());
+                };
+                object.insert(key.clone(), yaml_to_json(value)?);
+            }
+            Ok(Value::Object(object))
+        }
+        Yaml::Null => Ok(Value::Null),
+        Yaml::BadValue | Yaml::Alias(_) => Err("unsupported yaml value".to_owned()),
+    }
+}
+
+fn validation_error(
+    origin: Option<ManifestOrigin>,
+    partial_name: Option<String>,
+    partial_version: Option<String>,
+    raw_bytes_hash: [u8; 32],
+    failure: EventManifestValidationFailure,
+    details: String,
+) -> ManifestLoaderError {
+    ManifestLoaderError::Validation(ManifestValidationFailure {
+        origin,
+        partial_name,
+        partial_version,
+        raw_bytes_hash,
+        failure,
+        details,
+    })
+}
+
+fn schema_violation(
+    origin: ManifestOrigin,
+    partial_name: Option<String>,
+    partial_version: Option<String>,
+    raw_bytes_hash: [u8; 32],
+    json_pointer: impl Into<String>,
+    details: impl Into<String>,
+) -> ManifestLoaderError {
+    let details = details.into();
+    validation_error(
+        Some(origin),
+        partial_name,
+        partial_version,
+        raw_bytes_hash,
+        EventManifestValidationFailure::SchemaViolation {
+            json_pointer: json_pointer.into(),
+            details: details.clone(),
+        },
+        details,
+    )
+}
+
+fn sha256(bytes: &[u8]) -> [u8; 32] {
+    let digest = digest::digest(&digest::SHA256, bytes);
+    let mut hash = [0_u8; 32];
+    hash.copy_from_slice(digest.as_ref());
+    hash
+}
+
+fn partial_json_string(bytes: &[u8], key: &str) -> Option<String> {
+    let value = serde_json::from_slice::<Value>(bytes).ok()?;
+    value.get(key)?.as_str().map(str::to_owned)
+}
+
+fn partial_yaml_string(text: &str, key: &str) -> Option<String> {
+    let docs = YamlLoader::load_from_str(text).ok()?;
+    let document = docs.first()?;
+    let Yaml::Hash(hash) = document else {
+        return None;
+    };
+    hash.iter().find_map(|(candidate, value)| {
+        let Yaml::String(candidate) = candidate else {
+            return None;
+        };
+        if candidate != key {
+            return None;
+        }
+        let Yaml::String(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    })
+}
