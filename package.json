@@ -3,22 +3,27 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "packageManager": "pnpm@10.11.0",
+  "packageManager": "pnpm@11.7.0",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=24.0.0"
   },
   "scripts": {
     "dev": "pnpm -C apps/desktop tauri dev",
     "build": "pnpm -C apps/desktop build && pnpm -C apps/desktop tauri build",
     "lint": "pnpm -C apps/desktop lint",
     "format": "pnpm -C apps/desktop format",
-    "check:rust": "cargo fmt --all --check && cargo check --workspace && cargo test --workspace",
+    "check:agent-docs": "node scripts/check-agent-docs.mjs",
+    "check:frontend-docs": "node scripts/check-frontend-docs.mjs",
+    "check:backend-docs": "node --test scripts/backend-docs-policy.test.mjs && node scripts/check-backend-docs.mjs",
+    "check:docs": "pnpm check:agent-docs && pnpm check:frontend-docs && pnpm check:backend-docs",
+    "check:rust-deps": "node scripts/check-rust-deps.mjs",
+    "check:rust": "pnpm check:rust-deps && cargo fmt --all --check && cargo check --workspace && cargo test --workspace",
     "check:desktop": "pnpm -C apps/desktop check",
     "check:desktop:full": "pnpm -C apps/desktop check:full",
-    "check": "pnpm check:desktop && pnpm check:rust",
+    "check": "pnpm check:docs && pnpm check:desktop && pnpm check:rust",
     "tauri": "tauri"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.10.1"
+    "@tauri-apps/cli": "^2.11.2"
   }
 }

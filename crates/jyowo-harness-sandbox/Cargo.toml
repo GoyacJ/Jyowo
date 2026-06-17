@@ -30,16 +30,16 @@ code-runtime = []
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
 async-trait = { workspace = true }
-blake3 = "1"
+blake3 = "1.8.5"
 bytes = { workspace = true }
 chrono = { workspace = true }
 command-fds = { version = "0.3.3", features = ["tokio"] }
 futures = { workspace = true }
-os_pipe = "1"
-parking_lot = "0.12"
+os_pipe = "1.2.3"
+parking_lot = "0.12.5"
 serde = { workspace = true }
 serde_json = { workspace = true }
-tar = "0.4"
+tar = "0.4.46"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "process"] }
 tokio-util = { workspace = true, features = ["io"] }

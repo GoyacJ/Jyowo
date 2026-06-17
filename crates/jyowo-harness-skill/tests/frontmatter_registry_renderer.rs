@@ -247,7 +247,7 @@ impl SkillConfigResolver for TestConfigResolver {
 
     async fn resolve_secret(&self, key: &str) -> Result<secrecy::SecretString, ConfigResolveError> {
         match key {
-            "github.token" => Ok(secrecy::SecretString::new("secret-token".to_owned())),
+            "github.token" => Ok(secrecy::SecretString::new("secret-token".into())),
             other => Err(ConfigResolveError::UnknownKey(other.to_owned())),
         }
     }

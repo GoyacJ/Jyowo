@@ -108,7 +108,7 @@ impl CredentialSource for Source {
     async fn fetch(&self, key: CredentialKey) -> Result<CredentialValue, CredentialError> {
         self.seen.lock().push(key.clone());
         Ok(CredentialValue {
-            secret: SecretString::new(key.key_label.clone().into()),
+            secret: SecretString::new(key.key_label.clone().into_boxed_str()),
             metadata: CredentialMetadata::default(),
         })
     }

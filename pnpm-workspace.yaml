@@ -1,2 +1,24 @@
 packages:
   - "apps/*"
+
+allowBuilds:
+  esbuild: true
+
+overrides:
+  electron-to-chromium: "1.5.373"
+
+onlyBuiltDependencies:
+  - esbuild
+
+minimumReleaseAgeExclude:
+  - '@storybook/addon-a11y@10.4.6'
+  - '@storybook/addon-docs@10.4.6'
+  - '@storybook/addon-vitest@10.4.6'
+  - '@storybook/builder-vite@10.4.6'
+  - '@storybook/csf-plugin@10.4.6'
+  - '@storybook/react-dom-shim@10.4.6'
+  - '@storybook/react-vite@10.4.6'
+  - '@storybook/react@10.4.6'
+  - '@tanstack/react-router@1.170.16'
+  - lucide-react@1.20.0
+  - storybook@10.4.6

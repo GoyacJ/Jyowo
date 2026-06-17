@@ -29,5 +29,5 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
-parking_lot = "0.12"
+parking_lot = "0.12.5"
 reqwest = { workspace = true, optional = true }

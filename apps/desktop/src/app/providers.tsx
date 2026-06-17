@@ -23,13 +23,45 @@ function createQueryClient() {
   })
 }
 
+function getSystemPrefersDark() {
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+}
+
 function ThemeProvider({ children }: { children: ReactNode }) {
   const theme = useUiStore((state) => state.theme)
+  const [systemPrefersDark, setSystemPrefersDark] = useState(getSystemPrefersDark)
 
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', theme === 'dark')
-    document.documentElement.dataset.theme = theme
+    if (theme !== 'system') {
+      return
+    }
+
+    const mediaQuery = window.matchMedia?.('(prefers-color-scheme: dark)')
+
+    if (!mediaQuery) {
+      setSystemPrefersDark(false)
+      return
+    }
+
+    setSystemPrefersDark(mediaQuery.matches)
+
+    function handleChange(event: MediaQueryListEvent) {
+      setSystemPrefersDark(event.matches)
+    }
+
+    mediaQuery.addEventListener('change', handleChange)
+
+    return () => {
+      mediaQuery.removeEventListener('change', handleChange)
+    }
   }, [theme])
+
+  useEffect(() => {
+    const resolvedTheme = theme === 'system' ? (systemPrefersDark ? 'dark' : 'light') : theme
+
+    document.documentElement.classList.toggle('dark', resolvedTheme === 'dark')
+    document.documentElement.dataset.theme = theme
+  }, [systemPrefersDark, theme])
 
   return children
 }

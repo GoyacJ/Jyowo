@@ -1,11 +1,11 @@
 import '@testing-library/jest-dom/vitest'
 
-import { QueryClient } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import { AppProviders } from '@/app/providers'
 import { createMockCommandClient, createRejectedCommandClient } from '@/shared/tauri/mock-client'
+import { CommandClientProvider } from '@/shared/tauri/react'
 import { SystemStatusPage } from './SystemStatusPage'
 
 function renderSystemStatus(commandClient = createMockCommandClient()) {
@@ -18,9 +18,11 @@ function renderSystemStatus(commandClient = createMockCommandClient()) {
   })
 
   return render(
-    <AppProviders commandClient={commandClient} queryClient={queryClient}>
-      <SystemStatusPage />
-    </AppProviders>,
+    <CommandClientProvider client={commandClient}>
+      <QueryClientProvider client={queryClient}>
+        <SystemStatusPage />
+      </QueryClientProvider>
+    </CommandClientProvider>,
   )
 }
 

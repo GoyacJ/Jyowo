@@ -34,7 +34,7 @@ impl GeminiProvider {
     pub fn from_api_key(api_key: impl Into<String>) -> Self {
         Self {
             http: reqwest::Client::new(),
-            api_key: SecretString::new(api_key.into()),
+            api_key: SecretString::new(api_key.into().into_boxed_str()),
             base_url: DEFAULT_BASE_URL.to_owned(),
         }
     }

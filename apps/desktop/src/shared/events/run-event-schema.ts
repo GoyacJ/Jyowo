@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { assertNever } from './assert-never'
 
 export const runEventVisibilitySchema = z.enum(['public', 'redacted', 'withheld'])
-export const runEventSourceSchema = z.enum(['engine', 'assistant', 'tool', 'permission', 'system'])
+export const runEventSourceSchema = z.enum(['user', 'assistant', 'tool', 'engine', 'policy'])
 
 const payloadSchema = z.record(z.string(), z.unknown())
 
@@ -161,7 +161,7 @@ export const runEventFixtures: Array<Record<string, unknown>> = [
     sequence: 10,
     timestamp,
     type: 'permission.requested',
-    source: 'permission',
+    source: 'policy',
     visibility: 'public',
     payload: { requestId: 'perm-001', severity: 'medium' },
   },
@@ -171,7 +171,7 @@ export const runEventFixtures: Array<Record<string, unknown>> = [
     sequence: 11,
     timestamp,
     type: 'permission.resolved',
-    source: 'permission',
+    source: 'policy',
     visibility: 'public',
     payload: { requestId: 'perm-001', decision: 'approve' },
   },

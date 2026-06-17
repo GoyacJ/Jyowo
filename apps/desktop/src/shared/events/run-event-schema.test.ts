@@ -24,6 +24,12 @@ describe('RunEvent schema', () => {
     expect(visibility).toBe('public')
   })
 
+  it('keeps event source values aligned with the frontend specification', () => {
+    expect(runEventSourceSchema.options).toEqual(['user', 'assistant', 'tool', 'engine', 'policy'])
+    expect(() => runEventSourceSchema.parse('permission')).toThrow()
+    expect(() => runEventSourceSchema.parse('system')).toThrow()
+  })
+
   it('parses all MVP event fixtures', () => {
     const events = runEventsSchema.parse(runEventFixtures)
 

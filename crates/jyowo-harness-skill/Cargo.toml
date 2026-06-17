@@ -32,4 +32,4 @@ secrecy = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 yaml-rust2 = { workspace = true }
-parking_lot = "0.12"
+parking_lot = "0.12.5"

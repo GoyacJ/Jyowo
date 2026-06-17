@@ -59,6 +59,6 @@ blake3 = { workspace = true }
 bytes = { workspace = true }
 jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["in-memory"] }
 jyowo-harness-tool = { path = "../jyowo-harness-tool", features = ["builtin-toolset"] }
-parking_lot = "0.12"
+parking_lot = "0.12.5"
 rust_decimal = { workspace = true }
 tempfile = { workspace = true }

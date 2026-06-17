@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use schemars::{schema::RootSchema, schema_for};
+use schemars::{schema_for, Schema};
 
 use crate::*;
 
@@ -14,11 +14,11 @@ macro_rules! insert_schema {
     };
 }
 
-pub fn generate_schema() -> RootSchema {
+pub fn generate_schema() -> Schema {
     schema_for!(Event)
 }
 
-pub fn export_all_schemas() -> BTreeMap<String, RootSchema> {
+pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     let mut schemas = BTreeMap::new();
 
     insert_schema!(schemas, "event", Event);

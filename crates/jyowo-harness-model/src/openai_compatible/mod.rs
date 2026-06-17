@@ -70,7 +70,7 @@ impl OpenAiCompatibleClient {
     ) -> Self {
         Self {
             http: reqwest::Client::new(),
-            api_key: api_key.map(SecretString::new),
+            api_key: api_key.map(|api_key| SecretString::new(api_key.into_boxed_str())),
             credential_resolver: None,
             provider_id: "openai-compatible".to_owned(),
             base_url: base_url.into(),
@@ -102,7 +102,7 @@ impl OpenAiCompatibleClient {
 
     #[must_use]
     pub(crate) fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.api_key = Some(SecretString::new(api_key.into()));
+        self.api_key = Some(SecretString::new(api_key.into().into_boxed_str()));
         self
     }
 
@@ -728,7 +728,7 @@ mod credential_pool_tests {
         async fn fetch(&self, key: CredentialKey) -> Result<CredentialValue, CredentialError> {
             self.seen.lock().push(key.clone());
             Ok(CredentialValue {
-                secret: SecretString::new(key.key_label.clone().into()),
+                secret: SecretString::new(key.key_label.clone().into_boxed_str()),
                 metadata: CredentialMetadata::default(),
             })
         }
