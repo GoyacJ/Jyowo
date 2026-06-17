@@ -1,0 +1,43 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.0/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": false
+  },
+  "files": {
+    "includes": [
+      ".storybook/**/*.ts",
+      ".storybook/**/*.tsx",
+      "e2e/**/*.ts",
+      "src/**/*.ts",
+      "src/**/*.tsx",
+      "*.ts",
+      "!src/routeTree.gen.ts"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "includes": ["**", "!src/routeTree.gen.ts"],
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "semicolons": "asNeeded",
+      "trailingCommas": "all"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "includes": ["**", "!src/routeTree.gen.ts"],
+    "rules": {
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noTsIgnore": "error"
+      }
+    }
+  }
+}
