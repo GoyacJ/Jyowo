@@ -43,7 +43,6 @@ describe('ui-preferences-store', () => {
       sidebarCollapsed: false,
       chatComposerHeight: 160,
       contextPanelWidth: 320,
-      lastSelectedWorkspaceRef: null,
     })
 
     expect(storeMock.load).toHaveBeenCalledWith(UI_PREFERENCES_STORE_PATH, {
@@ -53,7 +52,6 @@ describe('ui-preferences-store', () => {
         sidebarCollapsed: false,
         chatComposerHeight: 160,
         contextPanelWidth: 320,
-        lastSelectedWorkspaceRef: null,
       },
       overrideDefaults: true,
     })
@@ -64,7 +62,6 @@ describe('ui-preferences-store', () => {
     storeMock.state.set('sidebarCollapsed', 'yes')
     storeMock.state.set('chatComposerHeight', 'tall')
     storeMock.state.set('contextPanelWidth', 'wide')
-    storeMock.state.set('lastSelectedWorkspaceRef', { id: 'workspace-001' })
 
     const { readUiPreferences } = await importUiPreferencesStore()
 
@@ -73,7 +70,6 @@ describe('ui-preferences-store', () => {
       sidebarCollapsed: false,
       chatComposerHeight: 160,
       contextPanelWidth: 320,
-      lastSelectedWorkspaceRef: null,
     })
   })
 
@@ -84,18 +80,15 @@ describe('ui-preferences-store', () => {
       theme: 'dark',
       sidebarCollapsed: true,
       contextPanelWidth: 420,
-      lastSelectedWorkspaceRef: 'local:current',
     })
 
     expect(storeMock.set).toHaveBeenCalledWith('theme', 'dark')
     expect(storeMock.set).toHaveBeenCalledWith('sidebarCollapsed', true)
     expect(storeMock.set).toHaveBeenCalledWith('contextPanelWidth', 420)
-    expect(storeMock.set).toHaveBeenCalledWith('lastSelectedWorkspaceRef', 'local:current')
     await expect(readUiPreferences()).resolves.toMatchObject({
       theme: 'dark',
       sidebarCollapsed: true,
       contextPanelWidth: 420,
-      lastSelectedWorkspaceRef: 'local:current',
     })
   })
 

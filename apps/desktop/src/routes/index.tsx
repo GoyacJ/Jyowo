@@ -1,7 +1,14 @@
 import { createFileRoute } from '@tanstack/react-router'
 
-import { ConversationWorkspace } from '@/features/conversation/ConversationWorkspace'
-
 export const Route = createFileRoute('/')({
-  component: ConversationWorkspace,
+  validateSearch: (search): ConversationSearch => ({
+    conversationId:
+      typeof search.conversationId === 'string' && search.conversationId.trim().length > 0
+        ? search.conversationId
+        : undefined,
+  }),
 })
+
+type ConversationSearch = {
+  conversationId?: string
+}

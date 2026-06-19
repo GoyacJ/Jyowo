@@ -11,9 +11,9 @@ import {
 import { cn } from '@/shared/lib/utils'
 import { Button } from '@/shared/ui/button'
 
-export type ArtifactStatus = 'failed' | 'pending' | 'ready' | 'running'
+type ArtifactStatus = 'failed' | 'pending' | 'ready' | 'running'
 
-export interface ArtifactHistoryItem {
+interface ArtifactHistoryItem {
   actionLabel: string
   description: string
   id: string

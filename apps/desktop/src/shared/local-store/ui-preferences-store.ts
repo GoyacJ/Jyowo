@@ -9,7 +9,6 @@ export type UiPreferences = {
   sidebarCollapsed: boolean
   chatComposerHeight: number
   contextPanelWidth: number
-  lastSelectedWorkspaceRef: string | null
 }
 
 const UI_PREFERENCES_DEFAULTS: UiPreferences = {
@@ -17,7 +16,6 @@ const UI_PREFERENCES_DEFAULTS: UiPreferences = {
   sidebarCollapsed: false,
   chatComposerHeight: 160,
   contextPanelWidth: 320,
-  lastSelectedWorkspaceRef: null,
 }
 
 let storePromise: Promise<Store> | undefined
@@ -34,14 +32,12 @@ export function loadUiPreferencesStore() {
 
 export async function readUiPreferences(): Promise<UiPreferences> {
   const store = await loadUiPreferencesStore()
-  const [theme, sidebarCollapsed, chatComposerHeight, contextPanelWidth, lastSelectedWorkspaceRef] =
-    await Promise.all([
-      store.get<UiThemePreference>('theme'),
-      store.get<boolean>('sidebarCollapsed'),
-      store.get<number>('chatComposerHeight'),
-      store.get<number>('contextPanelWidth'),
-      store.get<string | null>('lastSelectedWorkspaceRef'),
-    ])
+  const [theme, sidebarCollapsed, chatComposerHeight, contextPanelWidth] = await Promise.all([
+    store.get<UiThemePreference>('theme'),
+    store.get<boolean>('sidebarCollapsed'),
+    store.get<number>('chatComposerHeight'),
+    store.get<number>('contextPanelWidth'),
+  ])
 
   return {
     theme: isUiThemePreference(theme) ? theme : UI_PREFERENCES_DEFAULTS.theme,
@@ -57,10 +53,6 @@ export async function readUiPreferences(): Promise<UiPreferences> {
       typeof contextPanelWidth === 'number'
         ? contextPanelWidth
         : UI_PREFERENCES_DEFAULTS.contextPanelWidth,
-    lastSelectedWorkspaceRef:
-      typeof lastSelectedWorkspaceRef === 'string' || lastSelectedWorkspaceRef === null
-        ? lastSelectedWorkspaceRef
-        : UI_PREFERENCES_DEFAULTS.lastSelectedWorkspaceRef,
   }
 }
 

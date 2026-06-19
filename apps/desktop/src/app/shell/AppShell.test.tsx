@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
 import { createMockCommandClient } from '@/shared/tauri/mock-client'
@@ -19,8 +19,17 @@ const routerMock = vi.hoisted(() => ({
 
 vi.mock('@tanstack/react-router', async () => ({
   useNavigate: () => routerMock.navigate,
-  useRouterState: ({ select }: { select: (state: { location: { pathname: string } }) => string }) =>
-    select({ location: { pathname: window.location.pathname } }),
+  useRouterState: ({
+    select,
+  }: {
+    select: (state: { location: { pathname: string; search: Record<string, unknown> } }) => unknown
+  }) =>
+    select({
+      location: {
+        pathname: window.location.pathname,
+        search: Object.fromEntries(new URLSearchParams(window.location.search)),
+      },
+    }),
 }))
 
 function renderAppShell(commandClient: CommandClient = createMockCommandClient()) {
@@ -47,6 +56,10 @@ function renderAppShell(commandClient: CommandClient = createMockCommandClient()
 }
 
 describe('AppShell', () => {
+  beforeEach(() => {
+    window.history.pushState(null, '', '/')
+  })
+
   afterEach(() => {
     act(() => {
       uiStore.getState().setActivityRailCollapsed(false)
@@ -86,7 +99,7 @@ describe('AppShell', () => {
     expect(screen.getByRole('button', { name: 'View all activity' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'More actions' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Share' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Toggle layout' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Hide context panel' })).toBeEnabled()
     const contextPanel = screen.getByRole('complementary', { name: 'Context' })
     const activityRail = screen.getByRole('region', { name: 'Activity' })
 
@@ -117,8 +130,50 @@ describe('AppShell', () => {
     await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
 
     await waitFor(() => {
-      expect(contextRequests).toEqual([{ conversationId: 'conversation-001' }])
+      expect(contextRequests).toEqual([{}, { conversationId: 'conversation-001' }])
       expect(activityRequests).toEqual([{ conversationId: 'conversation-001' }])
+    })
+  })
+
+  it('requests context and activity for the conversation selected in the URL', async () => {
+    window.history.pushState(null, '', '/?conversationId=conversation-002')
+    const commandClient = createMockCommandClient({
+      conversations: {
+        conversations: [
+          {
+            id: 'conversation-001',
+            title: 'First conversation',
+            updatedAt: '2026-06-17T00:00:00.000Z',
+          },
+          {
+            id: 'conversation-002',
+            title: 'Selected conversation',
+            updatedAt: '2026-06-17T00:00:01.000Z',
+          },
+        ],
+      },
+    })
+    const activityRequests: Array<Parameters<CommandClient['listActivity']>[0]> = []
+    const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
+    const trackedClient = {
+      ...commandClient,
+      getContextSnapshot: async (request: Parameters<CommandClient['getContextSnapshot']>[0]) => {
+        contextRequests.push(request)
+        return commandClient.getContextSnapshot(request)
+      },
+      listActivity: async (request: Parameters<CommandClient['listActivity']>[0]) => {
+        activityRequests.push(request)
+        return commandClient.listActivity(request)
+      },
+    } satisfies CommandClient
+
+    renderAppShell(trackedClient)
+
+    await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
+
+    await waitFor(() => {
+      expect(contextRequests).toEqual([{}, { conversationId: 'conversation-002' }])
+      expect(activityRequests).toEqual([{ conversationId: 'conversation-002' }])
     })
   })
 
@@ -150,7 +205,7 @@ describe('AppShell', () => {
     await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
 
     await waitFor(() => {
-      expect(contextRequests).toEqual([{ conversationId: 'conversation-001' }])
+      expect(contextRequests).toEqual([{}, { conversationId: 'conversation-001' }])
       expect(activityRequests).toEqual([{ conversationId: 'conversation-001', runId: 'run-001' }])
     })
   })

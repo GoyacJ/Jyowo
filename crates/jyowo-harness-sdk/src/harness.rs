@@ -13,10 +13,7 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 #[cfg(feature = "agents-team")]
 use bytes::Bytes;
-#[cfg(feature = "mcp-server-adapter")]
-use chrono::DateTime;
-#[cfg(feature = "memory-builtin")]
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use harness_context::ContextEngine;
@@ -230,6 +227,14 @@ pub struct ConversationSession {
     pub tenant_id: TenantId,
     pub session_id: SessionId,
     pub message_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationSessionSummary {
+    pub session_id: SessionId,
+    pub created_at: DateTime<Utc>,
+    pub last_event_at: DateTime<Utc>,
+    pub event_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -857,6 +862,41 @@ impl Harness {
                 })
             }
         }
+    }
+
+    pub async fn list_conversation_sessions(
+        &self,
+        tenant_id: TenantId,
+        limit: u32,
+    ) -> Result<Vec<ConversationSessionSummary>, HarnessError> {
+        let mut sessions = self
+            .inner
+            .event_store
+            .list_sessions(
+                tenant_id,
+                SessionFilter {
+                    since: None,
+                    end_reason: None,
+                    project_compression_tips: false,
+                    limit,
+                },
+            )
+            .await
+            .map_err(HarnessError::Journal)?;
+
+        sessions.retain(|session| session.end_reason.is_none());
+        sessions.sort_by_key(|session| session.last_event_at);
+        sessions.reverse();
+
+        Ok(sessions
+            .into_iter()
+            .map(|session| ConversationSessionSummary {
+                session_id: session.session_id,
+                created_at: session.created_at,
+                last_event_at: session.last_event_at,
+                event_count: session.event_count,
+            })
+            .collect())
     }
 
     pub async fn submit_conversation_turn(

@@ -66,6 +66,9 @@ export function useConversation(options: UseConversationOptions = {}) {
         await queryClient.invalidateQueries({
           queryKey: conversationQueryKeys.detail(selectedConversationId),
         })
+        await queryClient.invalidateQueries({
+          queryKey: conversationQueryKeys.list(),
+        })
       }
     },
   })

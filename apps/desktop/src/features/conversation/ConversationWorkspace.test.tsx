@@ -12,7 +12,10 @@ import { CommandClientProvider } from '@/shared/tauri/react'
 
 import { ConversationWorkspace } from './ConversationWorkspace'
 
-function renderConversationWorkspace(commandClient: CommandClient = createMockCommandClient()) {
+function renderConversationWorkspace(
+  commandClient: CommandClient = createMockCommandClient(),
+  conversationId?: string,
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -28,7 +31,7 @@ function renderConversationWorkspace(commandClient: CommandClient = createMockCo
     )
   }
 
-  return render(<ConversationWorkspace />, { wrapper: Wrapper })
+  return render(<ConversationWorkspace conversationId={conversationId} />, { wrapper: Wrapper })
 }
 
 describe('ConversationWorkspace', () => {
@@ -48,7 +51,7 @@ describe('ConversationWorkspace', () => {
     expect(
       screen.getByPlaceholderText('Ask Jyowo anything about this project...'),
     ).toBeInTheDocument()
-    expect(screen.getByText('Plan')).toBeInTheDocument()
+    expect(screen.queryByText('Plan')).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Work progress' })).toBeInTheDocument()
     expect(screen.getByText('Desktop foundation created')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Run app' })).toBeInTheDocument()
@@ -87,6 +90,18 @@ describe('ConversationWorkspace', () => {
     renderConversationWorkspace(createRejectedCommandClient(new Error('IPC unavailable')))
 
     expect(await screen.findByText('IPC unavailable')).toBeInTheDocument()
+  })
+
+  it('renders object-shaped command errors through their message', async () => {
+    renderConversationWorkspace(
+      createRejectedCommandClient({
+        code: 'RUNTIME_OPERATION_FAILED',
+        message: 'conversation read failed',
+      }),
+    )
+
+    expect(await screen.findByText('conversation read failed')).toBeInTheDocument()
+    expect(screen.queryByText('[object Object]')).not.toBeInTheDocument()
   })
 
   it('mounts conversation work once on the latest assistant message', async () => {
@@ -134,7 +149,7 @@ describe('ConversationWorkspace', () => {
               },
               {
                 author: 'assistant',
-                body: 'Second assistant turn\n\n- Prepare shell\n- Add verification tests',
+                body: 'Second assistant turn\n\nPrepare shell and add verification tests.',
                 id: 'message-004',
                 timestamp: '2026-06-17T00:00:03.000Z',
               },
@@ -147,7 +162,7 @@ describe('ConversationWorkspace', () => {
     )
 
     expect(await screen.findByText('Second assistant turn')).toBeInTheDocument()
-    expect(screen.getAllByText('Plan')).toHaveLength(1)
+    expect(screen.queryByText('Plan')).not.toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'Run app' })).toHaveLength(1)
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Show source message' })[0] as Element)
@@ -158,9 +173,14 @@ describe('ConversationWorkspace', () => {
 
   it('submits composer text through start_run without putting it in the query cache', async () => {
     const commandClient = createMockCommandClient()
+    let listConversationsCallCount = 0
     const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
     const trackedClient = {
       ...commandClient,
+      listConversations: async () => {
+        listConversationsCallCount += 1
+        return commandClient.listConversations()
+      },
       startRun: async (request: Parameters<CommandClient['startRun']>[0]) => {
         startRunCalls.push(request)
         return commandClient.startRun(request)
@@ -187,7 +207,26 @@ describe('ConversationWorkspace', () => {
       ])
       expect(uiStore.getState().activeRunConversationId).toBe('conversation-001')
       expect(uiStore.getState().activeRunId).toBe('run-001')
+      expect(listConversationsCallCount).toBeGreaterThanOrEqual(2)
     })
+  })
+
+  it('loads the selected conversation id from props', async () => {
+    const commandClient = createMockCommandClient()
+    const getConversationCalls: string[] = []
+    const trackedClient = {
+      ...commandClient,
+      getConversation: async (conversationId: string) => {
+        getConversationCalls.push(conversationId)
+        return commandClient.getConversation(conversationId)
+      },
+    } satisfies CommandClient
+
+    renderConversationWorkspace(trackedClient, 'conversation-002')
+
+    await screen.findByRole('heading', { name: 'Build the desktop foundation' })
+
+    expect(getConversationCalls).toEqual(['conversation-002'])
   })
 
   it('keeps the loaded conversation visible when start_run fails', async () => {
@@ -284,7 +323,7 @@ describe('ConversationWorkspace', () => {
     })
   })
 
-  it('shows the ask, plan, work, review, and continue path after submit', async () => {
+  it('shows the ask, work, review, and continue path after submit', async () => {
     renderConversationWorkspace()
 
     fireEvent.change(
@@ -296,7 +335,7 @@ describe('ConversationWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     expect(screen.getByText('Build the local app foundation')).toBeInTheDocument()
-    expect(screen.getByText('Add scripts, README, and .gitignore')).toBeInTheDocument()
+    expect(screen.queryByText('Plan')).not.toBeInTheDocument()
     expect(screen.getByText('Working: run')).toBeInTheDocument()
     expect(screen.getByText('Desktop foundation created')).toBeInTheDocument()
     expect(screen.getByText('Review generated foundation')).toBeInTheDocument()

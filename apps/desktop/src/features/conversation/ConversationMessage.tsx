@@ -27,7 +27,7 @@ export function ConversationMessage({
       tabIndex={elementId ? -1 : undefined}
     >
       <div
-        className="grid size-8 place-items-center rounded-full bg-accent/20 text-sm data-[tone=assistant]:bg-accent data-[tone=assistant]:text-accent-foreground"
+        className="grid size-8 place-items-center rounded-full bg-muted font-medium text-foreground text-xs data-[tone=assistant]:bg-foreground data-[tone=assistant]:text-background"
         data-tone={tone}
       >
         {avatar}

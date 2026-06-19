@@ -33,8 +33,8 @@ pub use error::HarnessError;
 pub use harness::StreamPermissionRuntime;
 pub use harness::{
     ConversationEventsPage, ConversationEventsPageRequest, ConversationSession,
-    ConversationTurnReceipt, ConversationTurnRequest, Harness, HarnessOptions,
-    HarnessSamplingProvider, McpConfig, TenantPolicy, WorkspaceCreateRequest,
+    ConversationSessionSummary, ConversationTurnReceipt, ConversationTurnRequest, Harness,
+    HarnessOptions, HarnessSamplingProvider, McpConfig, TenantPolicy, WorkspaceCreateRequest,
 };
 pub use harness_journal::{
     AuditFilter, AuditOrder, AuditPage, AuditQuery, AuditRecord, AuditScope,

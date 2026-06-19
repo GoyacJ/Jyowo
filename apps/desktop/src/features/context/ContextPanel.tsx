@@ -1,4 +1,4 @@
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, X } from 'lucide-react'
 
 import { ContextSection } from './ContextSection'
 import { type ContextFileReference, FileReferenceList } from './FileReferenceList'
@@ -54,7 +54,7 @@ export function ContextPanel({
             onClick={onClose}
             type="button"
           >
-            ×
+            <X className="size-4" />
           </button>
         ) : null}
       </div>
@@ -218,9 +218,12 @@ function DecisionContent({
 }) {
   return (
     <>
-      <span className="min-w-0">
-        <span className="block truncate">{decision.title}</span>
-        <span className="block text-muted-foreground text-xs">{decision.detail}</span>
+      <span className="flex min-w-0 items-start gap-2.5">
+        <span aria-hidden="true" className="mt-1.5 size-1.5 shrink-0 rounded-full bg-warning" />
+        <span className="min-w-0">
+          <span className="block truncate">{decision.title}</span>
+          <span className="block text-muted-foreground text-xs">{decision.detail}</span>
+        </span>
       </span>
       {interactive ? (
         <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-foreground" />

@@ -21,8 +21,8 @@ use jyowo_harness_sdk::ext::{
     TransportChoice,
 };
 use jyowo_harness_sdk::{
-    ConversationEventsPageRequest, ConversationTurnRequest, Harness, McpConfig, SessionOptions,
-    StreamPermissionRuntime,
+    ConversationEventsPageRequest, ConversationSessionSummary, ConversationTurnRequest, Harness,
+    McpConfig, SessionOptions, StreamPermissionRuntime,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -516,6 +516,26 @@ pub struct DesktopRuntimeState {
 }
 
 impl DesktopRuntimeState {
+    pub fn with_workspace_for_test(workspace_root: PathBuf) -> Result<Self, CommandErrorPayload> {
+        let workspace_root = canonical_workspace_root(workspace_root, "workspace root".to_owned())?;
+
+        Ok(Self {
+            default_conversation_id: SessionId::new(),
+            harness: None,
+            memory_lock: Arc::new(tokio::sync::Mutex::new(())),
+            mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
+            mcp_server_store: Arc::new(DesktopMcpServerStore::new(workspace_root.clone())),
+            permission_resolver: None,
+            provider_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
+            provider_settings_store: Arc::new(DesktopProviderSettingsStore::new(
+                workspace_root.clone(),
+            )),
+            start_run_lock: Arc::new(tokio::sync::Mutex::new(())),
+            stream_permission_runtime: None,
+            workspace_root,
+        })
+    }
+
     pub fn with_harness_and_stream_permission_runtime(
         harness: Arc<Harness>,
         stream_permission_runtime: Arc<StreamPermissionRuntime>,
@@ -736,7 +756,7 @@ pub struct ConversationSummaryPayload {
     pub id: String,
     pub last_message_preview: Option<String>,
     pub title: String,
-    pub updated_at: &'static str,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1030,26 +1050,6 @@ pub fn harness_healthcheck_payload() -> HarnessHealthcheckPayload {
 pub fn list_eval_cases_payload() -> ListEvalCasesResponse {
     ListEvalCasesResponse {
         cases: vec![regression_smoke_eval_case(3)],
-    }
-}
-
-#[must_use]
-pub fn list_artifacts_payload() -> ListArtifactsResponse {
-    ListArtifactsResponse {
-        artifacts: vec![ArtifactSummaryPayload {
-            action_label: "Open".to_owned(),
-            description: "Generated implementation plan and app shell review output.".to_owned(),
-            id: "artifact-foundation-plan".to_owned(),
-            kind: "markdown".to_owned(),
-            preview: Some(
-                "# Foundation review\n\n- Conversation workspace restored.\n- Activity rail connected.\n- Support surfaces available from navigation."
-                    .to_owned(),
-            ),
-            source_message_id: Some("message-002".to_owned()),
-            source_run_id: "run-001".to_owned(),
-            status: "ready",
-            title: "Foundation implementation review".to_owned(),
-        }],
     }
 }
 
@@ -1741,47 +1741,98 @@ fn cleanup_stale_provider_secrets(
         .collect()
 }
 
-#[must_use]
-pub fn list_conversations_payload() -> ListConversationsResponse {
-    ListConversationsResponse {
-        conversations: vec![ConversationSummaryPayload {
-            id: "conversation-placeholder".to_owned(),
-            last_message_preview: Some(
-                "Runtime conversation history is not connected yet.".to_owned(),
-            ),
-            title: "Build the desktop foundation".to_owned(),
-            updated_at: PLACEHOLDER_TIMESTAMP,
-        }],
-    }
-}
-
-#[must_use]
-pub fn list_conversations_with_runtime_state(
+pub async fn list_conversations_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> ListConversationsResponse {
-    ListConversationsResponse {
-        conversations: vec![ConversationSummaryPayload {
-            id: state.default_conversation_id().to_string(),
-            last_message_preview: Some("Runtime conversation is ready.".to_owned()),
-            title: "Build the desktop foundation".to_owned(),
-            updated_at: PLACEHOLDER_TIMESTAMP,
-        }],
+    let Some(harness) = state.harness() else {
+        return ListConversationsResponse {
+            conversations: Vec::new(),
+        };
+    };
+
+    let summaries = list_runtime_conversation_summaries(&harness, state).await;
+    let mut conversations = Vec::with_capacity(summaries.len());
+    for summary in summaries {
+        let messages = read_conversation_messages(summary.session_id, state)
+            .await
+            .unwrap_or_default();
+        conversations.push(conversation_summary_payload(summary, &messages));
+    }
+
+    ListConversationsResponse { conversations }
+}
+
+async fn list_runtime_conversation_summaries(
+    harness: &Harness,
+    state: &DesktopRuntimeState,
+) -> Vec<ConversationSessionSummary> {
+    let mut summaries = harness
+        .list_conversation_sessions(TenantId::SINGLE, 50)
+        .await
+        .unwrap_or_default();
+
+    if summaries.is_empty()
+        && harness
+            .open_or_create_conversation_session(
+                state.conversation_session_options(state.default_conversation_id()),
+            )
+            .await
+            .is_ok()
+    {
+        summaries = harness
+            .list_conversation_sessions(TenantId::SINGLE, 50)
+            .await
+            .unwrap_or_default();
+    }
+
+    summaries
+}
+
+fn conversation_summary_payload(
+    summary: ConversationSessionSummary,
+    messages: &[ConversationMessagePayload],
+) -> ConversationSummaryPayload {
+    ConversationSummaryPayload {
+        id: summary.session_id.to_string(),
+        last_message_preview: Some(conversation_preview(messages)),
+        title: conversation_title(messages),
+        updated_at: messages
+            .last()
+            .map(|message| message.timestamp.clone())
+            .unwrap_or_else(|| summary.last_event_at.to_rfc3339()),
     }
 }
 
-pub fn get_conversation_payload(
-    request: GetConversationRequest,
-) -> Result<GetConversationResponse, CommandErrorPayload> {
-    ensure_non_empty("conversationId", &request.conversation_id)?;
+fn conversation_title(messages: &[ConversationMessagePayload]) -> String {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.author == "user")
+        .map(|message| conversation_snippet(&message.body))
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| "New conversation".to_owned())
+}
 
-    Ok(GetConversationResponse {
-        conversation: ConversationPayload {
-            id: request.conversation_id,
-            messages: Vec::new(),
-            title: "Build the desktop foundation".to_owned(),
-            updated_at: PLACEHOLDER_TIMESTAMP.to_owned(),
-        },
-    })
+fn conversation_preview(messages: &[ConversationMessagePayload]) -> String {
+    messages
+        .last()
+        .map(|message| conversation_snippet(&message.body))
+        .filter(|preview| !preview.is_empty())
+        .unwrap_or_else(|| "Start from the composer when ready.".to_owned())
+}
+
+fn conversation_snippet(value: &str) -> String {
+    truncate_utf8(
+        value
+            .lines()
+            .find_map(|line| {
+                let trimmed = line.trim();
+                (!trimmed.is_empty()).then_some(trimmed)
+            })
+            .unwrap_or_default()
+            .to_owned(),
+        96,
+    )
 }
 
 pub async fn get_conversation_with_runtime_state(
@@ -1795,12 +1846,13 @@ pub async fn get_conversation_with_runtime_state(
         .last()
         .map(|message| message.timestamp.clone())
         .unwrap_or_else(|| PLACEHOLDER_TIMESTAMP.to_owned());
+    let title = conversation_title(&messages);
 
     Ok(GetConversationResponse {
         conversation: ConversationPayload {
             id: request.conversation_id,
             messages,
-            title: "Build the desktop foundation".to_owned(),
+            title,
             updated_at,
         },
     })
@@ -2068,22 +2120,6 @@ pub async fn export_support_bundle_with_runtime_state(
     })
 }
 
-pub fn get_context_snapshot_payload(
-    request: GetContextSnapshotRequest,
-) -> Result<GetContextSnapshotResponse, CommandErrorPayload> {
-    ensure_optional("conversationId", request.conversation_id.as_deref())?;
-    ensure_optional("runId", request.run_id.as_deref())?;
-
-    Ok(GetContextSnapshotResponse {
-        active_artifact: None,
-        decisions: Vec::new(),
-        files: Vec::new(),
-        next_actions: vec!["Connect the Rust runtime facade".to_owned()],
-        path: "workspace://local".to_owned(),
-        project: "Local workspace".to_owned(),
-    })
-}
-
 pub async fn get_context_snapshot_with_runtime_state(
     request: GetContextSnapshotRequest,
     state: &DesktopRuntimeState,
@@ -2106,14 +2142,21 @@ pub async fn get_context_snapshot_with_runtime_state(
     let mut next_actions = Vec::new();
 
     loop {
-        let page = harness
+        let page = match harness
             .page_conversation_events(ConversationEventsPageRequest {
                 options: state.conversation_session_options(session_id),
                 after_event_id,
                 limit: 200,
             })
             .await
-            .map_err(|_| runtime_operation_failed("context snapshot read failed".to_owned()))?;
+        {
+            Ok(page) => page,
+            Err(_) => {
+                // Context snapshot is display-only metadata. If a selected conversation has no
+                // event stream yet, keep the workspace metadata visible instead of failing the UI.
+                break;
+            }
+        };
         if page.events.is_empty() {
             break;
         }
@@ -3610,10 +3653,10 @@ pub async fn export_memory_items(
 }
 
 #[tauri::command]
-pub fn list_conversations(
+pub async fn list_conversations(
     runtime_state: tauri::State<'_, DesktopRuntimeState>,
-) -> ListConversationsResponse {
-    list_conversations_with_runtime_state(runtime_state.inner())
+) -> Result<ListConversationsResponse, CommandErrorPayload> {
+    Ok(list_conversations_with_runtime_state(runtime_state.inner()).await)
 }
 
 #[tauri::command]
