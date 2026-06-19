@@ -7,8 +7,6 @@
     "*.ts"
   ],
   "ignoreDependencies": [
-    "@tanstack/react-virtual",
-    "react-hook-form",
     "tailwindcss"
   ]
 }

@@ -52,6 +52,15 @@ impl MemoryStore for MockMemoryProvider {
             .collect())
     }
 
+    async fn get(&self, id: MemoryId) -> Result<MemoryRecord, MemoryError> {
+        let records = self.records.lock().await;
+        records
+            .iter()
+            .find(|record| record.id == id)
+            .cloned()
+            .ok_or(MemoryError::NotFound(id))
+    }
+
     async fn upsert(&self, record: MemoryRecord) -> Result<MemoryId, MemoryError> {
         let id = record.id;
         let mut records = self.records.lock().await;

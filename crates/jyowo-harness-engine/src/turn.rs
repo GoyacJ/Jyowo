@@ -17,7 +17,7 @@ use harness_contracts::{
     Message, MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, ModelError,
     ModelRef, NoopRedactor, PermissionMode, PermissionRequestSuppressedEvent,
     PermissionRequestedEvent, PermissionResolvedEvent, PricingSnapshotId, Redactor, RequestId,
-    RunEndedEvent, RunStartedEvent, StopReason, SuppressionReason, TeamId, TenantId,
+    RunEndedEvent, RunStartedEvent, SessionId, StopReason, SuppressionReason, TeamId, TenantId,
     ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseApprovedEvent,
     ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
     ToolUseRequestedEvent, TrustLevel, TurnInput, UsageAccumulatedEvent, UsageSnapshot,
@@ -27,6 +27,7 @@ use harness_hook::{
     HookPermissionConflict, HookPermissionOverride, HookSessionView, ReplayMode,
     ToolDescriptorView, ToolErrorView,
 };
+use harness_journal::EventStore;
 use harness_model::{
     apply_before_request_middlewares, apply_request_end_middlewares, wrap_stream_with_middlewares,
     BillingMode, InferContext, ModelRequest, PricingSnapshotResolveContext, PricingSource, Ratio,
@@ -762,6 +763,9 @@ pub(crate) async fn run_turn(
         let permission_recorder = Arc::new(RecordingPermissionBroker::new(
             engine.permission_broker.clone(),
             permission_overrides,
+            engine.event_store.clone(),
+            ctx.run_id,
+            ctx.interactivity,
         ));
         let tool_event_emitter = Arc::new(RecordingToolEventEmitter::new());
         let tool_interrupt = InterruptToken::new();
@@ -816,6 +820,7 @@ pub(crate) async fn run_turn(
         };
 
         let permission_records = permission_recorder.records().await;
+        emitted.extend(permission_recorder.requested_events().await);
         let mut post_tool_events = dispatch_permission_hooks(
             engine,
             &session,
@@ -1800,22 +1805,37 @@ struct RecordingPermissionBroker {
     inner: Arc<dyn PermissionBroker>,
     overrides: Vec<HookPermissionDecisionOverride>,
     records: Mutex<Vec<PermissionDecisionRecord>>,
+    event_store: Arc<dyn EventStore>,
+    requested_events: Mutex<Vec<Event>>,
+    run_id: harness_contracts::RunId,
+    interactivity: InteractivityLevel,
 }
 
 impl RecordingPermissionBroker {
     fn new(
         inner: Arc<dyn PermissionBroker>,
         overrides: Vec<HookPermissionDecisionOverride>,
+        event_store: Arc<dyn EventStore>,
+        run_id: harness_contracts::RunId,
+        interactivity: InteractivityLevel,
     ) -> Self {
         Self {
             inner,
             overrides,
             records: Mutex::new(Vec::new()),
+            event_store,
+            requested_events: Mutex::new(Vec::new()),
+            run_id,
+            interactivity,
         }
     }
 
     async fn records(&self) -> Vec<PermissionDecisionRecord> {
         self.records.lock().await.clone()
+    }
+
+    async fn requested_events(&self) -> Vec<Event> {
+        self.requested_events.lock().await.clone()
     }
 }
 
@@ -1823,6 +1843,20 @@ impl RecordingPermissionBroker {
 impl PermissionBroker for RecordingPermissionBroker {
     async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
         let fingerprint = canonical_permission_fingerprint(&request);
+        if request.tenant_id != ctx.tenant_id || request.session_id != ctx.session_id {
+            self.records.lock().await.push(PermissionDecisionRecord {
+                request,
+                decision: Decision::DenyOnce,
+                decided_by: DecidedBy::Broker {
+                    broker_id: "permission-context".to_owned(),
+                },
+                hook_conflict: None,
+                fingerprint,
+                suppressed: None,
+            });
+            return Decision::DenyOnce;
+        }
+
         if let Some(previous) = self.reusable_previous_decision(fingerprint).await {
             let decision = previous.decision.clone();
             self.records.lock().await.push(PermissionDecisionRecord {
@@ -1840,6 +1874,38 @@ impl PermissionBroker for RecordingPermissionBroker {
             });
             return decision;
         }
+
+        let requested_event = permission_requested_event(
+            self.run_id,
+            &request,
+            fingerprint,
+            self.interactivity,
+            ctx.tenant_id,
+            ctx.session_id,
+        );
+        if self
+            .event_store
+            .append(
+                ctx.tenant_id,
+                ctx.session_id,
+                std::slice::from_ref(&requested_event),
+            )
+            .await
+            .is_err()
+        {
+            self.records.lock().await.push(PermissionDecisionRecord {
+                request,
+                decision: Decision::DenyOnce,
+                decided_by: DecidedBy::Broker {
+                    broker_id: "permission-event-store".to_owned(),
+                },
+                hook_conflict: None,
+                fingerprint,
+                suppressed: None,
+            });
+            return Decision::DenyOnce;
+        }
+        self.requested_events.lock().await.push(requested_event);
 
         let (decision, decided_by, hook_conflict) = if let Some(override_decision) = self
             .overrides
@@ -1952,6 +2018,7 @@ fn permission_context(session: &SessionHandle, ctx: &RunContext) -> PermissionCo
         previous_mode: None,
         session_id: session.session_id,
         tenant_id: session.tenant_id,
+        run_id: Some(ctx.run_id),
         interactivity: ctx.interactivity,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::DenyAll,
@@ -1962,6 +2029,32 @@ fn permission_context(session: &SessionHandle, ctx: &RunContext) -> PermissionCo
         }),
         hook_overrides: Vec::new(),
     }
+}
+
+fn permission_requested_event(
+    run_id: harness_contracts::RunId,
+    request: &PermissionRequest,
+    fingerprint: ExecFingerprint,
+    interactivity: InteractivityLevel,
+    tenant_id: TenantId,
+    session_id: SessionId,
+) -> Event {
+    Event::PermissionRequested(PermissionRequestedEvent {
+        request_id: request.request_id,
+        run_id,
+        session_id,
+        tenant_id,
+        tool_use_id: request.tool_use_id,
+        tool_name: request.tool_name.clone(),
+        subject: request.subject.clone(),
+        severity: request.severity,
+        scope_hint: request.scope_hint.clone(),
+        fingerprint: Some(fingerprint),
+        presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+        interactivity,
+        causation_id: EventId::new(),
+        at: harness_contracts::now(),
+    })
 }
 
 fn permission_events(
@@ -1993,22 +2086,6 @@ fn permission_events(
             continue;
         }
         let resolved_event_id = EventId::new();
-        events.push(Event::PermissionRequested(PermissionRequestedEvent {
-            request_id: record.request.request_id,
-            run_id,
-            session_id: record.request.session_id,
-            tenant_id: record.request.tenant_id,
-            tool_use_id: record.request.tool_use_id,
-            tool_name: record.request.tool_name.clone(),
-            subject: record.request.subject.clone(),
-            severity: record.request.severity,
-            scope_hint: record.request.scope_hint.clone(),
-            fingerprint: Some(record.fingerprint),
-            presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
-            interactivity: InteractivityLevel::NoInteractive,
-            causation_id: EventId::new(),
-            at: harness_contracts::now(),
-        }));
         events.push(Event::PermissionResolved(PermissionResolvedEvent {
             request_id: record.request.request_id,
             decision: record.decision.clone(),

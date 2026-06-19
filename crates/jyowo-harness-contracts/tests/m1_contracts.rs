@@ -105,6 +105,23 @@ fn schema_export_contains_required_surface() {
     assert!(schemas.contains_key("skill_shell_invocation"));
     assert!(schemas.contains_key("sandbox_post_execution_failed"));
     assert!(schemas.contains_key("sandbox_backend_failed"));
+
+    for key in [
+        "run_started",
+        "run_ended",
+        "assistant_delta_produced",
+        "assistant_message_completed",
+        "tool_use_requested",
+        "tool_use_approved",
+        "tool_use_denied",
+        "tool_use_completed",
+        "tool_use_failed",
+        "permission_requested",
+        "permission_resolved",
+        "engine_failed",
+    ] {
+        assert!(schemas.contains_key(key), "missing MVP event schema: {key}");
+    }
 }
 
 #[test]

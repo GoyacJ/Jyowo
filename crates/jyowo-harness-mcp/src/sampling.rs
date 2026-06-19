@@ -819,6 +819,7 @@ impl SamplingJsonRpcHandler {
                     previous_mode: None,
                     session_id: request.session_id,
                     tenant_id: TenantId::SINGLE,
+                    run_id: None,
                     interactivity: InteractivityLevel::FullyInteractive,
                     timeout_policy: Some(TimeoutPolicy {
                         deadline_ms: effective_timeout.as_millis().min(u128::from(u64::MAX)) as u64,

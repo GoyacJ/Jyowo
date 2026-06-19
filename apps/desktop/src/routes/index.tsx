@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 
-import { SystemStatusPage } from '@/features/system-status/SystemStatusPage'
+import { ConversationWorkspace } from '@/features/conversation/ConversationWorkspace'
 
 export const Route = createFileRoute('/')({
-  component: SystemStatusPage,
+  component: ConversationWorkspace,
 })

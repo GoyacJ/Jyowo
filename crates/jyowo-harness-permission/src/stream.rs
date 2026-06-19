@@ -44,6 +44,7 @@ pub enum CancelReason {
 struct PendingResolution {
     sender: oneshot::Sender<Decision>,
     request: PermissionRequest,
+    context: PermissionContext,
     enqueued_at: Instant,
     last_heartbeat_at: Instant,
     timeout_at: Instant,
@@ -59,6 +60,12 @@ impl PendingResolution {
 #[derive(Clone)]
 pub struct ResolverHandle {
     pending: Arc<DashMap<RequestId, PendingResolution>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingPermissionRequest {
+    pub request: PermissionRequest,
+    pub context: PermissionContext,
 }
 
 impl Default for StreamBrokerConfig {
@@ -150,6 +157,17 @@ impl ResolverHandle {
             .collect()
     }
 
+    #[must_use]
+    pub fn pending_permission_requests(&self) -> Vec<PendingPermissionRequest> {
+        self.pending
+            .iter()
+            .map(|pending| PendingPermissionRequest {
+                request: pending.request.clone(),
+                context: pending.context.clone(),
+            })
+            .collect()
+    }
+
     pub async fn resolve(
         &self,
         request_id: RequestId,
@@ -206,6 +224,7 @@ impl PermissionBroker for StreamBasedBroker {
             PendingResolution {
                 sender,
                 request: request.clone(),
+                context: ctx.clone(),
                 enqueued_at: now,
                 last_heartbeat_at: now,
                 timeout_at: now + timeout,

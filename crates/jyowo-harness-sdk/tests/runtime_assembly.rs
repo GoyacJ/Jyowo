@@ -8,11 +8,12 @@ use std::sync::{
 use async_trait::async_trait;
 use futures::{executor::block_on, stream, StreamExt};
 use harness_contracts::{
-    ContextPatchSource, ContextStageId, Decision, DeferPolicy, DeferredToolHint, EndReason, Event,
-    HookEventKind, ManifestValidationFailure as ContractManifestValidationFailure, McpServerId,
-    McpServerSource, MemoryError, MemoryId, MemoryKind, MemorySessionCtx, MemorySource,
-    MemoryVisibility, MessageId, MessagePart, ModelError, PluginId, ProviderRestriction,
-    RedactRules, Redactor, RequestId, SessionSummaryView, SnapshotId, SteeringBody, SteeringKind,
+    ConfigHash, ContextPatchSource, ContextStageId, Decision, DeferPolicy, DeferredToolHint,
+    EndReason, Event, HookEventKind,
+    ManifestValidationFailure as ContractManifestValidationFailure, McpServerId, McpServerSource,
+    MemoryError, MemoryId, MemoryKind, MemorySessionCtx, MemorySource, MemoryVisibility, MessageId,
+    MessagePart, ModelError, PluginId, ProviderRestriction, RedactRules, Redactor, RequestId,
+    SessionCreatedEvent, SessionSummaryView, SnapshotId, SteeringBody, SteeringKind,
     SteeringSource, TeamId, TenantId, ToolDeferredPoolChangedEvent, ToolDescriptor, ToolGroup,
     ToolOrigin, ToolPoolChangeSource, ToolProperties, ToolResult, ToolSearchMode, ToolUseId,
     TrustLevel, UsageSnapshot,
@@ -115,6 +116,331 @@ fn create_session_uses_engine_runtime_path() {
                 .any(|event| matches!(event, Event::AssistantDeltaProduced(delta) if delta.message_id != MessageId::from_u128(0))),
             "SDK-created sessions must emit streaming assistant deltas from the Engine path"
         );
+    });
+}
+
+#[test]
+fn conversation_facade_opens_submits_and_pages_session_events() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-facade");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+
+        let harness = Harness::builder()
+            .with_model(MockProvider::default().with_events(vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("facade answer".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ]))
+            .with_store_arc(store)
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+
+        let opened = harness
+            .open_or_create_conversation_session(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+            )
+            .await
+            .expect("session should open through the conversation facade");
+        assert_eq!(opened.session_id, session_id);
+        assert_eq!(opened.tenant_id, TenantId::SINGLE);
+        assert_eq!(opened.message_count, 0);
+
+        let submitted = harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: SessionOptions::new(&workspace).with_session_id(session_id),
+                prompt: "use facade path".to_owned(),
+            })
+            .await
+            .expect("turn should run through the conversation facade");
+        assert_eq!(submitted.session_id, session_id);
+        assert_ne!(submitted.run_id, RunId::from_u128(0));
+        assert_eq!(submitted.message_count, 2);
+
+        let reopened = harness
+            .open_or_create_conversation_session(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+            )
+            .await
+            .expect("existing session should reopen through the conversation facade");
+        assert_eq!(reopened.message_count, 2);
+
+        let first_page = harness
+            .page_conversation_events(ConversationEventsPageRequest {
+                options: SessionOptions::new(&workspace).with_session_id(session_id),
+                after_event_id: None,
+                limit: 2,
+            })
+            .await
+            .expect("events should page through the conversation facade");
+        assert_eq!(first_page.events.len(), 2);
+        assert!(first_page.next_event_id.is_some());
+
+        let second_page = harness
+            .page_conversation_events(ConversationEventsPageRequest {
+                options: SessionOptions::new(&workspace).with_session_id(session_id),
+                after_event_id: first_page.next_event_id,
+                limit: 50,
+            })
+            .await
+            .expect("events should continue after the previous page");
+        assert!(
+            second_page
+                .events
+                .iter()
+                .any(|envelope| matches!(envelope.payload, Event::AssistantMessageCompleted(_))),
+            "paged events should include the completed assistant message"
+        );
+
+        let cancel_error = harness
+            .cancel_conversation_run(submitted.run_id)
+            .await
+            .expect_err("completed runs must not report a fake cancellation");
+        assert!(cancel_error.to_string().contains("not active"));
+    });
+}
+
+#[tokio::test]
+async fn conversation_facade_cancels_active_run_through_sdk_registry() {
+    let workspace = unique_workspace("sdk-conversation-active-cancel");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let session_id = SessionId::new();
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let provider = Arc::new(BlockingSkillListProvider::new(ToolUseId::new()));
+
+    let harness = Harness::builder()
+        .with_model_arc(provider.clone())
+        .with_store_arc(store.clone())
+        .with_sandbox(NoopSandbox::new())
+        .build()
+        .await
+        .expect("harness should build");
+    harness
+        .open_or_create_conversation_session(
+            SessionOptions::new(&workspace).with_session_id(session_id),
+        )
+        .await
+        .expect("session should open through the conversation facade");
+
+    let run_harness = harness.clone();
+    let run_workspace = workspace.clone();
+    let submitted = tokio::spawn(async move {
+        run_harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: SessionOptions::new(&run_workspace).with_session_id(session_id),
+                prompt: "cancel active facade run".to_owned(),
+            })
+            .await
+    });
+
+    provider.started.notified().await;
+    let events: Vec<_> = store
+        .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .expect("events should be readable")
+        .collect()
+        .await;
+    let run_id = events
+        .iter()
+        .find_map(|event| match event {
+            Event::RunStarted(started) => Some(started.run_id),
+            _ => None,
+        })
+        .expect("active run should have emitted RunStarted");
+
+    harness
+        .cancel_conversation_run(run_id)
+        .await
+        .expect("active run should cancel through the SDK facade");
+
+    provider.release.notify_one();
+    submitted
+        .await
+        .expect("submit task should join")
+        .expect("cancelled run should finish cleanly");
+}
+
+#[test]
+fn conversation_facade_rejects_tenant_policy_bypass_before_reading_events() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-tenant-boundary");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+
+        let permissive = Harness::builder()
+            .with_model(MockProvider::default())
+            .with_store_arc(store.clone())
+            .with_sandbox(NoopSandbox::new())
+            .with_tenant_policy(TenantPolicy {
+                allow_scoped_tenants: true,
+                ..TenantPolicy::default()
+            })
+            .build()
+            .await
+            .expect("permissive harness should build");
+        permissive
+            .create_session(
+                SessionOptions::new(&workspace)
+                    .with_tenant_id(TenantId::SHARED)
+                    .with_session_id(session_id),
+            )
+            .await
+            .expect("shared tenant session should be created");
+
+        let restricted = Harness::builder()
+            .with_model(MockProvider::default())
+            .with_store_arc(store)
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("restricted harness should build");
+
+        let error = restricted
+            .open_or_create_conversation_session(
+                SessionOptions::new(&workspace)
+                    .with_tenant_id(TenantId::SHARED)
+                    .with_session_id(session_id),
+            )
+            .await
+            .expect_err("restricted tenant policy must block open before event replay");
+        assert!(matches!(error, HarnessError::InvalidTenant(tenant) if tenant == TenantId::SHARED));
+
+        let error = restricted
+            .page_conversation_events(ConversationEventsPageRequest {
+                options: SessionOptions::new(&workspace)
+                    .with_tenant_id(TenantId::SHARED)
+                    .with_session_id(session_id),
+                after_event_id: None,
+                limit: 10,
+            })
+            .await
+            .expect_err("restricted tenant policy must block event paging");
+        assert!(matches!(error, HarnessError::InvalidTenant(tenant) if tenant == TenantId::SHARED));
+
+        let error = restricted
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: SessionOptions::new(&workspace)
+                    .with_tenant_id(TenantId::SHARED)
+                    .with_session_id(session_id),
+                prompt: "must not read shared tenant".to_owned(),
+            })
+            .await
+            .expect_err("restricted tenant policy must block submit before event replay");
+        assert!(matches!(error, HarnessError::InvalidTenant(tenant) if tenant == TenantId::SHARED));
+    });
+}
+
+#[test]
+fn conversation_facade_reopens_with_workspace_bound_options() {
+    block_on(async {
+        let workspace_root = unique_workspace("sdk-conversation-workspace-bound");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let session_id = SessionId::new();
+        let model = Arc::new(MockProvider::default().with_events(vec![
+            ModelStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: ContentDelta::Text("workspace answer".to_owned()),
+            },
+            ModelStreamEvent::MessageStop,
+        ]));
+        let harness = Harness::builder()
+            .with_model_arc(model.clone())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+        let workspace = harness
+            .create_workspace(
+                WorkspaceSpec::new(&workspace_root, "Conversation Workspace")
+                    .with_default_session_options(
+                        SessionOptions::default().with_model_id("workspace-model"),
+                    ),
+            )
+            .await
+            .expect("workspace should be registered");
+        let options = SessionOptions::default()
+            .with_workspace(workspace.id)
+            .with_session_id(session_id);
+
+        harness
+            .open_or_create_conversation_session(options.clone())
+            .await
+            .expect("workspace-bound conversation should open");
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: options.clone(),
+                prompt: "use workspace model".to_owned(),
+            })
+            .await
+            .expect("workspace-bound conversation should submit");
+
+        let requests = model.requests().await;
+        assert_eq!(requests[0].model_id, "workspace-model");
+
+        let mismatched = harness
+            .page_conversation_events(ConversationEventsPageRequest {
+                options: SessionOptions::new(&workspace_root).with_session_id(session_id),
+                after_event_id: None,
+                limit: 10,
+            })
+            .await
+            .expect_err("mismatched session options must not replay an existing conversation");
+        assert!(matches!(mismatched, HarnessError::PermissionDenied(_)));
+    });
+}
+
+#[test]
+fn conversation_facade_rejects_duplicate_session_created_with_mismatched_options() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-duplicate-created");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        let harness = Harness::builder()
+            .with_model(MockProvider::default())
+            .with_store_arc(store.clone())
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+        let options = SessionOptions::new(&workspace).with_session_id(session_id);
+
+        harness
+            .open_or_create_conversation_session(options.clone())
+            .await
+            .expect("session should be created");
+        store
+            .append(
+                TenantId::SINGLE,
+                session_id,
+                &[Event::SessionCreated(SessionCreatedEvent {
+                    session_id,
+                    tenant_id: TenantId::SINGLE,
+                    options_hash: [1; 32],
+                    snapshot_id: SnapshotId::from_u128(0),
+                    effective_config_hash: ConfigHash([1; 32]),
+                    created_at: harness_contracts::now(),
+                })],
+            )
+            .await
+            .expect("duplicate created event should append");
+
+        let error = harness
+            .page_conversation_events(ConversationEventsPageRequest {
+                options,
+                after_event_id: None,
+                limit: 10,
+            })
+            .await
+            .expect_err("mismatched duplicate SessionCreated must be rejected");
+        assert!(matches!(error, HarnessError::PermissionDenied(_)));
     });
 }
 

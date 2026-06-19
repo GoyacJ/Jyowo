@@ -189,16 +189,139 @@ Rules:
 Current Tauri commands:
 
 ```text
+cancel_run
+delete_mcp_server
+delete_memory_item
+export_memory_items
+export_support_bundle
+list_artifacts
+list_eval_cases
+get_context_snapshot
 get_app_info
+get_conversation
+get_memory_item
+get_replay_timeline
 harness_healthcheck
+list_activity
+list_conversations
+list_mcp_servers
+list_memory_items
+resolve_permission
+run_eval_case
+save_mcp_server
+save_provider_settings
+start_run
+update_memory_item
+validate_provider_settings
 ```
 
 Command payloads:
 
 ```rust
+cancel_run(run_id: String) -> Result<CancelRunResponse, CommandErrorPayload>
+delete_mcp_server(id: String) -> Result<DeleteMcpServerResponse, CommandErrorPayload>
+delete_memory_item(id: String) -> Result<DeleteMemoryItemResponse, CommandErrorPayload>
+export_memory_items() -> Result<ExportMemoryItemsResponse, CommandErrorPayload>
+export_support_bundle(
+  conversation_id: Option<String>,
+  run_id: Option<String>
+) -> Result<ExportSupportBundleResponse, CommandErrorPayload>
+list_artifacts() -> Result<ListArtifactsResponse, CommandErrorPayload>
+list_eval_cases() -> ListEvalCasesResponse
+get_context_snapshot(
+  conversation_id: Option<String>,
+  run_id: Option<String>
+) -> Result<GetContextSnapshotResponse, CommandErrorPayload>
 get_app_info() -> AppInfoPayload
+get_conversation(conversation_id: String) -> Result<GetConversationResponse, CommandErrorPayload>
+get_memory_item(id: String) -> Result<GetMemoryItemResponse, CommandErrorPayload>
+get_replay_timeline(
+  conversation_id: Option<String>,
+  run_id: Option<String>
+) -> Result<ReplayTimelineResponse, CommandErrorPayload>
 harness_healthcheck() -> HarnessHealthcheckPayload
+list_activity(
+  conversation_id: Option<String>,
+  run_id: Option<String>
+) -> Result<ListActivityResponse, CommandErrorPayload>
+list_conversations() -> ListConversationsResponse
+list_mcp_servers() -> Result<ListMcpServersResponse, CommandErrorPayload>
+list_memory_items() -> Result<ListMemoryItemsResponse, CommandErrorPayload>
+resolve_permission(
+  decision: PermissionDecision,
+  request_id: String
+) -> Result<ResolvePermissionResponse, CommandErrorPayload>
+run_eval_case(case_id: String) -> Result<RunEvalCaseResponse, CommandErrorPayload>
+save_mcp_server(
+  display_name: String,
+  id: String,
+  scope: String,
+  transport: McpServerTransportConfig
+) -> Result<SaveMcpServerResponse, CommandErrorPayload>
+save_provider_settings(
+  api_key: String,
+  model_id: String,
+  provider_id: String
+) -> Result<SaveProviderSettingsResponse, CommandErrorPayload>
+start_run(
+  context_references: Option<Vec<String>>,
+  conversation_id: String,
+  prompt: String
+) -> Result<StartRunResponse, CommandErrorPayload>
+update_memory_item(
+  content: String,
+  id: String
+) -> Result<UpdateMemoryItemResponse, CommandErrorPayload>
+validate_provider_settings(
+  model_id: String,
+  provider_id: String
+) -> Result<ValidateProviderSettingsResponse, CommandErrorPayload>
 ```
+
+`validate_provider_settings` validates payload shape, provider id, and model
+metadata support. It must not claim remote API availability unless the runtime
+provider implements a policy-governed network health check.
+
+`save_provider_settings` stores raw provider credentials only in the OS keyring.
+The returned `secret_ref` must include workspace scope and must not expose the
+raw workspace path.
+
+`list_mcp_servers`, `save_mcp_server`, and `delete_mcp_server` expose only
+sanitized MCP server management payloads. They must not serialize raw env
+values, authorization headers, bearer tokens, OAuth secrets, or tool-call
+arguments. Runtime tool exposure remains owned by the MCP registry and
+`PermissionBroker`; Tauri only lists summaries and persists structured config.
+
+`list_memory_items`, `get_memory_item`, `update_memory_item`,
+`delete_memory_item`, and `export_memory_items` must go through the SDK Memory
+facade. They must enforce tenant and actor visibility before returning,
+editing, deleting, or exporting records. Delete and export operations must emit
+audit events that contain hashes and counts, not raw memory content.
+`export_memory_items` writes the JSON export under `.jyowo/runtime/exports` and
+returns only the relative path, item count, format, and timestamp over IPC; raw
+export content must not cross into frontend state.
+
+`start_run` and `cancel_run` must go through the runtime conversation facade.
+`resolve_permission` must go through `PermissionBroker`. These shell commands
+return `RUNTIME_UNAVAILABLE` when those runtime paths are not available.
+
+`list_artifacts` must read through the runtime conversation projection, not a
+static demo payload. Until a dedicated artifact store exists, it may project
+redacted assistant outputs from conversation events as reviewable artifacts.
+Optional fields must be omitted instead of serialized as `null`.
+
+`get_context_snapshot` must read through the runtime conversation projection and
+workspace root. It may project current files, latest redacted assistant artifact,
+pending runtime decisions, and next actions until a dedicated context snapshot
+store exists. UI-visible workspace display fields must pass through Redactor
+before IPC. Runtime read failures must return a fixed safe error message over
+IPC.
+
+`get_replay_timeline` and `export_support_bundle` must read through the Replay
+and Journal projection path after Redactor has run. They require a conversation
+scope and may optionally narrow by run id. Support bundle export writes under
+`.jyowo/runtime/exports` and returns only redacted file metadata, counts, and
+relative paths over IPC.
 
 Forbidden:
 

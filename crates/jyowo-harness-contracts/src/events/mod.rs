@@ -117,6 +117,7 @@ pub enum Event {
     TeamTurnCompleted(TeamTurnCompletedEvent),
     TeamTerminated(TeamTerminatedEvent),
     MemoryUpserted(MemoryUpsertedEvent),
+    MemoryExported(MemoryExportedEvent),
     MemoryRecalled(MemoryRecalledEvent),
     MemoryRecallDegraded(MemoryRecallDegradedEvent),
     MemoryRecallSkipped(MemoryRecallSkippedEvent),

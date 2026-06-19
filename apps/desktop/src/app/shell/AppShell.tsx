@@ -1,63 +1,139 @@
+import { MoreHorizontal, PanelRight, Share } from 'lucide-react'
 import type { ReactNode } from 'react'
-
-const primaryNavigationItems = [
-  'Workspaces',
-  'Runs',
-  'Tools',
-  'MCP',
-  'Memory',
-  'Evals',
-  'Models',
-  'Settings',
-]
-const bottomPanelItems = ['Terminal', 'Logs', 'Problems', 'Event Stream']
+import { ActivityRail } from '@/features/activity/ActivityRail'
+import { ReplayTimeline } from '@/features/activity/ReplayTimeline'
+import { RunEventDetails } from '@/features/activity/RunEventDetails'
+import { SupportBundleExport } from '@/features/activity/SupportBundleExport'
+import { UsageSummary } from '@/features/activity/UsageSummary'
+import { useActivity } from '@/features/activity/use-activity'
+import { ContextPanel } from '@/features/context/ContextPanel'
+import { useContextSnapshot } from '@/features/context/use-context-snapshot'
+import { useConversation } from '@/features/conversation/use-conversation'
+import { SidebarNav } from '@/features/workspace/SidebarNav'
+import { useUiStore } from '@/shared/state/ui-store'
+import { exportSupportBundle } from '@/shared/tauri/commands'
+import { useCommandClient } from '@/shared/tauri/react'
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const activityRailCollapsed = useUiStore((state) => state.activityRailCollapsed)
+  const activityRailExpanded = useUiStore((state) => state.activityRailExpanded)
+  const activeRunConversationId = useUiStore((state) => state.activeRunConversationId)
+  const activeRunId = useUiStore((state) => state.activeRunId)
+  const setActivityRailCollapsed = useUiStore((state) => state.setActivityRailCollapsed)
+  const setActivityRailExpanded = useUiStore((state) => state.setActivityRailExpanded)
+  const commandClient = useCommandClient()
+  const conversation = useConversation({ includeDetail: false })
+  const selectedConversationId = conversation.selectedConversationId
+  const activityRequest =
+    activeRunId && selectedConversationId && activeRunConversationId === selectedConversationId
+      ? { conversationId: selectedConversationId, runId: activeRunId }
+      : selectedConversationId
+        ? { conversationId: selectedConversationId }
+        : {}
+  const contextRequest = selectedConversationId ? { conversationId: selectedConversationId } : {}
+  const activity = useActivity(activityRequest)
+  const contextSnapshot = useContextSnapshot(contextRequest)
+  const activityRailHeight = activityRailCollapsed
+    ? '32px'
+    : activityRailExpanded
+      ? '360px'
+      : '44px'
+  const activityRail = (
+    <ActivityRail
+      collapsed={activityRailCollapsed}
+      currentRun={activity.currentRun}
+      errorMessage={activity.error ? getErrorMessage(activity.error) : undefined}
+      expanded={activityRailExpanded}
+      items={activity.items}
+      loading={activity.isLoading}
+      onCollapse={() => {
+        setActivityRailCollapsed(true)
+        setActivityRailExpanded(false)
+      }}
+      onExpand={() => {
+        setActivityRailCollapsed(false)
+      }}
+      onViewAll={() => {
+        setActivityRailCollapsed(false)
+        setActivityRailExpanded(true)
+      }}
+    />
+  )
+
   return (
-    <div className="grid min-h-screen min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] bg-background text-foreground">
-      <header className="border-border border-b bg-surface">
-        <div className="flex h-12 items-center justify-between gap-4 px-4">
-          <div className="flex items-center gap-4">
-            <div className="font-semibold tracking-normal">Jyowo</div>
-            <div className="text-muted-foreground text-sm">Workspace</div>
-          </div>
-          <div className="flex items-center gap-4 text-muted-foreground text-sm">
-            <span>Model</span>
-            <span>Run idle</span>
-            <span>tauri2-react</span>
-          </div>
-        </div>
-      </header>
-      <div className="grid min-h-0 grid-cols-[220px_minmax(0,1fr)_320px]">
-        <nav aria-label="Primary" className="min-h-0 border-border border-r bg-surface">
-          <ul className="flex flex-col gap-1 p-3">
-            {primaryNavigationItems.map((item) => (
-              <li key={item}>
-                <button
-                  className="w-full rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-                  type="button"
-                >
-                  {item}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </nav>
-        <main className="min-w-0 overflow-auto px-6 py-6">{children}</main>
-        <aside aria-label="Inspector" className="min-h-0 border-border border-l bg-surface">
-          <div className="border-border border-b px-4 py-3 font-medium text-sm">Inspector</div>
-          <div className="p-4 text-muted-foreground text-sm">No event selected</div>
-        </aside>
-      </div>
-      <section aria-label="Bottom panel" className="border-border border-t bg-surface">
-        <div className="flex h-10 items-center gap-4 px-4 text-muted-foreground text-sm">
-          {bottomPanelItems.map((item) => (
-            <button className="hover:text-foreground" key={item} type="button">
-              {item}
+    <div
+      className="grid h-screen min-h-0 min-w-0 overflow-hidden bg-background text-foreground"
+      style={{ gridTemplateRows: `minmax(0, 1fr) ${activityRailHeight}` }}
+    >
+      <div className="grid min-h-0 grid-cols-[268px_minmax(0,1fr)_320px]">
+        <SidebarNav />
+        <div className="grid min-h-0 grid-rows-[56px_minmax(0,1fr)]">
+          <header className="flex items-center justify-end gap-2 px-6">
+            <button
+              aria-label="More actions"
+              className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+              disabled
+              type="button"
+            >
+              <MoreHorizontal className="size-4" />
             </button>
-          ))}
+            <button
+              className="rounded-md border border-border bg-surface px-3 py-1.5 text-sm"
+              disabled
+              type="button"
+            >
+              <Share data-icon="inline-start" className="size-4" />
+              Share
+            </button>
+            <button
+              aria-label="Toggle layout"
+              className="rounded-md border border-border bg-surface p-2"
+              disabled
+              type="button"
+            >
+              <PanelRight className="size-4" />
+            </button>
+          </header>
+          <main className="min-h-0 min-w-0 overflow-hidden px-8 pb-8 xl:px-16">{children}</main>
         </div>
-      </section>
+        <ContextPanel
+          context={contextSnapshot.context}
+          errorMessage={contextSnapshot.error ? getErrorMessage(contextSnapshot.error) : undefined}
+          loading={contextSnapshot.isLoading}
+        />
+      </div>
+      {activityRailExpanded ? (
+        <div className="grid min-h-0 grid-rows-[44px_minmax(0,1fr)] bg-background">
+          {activityRail}
+          <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_minmax(320px,420px)] gap-6 overflow-auto border-border border-t px-6 py-4">
+            {activity.activeDetails ? (
+              <RunEventDetails
+                event={activity.activeDetails}
+                onApprovePermission={activity.approvePermission}
+                onDenyPermission={activity.denyPermission}
+                resolvingPermissionId={activity.resolvingPermissionId}
+              />
+            ) : (
+              <section aria-label="Run event details" />
+            )}
+            <div className="space-y-6">
+              <UsageSummary unavailable={!activity.usageSummary} usage={activity.usageSummary} />
+              <ReplayTimeline events={activity.events} replayed />
+              {activityRequest.conversationId ? (
+                <SupportBundleExport
+                  onExport={() => exportSupportBundle(activityRequest, commandClient)}
+                />
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : (
+        activityRail
+      )}
     </div>
   )
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
 }

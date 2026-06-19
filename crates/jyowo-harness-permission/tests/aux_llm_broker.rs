@@ -156,6 +156,7 @@ fn permission_context(mode: PermissionMode) -> PermissionContext {
         previous_mode: None,
         session_id: harness_contracts::SessionId::new(),
         tenant_id: TenantId::SINGLE,
+        run_id: None,
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::AskUser,

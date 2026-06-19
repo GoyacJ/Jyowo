@@ -357,14 +357,225 @@ harness_healthcheck(): {
   status: 'available'
   sdkCrate: 'jyowo_harness_sdk'
 }
+
+list_conversations(): {
+  conversations: Array<{
+    id: string
+    lastMessagePreview?: string
+    title: string
+    updatedAt: string
+  }>
+}
+
+get_conversation(conversationId: string): {
+  conversation: {
+    id: string
+    messages: Array<{
+      author: 'assistant' | 'user'
+      body: string
+      id: string
+      timestamp: string
+    }>
+    title: string
+    updatedAt: string
+  }
+}
+
+start_run(request: {
+  contextReferences?: string[]
+  conversationId: string
+  prompt: string
+}): {
+  runId: string
+  status: 'started'
+}
+
+cancel_run(runId: string): {
+  runId: string
+  status: 'cancelled'
+}
+
+resolve_permission(request: {
+  decision: 'approve' | 'deny'
+  requestId: string
+}): {
+  decision: 'approve' | 'deny'
+  requestId: string
+  status: 'resolved'
+}
+
+list_activity(request: {
+  conversationId: string
+  runId?: string
+}): {
+  events: RunEvent[]
+}
+
+get_replay_timeline(request: {
+  conversationId: string
+  runId?: string
+}): {
+  events: RunEvent[]
+  replayed: true
+}
+
+export_support_bundle(request: {
+  conversationId: string
+  runId?: string
+}): {
+  bundlePath: string
+  eventCount: number
+  exportedAt: string
+  jsonlPath: string
+  markdownPath: string
+  redacted: true
+}
+
+list_artifacts(): {
+  artifacts: Array<{
+    actionLabel: string
+    description: string
+    id: string
+    kind: string
+    preview?: string
+    sourceMessageId?: string
+    sourceRunId: string
+    status: 'failed' | 'pending' | 'ready' | 'running'
+    title: string
+  }>
+}
+
+list_eval_cases(): {
+  cases: Array<{
+    id: string
+    lastRun?: {
+      completedAt?: string
+      failed: number
+      passed: number
+      status: 'failed' | 'passed' | 'running' | 'unavailable'
+    }
+    title: string
+  }>
+}
+
+run_eval_case(caseId: string): {
+  case: {
+    id: string
+    lastRun: {
+      completedAt?: string
+      failed: number
+      passed: number
+      status: 'failed' | 'passed' | 'running' | 'unavailable'
+    }
+    title: string
+  }
+  status: 'completed'
+}
+
+get_context_snapshot(request: {
+  conversationId?: string
+  runId?: string
+}): {
+  activeArtifact: string | null
+  decisions: Array<{ detail: string; title: string }>
+  files: Array<{ label: string; state?: 'missing' | 'ready' | 'stale' }>
+  nextActions: string[]
+  path: string
+  project: string
+}
+
+validate_provider_settings(request: {
+  modelId: string
+  providerId: string
+}): {
+  modelId: string
+  providerId: string
+  status: 'accepted'
+}
+
+save_provider_settings(request: {
+  apiKey: string
+  modelId: string
+  providerId: string
+}): {
+  modelId: string
+  providerId: string
+  secretRef: string
+  status: 'saved'
+}
+
+list_mcp_servers(): {
+  servers: Array<{
+    displayName: string
+    exposedToolCount: number
+    id: string
+    lastError?: string
+    origin: 'managed' | 'plugin' | 'policy' | 'user' | 'workspace'
+    scope: 'agent' | 'global' | 'session'
+    status: 'closed' | 'configured' | 'connecting' | 'failed' | 'ready' | 'reconnecting'
+    transport: 'http' | 'inProcess' | 'sse' | 'stdio' | 'websocket'
+  }>
+}
+
+save_mcp_server(request: {
+  displayName: string
+  id: string
+  scope: 'agent' | 'global' | 'session'
+  transport: {
+    args: string[]
+    command: string
+    kind: 'stdio'
+  }
+}): {
+  server: McpServerSummary
+}
+
+delete_mcp_server(id: string): {
+  id: string
+  status: 'deleted'
+}
+
+list_memory_items(): {
+  items: MemoryItemSummary[]
+}
+
+get_memory_item(id: string): {
+  item: MemoryItem
+}
+
+update_memory_item(request: {
+  content: string
+  id: string
+}): {
+  item: MemoryItem
+}
+
+delete_memory_item(id: string): {
+  id: string
+  status: 'deleted'
+}
+
+export_memory_items(): {
+  exportedAt: string
+  format: 'json'
+  itemCount: number
+  path: string
+}
 ```
 
 Command naming:
 
 - Rust commands use `snake_case`.
 - Frontend wrapper functions use `camelCase`.
-- Command names should be domain verbs: `start_run`, `cancel_run`, `approve_permission`.
+- Command names should be domain verbs: `start_run`, `cancel_run`, `resolve_permission`.
 - Avoid generic names such as `execute`, `handle`, `send`, and `process`.
+
+Memory IPC payloads must be Zod validated in `shared/tauri`, loaded through
+TanStack Query, and rendered with sanitized error text. Components must not
+render backend error bodies or raw audit event payloads. Memory export writes a
+JSON file under `.jyowo/runtime/exports` and returns only the relative `path`,
+`itemCount`, `format`, and `exportedAt`; export content must not be stored in
+frontend state or rendered into the DOM.
 
 Streaming:
 
@@ -378,6 +589,7 @@ IPC error shape:
 type CommandErrorCode =
   | 'IPC_UNAVAILABLE'
   | 'INVALID_PAYLOAD'
+  | 'RUNTIME_UNAVAILABLE'
   | 'PERMISSION_DENIED'
   | 'RUN_NOT_FOUND'
   | 'MCP_CONNECTION_FAILED'

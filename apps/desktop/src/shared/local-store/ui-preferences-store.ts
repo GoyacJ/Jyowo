@@ -8,12 +8,16 @@ export type UiPreferences = {
   theme: UiThemePreference
   sidebarCollapsed: boolean
   chatComposerHeight: number
+  contextPanelWidth: number
+  lastSelectedWorkspaceRef: string | null
 }
 
 const UI_PREFERENCES_DEFAULTS: UiPreferences = {
-  theme: 'system',
+  theme: 'light',
   sidebarCollapsed: false,
   chatComposerHeight: 160,
+  contextPanelWidth: 320,
+  lastSelectedWorkspaceRef: null,
 }
 
 let storePromise: Promise<Store> | undefined
@@ -30,11 +34,14 @@ export function loadUiPreferencesStore() {
 
 export async function readUiPreferences(): Promise<UiPreferences> {
   const store = await loadUiPreferencesStore()
-  const [theme, sidebarCollapsed, chatComposerHeight] = await Promise.all([
-    store.get<UiThemePreference>('theme'),
-    store.get<boolean>('sidebarCollapsed'),
-    store.get<number>('chatComposerHeight'),
-  ])
+  const [theme, sidebarCollapsed, chatComposerHeight, contextPanelWidth, lastSelectedWorkspaceRef] =
+    await Promise.all([
+      store.get<UiThemePreference>('theme'),
+      store.get<boolean>('sidebarCollapsed'),
+      store.get<number>('chatComposerHeight'),
+      store.get<number>('contextPanelWidth'),
+      store.get<string | null>('lastSelectedWorkspaceRef'),
+    ])
 
   return {
     theme: isUiThemePreference(theme) ? theme : UI_PREFERENCES_DEFAULTS.theme,
@@ -46,6 +53,14 @@ export async function readUiPreferences(): Promise<UiPreferences> {
       typeof chatComposerHeight === 'number'
         ? chatComposerHeight
         : UI_PREFERENCES_DEFAULTS.chatComposerHeight,
+    contextPanelWidth:
+      typeof contextPanelWidth === 'number'
+        ? contextPanelWidth
+        : UI_PREFERENCES_DEFAULTS.contextPanelWidth,
+    lastSelectedWorkspaceRef:
+      typeof lastSelectedWorkspaceRef === 'string' || lastSelectedWorkspaceRef === null
+        ? lastSelectedWorkspaceRef
+        : UI_PREFERENCES_DEFAULTS.lastSelectedWorkspaceRef,
   }
 }
 

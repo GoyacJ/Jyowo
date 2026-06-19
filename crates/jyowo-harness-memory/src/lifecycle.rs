@@ -12,6 +12,11 @@ use crate::MemoryStore;
 #[async_trait]
 pub trait MemoryEventSink: Send + Sync + 'static {
     async fn emit(&self, event: Event);
+
+    async fn emit_required(&self, event: Event) -> Result<(), MemoryError> {
+        self.emit(event).await;
+        Ok(())
+    }
 }
 
 pub trait MemoryMetricsSink: Send + Sync + 'static {

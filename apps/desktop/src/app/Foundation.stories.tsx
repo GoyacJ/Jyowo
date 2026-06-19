@@ -67,6 +67,8 @@ const uiPreferencesSmoke: UiPreferences = {
   theme: 'system',
   sidebarCollapsed: false,
   chatComposerHeight: 160,
+  contextPanelWidth: 320,
+  lastSelectedWorkspaceRef: 'local:current',
 }
 const uiThemeSmoke: UiThemePreference = uiPreferencesSmoke.theme
 const uiStoreApiNames = [

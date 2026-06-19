@@ -94,6 +94,7 @@ fn permission_context() -> PermissionContext {
         previous_mode: None,
         session_id: SessionId::new(),
         tenant_id: TenantId::SHARED,
+        run_id: None,
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::AskUser,

@@ -1,8 +1,9 @@
 pub use crate::ext::*;
 pub use crate::{
-    BootstrapFileSpec, Harness, HarnessBuilder, HarnessError, HarnessOptions, McpConfig, Session,
-    SessionHandle, SessionOptions, TenantPolicy, Workspace, WorkspaceBootstrap,
-    WorkspaceCreateRequest, WorkspaceSpec,
+    BootstrapFileSpec, ConversationEventsPage, ConversationEventsPageRequest, ConversationSession,
+    ConversationTurnReceipt, ConversationTurnRequest, Harness, HarnessBuilder, HarnessError,
+    HarnessOptions, McpConfig, Session, SessionHandle, SessionOptions, TenantPolicy, Workspace,
+    WorkspaceBootstrap, WorkspaceCreateRequest, WorkspaceSpec,
 };
 pub use harness_contracts::{
     Decision, Event, MessageId, PermissionMode, RunId, SessionId, TenantId, ToolUseId, TurnInput,

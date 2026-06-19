@@ -29,9 +29,12 @@ pub mod testing;
 
 pub use builder::{HarnessBuilder, Set, Unset};
 pub use error::HarnessError;
+#[cfg(feature = "stream-permission")]
+pub use harness::StreamPermissionRuntime;
 pub use harness::{
-    Harness, HarnessOptions, HarnessSamplingProvider, McpConfig, TenantPolicy,
-    WorkspaceCreateRequest,
+    ConversationEventsPage, ConversationEventsPageRequest, ConversationSession,
+    ConversationTurnReceipt, ConversationTurnRequest, Harness, HarnessOptions,
+    HarnessSamplingProvider, McpConfig, TenantPolicy, WorkspaceCreateRequest,
 };
 pub use harness_journal::{
     AuditFilter, AuditOrder, AuditPage, AuditQuery, AuditRecord, AuditScope,

@@ -201,7 +201,7 @@ fn harness_builder_injects_model_middlewares_into_session_engine() {
 
         let requests = model.requests().await;
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].extra, json!({ "middleware": "sdk" }));
+        assert_eq!(requests[0].extra["middleware"], json!("sdk"));
         assert_eq!(
             calls.lock().clone(),
             vec!["before:sdk".to_owned(), "end:sdk".to_owned()]
@@ -294,6 +294,48 @@ fn harness_resolves_stream_permission_requests() {
             .await
             .expect("permission request should resolve through facade");
         assert_eq!(decision_task.await.unwrap(), Decision::AllowOnce);
+    });
+}
+
+#[test]
+fn stream_permission_runtime_does_not_backpressure_resolved_requests() {
+    tokio_runtime().block_on(async {
+        let runtime = jyowo_harness_sdk::StreamPermissionRuntime::new(StreamBrokerConfig {
+            default_timeout: Some(Duration::from_secs(5)),
+            heartbeat_interval: None,
+            max_pending: 1,
+        });
+        let broker = runtime.broker();
+
+        let first = permission_request();
+        let first_request_id = first.request_id;
+        let first_task =
+            tokio::spawn(async move { broker.decide(first, permission_context()).await });
+        wait_for_pending_permission(&runtime, first_request_id).await;
+        runtime
+            .resolve_permission(first_request_id, Decision::AllowOnce)
+            .await
+            .expect("first permission should resolve");
+        assert_eq!(first_task.await.unwrap(), Decision::AllowOnce);
+
+        let broker = runtime.broker();
+        let second = permission_request();
+        let second_request_id = second.request_id;
+        let second_task =
+            tokio::spawn(async move { broker.decide(second, permission_context()).await });
+        wait_for_pending_permission(&runtime, second_request_id).await;
+        runtime
+            .resolve_permission(second_request_id, Decision::DenyOnce)
+            .await
+            .expect("second permission should resolve");
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), second_task)
+                .await
+                .expect("stale emitted requests must not block new decisions")
+                .unwrap(),
+            Decision::DenyOnce
+        );
     });
 }
 
@@ -572,6 +614,7 @@ fn permission_context() -> PermissionContext {
         previous_mode: None,
         session_id: SessionId::new(),
         tenant_id: TenantId::SINGLE,
+        run_id: None,
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::AskUser,
@@ -582,6 +625,27 @@ fn permission_context() -> PermissionContext {
         }),
         hook_overrides: Vec::new(),
     }
+}
+
+async fn wait_for_pending_permission(
+    runtime: &jyowo_harness_sdk::StreamPermissionRuntime,
+    request_id: RequestId,
+) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if runtime
+                .pending_requests()
+                .iter()
+                .any(|request| request.request_id == request_id)
+            {
+                return;
+            }
+
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("permission request should become pending");
 }
 
 #[derive(Default)]

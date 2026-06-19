@@ -1,20 +1,21 @@
 pub use harness_contracts::{
-    now, BlobError, BlobMeta, BlobRetention, BlobStore, BudgetMetric, ContentHash,
+    now, AgentId, BlobError, BlobMeta, BlobRetention, BlobStore, BudgetMetric, ContentHash,
     ContextPatchLifecycle, ContextPatchRequest, ContextPatchSource,
     CredentialPoolSharedAcrossTenantsEvent, Decision, DecisionId, DecisionScope, DeferPolicy,
-    EndReason, Event, EventId, ExecuteCodeStepInvokedEvent, ForkReason, HookEventKind,
-    HookOutcomeSummary, HookTriggeredEvent, InteractivityLevel, JournalError, JournalOffset,
-    ManifestOriginRef, McpServerId, McpServerSource, MemoryThreatDetectedEvent, Message,
-    MessageContent, MessagePart, MessageRole, ModelError, ModelRef, OverflowAction,
-    PermissionError, PermissionMode, PermissionRequestSuppressedEvent, PermissionSubject,
-    PluginCapabilitiesSummary, PluginId, PluginLifecycleStateDiscriminant, PluginLoadedEvent,
-    PricingSnapshotId, ProviderRestriction, RedactPatternKind, RedactPatternSet, RedactRules,
-    RedactScope, Redactor, RequestId, ResultBudget, RuleSource, RunId, SandboxError, SessionId,
-    Severity, SkillThreatDetectedEvent, StopReason, SubagentId, SubagentPermissionForwardedEvent,
-    SuppressionReason, TeamCreatedEvent, TeamId, TenantId, ThreatAction, ThreatCategory,
-    ThreatDirection, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolSearchMode, ToolUseCompletedEvent, ToolUseId, TopologyKind, TrustLevel,
-    UsageAccumulatedEvent, UsageSnapshot, WorkspaceId,
+    EndReason, Event, EventId, ExecuteCodeStepInvokedEvent, FallbackPolicy, ForkReason,
+    HookEventKind, HookOutcomeSummary, HookTriggeredEvent, InteractivityLevel, JournalError,
+    JournalOffset, ManifestOriginRef, McpServerId, McpServerSource, MemoryActor,
+    MemoryExportedEvent, MemoryId, MemoryKind, MemorySource, MemoryThreatDetectedEvent,
+    MemoryVisibility, Message, MessageContent, MessagePart, MessageRole, ModelError, ModelRef,
+    OverflowAction, PermissionError, PermissionMode, PermissionRequestSuppressedEvent,
+    PermissionSubject, PluginCapabilitiesSummary, PluginId, PluginLifecycleStateDiscriminant,
+    PluginLoadedEvent, PricingSnapshotId, ProviderRestriction, RedactPatternKind, RedactPatternSet,
+    RedactRules, RedactScope, Redactor, RequestId, ResultBudget, RuleSource, RunId, SandboxError,
+    SessionId, Severity, SkillThreatDetectedEvent, StopReason, SubagentId,
+    SubagentPermissionForwardedEvent, SuppressionReason, TeamCreatedEvent, TeamId, TenantId,
+    ThreatAction, ThreatCategory, ThreatDirection, ToolDescriptor, ToolError, ToolGroup,
+    ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseCompletedEvent, ToolUseId,
+    TopologyKind, TrustLevel, UsageAccumulatedEvent, UsageSnapshot, WorkspaceId,
 };
 pub use harness_hook::{HookEvent, HookHandler, HookOutcome, HookRegistry};
 pub use harness_journal::{
@@ -31,11 +32,13 @@ pub use harness_mcp::StdioTransport;
 pub use harness_mcp::WebsocketTransport;
 pub use harness_mcp::{
     ElicitationHandler, McpClient, McpClientAuth, McpConnection, McpConnectionState, McpError,
-    McpPrompt, McpRegistry, McpResource, McpServerScope, McpServerSpec, McpTimeouts,
+    McpEventSink, McpPrompt, McpRegistry, McpResource, McpServerScope, McpServerSpec, McpTimeouts,
     McpToolAnnotations, McpToolDescriptor, McpToolResult, McpTransport, StdioEnv, StdioPolicy,
     StreamElicitationHandler, TransportChoice,
 };
-pub use harness_memory::{MemoryLifecycle, MemoryProvider, MemoryStore};
+pub use harness_memory::{
+    MemoryLifecycle, MemoryMetadata, MemoryProvider, MemoryRecord, MemoryStore, MemorySummary,
+};
 pub use harness_model::{
     ApiMode, AuxModelProvider, BillingMode, ContentDelta, CredentialError, CredentialKey,
     CredentialMetadata, CredentialPool, CredentialPoolAuditSink, CredentialSource, CredentialValue,
@@ -49,7 +52,7 @@ pub use harness_permission::{
     PersistedDecision, RuleAction, RuleProvider, RuleSnapshot, RulesUpdated,
 };
 #[cfg(feature = "stream-permission")]
-pub use harness_permission::{ResolverHandle, StreamBrokerConfig};
+pub use harness_permission::{PendingPermissionRequest, ResolverHandle, StreamBrokerConfig};
 pub use harness_plugin::{Plugin, PluginManifest, PluginRegistry};
 pub use harness_sandbox::{
     ExecContext, ExecSpec, ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile,

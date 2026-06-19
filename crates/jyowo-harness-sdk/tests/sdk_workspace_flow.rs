@@ -69,7 +69,10 @@ async fn sdk_workspace_flow_binds_session_loads_bootstrap_and_merges_defaults() 
         .next()
         .expect("model should receive one request");
     assert_eq!(request.model_id, "workspace-model");
-    assert_eq!(request.extra, json!({ "source": "workspace" }));
+    assert_eq!(request.extra["source"], json!("workspace"));
+    assert!(request.extra["relay_logical_call_key"]
+        .as_str()
+        .is_some_and(|value| value.starts_with("engine_turn:")));
     let system = request.system.as_deref().unwrap_or_default();
     assert!(system.contains("workspace bootstrap"));
     assert!(system.contains("session addendum"));

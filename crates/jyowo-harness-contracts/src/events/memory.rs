@@ -21,6 +21,17 @@ pub struct MemoryUpsertedEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryExportedEvent {
+    pub session_id: SessionId,
+    pub tenant_id: TenantId,
+    pub provider_id: String,
+    pub item_count: u32,
+    pub content_hashes: Vec<ContentHash>,
+    pub bytes_exported: u64,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryRecalledEvent {
     pub session_id: SessionId,
     pub run_id: RunId,

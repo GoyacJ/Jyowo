@@ -17,15 +17,21 @@ doctest = false
 tauri-build = { workspace = true, features = [] }
 
 [dependencies]
-jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false }
+blake3 = { workspace = true }
+jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "jsonl-store", "local-sandbox", "mcp-stdio", "memory-external-slot", "provider-anthropic", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-local-llama", "provider-minimax", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "observability-redactor"] }
+keyring = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 tauri = { workspace = true, features = [] }
 tauri-plugin-store = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
+futures = { workspace = true }
+jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "jsonl-store", "local-sandbox", "mcp-stdio", "memory-external-slot", "provider-anthropic", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-local-llama", "provider-minimax", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "observability-redactor", "testing"] }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true

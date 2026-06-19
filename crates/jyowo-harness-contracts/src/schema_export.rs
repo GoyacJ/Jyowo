@@ -264,6 +264,7 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "team_turn_completed", TeamTurnCompletedEvent);
     insert_schema!(schemas, "team_terminated", TeamTerminatedEvent);
     insert_schema!(schemas, "memory_upserted", MemoryUpsertedEvent);
+    insert_schema!(schemas, "memory_exported", MemoryExportedEvent);
     insert_schema!(schemas, "memory_recalled", MemoryRecalledEvent);
     insert_schema!(schemas, "memory_recall_degraded", MemoryRecallDegradedEvent);
     insert_schema!(schemas, "memory_recall_skipped", MemoryRecallSkippedEvent);

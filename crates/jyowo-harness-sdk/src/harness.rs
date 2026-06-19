@@ -1,9 +1,11 @@
 #[cfg(feature = "tool-search")]
 use std::collections::BTreeSet;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+#[cfg(feature = "stream-permission")]
+use std::thread;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -18,30 +20,35 @@ use chrono::Utc;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use harness_context::ContextEngine;
+#[cfg(feature = "mcp-server-adapter")]
+use harness_contracts::BlobRef;
 #[cfg(feature = "tool-search")]
 use harness_contracts::CacheImpact;
 #[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
 use harness_contracts::MemdirFileTag;
 #[cfg(not(feature = "observability-redactor"))]
 use harness_contracts::NoopRedactor;
+#[cfg(feature = "stream-permission")]
+use harness_contracts::RequestId;
 #[cfg(feature = "agents-team")]
 use harness_contracts::{
     BlobMeta, BlobRetention, TeamCreatedEvent, TeamMemberJoinedEvent, TopologyKind,
 };
 use harness_contracts::{
     BlobReaderCapAdapter, BlobStore, CapabilityRegistry, ContextPatchRequest, ContextPatchSinkCap,
-    Decision, Event, HarnessError, HookEventKind, InteractivityLevel, JournalOffset,
+    Decision, Event, EventId, HarnessError, HookEventKind, InteractivityLevel, JournalOffset,
     ManifestOriginRef, ManifestValidationFailedEvent, McpServerId, Message, MessageContent,
     MessageId, MessagePart, MessageRole, PermissionError, PermissionMode,
     PluginCapabilitiesSummary, PluginLifecycleStateDiscriminant, PluginLoadedEvent,
     PluginRejectedEvent, RedactPatternSet, RedactRules, RedactScope, Redactor, RejectionReason,
-    RunId, SessionError, TenantId, ToolCapability, ToolSearchMode, TrustLevel, TurnInput,
+    RunId, SessionError, SessionId, TenantId, ToolCapability, ToolSearchMode, TrustLevel,
+    TurnInput,
 };
-#[cfg(feature = "mcp-server-adapter")]
-use harness_contracts::{BlobRef, EventId, RequestId};
 #[cfg(feature = "memory-builtin")]
 use harness_contracts::{MemdirOverflowEvent, OverflowStrategy};
-use harness_engine::{Engine, EngineRunner, RunContext, SessionHandle};
+use harness_engine::{
+    CancellationToken, Engine, EngineRunner, InterruptCause, RunContext, SessionHandle,
+};
 #[cfg(feature = "steering-queue")]
 use harness_engine::{SteeringDrain, SteeringMerge};
 use harness_hook::{
@@ -75,21 +82,19 @@ use harness_model::{
 #[cfg(feature = "observability-redactor")]
 use harness_observability::DefaultRedactor;
 use harness_observability::{AttributeValue, Observer, SpanAttributes, SpanStatus, Tracer};
-#[cfg(feature = "stream-permission")]
-use harness_permission::ResolverHandle;
 use harness_permission::{
     DecisionPersistence, PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
     RuleProvider,
 };
+#[cfg(feature = "stream-permission")]
+use harness_permission::{PendingPermissionRequest, ResolverHandle};
 use harness_plugin::{
     ManifestLoaderError, ManifestOrigin, ManifestRecord, PluginCapabilityRegistries, PluginError,
 };
 use harness_sandbox::SandboxBackend;
-#[cfg(feature = "mcp-server-adapter")]
-use harness_session::SessionProjection;
 use harness_session::{
-    Session, SessionOptions, SessionTurnContext, SessionTurnRunner, SkillReloadCap, Workspace,
-    WorkspaceRegistry, WorkspaceSpec,
+    session_options_hash, Session, SessionOptions, SessionProjection, SessionTurnContext,
+    SessionTurnRunner, SkillReloadCap, Workspace, WorkspaceRegistry, WorkspaceSpec,
 };
 use harness_skill::{
     BuiltinHookKind, SkillHookBinding, SkillHookTransport, SkillLoader, SkillMetricsSink,
@@ -220,6 +225,103 @@ pub struct Harness {
     inner: Arc<HarnessInner>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationSession {
+    pub tenant_id: TenantId,
+    pub session_id: SessionId,
+    pub message_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationTurnRequest {
+    pub options: SessionOptions,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationTurnReceipt {
+    pub tenant_id: TenantId,
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub message_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationEventsPageRequest {
+    pub options: SessionOptions,
+    pub after_event_id: Option<EventId>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationEventsPage {
+    pub events: Vec<EventEnvelope>,
+    pub next_event_id: Option<EventId>,
+}
+
+#[cfg(feature = "stream-permission")]
+pub struct StreamPermissionRuntime {
+    permission_broker: Arc<dyn PermissionBroker>,
+    resolver: ResolverHandle,
+}
+
+#[cfg(feature = "stream-permission")]
+impl StreamPermissionRuntime {
+    #[must_use]
+    pub fn new(config: harness_permission::StreamBrokerConfig) -> Self {
+        let (broker, mut receiver, resolver) = harness_permission::StreamBasedBroker::new(config);
+
+        thread::spawn(move || while receiver.blocking_recv().is_some() {});
+
+        Self {
+            permission_broker: Arc::new(broker),
+            resolver,
+        }
+    }
+
+    #[must_use]
+    pub fn broker(&self) -> Arc<dyn PermissionBroker> {
+        Arc::clone(&self.permission_broker)
+    }
+
+    #[must_use]
+    pub fn resolver_handle(&self) -> ResolverHandle {
+        self.resolver.clone()
+    }
+
+    #[must_use]
+    pub fn pending_requests(&self) -> Vec<PermissionRequest> {
+        self.resolver.pending_requests()
+    }
+
+    #[must_use]
+    pub fn pending_permission_requests(&self) -> Vec<PendingPermissionRequest> {
+        self.resolver.pending_permission_requests()
+    }
+
+    pub async fn resolve_permission(
+        &self,
+        request_id: RequestId,
+        decision: Decision,
+    ) -> Result<(), HarnessError> {
+        self.resolver
+            .resolve(request_id, decision)
+            .await
+            .map_err(HarnessError::Permission)
+    }
+}
+
+#[cfg(feature = "stream-permission")]
+impl Default for StreamPermissionRuntime {
+    fn default() -> Self {
+        Self::new(harness_permission::StreamBrokerConfig {
+            default_timeout: Some(Duration::from_secs(300)),
+            heartbeat_interval: None,
+            max_pending: 1024,
+        })
+    }
+}
+
 struct HarnessInner {
     options: HarnessOptions,
     model: Arc<dyn ModelProvider>,
@@ -254,6 +356,18 @@ struct HarnessInner {
     enabled_features: HashSet<String>,
     session_limits: Arc<SessionLimitState>,
     workspace_registry: Arc<WorkspaceRegistry>,
+    active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, CancellationToken>>>,
+}
+
+struct SdkSessionState {
+    projection: SessionProjection,
+    envelopes: Vec<EventEnvelope>,
+}
+
+fn sdk_session_not_found(session_id: SessionId) -> HarnessError {
+    HarnessError::Session(SessionError::Message(format!(
+        "session not found: {session_id}"
+    )))
 }
 
 pub trait WorkspaceCreateRequest {
@@ -663,6 +777,7 @@ impl Harness {
                 enabled_features: Self::enabled_feature_set(),
                 session_limits,
                 workspace_registry: Arc::new(WorkspaceRegistry::new()),
+                active_conversation_runs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             }),
         })
     }
@@ -706,6 +821,7 @@ impl Harness {
             .with_event_store(event_store)
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine,
+                active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),
                 skill_config_snapshot: self.inner.skill_config_snapshot.clone(),
@@ -713,6 +829,269 @@ impl Harness {
             .with_skill_reload_cap(Arc::new(SdkSkillReloadCap {
                 inner: Arc::clone(&self.inner),
             }))
+            .build()
+            .await
+            .map_err(HarnessError::from)?;
+        limit_permit.disarm();
+        Ok(session)
+    }
+
+    pub async fn open_or_create_conversation_session(
+        &self,
+        options: SessionOptions,
+    ) -> Result<ConversationSession, HarnessError> {
+        let effective = self.effective_sdk_session_options(options.clone())?;
+        match self.read_sdk_session_state(&effective).await? {
+            Some(state) => Ok(ConversationSession {
+                tenant_id: state.projection.tenant_id,
+                session_id: state.projection.session_id,
+                message_count: state.projection.messages.len(),
+            }),
+            None => {
+                let session = self.create_session(options).await?;
+                let projection = session.projection().await;
+                Ok(ConversationSession {
+                    tenant_id: projection.tenant_id,
+                    session_id: projection.session_id,
+                    message_count: projection.messages.len(),
+                })
+            }
+        }
+    }
+
+    pub async fn submit_conversation_turn(
+        &self,
+        request: ConversationTurnRequest,
+    ) -> Result<ConversationTurnReceipt, HarnessError> {
+        if request.prompt.trim().is_empty() {
+            return Err(HarnessError::Session(SessionError::Message(
+                "prompt must not be empty".to_owned(),
+            )));
+        }
+
+        let options = self.effective_sdk_session_options(request.options)?;
+        let state = self
+            .read_sdk_session_state(&options)
+            .await?
+            .ok_or_else(|| sdk_session_not_found(options.session_id))?;
+        let projection = state.projection;
+        if projection.end_reason.is_some() {
+            return Err(HarnessError::Session(SessionError::Message(
+                "cannot submit turn to ended session".to_owned(),
+            )));
+        }
+        let last_offset = projection.last_offset;
+        let session = self
+            .resume_sdk_session_from_projection(options.clone(), projection)
+            .await?;
+        session.run_turn(request.prompt).await?;
+        let new_events = self
+            .inner
+            .event_store
+            .read_envelopes(
+                options.tenant_id,
+                options.session_id,
+                ReplayCursor::FromOffset(last_offset),
+            )
+            .await
+            .map_err(HarnessError::Journal)?
+            .collect::<Vec<_>>()
+            .await;
+        let run_id = new_events
+            .iter()
+            .find_map(|envelope| match &envelope.payload {
+                Event::RunStarted(started) => Some(started.run_id),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                HarnessError::Session(SessionError::Message(
+                    "run did not emit RunStarted".to_owned(),
+                ))
+            })?;
+        let projection = session.projection().await;
+        Ok(ConversationTurnReceipt {
+            tenant_id: options.tenant_id,
+            session_id: options.session_id,
+            run_id,
+            message_count: projection.messages.len(),
+        })
+    }
+
+    pub async fn page_conversation_events(
+        &self,
+        request: ConversationEventsPageRequest,
+    ) -> Result<ConversationEventsPage, HarnessError> {
+        let options = self.effective_sdk_session_options(request.options)?;
+        let limit = request.limit.clamp(1, 200);
+        let mut envelopes = self
+            .read_sdk_session_state(&options)
+            .await?
+            .ok_or_else(|| sdk_session_not_found(options.session_id))?
+            .envelopes;
+        if let Some(after) = request.after_event_id {
+            match envelopes
+                .iter()
+                .position(|envelope| envelope.event_id == after)
+            {
+                Some(position) => envelopes.drain(0..=position).for_each(drop),
+                None => envelopes.clear(),
+            }
+        }
+        envelopes.truncate(limit);
+        let redactor = self.hook_redactor();
+        for envelope in &mut envelopes {
+            envelope.payload =
+                redact_business_event_for_display(envelope.payload.clone(), redactor.as_ref());
+        }
+        let next_event_id = envelopes.last().map(|envelope| envelope.event_id);
+        Ok(ConversationEventsPage {
+            events: envelopes,
+            next_event_id,
+        })
+    }
+
+    pub async fn cancel_conversation_run(&self, run_id: RunId) -> Result<(), HarnessError> {
+        let cancellation = self
+            .inner
+            .active_conversation_runs
+            .lock()
+            .get(&run_id)
+            .cloned();
+        let Some(cancellation) = cancellation else {
+            return Err(HarnessError::Session(SessionError::Message(format!(
+                "run is not active or cannot be cancelled through this facade: {run_id}"
+            ))));
+        };
+
+        cancellation.cancel(InterruptCause::User);
+        Ok(())
+    }
+
+    fn effective_sdk_session_options(
+        &self,
+        options: SessionOptions,
+    ) -> Result<SessionOptions, HarnessError> {
+        let mut options = self.effective_session_options(options)?;
+        if !self.inner.options.tool_search_enabled {
+            options.tool_search = ToolSearchMode::Disabled;
+        }
+        self.enforce_tenant(&options)?;
+        Ok(options)
+    }
+
+    async fn read_sdk_session_state(
+        &self,
+        options: &SessionOptions,
+    ) -> Result<Option<SdkSessionState>, HarnessError> {
+        let envelopes = self
+            .inner
+            .event_store
+            .read_envelopes(
+                options.tenant_id,
+                options.session_id,
+                ReplayCursor::FromStart,
+            )
+            .await
+            .map_err(HarnessError::Journal)?
+            .collect::<Vec<_>>()
+            .await;
+        if envelopes.is_empty() {
+            return Ok(None);
+        }
+        self.enforce_sdk_session_options_hash(options, &envelopes)?;
+        let projection =
+            SessionProjection::replay(envelopes.clone()).map_err(HarnessError::Session)?;
+        Ok(Some(SdkSessionState {
+            projection,
+            envelopes,
+        }))
+    }
+
+    fn enforce_sdk_session_options_hash(
+        &self,
+        options: &SessionOptions,
+        envelopes: &[EventEnvelope],
+    ) -> Result<(), HarnessError> {
+        let Some(Event::SessionCreated(created)) =
+            envelopes.first().map(|envelope| &envelope.payload)
+        else {
+            return Err(HarnessError::Session(SessionError::Message(
+                "session event stream does not start with SessionCreated".to_owned(),
+            )));
+        };
+        let mut canonical = options.clone();
+        canonical.workspace_root = canonical.workspace_root.canonicalize().map_err(|error| {
+            HarnessError::Session(SessionError::Message(format!(
+                "workspace_root invalid: {error}"
+            )))
+        })?;
+        let expected = session_options_hash(&canonical);
+        if created.options_hash != expected {
+            return Err(HarnessError::PermissionDenied(
+                "conversation session options do not match the existing session".to_owned(),
+            ));
+        }
+        for envelope in envelopes.iter().skip(1) {
+            let Event::SessionCreated(created) = &envelope.payload else {
+                continue;
+            };
+            if created.tenant_id != options.tenant_id
+                || created.session_id != options.session_id
+                || created.options_hash != expected
+            {
+                return Err(HarnessError::PermissionDenied(
+                    "conversation session stream contains a mismatched SessionCreated event"
+                        .to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn resume_sdk_session_from_projection(
+        &self,
+        options: SessionOptions,
+        projection: SessionProjection,
+    ) -> Result<Session, HarnessError> {
+        let limit_permit = self.inner.session_limits.try_acquire()?;
+        #[cfg(feature = "memory-external-slot")]
+        let memory_manager = self.memory_manager_for_session(&options).await?;
+        #[cfg(feature = "memory-external-slot")]
+        let engine = self
+            .engine_for_session(&options, memory_manager.clone())
+            .await?;
+        #[cfg(not(feature = "memory-external-slot"))]
+        let engine = self.engine_for_session(&options).await?;
+        let event_store: Arc<dyn EventStore> = Arc::new(LifecycleHookEventStore {
+            inner: Arc::clone(&self.inner.event_store),
+            hooks: HookDispatcher::new(self.inner.hook_registry.snapshot()),
+            tenant_id: options.tenant_id,
+            session_id: options.session_id,
+            #[cfg(feature = "memory-external-slot")]
+            user_id: options.user_id.clone(),
+            #[cfg(feature = "memory-external-slot")]
+            team_id: options.team_id,
+            workspace_root: options.workspace_root.clone(),
+            redactor: self.hook_redactor(),
+            session_limits: Arc::clone(&self.inner.session_limits),
+            summary_state: parking_lot::Mutex::new(MemorySessionSummaryState::default()),
+            #[cfg(feature = "memory-external-slot")]
+            memory_manager,
+        });
+        let session = Session::builder()
+            .with_options(options)
+            .with_event_store(event_store)
+            .with_turn_runner(Arc::new(EngineSessionTurnRunner {
+                engine,
+                active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
+                skill_registry: Some(self.inner.skill_registry.clone()),
+                skill_metrics_sink: self.skill_metrics_sink(),
+                skill_config_snapshot: self.inner.skill_config_snapshot.clone(),
+            }))
+            .with_skill_reload_cap(Arc::new(SdkSkillReloadCap {
+                inner: Arc::clone(&self.inner),
+            }))
+            .with_projection(projection)
             .build()
             .await
             .map_err(HarnessError::from)?;
@@ -1706,7 +2085,7 @@ impl Harness {
             .read(tenant_id, session_id, cursor)
             .await
             .map_err(HarnessError::Journal)?
-            .map(move |event| redact_business_event(event, redactor.as_ref()));
+            .map(move |event| redact_business_event_for_display(event, redactor.as_ref()));
         Ok(Box::pin(stream))
     }
 
@@ -1733,6 +2112,87 @@ impl Harness {
     #[must_use]
     pub fn memory_provider(&self) -> Option<Arc<dyn MemoryProvider>> {
         self.effective_memory_provider()
+    }
+
+    #[cfg(feature = "memory-external-slot")]
+    pub async fn list_memory_items(
+        &self,
+        options: SessionOptions,
+    ) -> Result<Vec<harness_memory::MemorySummary>, HarnessError> {
+        self.enforce_tenant(&options)?;
+        let manager = self.memory_manager_for_browser(&options).await?;
+        manager
+            .list_for_actor(memory_actor_from_options(&options))
+            .await
+            .map_err(HarnessError::Memory)
+    }
+
+    #[cfg(feature = "memory-external-slot")]
+    pub async fn get_memory_item(
+        &self,
+        options: SessionOptions,
+        id: harness_contracts::MemoryId,
+    ) -> Result<harness_memory::MemoryRecord, HarnessError> {
+        self.enforce_tenant(&options)?;
+        let manager = self.memory_manager_for_browser(&options).await?;
+        manager
+            .get_for_actor(id, memory_actor_from_options(&options))
+            .await
+            .map_err(HarnessError::Memory)
+    }
+
+    #[cfg(feature = "memory-external-slot")]
+    pub async fn update_memory_item_content(
+        &self,
+        options: SessionOptions,
+        id: harness_contracts::MemoryId,
+        content: impl Into<String>,
+    ) -> Result<harness_memory::MemoryRecord, HarnessError> {
+        self.enforce_tenant(&options)?;
+        let manager = self.memory_manager_for_browser(&options).await?;
+        manager
+            .update_content_for_actor(id, memory_actor_from_options(&options), content, None)
+            .await
+            .map_err(HarnessError::Memory)
+    }
+
+    #[cfg(feature = "memory-external-slot")]
+    pub async fn delete_memory_item(
+        &self,
+        options: SessionOptions,
+        id: harness_contracts::MemoryId,
+    ) -> Result<(), HarnessError> {
+        self.enforce_tenant(&options)?;
+        let manager = self.memory_manager_for_browser(&options).await?;
+        manager
+            .forget_for_actor(id, memory_actor_from_options(&options), None)
+            .await
+            .map_err(HarnessError::Memory)
+    }
+
+    #[cfg(feature = "memory-external-slot")]
+    pub async fn export_memory_items(
+        &self,
+        options: SessionOptions,
+    ) -> Result<Vec<harness_memory::MemoryRecord>, HarnessError> {
+        self.enforce_tenant(&options)?;
+        let manager = self.memory_manager_for_browser(&options).await?;
+        manager
+            .export_for_actor(memory_actor_from_options(&options))
+            .await
+            .map_err(HarnessError::Memory)
+    }
+
+    #[cfg(feature = "memory-external-slot")]
+    async fn memory_manager_for_browser(
+        &self,
+        options: &SessionOptions,
+    ) -> Result<Arc<harness_memory::MemoryManager>, HarnessError> {
+        self.memory_manager_for_session(options)
+            .await?
+            .ok_or_else(|| {
+                HarnessError::Memory(harness_contracts::MemoryError::ExternalProviderNotConfigured)
+            })
     }
 
     fn effective_memory_provider(&self) -> Option<Arc<dyn MemoryProvider>> {
@@ -2327,7 +2787,7 @@ impl Harness {
             workspace_root: options.workspace_root.clone(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
-            summary_state: Mutex::new(MemorySessionSummaryState::default()),
+            summary_state: parking_lot::Mutex::new(MemorySessionSummaryState::default()),
             #[cfg(feature = "memory-external-slot")]
             memory_manager,
         });
@@ -2729,6 +3189,12 @@ fn redact_business_event(event: Event, redactor: &dyn Redactor) -> Event {
     serde_json::from_value(value).unwrap_or(event)
 }
 
+fn redact_business_event_for_display(event: Event, redactor: &dyn Redactor) -> Event {
+    let event = redact_business_event(event, redactor);
+    let default_redactor = default_hook_redactor();
+    redact_business_event(event, default_redactor.as_ref())
+}
+
 fn redact_json_strings(value: &mut Value, redactor: &dyn Redactor) {
     match value {
         Value::String(text) => {
@@ -2943,9 +3409,35 @@ fn rejection_reason(error: &PluginError) -> RejectionReason {
 
 struct EngineSessionTurnRunner {
     engine: Engine,
+    active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, CancellationToken>>>,
     skill_registry: Option<SkillRegistry>,
     skill_metrics_sink: Option<Arc<dyn SkillMetricsSink>>,
     skill_config_snapshot: SkillConfigSnapshot,
+}
+
+struct ActiveConversationRunGuard {
+    active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, CancellationToken>>>,
+    run_id: RunId,
+}
+
+impl ActiveConversationRunGuard {
+    fn register(
+        active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, CancellationToken>>>,
+        run_id: RunId,
+        cancellation: CancellationToken,
+    ) -> Self {
+        active_conversation_runs.lock().insert(run_id, cancellation);
+        Self {
+            active_conversation_runs,
+            run_id,
+        }
+    }
+}
+
+impl Drop for ActiveConversationRunGuard {
+    fn drop(&mut self) {
+        self.active_conversation_runs.lock().remove(&self.run_id);
+    }
 }
 
 #[async_trait]
@@ -2964,7 +3456,14 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
             },
             metadata: json!({ "turn": ctx.turn_index }),
         };
+        let cancellation = CancellationToken::new();
+        let _active_run = ActiveConversationRunGuard::register(
+            Arc::clone(&self.active_conversation_runs),
+            ctx.run_id,
+            cancellation.clone(),
+        );
         let run_ctx = RunContext::new(ctx.tenant_id, ctx.session_id, ctx.run_id)
+            .with_cancellation(cancellation)
             .with_optional_user_id(ctx.user_id.clone())
             .with_optional_team_id(ctx.team_id)
             .with_permission_mode(ctx.permission_mode)
@@ -3110,6 +3609,16 @@ fn apply_tenant_tool_filter(filter: &mut ToolPoolFilter, policy: &TenantPolicy) 
                 .collect::<HashSet<_>>(),
             None => allowed_tools.clone(),
         });
+    }
+}
+
+#[cfg(feature = "memory-external-slot")]
+fn memory_actor_from_options(options: &SessionOptions) -> harness_contracts::MemoryActor {
+    harness_contracts::MemoryActor {
+        tenant_id: options.tenant_id,
+        user_id: options.user_id.clone(),
+        team_id: options.team_id,
+        session_id: Some(options.session_id),
     }
 }
 
@@ -3707,6 +4216,17 @@ impl harness_memory::MemoryEventSink for SdkMemoryEventSink {
             .event_store
             .append(self.tenant_id, self.session_id, &[event])
             .await;
+    }
+
+    async fn emit_required(&self, event: Event) -> Result<(), harness_contracts::MemoryError> {
+        self.event_store
+            .append(self.tenant_id, self.session_id, &[event])
+            .await
+            .map(|_| ())
+            .map_err(|error| harness_contracts::MemoryError::Provider {
+                provider: "journal".to_owned(),
+                source_message: error.to_string(),
+            })
     }
 }
 

@@ -557,7 +557,7 @@ pub(crate) fn session_error(error: impl std::fmt::Display) -> SessionError {
     SessionError::Message(error.to_string())
 }
 
-fn session_options_hash(options: &SessionOptions) -> [u8; 32] {
+pub fn session_options_hash(options: &SessionOptions) -> [u8; 32] {
     hash_json(&json!({
         "workspace_ref": options.workspace_ref,
         "workspace_root": options.workspace_root,

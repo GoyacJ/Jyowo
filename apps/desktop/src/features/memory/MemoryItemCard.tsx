@@ -1,0 +1,52 @@
+import { Eye, Trash2 } from 'lucide-react'
+
+import type { MemoryItemSummary } from '@/shared/tauri/commands'
+import { Button } from '@/shared/ui/button'
+
+interface MemoryItemCardProps {
+  item: MemoryItemSummary
+  onDelete: (id: string) => void
+  onInspect: (id: string) => void
+}
+
+export function MemoryItemCard({ item, onDelete, onInspect }: MemoryItemCardProps) {
+  return (
+    <article
+      aria-label={`Memory ${item.id}`}
+      className="rounded-md border border-border bg-surface p-3"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 space-y-2">
+          <p className="line-clamp-3 text-sm">{item.contentPreview}</p>
+          <div className="flex flex-wrap gap-2 text-muted-foreground text-xs">
+            <span>{item.visibility}</span>
+            <span>{item.kind}</span>
+            {item.tags.map((tag) => (
+              <span key={tag}>{tag}</span>
+            ))}
+          </div>
+        </div>
+        <div className="flex shrink-0 gap-1">
+          <Button
+            aria-label="Inspect memory item"
+            onClick={() => onInspect(item.id)}
+            size="icon"
+            type="button"
+            variant="ghost"
+          >
+            <Eye data-icon className="size-4" />
+          </Button>
+          <Button
+            aria-label="Delete memory item"
+            onClick={() => onDelete(item.id)}
+            size="icon"
+            type="button"
+            variant="ghost"
+          >
+            <Trash2 data-icon className="size-4" />
+          </Button>
+        </div>
+      </div>
+    </article>
+  )
+}

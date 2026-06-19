@@ -169,6 +169,39 @@ impl McpRegistry {
         Ok(())
     }
 
+    pub async fn add_failed_server(
+        &self,
+        spec: McpServerSpec,
+        scope: McpServerScope,
+        last_error: String,
+    ) -> Result<(), McpError> {
+        let derived = trust_level_for_source(&spec.source);
+        if spec.trust != derived {
+            return Err(McpError::Protocol(format!(
+                "trust mismatch for {}: expected {:?}, got {:?}",
+                spec.server_id.0, derived, spec.trust
+            )));
+        }
+
+        self.inner.write().await.insert(
+            spec.server_id.clone(),
+            ManagedMcpServer {
+                spec,
+                scope,
+                connection: Arc::new(FailedMcpConnection),
+                connection_state: McpConnectionState::Failed { last_error },
+                injected_tools: BTreeMap::new(),
+                known_resources: BTreeSet::new(),
+                resource_observers: BTreeMap::new(),
+                known_prompts: BTreeSet::new(),
+                pending_list_changed: false,
+                last_list_changed: None,
+                schema_fingerprint: None,
+            },
+        );
+        Ok(())
+    }
+
     pub async fn add_plugin_server(
         &self,
         plugin_id: PluginId,
@@ -269,6 +302,30 @@ impl McpRegistry {
             .await
             .get(server_id)
             .map(|managed| managed.connection_state.clone())
+    }
+
+    pub async fn server_scope(&self, server_id: &McpServerId) -> Option<McpServerScope> {
+        self.inner
+            .read()
+            .await
+            .get(server_id)
+            .map(|managed| managed.scope.clone())
+    }
+
+    pub async fn injected_tool_count(&self, server_id: &McpServerId) -> Option<usize> {
+        self.inner
+            .read()
+            .await
+            .get(server_id)
+            .map(|managed| managed.injected_tools.len())
+    }
+
+    pub async fn injected_tool_names(&self, server_id: &McpServerId) -> Option<Vec<String>> {
+        self.inner
+            .read()
+            .await
+            .get(server_id)
+            .map(|managed| managed.injected_tools.keys().cloned().collect())
     }
 
     pub async fn last_list_changed(&self, server_id: &McpServerId) -> Option<DateTime<Utc>> {
@@ -832,6 +889,31 @@ impl McpConnection for RegisteredPluginMcpConnection {
     async fn call_tool(&self, name: &str, _args: Value) -> Result<McpToolResult, McpError> {
         Err(McpError::Protocol(format!(
             "plugin MCP server {name} has no active connection"
+        )))
+    }
+
+    async fn shutdown(&self) -> Result<(), McpError> {
+        Ok(())
+    }
+}
+
+struct FailedMcpConnection;
+
+#[async_trait::async_trait]
+impl McpConnection for FailedMcpConnection {
+    fn connection_id(&self) -> &str {
+        "failed-mcp"
+    }
+
+    async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
+        Err(McpError::Connection(
+            "MCP server is not connected".to_owned(),
+        ))
+    }
+
+    async fn call_tool(&self, name: &str, _args: Value) -> Result<McpToolResult, McpError> {
+        Err(McpError::Connection(format!(
+            "MCP server is not connected for tool {name}"
         )))
     }
 

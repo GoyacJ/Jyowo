@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use harness_contracts::{
     Decision, DecisionId, DecisionScope, ExecFingerprint, FallbackPolicy, InteractivityLevel,
-    PermissionError, PermissionMode, PermissionSubject, RequestId, RuleSource, SessionId, Severity,
-    TenantId, TimeoutPolicy, ToolUseId,
+    PermissionError, PermissionMode, PermissionSubject, RequestId, RuleSource, RunId, SessionId,
+    Severity, TenantId, TimeoutPolicy, ToolUseId,
 };
 
 use crate::rule::{OverrideDecision, RuleSnapshot};
@@ -84,6 +84,7 @@ pub struct PermissionContext {
     pub previous_mode: Option<PermissionMode>,
     pub session_id: SessionId,
     pub tenant_id: TenantId,
+    pub run_id: Option<RunId>,
     pub interactivity: InteractivityLevel,
     pub timeout_policy: Option<TimeoutPolicy>,
     pub fallback_policy: FallbackPolicy,

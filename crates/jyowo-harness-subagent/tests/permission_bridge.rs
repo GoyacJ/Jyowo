@@ -59,6 +59,7 @@ async fn bridge_forwards_and_resolves_child_permission_requests() {
                 previous_mode: None,
                 session_id: child_session_id,
                 tenant_id: TenantId::SINGLE,
+                run_id: None,
                 interactivity: InteractivityLevel::FullyInteractive,
                 timeout_policy: Some(TimeoutPolicy {
                     deadline_ms: 30_000,
@@ -452,6 +453,7 @@ fn permission_context(session_id: SessionId) -> PermissionContext {
         previous_mode: None,
         session_id,
         tenant_id: TenantId::SINGLE,
+        run_id: None,
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::DenyAll,

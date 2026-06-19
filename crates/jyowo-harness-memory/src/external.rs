@@ -4,9 +4,10 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "consolidation")]
 use harness_contracts::MemoryConsolidationRanEvent;
 use harness_contracts::{
-    ContentHash, Event, MemdirFileTag, MemoryError, MemorySessionCtx, MemorySource,
-    MemoryUpsertedEvent, MemoryVisibility, MemoryWriteAction, MemoryWriteTarget, MessageView,
-    RunId, SessionId, SessionSummaryView, TakesEffect, UserMessageView, WriteDestination,
+    ContentHash, Event, MemdirFileTag, MemoryActor, MemoryError, MemoryExportedEvent, MemoryId,
+    MemorySessionCtx, MemorySource, MemoryUpsertedEvent, MemoryVisibility, MemoryWriteAction,
+    MemoryWriteTarget, MessageView, RunId, SessionId, SessionSummaryView, TakesEffect,
+    UserMessageView, WriteDestination,
 };
 #[cfg(feature = "threat-scanner")]
 use harness_contracts::{MemoryThreatDetectedEvent, ThreatAction, ThreatDirection};
@@ -20,8 +21,9 @@ use crate::ConsolidationHook;
 #[cfg(feature = "threat-scanner")]
 use crate::MemoryThreatScanner;
 use crate::{
-    visibility_matches, MemoryEventSink, MemoryKindFilter, MemoryMetric, MemoryMetricsSink,
-    MemoryProvider, MemoryQuery, MemoryRecallMetricOutcome, MemoryRecord, MemoryVisibilityFilter,
+    content_preview, visibility_matches, MemoryEventSink, MemoryKindFilter, MemoryListScope,
+    MemoryMetric, MemoryMetricsSink, MemoryProvider, MemoryQuery, MemoryRecallMetricOutcome,
+    MemoryRecord, MemorySummary, MemoryVisibilityFilter,
 };
 
 pub struct MemoryManager {
@@ -308,6 +310,180 @@ impl MemoryManager {
             visibility: metric_visibility,
         });
         Ok(id)
+    }
+
+    pub async fn list_for_actor(
+        &self,
+        actor: MemoryActor,
+    ) -> Result<Vec<crate::MemorySummary>, MemoryError> {
+        let Some(provider) = self.external.read().await.clone() else {
+            return Err(MemoryError::ExternalProviderNotConfigured);
+        };
+
+        let summaries = provider
+            .list(MemoryListScope::ForActor(actor.clone()))
+            .await?;
+        let mut visible = Vec::with_capacity(summaries.len());
+        for summary in summaries {
+            let record = provider.get(summary.id).await?;
+            if record_visible_to_actor(&record, &actor) {
+                let scanned = self
+                    .scan_records(
+                        vec![record],
+                        provider.provider_id().to_owned(),
+                        actor.session_id,
+                    )
+                    .await;
+                if let Some(record) = scanned.into_iter().next() {
+                    visible.push(memory_summary_from_record(&record));
+                }
+            }
+        }
+
+        Ok(visible)
+    }
+
+    pub async fn get_for_actor(
+        &self,
+        id: MemoryId,
+        actor: MemoryActor,
+    ) -> Result<MemoryRecord, MemoryError> {
+        let Some(provider) = self.external.read().await.clone() else {
+            return Err(MemoryError::ExternalProviderNotConfigured);
+        };
+        let record = provider.get(id).await?;
+        if !record_visible_to_actor(&record, &actor) {
+            return Err(MemoryError::NotFound(id));
+        }
+
+        let records = self
+            .scan_records(
+                vec![record],
+                provider.provider_id().to_owned(),
+                actor.session_id,
+            )
+            .await;
+        records.into_iter().next().ok_or(MemoryError::NotFound(id))
+    }
+
+    pub async fn update_content_for_actor(
+        &self,
+        id: MemoryId,
+        actor: MemoryActor,
+        content: impl Into<String>,
+        run_id: Option<RunId>,
+    ) -> Result<MemoryRecord, MemoryError> {
+        let mut record = self.get_for_actor(id, actor.clone()).await?;
+        record.content = content.into();
+        record.updated_at = chrono::Utc::now();
+        self.upsert(record, run_id).await?;
+        self.get_for_actor(id, actor).await
+    }
+
+    pub async fn forget_for_actor(
+        &self,
+        id: MemoryId,
+        actor: MemoryActor,
+        run_id: Option<RunId>,
+    ) -> Result<(), MemoryError> {
+        let Some(provider) = self.external.read().await.clone() else {
+            return Err(MemoryError::ExternalProviderNotConfigured);
+        };
+        let record = provider.get(id).await?;
+        if !record_visible_to_actor(&record, &actor) {
+            return Err(MemoryError::NotFound(id));
+        }
+
+        let now = chrono::Utc::now();
+        let content_hash = content_hash(&record.content);
+        let target = MemoryWriteTarget {
+            kind: record.kind.clone(),
+            visibility: record.visibility.clone(),
+            destination: WriteDestination::External {
+                provider_id: provider.provider_id().to_owned(),
+            },
+        };
+        let Some(sink) = &self.event_sink else {
+            return Err(MemoryError::Provider {
+                provider: "audit".to_owned(),
+                source_message: "required audit sink is not configured".to_owned(),
+            });
+        };
+        provider.forget(id).await?;
+        if let Err(error) = sink
+            .emit_required(Event::MemoryUpserted(MemoryUpsertedEvent {
+                session_id: actor
+                    .session_id
+                    .or_else(|| record.visibility.session_id())
+                    .or_else(|| source_session_id(&record.metadata.source))
+                    .unwrap_or_else(SessionId::new),
+                run_id,
+                memory_id: id,
+                kind: record.kind.clone(),
+                visibility: record.visibility.clone(),
+                action: MemoryWriteAction::Forget,
+                provider_id: provider.provider_id().to_owned(),
+                source: record.metadata.source.clone(),
+                content_hash: content_hash.clone(),
+                bytes_written: 0,
+                takes_effect: TakesEffect::CurrentSession,
+                at: now,
+            }))
+            .await
+        {
+            let _ = provider.upsert(record).await;
+            return Err(error);
+        }
+        provider
+            .on_memory_write(MemoryWriteAction::Forget, &target, content_hash.clone())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn export_for_actor(
+        &self,
+        actor: MemoryActor,
+    ) -> Result<Vec<MemoryRecord>, MemoryError> {
+        let Some(provider) = self.external.read().await.clone() else {
+            return Err(MemoryError::ExternalProviderNotConfigured);
+        };
+        let summaries = provider
+            .list(MemoryListScope::ForActor(actor.clone()))
+            .await?;
+        let mut records = Vec::with_capacity(summaries.len());
+        for summary in summaries {
+            let record = provider.get(summary.id).await?;
+            if record_visible_to_actor(&record, &actor) {
+                records.push(record);
+            }
+        }
+        let records = self
+            .scan_records(records, provider.provider_id().to_owned(), actor.session_id)
+            .await;
+        let Some(sink) = &self.event_sink else {
+            return Err(MemoryError::Provider {
+                provider: "audit".to_owned(),
+                source_message: "required audit sink is not configured".to_owned(),
+            });
+        };
+        sink.emit_required(Event::MemoryExported(MemoryExportedEvent {
+            session_id: actor.session_id.unwrap_or_else(SessionId::new),
+            tenant_id: actor.tenant_id,
+            provider_id: provider.provider_id().to_owned(),
+            item_count: records.len().min(u32::MAX as usize) as u32,
+            content_hashes: records
+                .iter()
+                .map(|record| content_hash(&record.content))
+                .collect(),
+            bytes_exported: records
+                .iter()
+                .map(|record| record.content.len() as u64)
+                .sum(),
+            at: chrono::Utc::now(),
+        }))
+        .await?;
+
+        Ok(records)
     }
 
     pub async fn initialize_session(&self, ctx: &MemorySessionCtx<'_>) -> Result<(), MemoryError> {
@@ -775,6 +951,21 @@ fn source_session_id(source: &MemorySource) -> Option<SessionId> {
         MemorySource::SubagentDerived { child_session } => Some(*child_session),
         _ => None,
     }
+}
+
+fn memory_summary_from_record(record: &MemoryRecord) -> MemorySummary {
+    MemorySummary {
+        id: record.id,
+        kind: record.kind.clone(),
+        visibility: record.visibility.clone(),
+        content_preview: content_preview(&record.content),
+        metadata: record.metadata.clone(),
+        updated_at: record.updated_at,
+    }
+}
+
+fn record_visible_to_actor(record: &MemoryRecord, actor: &MemoryActor) -> bool {
+    record.tenant_id == actor.tenant_id && visibility_matches(&record.visibility, actor)
 }
 
 fn content_hash(content: &str) -> ContentHash {

@@ -4,7 +4,7 @@ import { QueryClient } from '@tanstack/react-query'
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppProviders } from '@/app/providers'
-import { useUiStore } from '@/shared/state/ui-store'
+import { uiStore, useUiStore } from '@/shared/state/ui-store'
 import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import App from './App'
 
@@ -57,6 +57,8 @@ function ThemeSetter({ theme }: { theme: 'light' | 'dark' | 'system' }) {
 
 describe('App', () => {
   afterEach(() => {
+    window.history.pushState(null, '', '/')
+    uiStore.getState().setTheme('light')
     document.documentElement.classList.remove('dark')
     delete document.documentElement.dataset.theme
     vi.restoreAllMocks()
@@ -73,10 +75,61 @@ describe('App', () => {
 
     render(<App commandClient={createMockCommandClient()} queryClient={queryClient} />)
 
-    expect(await screen.findByRole('heading', { name: 'Jyowo' })).toBeInTheDocument()
-    expect(screen.getAllByText('tauri2-react')[0]).toBeInTheDocument()
-    expect(screen.getAllByText('jyowo_harness_sdk')[0]).toBeInTheDocument()
-    expect(screen.getByText('available')).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: 'Build the desktop foundation' }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Workspace' })).toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: 'Context' })).toBeInTheDocument()
+    expect(
+      screen.getByPlaceholderText('Ask Jyowo anything about this project...'),
+    ).toBeInTheDocument()
+  })
+
+  it('renders the memory browser support route', async () => {
+    window.history.pushState(null, '', '/memory')
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    })
+
+    render(<App commandClient={createMockCommandClient()} queryClient={queryClient} />)
+
+    expect(await screen.findByRole('heading', { name: 'Memory' })).toBeInTheDocument()
+    expect(await screen.findByText('Prefers concise Chinese responses')).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Workspace' })).toBeInTheDocument()
+  })
+
+  it('renders support routes for artifacts, settings, and evals', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    })
+    const commandClient = createMockCommandClient()
+
+    window.history.pushState(null, '', '/artifacts')
+    const { rerender } = render(<App commandClient={commandClient} queryClient={queryClient} />)
+
+    expect(await screen.findByRole('heading', { name: 'Artifacts' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Artifact history' })).toBeInTheDocument()
+
+    window.history.pushState(null, '', '/settings')
+    rerender(<App commandClient={commandClient} queryClient={queryClient} />)
+
+    expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Provider settings' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'MCP servers' })).toBeInTheDocument()
+
+    window.history.pushState(null, '', '/evals')
+    rerender(<App commandClient={commandClient} queryClient={queryClient} />)
+
+    expect(await screen.findByRole('heading', { name: 'Eval lab' })).toBeInTheDocument()
+    expect(await screen.findByText('Regression smoke')).toBeInTheDocument()
   })
 
   it('resolves system theme from the operating system preference', () => {
@@ -87,6 +140,10 @@ describe('App', () => {
         <ThemeSetter theme="system" />
       </AppProviders>,
     )
+
+    act(() => {
+      screen.getByRole('button', { name: 'Set theme' }).click()
+    })
 
     expect(document.documentElement).toHaveClass('dark')
     expect(document.documentElement.dataset.theme).toBe('system')

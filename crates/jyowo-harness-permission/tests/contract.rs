@@ -249,6 +249,7 @@ fn permission_context(timeout_policy: Option<TimeoutPolicy>) -> PermissionContex
         previous_mode: None,
         session_id: SessionId::new(),
         tenant_id: TenantId::SHARED,
+        run_id: None,
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy,
         fallback_policy: FallbackPolicy::AskUser,

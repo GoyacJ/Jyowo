@@ -62,6 +62,54 @@ async fn stream_broker_rejects_unknown_resolution() {
 }
 
 #[tokio::test]
+async fn stream_broker_keeps_high_and_critical_requests_pending_until_explicit_decision() {
+    let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    });
+    let high_request = permission_request_with_severity(Severity::High);
+    let critical_request = permission_request_with_severity(Severity::Critical);
+    let high_request_id = high_request.request_id;
+    let critical_request_id = critical_request.request_id;
+    let high_decide =
+        tokio::spawn(async move { broker.decide(high_request, permission_context(None)).await });
+    let emitted_high = receiver.recv().await.unwrap();
+    assert_eq!(emitted_high.request_id, high_request_id);
+    assert_eq!(emitted_high.severity, Severity::High);
+
+    let pending = resolver.pending_requests();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].request_id, high_request_id);
+
+    resolver
+        .resolve(high_request_id, Decision::DenyOnce)
+        .await
+        .unwrap();
+    assert_eq!(high_decide.await.unwrap(), Decision::DenyOnce);
+
+    let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    });
+    let critical_decide = tokio::spawn(async move {
+        broker
+            .decide(critical_request, permission_context(None))
+            .await
+    });
+    let emitted_critical = receiver.recv().await.unwrap();
+    assert_eq!(emitted_critical.request_id, critical_request_id);
+    assert_eq!(emitted_critical.severity, Severity::Critical);
+
+    resolver
+        .resolve(critical_request_id, Decision::AllowOnce)
+        .await
+        .unwrap();
+    assert_eq!(critical_decide.await.unwrap(), Decision::AllowOnce);
+}
+
+#[tokio::test]
 async fn stream_broker_uses_context_timeout_default() {
     let (broker, _receiver, _resolver) = StreamBasedBroker::new(StreamBrokerConfig {
         default_timeout: Some(Duration::from_secs(5)),
@@ -165,6 +213,10 @@ async fn stream_broker_cancel_cleans_pending_and_unblocks_decide() {
 }
 
 fn permission_request() -> PermissionRequest {
+    permission_request_with_severity(Severity::Low)
+}
+
+fn permission_request_with_severity(severity: Severity) -> PermissionRequest {
     let tenant_id = TenantId::SHARED;
     let session_id = SessionId::new();
     PermissionRequest {
@@ -179,7 +231,7 @@ fn permission_request() -> PermissionRequest {
             cwd: None,
             fingerprint: None,
         },
-        severity: Severity::Low,
+        severity,
         scope_hint: DecisionScope::ToolName("shell".to_owned()),
         created_at: Utc::now(),
     }
@@ -191,6 +243,7 @@ fn permission_context(timeout_policy: Option<TimeoutPolicy>) -> PermissionContex
         previous_mode: None,
         session_id: SessionId::new(),
         tenant_id: TenantId::SHARED,
+        run_id: None,
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy,
         fallback_policy: FallbackPolicy::AskUser,

@@ -267,7 +267,7 @@ pub(crate) async fn run_turn(
                     interrupt: InterruptToken::new(),
                     parent_run: None,
                 },
-                permission_context: permission_context(session),
+                permission_context: permission_context(session, run_id),
                 blob_store: runtime.blob_store.clone(),
                 event_emitter: tool_event_emitter.clone(),
             },
@@ -516,12 +516,13 @@ fn hook_context(session: &Session, run_id: RunId, messages: &[Message]) -> HookC
     }
 }
 
-fn permission_context(session: &Session) -> PermissionContext {
+fn permission_context(session: &Session, run_id: RunId) -> PermissionContext {
     PermissionContext {
         permission_mode: PermissionMode::Default,
         previous_mode: None,
         session_id: session.session_id(),
         tenant_id: session.tenant_id(),
+        run_id: Some(run_id),
         interactivity: InteractivityLevel::NoInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::DenyAll,

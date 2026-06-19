@@ -9,6 +9,10 @@ pub trait MemoryStore: Send + Sync + 'static {
 
     async fn recall(&self, query: MemoryQuery) -> Result<Vec<MemoryRecord>, MemoryError>;
 
+    async fn get(&self, id: MemoryId) -> Result<MemoryRecord, MemoryError> {
+        Err(MemoryError::NotFound(id))
+    }
+
     async fn upsert(&self, record: MemoryRecord) -> Result<MemoryId, MemoryError>;
 
     async fn forget(&self, id: MemoryId) -> Result<(), MemoryError>;

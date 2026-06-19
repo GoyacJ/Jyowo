@@ -68,7 +68,10 @@ fn workspace_bound_session_applies_defaults_and_bootstrap() {
         let requests = model.requests().await;
         assert_eq!(requests[0].model_id, "workspace-model");
         assert_eq!(requests[0].api_mode, ApiMode::Responses);
-        assert_eq!(requests[0].extra, json!({ "from": "workspace" }));
+        assert_eq!(requests[0].extra["from"], json!("workspace"));
+        assert!(requests[0].extra["relay_logical_call_key"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("engine_turn:")));
         let system = requests[0].system.as_deref().unwrap_or_default();
         assert!(system.contains("workspace bootstrap"));
         assert!(system.contains("session addendum"));
@@ -106,7 +109,10 @@ fn explicit_session_options_override_workspace_defaults() {
 
         let requests = model.requests().await;
         assert_eq!(requests[0].model_id, "explicit-model");
-        assert_eq!(requests[0].extra, json!({ "from": "explicit" }));
+        assert_eq!(requests[0].extra["from"], json!("explicit"));
+        assert!(requests[0].extra["relay_logical_call_key"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("engine_turn:")));
     });
 }
 
@@ -172,7 +178,10 @@ fn default_session_options_apply_to_normal_create_session() {
 
         let requests = model.requests().await;
         assert_eq!(requests[0].model_id, "default-session-model");
-        assert_eq!(requests[0].extra, json!({ "from": "default" }));
+        assert_eq!(requests[0].extra["from"], json!("default"));
+        assert!(requests[0].extra["relay_logical_call_key"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("engine_turn:")));
         assert_eq!(requests[0].system.as_deref(), Some("default addendum"));
     });
 }

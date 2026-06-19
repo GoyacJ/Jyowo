@@ -80,6 +80,7 @@ async fn permission_broker_decide_requires_context() {
         previous_mode: Some(PermissionMode::Default),
         session_id,
         tenant_id,
+        run_id: None,
         interactivity: InteractivityLevel::NoInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::DenyAll,
