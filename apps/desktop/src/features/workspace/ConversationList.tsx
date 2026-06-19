@@ -1,33 +1,66 @@
 import { FileText, MessageSquareText } from 'lucide-react'
 
-type ConversationListProps = {
-  conversations: string[]
-  activeConversation: string
+type ConversationListItem = {
+  id: string
+  lastMessagePreview?: string
+  title: string
+  updatedAt: string
 }
 
-export function ConversationList({ activeConversation, conversations }: ConversationListProps) {
+type ConversationListProps = {
+  activeConversationId?: string
+  conversations: ConversationListItem[]
+  errorMessage?: string
+  isLoading?: boolean
+  onSelectConversation: (conversationId: string) => void
+}
+
+export function ConversationList({
+  activeConversationId,
+  conversations,
+  errorMessage,
+  isLoading = false,
+  onSelectConversation,
+}: ConversationListProps) {
   return (
     <div className="mt-6 px-4">
       <div className="mb-2 text-muted-foreground text-xs">Recent conversations</div>
+      {isLoading ? (
+        <div className="rounded-md px-2 py-2 text-muted-foreground text-xs">Loading...</div>
+      ) : null}
+      {!isLoading && errorMessage ? (
+        <div className="rounded-md px-2 py-2 text-destructive text-xs">{errorMessage}</div>
+      ) : null}
+      {!isLoading && !errorMessage && conversations.length === 0 ? (
+        <div className="rounded-md px-2 py-2 text-muted-foreground text-xs">No conversations</div>
+      ) : null}
       <ul className="flex flex-col gap-1">
         {conversations.map((conversation) => {
-          const isActive = conversation === activeConversation
+          const isActive = conversation.id === activeConversationId
 
           return (
-            <li key={conversation}>
+            <li key={conversation.id}>
               <button
                 aria-current={isActive ? 'page' : undefined}
-                className="relative flex w-full items-center rounded-md px-2 py-2 pr-4 text-left text-xs hover:bg-muted data-[active=true]:bg-accent/10 data-[active=true]:text-foreground"
+                className="relative flex w-full items-start rounded-md px-2 py-2 pr-4 text-left text-xs hover:bg-muted data-[active=true]:bg-accent/10 data-[active=true]:text-foreground"
                 data-active={isActive}
+                onClick={() => onSelectConversation(conversation.id)}
                 type="button"
               >
-                <span className="flex w-full min-w-0 items-center gap-1.5">
+                <span className="flex w-full min-w-0 gap-1.5">
                   {isActive ? (
-                    <MessageSquareText className="size-3 shrink-0 text-muted-foreground" />
+                    <MessageSquareText className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
                   ) : (
-                    <FileText className="size-3 shrink-0 text-muted-foreground" />
+                    <FileText className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
                   )}
-                  <span className="min-w-0 truncate">{conversation}</span>
+                  <span className="min-w-0">
+                    <span className="block truncate">{conversation.title}</span>
+                    {conversation.lastMessagePreview ? (
+                      <span className="mt-0.5 block truncate text-muted-foreground">
+                        {conversation.lastMessagePreview}
+                      </span>
+                    ) : null}
+                  </span>
                 </span>
                 {isActive ? (
                   <span className="-translate-y-1/2 absolute top-1/2 right-1.5 size-1.5 rounded-full bg-accent" />

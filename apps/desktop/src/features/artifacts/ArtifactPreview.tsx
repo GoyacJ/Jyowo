@@ -1,6 +1,6 @@
 import { AlertCircle, FileText, Loader2 } from 'lucide-react'
 
-export type ArtifactPreviewState = 'error' | 'loading' | 'ready'
+type ArtifactPreviewState = 'error' | 'loading' | 'ready'
 
 export interface ArtifactPreviewProps {
   content?: string

@@ -38,18 +38,29 @@ const statusClasses = {
   success: 'text-success',
 } satisfies Record<ActivityStatus, string>
 
+const statusDotClasses = {
+  blocked: 'bg-warning',
+  failed: 'bg-destructive',
+  queued: 'bg-muted-foreground',
+  redacted: 'bg-muted-foreground',
+  running: 'bg-warning',
+  success: 'bg-success',
+} satisfies Record<ActivityStatus, string>
+
 export function getActivityStatusClass(status: ActivityStatus) {
   return statusClasses[status]
 }
 
 export function ActivityItem({ item }: ActivityItemProps) {
   return (
-    <li>
-      <span className="rounded-md border border-border bg-surface px-3 py-1 font-mono text-muted-foreground text-xs">
-        {item.label}
-        <span className={`ml-3 ${statusClasses[item.status]}`}>{statusLabels[item.status]}</span>
-        <span className="ml-6">{item.time}</span>
-      </span>
+    <li className="flex shrink-0 items-center gap-2 font-mono text-xs">
+      <span className="text-foreground">{item.label}</span>
+      <span
+        aria-hidden="true"
+        className={`size-1.5 rounded-full ${statusDotClasses[item.status]}`}
+      />
+      <span className={statusClasses[item.status]}>{statusLabels[item.status]}</span>
+      <span className="text-muted-foreground">{item.time}</span>
     </li>
   )
 }

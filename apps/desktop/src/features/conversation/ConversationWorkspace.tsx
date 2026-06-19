@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
 import type { RunEvent } from '@/shared/events/run-event-schema'
+import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { useCommandClient } from '@/shared/tauri/react'
 import { ArtifactSummary } from './ArtifactSummary'
 import { Composer } from './Composer'
@@ -20,11 +21,15 @@ type OptimisticMessage = {
   message: ConversationRuntimeState['messages'][number]
 }
 
+type ConversationWorkspaceProps = {
+  conversationId?: string
+}
+
 let optimisticMessageSequence = 0
 
-export function ConversationWorkspace() {
+export function ConversationWorkspace({ conversationId }: ConversationWorkspaceProps) {
   const commandClient = useCommandClient()
-  const conversation = useConversation()
+  const conversation = useConversation({ conversationId })
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null)
   const [localMessages, setLocalMessages] = useState<OptimisticMessage[]>([])
   const activityQuery = useQuery({
@@ -70,7 +75,9 @@ export function ConversationWorkspace() {
     return (
       <section className="mx-auto flex min-h-full max-w-5xl flex-col">
         <h1 className="pt-4 font-semibold text-2xl tracking-normal">Conversation unavailable</h1>
-        <p className="mt-3 text-destructive text-sm">{getErrorMessage(conversation.error)}</p>
+        <p className="mt-3 text-destructive text-sm">
+          {getCommandErrorMessage(conversation.error)}
+        </p>
       </section>
     )
   }
@@ -107,7 +114,7 @@ export function ConversationWorkspace() {
             <ConversationMessage
               author={message.author}
               avatar={message.avatar}
-              body={formatMessageBody(message.body)}
+              body={formatMultilineMessageBody(message.body)}
               elementId={getConversationMessageElementId(message.id)}
               key={message.id}
               time={message.time}
@@ -165,7 +172,7 @@ export function ConversationWorkspace() {
       <div className="pt-4">
         <Composer
           errorMessage={
-            conversation.submitError ? getErrorMessage(conversation.submitError) : undefined
+            conversation.submitError ? getCommandErrorMessage(conversation.submitError) : undefined
           }
           pending={conversation.isSubmitting}
           onSubmit={(message) => {
@@ -270,7 +277,7 @@ function createOptimisticMessage(
     ),
     message: {
       author: 'You',
-      avatar: 'JD',
+      avatar: 'Y',
       body,
       id: `message-optimistic-${optimisticMessageSequence}`,
       time: 'Now',
@@ -298,7 +305,7 @@ function toMessageViewModel(
 
   return {
     author: isAssistant ? 'Jyowo' : 'You',
-    avatar: isAssistant ? 'J' : 'JD',
+    avatar: isAssistant ? 'J' : 'Y',
     body: message.body,
     id: message.id,
     time: formatTimestamp(message.timestamp),
@@ -331,12 +338,8 @@ function formatTimestamp(timestamp: string) {
   }).format(date)
 }
 
-function getErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
-}
-
-function formatMessageBody(body: string) {
-  const lines = body.split('\n').filter((line) => !isHiddenPlanLine(line))
+function formatMultilineMessageBody(body: string) {
+  const lines = body.split('\n')
 
   if (lines.length === 1) {
     return lines[0] ?? ''
@@ -362,49 +365,9 @@ function toPlanBlockItem(item: ConversationRuntimeState['planItems'][number]) {
 }
 
 function toPlanItems(
-  messages: ConversationRuntimeState['messages'],
+  _messages: ConversationRuntimeState['messages'],
 ): ConversationRuntimeState['planItems'] {
-  const latestAssistantMessage = [...messages]
-    .reverse()
-    .find((message) => message.tone === 'assistant')
-
-  if (!latestAssistantMessage) {
-    return []
-  }
-
-  const hiddenPlanLines = latestAssistantMessage.body
-    .split('\n')
-    .map((line) => parseHiddenPlanLine(line))
-    .filter((label): label is string => Boolean(label))
-
-  if (hiddenPlanLines.length > 0) {
-    return hiddenPlanLines.map((label, index) => ({
-      id: `plan-${index + 1}`,
-      label,
-      status: index === hiddenPlanLines.length - 1 ? 'running' : 'completed',
-    }))
-  }
-
-  const planLines = latestAssistantMessage.body
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => /^[-*]\s+/.test(line))
-
-  return planLines.map((line, index) => ({
-    id: `plan-${index + 1}`,
-    label: line.replace(/^[-*]\s+/, ''),
-    status: index === planLines.length - 1 ? 'running' : 'completed',
-  }))
-}
-
-function isHiddenPlanLine(line: string) {
-  return parseHiddenPlanLine(line) !== null
-}
-
-function parseHiddenPlanLine(line: string) {
-  const match = line.trim().match(/^<!--\s*jyowo-plan:\s*(.+?)\s*-->$/)
-
-  return match?.[1] ?? null
+  return []
 }
 
 function toActivityItems(events: RunEvent[]): ConversationRuntimeState['activityItems'] {

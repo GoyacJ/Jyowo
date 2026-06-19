@@ -244,7 +244,7 @@ list_activity(
   conversation_id: Option<String>,
   run_id: Option<String>
 ) -> Result<ListActivityResponse, CommandErrorPayload>
-list_conversations() -> ListConversationsResponse
+list_conversations() -> Result<ListConversationsResponse, CommandErrorPayload>
 list_mcp_servers() -> Result<ListMcpServersResponse, CommandErrorPayload>
 list_memory_items() -> Result<ListMemoryItemsResponse, CommandErrorPayload>
 resolve_permission(

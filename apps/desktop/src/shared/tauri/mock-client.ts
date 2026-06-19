@@ -68,12 +68,9 @@ const mockConversation: GetConversationResponse = {
       {
         author: 'assistant',
         body: [
-          "I'll set up the foundation with a clean project structure, dev scripts, and base app shell.",
-          '<!-- jyowo-plan: Initialize project & dependencies -->',
-          '<!-- jyowo-plan: Configure Electron main process -->',
-          '<!-- jyowo-plan: Set up React + TypeScript (Vite) -->',
-          '<!-- jyowo-plan: Add base app shell & IPC bridge -->',
-          '<!-- jyowo-plan: Add scripts, README, and .gitignore -->',
+          'The runtime conversation is connected to the local workspace.',
+          'Activity, artifacts, and context now come from command responses instead of embedded UI data.',
+          'Continue from the composer to start another runtime-backed turn.',
         ].join('\n'),
         id: 'message-002',
         timestamp,
@@ -440,7 +437,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
   }
 }
 
-export function createRejectedCommandClient(error: Error): CommandClient {
+export function createRejectedCommandClient(error: unknown): CommandClient {
   return {
     cancelRun: () => Promise.reject(error),
     deleteMcpServer: () => Promise.reject(error),

@@ -1,7 +1,7 @@
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Bot,
-  ChevronDown,
   ChevronsRight,
   CircleDot,
   FileText,
@@ -14,13 +14,13 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { readUiPreferences, writeUiPreferences } from '@/shared/local-store/ui-preferences-store'
 import { useUiStore } from '@/shared/state/ui-store'
+import { listConversations } from '@/shared/tauri/commands'
+import { getCommandErrorMessage } from '@/shared/tauri/errors'
+import { useCommandClient } from '@/shared/tauri/react'
 import { CommandPalette, type CommandPaletteAction } from './CommandPalette'
 import { ConversationList } from './ConversationList'
-import { prototypeRecentConversations } from './prototype-data'
 import { WorkspaceSearch } from './WorkspaceSearch'
-import { type WorkspaceOption, WorkspaceSelector } from './WorkspaceSelector'
 
 const primaryNavigationItems = [
   { label: 'Home', icon: Home, to: '/' },
@@ -33,62 +33,54 @@ const primaryNavigationItems = [
 
 type SidebarDestination = (typeof primaryNavigationItems)[number]['label'] | 'Settings'
 
-const prototypeWorkspaces: WorkspaceOption[] = [
-  {
-    name: 'Jyowo',
-    path: 'Current project',
-    ref: 'local:current',
-  },
-  {
-    name: 'Design sandbox',
-    path: 'Local prototype workspace',
-    ref: 'local:design-sandbox',
-  },
-]
-
 export function SidebarNav() {
   const [searchTerm, setSearchTerm] = useState('')
   const [activeDestination, setActiveDestination] = useState<SidebarDestination>('Conversations')
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const commandClient = useCommandClient()
   const navigate = useNavigate()
   const currentPath = useRouterState({
     select: (state) => state.location.pathname,
   })
+  const selectedConversationId = useRouterState({
+    select: (state) => state.location.search.conversationId,
+  })
+  const conversationsQuery = useQuery({
+    queryKey: ['conversation', 'list'],
+    queryFn: () => listConversations(commandClient),
+  })
+  const workspaceContextQuery = useQuery({
+    queryKey: ['workspace', 'context-summary'],
+    queryFn: () => commandClient.getContextSnapshot({}),
+  })
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
   const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed)
-  const selectedWorkspaceRef = useUiStore((state) => state.selectedWorkspaceRef)
-  const setSelectedWorkspaceRef = useUiStore((state) => state.setSelectedWorkspaceRef)
   const clearActiveRun = useUiStore((state) => state.clearActiveRun)
   const setActivityRailCollapsed = useUiStore((state) => state.setActivityRailCollapsed)
   const setActivityRailExpanded = useUiStore((state) => state.setActivityRailExpanded)
   const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
   const filteredConversations = useMemo(() => {
     const normalizedSearch = searchTerm.trim().toLowerCase()
+    const conversations = conversationsQuery.data?.conversations ?? []
 
     if (!normalizedSearch) {
-      return prototypeRecentConversations
+      return conversations
     }
 
-    return prototypeRecentConversations.filter((conversation) =>
-      conversation.toLowerCase().includes(normalizedSearch),
-    )
-  }, [searchTerm])
+    return conversations.filter((conversation) => {
+      const preview = conversation.lastMessagePreview ?? ''
 
-  useEffect(() => {
-    let mounted = true
-
-    void readUiPreferences()
-      .then((preferences) => {
-        if (mounted && preferences.lastSelectedWorkspaceRef) {
-          setSelectedWorkspaceRef(preferences.lastSelectedWorkspaceRef)
-        }
-      })
-      .catch(() => {})
-
-    return () => {
-      mounted = false
-    }
-  }, [setSelectedWorkspaceRef])
+      return (
+        conversation.title.toLowerCase().includes(normalizedSearch) ||
+        preview.toLowerCase().includes(normalizedSearch)
+      )
+    })
+  }, [conversationsQuery.data?.conversations, searchTerm])
+  const activeConversationId =
+    selectedConversationId ?? conversationsQuery.data?.conversations[0]?.id
+  const workspaceProject = workspaceContextQuery.data?.project?.trim() || 'Workspace'
+  const workspacePath = workspaceContextQuery.data?.path?.trim() || 'Local workspace'
+  const workspaceInitials = getWorkspaceInitials(workspaceProject)
 
   useEffect(() => {
     if (currentPath === '/artifacts') {
@@ -110,9 +102,8 @@ export function SidebarNav() {
     void navigate({ to })
   }
 
-  function selectWorkspace(workspace: WorkspaceOption) {
-    setSelectedWorkspaceRef(workspace.ref)
-    void writeUiPreferences({ lastSelectedWorkspaceRef: workspace.ref }).catch(() => {})
+  function selectConversation(conversationId: string) {
+    void navigate({ search: { conversationId }, to: '/' })
   }
 
   function focusComposerForNewConversation() {
@@ -189,10 +180,10 @@ export function SidebarNav() {
       data-collapsed="false"
     >
       <CommandPalette onAction={runCommand} />
-      <div className="flex h-16 items-center justify-between px-5">
-        <span className="flex items-center gap-3 font-semibold text-sm">
-          <CircleDot className="size-5 text-foreground" />
-          Jyowo
+      <div className="flex h-16 items-center justify-between gap-2 px-5">
+        <span className="flex min-w-0 items-center gap-2.5">
+          <CircleDot className="size-5 shrink-0 text-foreground" />
+          <span className="truncate font-semibold text-sm">{workspaceProject}</span>
         </span>
         <button
           aria-label="New conversation"
@@ -210,14 +201,14 @@ export function SidebarNav() {
           value={searchTerm}
         />
       </div>
-      <WorkspaceSelector
-        onSelect={selectWorkspace}
-        selectedWorkspaceRef={selectedWorkspaceRef}
-        workspaces={prototypeWorkspaces}
-      />
       <ConversationList
-        activeConversation="Build the desktop foundation"
+        activeConversationId={activeConversationId}
         conversations={filteredConversations}
+        errorMessage={
+          conversationsQuery.error ? getCommandErrorMessage(conversationsQuery.error) : undefined
+        }
+        isLoading={conversationsQuery.isLoading}
+        onSelectConversation={selectConversation}
       />
       <div className="mt-8 flex-1 px-3">
         <ul className="flex flex-col gap-1">
@@ -255,22 +246,29 @@ export function SidebarNav() {
           <Settings className="size-4" />
           Settings
         </button>
-        <button
-          className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left hover:bg-muted"
-          type="button"
-        >
+        <div className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left">
           <span className="flex min-w-0 items-center gap-3">
             <span className="grid size-8 shrink-0 place-items-center rounded-full bg-accent/20 text-sm">
-              JD
+              {workspaceInitials}
             </span>
             <span className="min-w-0">
-              <span className="block truncate font-medium text-sm">Jane Doe</span>
-              <span className="block truncate text-muted-foreground text-xs">Local workspace</span>
+              <span className="block truncate font-medium text-sm">{workspaceProject}</span>
+              <span className="block truncate text-muted-foreground text-xs">{workspacePath}</span>
             </span>
           </span>
-          <ChevronDown className="size-4 -rotate-90 text-muted-foreground" />
-        </button>
+        </div>
       </div>
     </nav>
   )
+}
+
+function getWorkspaceInitials(project: string) {
+  const initials = project
+    .split(/[\s._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('')
+
+  return initials || 'J'
 }

@@ -11,7 +11,6 @@ import { DiffPreview } from './DiffPreview'
 import type { PlanItem } from './PlanBlock'
 import { PlanBlock } from './PlanBlock'
 import { ProgressBlock } from './ProgressBlock'
-import { prototypeDiffLines, prototypePlanItems } from './prototype-data'
 import { ReviewRequest } from './ReviewRequest'
 
 const meta = {
@@ -69,7 +68,7 @@ export const ErrorState: Story = {
       <ConversationCanvas title="Build the desktop foundation">
         <ConversationMessage
           author="You"
-          avatar="JD"
+          avatar="Y"
           body="Continue the desktop setup."
           time="10:21 AM"
         />
@@ -92,7 +91,7 @@ export const Streaming: Story = {
       <ConversationCanvas title="Build the desktop foundation">
         <ConversationMessage
           author="You"
-          avatar="JD"
+          avatar="Y"
           body="Use Vite for the renderer and keep the shell conversation-first."
           time="10:21 AM"
         />
@@ -118,7 +117,7 @@ export const PermissionPending: Story = {
       <ConversationCanvas title="Build the desktop foundation">
         <ConversationMessage
           author="You"
-          avatar="JD"
+          avatar="Y"
           body="Install the desktop dependencies."
           time="10:21 AM"
         />
@@ -159,7 +158,7 @@ export const Completed: Story = {
       <ConversationCanvas title="Build the desktop foundation">
         <ConversationMessage
           author="You"
-          avatar="JD"
+          avatar="Y"
           body="Create the desktop foundation and make it runnable."
           time="10:21 AM"
         />
@@ -174,7 +173,7 @@ export const Completed: Story = {
           <DiffPreview
             addedLineCount={46}
             filename="apps/desktop/src-tauri/src/lib.rs"
-            lines={prototypeDiffLines}
+            lines={storyDiffLines}
           />
           <ArtifactSummary
             artifacts={[
@@ -206,12 +205,38 @@ function StoryFrame({ children }: { children: ReactNode }) {
   return <main className="min-h-screen bg-background p-6 text-foreground">{children}</main>
 }
 
-const streamingPlanItems = prototypePlanItems.map((item, index) => ({
+const storyPlanItems = [
+  { label: 'Initialize project & dependencies', status: 'Done' },
+  { label: 'Configure Tauri command boundary', status: 'Done' },
+  { label: 'Set up React + TypeScript (Vite)', status: 'Done' },
+  { label: 'Add base app shell & IPC bridge', status: 'Done' },
+  { label: 'Add scripts, README, and .gitignore', status: 'In progress' },
+] satisfies PlanItem[]
+
+const storyDiffLines = [
+  '+ use serde::Serialize;',
+  '+',
+  '+ #[derive(Serialize)]',
+  '+ struct AppInfoPayload {',
+  '+   name: String,',
+  '+   version: String,',
+  '+ }',
+  '+',
+  '+ #[tauri::command]',
+  '+ fn get_app_info() -> AppInfoPayload {',
+  '+   AppInfoPayload {',
+  '+     name: "Jyowo".into(),',
+  '+     version: env!("CARGO_PKG_VERSION").into(),',
+  '+   }',
+  '+ }',
+]
+
+const streamingPlanItems = storyPlanItems.map((item, index) => ({
   ...item,
   status: index < 2 ? 'Done' : 'In progress',
 })) satisfies PlanItem[]
 
-const completedPlanItems = prototypePlanItems.map((item) => ({
+const completedPlanItems = storyPlanItems.map((item) => ({
   ...item,
   status: 'Done',
 })) satisfies PlanItem[]

@@ -10,13 +10,11 @@ describe('ui-store', () => {
     store.getState().setActivityRailCollapsed(true)
     store.getState().setActivityRailExpanded(true)
     store.getState().setActiveRun({ conversationId: 'conversation-001', runId: 'run-001' })
-    store.getState().setSelectedWorkspaceRef('local:current')
     store.getState().setInspectorOpen(false)
     store.getState().setTheme('dark')
 
     expect(store.getState().activeRunConversationId).toBe('conversation-001')
     expect(store.getState().activeRunId).toBe('run-001')
-    expect(store.getState().selectedWorkspaceRef).toBe('local:current')
     expect(store.getState().sidebarCollapsed).toBe(true)
     expect(store.getState().activityRailCollapsed).toBe(true)
     expect(store.getState().activityRailExpanded).toBe(true)

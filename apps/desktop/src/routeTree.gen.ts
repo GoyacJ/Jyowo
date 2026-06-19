@@ -19,27 +19,27 @@ const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
   getParentRoute: () => rootRouteImport,
-} as any)
+} as any).lazy(() => import('./routes/settings.lazy').then((d) => d.Route))
 const MemoryRoute = MemoryRouteImport.update({
   id: '/memory',
   path: '/memory',
   getParentRoute: () => rootRouteImport,
-} as any)
+} as any).lazy(() => import('./routes/memory.lazy').then((d) => d.Route))
 const EvalsRoute = EvalsRouteImport.update({
   id: '/evals',
   path: '/evals',
   getParentRoute: () => rootRouteImport,
-} as any)
+} as any).lazy(() => import('./routes/evals.lazy').then((d) => d.Route))
 const ArtifactsRoute = ArtifactsRouteImport.update({
   id: '/artifacts',
   path: '/artifacts',
   getParentRoute: () => rootRouteImport,
-} as any)
+} as any).lazy(() => import('./routes/artifacts.lazy').then((d) => d.Route))
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
-} as any)
+} as any).lazy(() => import('./routes/index.lazy').then((d) => d.Route))
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute

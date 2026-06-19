@@ -4,11 +4,10 @@ use jyowo_desktop_shell::commands::{
     cancel_run_payload, cancel_run_with_runtime_state, delete_mcp_server_with_runtime_state,
     delete_mcp_server_with_store, delete_memory_item_with_runtime_state,
     export_memory_items_with_runtime_state, export_support_bundle_with_runtime_state,
-    get_app_info_payload, get_context_snapshot_payload, get_context_snapshot_with_runtime_state,
-    get_conversation_payload, get_conversation_with_runtime_state,
-    get_memory_item_with_runtime_state, get_replay_timeline_with_runtime_state,
-    harness_healthcheck_payload, list_activity_payload, list_activity_with_runtime_state,
-    list_artifacts_payload, list_artifacts_with_runtime_state, list_conversations_payload,
+    get_app_info_payload, get_context_snapshot_with_runtime_state,
+    get_conversation_with_runtime_state, get_memory_item_with_runtime_state,
+    get_replay_timeline_with_runtime_state, harness_healthcheck_payload, list_activity_payload,
+    list_activity_with_runtime_state, list_artifacts_with_runtime_state,
     list_conversations_with_runtime_state, list_eval_cases_payload,
     list_mcp_servers_with_runtime_state, list_memory_items_with_runtime_state, provider_secret_ref,
     provider_secret_ref_prefix, resolve_permission_payload, resolve_permission_with_runtime_state,
@@ -103,31 +102,6 @@ fn eval_lab_payloads_return_safe_local_support_cases() {
     assert_eq!(run_value["status"], "completed");
     assert_eq!(run_value["case"]["id"], "regression-smoke");
     assert_eq!(run_value["case"]["lastRun"]["passed"], 4);
-}
-
-#[test]
-fn list_artifacts_payload_returns_safe_reviewable_artifacts() {
-    let payload = list_artifacts_payload();
-    let value = serde_json::to_value(&payload).unwrap();
-
-    assert_eq!(
-        value,
-        json!({
-            "artifacts": [
-                {
-                    "actionLabel": "Open",
-                    "description": "Generated implementation plan and app shell review output.",
-                    "id": "artifact-foundation-plan",
-                    "kind": "markdown",
-                    "preview": "# Foundation review\n\n- Conversation workspace restored.\n- Activity rail connected.\n- Support surfaces available from navigation.",
-                    "sourceMessageId": "message-002",
-                    "sourceRunId": "run-001",
-                    "status": "ready",
-                    "title": "Foundation implementation review"
-                }
-            ]
-        })
-    );
 }
 
 #[test]
@@ -787,30 +761,10 @@ async fn memory_commands_list_inspect_update_delete_and_export_visible_items() {
     assert!(list_after_delete.items.is_empty());
 }
 
-#[test]
-fn list_conversations_payload_returns_typed_placeholder_data() {
-    let payload = list_conversations_payload();
-    let value = serde_json::to_value(payload).unwrap();
-
-    assert_eq!(
-        value,
-        json!({
-            "conversations": [
-                {
-                    "id": "conversation-placeholder",
-                    "lastMessagePreview": "Runtime conversation history is not connected yet.",
-                    "title": "Build the desktop foundation",
-                    "updatedAt": "2026-06-17T00:00:00.000Z"
-                }
-            ]
-        })
-    );
-}
-
 #[tokio::test]
 async fn list_conversations_with_runtime_state_returns_startable_conversation_id() {
     let state = runtime_state_with_harness().await;
-    let payload = list_conversations_with_runtime_state(&state);
+    let payload = list_conversations_with_runtime_state(&state).await;
     let conversation_id = payload.conversations[0].id.clone();
 
     let session_id =
@@ -837,35 +791,74 @@ async fn list_conversations_with_runtime_state_returns_startable_conversation_id
     );
 }
 
-#[test]
-fn get_conversation_payload_rejects_empty_conversation_id() {
-    let error = get_conversation_payload(GetConversationRequest {
-        conversation_id: " ".to_owned(),
-    })
-    .unwrap_err();
+#[tokio::test]
+async fn list_conversations_with_runtime_state_returns_empty_list_without_harness() {
+    let workspace = unique_workspace("no-harness");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("workspace state should initialize without a harness");
+    let payload = list_conversations_with_runtime_state(&state).await;
 
-    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(payload.conversations.is_empty());
 }
 
-#[test]
-fn get_conversation_payload_returns_requested_conversation() {
-    let payload = get_conversation_payload(GetConversationRequest {
-        conversation_id: "conversation-001".to_owned(),
-    })
-    .unwrap();
-    let value = serde_json::to_value(payload).unwrap();
+#[tokio::test]
+async fn list_conversations_with_runtime_state_opens_listed_empty_conversation() {
+    let state = runtime_state_with_harness().await;
+    let payload = list_conversations_with_runtime_state(&state).await;
+    let conversation_id = payload.conversations[0].id.clone();
 
-    assert_eq!(
-        value,
-        json!({
-            "conversation": {
-                "id": "conversation-001",
-                "messages": [],
-                "title": "Build the desktop foundation",
-                "updatedAt": "2026-06-17T00:00:00.000Z"
-            }
-        })
-    );
+    let detail = get_conversation_with_runtime_state(
+        GetConversationRequest {
+            conversation_id: conversation_id.clone(),
+        },
+        &state,
+    )
+    .await
+    .expect("listed empty conversation should be readable");
+
+    assert_eq!(detail.conversation.id, conversation_id);
+    assert!(detail.conversation.messages.is_empty());
+    assert_eq!(detail.conversation.title, "New conversation");
+}
+
+#[tokio::test]
+async fn listed_empty_conversation_returns_empty_activity() {
+    let state = runtime_state_with_harness().await;
+    let payload = list_conversations_with_runtime_state(&state).await;
+    let conversation_id = payload.conversations[0].id.clone();
+
+    let activity = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(conversation_id),
+            run_id: None,
+        },
+        &state,
+    )
+    .await
+    .expect("listed empty conversation activity should be readable");
+
+    assert!(activity.events.is_empty());
+}
+
+#[tokio::test]
+async fn listed_empty_conversation_returns_workspace_context() {
+    let state = runtime_state_with_harness().await;
+    let payload = list_conversations_with_runtime_state(&state).await;
+    let conversation_id = payload.conversations[0].id.clone();
+
+    let context = get_context_snapshot_with_runtime_state(
+        GetContextSnapshotRequest {
+            conversation_id: Some(conversation_id),
+            run_id: None,
+        },
+        &state,
+    )
+    .await
+    .expect("listed empty conversation context should be readable");
+
+    assert!(!context.project.is_empty());
+    assert!(context.active_artifact.is_none());
 }
 
 #[tokio::test]
@@ -915,6 +908,52 @@ async fn get_conversation_with_runtime_state_returns_runtime_messages() {
 
         if tokio::time::Instant::now() >= deadline {
             panic!("conversation detail should include runtime messages");
+        }
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+#[tokio::test]
+async fn list_conversations_with_runtime_state_projects_runtime_summary() {
+    let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Text("Ready from runtime".to_owned()),
+        },
+        ModelStreamEvent::MessageStop,
+    ])])
+    .await;
+    let session_id = SessionId::new();
+
+    start_run_with_runtime_state(
+        StartRunRequest {
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            prompt: "Tell me status\nwith details".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("start_run should start a conversation run");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let payload = list_conversations_with_runtime_state(&state).await;
+        let summary = payload
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == session_id.to_string())
+            .expect("started session should be listed");
+
+        if summary.last_message_preview.as_deref() == Some("Ready from runtime") {
+            assert_eq!(summary.title, "Tell me status");
+            assert_ne!(summary.updated_at, "2026-06-17T00:00:00.000Z");
+            break;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!("conversation summary should include runtime message projection");
         }
 
         tokio::time::sleep(Duration::from_millis(1)).await;
@@ -2585,28 +2624,6 @@ impl McpServerStore for RecordingMcpServerStore {
 }
 
 #[test]
-fn get_context_snapshot_payload_returns_safe_placeholder_context() {
-    let payload = get_context_snapshot_payload(GetContextSnapshotRequest {
-        conversation_id: Some("conversation-001".to_owned()),
-        run_id: None,
-    })
-    .unwrap();
-    let value = serde_json::to_value(payload).unwrap();
-
-    assert_eq!(
-        value,
-        json!({
-            "activeArtifact": null,
-            "decisions": [],
-            "files": [],
-            "nextActions": ["Connect the Rust runtime facade"],
-            "path": "workspace://local",
-            "project": "Local workspace"
-        })
-    );
-}
-
-#[test]
 fn context_file_payload_skips_missing_optional_state() {
     let value = serde_json::to_value(jyowo_desktop_shell::commands::ContextFilePayload {
         label: "apps/desktop/src/main.tsx".to_owned(),
@@ -2619,6 +2636,47 @@ fn context_file_payload_skips_missing_optional_state() {
         json!({
             "label": "apps/desktop/src/main.tsx"
         })
+    );
+}
+
+#[tokio::test]
+async fn get_context_snapshot_with_runtime_state_returns_workspace_metadata_without_session() {
+    let workspace = unique_workspace("context-snapshot-no-session");
+    std::fs::create_dir_all(workspace.join("apps/desktop/src")).unwrap();
+    std::fs::write(
+        workspace.join("apps/desktop/src/main.tsx"),
+        "console.log('ready')",
+    )
+    .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
+    let session_id = SessionId::new();
+
+    let context = get_context_snapshot_with_runtime_state(
+        GetContextSnapshotRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: None,
+        },
+        &state,
+    )
+    .await
+    .expect("missing conversation events should still return workspace metadata");
+
+    assert_eq!(
+        context.project,
+        workspace.file_name().unwrap().to_string_lossy()
+    );
+    assert!(context
+        .path
+        .contains(&workspace.file_name().unwrap().to_string_lossy().to_string()));
+    assert!(context.active_artifact.is_none());
+    assert!(context.decisions.is_empty());
+    assert_eq!(context.next_actions, vec!["Continue the conversation"]);
+    assert_eq!(
+        context.files,
+        vec![jyowo_desktop_shell::commands::ContextFilePayload {
+            label: "apps/desktop/src/main.tsx".to_owned(),
+            state: Some("ready"),
+        }]
     );
 }
 
@@ -2841,7 +2899,7 @@ async fn get_context_snapshot_with_runtime_state_redacts_workspace_display_field
 async fn get_context_snapshot_with_runtime_state_hides_runtime_read_errors() {
     let state = runtime_state_with_harness().await;
 
-    let error = get_context_snapshot_with_runtime_state(
+    let payload = get_context_snapshot_with_runtime_state(
         GetContextSnapshotRequest {
             conversation_id: Some(state.default_conversation_id().to_string()),
             run_id: None,
@@ -2849,11 +2907,17 @@ async fn get_context_snapshot_with_runtime_state_hides_runtime_read_errors() {
         &state,
     )
     .await
-    .expect_err("missing conversation session should fail safely");
+    .expect("missing conversation session should still return workspace metadata");
 
-    assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
-    assert_eq!(error.message, "context snapshot read failed");
-    assert!(!error
-        .message
-        .contains(&state.default_conversation_id().to_string()));
+    assert_eq!(
+        payload.project,
+        state
+            .workspace_root()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap()
+    );
+    assert_eq!(payload.path, state.workspace_root().display().to_string());
+    assert!(payload.files.is_empty());
+    assert!(payload.decisions.is_empty());
 }

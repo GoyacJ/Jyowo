@@ -28,6 +28,7 @@ import {
   updateMemoryItem,
   validateProviderSettings,
 } from './commands'
+import { getCommandErrorMessage } from './errors'
 import { createMockCommandClient } from './mock-client'
 
 describe('CommandClient', () => {
@@ -88,6 +89,18 @@ describe('CommandClient', () => {
     )
 
     await expect(getAppInfo(client)).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('formats object-shaped Tauri command errors through their message', () => {
+    expect(
+      getCommandErrorMessage({
+        code: 'RUNTIME_OPERATION_FAILED',
+        message: 'conversation read failed',
+      }),
+    ).toBe('conversation read failed')
+    expect(getCommandErrorMessage({ code: 'RUNTIME_OPERATION_FAILED' })).toBe(
+      'Unknown command error',
+    )
   })
 
   it('supports mock clients outside the Tauri runtime', async () => {
