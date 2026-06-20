@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+
 import { type CommandDetails, CommandPreview } from './CommandPreview'
 import { PermissionDialog, type PermissionRequestDetails } from './PermissionDialog'
 import { type RawJsonDetails, RawJsonView } from './RawJsonView'
@@ -23,8 +25,10 @@ export function RunEventDetails({
   onDenyPermission,
   resolvingPermissionId,
 }: RunEventDetailsProps) {
+  const { t } = useTranslation('activity')
+
   return (
-    <section aria-label="Run event details" className="space-y-4">
+    <section aria-label={t('runEventDetails')} className="space-y-4">
       {event.toolCall ? <ToolCallCard toolCall={event.toolCall} /> : null}
       {event.command ? <CommandPreview command={event.command} /> : null}
       {event.permissions?.map((permission) => (

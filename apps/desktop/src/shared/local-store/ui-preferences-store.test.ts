@@ -40,6 +40,7 @@ describe('ui-preferences-store', () => {
 
     await expect(readUiPreferences()).resolves.toEqual({
       theme: 'light',
+      locale: 'zh-CN',
       sidebarCollapsed: false,
       chatComposerHeight: 160,
       contextPanelWidth: 320,
@@ -49,6 +50,7 @@ describe('ui-preferences-store', () => {
       autoSave: 100,
       defaults: {
         theme: 'light',
+        locale: 'zh-CN',
         sidebarCollapsed: false,
         chatComposerHeight: 160,
         contextPanelWidth: 320,
@@ -59,6 +61,7 @@ describe('ui-preferences-store', () => {
 
   it('falls back when stored values are invalid', async () => {
     storeMock.state.set('theme', 'blue')
+    storeMock.state.set('locale', 'pirate')
     storeMock.state.set('sidebarCollapsed', 'yes')
     storeMock.state.set('chatComposerHeight', 'tall')
     storeMock.state.set('contextPanelWidth', 'wide')
@@ -67,6 +70,7 @@ describe('ui-preferences-store', () => {
 
     await expect(readUiPreferences()).resolves.toEqual({
       theme: 'light',
+      locale: 'zh-CN',
       sidebarCollapsed: false,
       chatComposerHeight: 160,
       contextPanelWidth: 320,
@@ -78,15 +82,18 @@ describe('ui-preferences-store', () => {
 
     await writeUiPreferences({
       theme: 'dark',
+      locale: 'en-US',
       sidebarCollapsed: true,
       contextPanelWidth: 420,
     })
 
     expect(storeMock.set).toHaveBeenCalledWith('theme', 'dark')
+    expect(storeMock.set).toHaveBeenCalledWith('locale', 'en-US')
     expect(storeMock.set).toHaveBeenCalledWith('sidebarCollapsed', true)
     expect(storeMock.set).toHaveBeenCalledWith('contextPanelWidth', 420)
     await expect(readUiPreferences()).resolves.toMatchObject({
       theme: 'dark',
+      locale: 'en-US',
       sidebarCollapsed: true,
       contextPanelWidth: 420,
     })

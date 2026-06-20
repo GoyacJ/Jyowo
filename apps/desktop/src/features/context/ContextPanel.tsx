@@ -1,4 +1,5 @@
 import { ChevronDown, X } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { ContextSection } from './ContextSection'
 import { type ContextFileReference, FileReferenceList } from './FileReferenceList'
@@ -40,16 +41,18 @@ export function ContextPanel({
   onNextAction,
   onShowAllFiles,
 }: ContextPanelProps) {
+  const { t } = useTranslation('context')
+
   return (
     <aside
-      aria-label="Context"
+      aria-label={t('title')}
       className="flex min-h-0 flex-col border-border border-l bg-background"
     >
-      <div className="flex h-16 items-center justify-between px-8">
-        <div className="font-semibold">Context</div>
+      <div className="flex h-14 items-center justify-between px-6">
+        <div className="font-semibold">{t('title')}</div>
         {onClose ? (
           <button
-            aria-label="Close context"
+            aria-label={t('close')}
             className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
             onClick={onClose}
             type="button"
@@ -78,14 +81,18 @@ export function ContextPanel({
 }
 
 function LoadingContextPanel() {
-  return <div className="px-8 text-muted-foreground text-sm">Loading context</div>
+  const { t } = useTranslation('context')
+
+  return <div className="px-6 text-muted-foreground text-sm">{t('loading')}</div>
 }
 
 function ErrorContextPanel({ message }: { message: string }) {
+  const { t } = useTranslation('context')
+
   return (
-    <div className="px-8 text-sm">
+    <div className="px-6 text-sm">
       <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4">
-        <div className="font-medium text-destructive">Context unavailable</div>
+        <div className="font-medium text-destructive">{t('unavailable')}</div>
         <p className="mt-2 text-destructive/80">{message}</p>
       </div>
     </div>
@@ -105,15 +112,16 @@ function ContextPanelContent({
   onNextAction?: (action: string) => void
   onShowAllFiles?: () => void
 }) {
+  const { t } = useTranslation('context')
   const totalFileCount = context.totalFileCount ?? context.files.length
   const hiddenFileCount = Math.max(totalFileCount - context.files.length, 0)
 
   return (
-    <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-8 pb-6 text-sm">
+    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-5 text-sm">
       <section className="space-y-3">
-        <div className="text-muted-foreground">Project</div>
+        <div className="text-muted-foreground">{t('project')}</div>
         <div className="font-medium">{context.project}</div>
-        <div className="text-muted-foreground">Path</div>
+        <div className="text-muted-foreground">{t('path')}</div>
         <div className="break-all font-mono text-xs">{context.path}</div>
       </section>
 
@@ -121,7 +129,7 @@ function ContextPanelContent({
         action={
           onAddFile ? (
             <button
-              aria-label="Add file"
+              aria-label={t('addFile')}
               className="text-lg leading-none"
               onClick={onAddFile}
               type="button"
@@ -130,27 +138,27 @@ function ContextPanelContent({
             </button>
           ) : null
         }
-        title="Files"
+        title={t('files')}
       >
         <FileReferenceList files={context.files} />
         {hiddenFileCount > 0 && onShowAllFiles ? (
           <button
-            aria-label="Show all files"
+            aria-label={t('showAllFilesLabel')}
             className="mt-3 text-muted-foreground text-xs hover:text-foreground"
             onClick={onShowAllFiles}
             type="button"
           >
-            Show all ({totalFileCount})
+            {t('showAllFiles', { count: totalFileCount })}
           </button>
         ) : null}
       </ContextSection>
 
-      <ContextSection title="Active artifact">
-        <div className="font-medium">{context.activeArtifact ?? 'No active artifact'}</div>
+      <ContextSection title={t('activeArtifact')}>
+        <div className="font-medium">{context.activeArtifact ?? t('noActiveArtifact')}</div>
         {context.activeArtifact ? <ActiveArtifactThumbnail title={context.activeArtifact} /> : null}
       </ContextSection>
 
-      <ContextSection title="Decisions needed">
+      <ContextSection title={t('decisionsNeeded')}>
         {context.decisions.length > 0 ? (
           <div className="space-y-2">
             {context.decisions.map((decision) =>
@@ -174,11 +182,11 @@ function ContextPanelContent({
             )}
           </div>
         ) : (
-          <p className="text-muted-foreground text-sm">No decisions needed.</p>
+          <p className="text-muted-foreground text-sm">{t('noDecisionsNeeded')}</p>
         )}
       </ContextSection>
 
-      <ContextSection title="Next actions">
+      <ContextSection title={t('nextActions')}>
         <NextActionList actions={context.nextActions} onNextAction={onNextAction} />
       </ContextSection>
     </div>
@@ -186,9 +194,11 @@ function ContextPanelContent({
 }
 
 function ActiveArtifactThumbnail({ title }: { title: string }) {
+  const { t } = useTranslation('context')
+
   return (
     <div
-      aria-label={`${title} preview`}
+      aria-label={t('preview', { title })}
       className="mt-3 overflow-hidden rounded-md border border-border bg-surface"
       role="img"
     >
@@ -233,13 +243,13 @@ function DecisionContent({
 }
 
 function EmptyContextPanel() {
+  const { t } = useTranslation('context')
+
   return (
-    <div className="px-8 text-sm">
+    <div className="px-6 text-sm">
       <div className="rounded-md border border-border bg-surface p-4">
-        <div className="font-medium">No context selected</div>
-        <p className="mt-2 text-muted-foreground">
-          Start a conversation to attach project context.
-        </p>
+        <div className="font-medium">{t('emptyTitle')}</div>
+        <p className="mt-2 text-muted-foreground">{t('emptyDescription')}</p>
       </div>
     </div>
   )

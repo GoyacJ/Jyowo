@@ -1,4 +1,5 @@
 import { Copy, FileText } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 export type DiffViewerLine = {
   content: string
@@ -21,6 +22,7 @@ export function DiffViewer({
   maxVisibleLines = 120,
   onCopy,
 }: DiffViewerProps) {
+  const { t } = useTranslation('conversation')
   const visibleLines = lines.slice(0, maxVisibleLines)
   const hiddenLineCount = Math.max(0, lines.length - visibleLines.length)
 
@@ -34,10 +36,10 @@ export function DiffViewer({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button className="rounded-md border border-border px-3 py-1 text-xs" type="button">
-            Open in editor
+            {t('diff.openInEditor')}
           </button>
           <button
-            aria-label="Copy diff"
+            aria-label={t('diff.copy')}
             className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
             type="button"
             onClick={onCopy}
@@ -62,7 +64,7 @@ export function DiffViewer({
       </pre>
       {hiddenLineCount > 0 ? (
         <p className="border-border border-t px-4 py-1.5 text-muted-foreground text-xs">
-          {hiddenLineCount} more lines hidden. Open in editor to inspect the full diff.
+          {t('diff.hiddenLines', { count: hiddenLineCount })}
         </p>
       ) : null}
     </section>

@@ -12,6 +12,7 @@ describe('ui-store', () => {
     store.getState().setActiveRun({ conversationId: 'conversation-001', runId: 'run-001' })
     store.getState().setInspectorOpen(false)
     store.getState().setTheme('dark')
+    store.getState().setLocale('en-US')
 
     expect(store.getState().activeRunConversationId).toBe('conversation-001')
     expect(store.getState().activeRunId).toBe('run-001')
@@ -20,6 +21,7 @@ describe('ui-store', () => {
     expect(store.getState().activityRailExpanded).toBe(true)
     expect(store.getState().inspectorOpen).toBe(false)
     expect(store.getState().theme).toBe('dark')
+    expect(store.getState().locale).toBe('en-US')
 
     store.getState().clearActiveRun()
 

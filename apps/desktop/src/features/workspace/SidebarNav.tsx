@@ -13,6 +13,7 @@ import {
   Wrench,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { useUiStore } from '@/shared/state/ui-store'
 import { listConversations } from '@/shared/tauri/commands'
@@ -23,17 +24,18 @@ import { ConversationList } from './ConversationList'
 import { WorkspaceSearch } from './WorkspaceSearch'
 
 const primaryNavigationItems = [
-  { label: 'Home', icon: Home, to: '/' },
-  { label: 'Conversations', icon: MessageSquare, to: '/' },
-  { label: 'Projects', icon: Folder, to: '/' },
-  { label: 'Artifacts', icon: FileText, to: '/artifacts' },
-  { label: 'Agents', icon: Bot, to: '/' },
-  { label: 'Tools', icon: Wrench, to: '/settings' },
+  { id: 'Home', labelKey: 'nav.home', icon: Home, to: '/' },
+  { id: 'Conversations', labelKey: 'nav.conversations', icon: MessageSquare, to: '/' },
+  { id: 'Projects', labelKey: 'nav.projects', icon: Folder, to: '/' },
+  { id: 'Artifacts', labelKey: 'nav.artifacts', icon: FileText, to: '/artifacts' },
+  { id: 'Agents', labelKey: 'nav.agents', icon: Bot, to: '/' },
+  { id: 'Tools', labelKey: 'nav.tools', icon: Wrench, to: '/settings' },
 ]
 
-type SidebarDestination = (typeof primaryNavigationItems)[number]['label'] | 'Settings'
+type SidebarDestination = (typeof primaryNavigationItems)[number]['id'] | 'Settings'
 
 export function SidebarNav() {
+  const { t } = useTranslation(['shell', 'conversation'])
   const [searchTerm, setSearchTerm] = useState('')
   const [activeDestination, setActiveDestination] = useState<SidebarDestination>('Conversations')
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -78,8 +80,8 @@ export function SidebarNav() {
   }, [conversationsQuery.data?.conversations, searchTerm])
   const activeConversationId =
     selectedConversationId ?? conversationsQuery.data?.conversations[0]?.id
-  const workspaceProject = workspaceContextQuery.data?.project?.trim() || 'Workspace'
-  const workspacePath = workspaceContextQuery.data?.path?.trim() || 'Local workspace'
+  const workspaceProject = workspaceContextQuery.data?.project?.trim() || t('workspace')
+  const workspacePath = workspaceContextQuery.data?.path?.trim() || t('localWorkspace')
   const workspaceInitials = getWorkspaceInitials(workspaceProject)
 
   useEffect(() => {
@@ -110,11 +112,7 @@ export function SidebarNav() {
     clearActiveRun()
     void navigate({ to: '/' }).then(() => {
       window.setTimeout(() => {
-        document
-          .querySelector<HTMLTextAreaElement>(
-            'textarea[placeholder="Ask Jyowo anything about this project..."]',
-          )
-          ?.focus()
+        document.querySelector<HTMLTextAreaElement>('textarea')?.focus()
       }, 0)
     })
   }
@@ -157,12 +155,13 @@ export function SidebarNav() {
   if (sidebarCollapsed) {
     return (
       <nav
-        aria-label="Workspace"
+        aria-label={t('workspace')}
         className="flex min-h-0 flex-col items-center border-border border-r bg-muted/45 py-4"
         data-collapsed="true"
       >
+        <CommandPalette onAction={runCommand} />
         <button
-          aria-label="Expand sidebar"
+          aria-label={t('actions.expandSidebar')}
           className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
           onClick={() => setSidebarCollapsed(false)}
           type="button"
@@ -175,18 +174,18 @@ export function SidebarNav() {
 
   return (
     <nav
-      aria-label="Workspace"
+      aria-label={t('workspace')}
       className="flex min-h-0 flex-col border-border border-r bg-muted/45"
       data-collapsed="false"
     >
       <CommandPalette onAction={runCommand} />
-      <div className="flex h-16 items-center justify-between gap-2 px-5">
+      <div className="flex h-14 items-center justify-between gap-2 px-4">
         <span className="flex min-w-0 items-center gap-2.5">
           <CircleDot className="size-5 shrink-0 text-foreground" />
           <span className="truncate font-semibold text-sm">{workspaceProject}</span>
         </span>
         <button
-          aria-label="New conversation"
+          aria-label={t('actions.newConversation')}
           className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
           onClick={focusComposerForNewConversation}
           type="button"
@@ -194,7 +193,7 @@ export function SidebarNav() {
           <Pencil data-icon="button" className="size-4" />
         </button>
       </div>
-      <div className="px-4">
+      <div className="px-3">
         <WorkspaceSearch
           inputRef={searchInputRef}
           onChange={(event) => setSearchTerm(event.target.value)}
@@ -210,22 +209,22 @@ export function SidebarNav() {
         isLoading={conversationsQuery.isLoading}
         onSelectConversation={selectConversation}
       />
-      <div className="mt-8 flex-1 px-3">
+      <div className="mt-6 flex-1 px-3">
         <ul className="flex flex-col gap-1">
-          {primaryNavigationItems.map(({ icon: Icon, label, to }) => (
-            <li key={label}>
+          {primaryNavigationItems.map(({ icon: Icon, id, labelKey, to }) => (
+            <li key={id}>
               <button
-                aria-current={activeDestination === label ? 'page' : undefined}
-                className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground data-[active=true]:bg-surface data-[active=true]:text-foreground"
-                data-active={activeDestination === label}
+                aria-current={activeDestination === id ? 'page' : undefined}
+                className="flex w-full items-center gap-3 rounded-md px-3 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground data-[active=true]:bg-surface data-[active=true]:text-foreground"
+                data-active={activeDestination === id}
                 onClick={() => {
-                  setActiveDestination(label)
+                  setActiveDestination(id)
                   navigateTo(to)
                 }}
                 type="button"
               >
                 <Icon className="size-4" />
-                {label}
+                {t(labelKey)}
               </button>
             </li>
           ))}
@@ -234,7 +233,7 @@ export function SidebarNav() {
       <div className="border-border border-t p-3">
         <button
           aria-current={activeDestination === 'Settings' ? 'page' : undefined}
-          className="mb-3 flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground data-[active=true]:bg-surface data-[active=true]:text-foreground"
+          className="mb-3 flex w-full items-center gap-3 rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground data-[active=true]:bg-surface data-[active=true]:text-foreground"
           data-active={activeDestination === 'Settings'}
           onClick={() => {
             setActiveDestination('Settings')
@@ -244,9 +243,9 @@ export function SidebarNav() {
           type="button"
         >
           <Settings className="size-4" />
-          Settings
+          {t('nav.settings')}
         </button>
-        <div className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left">
+        <div className="flex w-full items-center justify-between rounded-md px-3 py-1.5 text-left">
           <span className="flex min-w-0 items-center gap-3">
             <span className="grid size-8 shrink-0 place-items-center rounded-full bg-accent/20 text-sm">
               {workspaceInitials}

@@ -8,6 +8,7 @@ import {
   type LucideIcon,
   TriangleAlert,
 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/shared/lib/utils'
 import { Button } from '@/shared/ui/button'
@@ -92,8 +93,10 @@ function CompactArtifactHistory({
   onOpenArtifact?: (artifactId: string) => void
   onOpenSource?: (messageId: string) => void
 }) {
+  const { t } = useTranslation('artifacts')
+
   return (
-    <section aria-label="Artifact history" className="space-y-3">
+    <section aria-label={t('history')} className="space-y-3">
       {artifacts.map((artifact) => {
         const StatusIcon = statusIcons[artifact.status]
         const isActive = artifact.id === activeArtifactId
@@ -143,7 +146,7 @@ function CompactArtifactHistory({
                 </Button>
                 {artifact.sourceMessageId ? (
                   <Button
-                    aria-label="Show source message"
+                    aria-label={t('showSourceMessage')}
                     size="icon"
                     type="button"
                     variant="outline"
@@ -163,7 +166,7 @@ function CompactArtifactHistory({
 
 function CompactArtifactPreview({
   content = '',
-  errorMessage = 'Artifact preview unavailable.',
+  errorMessage,
   kind = 'artifact',
   state,
   title,
@@ -174,15 +177,17 @@ function CompactArtifactPreview({
   state: ArtifactPreviewState
   title: string
 }) {
+  const { t } = useTranslation('artifacts')
+
   if (state === 'loading') {
     return (
       <section
-        aria-label={`${title} preview`}
+        aria-label={`${title} ${t('preview')}`}
         className="mt-3 rounded-md border border-border bg-background px-3 py-3 text-muted-foreground text-sm"
       >
         <span className="flex items-center gap-2">
           <Loader2 className="size-4 animate-spin" />
-          Loading artifact preview.
+          {t('loadingPreview')}
         </span>
       </section>
     )
@@ -191,12 +196,12 @@ function CompactArtifactPreview({
   if (state === 'error') {
     return (
       <section
-        aria-label={`${title} preview`}
+        aria-label={`${title} ${t('preview')}`}
         className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-3 text-destructive text-sm"
       >
         <span className="flex items-center gap-2">
           <AlertCircle className="size-4" />
-          {errorMessage}
+          {errorMessage ?? t('previewUnavailable')}
         </span>
       </section>
     )
@@ -204,18 +209,18 @@ function CompactArtifactPreview({
 
   return (
     <section
-      aria-label={`${title} preview`}
+      aria-label={`${title} ${t('preview')}`}
       className="mt-3 rounded-md border border-border bg-background"
     >
       <div className="flex items-center justify-between border-border border-b px-3 py-2">
         <span className="flex items-center gap-2 font-medium text-sm">
           <FileText className="size-4 text-muted-foreground" />
-          Preview
+          {t('preview')}
         </span>
         <span className="text-muted-foreground text-xs">{kind}</span>
       </div>
       <pre className="max-h-64 overflow-auto whitespace-pre-wrap px-3 py-3 text-sm">
-        {content || 'No preview available.'}
+        {content || t('noPreview')}
       </pre>
     </section>
   )

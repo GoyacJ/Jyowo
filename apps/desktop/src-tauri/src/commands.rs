@@ -1046,11 +1046,16 @@ pub fn harness_healthcheck_payload() -> HarnessHealthcheckPayload {
     }
 }
 
-#[must_use]
-pub fn list_eval_cases_payload() -> ListEvalCasesResponse {
-    ListEvalCasesResponse {
-        cases: vec![regression_smoke_eval_case(3)],
-    }
+pub fn list_eval_cases_payload() -> Result<ListEvalCasesResponse, CommandErrorPayload> {
+    Err(runtime_unavailable(
+        "Listing eval cases requires the eval runtime.",
+    ))
+}
+
+pub fn list_eval_cases_with_runtime_state(
+    _state: &DesktopRuntimeState,
+) -> Result<ListEvalCasesResponse, CommandErrorPayload> {
+    list_eval_cases_payload()
 }
 
 pub async fn list_artifacts_with_runtime_state(
@@ -1111,17 +1116,17 @@ pub fn run_eval_case_payload(
     request: RunEvalCaseRequest,
 ) -> Result<RunEvalCaseResponse, CommandErrorPayload> {
     ensure_eval_case_id(&request.case_id)?;
-    if request.case_id != "regression-smoke" {
-        return Err(invalid_payload(format!(
-            "unsupported eval case: {}",
-            request.case_id
-        )));
-    }
 
-    Ok(RunEvalCaseResponse {
-        case: regression_smoke_eval_case(4),
-        status: "completed",
-    })
+    Err(runtime_unavailable(
+        "Running eval cases requires the eval runtime.",
+    ))
+}
+
+pub fn run_eval_case_with_runtime_state(
+    request: RunEvalCaseRequest,
+    _state: &DesktopRuntimeState,
+) -> Result<RunEvalCaseResponse, CommandErrorPayload> {
+    run_eval_case_payload(request)
 }
 
 pub async fn validate_provider_settings_payload(
@@ -2403,19 +2408,6 @@ fn require_conversation_id_for_replay(value: Option<&str>) -> Result<(), Command
     Ok(())
 }
 
-fn regression_smoke_eval_case(passed: u32) -> EvalCasePayload {
-    EvalCasePayload {
-        id: "regression-smoke".to_owned(),
-        last_run: Some(EvalLastRunPayload {
-            completed_at: Some(PLACEHOLDER_TIMESTAMP),
-            failed: 0,
-            passed,
-            status: "passed",
-        }),
-        title: "Regression smoke".to_owned(),
-    }
-}
-
 fn require_conversation_id_for_activity(value: Option<&str>) -> Result<(), CommandErrorPayload> {
     if value.is_none() {
         return Err(invalid_payload(
@@ -3660,8 +3652,10 @@ pub async fn list_conversations(
 }
 
 #[tauri::command]
-pub fn list_eval_cases() -> ListEvalCasesResponse {
-    list_eval_cases_payload()
+pub async fn list_eval_cases(
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<ListEvalCasesResponse, CommandErrorPayload> {
+    list_eval_cases_with_runtime_state(runtime_state.inner())
 }
 
 #[tauri::command]
@@ -3672,8 +3666,11 @@ pub async fn list_artifacts(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub fn run_eval_case(case_id: String) -> Result<RunEvalCaseResponse, CommandErrorPayload> {
-    run_eval_case_payload(RunEvalCaseRequest { case_id })
+pub async fn run_eval_case(
+    case_id: String,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<RunEvalCaseResponse, CommandErrorPayload> {
+    run_eval_case_with_runtime_state(RunEvalCaseRequest { case_id }, runtime_state.inner())
 }
 
 #[tauri::command(rename_all = "camelCase")]

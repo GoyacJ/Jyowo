@@ -227,7 +227,7 @@ export_support_bundle(
   run_id: Option<String>
 ) -> Result<ExportSupportBundleResponse, CommandErrorPayload>
 list_artifacts() -> Result<ListArtifactsResponse, CommandErrorPayload>
-list_eval_cases() -> ListEvalCasesResponse
+list_eval_cases() -> Result<ListEvalCasesResponse, CommandErrorPayload>
 get_context_snapshot(
   conversation_id: Option<String>,
   run_id: Option<String>

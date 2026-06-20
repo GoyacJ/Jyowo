@@ -1,12 +1,12 @@
 import '@testing-library/jest-dom/vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { uiStore } from '@/shared/state/ui-store'
-import type { CommandClient } from '@/shared/tauri/commands'
+import type { CommandClient, StartRunResponse } from '@/shared/tauri/commands'
 import { createMockCommandClient, createRejectedCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
 
@@ -169,6 +169,156 @@ describe('ConversationWorkspace', () => {
 
     expect(scrollIntoView).toHaveBeenCalled()
     expect(document.activeElement).toHaveAttribute('id', 'conversation-message-message-004')
+  })
+
+  it('renders an inline plan parsed from the latest assistant message', async () => {
+    renderConversationWorkspace(
+      createMockCommandClient({
+        conversation: {
+          conversation: {
+            id: 'conversation-001',
+            messages: [
+              {
+                author: 'user',
+                body: 'Build it',
+                id: 'message-001',
+                timestamp: '2026-06-17T00:00:00.000Z',
+              },
+              {
+                author: 'assistant',
+                body: [
+                  'Plan:',
+                  '- [x] Create the Tauri shell',
+                  '- [ ] Wire the conversation canvas',
+                  '- [ ] Add verification coverage',
+                ].join('\n'),
+                id: 'message-002',
+                timestamp: '2026-06-17T00:00:01.000Z',
+              },
+            ],
+            title: 'Build the desktop foundation',
+            updatedAt: '2026-06-17T00:00:01.000Z',
+          },
+        },
+      }),
+    )
+
+    const planBlock = await screen.findByRole('region', { name: 'Plan' })
+
+    expect(within(planBlock).getByText('Plan')).toBeInTheDocument()
+    expect(within(planBlock).getByText('Create the Tauri shell')).toBeInTheDocument()
+    expect(within(planBlock).getByText('Wire the conversation canvas')).toBeInTheDocument()
+    expect(within(planBlock).getByText('Add verification coverage')).toBeInTheDocument()
+    expect(within(planBlock).getByText('1 / 3 completed')).toBeInTheDocument()
+    expect(screen.queryByText('Plan:')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Create the Tauri shell')).toHaveLength(1)
+  })
+
+  it('does not treat ordinary assistant lists as inline plans', async () => {
+    renderConversationWorkspace(
+      createMockCommandClient({
+        conversation: {
+          conversation: {
+            id: 'conversation-001',
+            messages: [
+              {
+                author: 'user',
+                body: 'What changed?',
+                id: 'message-001',
+                timestamp: '2026-06-17T00:00:00.000Z',
+              },
+              {
+                author: 'assistant',
+                body: ['Here is the summary:', '1. Read the docs', '2. Run the checks'].join('\n'),
+                id: 'message-002',
+                timestamp: '2026-06-17T00:00:01.000Z',
+              },
+            ],
+            title: 'Build the desktop foundation',
+            updatedAt: '2026-06-17T00:00:01.000Z',
+          },
+        },
+      }),
+    )
+
+    expect(await screen.findByText('Here is the summary:')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Plan' })).not.toBeInTheDocument()
+    expect(screen.getByText('Read the docs')).toBeInTheDocument()
+    expect(screen.getByText('Run the checks')).toBeInTheDocument()
+  })
+
+  it('keeps an older assistant plan visible after a newer assistant reply', async () => {
+    renderConversationWorkspace(
+      createMockCommandClient({
+        conversation: {
+          conversation: {
+            id: 'conversation-001',
+            messages: [
+              {
+                author: 'user',
+                body: 'Build it',
+                id: 'message-001',
+                timestamp: '2026-06-17T00:00:00.000Z',
+              },
+              {
+                author: 'assistant',
+                body: ['Plan:', '1. Create the Tauri shell', '2. Add verification coverage'].join(
+                  '\n',
+                ),
+                id: 'message-002',
+                timestamp: '2026-06-17T00:00:01.000Z',
+              },
+              {
+                author: 'assistant',
+                body: 'The first step is complete.',
+                id: 'message-003',
+                timestamp: '2026-06-17T00:00:02.000Z',
+              },
+            ],
+            title: 'Build the desktop foundation',
+            updatedAt: '2026-06-17T00:00:02.000Z',
+          },
+        },
+      }),
+    )
+
+    expect(await screen.findByText('Plan:')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Plan' })).not.toBeInTheDocument()
+    expect(screen.getByText('Create the Tauri shell')).toBeInTheDocument()
+    expect(screen.getByText('Add verification coverage')).toBeInTheDocument()
+    expect(screen.getByText('The first step is complete.')).toBeInTheDocument()
+  })
+
+  it('submits one review continue action while the first request is pending', async () => {
+    const commandClient = createMockCommandClient()
+    const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
+    let resolveStartRun: ((response: StartRunResponse) => void) | undefined
+    const trackedClient = {
+      ...commandClient,
+      startRun: (request: Parameters<CommandClient['startRun']>[0]) => {
+        startRunCalls.push(request)
+        return new Promise<StartRunResponse>((resolve) => {
+          resolveStartRun = resolve
+        })
+      },
+    } satisfies CommandClient
+
+    renderConversationWorkspace(trackedClient)
+
+    const continueButton = await screen.findByRole('button', { name: 'Continue' })
+    fireEvent.click(continueButton)
+    fireEvent.click(continueButton)
+
+    await waitFor(() => {
+      expect(startRunCalls).toEqual([
+        {
+          conversationId: 'conversation-001',
+          prompt: 'Continue',
+        },
+      ])
+    })
+
+    resolveStartRun?.({ runId: 'run-001', status: 'started' })
   })
 
   it('submits composer text through start_run without putting it in the query cache', async () => {

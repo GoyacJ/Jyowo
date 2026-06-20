@@ -5,6 +5,7 @@ import {
   Play,
   SquareArrowOutUpRight,
 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 type NextActionListProps = {
   actions: string[]
@@ -26,12 +27,14 @@ function getActionIcon(action: string): LucideIcon {
 }
 
 export function NextActionList({ actions, onNextAction }: NextActionListProps) {
+  const { t } = useTranslation('context')
+
   if (actions.length === 0) {
-    return <p className="text-muted-foreground text-sm">No next actions.</p>
+    return <p className="text-muted-foreground text-sm">{t('noNextActions')}</p>
   }
 
   return (
-    <ul aria-label="Next actions" className="space-y-2">
+    <ul aria-label={t('nextActions')} className="space-y-2">
       {actions.map((action) => {
         const Icon = getActionIcon(action)
         const content = (

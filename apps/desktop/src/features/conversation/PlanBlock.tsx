@@ -1,4 +1,5 @@
 import { Check, ChevronDown, Circle } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 export interface PlanItem {
   label: string
@@ -12,22 +13,24 @@ export interface PlanBlockProps {
 }
 
 export function PlanBlock({ completedCount, items, totalCount }: PlanBlockProps) {
+  const { t } = useTranslation('conversation')
   const progressValue =
     totalCount > 0 ? Math.min(100, Math.max(0, Math.round((completedCount / totalCount) * 100))) : 0
 
   return (
-    <section className="mt-3 rounded-md border border-border bg-surface">
+    <section
+      aria-label={t('plan.title')}
+      className="mt-3 rounded-md border border-border bg-surface"
+    >
       <div className="flex items-center justify-between border-border border-b px-4 py-1">
         <div className="flex items-center gap-2 font-medium text-sm">
           <ChevronDown className="size-4" />
-          Plan
+          {t('plan.title')}
         </div>
         <div className="flex items-center gap-3 text-xs">
-          <span>
-            {completedCount} / {totalCount} completed
-          </span>
+          <span>{t('plan.completed', { completed: completedCount, total: totalCount })}</span>
           <span
-            aria-label="Plan progress"
+            aria-label={t('plan.progress')}
             aria-valuemax={100}
             aria-valuemin={0}
             aria-valuenow={progressValue}
@@ -49,7 +52,9 @@ export function PlanBlock({ completedCount, items, totalCount }: PlanBlockProps)
               )}
               {item.label}
             </span>
-            <span className="text-muted-foreground text-xs">{item.status}</span>
+            <span className="text-muted-foreground text-xs">
+              {item.status === 'Done' ? t('plan.done') : t('plan.inProgress')}
+            </span>
           </li>
         ))}
       </ul>

@@ -98,7 +98,7 @@ describe('AppShell', () => {
     expect(screen.getByRole('complementary', { name: 'Context' })).not.toHaveClass('hidden')
     expect(screen.getByRole('button', { name: 'View all activity' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'More actions' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Share' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Share' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Hide context panel' })).toBeEnabled()
     const contextPanel = screen.getByRole('complementary', { name: 'Context' })
     const activityRail = screen.getByRole('region', { name: 'Activity' })
@@ -106,7 +106,21 @@ describe('AppShell', () => {
     expect(await within(contextPanel).findByText('Desktop App')).toBeInTheDocument()
     expect(within(contextPanel).getByText('src/')).toBeInTheDocument()
     expect(within(activityRail).getByText('Current run')).toBeInTheDocument()
-    expect(within(activityRail).getByText('run')).toBeInTheDocument()
+    expect(within(activityRail).getByText('Run')).toBeInTheDocument()
+  })
+
+  it('opens the command palette from the top actions and routes commands', async () => {
+    renderAppShell()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }))
+
+    expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('option', { name: 'Open evals' }))
+
+    await waitFor(() => {
+      expect(routerMock.navigate).toHaveBeenCalledWith({ to: '/evals' })
+    })
   })
 
   it('requests context and activity for the selected conversation', async () => {
@@ -130,7 +144,7 @@ describe('AppShell', () => {
     await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
 
     await waitFor(() => {
-      expect(contextRequests).toEqual([{}, { conversationId: 'conversation-001' }])
+      expect(contextRequests).toEqual([{}, {}, { conversationId: 'conversation-001' }])
       expect(activityRequests).toEqual([{ conversationId: 'conversation-001' }])
     })
   })
@@ -205,7 +219,7 @@ describe('AppShell', () => {
     await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
 
     await waitFor(() => {
-      expect(contextRequests).toEqual([{}, { conversationId: 'conversation-001' }])
+      expect(contextRequests).toEqual([{}, {}, { conversationId: 'conversation-001' }])
       expect(activityRequests).toEqual([{ conversationId: 'conversation-001', runId: 'run-001' }])
     })
   })
@@ -214,7 +228,7 @@ describe('AppShell', () => {
     renderAppShell()
 
     expect(
-      await within(screen.getByRole('region', { name: 'Activity' })).findByText('run'),
+      await within(screen.getByRole('region', { name: 'Activity' })).findByText('Run'),
     ).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'View all activity' }))
@@ -222,7 +236,7 @@ describe('AppShell', () => {
       'data-expanded',
       'true',
     )
-    expect(screen.getByRole('region', { name: 'Replay timeline' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Replay' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Usage summary' })).toBeInTheDocument()
     expect(screen.getByText('Usage analytics unavailable.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Export support bundle' })).toBeInTheDocument()
@@ -283,7 +297,7 @@ describe('AppShell', () => {
 
     await waitFor(() => {
       expect(
-        within(screen.getByRole('region', { name: 'Activity' })).getAllByText('run'),
+        within(screen.getByRole('region', { name: 'Activity' })).getAllByText('Run'),
       ).toHaveLength(2)
     })
 
@@ -307,7 +321,7 @@ describe('AppShell', () => {
     renderAppShell(trackedClient)
 
     expect(
-      await within(screen.getByRole('region', { name: 'Activity' })).findByText('run'),
+      await within(screen.getByRole('region', { name: 'Activity' })).findByText('Run'),
     ).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'View all activity' }))

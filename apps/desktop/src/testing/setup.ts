@@ -1,5 +1,9 @@
 import '@testing-library/jest-dom/vitest'
 
+import { appI18n } from '@/shared/i18n/i18n'
+
+void appI18n.changeLanguage('en-US')
+
 window.scrollTo = () => {}
 Element.prototype.scrollIntoView = () => {}
 

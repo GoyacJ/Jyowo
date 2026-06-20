@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+
 import { Badge } from '@/shared/ui/badge'
 
 type CommandRisk = 'critical' | 'high' | 'low' | 'medium'
@@ -18,20 +20,22 @@ export type CommandDetails = {
   risk: CommandRisk
 }
 
-const riskLabels = {
-  critical: 'Critical risk',
-  high: 'High risk',
-  low: 'Low risk',
-  medium: 'Medium risk',
+const riskLabelKeys = {
+  critical: 'command.risk.critical',
+  high: 'command.risk.high',
+  low: 'command.risk.low',
+  medium: 'command.risk.medium',
 } satisfies Record<CommandRisk, string>
 
-const approvalLabels = {
-  approved: 'Approval approved',
-  denied: 'Approval denied',
-  pending: 'Approval pending',
+const approvalLabelKeys = {
+  approved: 'command.approval.approved',
+  denied: 'command.approval.denied',
+  pending: 'command.approval.pending',
 } satisfies Record<CommandApprovalState, string>
 
 export function CommandPreview({ command }: { command: CommandDetails }) {
+  const { t } = useTranslation('activity')
+
   return (
     <section
       aria-labelledby="command-preview-title"
@@ -39,19 +43,19 @@ export function CommandPreview({ command }: { command: CommandDetails }) {
     >
       <div className="flex items-center justify-between gap-3">
         <h3 className="font-medium" id="command-preview-title">
-          Command
+          {t('command.title')}
         </h3>
         <div className="flex items-center gap-2">
           <Badge variant={command.risk === 'critical' ? 'destructive' : 'outline'}>
-            {riskLabels[command.risk]}
+            {t(riskLabelKeys[command.risk])}
           </Badge>
-          <Badge variant="secondary">{approvalLabels[command.approvalState]}</Badge>
+          <Badge variant="secondary">{t(approvalLabelKeys[command.approvalState])}</Badge>
         </div>
       </div>
       <dl className="mt-4 grid gap-3 text-sm">
-        <DetailRow label="Executable" value={command.executable} />
+        <DetailRow label={t('command.executable')} value={command.executable} />
         <div className="grid gap-1">
-          <dt className="text-muted-foreground text-xs">Args</dt>
+          <dt className="text-muted-foreground text-xs">{t('command.args')}</dt>
           <dd className="flex flex-wrap gap-1 font-mono text-xs">
             {command.args.map((arg, index) => (
               <span className="rounded-md border border-border px-2 py-1" key={`${index}:${arg}`}>
@@ -60,9 +64,9 @@ export function CommandPreview({ command }: { command: CommandDetails }) {
             ))}
           </dd>
         </div>
-        <DetailRow label="Cwd" value={command.cwd} />
+        <DetailRow label={t('command.cwd')} value={command.cwd} />
         <div className="grid gap-1">
-          <dt className="text-muted-foreground text-xs">Environment</dt>
+          <dt className="text-muted-foreground text-xs">{t('command.environment')}</dt>
           <dd className="space-y-1 font-mono text-xs">
             {command.environment.map((entry) => (
               <div key={entry.name}>

@@ -1,5 +1,5 @@
 type ConversationMessageViewModel = {
-  author: 'Jyowo' | 'You'
+  author: string
   avatar: string
   body: string
   id: string
@@ -62,6 +62,7 @@ type ConversationActivityItemViewModel = {
 
 type ConversationReviewRequestViewModel = {
   continueActionLabel: string
+  continuePrompt: string
   title: string
 }
 

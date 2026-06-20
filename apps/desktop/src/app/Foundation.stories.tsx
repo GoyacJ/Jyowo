@@ -65,6 +65,7 @@ type Story = StoryObj<typeof meta>
 
 const uiPreferencesSmoke: UiPreferences = {
   theme: 'system',
+  locale: 'zh-CN',
   sidebarCollapsed: false,
   chatComposerHeight: 160,
   contextPanelWidth: 320,
@@ -84,7 +85,7 @@ export const Primitives: Story = {
       <div className="flex flex-wrap items-center gap-3">
         <Button variant="outline">Refresh</Button>
         <Badge variant="secondary">available</Badge>
-        <Checkbox aria-label="Enable workspace sync" defaultChecked />
+        <Checkbox aria-label="Keep local workspace state visible" defaultChecked />
         <Switch aria-label="Use compact mode" defaultChecked />
         <TooltipProvider>
           <Tooltip>

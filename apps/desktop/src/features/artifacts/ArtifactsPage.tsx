@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { useCommandClient } from '@/shared/tauri/react'
 
@@ -9,6 +10,7 @@ import { ArtifactPreview } from './ArtifactPreview'
 const artifactsQueryKey = ['artifacts'] as const
 
 export function ArtifactsPage() {
+  const { t } = useTranslation('artifacts')
   const commandClient = useCommandClient()
   const artifactsQuery = useQuery({
     queryFn: () => commandClient.listArtifacts(),
@@ -29,28 +31,24 @@ export function ArtifactsPage() {
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-5">
       <header>
-        <h1 className="font-semibold text-2xl">Artifacts</h1>
-        <p className="mt-1 text-muted-foreground text-sm">
-          Review work products generated from conversation runs.
-        </p>
+        <h1 className="font-semibold text-2xl">{t('pageTitle')}</h1>
+        <p className="mt-1 text-muted-foreground text-sm">{t('pageDescription')}</p>
       </header>
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
         {artifactsQuery.isError ? (
           <section
-            aria-label="Artifact history"
+            aria-label={t('history')}
             className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3"
           >
-            <h2 className="font-medium text-destructive text-sm">
-              Artifact history could not be loaded.
-            </h2>
+            <h2 className="font-medium text-destructive text-sm">{t('historyLoadError')}</h2>
           </section>
         ) : artifactsQuery.isLoading ? (
           <section
-            aria-label="Artifact history"
+            aria-label={t('history')}
             className="rounded-md border border-border bg-surface px-4 py-3 text-muted-foreground text-sm"
           >
-            Loading artifacts
+            {t('loading')}
           </section>
         ) : (
           <ArtifactHistory
@@ -61,12 +59,10 @@ export function ArtifactsPage() {
         )}
         <ArtifactPreview
           content={activeArtifact?.preview}
-          errorMessage={
-            artifactsQuery.isError ? 'Artifact preview unavailable.' : 'No artifact selected.'
-          }
+          errorMessage={artifactsQuery.isError ? t('previewUnavailable') : t('noArtifactSelected')}
           kind={activeArtifact?.kind}
           state={previewState}
-          title={activeArtifact?.title ?? 'Artifacts'}
+          title={activeArtifact?.title ?? t('pageTitle')}
         />
       </div>
     </div>

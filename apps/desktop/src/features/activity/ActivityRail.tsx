@@ -1,11 +1,11 @@
 import { ChevronsDown, ChevronsUp } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import {
   ActivityItem,
   type ActivityRailItem,
   type CurrentRunStatus,
   getActivityStatusClass,
-  getActivityStatusLabel,
 } from './ActivityItem'
 
 export type { ActivityRailItem } from './ActivityItem'
@@ -35,20 +35,21 @@ export function ActivityRail({
   onExpand,
   onViewAll,
 }: ActivityRailProps) {
+  const { t } = useTranslation(['activity', 'common'])
   const visibleItems = expanded ? items : items.slice(0, compactActivityLimit)
 
   if (collapsed) {
     return (
       <section
-        aria-label="Activity"
+        aria-label={t('activity:title')}
         className="border-border border-t bg-background"
         data-collapsed="true"
         data-expanded="false"
       >
-        <div className="flex h-full items-center gap-4 px-6 text-sm">
+        <div className="flex h-full items-center gap-4 px-5 text-sm">
           {onExpand ? (
             <button
-              aria-label="Expand activity"
+              aria-label={t('activity:expand')}
               className="text-muted-foreground hover:text-foreground"
               onClick={onExpand}
               type="button"
@@ -56,7 +57,7 @@ export function ActivityRail({
               <ChevronsDown className="size-4" />
             </button>
           ) : null}
-          <span className="font-medium">Activity</span>
+          <span className="font-medium">{t('activity:title')}</span>
         </div>
       </section>
     )
@@ -64,15 +65,15 @@ export function ActivityRail({
 
   return (
     <section
-      aria-label="Activity"
+      aria-label={t('activity:title')}
       className="border-border border-t bg-background"
       data-collapsed="false"
       data-expanded={expanded}
     >
-      <div className="flex h-full items-center gap-5 px-6 text-sm">
+      <div className="flex h-full items-center gap-4 px-5 text-sm">
         {onCollapse ? (
           <button
-            aria-label="Collapse activity"
+            aria-label={t('activity:collapse')}
             className="text-muted-foreground hover:text-foreground"
             onClick={onCollapse}
             type="button"
@@ -82,20 +83,20 @@ export function ActivityRail({
         ) : (
           <ChevronsUp aria-hidden="true" className="size-4 text-muted-foreground" />
         )}
-        <span className="font-medium">Activity</span>
+        <span className="font-medium">{t('activity:title')}</span>
         {currentRun ? (
           <span className="rounded-md border border-border bg-surface px-3 py-1 text-muted-foreground text-xs">
-            {currentRun.label}
+            {currentRun.label === 'Current run' ? t('activity:currentRun') : currentRun.label}
             <span
               className={`ml-3 ${getActivityStatusClass(currentRun.status)}`}
               data-testid="current-run-status"
             >
-              {getActivityStatusLabel(currentRun.status)}
+              {t(`common:status.${currentRun.status}`)}
             </span>
           </span>
         ) : null}
         {loading ? (
-          <span className="min-w-0 flex-1 text-muted-foreground">Loading activity</span>
+          <span className="min-w-0 flex-1 text-muted-foreground">{t('activity:loading')}</span>
         ) : errorMessage ? (
           <span className="min-w-0 flex-1 text-destructive">{errorMessage}</span>
         ) : (
@@ -103,7 +104,7 @@ export function ActivityRail({
             className={
               expanded
                 ? 'grid max-h-full min-w-0 flex-1 grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-2 overflow-y-auto'
-                : 'flex min-w-0 flex-1 items-center gap-5 overflow-hidden'
+                : 'flex min-w-0 flex-1 items-center gap-4 overflow-hidden'
             }
           >
             {visibleItems.map((item) => (
@@ -117,7 +118,7 @@ export function ActivityRail({
             onClick={onViewAll}
             type="button"
           >
-            View all activity
+            {t('activity:viewAll')}
           </button>
         ) : null}
       </div>

@@ -2,6 +2,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
 
+import { AppI18nProvider } from '@/shared/i18n/i18n'
+import { readUiPreferences, writeUiPreferences } from '@/shared/local-store/ui-preferences-store'
 import { useUiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
@@ -66,13 +68,67 @@ function ThemeProvider({ children }: { children: ReactNode }) {
   return children
 }
 
+function UiPreferencesProvider({ children }: { children: ReactNode }) {
+  const theme = useUiStore((state) => state.theme)
+  const locale = useUiStore((state) => state.locale)
+  const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
+  const setTheme = useUiStore((state) => state.setTheme)
+  const setLocale = useUiStore((state) => state.setLocale)
+  const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed)
+  const [hydrated, setHydrated] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+
+    void readUiPreferences()
+      .then((preferences) => {
+        if (cancelled) {
+          return
+        }
+
+        setTheme(preferences.theme)
+        setLocale(preferences.locale)
+        setSidebarCollapsed(preferences.sidebarCollapsed)
+        setHydrated(true)
+      })
+      .catch(() => {
+        if (cancelled) {
+          return
+        }
+
+        // Local UI preferences are non-security settings, so store failures should not block app rendering.
+        setHydrated(true)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [setLocale, setSidebarCollapsed, setTheme])
+
+  useEffect(() => {
+    if (!hydrated) {
+      return
+    }
+
+    void writeUiPreferences({ locale, sidebarCollapsed, theme }).catch(() => {
+      // Local UI preferences are non-security settings; the app can keep running without persistence.
+    })
+  }, [hydrated, locale, sidebarCollapsed, theme])
+
+  return children
+}
+
 export function AppProviders({ children, commandClient, queryClient }: AppProvidersProps) {
   const [defaultQueryClient] = useState(createQueryClient)
 
   return (
     <CommandClientProvider client={commandClient}>
       <QueryClientProvider client={queryClient ?? defaultQueryClient}>
-        <ThemeProvider>{children}</ThemeProvider>
+        <UiPreferencesProvider>
+          <AppI18nProvider>
+            <ThemeProvider>{children}</ThemeProvider>
+          </AppI18nProvider>
+        </UiPreferencesProvider>
       </QueryClientProvider>
     </CommandClientProvider>
   )

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import type { ExportSupportBundleResponse } from '@/shared/tauri/commands'
 import { Button } from '@/shared/ui/button'
@@ -13,10 +14,11 @@ type SupportBundleExportProps = {
 type ExportState =
   | { status: 'idle' }
   | { status: 'exporting' }
-  | { message: string; status: 'error' }
+  | { messageKey: 'failed' | 'notRedacted'; status: 'error' }
   | { result: ExportSupportBundleResponse; status: 'ready' }
 
 export function SupportBundleExport({ onExport }: SupportBundleExportProps) {
+  const { t } = useTranslation('activity')
   const [exportState, setExportState] = useState<ExportState>({
     status: 'idle',
   })
@@ -29,7 +31,7 @@ export function SupportBundleExport({ onExport }: SupportBundleExportProps) {
 
       if (!result.redacted) {
         setExportState({
-          message: 'Support bundle export was not redacted.',
+          messageKey: 'notRedacted',
           status: 'error',
         })
         return
@@ -38,37 +40,39 @@ export function SupportBundleExport({ onExport }: SupportBundleExportProps) {
       setExportState({ result: { ...result, redacted: true }, status: 'ready' })
     } catch {
       setExportState({
-        message: 'Support bundle export failed.',
+        messageKey: 'failed',
         status: 'error',
       })
     }
   }
 
   return (
-    <section aria-label="Support bundle export" className="space-y-4">
+    <section aria-label={t('supportBundle.title')} className="space-y-4">
       <Button disabled={exportState.status === 'exporting'} onClick={handleExport} type="button">
-        {exportState.status === 'exporting' ? 'Exporting support bundle' : 'Export support bundle'}
+        {exportState.status === 'exporting'
+          ? t('supportBundle.exporting')
+          : t('supportBundle.export')}
       </Button>
 
       {exportState.status === 'error' ? (
-        <p className="text-destructive text-sm">{exportState.message}</p>
+        <p className="text-destructive text-sm">{t(`supportBundle.${exportState.messageKey}`)}</p>
       ) : null}
 
       {exportState.status === 'ready' ? (
         <div className="space-y-2 text-sm">
-          <p className="text-success">Redacted</p>
-          <p>{exportState.result.eventCount} events</p>
+          <p className="text-success">{t('supportBundle.redacted')}</p>
+          <p>{t('supportBundle.events', { count: exportState.result.eventCount })}</p>
           <dl className="grid gap-2">
             <div>
-              <dt className="text-muted-foreground text-xs">Bundle</dt>
+              <dt className="text-muted-foreground text-xs">{t('supportBundle.bundle')}</dt>
               <dd className="font-mono text-xs">{exportState.result.bundlePath}</dd>
             </div>
             <div>
-              <dt className="text-muted-foreground text-xs">JSONL</dt>
+              <dt className="text-muted-foreground text-xs">{t('supportBundle.jsonl')}</dt>
               <dd className="font-mono text-xs">{exportState.result.jsonlPath}</dd>
             </div>
             <div>
-              <dt className="text-muted-foreground text-xs">Markdown</dt>
+              <dt className="text-muted-foreground text-xs">{t('supportBundle.markdown')}</dt>
               <dd className="font-mono text-xs">{exportState.result.markdownPath}</dd>
             </div>
           </dl>

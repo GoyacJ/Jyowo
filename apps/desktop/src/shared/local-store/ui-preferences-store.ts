@@ -1,11 +1,14 @@
 import { load, type Store } from '@tauri-apps/plugin-store'
 
+import { type AppLocale, DEFAULT_APP_LOCALE, isAppLocale } from '@/shared/i18n/locales'
+
 export const UI_PREFERENCES_STORE_PATH = 'ui-preferences.json'
 
 export type UiThemePreference = 'system' | 'light' | 'dark'
 
 export type UiPreferences = {
   theme: UiThemePreference
+  locale: AppLocale
   sidebarCollapsed: boolean
   chatComposerHeight: number
   contextPanelWidth: number
@@ -13,6 +16,7 @@ export type UiPreferences = {
 
 const UI_PREFERENCES_DEFAULTS: UiPreferences = {
   theme: 'light',
+  locale: DEFAULT_APP_LOCALE,
   sidebarCollapsed: false,
   chatComposerHeight: 160,
   contextPanelWidth: 320,
@@ -32,15 +36,18 @@ export function loadUiPreferencesStore() {
 
 export async function readUiPreferences(): Promise<UiPreferences> {
   const store = await loadUiPreferencesStore()
-  const [theme, sidebarCollapsed, chatComposerHeight, contextPanelWidth] = await Promise.all([
-    store.get<UiThemePreference>('theme'),
-    store.get<boolean>('sidebarCollapsed'),
-    store.get<number>('chatComposerHeight'),
-    store.get<number>('contextPanelWidth'),
-  ])
+  const [theme, locale, sidebarCollapsed, chatComposerHeight, contextPanelWidth] =
+    await Promise.all([
+      store.get<UiThemePreference>('theme'),
+      store.get<AppLocale>('locale'),
+      store.get<boolean>('sidebarCollapsed'),
+      store.get<number>('chatComposerHeight'),
+      store.get<number>('contextPanelWidth'),
+    ])
 
   return {
     theme: isUiThemePreference(theme) ? theme : UI_PREFERENCES_DEFAULTS.theme,
+    locale: isAppLocale(locale) ? locale : UI_PREFERENCES_DEFAULTS.locale,
     sidebarCollapsed:
       typeof sidebarCollapsed === 'boolean'
         ? sidebarCollapsed

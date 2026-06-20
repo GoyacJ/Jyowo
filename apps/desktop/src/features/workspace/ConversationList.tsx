@@ -1,4 +1,5 @@
 import { FileText, MessageSquareText } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 type ConversationListItem = {
   id: string
@@ -22,17 +23,23 @@ export function ConversationList({
   isLoading = false,
   onSelectConversation,
 }: ConversationListProps) {
+  const { t } = useTranslation('shell')
+
   return (
-    <div className="mt-6 px-4">
-      <div className="mb-2 text-muted-foreground text-xs">Recent conversations</div>
+    <div className="mt-5 px-3">
+      <div className="mb-2 text-muted-foreground text-xs">{t('conversations.recent')}</div>
       {isLoading ? (
-        <div className="rounded-md px-2 py-2 text-muted-foreground text-xs">Loading...</div>
+        <div className="rounded-md px-2 py-2 text-muted-foreground text-xs">
+          {t('conversations.loading')}
+        </div>
       ) : null}
       {!isLoading && errorMessage ? (
         <div className="rounded-md px-2 py-2 text-destructive text-xs">{errorMessage}</div>
       ) : null}
       {!isLoading && !errorMessage && conversations.length === 0 ? (
-        <div className="rounded-md px-2 py-2 text-muted-foreground text-xs">No conversations</div>
+        <div className="rounded-md px-2 py-2 text-muted-foreground text-xs">
+          {t('conversations.empty')}
+        </div>
       ) : null}
       <ul className="flex flex-col gap-1">
         {conversations.map((conversation) => {
@@ -42,7 +49,7 @@ export function ConversationList({
             <li key={conversation.id}>
               <button
                 aria-current={isActive ? 'page' : undefined}
-                className="relative flex w-full items-start rounded-md px-2 py-2 pr-4 text-left text-xs hover:bg-muted data-[active=true]:bg-accent/10 data-[active=true]:text-foreground"
+                className="relative flex w-full items-start rounded-md px-2 py-1.5 pr-4 text-left text-xs hover:bg-muted data-[active=true]:bg-accent/10 data-[active=true]:text-foreground"
                 data-active={isActive}
                 onClick={() => onSelectConversation(conversation.id)}
                 type="button"

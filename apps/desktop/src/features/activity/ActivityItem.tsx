@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+
 type ActivityStatus = 'blocked' | 'failed' | 'queued' | 'redacted' | 'running' | 'success'
 
 export type ActivityRailItem = {
@@ -14,19 +16,6 @@ export type CurrentRunStatus = {
 
 type ActivityItemProps = {
   item: ActivityRailItem
-}
-
-const statusLabels = {
-  blocked: 'Blocked',
-  failed: 'Failed',
-  queued: 'Queued',
-  redacted: 'Redacted',
-  running: 'Running',
-  success: 'Success',
-} satisfies Record<ActivityStatus, string>
-
-export function getActivityStatusLabel(status: ActivityStatus) {
-  return statusLabels[status]
 }
 
 const statusClasses = {
@@ -51,16 +40,33 @@ export function getActivityStatusClass(status: ActivityStatus) {
   return statusClasses[status]
 }
 
+const translatableActivityLabels = {
+  assistant: 'eventLabels.assistant',
+  engine: 'eventLabels.engine',
+  permission: 'eventLabels.permission',
+  run: 'eventLabels.run',
+  tool: 'eventLabels.tool',
+} satisfies Record<string, string>
+
 export function ActivityItem({ item }: ActivityItemProps) {
+  const { t } = useTranslation(['activity', 'common'])
+  const labelKey = getActivityLabelKey(item.label)
+
   return (
     <li className="flex shrink-0 items-center gap-2 font-mono text-xs">
-      <span className="text-foreground">{item.label}</span>
+      <span className="text-foreground">{labelKey ? t(`activity:${labelKey}`) : item.label}</span>
       <span
         aria-hidden="true"
         className={`size-1.5 rounded-full ${statusDotClasses[item.status]}`}
       />
-      <span className={statusClasses[item.status]}>{statusLabels[item.status]}</span>
+      <span className={statusClasses[item.status]}>{t(`common:status.${item.status}`)}</span>
       <span className="text-muted-foreground">{item.time}</span>
     </li>
   )
+}
+
+function getActivityLabelKey(label: string): string | undefined {
+  return Object.hasOwn(translatableActivityLabels, label)
+    ? translatableActivityLabels[label as keyof typeof translatableActivityLabels]
+    : undefined
 }

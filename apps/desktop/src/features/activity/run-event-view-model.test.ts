@@ -138,7 +138,7 @@ describe('run-event-view-model', () => {
     expect(toRunEventViewModel(event).details?.permissions).toEqual([
       {
         id: '01HZ0000000000000000000001',
-        label: 'Permission denied',
+        label: 'permission',
         risk: 'medium',
         state: 'denied',
       },
@@ -196,7 +196,7 @@ describe('run-event-view-model', () => {
 
     expect(viewModels[0]?.details?.permissions?.[0]).toMatchObject({
       id: '01HZ0000000000000000000001',
-      label: 'Permission approved',
+      label: 'permission',
       risk: 'high',
       state: 'approved',
     })

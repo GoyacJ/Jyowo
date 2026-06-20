@@ -7,6 +7,7 @@ import {
   type LucideIcon,
   TriangleAlert,
 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/shared/lib/utils'
 import { Button } from '@/shared/ui/button'
@@ -33,13 +34,6 @@ interface ArtifactHistoryProps {
   variant?: 'compact' | 'default'
 }
 
-const statusLabels = {
-  failed: 'Failed',
-  pending: 'Pending',
-  ready: 'Ready',
-  running: 'Running',
-} satisfies Record<ArtifactStatus, string>
-
 const statusIcons = {
   failed: TriangleAlert,
   pending: Clock,
@@ -61,19 +55,19 @@ export function ArtifactHistory({
   onOpenSource,
   variant = 'default',
 }: ArtifactHistoryProps) {
+  const { t } = useTranslation(['artifacts', 'common'])
+
   if (artifacts.length === 0) {
     return (
       <section className="rounded-md border border-border bg-surface px-4 py-3">
-        <h3 className="font-medium text-sm">No artifacts for this conversation.</h3>
-        <p className="mt-1 text-muted-foreground text-sm">
-          Artifacts appear after Jyowo produces reviewable work.
-        </p>
+        <h3 className="font-medium text-sm">{t('artifacts:emptyTitle')}</h3>
+        <p className="mt-1 text-muted-foreground text-sm">{t('artifacts:emptyDescription')}</p>
       </section>
     )
   }
 
   return (
-    <section aria-label="Artifact history" className="space-y-3">
+    <section aria-label={t('artifacts:history')} className="space-y-3">
       {artifacts.map((artifact) => {
         const StatusIcon = statusIcons[artifact.status]
         const isActive = artifact.id === activeArtifactId
@@ -114,7 +108,7 @@ export function ArtifactHistory({
                         {artifact.kind}
                       </span>
                       <span className="rounded-md border border-border px-2 py-0.5 text-xs">
-                        {statusLabels[artifact.status]}
+                        {t(`common:status.${artifact.status}`)}
                       </span>
                     </>
                   )}
@@ -131,7 +125,7 @@ export function ArtifactHistory({
                   <div className="mt-2 flex flex-wrap items-center gap-3 text-muted-foreground text-xs">
                     <span className="inline-flex items-center gap-1">
                       <FileText className="size-3.5" />
-                      Source run
+                      {t('artifacts:sourceRun')}
                     </span>
                     <span>{artifact.sourceRunId}</span>
                   </div>
@@ -150,7 +144,7 @@ export function ArtifactHistory({
                 </Button>
                 {artifact.sourceMessageId ? (
                   <Button
-                    aria-label="Show source message"
+                    aria-label={t('artifacts:showSourceMessage')}
                     size="icon"
                     type="button"
                     variant="outline"

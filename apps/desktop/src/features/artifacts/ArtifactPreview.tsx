@@ -1,4 +1,5 @@
 import { AlertCircle, FileText, Loader2 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 type ArtifactPreviewState = 'error' | 'loading' | 'ready'
 
@@ -15,12 +16,14 @@ const defaultMaxPreviewCharacters = 1600
 
 export function ArtifactPreview({
   content = '',
-  errorMessage = 'Artifact preview unavailable.',
+  errorMessage,
   kind = 'artifact',
   maxPreviewCharacters = defaultMaxPreviewCharacters,
   state,
   title,
 }: ArtifactPreviewProps) {
+  const { t } = useTranslation('artifacts')
+
   if (state === 'loading') {
     return (
       <section
@@ -29,7 +32,7 @@ export function ArtifactPreview({
       >
         <span className="flex items-center gap-2">
           <Loader2 className="size-4 animate-spin" />
-          Loading artifact preview.
+          {t('loadingPreview')}
         </span>
       </section>
     )
@@ -43,7 +46,7 @@ export function ArtifactPreview({
       >
         <span className="flex items-center gap-2">
           <AlertCircle className="size-4" />
-          {errorMessage}
+          {errorMessage ?? t('previewUnavailable')}
         </span>
       </section>
     )
@@ -60,17 +63,17 @@ export function ArtifactPreview({
       <div className="flex items-center justify-between border-border border-b px-3 py-2">
         <span className="flex items-center gap-2 font-medium text-sm">
           <FileText className="size-4 text-muted-foreground" />
-          Preview
+          {t('preview')}
         </span>
         <span className="text-muted-foreground text-xs">{kind}</span>
       </div>
       <pre className="max-h-64 overflow-auto whitespace-pre-wrap px-3 py-3 text-sm">
-        {previewContent || 'No preview available.'}
+        {previewContent || t('noPreview')}
       </pre>
       {hasLargePreview ? (
         <div className="border-border border-t px-3 py-2 text-muted-foreground text-xs">
-          <span className="block font-medium text-foreground">Large preview truncated.</span>
-          <span>Open artifact to inspect the full output.</span>
+          <span className="block font-medium text-foreground">{t('largePreviewTruncated')}</span>
+          <span>{t('openFullOutput')}</span>
         </div>
       ) : null}
     </section>

@@ -1,4 +1,5 @@
 import { Eye, Trash2 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import type { MemoryItemSummary } from '@/shared/tauri/commands'
 import { Button } from '@/shared/ui/button'
@@ -10,6 +11,8 @@ interface MemoryItemCardProps {
 }
 
 export function MemoryItemCard({ item, onDelete, onInspect }: MemoryItemCardProps) {
+  const { t } = useTranslation('memory')
+
   return (
     <article
       aria-label={`Memory ${item.id}`}
@@ -28,7 +31,7 @@ export function MemoryItemCard({ item, onDelete, onInspect }: MemoryItemCardProp
         </div>
         <div className="flex shrink-0 gap-1">
           <Button
-            aria-label="Inspect memory item"
+            aria-label={t('inspect')}
             onClick={() => onInspect(item.id)}
             size="icon"
             type="button"
@@ -37,7 +40,7 @@ export function MemoryItemCard({ item, onDelete, onInspect }: MemoryItemCardProp
             <Eye data-icon className="size-4" />
           </Button>
           <Button
-            aria-label="Delete memory item"
+            aria-label={t('delete')}
             onClick={() => onDelete(item.id)}
             size="icon"
             type="button"

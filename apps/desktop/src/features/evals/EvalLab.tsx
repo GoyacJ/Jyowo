@@ -1,4 +1,5 @@
 import { FlaskConical, Play, TriangleAlert } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/shared/lib/utils'
 import { Button } from '@/shared/ui/button'
@@ -31,9 +32,11 @@ const statusStyles = {
 } satisfies Record<EvalRunStatus, string>
 
 export function EvalLab({ cases, errorMessage, onRunCase, unavailable = false }: EvalLabProps) {
+  const { t } = useTranslation('evals')
+
   return (
     <section
-      aria-label="Eval lab"
+      aria-label={t('lab')}
       className="space-y-4 rounded-md border border-border bg-surface p-5"
     >
       <div className="flex items-start gap-3">
@@ -41,16 +44,14 @@ export function EvalLab({ cases, errorMessage, onRunCase, unavailable = false }:
           <FlaskConical className="size-4" />
         </div>
         <div>
-          <h2 className="font-semibold text-base">Eval lab</h2>
-          <p className="mt-1 text-muted-foreground text-sm">
-            Review quality checks without changing the default conversation workspace.
-          </p>
+          <h2 className="font-semibold text-base">{t('lab')}</h2>
+          <p className="mt-1 text-muted-foreground text-sm">{t('description')}</p>
         </div>
       </div>
 
       {unavailable ? (
         <div className="rounded-md border border-dashed border-border bg-background px-4 py-6 text-center text-muted-foreground text-sm">
-          Eval runtime is not connected.
+          {t('runtimeUnavailable')}
         </div>
       ) : null}
 
@@ -60,13 +61,13 @@ export function EvalLab({ cases, errorMessage, onRunCase, unavailable = false }:
           role="alert"
         >
           <TriangleAlert className="size-4" />
-          Eval results could not be loaded.
+          {t('loadError')}
         </div>
       ) : null}
 
       {!unavailable && !errorMessage && cases.length === 0 ? (
         <div className="rounded-md border border-dashed border-border bg-background px-4 py-6 text-center text-muted-foreground text-sm">
-          No eval cases configured.
+          {t('empty')}
         </div>
       ) : null}
 
@@ -89,14 +90,14 @@ export function EvalLab({ cases, errorMessage, onRunCase, unavailable = false }:
                     </div>
                     {evalCase.lastRun ? (
                       <div className="mt-2 flex flex-wrap gap-3 text-muted-foreground text-xs">
-                        <span>{evalCase.lastRun.passed} passed</span>
-                        <span>{evalCase.lastRun.failed} failed</span>
+                        <span>{t('passed', { count: evalCase.lastRun.passed })}</span>
+                        <span>{t('failed', { count: evalCase.lastRun.failed })}</span>
                         {evalCase.lastRun.completedAt ? (
                           <span>{new Date(evalCase.lastRun.completedAt).toLocaleString()}</span>
                         ) : null}
                       </div>
                     ) : (
-                      <p className="mt-2 text-muted-foreground text-xs">No previous result.</p>
+                      <p className="mt-2 text-muted-foreground text-xs">{t('noPreviousResult')}</p>
                     )}
                   </div>
 
@@ -108,7 +109,7 @@ export function EvalLab({ cases, errorMessage, onRunCase, unavailable = false }:
                     variant="outline"
                   >
                     <Play className="size-4" />
-                    Run {evalCase.title}
+                    {t('runCase', { title: evalCase.title })}
                   </Button>
                 </div>
               </article>

@@ -1,12 +1,33 @@
 import '@testing-library/jest-dom/vitest'
 
 import { QueryClient } from '@tanstack/react-query'
-import { act, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppProviders } from '@/app/providers'
 import { uiStore, useUiStore } from '@/shared/state/ui-store'
 import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import App from './App'
+
+const uiPreferencesStoreMock = vi.hoisted(() => ({
+  readUiPreferences: vi.fn<
+    () => Promise<{
+      theme: 'light' | 'dark' | 'system'
+      locale: 'zh-CN' | 'en-US'
+      sidebarCollapsed: boolean
+      chatComposerHeight: number
+      contextPanelWidth: number
+    }>
+  >(async () => ({
+    theme: 'light',
+    locale: 'en-US',
+    sidebarCollapsed: false,
+    chatComposerHeight: 160,
+    contextPanelWidth: 320,
+  })),
+  writeUiPreferences: vi.fn(async () => undefined),
+}))
+
+vi.mock('@/shared/local-store/ui-preferences-store', () => uiPreferencesStoreMock)
 
 function mockSystemColorScheme(matches: boolean) {
   const listeners = new Set<EventListenerOrEventListenerObject>()
@@ -56,9 +77,24 @@ function ThemeSetter({ theme }: { theme: 'light' | 'dark' | 'system' }) {
 }
 
 describe('App', () => {
+  beforeEach(() => {
+    uiPreferencesStoreMock.readUiPreferences.mockReset()
+    uiPreferencesStoreMock.readUiPreferences.mockResolvedValue({
+      theme: 'light',
+      locale: 'en-US',
+      sidebarCollapsed: false,
+      chatComposerHeight: 160,
+      contextPanelWidth: 320,
+    })
+    uiPreferencesStoreMock.writeUiPreferences.mockReset()
+    uiPreferencesStoreMock.writeUiPreferences.mockResolvedValue(undefined)
+  })
+
   afterEach(() => {
     window.history.pushState(null, '', '/')
     uiStore.getState().setTheme('light')
+    uiStore.getState().setLocale('en-US')
+    uiStore.getState().setSidebarCollapsed(false)
     document.documentElement.classList.remove('dark')
     delete document.documentElement.dataset.theme
     vi.restoreAllMocks()
@@ -154,5 +190,37 @@ describe('App', () => {
 
     expect(document.documentElement).not.toHaveClass('dark')
     expect(document.documentElement.dataset.theme).toBe('system')
+  })
+
+  it('hydrates and persists local UI preferences', async () => {
+    uiPreferencesStoreMock.readUiPreferences.mockResolvedValueOnce({
+      theme: 'dark',
+      locale: 'en-US',
+      sidebarCollapsed: true,
+      chatComposerHeight: 160,
+      contextPanelWidth: 320,
+    })
+
+    render(
+      <AppProviders commandClient={createMockCommandClient()}>
+        <ThemeSetter theme="system" />
+      </AppProviders>,
+    )
+
+    await waitFor(() => {
+      expect(uiStore.getState().theme).toBe('dark')
+      expect(uiStore.getState().sidebarCollapsed).toBe(true)
+      expect(document.documentElement).toHaveClass('dark')
+    })
+
+    act(() => {
+      screen.getByRole('button', { name: 'Set theme' }).click()
+    })
+
+    expect(uiPreferencesStoreMock.writeUiPreferences).toHaveBeenCalledWith({
+      locale: 'en-US',
+      theme: 'system',
+      sidebarCollapsed: true,
+    })
   })
 })

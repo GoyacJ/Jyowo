@@ -114,13 +114,13 @@ AppShell:
 - center conversation canvas
 - right Context panel
 - bottom Activity rail
-- top actions for share, layout, command palette, and workspace utilities
+- top actions for layout, command palette, and local workspace utilities
 - panels may be resizable where useful
 
 Recommended primary layout:
 
 ```text
-Top Bar: Workspace Actions | Layout | Share | Command Palette
+Top Bar: Workspace Actions | Layout | Command Palette
 Sidebar: Search | Recent Conversations | Home | Conversations | Projects | Artifacts | Agents | Tools | Settings
 Main: Conversation Header | Message Blocks | Plan | Diff Preview | Artifact Result | Composer
 Context: Project | Path | Files | Active Artifact | Decisions Needed | Next Actions
@@ -186,7 +186,8 @@ composer.
 
 ## Visual Direction
 
-Jyowo uses a Paper Workspace + Ink Accent visual system.
+Jyowo uses a Notion-derived warm-neutral visual system: a white document canvas,
+warm-white surfaces, whisper-weight borders, and a single blue accent.
 
 The interface should feel:
 
@@ -221,21 +222,31 @@ Reference posture:
 Color tokens:
 
 ```text
-background: #F7F5EF
-surface: #FFFCF5
-sidebar: #EEEAE1
-foreground: #24211C
-muted-foreground: #756F64
-border: #DED7C8
-primary: #2563EB
-accent: #0F766E
-accent-soft: #E7EEF9
-success: #2F7D4F
-warning: #B7791F
-destructive: #B42318
-code-background: #F4F1EA
-terminal-background: #1E1C18
+background: #FFFFFF
+surface: #FFFFFF
+sidebar: #F7F6F3
+muted: #F6F5F4
+foreground: #1C1B19
+muted-foreground: #615D59
+border: #E9E8E4
+input: #DCDBD6
+ring: #097FE8
+primary: #0075DE
+accent: #2A9D99
+accent-soft: #F2F9FF
+badge: #F2F9FF
+badge-foreground: #097FE8
+success: #1AAE39
+warning: #DD5B00
+destructive: #D93F3F
+code-background: #F6F5F4
+terminal-background: #2B2926
 ```
+
+Borders are whisper-weight. Elevation uses multi-layer low-opacity shadows
+(`shadow-card`, `shadow-deep`) and is reserved for overlays such as dialogs,
+dropdowns, the command palette, and starter cards. Flat surfaces do not cast
+shadows.
 
 Token families:
 
@@ -254,6 +265,9 @@ secondary
 secondary-foreground
 accent
 accent-foreground
+accent-soft
+badge
+badge-foreground
 destructive
 destructive-foreground
 success
@@ -328,10 +342,13 @@ Also forbidden:
 Typography:
 
 ```text
-UI: system font
+UI: bundled Inter (Inter Variable), system-ui fallback
 Code: SF Mono / Menlo / Cascadia Code / JetBrains Mono
 Numbers: tabular-nums
 ```
+
+Headings use Inter with tightened tracking that scales with size. Body text uses
+normal tracking and a 1.45-1.65 line height.
 
 Use page-like headings and readable body text. Do not use oversized hero type inside
 the app shell.
@@ -724,7 +741,7 @@ Out of scope for the core product:
 
 ```text
 full IDE
-public team dashboard
+web collaboration dashboard
 mobile adaptation
 theme marketplace
 assistant catalog clutter

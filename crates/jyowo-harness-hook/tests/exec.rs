@@ -152,7 +152,7 @@ fn exec_spec(handler_id: &str, command: PathBuf) -> HookExecSpec {
         args: Vec::new(),
         env: BTreeMap::new(),
         working_dir,
-        timeout: Duration::from_secs(5),
+        timeout: Duration::from_secs(15),
         resource_limits: HookExecResourceLimits::default(),
         signal_policy: HookExecSignalPolicy::default(),
         protocol_version: HookProtocolVersion::V1,

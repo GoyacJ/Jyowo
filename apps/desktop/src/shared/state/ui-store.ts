@@ -1,12 +1,15 @@
 import { useStore } from 'zustand'
 import { createStore } from 'zustand/vanilla'
 
+import { type AppLocale, DEFAULT_APP_LOCALE } from '@/shared/i18n/locales'
+
 type ThemeMode = 'light' | 'dark' | 'system'
 
 export interface UiState {
   activeRunConversationId: string | undefined
   activeRunId: string | undefined
   theme: ThemeMode
+  locale: AppLocale
   sidebarCollapsed: boolean
   contextPanelCollapsed: boolean
   activityRailCollapsed: boolean
@@ -15,6 +18,7 @@ export interface UiState {
   clearActiveRun: () => void
   setActiveRun: (activeRun: { conversationId: string; runId: string }) => void
   setTheme: (theme: ThemeMode) => void
+  setLocale: (locale: AppLocale) => void
   setSidebarCollapsed: (sidebarCollapsed: boolean) => void
   setContextPanelCollapsed: (contextPanelCollapsed: boolean) => void
   setActivityRailCollapsed: (activityRailCollapsed: boolean) => void
@@ -27,6 +31,7 @@ export function createUiStore() {
     activeRunConversationId: undefined,
     activeRunId: undefined,
     theme: 'light',
+    locale: DEFAULT_APP_LOCALE,
     sidebarCollapsed: false,
     contextPanelCollapsed: false,
     activityRailCollapsed: false,
@@ -39,6 +44,7 @@ export function createUiStore() {
         activeRunId: activeRun.runId,
       }),
     setTheme: (theme) => set({ theme }),
+    setLocale: (locale) => set({ locale }),
     setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
     setContextPanelCollapsed: (contextPanelCollapsed) => set({ contextPanelCollapsed }),
     setActivityRailCollapsed: (activityRailCollapsed) => set({ activityRailCollapsed }),

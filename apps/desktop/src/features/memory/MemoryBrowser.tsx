@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, Save, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import {
   exportMemoryItems,
@@ -21,6 +22,7 @@ const memoryQueryKeys = {
 }
 
 export function MemoryBrowser() {
+  const { t } = useTranslation('memory')
   const commandClient = useCommandClient()
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -59,7 +61,7 @@ export function MemoryBrowser() {
   const exportMutation = useMutation({
     mutationFn: () => exportMemoryItems(commandClient),
     onSuccess: (response) => {
-      setExportMessage(`Export saved: ${response.itemCount} memory items to ${response.path}.`)
+      setExportMessage(t('exportSaved', { count: response.itemCount, path: response.path }))
     },
   })
 
@@ -101,8 +103,10 @@ export function MemoryBrowser() {
     <section className="space-y-5 rounded-md border border-border bg-background p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="font-semibold text-base">Memory</h2>
-          <p className="mt-1 text-muted-foreground text-sm">{items.length} visible items</p>
+          <h2 className="font-semibold text-base">{t('title')}</h2>
+          <p className="mt-1 text-muted-foreground text-sm">
+            {t('visibleItems', { count: items.length })}
+          </p>
         </div>
         <Button
           disabled={exportMutation.isPending}
@@ -111,29 +115,29 @@ export function MemoryBrowser() {
           variant="outline"
         >
           <Download data-icon className="size-4" />
-          Export memory items
+          {t('export')}
         </Button>
       </div>
 
       {memoryItemsQuery.isLoading ? (
-        <div className="text-muted-foreground text-sm">Loading memory items.</div>
+        <div className="text-muted-foreground text-sm">{t('loading')}</div>
       ) : null}
 
       {memoryItemsQuery.isError ? (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
-          Memory items could not be loaded.
+          {t('loadError')}
         </div>
       ) : null}
 
       {!memoryItemsQuery.isLoading && !memoryItemsQuery.isError && items.length === 0 ? (
         <div className="rounded-md border border-dashed border-border bg-surface px-4 py-6 text-center text-muted-foreground text-sm">
-          No memory items available.
+          {t('empty')}
         </div>
       ) : null}
 
       {exportMutation.isError ? (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
-          Memory export could not be prepared.
+          {t('exportError')}
         </div>
       ) : null}
 
@@ -145,7 +149,7 @@ export function MemoryBrowser() {
 
       {items.length > 0 ? (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
-          <nav aria-label="Memory" className="max-h-[620px] space-y-3 overflow-y-auto pr-1">
+          <nav aria-label={t('title')} className="max-h-[620px] space-y-3 overflow-y-auto pr-1">
             {items.map((item) => (
               <MemoryItemCard
                 item={item}
@@ -158,28 +162,32 @@ export function MemoryBrowser() {
 
           <aside className="space-y-3">
             {detailQuery.isLoading ? (
-              <div className="text-muted-foreground text-sm">Loading memory detail.</div>
+              <div className="text-muted-foreground text-sm">{t('detailLoading')}</div>
             ) : null}
 
             {detailQuery.isError ? (
               <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
-                Memory detail could not be loaded.
+                {t('detailLoadError')}
               </div>
             ) : null}
 
             {selectedItem ? (
               <section
-                aria-label="Memory detail"
+                aria-label={t('detail')}
                 className="space-y-4 rounded-md border border-border bg-surface p-4"
               >
                 <div className="space-y-1 text-sm">
                   <div className="font-medium">{selectedItem.kind}</div>
-                  <div className="text-muted-foreground">source: {selectedItem.source}</div>
-                  <div className="text-muted-foreground">visibility: {selectedItem.visibility}</div>
+                  <div className="text-muted-foreground">
+                    {t('source', { source: selectedItem.source })}
+                  </div>
+                  <div className="text-muted-foreground">
+                    {t('visibility', { visibility: selectedItem.visibility })}
+                  </div>
                 </div>
 
                 <label className="block space-y-2 text-sm">
-                  <span className="font-medium">Memory content</span>
+                  <span className="font-medium">{t('content')}</span>
                   <textarea
                     className="min-h-36 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onChange={(event) => setDraftContent(event.target.value)}
@@ -194,7 +202,7 @@ export function MemoryBrowser() {
                     type="button"
                   >
                     <Save data-icon className="size-4" />
-                    Save memory item
+                    {t('save')}
                   </Button>
                 </div>
               </section>
@@ -202,14 +210,14 @@ export function MemoryBrowser() {
 
             {deleteCandidateId ? (
               <div className="space-y-3 rounded-md border border-destructive/30 bg-destructive/5 p-4">
-                <p className="text-sm">Delete memory item {deleteCandidateId}?</p>
+                <p className="text-sm">{t('deletePrompt', { id: deleteCandidateId })}</p>
                 <div className="flex justify-end gap-2">
                   <Button
                     onClick={() => setDeleteCandidateId(null)}
                     type="button"
                     variant="outline"
                   >
-                    Cancel
+                    {t('cancel')}
                   </Button>
                   <Button
                     disabled={deleteMutation.isPending}
@@ -218,7 +226,7 @@ export function MemoryBrowser() {
                     variant="destructive"
                   >
                     <Trash2 data-icon className="size-4" />
-                    Confirm memory deletion
+                    {t('confirmDelete')}
                   </Button>
                 </div>
               </div>
@@ -226,13 +234,13 @@ export function MemoryBrowser() {
 
             {updateMutation.isError ? (
               <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
-                Memory item could not be saved.
+                {t('saveError')}
               </div>
             ) : null}
 
             {deleteMutation.isError ? (
               <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
-                Memory item could not be deleted.
+                {t('deleteError')}
               </div>
             ) : null}
           </aside>

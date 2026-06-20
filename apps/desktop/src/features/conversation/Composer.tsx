@@ -1,5 +1,6 @@
 import { Paperclip, Send } from 'lucide-react'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 type ComposerProps = {
   onSubmit: (text: string) => void
@@ -16,6 +17,7 @@ export function Composer({
   errorMessage,
   onRetry,
 }: ComposerProps) {
+  const { t } = useTranslation(['common', 'conversation'])
   const [text, setText] = useState('')
   const isDisabled = pending || disabled
   const canSubmit = text.trim().length > 0 && !isDisabled
@@ -45,7 +47,7 @@ export function Composer({
               onClick={onRetry}
               type="button"
             >
-              Retry
+              {t('common:retry')}
             </button>
           ) : null}
         </div>
@@ -55,14 +57,14 @@ export function Composer({
         className="h-8 w-full resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
         disabled={isDisabled}
         onChange={(event) => setText(event.target.value)}
-        placeholder="Ask Jyowo anything about this project..."
+        placeholder={t('conversation:composer.placeholder')}
         rows={1}
         value={text}
       />
       <div className="mt-1 flex items-center justify-between">
         <div className="flex items-center gap-2 text-muted-foreground">
           <button
-            aria-label="Attach file"
+            aria-label={t('conversation:composer.attachFile')}
             className="rounded-md p-1.5 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
             disabled={isDisabled}
             type="button"
@@ -85,9 +87,11 @@ export function Composer({
           </button>
         </div>
         <div className="flex items-center gap-2">
-          <span className="rounded-md border border-border px-3 py-1 text-sm">Local</span>
+          <span className="rounded-md border border-border px-3 py-1 text-sm">
+            {t('common:local')}
+          </span>
           <button
-            aria-label="Send message"
+            aria-label={t('conversation:composer.sendMessage')}
             className="rounded-md bg-primary p-2 text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"
             disabled={!canSubmit}
             type="submit"

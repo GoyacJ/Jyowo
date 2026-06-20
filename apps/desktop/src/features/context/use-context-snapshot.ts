@@ -23,9 +23,7 @@ const contextSnapshotQueryKeys = {
 
 export function useContextSnapshot(request: GetContextSnapshotRequest = {}) {
   const commandClient = useCommandClient()
-  const enabled = Boolean(request.conversationId || request.runId)
   const contextQuery = useQuery({
-    enabled,
     queryKey: contextSnapshotQueryKeys.detail(request),
     queryFn: () => getContextSnapshot(request, commandClient),
   })

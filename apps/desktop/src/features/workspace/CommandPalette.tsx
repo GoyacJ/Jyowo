@@ -7,6 +7,7 @@ import {
   TerminalSquare,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import {
   Command,
@@ -29,28 +30,47 @@ export type CommandPaletteAction =
 type CommandPaletteCommand = {
   action: CommandPaletteAction
   icon: typeof MessageSquarePlus
-  label: string
+  labelKey: string
 }
 
 const commands: CommandPaletteCommand[] = [
-  { action: 'new-conversation', icon: MessageSquarePlus, label: 'New conversation' },
-  { action: 'open-artifact', icon: FileText, label: 'Open artifact' },
-  { action: 'open-evals', icon: FlaskConical, label: 'Open evals' },
-  { action: 'search-files', icon: FileSearch, label: 'Search files' },
-  { action: 'view-activity', icon: TerminalSquare, label: 'View activity' },
-  { action: 'settings', icon: Settings, label: 'Settings' },
+  {
+    action: 'new-conversation',
+    icon: MessageSquarePlus,
+    labelKey: 'commandPalette.newConversation',
+  },
+  { action: 'open-artifact', icon: FileText, labelKey: 'commandPalette.openArtifact' },
+  { action: 'open-evals', icon: FlaskConical, labelKey: 'commandPalette.openEvals' },
+  { action: 'search-files', icon: FileSearch, labelKey: 'commandPalette.searchFiles' },
+  { action: 'view-activity', icon: TerminalSquare, labelKey: 'commandPalette.viewActivity' },
+  { action: 'settings', icon: Settings, labelKey: 'commandPalette.settings' },
 ]
+
+export const OPEN_COMMAND_PALETTE_EVENT = 'jyowo:open-command-palette'
 
 type CommandPaletteProps = {
   onAction?: (action: CommandPaletteAction) => void
 }
 
 export function CommandPalette({ onAction }: CommandPaletteProps) {
+  const { t } = useTranslation('shell')
   const [open, setOpen] = useState(false)
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const restoreFocusOnCloseRef = useRef(true)
 
   useEffect(() => {
+    function captureOpeningFocus() {
+      if (document.activeElement instanceof HTMLElement) {
+        previousFocusRef.current = document.activeElement
+      }
+      restoreFocusOnCloseRef.current = true
+    }
+
+    function openPalette() {
+      captureOpeningFocus()
+      setOpen(true)
+    }
+
     function onKeyDown(event: KeyboardEvent) {
       if (event.key.toLowerCase() !== 'k' || (!event.metaKey && !event.ctrlKey)) {
         return
@@ -59,16 +79,23 @@ export function CommandPalette({ onAction }: CommandPaletteProps) {
       event.preventDefault()
       setOpen((current) => {
         const nextOpen = !current
-        if (nextOpen && document.activeElement instanceof HTMLElement) {
-          previousFocusRef.current = document.activeElement
+        if (nextOpen) {
+          captureOpeningFocus()
         }
-        restoreFocusOnCloseRef.current = true
         return nextOpen
       })
     }
 
+    function onOpenCommandPalette() {
+      openPalette()
+    }
+
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    window.addEventListener(OPEN_COMMAND_PALETTE_EVENT, onOpenCommandPalette)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, onOpenCommandPalette)
+    }
   }, [])
 
   function handleOpenChange(nextOpen: boolean) {
@@ -88,7 +115,7 @@ export function CommandPalette({ onAction }: CommandPaletteProps) {
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        aria-label="Command palette"
+        aria-label={t('commandPalette.title')}
         className="gap-0 overflow-hidden p-0"
         onCloseAutoFocus={(event) => {
           if (!restoreFocusOnCloseRef.current) {
@@ -104,16 +131,20 @@ export function CommandPalette({ onAction }: CommandPaletteProps) {
         }}
         onOpenAutoFocus={(event) => event.preventDefault()}
       >
-        <DialogTitle className="sr-only">Command palette</DialogTitle>
-        <Command label="Search commands">
-          <CommandInput aria-label="Search commands" autoFocus placeholder="Search commands" />
+        <DialogTitle className="sr-only">{t('commandPalette.title')}</DialogTitle>
+        <Command label={t('commandPalette.searchLabel')}>
+          <CommandInput
+            aria-label={t('commandPalette.searchLabel')}
+            autoFocus
+            placeholder={t('commandPalette.searchPlaceholder')}
+          />
           <CommandList>
-            <CommandEmpty>No commands found.</CommandEmpty>
-            <CommandGroup heading="Actions">
-              {commands.map(({ action, icon: Icon, label }) => (
+            <CommandEmpty>{t('commandPalette.empty')}</CommandEmpty>
+            <CommandGroup heading={t('commandPalette.actionsHeading')}>
+              {commands.map(({ action, icon: Icon, labelKey }) => (
                 <CommandItem key={action} onSelect={() => runCommand(action)}>
                   <Icon aria-hidden="true" className="mr-2 size-4 text-muted-foreground" />
-                  {label}
+                  {t(labelKey)}
                 </CommandItem>
               ))}
             </CommandGroup>

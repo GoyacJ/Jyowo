@@ -1,4 +1,5 @@
 import { FileText } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 export type ContextFileReference = {
   label: string
@@ -9,21 +10,17 @@ type FileReferenceListProps = {
   files: ContextFileReference[]
 }
 
-const stateLabels = {
-  missing: 'Missing',
-  ready: '',
-  stale: 'Stale',
-} satisfies Record<NonNullable<ContextFileReference['state']>, string>
-
 export function FileReferenceList({ files }: FileReferenceListProps) {
+  const { t } = useTranslation('context')
+
   if (files.length === 0) {
-    return <p className="text-muted-foreground text-sm">No files attached.</p>
+    return <p className="text-muted-foreground text-sm">{t('noFiles')}</p>
   }
 
   return (
-    <ul aria-label="Files" className="space-y-2">
+    <ul aria-label={t('files')} className="space-y-2">
       {files.map((file) => {
-        const stateLabel = stateLabels[file.state ?? 'ready']
+        const stateLabel = getStateLabel(file.state ?? 'ready', t)
         const accessibleName = stateLabel ? `${file.label} ${stateLabel}` : file.label
 
         return (
@@ -44,4 +41,19 @@ export function FileReferenceList({ files }: FileReferenceListProps) {
       })}
     </ul>
   )
+}
+
+function getStateLabel(
+  state: NonNullable<ContextFileReference['state']>,
+  t: (key: string) => string,
+) {
+  if (state === 'missing') {
+    return t('missing')
+  }
+
+  if (state === 'stale') {
+    return t('stale')
+  }
+
+  return ''
 }

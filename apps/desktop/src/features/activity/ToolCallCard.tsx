@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+
 import { Badge } from '@/shared/ui/badge'
 
 type ToolStatus = 'blocked' | 'failed' | 'queued' | 'redacted' | 'running' | 'success'
@@ -15,15 +17,6 @@ export type ToolCallDetails = {
   toolName: string
 }
 
-const statusLabels = {
-  blocked: 'Blocked',
-  failed: 'Failed',
-  queued: 'Queued',
-  redacted: 'Redacted',
-  running: 'Running',
-  success: 'Success',
-} satisfies Record<ToolStatus, string>
-
 const statusVariants = {
   blocked: 'outline',
   failed: 'destructive',
@@ -33,14 +26,16 @@ const statusVariants = {
   success: 'success',
 } satisfies Record<ToolStatus, 'destructive' | 'outline' | 'secondary' | 'success'>
 
-const permissionStateLabels = {
-  approved: 'Permission approved',
-  denied: 'Permission denied',
-  not_required: 'Permission not required',
-  pending: 'Permission pending',
+const permissionStateLabelKeys = {
+  approved: 'toolCall.permissionStates.approved',
+  denied: 'toolCall.permissionStates.denied',
+  not_required: 'toolCall.permissionStates.notRequired',
+  pending: 'toolCall.permissionStates.pending',
 } satisfies Record<ToolPermissionState, string>
 
 export function ToolCallCard({ toolCall }: { toolCall: ToolCallDetails }) {
+  const { t } = useTranslation(['activity', 'common'])
+
   return (
     <section aria-labelledby="tool-call-title" className="rounded-md border border-border p-4">
       <div className="flex items-center justify-between gap-3">
@@ -48,7 +43,9 @@ export function ToolCallCard({ toolCall }: { toolCall: ToolCallDetails }) {
           {toolCall.toolName}
         </h3>
         <div className="flex items-center gap-2">
-          <Badge variant={statusVariants[toolCall.status]}>{statusLabels[toolCall.status]}</Badge>
+          <Badge variant={statusVariants[toolCall.status]}>
+            {t(`common:status.${toolCall.status}`)}
+          </Badge>
           {toolCall.durationMs ? (
             <span className="font-mono text-muted-foreground text-xs">
               {formatDuration(toolCall.durationMs)}
@@ -57,16 +54,25 @@ export function ToolCallCard({ toolCall }: { toolCall: ToolCallDetails }) {
         </div>
       </div>
       <dl className="mt-4 grid gap-3 text-sm">
-        {toolCall.startedAt ? <DetailRow label="Started" value={toolCall.startedAt} /> : null}
-        {toolCall.endedAt ? <DetailRow label="Ended" value={toolCall.endedAt} /> : null}
+        {toolCall.startedAt ? (
+          <DetailRow label={t('activity:toolCall.started')} value={toolCall.startedAt} />
+        ) : null}
+        {toolCall.endedAt ? (
+          <DetailRow label={t('activity:toolCall.ended')} value={toolCall.endedAt} />
+        ) : null}
         {toolCall.permissionState ? (
-          <DetailRow label="Permission" value={permissionStateLabels[toolCall.permissionState]} />
+          <DetailRow
+            label={t('activity:toolCall.permission')}
+            value={t(`activity:${permissionStateLabelKeys[toolCall.permissionState]}`)}
+          />
         ) : null}
-        <DetailRow label="Arguments" value={toolCall.argumentsSummary} />
+        <DetailRow label={t('activity:toolCall.arguments')} value={toolCall.argumentsSummary} />
         {toolCall.outputSummary ? (
-          <DetailRow label="Output" value={toolCall.outputSummary} />
+          <DetailRow label={t('activity:toolCall.output')} value={toolCall.outputSummary} />
         ) : null}
-        {toolCall.errorDetails ? <DetailRow label="Error" value={toolCall.errorDetails} /> : null}
+        {toolCall.errorDetails ? (
+          <DetailRow label={t('activity:toolCall.error')} value={toolCall.errorDetails} />
+        ) : null}
       </dl>
     </section>
   )

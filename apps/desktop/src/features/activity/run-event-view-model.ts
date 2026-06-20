@@ -188,8 +188,7 @@ function getDetails(event: RunEvent): RunEventViewModel['details'] {
         permissions: [
           {
             id: event.payload?.requestId ?? event.id,
-            label:
-              event.payload?.decision === 'approve' ? 'Permission approved' : 'Permission denied',
+            label: 'permission',
             risk: 'medium',
             state: event.payload?.decision === 'approve' ? 'approved' : 'denied',
           },

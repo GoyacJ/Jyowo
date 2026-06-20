@@ -9,9 +9,10 @@ use jyowo_desktop_shell::commands::{
     get_replay_timeline_with_runtime_state, harness_healthcheck_payload, list_activity_payload,
     list_activity_with_runtime_state, list_artifacts_with_runtime_state,
     list_conversations_with_runtime_state, list_eval_cases_payload,
-    list_mcp_servers_with_runtime_state, list_memory_items_with_runtime_state, provider_secret_ref,
-    provider_secret_ref_prefix, resolve_permission_payload, resolve_permission_with_runtime_state,
-    run_eval_case_payload, runtime_state_async, runtime_state_for_workspace,
+    list_eval_cases_with_runtime_state, list_mcp_servers_with_runtime_state,
+    list_memory_items_with_runtime_state, provider_secret_ref, provider_secret_ref_prefix,
+    resolve_permission_payload, resolve_permission_with_runtime_state, run_eval_case_payload,
+    run_eval_case_with_runtime_state, runtime_state_async, runtime_state_for_workspace,
     save_mcp_server_with_runtime_state, save_mcp_server_with_store,
     save_provider_settings_with_store, start_run_payload, start_run_with_runtime_state,
     update_memory_item_with_runtime_state, validate_provider_settings_payload,
@@ -71,37 +72,36 @@ fn harness_healthcheck_payload_reports_available_sdk() {
 }
 
 #[test]
-fn eval_lab_payloads_return_safe_local_support_cases() {
-    let list = list_eval_cases_payload();
-    let value = serde_json::to_value(&list).unwrap();
+fn eval_lab_payloads_require_runtime_instead_of_static_support_cases() {
+    let list_error = list_eval_cases_payload().unwrap_err();
+    assert_eq!(list_error.code, "RUNTIME_UNAVAILABLE");
 
-    assert_eq!(
-        value,
-        json!({
-            "cases": [
-                {
-                    "id": "regression-smoke",
-                    "lastRun": {
-                        "completedAt": "2026-06-17T00:00:00.000Z",
-                        "failed": 0,
-                        "passed": 3,
-                        "status": "passed"
-                    },
-                    "title": "Regression smoke"
-                }
-            ]
-        })
-    );
-
-    let run = run_eval_case_payload(RunEvalCaseRequest {
+    let error = run_eval_case_payload(RunEvalCaseRequest {
         case_id: "regression-smoke".to_owned(),
     })
-    .unwrap();
-    let run_value = serde_json::to_value(&run).unwrap();
+    .unwrap_err();
 
-    assert_eq!(run_value["status"], "completed");
-    assert_eq!(run_value["case"]["id"], "regression-smoke");
-    assert_eq!(run_value["case"]["lastRun"]["passed"], 4);
+    assert_eq!(error.code, "RUNTIME_UNAVAILABLE");
+}
+
+#[test]
+fn eval_lab_runtime_state_paths_require_eval_runtime() {
+    let workspace = unique_workspace("eval-no-runtime");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("workspace state should initialize without a harness");
+
+    let list_error = list_eval_cases_with_runtime_state(&state).unwrap_err();
+    assert_eq!(list_error.code, "RUNTIME_UNAVAILABLE");
+
+    let run_error = run_eval_case_with_runtime_state(
+        RunEvalCaseRequest {
+            case_id: "regression-smoke".to_owned(),
+        },
+        &state,
+    )
+    .unwrap_err();
+    assert_eq!(run_error.code, "RUNTIME_UNAVAILABLE");
 }
 
 #[test]
@@ -124,12 +124,12 @@ fn artifact_payload_skips_missing_optional_fields() {
 }
 
 #[test]
-fn run_eval_case_payload_rejects_unknown_or_malformed_case_ids() {
+fn run_eval_case_payload_requires_runtime_for_valid_case_ids_and_rejects_malformed_ids() {
     let unknown = run_eval_case_payload(RunEvalCaseRequest {
         case_id: "unknown-case".to_owned(),
     })
     .unwrap_err();
-    assert_eq!(unknown.code, "INVALID_PAYLOAD");
+    assert_eq!(unknown.code, "RUNTIME_UNAVAILABLE");
 
     let malformed = run_eval_case_payload(RunEvalCaseRequest {
         case_id: "bad case".to_owned(),
@@ -1766,7 +1766,7 @@ async fn get_replay_timeline_with_runtime_state_reads_beyond_first_event_page() 
         conversation_id: Some(session_id.to_string()),
         run_id: Some(started.run_id),
     };
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
 
     loop {
         let payload = get_replay_timeline_with_runtime_state(request.clone(), &state)

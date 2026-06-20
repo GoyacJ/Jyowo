@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+
 export type RawJsonDetails = {
   payload: Record<string, unknown>
   withheld?: boolean
@@ -7,13 +9,15 @@ const maxRenderedPayloadLength = 4000
 const maxRenderedPayloadLines = 160
 
 export function RawJsonView({ rawJson }: { rawJson: RawJsonDetails }) {
+  const { t } = useTranslation('activity')
+
   if (rawJson.withheld) {
     return (
       <section aria-labelledby="raw-json-title" className="rounded-md border border-border p-4">
         <h3 className="font-medium" id="raw-json-title">
-          Raw JSON
+          {t('rawJson.title')}
         </h3>
-        <p className="mt-3 text-muted-foreground text-sm">Raw JSON withheld by policy</p>
+        <p className="mt-3 text-muted-foreground text-sm">{t('rawJson.withheld')}</p>
       </section>
     )
   }
@@ -24,10 +28,10 @@ export function RawJsonView({ rawJson }: { rawJson: RawJsonDetails }) {
     <section aria-labelledby="raw-json-title" className="rounded-md border border-border p-4">
       <div className="flex items-center justify-between gap-3">
         <h3 className="font-medium" id="raw-json-title">
-          Raw JSON
+          {t('rawJson.title')}
         </h3>
         {payloadPreview.truncated ? (
-          <span className="text-muted-foreground text-xs">Payload truncated</span>
+          <span className="text-muted-foreground text-xs">{t('rawJson.truncated')}</span>
         ) : null}
       </div>
       <pre className="mt-4 overflow-x-auto rounded-md bg-muted p-3 text-xs">

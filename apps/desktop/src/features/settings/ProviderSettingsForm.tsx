@@ -1,35 +1,35 @@
 import { KeyRound, Save } from 'lucide-react'
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
+import { useTranslation } from 'react-i18next'
 import { z } from 'zod'
 
 import type { SaveProviderSettingsResponse } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
 
-const providerSettingsFormSchema = z
-  .object({
-    apiKey: z.string().trim().min(1, 'API key is required.'),
-    modelId: z.string().trim().min(1, 'Model is required.'),
-    providerId: z.enum([
-      'anthropic',
-      'codex',
-      'deepseek',
-      'doubao',
-      'gemini',
-      'local-llama',
-      'minimax',
-      'openai',
-      'openrouter',
-      'qwen',
-      'zhipu',
-    ]),
-  })
-  .strict()
+const providerIds = [
+  'anthropic',
+  'codex',
+  'deepseek',
+  'doubao',
+  'gemini',
+  'local-llama',
+  'minimax',
+  'openai',
+  'openrouter',
+  'qwen',
+  'zhipu',
+] as const
 
-type ProviderSettingsFormValues = z.infer<typeof providerSettingsFormSchema>
+type ProviderSettingsFormValues = {
+  apiKey: string
+  modelId: string
+  providerId: (typeof providerIds)[number]
+}
 
 export function ProviderSettingsForm() {
+  const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
   const [formError, setFormError] = useState<string | null>(null)
   const [savedSettings, setSavedSettings] = useState<SaveProviderSettingsResponse | null>(null)
@@ -46,6 +46,13 @@ export function ProviderSettingsForm() {
       providerId: 'openai',
     },
   })
+  const providerSettingsFormSchema = z
+    .object({
+      apiKey: z.string().trim().min(1, t('provider.errors.apiKeyRequired')),
+      modelId: z.string().trim().min(1, t('provider.errors.modelRequired')),
+      providerId: z.enum(providerIds),
+    })
+    .strict()
 
   async function submit(values: ProviderSettingsFormValues) {
     setFormError(null)
@@ -69,7 +76,7 @@ export function ProviderSettingsForm() {
       const saved = await commandClient.saveProviderSettings(request)
       setSavedSettings(saved)
     } catch {
-      setFormError('Provider settings could not be saved.')
+      setFormError(t('provider.saveError'))
     }
   }
 
@@ -83,16 +90,14 @@ export function ProviderSettingsForm() {
           <KeyRound className="size-4" />
         </div>
         <div>
-          <h2 className="font-semibold text-base">Provider settings</h2>
-          <p className="mt-1 text-muted-foreground text-sm">
-            Configure the model endpoint used by local runs.
-          </p>
+          <h2 className="font-semibold text-base">{t('provider.title')}</h2>
+          <p className="mt-1 text-muted-foreground text-sm">{t('provider.description')}</p>
         </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
         <label className="space-y-2 text-sm">
-          <span className="font-medium">Provider</span>
+          <span className="font-medium">{t('provider.provider')}</span>
           <select
             className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
             disabled={isSubmitting}
@@ -113,7 +118,7 @@ export function ProviderSettingsForm() {
         </label>
 
         <label className="space-y-2 text-sm">
-          <span className="font-medium">Model</span>
+          <span className="font-medium">{t('provider.model')}</span>
           <input
             className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
             disabled={isSubmitting}
@@ -127,11 +132,11 @@ export function ProviderSettingsForm() {
       </div>
 
       <label className="block space-y-2 text-sm">
-        <span className="font-medium">API key</span>
+        <span className="font-medium">{t('provider.apiKey')}</span>
         <input
           className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
           disabled={isSubmitting}
-          placeholder="Stored after save"
+          placeholder={t('provider.apiKeyPlaceholder')}
           type="password"
           {...register('apiKey')}
         />
@@ -148,8 +153,8 @@ export function ProviderSettingsForm() {
 
       {savedSettings ? (
         <div className="rounded-md border border-border bg-background px-3 py-2 text-sm">
-          <div className="font-medium">Provider saved.</div>
-          <div className="mt-1 text-muted-foreground">Stored as secret reference</div>
+          <div className="font-medium">{t('provider.saved')}</div>
+          <div className="mt-1 text-muted-foreground">{t('provider.secretReference')}</div>
           <div className="mt-1 break-all font-mono text-xs">{savedSettings.secretRef}</div>
         </div>
       ) : null}
@@ -157,7 +162,7 @@ export function ProviderSettingsForm() {
       <div className="flex justify-end">
         <Button disabled={isSubmitting} type="submit">
           <Save className="size-4" />
-          {isSubmitting ? 'Saving provider settings' : 'Save provider settings'}
+          {isSubmitting ? t('provider.saving') : t('provider.save')}
         </Button>
       </div>
     </form>

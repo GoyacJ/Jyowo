@@ -1,6 +1,7 @@
 import { useRouterState } from '@tanstack/react-router'
-import { MoreHorizontal, PanelRight, Share } from 'lucide-react'
+import { Command as CommandIcon, MoreHorizontal, PanelRight } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { useTranslation } from 'react-i18next'
 import { ActivityRail } from '@/features/activity/ActivityRail'
 import { ReplayTimeline } from '@/features/activity/ReplayTimeline'
 import { RunEventDetails } from '@/features/activity/RunEventDetails'
@@ -10,17 +11,21 @@ import { useActivity } from '@/features/activity/use-activity'
 import { ContextPanel } from '@/features/context/ContextPanel'
 import { useContextSnapshot } from '@/features/context/use-context-snapshot'
 import { useConversation } from '@/features/conversation/use-conversation'
+import { OPEN_COMMAND_PALETTE_EVENT } from '@/features/workspace/CommandPalette'
 import { SidebarNav } from '@/features/workspace/SidebarNav'
 import { useUiStore } from '@/shared/state/ui-store'
 import { exportSupportBundle } from '@/shared/tauri/commands'
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { useCommandClient } from '@/shared/tauri/react'
+import { Button } from '@/shared/ui/button'
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const { t } = useTranslation(['shell', 'activity'])
   const activityRailCollapsed = useUiStore((state) => state.activityRailCollapsed)
   const activityRailExpanded = useUiStore((state) => state.activityRailExpanded)
   const activeRunConversationId = useUiStore((state) => state.activeRunConversationId)
   const activeRunId = useUiStore((state) => state.activeRunId)
+  const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
   const contextPanelCollapsed = useUiStore((state) => state.contextPanelCollapsed)
   const setContextPanelCollapsed = useUiStore((state) => state.setContextPanelCollapsed)
   const setActivityRailCollapsed = useUiStore((state) => state.setActivityRailCollapsed)
@@ -44,10 +49,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const activity = useActivity(activityRequest)
   const contextSnapshot = useContextSnapshot(contextRequest)
   const activityRailHeight = activityRailCollapsed
-    ? '32px'
+    ? '30px'
     : activityRailExpanded
-      ? '360px'
-      : '44px'
+      ? '336px'
+      : '40px'
+  const sidebarWidth = sidebarCollapsed ? '48px' : '248px'
   const activityRail = (
     <ActivityRail
       collapsed={activityRailCollapsed}
@@ -79,40 +85,50 @@ export function AppShell({ children }: { children: ReactNode }) {
         className="grid min-h-0"
         style={{
           gridTemplateColumns: contextPanelCollapsed
-            ? '268px minmax(0,1fr)'
-            : '268px minmax(0,1fr) 320px',
+            ? `${sidebarWidth} minmax(0,1fr)`
+            : `${sidebarWidth} minmax(0,1fr) 320px`,
         }}
       >
         <SidebarNav />
-        <div className="grid min-h-0 grid-rows-[56px_minmax(0,1fr)]">
-          <header className="flex items-center justify-end gap-2 px-6">
-            <button
-              aria-label="More actions"
-              className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
-              disabled
+        <div className="grid min-h-0 grid-rows-[52px_minmax(0,1fr)]">
+          <header className="flex items-center justify-end gap-2 px-4">
+            <Button
+              aria-label={t('actions.openCommandPalette')}
+              className="size-8"
+              onClick={() => window.dispatchEvent(new Event(OPEN_COMMAND_PALETTE_EVENT))}
+              size="icon"
               type="button"
+              variant="outline"
+            >
+              <CommandIcon className="size-4" />
+            </Button>
+            <Button
+              aria-label={t('actions.moreActions')}
+              className="size-8 text-muted-foreground"
+              disabled
+              size="icon"
+              type="button"
+              variant="ghost"
             >
               <MoreHorizontal className="size-4" />
-            </button>
-            <button
-              className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-sm hover:bg-muted"
-              disabled
-              type="button"
-            >
-              <Share className="size-4" />
-              Share
-            </button>
-            <button
-              aria-label={contextPanelCollapsed ? 'Show context panel' : 'Hide context panel'}
+            </Button>
+            <Button
+              aria-label={
+                contextPanelCollapsed
+                  ? t('actions.showContextPanel')
+                  : t('actions.hideContextPanel')
+              }
               aria-pressed={!contextPanelCollapsed}
-              className="rounded-md border border-border bg-surface p-2 hover:bg-muted"
+              className="size-8"
               onClick={() => setContextPanelCollapsed(!contextPanelCollapsed)}
+              size="icon"
               type="button"
+              variant="outline"
             >
               <PanelRight className="size-4" />
-            </button>
+            </Button>
           </header>
-          <main className="min-h-0 min-w-0 overflow-hidden px-8 pb-8 xl:px-16">{children}</main>
+          <main className="min-h-0 min-w-0 overflow-hidden px-6 pb-6 xl:px-8">{children}</main>
         </div>
         {contextPanelCollapsed ? null : (
           <ContextPanel
@@ -137,7 +153,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 resolvingPermissionId={activity.resolvingPermissionId}
               />
             ) : (
-              <section aria-label="Run event details" />
+              <section aria-label={t('activity:runEventDetails')} />
             )}
             <div className="space-y-6">
               <UsageSummary unavailable={!activity.usageSummary} usage={activity.usageSummary} />
