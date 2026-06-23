@@ -93,6 +93,7 @@ export const zhCN = {
       searchReferences: '搜索引用',
       loadingReferences: '正在加载引用...',
       noReferences: '未找到引用。',
+      cancelRun: '取消运行',
       sendMessage: '发送消息',
     },
     continue: '继续',

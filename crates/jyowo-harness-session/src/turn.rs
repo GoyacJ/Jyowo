@@ -1,6 +1,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -36,6 +37,8 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::Session;
+
+const DEFAULT_CONVERSATION_TURN_DEADLINE: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Clone)]
 pub struct SessionTurnRuntime {
@@ -187,6 +190,9 @@ pub(crate) async fn run_turn(
     infer_ctx.session_id = Some(session.session_id());
     infer_ctx.run_id = Some(run_id);
     infer_ctx.blob_store = runtime.blob_store.clone();
+    if infer_ctx.deadline.is_none() {
+        infer_ctx.deadline = Some(Instant::now() + DEFAULT_CONVERSATION_TURN_DEADLINE);
+    }
 
     let mut stream = match runtime.model.infer(request, infer_ctx).await {
         Ok(stream) => stream,
@@ -247,8 +253,8 @@ pub(crate) async fn run_turn(
                 )
                 .await;
             }
-            ModelStreamEvent::MessageStop
-            | ModelStreamEvent::ContentBlockStart { .. }
+            ModelStreamEvent::MessageStop => break,
+            ModelStreamEvent::ContentBlockStart { .. }
             | ModelStreamEvent::ContentBlockStop { .. } => {}
         }
     }

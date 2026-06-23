@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use async_stream::stream;
 use futures::StreamExt;
@@ -8,6 +9,8 @@ use serde::Deserialize;
 use crate::{ContentDelta, ContentType, ErrorClass, ErrorHints, ModelStream, ModelStreamEvent};
 
 use super::{stop_reason, usage, OpenAiUsage};
+
+const POST_FINISH_USAGE_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SseEvent {
@@ -57,13 +60,34 @@ pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
     Box::pin(stream! {
         let mut parser = IncrementalSseParser::default();
         let mut state = OpenAiStreamState::default();
-        while let Some(chunk) = bytes.next().await {
+        loop {
+            let chunk = if state.terminal_pending {
+                match tokio::time::timeout(POST_FINISH_USAGE_GRACE, bytes.next()).await {
+                    Ok(chunk) => chunk,
+                    Err(_) => {
+                        if let Some(stop) = state.finish_message() {
+                            yield stop;
+                        }
+                        return;
+                    }
+                }
+            } else {
+                bytes.next().await
+            };
+
+            let Some(chunk) = chunk else {
+                break;
+            };
+
             match chunk {
                 Ok(chunk) => match parser.push(&chunk) {
                     Ok(events) => {
                         for event in events {
                             for mapped in state.map_event(event) {
                                 yield mapped;
+                            }
+                            if state.stopped {
+                                return;
                             }
                         }
                     }
@@ -88,7 +112,11 @@ pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
         }
 
         if state.started && !state.stopped {
-            yield ModelStreamEvent::MessageStop;
+            if let Some(stop) = state.finish_message() {
+                yield stop;
+            } else {
+                yield ModelStreamEvent::MessageStop;
+            }
         }
     })
 }
@@ -119,6 +147,7 @@ fn parse_frame(frame: &str) -> Option<SseEvent> {
 struct OpenAiStreamState {
     started: bool,
     stopped: bool,
+    terminal_pending: bool,
     text_started: bool,
     text_stopped: bool,
     next_block_index: u32,
@@ -128,7 +157,10 @@ struct OpenAiStreamState {
 impl OpenAiStreamState {
     fn map_event(&mut self, event: SseEvent) -> Vec<ModelStreamEvent> {
         if event.data == "[DONE]" {
-            return Vec::new();
+            let stop = self.finish_message();
+            self.stopped = true;
+            self.terminal_pending = false;
+            return stop.into_iter().collect::<Vec<ModelStreamEvent>>();
         }
 
         let payload = match serde_json::from_str::<ChatCompletionChunk>(&event.data) {
@@ -144,6 +176,7 @@ impl OpenAiStreamState {
         };
 
         let mut events = Vec::new();
+        let mut finish_reason_seen = false;
         if !self.started {
             self.started = true;
             events.push(ModelStreamEvent::MessageStart {
@@ -175,6 +208,7 @@ impl OpenAiStreamState {
             }
 
             if let Some(reason) = choice.finish_reason {
+                finish_reason_seen = true;
                 if self.text_started && !self.text_stopped {
                     self.text_stopped = true;
                     events.push(ModelStreamEvent::ContentBlockStop { index: 0 });
@@ -191,21 +225,32 @@ impl OpenAiStreamState {
                     stop_reason: Some(stop_reason(&reason)),
                     usage_delta: usage(payload.usage.as_ref()),
                 });
-                events.push(ModelStreamEvent::MessageStop);
-                self.stopped = true;
+                self.terminal_pending = true;
             }
         }
 
         if let Some(usage_value) = payload.usage.as_ref() {
-            if !self.stopped {
+            if !self.stopped && !finish_reason_seen {
                 events.push(ModelStreamEvent::MessageDelta {
                     stop_reason: None,
                     usage_delta: usage(Some(usage_value)),
                 });
             }
+            if let Some(stop) = self.finish_message() {
+                events.push(stop);
+            }
         }
 
         events
+    }
+
+    fn finish_message(&mut self) -> Option<ModelStreamEvent> {
+        if self.stopped || !self.started {
+            return None;
+        }
+        self.stopped = true;
+        self.terminal_pending = false;
+        Some(ModelStreamEvent::MessageStop)
     }
 
     fn map_tool_call(&mut self, delta: StreamToolCallDelta) -> Vec<ModelStreamEvent> {
@@ -323,7 +368,14 @@ fn stream_error(error: ModelError, class: ErrorClass) -> ModelStreamEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{IncrementalSseParser, OpenAiStreamState, SseEvent};
+    use std::future;
+    use std::time::Duration;
+
+    use futures::StreamExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::{response_to_stream, IncrementalSseParser, OpenAiStreamState, SseEvent};
     use crate::{ContentDelta, ModelStreamEvent};
 
     #[test]
@@ -389,5 +441,116 @@ mod tests {
             index: 1,
             delta: ContentDelta::ToolUseInputJson("\"docs\"}".to_owned()),
         }));
+    }
+
+    #[test]
+    fn done_marks_stream_stopped_without_error() {
+        let mut state = OpenAiStreamState::default();
+
+        let events = state.map_event(SseEvent {
+            data: "[DONE]".to_owned(),
+        });
+
+        assert!(events.is_empty());
+        assert!(state.stopped);
+    }
+
+    #[test]
+    fn finish_reason_marks_terminal_pending_until_usage_or_done() {
+        let mut state = OpenAiStreamState::default();
+
+        let events = state.map_event(SseEvent {
+            data: "{\"id\":\"chatcmpl_1\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}".to_owned(),
+        });
+
+        assert!(!events.contains(&ModelStreamEvent::MessageStop));
+        assert!(state.terminal_pending);
+        assert!(!state.stopped);
+    }
+
+    #[tokio::test]
+    async fn done_terminates_response_stream_without_waiting_for_eof() {
+        let response = pending_sse_response("data: [DONE]\n\n").await;
+        let mut stream = response_to_stream(response);
+
+        let next = tokio::time::timeout(Duration::from_millis(200), stream.next())
+            .await
+            .expect("stream should terminate after [DONE] without EOF");
+
+        assert!(next.is_none());
+    }
+
+    #[tokio::test]
+    async fn finish_reason_terminates_response_stream_without_waiting_for_eof() {
+        let response = pending_sse_response(
+            "data: {\"id\":\"chatcmpl_1\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+        )
+        .await;
+        let mut stream = response_to_stream(response);
+
+        let mut events = Vec::new();
+        while let Some(event) = tokio::time::timeout(Duration::from_millis(500), stream.next())
+            .await
+            .expect("stream should terminate after finish_reason without EOF")
+        {
+            events.push(event);
+        }
+
+        assert!(events.contains(&ModelStreamEvent::MessageStop));
+    }
+
+    #[tokio::test]
+    async fn finish_reason_preserves_following_usage_chunk_before_message_stop() {
+        let response = pending_sse_response(
+            "data: {\"id\":\"chatcmpl_1\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl_1\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+        )
+        .await;
+        let mut stream = response_to_stream(response);
+
+        let mut events = Vec::new();
+        while let Some(event) = tokio::time::timeout(Duration::from_millis(500), stream.next())
+            .await
+            .expect("stream should terminate after preserving usage chunk")
+        {
+            events.push(event);
+        }
+
+        let usage_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    ModelStreamEvent::MessageDelta {
+                        usage_delta,
+                        ..
+                    } if usage_delta.input_tokens == 3 && usage_delta.output_tokens == 2
+                )
+            })
+            .expect("post-finish usage chunk should be emitted");
+        let stop_index = events
+            .iter()
+            .position(|event| matches!(event, ModelStreamEvent::MessageStop))
+            .expect("message stop should be emitted");
+        assert!(usage_index < stop_index);
+    }
+
+    async fn pending_sse_response(frame: &'static str) -> reqwest::Response {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            let header =
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n";
+            socket.write_all(header.as_bytes()).await.unwrap();
+            let chunk = format!("{:x}\r\n{}\r\n", frame.len(), frame);
+            socket.write_all(chunk.as_bytes()).await.unwrap();
+            socket.flush().await.unwrap();
+            future::pending::<()>().await;
+        });
+
+        reqwest::get(url).await.unwrap()
     }
 }

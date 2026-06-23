@@ -496,6 +496,33 @@ describe('ConversationWorkspace', () => {
     })
   })
 
+  it('cancels the current active run from the composer', async () => {
+    const commandClient = createStreamingClient([
+      runEvent({
+        id: 'evt-run',
+        payload: { sessionId: 'conversation-001' },
+        runId: 'run-001',
+        sequence: 1,
+        source: 'engine',
+        timestamp,
+        type: 'run.started',
+        visibility: 'public',
+      }),
+    ])
+    const cancelRun = vi.fn(commandClient.cancelRun)
+    const trackedClient = {
+      ...commandClient,
+      cancelRun,
+    } satisfies CommandClient
+
+    renderConversationWorkspace(trackedClient, 'conversation-001')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel run' }))
+
+    await waitFor(() => expect(cancelRun).toHaveBeenCalledWith('run-001'))
+    expect(screen.getByPlaceholderText('Ask Jyowo anything about this project...')).toBeDisabled()
+  })
+
   it('clears only the ended conversation run when multiple conversations are active', async () => {
     const commandClient = createMockCommandClient()
     let listener: ((batch: ConversationEventBatchPayload) => void) | undefined
