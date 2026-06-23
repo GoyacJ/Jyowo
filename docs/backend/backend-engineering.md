@@ -206,10 +206,12 @@ list_eval_cases
 get_context_snapshot
 get_app_info
 get_conversation
+get_execution_settings
 get_memory_item
 get_provider_config_api_key
 get_replay_timeline
-get_skill
+get_skill_detail
+get_skill_file
 harness_healthcheck
 list_activity
 list_conversations
@@ -219,12 +221,14 @@ list_mcp_servers
 list_memory_items
 list_provider_settings
 list_skills
+page_conversation_timeline
 resolve_permission
 request_provider_config_api_key_reveal
 run_eval_case
 save_mcp_server
 save_provider_settings
 import_skill
+set_execution_settings
 set_conversation_model_config
 set_skill_enabled
 start_run
@@ -261,6 +265,7 @@ get_context_snapshot(
 ) -> Result<GetContextSnapshotResponse, CommandErrorPayload>
 get_app_info() -> AppInfoPayload
 get_conversation(conversation_id: String) -> Result<GetConversationResponse, CommandErrorPayload>
+get_execution_settings() -> Result<GetExecutionSettingsResponse, CommandErrorPayload>
 get_memory_item(id: String) -> Result<GetMemoryItemResponse, CommandErrorPayload>
 get_provider_config_api_key(
   config_id: String,
@@ -270,10 +275,11 @@ get_replay_timeline(
   conversation_id: Option<String>,
   run_id: Option<String>
 ) -> Result<ReplayTimelineResponse, CommandErrorPayload>
-get_skill(
+get_skill_detail(id: String) -> Result<GetSkillDetailResponse, CommandErrorPayload>
+get_skill_file(
   id: String,
-  include_body: bool
-) -> Result<GetSkillResponse, CommandErrorPayload>
+  path: String
+) -> Result<GetSkillFileResponse, CommandErrorPayload>
 harness_healthcheck() -> HarnessHealthcheckPayload
 list_activity(
   conversation_id: Option<String>,
@@ -288,6 +294,11 @@ list_mcp_servers() -> Result<ListMcpServersResponse, CommandErrorPayload>
 list_memory_items() -> Result<ListMemoryItemsResponse, CommandErrorPayload>
 list_provider_settings() -> Result<ListProviderSettingsResponse, CommandErrorPayload>
 list_skills() -> Result<ListSkillsResponse, CommandErrorPayload>
+page_conversation_timeline(
+  conversation_id: String,
+  after_cursor: Option<ConversationCursor>,
+  limit: Option<u32>
+) -> Result<ConversationTimelinePage, CommandErrorPayload>
 resolve_permission(
   decision: PermissionDecision,
   request_id: String
@@ -312,6 +323,9 @@ save_provider_settings(
   set_default: Option<bool>
 ) -> Result<SaveProviderSettingsResponse, CommandErrorPayload>
 import_skill(source_path: String) -> Result<ImportSkillResponse, CommandErrorPayload>
+set_execution_settings(
+  permission_mode: PermissionMode
+) -> Result<SetExecutionSettingsResponse, CommandErrorPayload>
 set_conversation_model_config(
   conversation_id: String,
   model_config_id: String
@@ -329,7 +343,7 @@ start_run(
 ) -> Result<StartRunResponse, CommandErrorPayload>
 subscribe_conversation_events(
   conversation_id: String,
-  after_cursor: Option<String>
+  after_cursor: Option<ConversationCursor>
 ) -> Result<SubscribeConversationEventsResponse, CommandErrorPayload>
 unsubscribe_conversation_events(
   subscription_id: String
@@ -370,13 +384,17 @@ audit events that contain hashes and counts, not raw memory content.
 returns only the relative path, item count, format, and timestamp over IPC; raw
 export content must not cross into frontend state.
 
-`list_skills`, `get_skill`, `import_skill`, `set_skill_enabled`, and
-`delete_skill` must go through the SDK skill facade. Tauri commands may manage
-the workspace skill store under `.jyowo/runtime/skills`, but runtime registry
-reload, validation, and hook replacement stay behind the SDK boundary. Imported
-source paths must not be returned over IPC. `import_skill(source_path)` accepts
-only a local skill package directory containing `SKILL.md`; single Markdown
-files are rejected. Workspace packages are persisted as
+`list_skills`, `get_skill_detail`, `get_skill_file`, `import_skill`,
+`set_skill_enabled`, and `delete_skill` must go through the SDK skill facade.
+Tauri commands may manage the workspace skill store under
+`.jyowo/runtime/skills`, but runtime registry reload, validation, and hook
+replacement stay behind the SDK boundary. `list_skills` must return only
+summaries. `get_skill_detail` may return manifest metadata and a relative file
+index, but must not read file bodies. `get_skill_file` is the only command that
+reads a selected package file. Imported source paths must not be returned over
+IPC. `import_skill(source_path)` accepts only a local skill package directory
+containing `SKILL.md`; single Markdown files are rejected. Workspace packages
+are persisted as
 `.jyowo/runtime/skills/enabled/<id>/SKILL.md` or
 `.jyowo/runtime/skills/disabled/<id>/SKILL.md`, with package resources copied
 under the same `<id>` directory. Disabled workspace skills remain in the store

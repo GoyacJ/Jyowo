@@ -67,6 +67,12 @@ pub struct SessionSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventEnvelopePage {
+    pub envelopes: Vec<EventEnvelope>,
+    pub next_event_id: Option<EventId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompactionLineage {
     pub parent_session: SessionId,
     pub child_session: SessionId,
@@ -113,6 +119,28 @@ pub trait EventStore: Send + Sync + 'static {
         session_id: SessionId,
         cursor: ReplayCursor,
     ) -> Result<BoxStream<'static, EventEnvelope>, JournalError>;
+
+    async fn page_session_envelopes(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        after_event_id: Option<EventId>,
+        limit: usize,
+    ) -> Result<EventEnvelopePage, JournalError> {
+        let mut envelopes = self
+            .read_envelopes(tenant, session_id, ReplayCursor::FromStart)
+            .await?
+            .collect::<Vec<_>>()
+            .await;
+        apply_event_id_cursor(&mut envelopes, after_event_id)?;
+        let limit = limit.clamp(1, 200);
+        envelopes.truncate(limit);
+        let next_event_id = envelopes.last().map(|envelope| envelope.event_id);
+        Ok(EventEnvelopePage {
+            envelopes,
+            next_event_id,
+        })
+    }
 
     async fn query_after(
         &self,
@@ -202,6 +230,18 @@ where
     ) -> Result<BoxStream<'static, EventEnvelope>, JournalError> {
         self.as_ref()
             .read_envelopes(tenant, session_id, cursor)
+            .await
+    }
+
+    async fn page_session_envelopes(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        after_event_id: Option<EventId>,
+        limit: usize,
+    ) -> Result<EventEnvelopePage, JournalError> {
+        self.as_ref()
+            .page_session_envelopes(tenant, session_id, after_event_id, limit)
             .await
     }
 
@@ -342,4 +382,21 @@ pub(crate) fn apply_cursor(events: &mut Vec<EventEnvelope>, cursor: ReplayCursor
             events.retain(|event| event.recorded_at >= cutoff);
         }
     }
+}
+
+pub(crate) fn apply_event_id_cursor(
+    events: &mut Vec<EventEnvelope>,
+    after_event_id: Option<EventId>,
+) -> Result<(), JournalError> {
+    let Some(after_event_id) = after_event_id else {
+        return Ok(());
+    };
+    let Some(position) = events
+        .iter()
+        .position(|envelope| envelope.event_id == after_event_id)
+    else {
+        return Err(journal_error("conversation cursor is unknown"));
+    };
+    events.drain(0..=position).for_each(drop);
+    Ok(())
 }

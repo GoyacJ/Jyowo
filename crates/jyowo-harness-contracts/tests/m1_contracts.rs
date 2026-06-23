@@ -108,6 +108,13 @@ fn schema_export_contains_required_surface() {
     assert!(schemas.contains_key("conversation_context_reference"));
     assert!(schemas.contains_key("conversation_attachment_reference"));
     assert!(schemas.contains_key("conversation_turn_input"));
+    assert!(schemas.contains_key("ui_safe_text"));
+    assert!(schemas.contains_key("conversation_cursor"));
+    assert!(schemas.contains_key("conversation_summary"));
+    assert!(schemas.contains_key("conversation_message"));
+    assert!(schemas.contains_key("conversation_snapshot"));
+    assert!(schemas.contains_key("conversation_timeline_event"));
+    assert!(schemas.contains_key("conversation_timeline_page"));
     assert!(!schemas.contains_key("conversation_intent_mode"));
     assert!(schemas.contains_key("sandbox_post_execution_failed"));
     assert!(schemas.contains_key("sandbox_backend_failed"));
@@ -133,6 +140,57 @@ fn schema_export_contains_required_surface() {
     ] {
         assert!(schemas.contains_key(key), "missing MVP event schema: {key}");
     }
+}
+
+#[test]
+fn ui_safe_text_redacts_private_paths_and_obvious_secrets() {
+    let redactor: &dyn Redactor = &NoopRedactor;
+
+    for value in [
+        "open /Users/goya/.ssh/config",
+        "read /home/alice/.aws/credentials",
+        "tail /private/var/folders/token.txt",
+        "type C:\\Users\\alice\\.ssh\\config",
+        "Authorization: Bearer abcdef123456",
+        "api_key = sk-abcdefghijkl",
+    ] {
+        let text = UiSafeText::from_redacted_display(value, redactor);
+        assert_eq!(text.as_str(), "[REDACTED]");
+    }
+
+    let text = UiSafeText::from_redacted_display("plain project note", redactor);
+    assert_eq!(text.as_str(), "plain project note");
+}
+
+#[test]
+fn conversation_read_model_contracts_use_stable_wire_shape() {
+    let cursor = ConversationCursor {
+        event_id: EventId::new(),
+        conversation_sequence: 12,
+    };
+    let message = ConversationMessage {
+        author: ConversationMessageAuthor::User,
+        body: UiSafeText::from_trusted_redacted("hello"),
+        client_message_id: Some("550e8400-e29b-41d4-a716-446655440000".to_owned()),
+        id: MessageId::new().to_string(),
+        timestamp: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+        conversation_sequence: 11,
+    };
+    let snapshot = ConversationSnapshot {
+        id: SessionId::new().to_string(),
+        messages: vec![message],
+        model_config_id: Some("provider-config-1".to_owned()),
+        title: UiSafeText::from_trusted_redacted("hello"),
+        updated_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+        cursor: Some(cursor),
+    };
+
+    let value = serde_json::to_value(snapshot).unwrap();
+
+    assert_eq!(value["messages"][0]["author"], "user");
+    assert_eq!(value["messages"][0]["body"], "hello");
+    assert_eq!(value["messages"][0]["conversationSequence"], 11);
+    assert_eq!(value["cursor"]["conversationSequence"], 12);
 }
 
 #[test]

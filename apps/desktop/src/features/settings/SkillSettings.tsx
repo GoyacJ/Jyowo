@@ -14,7 +14,8 @@ import { useTranslation } from 'react-i18next'
 
 import {
   deleteSkill,
-  getSkill,
+  getSkillDetail,
+  getSkillFile,
   importSkill,
   listSkills,
   type SkillFile,
@@ -67,8 +68,9 @@ const BUILTIN_TOOLS: BuiltinTool[] = [
 
 const skillQueryKeys = {
   all: ['skills'] as const,
-  detail: (id: string | null, selectedFilePath: string | null) =>
-    [...skillQueryKeys.all, 'detail', id, selectedFilePath] as const,
+  detail: (id: string | null) => [...skillQueryKeys.all, 'detail', id] as const,
+  file: (id: string | null, path: string | null) =>
+    [...skillQueryKeys.all, 'file', id, path] as const,
   list: () => [...skillQueryKeys.all, 'list'] as const,
 }
 
@@ -86,13 +88,23 @@ function useSkills() {
   })
 }
 
-function useSkillDetail(id: string | null, selectedFilePath: string | null) {
+function useSkillDetail(id: string | null) {
   const commandClient = useCommandClient()
 
   return useQuery({
     enabled: id !== null,
-    queryKey: skillQueryKeys.detail(id, selectedFilePath),
-    queryFn: () => getSkill(id ?? '', true, commandClient, selectedFilePath ?? undefined),
+    queryKey: skillQueryKeys.detail(id),
+    queryFn: () => getSkillDetail(id ?? '', commandClient),
+  })
+}
+
+function useSkillFile(id: string | null, path: string | null) {
+  const commandClient = useCommandClient()
+
+  return useQuery({
+    enabled: id !== null && path !== null,
+    queryKey: skillQueryKeys.file(id, path),
+    queryFn: () => getSkillFile(id ?? '', path ?? '', commandClient),
   })
 }
 
@@ -179,7 +191,8 @@ export function SkillsManager() {
   const [page, setPage] = useState(1)
   const skills = skillsQuery.data?.skills ?? []
   const selectedSkill = skills.find((skill) => skill.id === selectedId) ?? null
-  const detailQuery = useSkillDetail(selectedId, selectedFilePath)
+  const detailQuery = useSkillDetail(selectedId)
+  const fileQuery = useSkillFile(selectedId, selectedFilePath)
   const filteredSkills = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase()
 
@@ -406,8 +419,9 @@ export function SkillsManager() {
 
           <SkillDetailPanel
             detailQuery={detailQuery}
+            fileQuery={fileQuery}
             onSelectFile={setSelectedFilePath}
-            selectedFilePath={detailQuery.data?.skill.selectedFile?.path ?? selectedFilePath}
+            selectedFilePath={selectedFilePath}
             selectedSkill={selectedSkill}
           />
         </div>
@@ -539,19 +553,31 @@ function SkillListItem({
 
 function SkillFilesTab({
   detailQuery,
+  fileQuery,
   onSelectFile,
   selectedFilePath,
   selectedSkill,
 }: {
   detailQuery: ReturnType<typeof useSkillDetail>
+  fileQuery: ReturnType<typeof useSkillFile>
   onSelectFile: (path: string) => void
   selectedFilePath: string | null
   selectedSkill: SkillSummary | null
 }) {
   const { t } = useTranslation('skills')
   const files = detailQuery.data?.skill.files ?? []
-  const selectedFile = detailQuery.data?.skill.selectedFile
   const detail = detailQuery.data?.skill ?? null
+  const selectedFile = fileQuery.data?.file
+
+  useEffect(() => {
+    if (selectedFilePath !== null || files.length === 0) {
+      return
+    }
+    const firstFile = files.find((file) => file.kind === 'file')
+    if (firstFile) {
+      onSelectFile(firstFile.path)
+    }
+  }, [files, onSelectFile, selectedFilePath])
 
   return (
     <section
@@ -595,7 +621,9 @@ function SkillFilesTab({
         </div>
         <pre className="max-h-[560px] min-h-[360px] max-w-full overflow-auto p-3 text-sm leading-6">
           <code className="block min-w-full w-max whitespace-pre">
-            {selectedFile?.content ?? detail?.bodyFull ?? detail?.bodyPreview ?? t('content.empty')}
+            {fileQuery.isLoading
+              ? t('files.loading')
+              : (selectedFile?.content ?? detail?.bodyPreview ?? t('content.empty'))}
           </code>
         </pre>
       </div>
@@ -654,11 +682,13 @@ function SkillFileRow({
 
 function SkillDetailPanel({
   detailQuery,
+  fileQuery,
   onSelectFile,
   selectedFilePath,
   selectedSkill,
 }: {
   detailQuery: ReturnType<typeof useSkillDetail>
+  fileQuery: ReturnType<typeof useSkillFile>
   onSelectFile: (path: string) => void
   selectedFilePath: string | null
   selectedSkill: SkillSummary | null
@@ -748,6 +778,7 @@ function SkillDetailPanel({
             <TabsContent className="pt-2" value="files">
               <SkillFilesTab
                 detailQuery={detailQuery}
+                fileQuery={fileQuery}
                 onSelectFile={onSelectFile}
                 selectedFilePath={selectedFilePath}
                 selectedSkill={selectedSkill}

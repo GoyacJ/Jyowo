@@ -1,5 +1,6 @@
 import type {
   CommandClient,
+  ConversationCursor,
   ConversationEventBatchPayload,
   SubscribeConversationEventsResponse,
 } from '@/shared/tauri/commands'
@@ -8,7 +9,7 @@ import type { ConversationTimelineAction } from './conversation-timeline-actions
 export type ConversationTimelineSource = {
   subscribe: (
     conversationId: string,
-    afterCursor: string | null,
+    afterCursor: ConversationCursor | null,
     dispatch: (action: ConversationTimelineAction) => void,
   ) => Promise<() => Promise<void>>
 }

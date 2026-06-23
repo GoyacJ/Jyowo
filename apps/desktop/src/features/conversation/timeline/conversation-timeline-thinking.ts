@@ -1,5 +1,5 @@
 import type { ThinkingBlock } from './conversation-blocks'
-import { addBlock, indexBlocks, patchBlock } from './conversation-timeline-index'
+import { addBlock, findBlockById, patchBlock, removeBlockById } from './conversation-timeline-index'
 import type { ConversationTimelineState } from './conversation-timeline-reducer'
 
 export function appendThinkingDelta(
@@ -15,10 +15,8 @@ export function appendThinkingDelta(
 ): ConversationTimelineState {
   const existingId = state.thinkingBlockByRunId[input.runId]
   if (existingId) {
-    const block = state.blocks.find(
-      (currentBlock): currentBlock is ThinkingBlock =>
-        currentBlock.id === existingId && currentBlock.kind === 'thinking',
-    )
+    const currentBlock = findBlockById(state, existingId)
+    const block = currentBlock?.kind === 'thinking' ? (currentBlock as ThinkingBlock) : undefined
     if (block) {
       patchBlock(state, block.id, {
         body: `${block.body}${input.text}`,
@@ -52,9 +50,8 @@ export function removeThinkingBlocksForRun(
 ): ConversationTimelineState {
   const blockId = state.thinkingBlockByRunId[runId]
   if (blockId) {
-    state.blocks = state.blocks.filter((block) => block.id !== blockId)
+    removeBlockById(state, blockId)
     delete state.thinkingBlockByRunId[runId]
-    indexBlocks(state)
   }
   return state
 }

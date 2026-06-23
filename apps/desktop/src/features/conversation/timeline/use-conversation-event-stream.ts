@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
-
+import type { ConversationCursor } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 import type { ConversationTimelineAction } from './conversation-timeline-actions'
 import { createConversationTimelineSource } from './conversation-timeline-source'
@@ -11,7 +11,7 @@ export function useConversationEventStream({
   resetKey = 0,
 }: {
   conversationId: string | null
-  cursor: string | null
+  cursor: ConversationCursor | null
   dispatch: (action: ConversationTimelineAction) => void
   resetKey?: number
 }) {

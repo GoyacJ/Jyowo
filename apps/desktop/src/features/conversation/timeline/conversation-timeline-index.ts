@@ -21,11 +21,11 @@ function findBlockByMessageId(
 ): ConversationBlock | undefined {
   const indexedId = state.assistantBlockByMessageId[messageId]
   if (indexedId) {
-    return state.blocks.find((block) => block.id === indexedId)
+    return state.blocksById[indexedId]
   }
 
   const canonicalId = messageBlockId(messageId)
-  return state.blocks.find((block) => block.id === canonicalId)
+  return state.blocksById[canonicalId]
 }
 
 function hasFinalAssistantMessage(state: ConversationTimelineState, messageId: string) {
@@ -34,25 +34,39 @@ function hasFinalAssistantMessage(state: ConversationTimelineState, messageId: s
 }
 
 function removeBlock(state: ConversationTimelineState, blockId: string) {
-  state.blocks = state.blocks.filter((block) => block.id !== blockId)
-  indexBlocks(state)
+  const block = state.blocksById[blockId]
+  if (block) {
+    unindexBlock(state, block)
+  }
+  state.blockOrder = state.blockOrder.filter((id) => id !== blockId)
+  delete state.blocksById[blockId]
 }
 
 export function sortBlocks(state: ConversationTimelineState) {
-  state.blocks.sort((left, right) => left.conversationSequence - right.conversationSequence)
+  state.blockOrder.sort(
+    (left, right) =>
+      state.blocksById[left].conversationSequence - state.blocksById[right].conversationSequence,
+  )
 }
 
 export function nextSequence(state: ConversationTimelineState) {
-  return state.blocks.reduce((max, block) => Math.max(max, block.conversationSequence), -1) + 1
+  return (
+    selectBlocksFromState(state).reduce(
+      (max, block) => Math.max(max, block.conversationSequence),
+      -1,
+    ) + 1
+  )
 }
 
 export function addBlock(state: ConversationTimelineState, block: ConversationBlock) {
-  if (state.blocks.some((currentBlock) => currentBlock.id === block.id)) {
+  if (state.blocksById[block.id]) {
     patchBlock(state, block.id, block)
     return
   }
-  state.blocks.push(block)
+  state.blocksById[block.id] = block
+  state.blockOrder.push(block.id)
   sortBlocks(state)
+  indexBlock(state, block)
 }
 
 export function patchBlock(
@@ -60,13 +74,22 @@ export function patchBlock(
   blockId: string,
   patch: Partial<ConversationBlock> & { id?: string },
 ) {
-  state.blocks = state.blocks.map((block) =>
-    block.id === blockId ? ({ ...block, ...patch } as ConversationBlock) : block,
-  )
-  indexBlocks(state)
+  const block = state.blocksById[blockId]
+  if (!block) {
+    return
+  }
+  const next = { ...block, ...patch } as ConversationBlock
+  unindexBlock(state, block)
+  if (next.id !== blockId) {
+    delete state.blocksById[blockId]
+    state.blockOrder = state.blockOrder.map((id) => (id === blockId ? next.id : id))
+  }
+  state.blocksById[next.id] = next
+  indexBlock(state, next)
+  sortBlocks(state)
 }
 
-export function indexBlocks(state: ConversationTimelineState) {
+function indexBlocks(state: ConversationTimelineState) {
   state.optimisticBlocksByClientMessageId = {}
   state.artifactBlockByArtifactId = {}
   state.permissionBlockByRequestId = {}
@@ -75,32 +98,84 @@ export function indexBlocks(state: ConversationTimelineState) {
   state.assistantBlockByMessageId = {}
 
   state.thinkingBlockByRunId = {}
-  for (const block of state.blocks) {
-    if (block.kind === 'userMessage' && block.clientMessageId && block.status !== 'sent') {
-      state.optimisticBlocksByClientMessageId[block.clientMessageId] = block.id
-    }
-    if (block.kind === 'artifact') {
-      state.artifactBlockByArtifactId[block.artifactId] = block.id
-    }
-    if (block.kind === 'permissionRequest') {
-      state.permissionBlockByRequestId[block.requestId] = block.id
-    }
-    if (block.kind === 'assistantStreaming' && block.runId) {
-      state.streamingBlockByRunId[block.runId] = block.id
-    }
-    if (block.kind === 'toolGroup' && block.runId) {
-      state.toolGroupBlockByRunId[block.runId] = block.id
-    }
-    if (block.kind === 'thinking' && block.runId) {
-      state.thinkingBlockByRunId[block.runId] = block.id
-    }
-    if (
-      (block.kind === 'assistantMessage' || block.kind === 'assistantStreaming') &&
-      block.messageId
-    ) {
-      state.assistantBlockByMessageId[block.messageId] = block.id
-    }
+  for (const block of selectBlocksFromState(state)) {
+    indexBlock(state, block)
   }
+}
+
+function indexBlock(state: ConversationTimelineState, block: ConversationBlock) {
+  if (block.kind === 'userMessage' && block.clientMessageId && block.status !== 'sent') {
+    state.optimisticBlocksByClientMessageId[block.clientMessageId] = block.id
+  }
+  if (block.kind === 'artifact') {
+    state.artifactBlockByArtifactId[block.artifactId] = block.id
+  }
+  if (block.kind === 'permissionRequest') {
+    state.permissionBlockByRequestId[block.requestId] = block.id
+  }
+  if (block.kind === 'assistantStreaming' && block.runId) {
+    state.streamingBlockByRunId[block.runId] = block.id
+  }
+  if (block.kind === 'toolGroup' && block.runId) {
+    state.toolGroupBlockByRunId[block.runId] = block.id
+  }
+  if (block.kind === 'thinking' && block.runId) {
+    state.thinkingBlockByRunId[block.runId] = block.id
+  }
+  if (
+    (block.kind === 'assistantMessage' || block.kind === 'assistantStreaming') &&
+    block.messageId
+  ) {
+    state.assistantBlockByMessageId[block.messageId] = block.id
+  }
+}
+
+function unindexBlock(state: ConversationTimelineState, block: ConversationBlock) {
+  if (block.kind === 'userMessage' && block.clientMessageId) {
+    deleteIfIndexed(state.optimisticBlocksByClientMessageId, block.clientMessageId, block.id)
+  }
+  if (block.kind === 'artifact') {
+    deleteIfIndexed(state.artifactBlockByArtifactId, block.artifactId, block.id)
+  }
+  if (block.kind === 'permissionRequest') {
+    deleteIfIndexed(state.permissionBlockByRequestId, block.requestId, block.id)
+  }
+  if (block.kind === 'assistantStreaming' && block.runId) {
+    deleteIfIndexed(state.streamingBlockByRunId, block.runId, block.id)
+  }
+  if (block.kind === 'toolGroup' && block.runId) {
+    deleteIfIndexed(state.toolGroupBlockByRunId, block.runId, block.id)
+  }
+  if (block.kind === 'thinking' && block.runId) {
+    deleteIfIndexed(state.thinkingBlockByRunId, block.runId, block.id)
+  }
+  if (
+    (block.kind === 'assistantMessage' || block.kind === 'assistantStreaming') &&
+    block.messageId
+  ) {
+    deleteIfIndexed(state.assistantBlockByMessageId, block.messageId, block.id)
+  }
+}
+
+function deleteIfIndexed(index: Record<string, string>, key: string, blockId: string) {
+  if (index[key] === blockId) {
+    delete index[key]
+  }
+}
+
+export function selectBlocksFromState(state: ConversationTimelineState): ConversationBlock[] {
+  return state.blockOrder.map((id) => state.blocksById[id]).filter(Boolean)
+}
+
+export function findBlockById(
+  state: ConversationTimelineState,
+  blockId: string | undefined,
+): ConversationBlock | undefined {
+  return blockId ? state.blocksById[blockId] : undefined
+}
+
+export function removeBlockById(state: ConversationTimelineState, blockId: string) {
+  removeBlock(state, blockId)
 }
 
 export function reconcileSnapshotMessages(
@@ -113,23 +188,27 @@ export function reconcileSnapshotMessages(
 
   const snapshotMessageIds = new Set(snapshot.messages.map((message) => messageBlockId(message.id)))
   const nonSnapshotSequenceById = new Map(
-    state.blocks
+    selectBlocksFromState(state)
       .filter((block) => !snapshotMessageIds.has(block.id))
       .map((block, index) => [block.id, snapshot.messages.length + index]),
   )
 
-  state.blocks = state.blocks
-    .map((block) =>
-      snapshotMessageIds.has(block.id)
+  state.blocksById = Object.fromEntries(
+    selectBlocksFromState(state).map((block) => {
+      const next = snapshotMessageIds.has(block.id)
         ? block
-        : {
+        : ({
             ...block,
             conversationId: snapshot.id,
             conversationSequence:
               nonSnapshotSequenceById.get(block.id) ?? block.conversationSequence,
-          },
-    )
+          } as ConversationBlock)
+      return [next.id, next]
+    }),
+  )
+  state.blockOrder = selectBlocksFromState(state)
     .sort((left, right) => left.conversationSequence - right.conversationSequence)
+    .map((block) => block.id)
 
   for (const [index, message] of snapshot.messages.entries()) {
     upsertSnapshotMessage(state, snapshot.id, message, index)
@@ -142,8 +221,9 @@ export function reconcileSnapshotMessages(
 function createFreshStateForSnapshot(snapshot: ConversationSnapshot): ConversationTimelineState {
   return {
     conversationId: snapshot.id,
-    blocks: [],
-    eventsById: {},
+    blockOrder: [],
+    blocksById: {},
+    eventIds: {},
     cursor: null,
     activeRunIds: [],
     activeTurnByRunId: {},
@@ -219,7 +299,7 @@ function upsertSnapshotUserMessage(
     return
   }
 
-  const existing = state.blocks.find((block) => block.id === base.id)
+  const existing = state.blocksById[base.id]
   if (existing) {
     patchBlock(state, base.id, {
       kind: 'userMessage',
@@ -273,7 +353,7 @@ function upsertSnapshotAssistantMessage(
     return
   }
 
-  const duplicateStreaming = state.blocks.find(
+  const duplicateStreaming = selectBlocksFromState(state).find(
     (block): block is AssistantStreamingBlock =>
       block.kind === 'assistantStreaming' && block.messageId === message.id,
   )
@@ -307,7 +387,7 @@ function findOptimisticUserBlockForSnapshot(
     return undefined
   }
   const blockId = state.optimisticBlocksByClientMessageId[clientMessageId]
-  return state.blocks.find(
+  return selectBlocksFromState(state).find(
     (block): block is UserMessageBlock =>
       block.id === blockId && block.kind === 'userMessage' && !block.messageId,
   )
@@ -403,7 +483,7 @@ export function appendAssistantAnswerDelta(
 ): ConversationTimelineState {
   const streamingId = state.streamingBlockByRunId[input.runId]
   if (streamingId) {
-    const streamingBlock = state.blocks.find(
+    const streamingBlock = selectBlocksFromState(state).find(
       (block): block is AssistantStreamingBlock =>
         block.id === streamingId && block.kind === 'assistantStreaming',
     )

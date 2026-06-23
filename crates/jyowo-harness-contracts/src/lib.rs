@@ -9,6 +9,7 @@
 pub mod announcement;
 pub mod blob;
 pub mod capability;
+pub mod conversation;
 pub mod dangerous_patterns;
 pub mod deferred_tools;
 pub mod enums;
@@ -24,6 +25,7 @@ pub mod tool;
 pub use announcement::*;
 pub use blob::*;
 pub use capability::*;
+pub use conversation::*;
 pub use dangerous_patterns::*;
 pub use deferred_tools::*;
 pub use enums::*;

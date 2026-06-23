@@ -88,8 +88,14 @@ function createDeferredMockCommandClient(): CommandClient {
     async getReplayTimeline(request) {
       return (await getClient()).getReplayTimeline(request)
     },
-    async getSkill(id, includeBody, selectedFilePath) {
-      return (await getClient()).getSkill(id, includeBody, selectedFilePath)
+    async pageConversationTimeline(request) {
+      return (await getClient()).pageConversationTimeline(request)
+    },
+    async getSkillDetail(id) {
+      return (await getClient()).getSkillDetail(id)
+    },
+    async getSkillFile(id, path) {
+      return (await getClient()).getSkillFile(id, path)
     },
     async importSkill(sourcePath) {
       return (await getClient()).importSkill(sourcePath)

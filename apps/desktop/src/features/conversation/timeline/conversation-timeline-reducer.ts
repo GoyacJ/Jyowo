@@ -1,3 +1,4 @@
+import type { ConversationCursor } from '@/shared/tauri/commands'
 import type {
   ArtifactBlock,
   ArtifactView,
@@ -14,18 +15,21 @@ import {
   addBlock,
   appendAssistantAnswerDelta,
   finalizeAssistantMessage,
+  findBlockById,
   nextSequence,
   patchBlock,
   reconcileSnapshotMessages,
+  selectBlocksFromState,
   sortBlocks,
 } from './conversation-timeline-index'
 import { appendThinkingDelta, removeThinkingBlocksForRun } from './conversation-timeline-thinking'
 
 export type ConversationTimelineState = {
   conversationId: string
-  blocks: ConversationBlock[]
-  eventsById: Record<string, true>
-  cursor: string | null
+  blockOrder: string[]
+  blocksById: Record<string, ConversationBlock>
+  eventIds: Record<string, true>
+  cursor: ConversationCursor | null
   activeRunIds: string[]
   activeTurnByRunId: Record<string, string>
   clientMessageByRunId: Record<string, string>
@@ -45,8 +49,9 @@ export type ConversationTimelineState = {
 export function createConversationTimelineState(conversationId: string): ConversationTimelineState {
   return {
     conversationId,
-    blocks: [],
-    eventsById: {},
+    blockOrder: [],
+    blocksById: {},
+    eventIds: {},
     cursor: null,
     activeRunIds: [],
     activeTurnByRunId: {},
@@ -73,41 +78,29 @@ export function conversationTimelineReducer(
     case 'hydrateSnapshot':
       return hydrateSnapshot(state, action.snapshot)
     case 'applyEvents':
-      return applyEvents(
-        { ...state, blocks: [...state.blocks] },
-        action.events,
-        action.cursor ?? null,
-      )
+      return applyEvents(cloneTimelineState(state), action.events, action.cursor ?? null)
     case 'applyArtifacts':
-      return applyArtifacts({ ...state, blocks: [...state.blocks] }, action.artifacts)
+      return applyArtifacts(cloneTimelineState(state), action.artifacts)
     case 'localSubmit':
-      return localSubmit({ ...state, blocks: [...state.blocks] }, action)
+      return localSubmit(cloneTimelineState(state), action)
     case 'commandAccepted':
-      return commandAccepted(
-        { ...state, blocks: [...state.blocks] },
-        action.clientMessageId,
-        action.runId,
-      )
+      return commandAccepted(cloneTimelineState(state), action.clientMessageId, action.runId)
     case 'commandFailed':
-      return patchUserBlock({ ...state, blocks: [...state.blocks] }, action.clientMessageId, {
+      return patchUserBlock(cloneTimelineState(state), action.clientMessageId, {
         status: 'failed',
         errorMessage: action.errorMessage,
       })
     case 'assistantFinalContentMissing':
-      return markAssistantReconcile(
-        { ...state, blocks: [...state.blocks] },
-        action.runId,
-        action.messageId,
-      )
+      return markAssistantReconcile(cloneTimelineState(state), action.runId, action.messageId)
     case 'snapshotReconciled':
-      return snapshotReconciled({ ...state, blocks: [...state.blocks] }, action.snapshot)
+      return snapshotReconciled(cloneTimelineState(state), action.snapshot)
     case 'permissionSubmitting':
-      return patchPermissionBlock({ ...state, blocks: [...state.blocks] }, action.requestId, {
+      return patchPermissionBlock(cloneTimelineState(state), action.requestId, {
         status: 'submitting',
         submitDecision: action.decision,
       })
     case 'permissionSubmitFailed':
-      return patchPermissionBlock({ ...state, blocks: [...state.blocks] }, action.requestId, {
+      return patchPermissionBlock(cloneTimelineState(state), action.requestId, {
         status: 'failed',
         errorMessage: action.errorMessage,
       })
@@ -120,14 +113,21 @@ export function conversationTimelineReducer(
   }
 }
 
+function cloneTimelineState(state: ConversationTimelineState): ConversationTimelineState {
+  return {
+    ...state,
+    blockOrder: [...state.blockOrder],
+    blocksById: { ...state.blocksById },
+    eventIds: { ...state.eventIds },
+  }
+}
+
 function hydrateSnapshot(
   state: ConversationTimelineState,
   snapshot: ConversationSnapshot,
 ): ConversationTimelineState {
   const next = {
-    ...state,
-    blocks: [...state.blocks],
-    eventsById: { ...state.eventsById },
+    ...cloneTimelineState(state),
     activeRunIds: [...state.activeRunIds],
     activeTurnByRunId: { ...state.activeTurnByRunId },
     clientMessageByRunId: { ...state.clientMessageByRunId },
@@ -150,12 +150,12 @@ function hydrateSnapshot(
 function applyEvents(
   state: ConversationTimelineState,
   events: TimelineRunEvent[],
-  cursor: string | null,
+  cursor: ConversationCursor | null,
 ): ConversationTimelineState {
   let next = {
     ...state,
     activeRunIds: [...state.activeRunIds],
-    eventsById: { ...state.eventsById },
+    eventIds: { ...state.eventIds },
     activeTurnByRunId: { ...state.activeTurnByRunId },
     clientMessageByRunId: { ...state.clientMessageByRunId },
     optimisticBlocksByClientMessageId: { ...state.optimisticBlocksByClientMessageId },
@@ -173,7 +173,7 @@ function applyEvents(
   let appliedEvent = false
 
   for (const event of events) {
-    if (next.eventsById[event.id]) {
+    if (next.eventIds[event.id]) {
       continue
     }
     if (
@@ -196,7 +196,7 @@ function applyEvents(
       detectedGap = true
       continue
     }
-    next.eventsById[event.id] = true
+    next.eventIds[event.id] = true
     next.lastConversationEventSequence = event.conversationSequence
     next = applyEvent(next, event)
     appliedEvent = true
@@ -382,7 +382,11 @@ function applyUserMessageAppended(
     return state
   }
 
-  if (state.blocks.some((block) => 'messageId' in block && block.messageId === payload.messageId)) {
+  if (
+    selectBlocksFromState(state).some(
+      (block) => 'messageId' in block && block.messageId === payload.messageId,
+    )
+  ) {
     return state
   }
 
@@ -493,11 +497,9 @@ function ensureToolGroup(
   event: TimelineRunEvent,
 ): ToolGroupBlock {
   const existingId = state.toolGroupBlockByRunId[event.runId]
-  const existing = state.blocks.find(
-    (block): block is ToolGroupBlock => block.id === existingId && block.kind === 'toolGroup',
-  )
+  const existing = findBlockById(state, existingId)
   if (existing) {
-    return existing
+    return existing as ToolGroupBlock
   }
 
   const block: ToolGroupBlock = {

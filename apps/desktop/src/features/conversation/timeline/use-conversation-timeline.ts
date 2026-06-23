@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { useUiStore } from '@/shared/state/ui-store'
@@ -22,7 +22,7 @@ import {
 import { useConversationEventStream } from './use-conversation-event-stream'
 
 const artifactRefreshIntervalMs = 2000
-const gapRecoveryRetryMs = 250
+const gapRecoveryPageLimit = 200
 
 export function useConversationTimeline({ conversationId }: { conversationId?: string }) {
   const { t } = useTranslation('conversation')
@@ -42,8 +42,8 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     undefined,
     () => createConversationTimelineRoot(),
   )
-  const [recoveryEpoch, setRecoveryEpoch] = useState(0)
   const hadActiveRunRef = useRef(false)
+  const gapRecoveryKeyRef = useRef<string | null>(null)
   const renderedConversationId = renderedConversation?.id ?? null
   const activeConversationId =
     renderedConversationId ?? conversation.selectedConversationId ?? 'conversation-pending'
@@ -72,26 +72,77 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
 
   useConversationEventStream({
     conversationId: renderedConversationId,
-    cursor: displayState.hasGap ? null : displayState.cursor,
+    cursor: displayState.cursor,
     dispatch,
-    resetKey: recoveryEpoch,
   })
 
   useEffect(() => {
     if (!renderedConversationId || !displayState.hasGap) {
+      gapRecoveryKeyRef.current = null
       return
     }
 
-    void queryClient.invalidateQueries({
-      queryKey: ['conversation', 'detail', renderedConversationId],
-    })
-    void queryClient.invalidateQueries({ queryKey: ['conversation', 'list'] })
-    const retry = window.setTimeout(() => {
-      setRecoveryEpoch((epoch) => epoch + 1)
-    }, gapRecoveryRetryMs)
+    const recoveryKey = [
+      renderedConversationId,
+      displayState.cursor?.eventId ?? 'start',
+      displayState.cursor?.conversationSequence ?? 0,
+      displayState.gapRecoverySequence ?? 'unknown',
+    ].join(':')
+    if (gapRecoveryKeyRef.current === recoveryKey) {
+      return
+    }
+    gapRecoveryKeyRef.current = recoveryKey
 
-    return () => window.clearTimeout(retry)
-  }, [displayState.hasGap, queryClient, recoveryEpoch, renderedConversationId])
+    let cancelled = false
+
+    void commandClient
+      .pageConversationTimeline({
+        conversationId: renderedConversationId,
+        limit: gapRecoveryPageLimit,
+        ...(displayState.cursor ? { afterCursor: displayState.cursor } : {}),
+      })
+      .then((page) => {
+        if (cancelled) {
+          return
+        }
+        dispatch({
+          type: 'applyEvents',
+          events: page.events,
+          cursor: page.cursor ?? null,
+        })
+        if (page.gap) {
+          dispatch({
+            type: 'markGap',
+            afterCursor: page.cursor ?? displayState.cursor ?? undefined,
+          })
+          void queryClient.invalidateQueries({
+            queryKey: ['conversation', 'detail', renderedConversationId],
+          })
+          void queryClient.invalidateQueries({ queryKey: ['conversation', 'list'] })
+        }
+      })
+      .catch(() => {
+        if (cancelled) {
+          return
+        }
+        void queryClient.invalidateQueries({
+          queryKey: ['conversation', 'detail', renderedConversationId],
+        })
+        void queryClient.invalidateQueries({ queryKey: ['conversation', 'list'] })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    commandClient,
+    dispatch,
+    displayState.cursor,
+    displayState.gapRecoverySequence,
+    displayState.hasGap,
+    queryClient,
+    renderedConversationId,
+  ])
 
   useEffect(() => {
     if (!renderedConversationId) {

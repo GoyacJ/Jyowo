@@ -1,12 +1,22 @@
 import { describe, expect, it } from 'vitest'
 
 import type { TimelineRunEvent } from './conversation-blocks'
+import { patchBlock } from './conversation-timeline-index'
 import {
   conversationTimelineReducer,
   createConversationTimelineState,
 } from './conversation-timeline-reducer'
+import { selectBlocks } from './conversation-timeline-selectors'
 
 const timestamp = '2026-06-17T00:00:00.000Z'
+
+function cursor(_label: string, conversationSequence = 1) {
+  return { eventId: _label || 'evt-001', conversationSequence }
+}
+
+function blocks(state: ReturnType<typeof createConversationTimelineState>) {
+  return selectBlocks(state)
+}
 
 function event(
   type: TimelineRunEvent['type'],
@@ -60,11 +70,11 @@ describe('conversationTimelineReducer', () => {
             { id: 'evt-user-001', source: 'user', sequence: 1 },
           ),
         ],
-        cursor: 'evt-user-001',
+        cursor: cursor('evt-user-001'),
       },
     ])
 
-    const userBlocks = state.blocks.filter((block) => block.kind === 'userMessage')
+    const userBlocks = blocks(state).filter((block) => block.kind === 'userMessage')
 
     expect(userBlocks).toHaveLength(2)
     expect(userBlocks[0]).toMatchObject({
@@ -101,7 +111,7 @@ describe('conversationTimelineReducer', () => {
       { type: 'commandAccepted', clientMessageId: 'client-001', runId: 'run-001' },
     ])
 
-    expect(state.blocks[0]).toMatchObject({ runId: 'run-001', status: 'sent' })
+    expect(blocks(state)[0]).toMatchObject({ runId: 'run-001', status: 'sent' })
     expect(state.clientMessageByRunId).toMatchObject({ 'run-001': 'client-001' })
   })
 
@@ -109,7 +119,7 @@ describe('conversationTimelineReducer', () => {
     const state = reduce([
       {
         type: 'markGap',
-        afterCursor: 'evt-before-gap',
+        afterCursor: cursor(''),
       },
       {
         type: 'hydrateSnapshot',
@@ -131,7 +141,7 @@ describe('conversationTimelineReducer', () => {
     ])
 
     expect(state.hasGap).toBe(true)
-    expect(state.blocks).toContainEqual(
+    expect(blocks(state)).toContainEqual(
       expect.objectContaining({
         kind: 'userMessage',
         body: 'Recovered prompt',
@@ -146,7 +156,7 @@ describe('conversationTimelineReducer', () => {
         events: [
           event('run.started', { sessionId: 'conversation-001' }, { id: 'evt-run-1', sequence: 1 }),
         ],
-        cursor: 'evt-run-1',
+        cursor: cursor('evt-run-1'),
       },
       {
         type: 'applyEvents',
@@ -162,7 +172,7 @@ describe('conversationTimelineReducer', () => {
             },
           ),
         ],
-        cursor: 'evt-delta-3',
+        cursor: cursor('evt-run-1'),
       },
       {
         type: 'applyEvents',
@@ -172,7 +182,7 @@ describe('conversationTimelineReducer', () => {
     ])
 
     expect(state.hasGap).toBe(true)
-    expect(state.cursor).toBe('evt-run-1')
+    expect(state.cursor?.eventId).toBe('evt-run-1')
   })
 
   it('clears a transient gap when replay only contains already applied events', () => {
@@ -188,21 +198,21 @@ describe('conversationTimelineReducer', () => {
       {
         type: 'applyEvents',
         events: [applied],
-        cursor: 'evt-run-1',
+        cursor: cursor('evt-run-1'),
       },
       {
         type: 'markGap',
-        afterCursor: 'evt-run-1',
+        afterCursor: cursor('evt-run-1'),
       },
       {
         type: 'applyEvents',
         events: [applied],
-        cursor: 'evt-run-1',
+        cursor: cursor('evt-run-1'),
       },
     ])
 
     expect(state.hasGap).toBe(false)
-    expect(state.cursor).toBe('evt-run-1')
+    expect(state.cursor?.eventId).toBe('evt-run-1')
   })
 
   it('clears a stream gap only after replaying the missing contiguous event', () => {
@@ -212,7 +222,7 @@ describe('conversationTimelineReducer', () => {
         events: [
           event('run.started', { sessionId: 'conversation-001' }, { id: 'evt-run-1', sequence: 1 }),
         ],
-        cursor: 'evt-run-1',
+        cursor: cursor('evt-run-1'),
       },
       {
         type: 'applyEvents',
@@ -228,7 +238,7 @@ describe('conversationTimelineReducer', () => {
             },
           ),
         ],
-        cursor: 'evt-delta-3',
+        cursor: cursor('evt-run-1'),
       },
       {
         type: 'applyEvents',
@@ -254,13 +264,13 @@ describe('conversationTimelineReducer', () => {
             },
           ),
         ],
-        cursor: 'evt-delta-3',
+        cursor: cursor('evt-delta-3', 3),
       },
     ])
 
     expect(state.hasGap).toBe(false)
-    expect(state.cursor).toBe('evt-delta-3')
-    expect(state.blocks).toContainEqual(
+    expect(state.cursor?.eventId).toBe('evt-delta-3')
+    expect(blocks(state)).toContainEqual(
       expect.objectContaining({
         kind: 'assistantStreaming',
         body: 'missing future',
@@ -275,7 +285,7 @@ describe('conversationTimelineReducer', () => {
         events: [
           event('run.started', { sessionId: 'conversation-001' }, { id: 'evt-run-1', sequence: 1 }),
         ],
-        cursor: 'evt-run-1',
+        cursor: cursor('evt-run-1'),
       },
       {
         type: 'applyEvents',
@@ -291,7 +301,7 @@ describe('conversationTimelineReducer', () => {
             },
           ),
         ],
-        cursor: 'evt-delta-3',
+        cursor: cursor('evt-run-1'),
       },
       {
         type: 'applyEvents',
@@ -307,13 +317,13 @@ describe('conversationTimelineReducer', () => {
             },
           ),
         ],
-        cursor: 'evt-delta-2',
+        cursor: cursor('evt-delta-2', 2),
       },
     ])
 
     expect(state.hasGap).toBe(true)
-    expect(state.cursor).toBe('evt-run-1')
-    expect(state.blocks).toContainEqual(
+    expect(state.cursor?.eventId).toBe('evt-run-1')
+    expect(blocks(state)).toContainEqual(
       expect.objectContaining({
         kind: 'assistantStreaming',
         body: 'missing ',
@@ -328,7 +338,7 @@ describe('conversationTimelineReducer', () => {
         events: [
           event('run.started', { sessionId: 'conversation-001' }, { id: 'evt-run-1', sequence: 1 }),
         ],
-        cursor: 'evt-run-1',
+        cursor: cursor('evt-run-1'),
       },
       {
         type: 'applyEvents',
@@ -344,13 +354,13 @@ describe('conversationTimelineReducer', () => {
             },
           ),
         ],
-        cursor: 'evt-delta-3',
+        cursor: cursor('evt-run-1'),
       },
     ])
 
     expect(state.hasGap).toBe(true)
-    expect(state.cursor).toBe('evt-run-1')
-    expect(state.blocks).not.toContainEqual(
+    expect(state.cursor?.eventId).toBe('evt-run-1')
+    expect(blocks(state)).not.toContainEqual(
       expect.objectContaining({
         kind: 'assistantStreaming',
         body: 'missed event',
@@ -383,7 +393,7 @@ describe('conversationTimelineReducer', () => {
       },
     ])
 
-    expect(state.blocks).toContainEqual(
+    expect(blocks(state)).toContainEqual(
       expect.objectContaining({
         kind: 'assistantMessage',
         id: 'message:message-002',
@@ -432,7 +442,7 @@ describe('conversationTimelineReducer', () => {
     ])
 
     expect(state.pendingAssistantReconcileByMessageId['message-002']).toBeUndefined()
-    expect(state.blocks).toContainEqual(
+    expect(blocks(state)).toContainEqual(
       expect.objectContaining({
         kind: 'assistantMessage',
         messageId: 'message-002',
@@ -474,7 +484,7 @@ describe('conversationTimelineReducer', () => {
       },
     ])
 
-    expect(state.blocks).toContainEqual(
+    expect(blocks(state)).toContainEqual(
       expect.objectContaining({
         kind: 'toolGroup',
         expanded: true,
@@ -528,7 +538,7 @@ describe('conversationTimelineReducer', () => {
       },
     ])
 
-    expect(state.blocks).toContainEqual(
+    expect(blocks(state)).toContainEqual(
       expect.objectContaining({
         kind: 'permissionRequest',
         requestId: '01HZ0000000000000000000001',
@@ -571,7 +581,7 @@ describe('conversationTimelineReducer', () => {
       },
     ])
 
-    const artifactBlocks = state.blocks.filter((block) => block.kind === 'artifact')
+    const artifactBlocks = blocks(state).filter((block) => block.kind === 'artifact')
 
     expect(artifactBlocks).toHaveLength(1)
     expect(artifactBlocks[0]).toMatchObject({
@@ -590,7 +600,7 @@ describe('conversationTimelineReducer', () => {
     })
     const state = reduce([{ type: 'applyEvents', events: [withheld, withheld] }])
 
-    expect(state.blocks).toEqual([
+    expect(blocks(state)).toEqual([
       expect.objectContaining({
         kind: 'systemNotice',
         message: 'Event details are withheld.',
@@ -635,7 +645,7 @@ describe('conversationTimelineReducer', () => {
       },
     ])
 
-    expect(state.blocks).toEqual([
+    expect(blocks(state)).toEqual([
       expect.objectContaining({ kind: 'userMessage', body: 'Persisted' }),
       expect.objectContaining({ kind: 'userMessage', body: 'Local draft' }),
       expect.objectContaining({ kind: 'assistantStreaming', body: 'streaming' }),
@@ -672,7 +682,7 @@ describe('conversationTimelineReducer', () => {
       { type: 'hydrateSnapshot', snapshot },
     ])
 
-    expect(state.blocks.find((block) => block.kind === 'assistantStreaming')).toMatchObject({
+    expect(blocks(state).find((block) => block.kind === 'assistantStreaming')).toMatchObject({
       conversationSequence: 1,
     })
   })
@@ -713,7 +723,7 @@ describe('conversationTimelineReducer', () => {
       },
     ])
 
-    expect(state.blocks.map((block) => block.kind)).toEqual(['userMessage', 'assistantStreaming'])
+    expect(blocks(state).map((block) => block.kind)).toEqual(['userMessage', 'assistantStreaming'])
   })
 
   it('reconciles snapshot user messages with matching optimistic client ids', () => {
@@ -754,7 +764,7 @@ describe('conversationTimelineReducer', () => {
       },
     ])
 
-    const userBlocks = state.blocks.filter((block) => block.kind === 'userMessage')
+    const userBlocks = blocks(state).filter((block) => block.kind === 'userMessage')
 
     expect(userBlocks).toHaveLength(1)
     expect(userBlocks[0]).toMatchObject({
@@ -800,7 +810,7 @@ describe('conversationTimelineReducer', () => {
       },
     ])
 
-    expect(state.blocks).toContainEqual(
+    expect(blocks(state)).toContainEqual(
       expect.objectContaining({
         id: 'message:message-002',
         clientMessageId: 'client-002',
@@ -808,7 +818,7 @@ describe('conversationTimelineReducer', () => {
         status: 'sent',
       }),
     )
-    expect(state.blocks).toContainEqual(
+    expect(blocks(state)).toContainEqual(
       expect.objectContaining({
         id: 'local:client-001',
         clientMessageId: 'client-001',
@@ -818,10 +828,44 @@ describe('conversationTimelineReducer', () => {
   })
 
   it('marks explicit gaps without guessing order', () => {
-    const state = reduce([{ type: 'markGap', afterCursor: 'evt-001' }])
+    const state = reduce([{ type: 'markGap', afterCursor: cursor('evt-001') }])
 
     expect(state.hasGap).toBe(true)
-    expect(state.cursor).toBe('evt-001')
+    expect(state.cursor?.eventId).toBe('evt-001')
+  })
+
+  it('patches one block without rebuilding unrelated index maps', () => {
+    const state = reduce([
+      {
+        type: 'applyEvents',
+        events: [
+          event(
+            'artifact.created',
+            { artifactId: 'artifact-001', status: 'pending' },
+            { id: 'evt-artifact', sequence: 1 },
+          ),
+          event(
+            'assistant.delta',
+            { text: 'Hel' },
+            { id: 'evt-delta-1', source: 'assistant', sequence: 2 },
+          ),
+        ],
+      },
+    ])
+    const artifactIndex = state.artifactBlockByArtifactId
+    const streamingId = state.streamingBlockByRunId['run-001']
+
+    patchBlock(state, streamingId, { body: 'Hello' })
+
+    expect(state.artifactBlockByArtifactId).toBe(artifactIndex)
+    expect(state.artifactBlockByArtifactId['artifact-001']).toBe('artifact:artifact-001')
+    expect(blocks(state)).toContainEqual(
+      expect.objectContaining({
+        id: streamingId,
+        kind: 'assistantStreaming',
+        body: 'Hello',
+      }),
+    )
   })
 
   it('does not duplicate assistant messages when snapshot hydrate precedes event replay', () => {
@@ -864,11 +908,11 @@ describe('conversationTimelineReducer', () => {
             { id: 'evt-complete', source: 'assistant', sequence: 3 },
           ),
         ],
-        cursor: 'evt-complete',
+        cursor: cursor('evt-complete', 3),
       },
     ])
 
-    const assistantBlocks = state.blocks.filter(
+    const assistantBlocks = blocks(state).filter(
       (block) => block.kind === 'assistantMessage' || block.kind === 'assistantStreaming',
     )
 
@@ -916,7 +960,7 @@ describe('conversationTimelineReducer', () => {
       },
     ])
 
-    const assistantBlocks = state.blocks.filter((block) => block.kind === 'assistantMessage')
+    const assistantBlocks = blocks(state).filter((block) => block.kind === 'assistantMessage')
 
     expect(assistantBlocks).toHaveLength(1)
   })
@@ -936,7 +980,7 @@ describe('conversationTimelineReducer', () => {
       },
     ])
 
-    expect(state.blocks.some((block) => block.kind === 'thinking')).toBe(false)
+    expect(blocks(state).some((block) => block.kind === 'thinking')).toBe(false)
   })
 
   it('keeps answer text separate from thinking deltas', () => {
@@ -958,10 +1002,10 @@ describe('conversationTimelineReducer', () => {
       },
     ])
 
-    expect(state.blocks).toContainEqual(
+    expect(blocks(state)).toContainEqual(
       expect.objectContaining({ kind: 'thinking', body: 'hidden plan' }),
     )
-    expect(state.blocks).toContainEqual(
+    expect(blocks(state)).toContainEqual(
       expect.objectContaining({ kind: 'assistantStreaming', body: 'Visible answer' }),
     )
   })
@@ -985,7 +1029,7 @@ describe('conversationTimelineReducer', () => {
       },
     ])
 
-    expect(state.blocks.some((block) => block.kind === 'thinking')).toBe(false)
-    expect(state.blocks.some((block) => block.kind === 'error')).toBe(true)
+    expect(blocks(state).some((block) => block.kind === 'thinking')).toBe(false)
+    expect(blocks(state).some((block) => block.kind === 'error')).toBe(true)
   })
 })

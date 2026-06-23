@@ -18,8 +18,8 @@ use tokio::sync::Mutex;
 
 use crate::{
     apply_cursor, journal_error, session_end_reason, AppendMetadata, CompactionLineage,
-    EventEnvelope, EventStore, JournalRedaction, PrunePolicy, PruneReport, ReplayCursor,
-    SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
+    EventEnvelope, EventEnvelopePage, EventStore, JournalRedaction, PrunePolicy, PruneReport,
+    ReplayCursor, SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -359,6 +359,63 @@ impl EventStore for JsonlEventStore {
         let mut envelopes = self.load_envelopes(tenant, session_id)?;
         apply_cursor(&mut envelopes, cursor);
         Ok(Box::pin(stream::iter(envelopes)))
+    }
+
+    async fn page_session_envelopes(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        after_event_id: Option<EventId>,
+        limit: usize,
+    ) -> Result<EventEnvelopePage, JournalError> {
+        let limit = limit.clamp(1, 200);
+        let mut found_cursor = after_event_id.is_none();
+        let mut envelopes = Vec::new();
+
+        for path in self.segment_paths(tenant, session_id)? {
+            if envelopes.len() >= limit {
+                break;
+            }
+            let file = match File::open(&path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(journal_error(error)),
+            };
+            let mut lines = BufReader::new(file).lines().peekable();
+            while let Some(line) = lines.next() {
+                let line = line.map_err(journal_error)?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let envelope = match serde_json::from_str::<EventEnvelope>(&line) {
+                    Ok(envelope) => envelope,
+                    Err(_) if lines.peek().is_none() && self.options.read.tolerate_partial_tail => {
+                        continue;
+                    }
+                    Err(_) if self.options.read.tolerate_invalid_lines => continue,
+                    Err(error) => return Err(journal_error(error)),
+                };
+                if !found_cursor {
+                    found_cursor = Some(envelope.event_id) == after_event_id;
+                    continue;
+                }
+                envelopes.push(envelope);
+                if envelopes.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        if !found_cursor {
+            return Err(journal_error("conversation cursor is unknown"));
+        }
+        envelopes.sort_by_key(|envelope| envelope.offset);
+        envelopes.truncate(limit);
+        let next_event_id = envelopes.last().map(|envelope| envelope.event_id);
+        Ok(EventEnvelopePage {
+            envelopes,
+            next_event_id,
+        })
     }
 
     async fn query_after(

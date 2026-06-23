@@ -9,6 +9,8 @@
 
 pub mod audit;
 pub mod blob;
+#[cfg(feature = "sqlite")]
+pub mod conversation_read_model;
 #[cfg(feature = "jsonl")]
 pub mod jsonl;
 #[cfg(any(test, feature = "in-memory", feature = "mock"))]
@@ -25,6 +27,8 @@ pub mod version;
 
 pub use audit::*;
 pub use blob::*;
+#[cfg(feature = "sqlite")]
+pub use conversation_read_model::*;
 #[cfg(feature = "jsonl")]
 pub use jsonl::*;
 #[cfg(any(test, feature = "in-memory", feature = "mock"))]

@@ -619,11 +619,20 @@ list_skills(): {
   skills: SkillSummary[]
 }
 
-get_skill(request: {
+get_skill_detail(request: {
   id: string
-  includeBody?: boolean
 }): {
   skill: SkillDetail
+}
+
+get_skill_file(request: {
+  id: string
+  path: string
+}): {
+  file: {
+    content: string
+    path: string
+  }
 }
 
 import_skill(request: {
@@ -646,18 +655,33 @@ delete_skill(id: string): {
 
 subscribe_conversation_events(request: {
   conversationId: string
-  afterCursor?: string | null
+  afterCursor?: ConversationCursor
 }): {
   subscriptionId: string
   conversationId: string
   replayEvents: RunEvent[]
-  cursor?: string | null
+  cursor?: ConversationCursor
+  gap: boolean
+}
+
+page_conversation_timeline(request: {
+  conversationId: string
+  afterCursor?: ConversationCursor
+  limit?: number
+}): {
+  events: RunEvent[]
+  cursor?: ConversationCursor
   gap: boolean
 }
 
 unsubscribe_conversation_events(subscriptionId: string): {
   subscriptionId: string
   status: 'unsubscribed' | 'alreadyClosed'
+}
+
+type ConversationCursor = {
+  eventId: string
+  conversationSequence: number
 }
 ```
 
@@ -676,12 +700,13 @@ JSON file under `.jyowo/runtime/exports` and returns only the relative `path`,
 frontend state or rendered into the DOM.
 
 Skill IPC payloads must be Zod validated in `shared/tauri`, loaded through
-TanStack Query, and rendered with sanitized error text. The frontend may show
-user-imported skill Markdown in the detail pane, but must not store skill body
-content outside the query cache or render backend error bodies. Config display
-must show keys only, never secret values. Skill import must use the system
-directory picker and pass a local skill package directory containing `SKILL.md`;
-the frontend must not offer single Markdown file import.
+TanStack Query, and rendered with sanitized error text. `list_skills` loads
+only summaries. `get_skill_detail` loads manifest metadata and the file index.
+`get_skill_file` is the only skill command that reads file content, and the UI
+must call it lazily for the selected file. Config display must show keys only,
+never secret values. Skill import must use the system directory picker and pass
+a local skill package directory containing `SKILL.md`; the frontend must not
+offer single Markdown file import.
 
 Streaming:
 

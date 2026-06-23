@@ -63,6 +63,21 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         ConversationAttachmentReference
     );
     insert_schema!(schemas, "conversation_turn_input", ConversationTurnInput);
+    insert_schema!(schemas, "ui_safe_text", UiSafeText);
+    insert_schema!(schemas, "conversation_cursor", ConversationCursor);
+    insert_schema!(schemas, "conversation_summary", ConversationSummary);
+    insert_schema!(schemas, "conversation_message", ConversationMessage);
+    insert_schema!(schemas, "conversation_snapshot", ConversationSnapshot);
+    insert_schema!(
+        schemas,
+        "conversation_timeline_event",
+        ConversationTimelineEvent
+    );
+    insert_schema!(
+        schemas,
+        "conversation_timeline_page",
+        ConversationTimelinePage
+    );
     insert_schema!(schemas, "blob_ref", BlobRef);
     insert_schema!(schemas, "blob_meta", BlobMeta);
     insert_schema!(schemas, "redact_rules", RedactRules);

@@ -21,7 +21,8 @@ blake3 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
-jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "jsonl-store", "blob-file", "local-sandbox", "mcp-stdio", "memory-external-slot", "provider-anthropic", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-km", "provider-local-llama", "provider-minimax", "minimax-tools", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "observability-redactor"] }
+jyowo-harness-contracts = { path = "../../../crates/jyowo-harness-contracts" }
+jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "jsonl-store", "sqlite-store", "blob-file", "local-sandbox", "mcp-stdio", "memory-external-slot", "provider-anthropic", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-km", "provider-local-llama", "provider-minimax", "minimax-tools", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "observability-redactor"] }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -32,8 +33,7 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
-jyowo-harness-contracts = { path = "../../../crates/jyowo-harness-contracts" }
-jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "jsonl-store", "blob-file", "local-sandbox", "mcp-stdio", "memory-external-slot", "provider-anthropic", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-km", "provider-local-llama", "provider-minimax", "minimax-tools", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "observability-redactor", "testing"] }
+jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "jsonl-store", "sqlite-store", "blob-file", "local-sandbox", "mcp-stdio", "memory-external-slot", "provider-anthropic", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-km", "provider-local-llama", "provider-minimax", "minimax-tools", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "observability-redactor", "testing"] }
 harness-skill = { package = "jyowo-harness-skill", path = "../../../crates/jyowo-harness-skill" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

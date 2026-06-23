@@ -41,18 +41,3 @@ export function shouldAutoFollowOnAnchorChange(input: {
 export function shouldShowJumpToLatest(followLatest: boolean) {
   return !followLatest
 }
-
-function scheduleScrollToEnd(
-  endElement: HTMLElement | null,
-  requestFrame: (callback: FrameRequestCallback) => number = requestAnimationFrame,
-) {
-  if (!endElement) {
-    return () => undefined
-  }
-
-  const handle = requestFrame(() => {
-    endElement.scrollIntoView({ block: 'end' })
-  })
-
-  return () => cancelAnimationFrame(handle)
-}

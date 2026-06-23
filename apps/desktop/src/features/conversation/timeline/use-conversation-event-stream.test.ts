@@ -5,6 +5,10 @@ import { coalesceTimelineActions } from './use-conversation-event-stream'
 
 const timestamp = '2026-06-17T00:00:00.000Z'
 
+function cursor(_label: string, conversationSequence = 1) {
+  return { eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV', conversationSequence }
+}
+
 function deltaEvent(id: string, conversationSequence: number, text: string): RunEvent {
   return {
     conversationSequence,
@@ -26,10 +30,10 @@ describe('coalesceTimelineActions', () => {
 
     expect(
       coalesceTimelineActions([
-        { type: 'applyEvents', events: [firstEvent], cursor: 'evt-001' },
-        { type: 'applyEvents', events: [secondEvent], cursor: 'evt-002' },
+        { type: 'applyEvents', events: [firstEvent], cursor: cursor('') },
+        { type: 'applyEvents', events: [secondEvent], cursor: cursor('') },
       ]),
-    ).toEqual([{ type: 'applyEvents', events: [firstEvent, secondEvent], cursor: 'evt-002' }])
+    ).toEqual([{ type: 'applyEvents', events: [firstEvent, secondEvent], cursor: cursor('') }])
   })
 
   it('keeps gap ordering between event updates', () => {
@@ -38,14 +42,14 @@ describe('coalesceTimelineActions', () => {
 
     expect(
       coalesceTimelineActions([
-        { type: 'applyEvents', events: [firstEvent], cursor: 'evt-001' },
-        { type: 'markGap', afterCursor: 'evt-001' },
-        { type: 'applyEvents', events: [secondEvent], cursor: 'evt-002' },
+        { type: 'applyEvents', events: [firstEvent], cursor: cursor('') },
+        { type: 'markGap', afterCursor: cursor('') },
+        { type: 'applyEvents', events: [secondEvent], cursor: cursor('') },
       ]),
     ).toEqual([
-      { type: 'applyEvents', events: [firstEvent], cursor: 'evt-001' },
-      { type: 'markGap', afterCursor: 'evt-001' },
-      { type: 'applyEvents', events: [secondEvent], cursor: 'evt-002' },
+      { type: 'applyEvents', events: [firstEvent], cursor: cursor('') },
+      { type: 'markGap', afterCursor: cursor('') },
+      { type: 'applyEvents', events: [secondEvent], cursor: cursor('') },
     ])
   })
 })

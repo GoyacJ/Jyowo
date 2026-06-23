@@ -33,8 +33,9 @@ use harness_contracts::{
 };
 use harness_contracts::{
     BlobReaderCapAdapter, BlobStore, CapabilityRegistry, ContextPatchRequest, ContextPatchSinkCap,
-    ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput, Decision,
-    Event, EventId, HarnessError, HookEventKind, InteractivityLevel, JournalOffset,
+    ConversationAttachmentReference, ConversationContextReference, ConversationCursor,
+    ConversationSnapshot, ConversationSummary, ConversationTimelinePage, ConversationTurnInput,
+    Decision, Event, EventId, HarnessError, HookEventKind, InteractivityLevel, JournalOffset,
     ManifestOriginRef, ManifestValidationFailedEvent, McpServerId, Message, MessageContent,
     MessageId, MessagePart, MessageRole, ModelModality, PermissionError, PermissionMode,
     PluginCapabilitiesSummary, PluginLifecycleStateDiscriminant, PluginLoadedEvent,
@@ -57,6 +58,8 @@ use harness_hook::{
     NotificationKind, ReplayMode, SsrfGuardPolicy, SubagentSpecView, ToolDescriptorView,
     WorkingDir,
 };
+#[cfg(feature = "sqlite-store")]
+use harness_journal::SqliteConversationReadModelStore;
 use harness_journal::{
     AppendMetadata, AuditPage, AuditQuery, AuditStore, EventEnvelope, EventStore, EventStoreAudit,
     EventStoreOffloadedBlobAuthorizer, PrunePolicy, PruneReport, ReplayCursor, SessionFilter,
@@ -105,6 +108,8 @@ use harness_tool::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(feature = "sqlite-store")]
+use tokio::sync::OnceCell;
 
 #[cfg(feature = "memory-builtin")]
 use crate::builder::BuiltinMemoryConfig;
@@ -528,6 +533,8 @@ struct HarnessInner {
     options: HarnessOptions,
     model: Arc<dyn ModelProvider>,
     event_store: Arc<dyn EventStore>,
+    #[cfg(feature = "sqlite-store")]
+    conversation_read_model: OnceCell<Arc<SqliteConversationReadModelStore>>,
     sandbox: Arc<dyn SandboxBackend>,
     permission_broker: Arc<dyn PermissionBroker>,
     #[cfg(feature = "stream-permission")]
@@ -571,13 +578,20 @@ struct ActiveConversationRun {
 
 struct SdkSessionState {
     projection: SessionProjection,
-    envelopes: Vec<EventEnvelope>,
 }
 
 fn sdk_session_not_found(session_id: SessionId) -> HarnessError {
     HarnessError::Session(SessionError::Message(format!(
         "session not found: {session_id}"
     )))
+}
+
+fn parse_conversation_session_id(conversation_id: &str) -> Result<SessionId, HarnessError> {
+    SessionId::parse(conversation_id).map_err(|error| {
+        HarnessError::Session(SessionError::Message(format!(
+            "invalid conversation id: {error}"
+        )))
+    })
 }
 
 pub trait WorkspaceCreateRequest {
@@ -849,6 +863,28 @@ impl Harness {
         HarnessBuilder::new()
     }
 
+    #[cfg(feature = "sqlite-store")]
+    async fn conversation_read_model(
+        &self,
+    ) -> Result<Arc<SqliteConversationReadModelStore>, HarnessError> {
+        let path = self
+            .inner
+            .options
+            .workspace_root
+            .join(".jyowo/runtime/conversation-read-model.sqlite");
+        let store = self
+            .inner
+            .conversation_read_model
+            .get_or_try_init(|| async move {
+                SqliteConversationReadModelStore::open(path)
+                    .await
+                    .map(Arc::new)
+                    .map_err(HarnessError::Journal)
+            })
+            .await?;
+        Ok(Arc::clone(store))
+    }
+
     pub(crate) async fn from_builder(
         builder: HarnessBuilder<
             Set<Arc<dyn ModelProvider>>,
@@ -923,7 +959,6 @@ impl Harness {
                 .max_concurrent_sessions
                 .or(builder.options.concurrent_sessions),
         ));
-
         let (elicitation_handler, stream_elicitation_handler) =
             match extras.stream_elicitation_handler.take() {
                 Some(handler) => (
@@ -959,6 +994,8 @@ impl Harness {
                 options: builder.options,
                 model: builder.model.0,
                 event_store: builder.store.0,
+                #[cfg(feature = "sqlite-store")]
+                conversation_read_model: OnceCell::new(),
                 sandbox: builder.sandbox.0,
                 permission_broker,
                 #[cfg(feature = "stream-permission")]
@@ -1137,6 +1174,216 @@ impl Harness {
             .collect())
     }
 
+    #[cfg(feature = "sqlite-store")]
+    pub async fn list_conversation_summaries(
+        &self,
+        tenant_id: TenantId,
+        limit: usize,
+    ) -> Result<Vec<ConversationSummary>, HarnessError> {
+        let sessions = self
+            .inner
+            .event_store
+            .list_sessions(
+                tenant_id,
+                SessionFilter {
+                    since: None,
+                    end_reason: None,
+                    project_compression_tips: false,
+                    limit: limit.clamp(1, 200) as u32,
+                },
+            )
+            .await
+            .map_err(HarnessError::Journal)?;
+        for session in sessions {
+            if self
+                .is_conversation_session_stream_page(tenant_id, session.session_id)
+                .await?
+            {
+                self.catch_up_conversation_projection(tenant_id, session.session_id)
+                    .await?;
+            }
+        }
+        self.conversation_read_model()
+            .await?
+            .list_summaries(tenant_id, limit)
+            .await
+            .map_err(HarnessError::Journal)
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    pub async fn get_conversation_snapshot(
+        &self,
+        conversation_id: &str,
+        message_limit: usize,
+    ) -> Result<Option<ConversationSnapshot>, HarnessError> {
+        let tenant_id = self.inner.options.tenant_policy.id;
+        let session_id = parse_conversation_session_id(conversation_id)?;
+        let read_model = self.conversation_read_model().await?;
+        let existing_empty_summary = read_model
+            .summary(tenant_id, session_id)
+            .await
+            .map_err(HarnessError::Journal)?
+            .filter(|summary| summary.is_empty);
+        self.catch_up_conversation_projection(tenant_id, session_id)
+            .await?;
+        let snapshot = read_model
+            .snapshot(tenant_id, session_id, message_limit)
+            .await
+            .map_err(HarnessError::Journal)?;
+        if snapshot.is_some() {
+            return Ok(snapshot);
+        }
+        if let Some(existing_empty_summary) = existing_empty_summary {
+            read_model
+                .seed_empty_conversation(
+                    tenant_id,
+                    session_id,
+                    existing_empty_summary.updated_at,
+                    existing_empty_summary.model_config_id.as_deref(),
+                )
+                .await
+                .map_err(HarnessError::Journal)?;
+            return read_model
+                .snapshot(tenant_id, session_id, message_limit)
+                .await
+                .map_err(HarnessError::Journal);
+        }
+        let Some(summary) = self
+            .conversation_session_summary(tenant_id, session_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        read_model
+            .seed_empty_summary(tenant_id, &summary, None)
+            .await
+            .map_err(HarnessError::Journal)?;
+        read_model
+            .snapshot(tenant_id, session_id, message_limit)
+            .await
+            .map_err(HarnessError::Journal)
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    pub async fn page_conversation_timeline(
+        &self,
+        conversation_id: &str,
+        after_cursor: Option<ConversationCursor>,
+        limit: usize,
+    ) -> Result<ConversationTimelinePage, HarnessError> {
+        let tenant_id = self.inner.options.tenant_policy.id;
+        let session_id = parse_conversation_session_id(conversation_id)?;
+        self.catch_up_conversation_projection(tenant_id, session_id)
+            .await?;
+        self.conversation_read_model()
+            .await?
+            .page_timeline(tenant_id, session_id, after_cursor, limit)
+            .await
+            .map_err(HarnessError::Journal)
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    pub async fn catch_up_conversation_projection(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+    ) -> Result<(), HarnessError> {
+        let read_model = self.conversation_read_model().await?;
+        let mut after_event_id = read_model
+            .projection_cursor(tenant_id, session_id)
+            .await
+            .map_err(HarnessError::Journal)?
+            .map(|cursor| cursor.event_id);
+        let mut reset_stale_projection = false;
+        loop {
+            let page = match self
+                .inner
+                .event_store
+                .page_session_envelopes(tenant_id, session_id, after_event_id, 200)
+                .await
+            {
+                Ok(page) => page,
+                Err(error)
+                    if after_event_id.is_some()
+                        && !reset_stale_projection
+                        && error.to_string().contains("conversation cursor is unknown") =>
+                {
+                    read_model
+                        .reset_session(tenant_id, session_id)
+                        .await
+                        .map_err(HarnessError::Journal)?;
+                    after_event_id = None;
+                    reset_stale_projection = true;
+                    continue;
+                }
+                Err(error) => return Err(HarnessError::Journal(error)),
+            };
+            if page.envelopes.is_empty() {
+                return Ok(());
+            }
+            read_model
+                .apply_envelopes(tenant_id, session_id, &page.envelopes, None)
+                .await
+                .map_err(HarnessError::Journal)?;
+            after_event_id = page.next_event_id;
+        }
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    pub async fn conversation_session_exists(
+        &self,
+        options: SessionOptions,
+    ) -> Result<bool, HarnessError> {
+        let options = self.effective_sdk_session_options(options)?;
+        if self
+            .inner
+            .deleted_conversation_sessions
+            .lock()
+            .contains(&(options.tenant_id, options.session_id))
+        {
+            return Ok(false);
+        }
+        if self
+            .conversation_read_model()
+            .await?
+            .snapshot(options.tenant_id, options.session_id, 1)
+            .await
+            .map_err(HarnessError::Journal)?
+            .is_some()
+        {
+            return Ok(true);
+        }
+        Ok(self
+            .conversation_session_summary(options.tenant_id, options.session_id)
+            .await?
+            .is_some())
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    async fn conversation_session_summary(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+    ) -> Result<Option<harness_journal::SessionSummary>, HarnessError> {
+        let summaries = self
+            .inner
+            .event_store
+            .list_sessions(
+                tenant_id,
+                SessionFilter {
+                    since: None,
+                    end_reason: None,
+                    project_compression_tips: false,
+                    limit: 200,
+                },
+            )
+            .await
+            .map_err(HarnessError::Journal)?;
+        Ok(summaries
+            .into_iter()
+            .find(|summary| summary.session_id == session_id))
+    }
+
     pub async fn delete_conversation_session(
         &self,
         options: SessionOptions,
@@ -1235,30 +1482,37 @@ impl Harness {
     ) -> Result<ConversationEventsPage, HarnessError> {
         let options = self.effective_sdk_session_options(request.options)?;
         let limit = request.limit.clamp(1, 200);
-        let mut envelopes = self
-            .read_sdk_session_state(&options)
-            .await?
-            .ok_or_else(|| sdk_session_not_found(options.session_id))?
-            .envelopes;
-        if let Some(after) = request.after_event_id {
-            match envelopes
-                .iter()
-                .position(|envelope| envelope.event_id == after)
-            {
-                Some(position) => envelopes.drain(0..=position).for_each(drop),
-                None => envelopes.clear(),
-            }
+        let page = self
+            .inner
+            .event_store
+            .page_session_envelopes(
+                options.tenant_id,
+                options.session_id,
+                request.after_event_id,
+                limit,
+            )
+            .await
+            .map_err(HarnessError::Journal)?;
+        let mut envelopes = page.envelopes;
+        if request.after_event_id.is_none() {
+            self.enforce_sdk_session_options_hash(&options, &envelopes)?;
+        } else {
+            let header = self
+                .inner
+                .event_store
+                .page_session_envelopes(options.tenant_id, options.session_id, None, 1)
+                .await
+                .map_err(HarnessError::Journal)?;
+            self.enforce_sdk_session_options_hash(&options, &header.envelopes)?;
         }
-        envelopes.truncate(limit);
         let redactor = self.hook_redactor();
         for envelope in &mut envelopes {
             envelope.payload =
                 redact_business_event_for_display(envelope.payload.clone(), redactor.as_ref());
         }
-        let next_event_id = envelopes.last().map(|envelope| envelope.event_id);
         Ok(ConversationEventsPage {
             events: envelopes,
-            next_event_id,
+            next_event_id: page.next_event_id,
         })
     }
 
@@ -1356,10 +1610,7 @@ impl Harness {
         self.enforce_sdk_session_options_hash(options, &envelopes)?;
         let projection =
             SessionProjection::replay(envelopes.clone()).map_err(HarnessError::Session)?;
-        Ok(Some(SdkSessionState {
-            projection,
-            envelopes,
-        }))
+        Ok(Some(SdkSessionState { projection }))
     }
 
     async fn is_conversation_session_stream(
@@ -1377,6 +1628,27 @@ impl Harness {
             .collect::<Vec<_>>()
             .await;
         let Some(envelope) = envelopes.first() else {
+            return Ok(false);
+        };
+        let Event::SessionCreated(created) = &envelope.payload else {
+            return Ok(false);
+        };
+        Ok(created.tenant_id == tenant_id && created.session_id == session_id)
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    async fn is_conversation_session_stream_page(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+    ) -> Result<bool, HarnessError> {
+        let page = self
+            .inner
+            .event_store
+            .page_session_envelopes(tenant_id, session_id, None, 1)
+            .await
+            .map_err(HarnessError::Journal)?;
+        let Some(envelope) = page.envelopes.first() else {
             return Ok(false);
         };
         let Event::SessionCreated(created) = &envelope.payload else {

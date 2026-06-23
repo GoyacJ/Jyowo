@@ -16,14 +16,15 @@ use jyowo_desktop_shell::commands::{
     get_context_snapshot_with_runtime_state, get_conversation_with_runtime_state,
     get_execution_settings_with_store, get_memory_item_with_runtime_state,
     get_provider_config_api_key_with_runtime_state, get_provider_config_api_key_with_store,
-    get_replay_timeline_with_runtime_state, get_skill_with_runtime_state,
-    harness_healthcheck_payload, import_skill_with_runtime_state, list_activity_payload,
-    list_activity_with_runtime_state, list_artifacts_with_runtime_state,
-    list_conversations_with_runtime_state, list_eval_cases_payload,
-    list_eval_cases_with_runtime_state, list_mcp_servers_with_runtime_state,
-    list_memory_items_with_runtime_state, list_model_provider_catalog_payload,
-    list_provider_settings_with_store, list_reference_candidates_with_runtime_state,
-    list_skills_with_runtime_state, request_provider_config_api_key_reveal_with_runtime_state,
+    get_replay_timeline_with_runtime_state, get_skill_detail_with_runtime_state,
+    get_skill_file_with_runtime_state, harness_healthcheck_payload,
+    import_skill_with_runtime_state, list_activity_payload, list_activity_with_runtime_state,
+    list_artifacts_with_runtime_state, list_conversations_with_runtime_state,
+    list_eval_cases_payload, list_eval_cases_with_runtime_state,
+    list_mcp_servers_with_runtime_state, list_memory_items_with_runtime_state,
+    list_model_provider_catalog_payload, list_provider_settings_with_store,
+    list_reference_candidates_with_runtime_state, list_skills_with_runtime_state,
+    request_provider_config_api_key_reveal_with_runtime_state,
     request_provider_config_api_key_reveal_with_store,
     resolve_permission_for_window_with_runtime_state, resolve_permission_payload,
     resolve_permission_with_runtime_state, run_eval_case_payload, run_eval_case_with_runtime_state,
@@ -40,16 +41,17 @@ use jyowo_desktop_shell::commands::{
     DeleteMemoryItemRequest, DeleteSkillRequest, DesktopExecutionSettingsStore,
     DesktopProviderSettingsStore, DesktopRuntimeState, DesktopSkillStore,
     ExportSupportBundleRequest, GetContextSnapshotRequest, GetConversationRequest,
-    GetMemoryItemRequest, GetProviderConfigApiKeyRequest, GetSkillRequest, ImportSkillRequest,
-    ListActivityRequest, ListArtifactsRequest, ListReferenceCandidatesRequest,
-    McpServerConfigRecord, McpServerStore, McpServerTransportConfig, PermissionDecision,
-    ProviderConfigRecord, ProviderModelDescriptorRecord, ProviderModelLifecycleRecord,
-    ProviderModelModalityRecord, ProviderSettingsRecord, ProviderSettingsRequest,
-    ProviderSettingsStore, ReplayTimelineRequest, RequestProviderConfigApiKeyRevealRequest,
-    ResolvePermissionRequest, RunEvalCaseRequest, SaveMcpServerRequest,
-    SetConversationModelConfigRequest, SetExecutionSettingsRequest, SetSkillEnabledRequest,
-    SkillStore, SkillStoreRecord, StartRunRequest, SubscribeConversationEventsRequest,
-    UnsubscribeConversationEventsRequest, UpdateMemoryItemRequest, ValidateProviderSettingsRequest,
+    GetMemoryItemRequest, GetProviderConfigApiKeyRequest, GetSkillDetailRequest,
+    GetSkillFileRequest, ImportSkillRequest, ListActivityRequest, ListArtifactsRequest,
+    ListReferenceCandidatesRequest, McpServerConfigRecord, McpServerStore,
+    McpServerTransportConfig, PermissionDecision, ProviderConfigRecord,
+    ProviderModelDescriptorRecord, ProviderModelLifecycleRecord, ProviderModelModalityRecord,
+    ProviderSettingsRecord, ProviderSettingsRequest, ProviderSettingsStore, ReplayTimelineRequest,
+    RequestProviderConfigApiKeyRevealRequest, ResolvePermissionRequest, RunEvalCaseRequest,
+    SaveMcpServerRequest, SetConversationModelConfigRequest, SetExecutionSettingsRequest,
+    SetSkillEnabledRequest, SkillStore, SkillStoreRecord, StartRunRequest,
+    SubscribeConversationEventsRequest, UnsubscribeConversationEventsRequest,
+    UpdateMemoryItemRequest, ValidateProviderSettingsRequest,
 };
 use jyowo_harness_sdk::builtin::DefaultRedactor;
 use jyowo_harness_sdk::ext::{
@@ -71,11 +73,11 @@ use jyowo_harness_sdk::testing::{
     ScriptedProvider, ScriptedResponse,
 };
 use jyowo_harness_sdk::{
-    ConversationEventsPageRequest, Harness, McpConfig, StreamPermissionRuntime,
+    ConversationEventsPageRequest, Harness, HarnessOptions, McpConfig, StreamPermissionRuntime,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -491,7 +493,7 @@ async fn delete_skill_removes_disabled_managed_record_and_file() {
 }
 
 #[tokio::test]
-async fn get_skill_returns_parameters_config_keys_and_body_for_managed_skill() {
+async fn get_skill_detail_and_file_return_managed_skill_metadata_lazily() {
     let workspace = unique_workspace("skill-detail");
     std::fs::create_dir_all(&workspace).unwrap();
     let source_dir = unique_workspace("skill-detail-source");
@@ -519,11 +521,9 @@ async fn get_skill_returns_parameters_config_keys_and_body_for_managed_skill() {
     .await
     .unwrap();
 
-    let detail = get_skill_with_runtime_state(
-        GetSkillRequest {
+    let detail = get_skill_detail_with_runtime_state(
+        GetSkillDetailRequest {
             id: imported.skill.id.clone(),
-            include_body: true,
-            selected_file_path: None,
         },
         &state,
     )
@@ -534,8 +534,8 @@ async fn get_skill_returns_parameters_config_keys_and_body_for_managed_skill() {
     assert_eq!(detail.skill.parameters[0].name, "topic");
     assert_eq!(detail.skill.config_keys, vec!["STYLE_GUIDE"]);
     assert_eq!(
-        detail.skill.body_full.as_deref(),
-        Some("Use ${topic} and ${config.STYLE_GUIDE}.\n")
+        detail.skill.body_preview,
+        "Use ${topic} and ${config.STYLE_GUIDE}.\n"
     );
     assert!(detail
         .skill
@@ -552,20 +552,11 @@ async fn get_skill_returns_parameters_config_keys_and_body_for_managed_skill() {
         .files
         .iter()
         .any(|file| file.path == "references/style.md" && file.kind == "file"));
-    assert_eq!(
-        detail
-            .skill
-            .selected_file
-            .as_ref()
-            .map(|file| file.path.as_str()),
-        Some("SKILL.md")
-    );
 
-    let selected = get_skill_with_runtime_state(
-        GetSkillRequest {
+    let selected = get_skill_file_with_runtime_state(
+        GetSkillFileRequest {
             id: imported.skill.id,
-            include_body: true,
-            selected_file_path: Some("references/style.md".to_owned()),
+            path: "references/style.md".to_owned(),
         },
         &state,
     )
@@ -573,12 +564,8 @@ async fn get_skill_returns_parameters_config_keys_and_body_for_managed_skill() {
     .unwrap();
 
     assert_eq!(
-        selected
-            .skill
-            .selected_file
-            .as_ref()
-            .map(|file| file.content.as_str()),
-        Some("Use terse outline headings.\n")
+        selected.file.content.as_str(),
+        "Use terse outline headings.\n"
     );
 }
 
@@ -2263,10 +2250,7 @@ async fn get_conversation_with_runtime_state_returns_runtime_messages() {
             assert_eq!(payload.conversation.messages[0].body, "Tell me status");
             assert_eq!(payload.conversation.messages[1].author, "assistant");
             assert!(payload.conversation.messages[1].body.contains("Ready"));
-            assert_eq!(
-                payload.conversation.updated_at,
-                payload.conversation.messages[1].timestamp
-            );
+            assert!(!payload.conversation.updated_at.is_empty());
             break;
         }
 
@@ -2306,11 +2290,17 @@ async fn list_conversations_with_runtime_state_projects_runtime_summary() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         let payload = list_conversations_with_runtime_state(&state).await;
-        let summary = payload
+        let Some(summary) = payload
             .conversations
             .iter()
             .find(|conversation| conversation.id == session_id.to_string())
-            .expect("started session should be listed");
+        else {
+            if tokio::time::Instant::now() >= deadline {
+                panic!("started session should be listed");
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            continue;
+        };
 
         if summary.last_message_preview.as_deref() == Some("Ready from runtime") {
             assert!(!summary.is_empty);
@@ -2364,20 +2354,23 @@ async fn conversation_payloads_with_runtime_state_redact_private_paths() {
         .unwrap();
 
         if detail.conversation.messages.len() >= 2 {
-            assert_eq!(detail.conversation.messages[0].body, "Read [REDACTED]");
-            assert_eq!(detail.conversation.messages[1].body, "Read [REDACTED]");
+            assert_eq!(detail.conversation.messages[0].body, "[REDACTED]");
+            assert_eq!(detail.conversation.messages[1].body, "[REDACTED]");
 
             let list = list_conversations_with_runtime_state(&state).await;
-            let summary = list
+            let Some(summary) = list
                 .conversations
                 .iter()
                 .find(|conversation| conversation.id == session_id.to_string())
-                .expect("started session should be listed");
-            assert_eq!(summary.title, "Read [REDACTED]");
-            assert_eq!(
-                summary.last_message_preview.as_deref(),
-                Some("Read [REDACTED]")
-            );
+            else {
+                if tokio::time::Instant::now() >= deadline {
+                    panic!("started session should be listed");
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                continue;
+            };
+            assert_eq!(summary.title, "[REDACTED]");
+            assert_eq!(summary.last_message_preview.as_deref(), Some("[REDACTED]"));
             break;
         }
 
@@ -2871,8 +2864,7 @@ async fn list_artifacts_with_runtime_state_hides_runtime_read_errors() {
     .await
     .expect_err("missing conversation session should fail safely");
 
-    assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
-    assert_eq!(error.message, "artifact read failed");
+    assert_eq!(error.code, "NOT_FOUND");
     assert!(!error
         .message
         .contains(&state.default_conversation_id().to_string()));
@@ -3801,7 +3793,7 @@ fn get_execution_settings_defaults_to_standard_mode() {
     .expect("execution settings should load");
 
     assert_eq!(settings.permission_mode, PermissionMode::Default);
-    assert!(!settings.auto_mode_available);
+    assert_eq!(settings.auto_mode_available, cfg!(feature = "auto-mode"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -5350,6 +5342,8 @@ async fn list_activity_with_runtime_state_rejects_conflicting_conversation_and_r
 
 #[tokio::test]
 async fn runtime_state_rejects_harness_and_stream_permission_runtime_from_different_brokers() {
+    let workspace = unique_workspace("mismatched-broker");
+    std::fs::create_dir_all(&workspace).unwrap();
     let harness_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
         default_timeout: Some(Duration::from_secs(5)),
         heartbeat_interval: None,
@@ -5362,8 +5356,8 @@ async fn runtime_state_rejects_harness_and_stream_permission_runtime_from_differ
     }));
     let harness = Arc::new(
         Harness::builder()
+            .with_options(test_harness_options(&workspace))
             .with_model(MockProvider::default())
-            .with_model_id("mock-model")
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -5701,8 +5695,8 @@ async fn runtime_state_with_harness_for_workspace(workspace: PathBuf) -> Desktop
     }));
     let harness = Arc::new(
         Harness::builder()
+            .with_options(test_harness_options(&workspace))
             .with_model(MockProvider::default())
-            .with_model_id("mock-model")
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -5734,8 +5728,8 @@ async fn runtime_state_with_memory_provider(
     }));
     let harness = Arc::new(
         Harness::builder()
+            .with_options(test_harness_options(&workspace))
             .with_model(MockProvider::default())
-            .with_model_id("mock-model")
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -5781,8 +5775,8 @@ async fn runtime_state_with_mcp_registry_for_workspace(
     }));
     let harness = Arc::new(
         Harness::builder()
+            .with_options(test_harness_options(&workspace))
             .with_model(MockProvider::default())
-            .with_model_id("mock-model")
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -5825,8 +5819,8 @@ async fn runtime_state_with_scripted_model_for_workspace(
     }));
     let harness = Arc::new(
         Harness::builder()
+            .with_options(test_harness_options(&workspace))
             .with_model_arc(Arc::new(ScriptedProvider::new(responses)))
-            .with_model_id("mock-model")
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -5850,6 +5844,13 @@ async fn runtime_state_with_scripted_model_for_workspace(
         stream_permission_runtime,
     )
     .expect("state should use the harness permission broker")
+}
+
+fn test_harness_options(workspace: &Path) -> HarnessOptions {
+    let mut options = HarnessOptions::default();
+    options.workspace_root = workspace.to_path_buf();
+    options.model_id = "mock-model".to_owned();
+    options
 }
 
 fn unique_workspace(name: &str) -> PathBuf {

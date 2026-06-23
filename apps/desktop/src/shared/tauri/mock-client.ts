@@ -15,7 +15,8 @@ import type {
   GetExecutionSettingsResponse,
   GetMemoryItemResponse,
   GetProviderConfigApiKeyResponse,
-  GetSkillResponse,
+  GetSkillDetailResponse,
+  GetSkillFileResponse,
   HarnessHealthcheck,
   ListActivityResponse,
   ListArtifactsResponse,
@@ -27,6 +28,7 @@ import type {
   ListReferenceCandidatesResponse,
   ListSkillsResponse,
   ModelProviderCatalogResponse,
+  PageConversationTimelineResponse,
   ReplayTimelineResponse,
   RequestProviderConfigApiKeyRevealResponse,
   ResolvePermissionResponse,
@@ -393,9 +395,8 @@ const mockListSkills: ListSkillsResponse = {
   skills: [mockWorkspaceSkill, mockBundledSkill],
 }
 
-const mockSkillDetail: GetSkillResponse = {
+const mockSkillDetail: GetSkillDetailResponse = {
   skill: {
-    bodyFull: 'Write concise release notes from the current workspace diff.',
     bodyPreview: 'Write concise release notes from the current workspace diff.',
     configKeys: ['CHANGELOG_TOKEN'],
     files: [
@@ -428,11 +429,14 @@ const mockSkillDetail: GetSkillResponse = {
         required: true,
       },
     ],
-    selectedFile: {
-      content: 'Write concise release notes from the current workspace diff.',
-      path: 'SKILL.md',
-    },
     summary: mockWorkspaceSkill,
+  },
+}
+
+const mockSkillEntryFile: GetSkillFileResponse = {
+  file: {
+    content: 'Write concise release notes from the current workspace diff.',
+    path: 'SKILL.md',
   },
 }
 
@@ -538,8 +542,10 @@ export interface MockCommandClientOptions {
   setExecutionSettings?: SetExecutionSettingsResponse
   referenceCandidates?: ListReferenceCandidatesResponse
   replayTimeline?: ReplayTimelineResponse
+  conversationTimelinePage?: PageConversationTimelineResponse
   subscribeConversationEvents?: SubscribeConversationEventsResponse
-  skillDetail?: GetSkillResponse
+  skillDetail?: GetSkillDetailResponse
+  skillFile?: GetSkillFileResponse
   skills?: ListSkillsResponse
   supportBundleExport?: ExportSupportBundleResponse
   delayMs?: number
@@ -656,7 +662,17 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       return options.replayTimeline ?? mockReplayTimeline
     },
-    async getSkill(id, _includeBody, selectedFilePath) {
+    async pageConversationTimeline() {
+      await wait(options.delayMs)
+      return (
+        options.conversationTimelinePage ?? {
+          events: (options.replayTimeline ?? mockReplayTimeline).events,
+          cursor: undefined,
+          gap: false,
+        }
+      )
+    },
+    async getSkillDetail(id) {
       await wait(options.delayMs)
       if (options.skillDetail) {
         return options.skillDetail
@@ -669,15 +685,24 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       return {
         skill: {
           ...mockSkillDetail.skill,
-          selectedFile: selectedFilePath
-            ? {
-                content: `Mock content for ${selectedFilePath}`,
-                path: selectedFilePath,
-              }
-            : mockSkillDetail.skill.selectedFile,
           summary,
         },
-      } satisfies GetSkillResponse
+      } satisfies GetSkillDetailResponse
+    },
+    async getSkillFile(_id, path) {
+      await wait(options.delayMs)
+      if (options.skillFile) {
+        return options.skillFile
+      }
+
+      return path === mockSkillEntryFile.file.path
+        ? mockSkillEntryFile
+        : {
+            file: {
+              content: `Mock content for ${path}`,
+              path,
+            },
+          }
     },
     async importSkill() {
       await wait(options.delayMs)
@@ -945,7 +970,6 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
         subscriptionId: `subscription-mock-${subscriptionCounter}`,
         conversationId: request.conversationId,
         replayEvents: [],
-        cursor: null,
         gap: false,
       }
       return activeSubscription
@@ -1043,7 +1067,12 @@ function emitMockConversationBatch(
         subscriptionId: currentSubscription.subscriptionId,
         conversationId: currentSubscription.conversationId,
         events,
-        cursor: events.at(-1)?.id ?? currentSubscription.cursor,
+        cursor: events.at(-1)
+          ? {
+              eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+              conversationSequence: events.at(-1)?.conversationSequence ?? 0,
+            }
+          : currentSubscription.cursor,
         gap: false,
         phase: 'live',
       })
@@ -1072,7 +1101,9 @@ export function createRejectedCommandClient(error: unknown): CommandClient {
     getMemoryItem: () => Promise.reject(error),
     getProviderConfigApiKey: () => Promise.reject(error),
     getReplayTimeline: () => Promise.reject(error),
-    getSkill: () => Promise.reject(error),
+    pageConversationTimeline: () => Promise.reject(error),
+    getSkillDetail: () => Promise.reject(error),
+    getSkillFile: () => Promise.reject(error),
     importSkill: () => Promise.reject(error),
     listActivity: () => Promise.reject(error),
     listArtifacts: () => Promise.reject(error),

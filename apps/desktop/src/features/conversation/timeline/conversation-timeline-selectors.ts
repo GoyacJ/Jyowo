@@ -1,4 +1,5 @@
 import type { ConversationBlock, PermissionRequestBlock } from './conversation-blocks'
+import { selectBlocksFromState } from './conversation-timeline-index'
 import type { ConversationTimelineState } from './conversation-timeline-reducer'
 
 export type ComposerMode =
@@ -11,7 +12,7 @@ export type ComposerMode =
   | { kind: 'continue' }
 
 export function selectBlocks(state: ConversationTimelineState): ConversationBlock[] {
-  return state.blocks
+  return selectBlocksFromState(state)
 }
 
 export function selectComposerMode(state: ConversationTimelineState): ComposerMode {
@@ -19,21 +20,22 @@ export function selectComposerMode(state: ConversationTimelineState): ComposerMo
     return { kind: 'running-disabled', canCancel: true }
   }
 
-  const clarification = state.blocks.find(
+  const blocks = selectBlocks(state)
+  const clarification = blocks.find(
     (block) => block.kind === 'clarificationRequest' && block.status === 'pending',
   )
   if (clarification) {
     return { kind: 'clarification-reply', blockId: clarification.id }
   }
 
-  const review = state.blocks.find(
+  const review = blocks.find(
     (block) => block.kind === 'reviewRequest' && block.status === 'pending',
   )
   if (review) {
     return { kind: 'review-comment', blockId: review.id }
   }
 
-  const failedTurn = [...state.blocks].reverse().find((block) => block.status === 'failed')
+  const failedTurn = [...blocks].reverse().find((block) => block.status === 'failed')
   if (failedTurn?.turnId) {
     return { kind: 'retry', turnId: failedTurn.turnId }
   }
@@ -44,7 +46,7 @@ export function selectComposerMode(state: ConversationTimelineState): ComposerMo
 export function selectPendingPermissionBlocks(
   state: ConversationTimelineState,
 ): PermissionRequestBlock[] {
-  return state.blocks.filter(
+  return selectBlocks(state).filter(
     (block): block is PermissionRequestBlock =>
       block.kind === 'permissionRequest' &&
       (block.status === 'pending' || block.status === 'submitting'),

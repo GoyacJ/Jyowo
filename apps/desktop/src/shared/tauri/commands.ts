@@ -313,9 +313,32 @@ const replayTimelineResponseSchema = z
   })
   .strict()
 
+const conversationCursorSchema = z
+  .object({
+    eventId: z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/),
+    conversationSequence: z.number().int().nonnegative(),
+  })
+  .strict()
+
+const pageConversationTimelineRequestSchema = z
+  .object({
+    afterCursor: conversationCursorSchema.optional(),
+    conversationId: z.string().min(1),
+    limit: z.number().int().positive().max(200).optional(),
+  })
+  .strict()
+
+const pageConversationTimelineResponseSchema = z
+  .object({
+    events: runEventsSchema,
+    cursor: conversationCursorSchema.optional(),
+    gap: z.boolean(),
+  })
+  .strict()
+
 const subscribeConversationEventsRequestSchema = z
   .object({
-    afterCursor: z.string().min(1).optional(),
+    afterCursor: conversationCursorSchema.optional(),
     conversationId: z.string().min(1),
   })
   .strict()
@@ -325,7 +348,7 @@ const subscribeConversationEventsResponseSchema = z
     subscriptionId: z.string().min(1),
     conversationId: z.string().min(1),
     replayEvents: runEventsSchema,
-    cursor: z.string().min(1).nullable().optional(),
+    cursor: conversationCursorSchema.optional(),
     gap: z.boolean(),
   })
   .strict()
@@ -348,7 +371,7 @@ const conversationEventBatchPayloadSchema = z
     subscriptionId: z.string().min(1),
     conversationId: z.string().min(1),
     events: runEventsSchema,
-    cursor: z.string().min(1).nullable().optional(),
+    cursor: conversationCursorSchema.optional(),
     gap: z.boolean(),
     phase: z.enum(['replay', 'live']),
   })
@@ -788,12 +811,10 @@ const skillFileContentSchema = z
 
 const skillDetailSchema = z
   .object({
-    bodyFull: z.string().optional(),
     bodyPreview: z.string(),
     configKeys: z.array(z.string().min(1)),
     files: z.array(skillFileSchema),
     parameters: z.array(skillParameterSchema),
-    selectedFile: skillFileContentSchema.optional(),
     summary: skillSummarySchema,
     validationError: z.string().optional(),
   })
@@ -805,17 +826,28 @@ const listSkillsResponseSchema = z
   })
   .strict()
 
-const getSkillRequestSchema = z
+const getSkillDetailRequestSchema = z
   .object({
     id: skillIdSchema,
-    includeBody: z.boolean().optional(),
-    selectedFilePath: z.string().trim().min(1).optional(),
   })
   .strict()
 
-const getSkillResponseSchema = z
+const getSkillDetailResponseSchema = z
   .object({
     skill: skillDetailSchema,
+  })
+  .strict()
+
+const getSkillFileRequestSchema = z
+  .object({
+    id: skillIdSchema,
+    path: z.string().trim().min(1),
+  })
+  .strict()
+
+const getSkillFileResponseSchema = z
+  .object({
+    file: skillFileContentSchema,
   })
   .strict()
 
@@ -1031,6 +1063,11 @@ export type ListActivityRequest = z.infer<typeof listActivityRequestSchema>
 export type ListActivityResponse = z.infer<typeof listActivityResponseSchema>
 export type ReplayTimelineRequest = z.infer<typeof replayTimelineRequestSchema>
 export type ReplayTimelineResponse = z.infer<typeof replayTimelineResponseSchema>
+export type ConversationCursor = z.infer<typeof conversationCursorSchema>
+type PageConversationTimelineRequest = z.infer<typeof pageConversationTimelineRequestSchema>
+export type PageConversationTimelineResponse = z.infer<
+  typeof pageConversationTimelineResponseSchema
+>
 type SubscribeConversationEventsRequest = z.infer<typeof subscribeConversationEventsRequestSchema>
 export type SubscribeConversationEventsResponse = z.infer<
   typeof subscribeConversationEventsResponseSchema
@@ -1072,7 +1109,8 @@ export type DeleteMcpServerResponse = z.infer<typeof deleteMcpServerResponseSche
 export type SkillSummary = z.infer<typeof skillSummarySchema>
 export type SkillFile = z.infer<typeof skillFileSchema>
 export type ListSkillsResponse = z.infer<typeof listSkillsResponseSchema>
-export type GetSkillResponse = z.infer<typeof getSkillResponseSchema>
+export type GetSkillDetailResponse = z.infer<typeof getSkillDetailResponseSchema>
+export type GetSkillFileResponse = z.infer<typeof getSkillFileResponseSchema>
 export type ImportSkillResponse = z.infer<typeof importSkillResponseSchema>
 export type SetSkillEnabledResponse = z.infer<typeof setSkillEnabledResponseSchema>
 export type DeleteSkillResponse = z.infer<typeof deleteSkillResponseSchema>
@@ -1106,11 +1144,8 @@ export interface CommandClient {
     revealToken: string,
   ) => Promise<GetProviderConfigApiKeyResponse>
   getReplayTimeline: (request: ReplayTimelineRequest) => Promise<ReplayTimelineResponse>
-  getSkill: (
-    id: string,
-    includeBody?: boolean,
-    selectedFilePath?: string,
-  ) => Promise<GetSkillResponse>
+  getSkillDetail: (id: string) => Promise<GetSkillDetailResponse>
+  getSkillFile: (id: string, path: string) => Promise<GetSkillFileResponse>
   importSkill: (sourcePath: string) => Promise<ImportSkillResponse>
   exportMemoryItems: () => Promise<ExportMemoryItemsResponse>
   exportSupportBundle: (request: ExportSupportBundleRequest) => Promise<ExportSupportBundleResponse>
@@ -1123,6 +1158,9 @@ export interface CommandClient {
   listMcpServers: () => Promise<ListMcpServersResponse>
   listMemoryItems: () => Promise<ListMemoryItemsResponse>
   listProviderSettings: () => Promise<ListProviderSettingsResponse>
+  pageConversationTimeline: (
+    request: PageConversationTimelineRequest,
+  ) => Promise<PageConversationTimelineResponse>
   listReferenceCandidates: (
     request: ListReferenceCandidatesRequest,
   ) => Promise<ListReferenceCandidatesResponse>
@@ -1272,14 +1310,29 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, replayTimelineRequestSchema, request)
       return parsePayload(command, replayTimelineResponseSchema, await invoke(command, args))
     },
-    async getSkill(id, includeBody = false, selectedFilePath) {
-      const command = 'get_skill'
-      const args = parseArgs(command, getSkillRequestSchema, {
+    async pageConversationTimeline(request) {
+      const command = 'page_conversation_timeline'
+      const args = parseArgs(command, pageConversationTimelineRequestSchema, request)
+      return parsePayload(
+        command,
+        pageConversationTimelineResponseSchema,
+        await invoke(command, args),
+      )
+    },
+    async getSkillDetail(id) {
+      const command = 'get_skill_detail'
+      const args = parseArgs(command, getSkillDetailRequestSchema, {
         id,
-        includeBody,
-        ...(selectedFilePath === undefined ? {} : { selectedFilePath }),
       })
-      return parsePayload(command, getSkillResponseSchema, await invoke(command, args))
+      return parsePayload(command, getSkillDetailResponseSchema, await invoke(command, args))
+    },
+    async getSkillFile(id, path) {
+      const command = 'get_skill_file'
+      const args = parseArgs(command, getSkillFileRequestSchema, {
+        id,
+        path,
+      })
+      return parsePayload(command, getSkillFileResponseSchema, await invoke(command, args))
     },
     async importSkill(sourcePath) {
       const command = 'import_skill'
@@ -1580,13 +1633,19 @@ export function listSkills(
   return client.listSkills()
 }
 
-export function getSkill(
+export function getSkillDetail(
   id: string,
-  includeBody = false,
   client: CommandClient = tauriCommandClient,
-  selectedFilePath?: string,
-): Promise<GetSkillResponse> {
-  return client.getSkill(id, includeBody, selectedFilePath)
+): Promise<GetSkillDetailResponse> {
+  return client.getSkillDetail(id)
+}
+
+export function getSkillFile(
+  id: string,
+  path: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<GetSkillFileResponse> {
+  return client.getSkillFile(id, path)
 }
 
 export function importSkill(

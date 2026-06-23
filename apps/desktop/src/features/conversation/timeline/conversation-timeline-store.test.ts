@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ConversationTimelineAction } from './conversation-timeline-actions'
+import { selectBlocks } from './conversation-timeline-selectors'
 import {
   conversationTimelineRootReducerFromAction,
   createConversationTimelineRoot,
@@ -8,6 +9,14 @@ import {
 } from './conversation-timeline-store'
 
 const timestamp = '2026-06-17T00:00:00.000Z'
+
+function cursor(_label: string, conversationSequence = 1) {
+  return { eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV', conversationSequence }
+}
+
+function blocks(state: ReturnType<typeof getConversationTimelineState>) {
+  return selectBlocks(state)
+}
 
 describe('conversationTimelineStore', () => {
   it('keeps independent buckets per conversation', () => {
@@ -32,12 +41,12 @@ describe('conversationTimelineStore', () => {
       },
     })
 
-    expect(getConversationTimelineState(root, 'conversation-a').blocks).toHaveLength(1)
-    expect(getConversationTimelineState(root, 'conversation-b').blocks).toHaveLength(1)
-    expect(getConversationTimelineState(root, 'conversation-a').blocks[0]).toMatchObject({
+    expect(blocks(getConversationTimelineState(root, 'conversation-a'))).toHaveLength(1)
+    expect(blocks(getConversationTimelineState(root, 'conversation-b'))).toHaveLength(1)
+    expect(blocks(getConversationTimelineState(root, 'conversation-a'))[0]).toMatchObject({
       body: 'A',
     })
-    expect(getConversationTimelineState(root, 'conversation-b').blocks[0]).toMatchObject({
+    expect(blocks(getConversationTimelineState(root, 'conversation-b'))[0]).toMatchObject({
       body: 'B',
     })
   })
@@ -59,7 +68,7 @@ describe('conversationTimelineStore', () => {
           visibility: 'public',
         },
       ],
-      cursor: 'evt-a-1',
+      cursor: cursor(''),
     }
 
     root = conversationTimelineRootReducerFromAction(root, {
@@ -78,7 +87,7 @@ describe('conversationTimelineStore', () => {
 
     const conversationA = getConversationTimelineState(root, 'conversation-a')
 
-    expect(conversationA.cursor).toBe('evt-a-1')
-    expect(conversationA.eventsById['evt-a-1']).toBe(true)
+    expect(conversationA.cursor).toEqual(cursor('evt-a-1'))
+    expect(conversationA.eventIds['evt-a-1']).toBe(true)
   })
 })

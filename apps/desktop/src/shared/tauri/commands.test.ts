@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 
+function cursor(_label: string, conversationSequence = 1) {
+  return { eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV', conversationSequence }
+}
+
 const tauriListenMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -24,7 +28,8 @@ import {
   getMemoryItem,
   getProviderConfigApiKey,
   getReplayTimeline,
-  getSkill,
+  getSkillDetail,
+  getSkillFile,
   importSkill,
   listActivity,
   listArtifacts,
@@ -172,7 +177,6 @@ describe('CommandClient', () => {
     ).resolves.toMatchObject({
       conversationId: 'conversation-001',
       replayEvents: [],
-      cursor: null,
       gap: false,
     })
 
@@ -193,7 +197,7 @@ describe('CommandClient', () => {
             visibility: 'public',
           },
         ],
-        cursor: 'evt-delta',
+        cursor: cursor(''),
         gap: false,
       },
     })
@@ -203,7 +207,7 @@ describe('CommandClient', () => {
     ).resolves.toMatchObject({
       subscriptionId: 'subscription-stream',
       replayEvents: [{ id: 'evt-delta' }],
-      cursor: 'evt-delta',
+      cursor: cursor(''),
     })
   })
 
@@ -447,7 +451,7 @@ describe('CommandClient', () => {
               visibility: 'public',
             },
           ],
-          cursor: 'cursor-001',
+          cursor: cursor(''),
           gap: false,
         }
       }
@@ -469,12 +473,12 @@ describe('CommandClient', () => {
     await expect(
       client.subscribeConversationEvents({
         conversationId: 'conversation-001',
-        afterCursor: 'cursor-before',
+        afterCursor: cursor(''),
       }),
     ).resolves.toMatchObject({
       subscriptionId: 'subscription-001',
       replayEvents: [{ id: 'evt-replay' }],
-      cursor: 'cursor-001',
+      cursor: cursor(''),
     })
     const cleanup = await client.listenConversationEventBatches((batch) => {
       batches.push(batch)
@@ -496,7 +500,7 @@ describe('CommandClient', () => {
             visibility: 'public',
           },
         ],
-        cursor: 'cursor-002',
+        cursor: cursor(''),
         gap: false,
         phase: 'live',
       },
@@ -509,7 +513,7 @@ describe('CommandClient', () => {
     })
     expect(invoke).toHaveBeenCalledWith('subscribe_conversation_events', {
       conversationId: 'conversation-001',
-      afterCursor: 'cursor-before',
+      afterCursor: cursor(''),
     })
     expect(tauriListenMock).toHaveBeenCalledWith('conversation_event_batch', expect.any(Function))
     expect(batches).toEqual([
@@ -1748,10 +1752,9 @@ describe('CommandClient', () => {
         }
       }
 
-      if (command === 'get_skill') {
+      if (command === 'get_skill_detail') {
         return {
           skill: {
-            bodyFull: 'Write concise release notes.',
             bodyPreview: 'Write concise release notes.',
             configKeys: ['CHANGELOG_TOKEN'],
             files: [
@@ -1784,10 +1787,6 @@ describe('CommandClient', () => {
                 required: true,
               },
             ],
-            selectedFile: {
-              content: 'Use terse release note bullets.',
-              path: 'references/style.md',
-            },
             summary: {
               description: 'Creates release notes from recent changes.',
               enabled: true,
@@ -1798,6 +1797,15 @@ describe('CommandClient', () => {
               status: 'ready',
               tags: ['writing'],
             },
+          },
+        }
+      }
+
+      if (command === 'get_skill_file') {
+        return {
+          file: {
+            content: 'Use terse release note bullets.',
+            path: 'references/style.md',
           },
         }
       }
@@ -1841,18 +1849,18 @@ describe('CommandClient', () => {
     const client = createInvokeCommandClient(invoke)
 
     await expect(listSkills(client)).resolves.toHaveProperty('skills.0.name', 'release-notes')
-    await expect(getSkill('skill-001', true, client, 'references/style.md')).resolves.toMatchObject(
-      {
-        skill: {
-          bodyFull: 'Write concise release notes.',
-          files: [{ path: 'SKILL.md' }, { path: 'references' }, { path: 'references/style.md' }],
-          selectedFile: {
-            content: 'Use terse release note bullets.',
-            path: 'references/style.md',
-          },
-        },
+    await expect(getSkillDetail('skill-001', client)).resolves.toMatchObject({
+      skill: {
+        bodyPreview: 'Write concise release notes.',
+        files: [{ path: 'SKILL.md' }, { path: 'references' }, { path: 'references/style.md' }],
       },
-    )
+    })
+    await expect(getSkillFile('skill-001', 'references/style.md', client)).resolves.toMatchObject({
+      file: {
+        content: 'Use terse release note bullets.',
+        path: 'references/style.md',
+      },
+    })
     await expect(importSkill('/tmp/release-notes', client)).resolves.toHaveProperty(
       'skill.sourceKind',
       'workspace',
@@ -1867,10 +1875,12 @@ describe('CommandClient', () => {
     })
 
     expect(invoke).toHaveBeenCalledWith('list_skills')
-    expect(invoke).toHaveBeenCalledWith('get_skill', {
+    expect(invoke).toHaveBeenCalledWith('get_skill_detail', {
       id: 'skill-001',
-      includeBody: true,
-      selectedFilePath: 'references/style.md',
+    })
+    expect(invoke).toHaveBeenCalledWith('get_skill_file', {
+      id: 'skill-001',
+      path: 'references/style.md',
     })
     expect(invoke).toHaveBeenCalledWith('import_skill', { sourcePath: '/tmp/release-notes' })
     expect(invoke).toHaveBeenCalledWith('set_skill_enabled', {
@@ -1897,7 +1907,8 @@ describe('CommandClient', () => {
     })
     const client = createInvokeCommandClient(invoke)
 
-    await expect(getSkill('', false, client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(getSkillDetail('', client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(getSkillFile('skill-001', '', client)).rejects.toThrow(TauriCommandPayloadError)
     await expect(importSkill('', client)).rejects.toThrow(TauriCommandPayloadError)
     await expect(setSkillEnabled('', true, client)).rejects.toThrow(TauriCommandPayloadError)
     await expect(deleteSkill('', client)).rejects.toThrow(TauriCommandPayloadError)

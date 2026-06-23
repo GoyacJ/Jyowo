@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use chrono::{NaiveDate, Utc};
+use harness_contracts::{ConversationCursor, ConversationMessageAuthor};
 use jyowo_harness_sdk::builtin::{
     DefaultRedactor, FileBlobStore, InMemoryMemoryProvider, JsonlEventStore, LocalLlamaProvider,
     LocalSandbox,
@@ -22,26 +23,24 @@ use jyowo_harness_sdk::ext::{
     McpServerId, McpServerScope, McpServerSource, McpServerSpec, MemoryId, MemoryKind,
     MemoryRecord, MemorySource, MemorySummary, MemoryVisibility, MessageContent, MessagePart,
     ModelDescriptor, ModelInventoryEntry, ModelLifecycle, ModelModality, ModelProtocol,
-    ModelProvider, ModelRuntimeStatus, PendingPermissionRequest, PermissionMode,
-    PermissionSubject, ProviderAuthScheme, ProviderBaseUrlRegion, ProviderBuildConfig,
-    ProviderCredential, ProviderCredentialResolveContext, ProviderCredentialResolverCap,
-    ProviderRegistryError, ProviderRuntimeCapability, ProviderServiceCapability,
-    ProviderServiceCategory, ProviderServiceCostRisk, ProviderServiceExecution, RedactPatternSet,
-    RedactRules, RedactScope, Redactor, RequestId, RunId, SessionId, Severity, SkillLoader,
-    SkillSourceConfig, StdioEnv, StdioPolicy, StdioTransport, TenantId, ToolCapability, ToolError,
-    ToolUseId, TransportChoice,
+    ModelProvider, ModelRuntimeStatus, PendingPermissionRequest, PermissionMode, PermissionSubject,
+    ProviderAuthScheme, ProviderBaseUrlRegion, ProviderBuildConfig, ProviderCredential,
+    ProviderCredentialResolveContext, ProviderCredentialResolverCap, ProviderRegistryError,
+    ProviderRuntimeCapability, ProviderServiceCapability, ProviderServiceCategory,
+    ProviderServiceCostRisk, ProviderServiceExecution, RedactPatternSet, RedactRules, RedactScope,
+    Redactor, RequestId, RunId, SessionId, Severity, SkillLoader, SkillSourceConfig, StdioEnv,
+    StdioPolicy, StdioTransport, TenantId, ToolCapability, ToolError, ToolUseId, TransportChoice,
 };
 use jyowo_harness_sdk::{
     ConversationAttachmentReference, ConversationContextReference, ConversationEventsPageRequest,
-    ConversationSessionSummary, ConversationTurnInput, ConversationTurnRequest, Harness, McpConfig,
-    RuntimeSkillSummary, RuntimeSkillView, SessionOptions, StreamPermissionRuntime,
+    ConversationTurnInput, ConversationTurnRequest, Harness, McpConfig, RuntimeSkillSummary,
+    RuntimeSkillView, SessionOptions, StreamPermissionRuntime,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::Emitter;
 use tokio::task::JoinHandle;
 
-const PLACEHOLDER_TIMESTAMP: &str = "2026-06-17T00:00:00.000Z";
 const START_RUN_STARTED_TIMEOUT: Duration = Duration::from_secs(5);
 const WORKSPACE_ROOT_ENV: &str = "JYOWO_WORKSPACE_ROOT";
 const MAX_MEMORY_CONTENT_BYTES: usize = 64 * 1024;
@@ -467,12 +466,15 @@ pub struct ImportSkillRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetSkillRequest {
+pub struct GetSkillDetailRequest {
     pub id: String,
-    #[serde(default)]
-    pub include_body: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selected_file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GetSkillFileRequest {
+    pub id: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -566,11 +568,7 @@ pub struct SkillDetailPayload {
     pub parameters: Vec<SkillParameterPayload>,
     pub config_keys: Vec<String>,
     pub files: Vec<SkillFilePayload>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub selected_file: Option<SkillFileContentPayload>,
     pub body_preview: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub body_full: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub validation_error: Option<String>,
 }
@@ -583,8 +581,14 @@ pub struct ListSkillsResponse {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GetSkillResponse {
+pub struct GetSkillDetailResponse {
     pub skill: SkillDetailPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetSkillFileResponse {
+    pub file: SkillFileContentPayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2566,7 +2570,7 @@ pub struct ListActivityRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SubscribeConversationEventsRequest {
     pub conversation_id: String,
-    pub after_cursor: Option<String>,
+    pub after_cursor: Option<ConversationCursor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2575,7 +2579,8 @@ pub struct SubscribeConversationEventsResponse {
     pub subscription_id: String,
     pub conversation_id: String,
     pub replay_events: Vec<RunEventPayload>,
-    pub cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<ConversationCursor>,
     pub gap: bool,
 }
 
@@ -2598,7 +2603,8 @@ pub struct ConversationEventBatchPayload {
     pub subscription_id: String,
     pub conversation_id: String,
     pub events: Vec<RunEventPayload>,
-    pub cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<ConversationCursor>,
     pub gap: bool,
     pub phase: &'static str,
 }
@@ -2655,6 +2661,25 @@ pub struct ReplayTimelineRequest {
 pub struct ReplayTimelineResponse {
     pub events: Vec<RunEventPayload>,
     pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageConversationTimelineRequest {
+    pub conversation_id: String,
+    #[serde(default)]
+    pub after_cursor: Option<ConversationCursor>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageConversationTimelineResponse {
+    pub events: Vec<RunEventPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<ConversationCursor>,
+    pub gap: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -3002,6 +3027,13 @@ async fn collect_artifacts_from_runtime_state(
             "Listing artifacts requires the runtime conversation facade.",
         ));
     };
+    if !harness
+        .conversation_session_exists(state.conversation_session_options(session_id))
+        .await
+        .map_err(|error| runtime_operation_failed(error.to_string()))?
+    {
+        return Err(not_found(format!("conversation not found: {session_id}")));
+    }
     let redactor = DefaultRedactor::default();
     let mut after_event_id = None;
     let mut artifacts_by_id = BTreeMap::<String, ArtifactSummaryPayload>::new();
@@ -3552,10 +3584,10 @@ pub async fn import_skill_with_runtime_state(
     })
 }
 
-pub async fn get_skill_with_runtime_state(
-    request: GetSkillRequest,
+pub async fn get_skill_detail_with_runtime_state(
+    request: GetSkillDetailRequest,
     state: &DesktopRuntimeState,
-) -> Result<GetSkillResponse, CommandErrorPayload> {
+) -> Result<GetSkillDetailResponse, CommandErrorPayload> {
     ensure_skill_id(&request.id)?;
     let records = state.skill_store.load_records()?;
     let record = records.iter().find(|record| record.id == request.id);
@@ -3566,14 +3598,13 @@ pub async fn get_skill_with_runtime_state(
             .as_ref()
             .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
         let view = harness
-            .view_runtime_skill(&request.id, request.include_body)
+            .view_runtime_skill(&request.id, false)
             .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
-        return Ok(GetSkillResponse {
+        return Ok(GetSkillDetailResponse {
             skill: skill_detail_from_runtime_view(
                 runtime_skill_summary_payload(&view.summary),
                 view,
                 Vec::new(),
-                None,
                 None,
             ),
         });
@@ -3582,52 +3613,53 @@ pub async fn get_skill_with_runtime_state(
     let runtime_view = harness.as_ref().and_then(|harness| {
         record
             .enabled
-            .then(|| harness.view_runtime_skill(&record.name, request.include_body))
+            .then(|| harness.view_runtime_skill(&record.name, false))
             .flatten()
     });
     let files = state.skill_store.list_skill_package_files(record)?;
-    let selected_file_path = request
-        .selected_file_path
-        .as_deref()
-        .unwrap_or(SKILL_PACKAGE_ENTRY_FILE);
-    let selected_file = if files
-        .iter()
-        .any(|file| file.kind == "file" && file.path == selected_file_path)
-    {
-        Some(
-            state
-                .skill_store
-                .read_skill_package_file(record, selected_file_path)?,
-        )
-    } else if request.selected_file_path.is_some() {
-        return Err(invalid_payload("skill file not found".to_owned()));
-    } else {
-        None
-    };
     let detail = if let Some(view) = runtime_view {
         let status = skill_status_string(&view.summary.status);
         skill_detail_from_runtime_view(
             managed_skill_summary(record, Some(status)),
             view,
             files,
-            selected_file,
             record.last_validation_error.clone(),
         )
     } else {
-        let markdown = state.skill_store.read_skill_entry_file(record)?;
-        let body = markdown_body_preview(&markdown);
         SkillDetailPayload {
             summary: managed_skill_summary(record, None),
             parameters: Vec::new(),
             config_keys: Vec::new(),
             files,
-            selected_file,
-            body_preview: body.chars().take(1024).collect(),
-            body_full: request.include_body.then_some(body),
+            body_preview: String::new(),
             validation_error: record.last_validation_error.clone(),
         }
     };
-    Ok(GetSkillResponse { skill: detail })
+    Ok(GetSkillDetailResponse { skill: detail })
+}
+
+pub async fn get_skill_file_with_runtime_state(
+    request: GetSkillFileRequest,
+    state: &DesktopRuntimeState,
+) -> Result<GetSkillFileResponse, CommandErrorPayload> {
+    ensure_skill_id(&request.id)?;
+    let records = state.skill_store.load_records()?;
+    let record = records
+        .iter()
+        .find(|record| record.id == request.id)
+        .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
+    let files = state.skill_store.list_skill_package_files(record)?;
+    if !files
+        .iter()
+        .any(|file| file.kind == "file" && file.path == request.path)
+    {
+        return Err(invalid_payload("skill file not found".to_owned()));
+    }
+    Ok(GetSkillFileResponse {
+        file: state
+            .skill_store
+            .read_skill_package_file(record, &request.path)?,
+    })
 }
 
 pub async fn set_skill_enabled_with_runtime_state(
@@ -3811,7 +3843,6 @@ fn skill_detail_from_runtime_view(
     summary: SkillSummaryPayload,
     view: RuntimeSkillView,
     files: Vec<SkillFilePayload>,
-    selected_file: Option<SkillFileContentPayload>,
     validation_error: Option<String>,
 ) -> SkillDetailPayload {
     SkillDetailPayload {
@@ -3829,9 +3860,7 @@ fn skill_detail_from_runtime_view(
             .collect(),
         config_keys: view.config_keys,
         files,
-        selected_file,
         body_preview: view.body_preview,
-        body_full: view.body_full,
         validation_error,
     }
 }
@@ -3860,17 +3889,6 @@ fn skill_source_string(source: &jyowo_harness_sdk::ext::SkillSourceKind) -> &'st
         jyowo_harness_sdk::ext::SkillSourceKind::Mcp(_) => "mcp",
         _ => "workspace",
     }
-}
-
-fn markdown_body_preview(markdown: &str) -> String {
-    markdown
-        .split_once("\n---")
-        .map(|(_, body)| {
-            body.trim_start_matches("\r\n")
-                .trim_start_matches('\n')
-                .to_owned()
-        })
-        .unwrap_or_default()
 }
 
 pub async fn list_memory_items_with_runtime_state(
@@ -4295,13 +4313,10 @@ pub async fn list_conversations_with_runtime_state(
     };
 
     let summaries = list_runtime_conversation_summaries(&harness, state).await;
-    let mut conversations = Vec::with_capacity(summaries.len());
-    for summary in summaries {
-        let messages = read_conversation_messages(summary.session_id, state)
-            .await
-            .unwrap_or_default();
-        conversations.push(conversation_summary_payload(summary, &messages));
-    }
+    let conversations = summaries
+        .into_iter()
+        .map(conversation_summary_payload_from_read_model)
+        .collect();
 
     ListConversationsResponse { conversations }
 }
@@ -4323,26 +4338,26 @@ pub async fn create_conversation_with_runtime_state(
         })?;
 
     let summary = harness
-        .list_conversation_sessions(TenantId::SINGLE, 50)
+        .list_conversation_summaries(TenantId::SINGLE, 50)
         .await
         .map_err(|error| {
             runtime_operation_failed(format!("conversation list failed after create: {error}"))
         })?
         .into_iter()
-        .find(|summary| summary.session_id == session_id)
+        .find(|summary| summary.id == session_id.to_string())
         .ok_or_else(|| not_found(format!("conversation not found: {session_id}")))?;
 
     Ok(CreateConversationResponse {
-        conversation: conversation_summary_payload(summary, &[]),
+        conversation: conversation_summary_payload_from_read_model(summary),
     })
 }
 
 async fn list_runtime_conversation_summaries(
     harness: &Harness,
     state: &DesktopRuntimeState,
-) -> Vec<ConversationSessionSummary> {
+) -> Vec<harness_contracts::ConversationSummary> {
     let mut summaries = harness
-        .list_conversation_sessions(TenantId::SINGLE, 50)
+        .list_conversation_summaries(TenantId::SINGLE, 50)
         .await
         .unwrap_or_default();
 
@@ -4363,60 +4378,31 @@ async fn list_runtime_conversation_summaries(
             .is_ok()
     {
         summaries = harness
-            .list_conversation_sessions(TenantId::SINGLE, 50)
+            .list_conversation_summaries(TenantId::SINGLE, 50)
             .await
             .unwrap_or_default();
     }
 
+    let deleted = state.deleted_conversation_ids.lock().await;
+    summaries.retain(|summary| {
+        SessionId::parse(&summary.id).is_ok_and(|session_id| !deleted.contains(&session_id))
+    });
+
     summaries
 }
 
-fn conversation_summary_payload(
-    summary: ConversationSessionSummary,
-    messages: &[ConversationMessagePayload],
+fn conversation_summary_payload_from_read_model(
+    summary: harness_contracts::ConversationSummary,
 ) -> ConversationSummaryPayload {
     ConversationSummaryPayload {
-        id: summary.session_id.to_string(),
-        is_empty: messages.is_empty(),
-        last_message_preview: Some(conversation_preview(messages)),
-        title: conversation_title(messages),
-        updated_at: messages
-            .last()
-            .map(|message| message.timestamp.clone())
-            .unwrap_or_else(|| summary.last_event_at.to_rfc3339()),
+        id: summary.id,
+        is_empty: summary.is_empty,
+        last_message_preview: summary
+            .last_message_preview
+            .map(|preview| preview.into_string()),
+        title: summary.title.into_string(),
+        updated_at: summary.updated_at.to_rfc3339(),
     }
-}
-
-fn conversation_title(messages: &[ConversationMessagePayload]) -> String {
-    messages
-        .iter()
-        .rev()
-        .find(|message| message.author == "user")
-        .map(|message| conversation_snippet(&message.body))
-        .filter(|title| !title.is_empty())
-        .unwrap_or_else(|| "New conversation".to_owned())
-}
-
-fn conversation_preview(messages: &[ConversationMessagePayload]) -> String {
-    messages
-        .last()
-        .map(|message| conversation_snippet(&message.body))
-        .filter(|preview| !preview.is_empty())
-        .unwrap_or_else(|| "Start from the composer when ready.".to_owned())
-}
-
-fn conversation_snippet(value: &str) -> String {
-    truncate_utf8(
-        value
-            .lines()
-            .find_map(|line| {
-                let trimmed = line.trim();
-                (!trimmed.is_empty()).then_some(trimmed)
-            })
-            .unwrap_or_default()
-            .to_owned(),
-        96,
-    )
 }
 
 pub async fn get_conversation_with_runtime_state(
@@ -4425,22 +4411,62 @@ pub async fn get_conversation_with_runtime_state(
 ) -> Result<GetConversationResponse, CommandErrorPayload> {
     ensure_non_empty("conversationId", &request.conversation_id)?;
     let session_id = parse_session_id(&request.conversation_id)?;
-    let messages = read_conversation_messages(session_id, state).await?;
-    let updated_at = messages
-        .last()
-        .map(|message| message.timestamp.clone())
-        .unwrap_or_else(|| PLACEHOLDER_TIMESTAMP.to_owned());
-    let title = conversation_title(&messages);
+    if state
+        .deleted_conversation_ids
+        .lock()
+        .await
+        .contains(&session_id)
+    {
+        return Err(not_found(format!(
+            "conversation not found: {}",
+            request.conversation_id
+        )));
+    }
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Reading conversations requires the runtime conversation facade.",
+        ));
+    };
+    let snapshot = harness
+        .get_conversation_snapshot(&request.conversation_id, 200)
+        .await
+        .map_err(conversation_read_error)?
+        .ok_or_else(|| {
+            not_found(format!(
+                "conversation not found: {}",
+                request.conversation_id
+            ))
+        })?;
 
     Ok(GetConversationResponse {
         conversation: ConversationPayload {
             id: request.conversation_id,
-            messages,
-            model_config_id: conversation_model_config_id(&session_id, state)?,
-            title,
-            updated_at,
+            messages: snapshot
+                .messages
+                .into_iter()
+                .map(conversation_message_payload_from_read_model)
+                .collect(),
+            model_config_id: conversation_model_config_id(&session_id, state)?
+                .or(snapshot.model_config_id),
+            title: snapshot.title.into_string(),
+            updated_at: snapshot.updated_at.to_rfc3339(),
         },
     })
+}
+
+fn conversation_message_payload_from_read_model(
+    message: harness_contracts::ConversationMessage,
+) -> ConversationMessagePayload {
+    ConversationMessagePayload {
+        author: match message.author {
+            ConversationMessageAuthor::User => "user",
+            ConversationMessageAuthor::Assistant => "assistant",
+        },
+        body: message.body.into_string(),
+        client_message_id: message.client_message_id,
+        id: message.id,
+        timestamp: message.timestamp.to_rfc3339(),
+    }
 }
 
 fn conversation_model_config_id(
@@ -4492,30 +4518,7 @@ pub async fn set_conversation_model_config_with_runtime_state(
             "apiKey is required before selecting a provider config".to_owned(),
         ));
     }
-    let stream_permission_runtime = state
-        .stream_permission_runtime
-        .as_ref()
-        .ok_or_else(|| runtime_unavailable("Selecting models requires the desktop runtime."))?;
-    let (harness, model_id, protocol) = build_desktop_harness(
-        &state.workspace_root,
-        Arc::clone(stream_permission_runtime),
-        Some(&request.model_config_id),
-    )
-    .await?;
-    let harness = Arc::new(harness);
-    harness
-        .open_or_create_conversation_session(state.conversation_session_options_for_model(
-            session_id,
-            model_id.clone(),
-            protocol,
-        ))
-        .await
-        .map_err(|error| {
-            runtime_operation_failed(format!("conversation model switch failed: {error}"))
-        })?;
     persist_conversation_model_config_id(session_id, &request.model_config_id, state).await?;
-    let _start_run_guard = state.start_run_lock.lock().await;
-    state.replace_harness(harness, model_id, protocol);
 
     Ok(SetConversationModelConfigResponse {
         conversation_id: request.conversation_id,
@@ -4613,24 +4616,30 @@ pub async fn start_run_with_runtime_state(
 
     let input = build_conversation_turn_input(&request, state).await?;
     let _start_run_guard = state.start_run_lock.lock().await;
-    if let Some(model_config_id) = conversation_model_config_id(&session_id, state)? {
-        let stream_permission_runtime = state
-            .stream_permission_runtime
-            .as_ref()
-            .ok_or_else(|| runtime_unavailable("Starting runs requires the desktop runtime."))?;
-        let (harness, model_id, protocol) = build_desktop_harness(
-            &state.workspace_root,
-            Arc::clone(stream_permission_runtime),
-            Some(&model_config_id),
-        )
-        .await?;
-        state.replace_harness(Arc::new(harness), model_id, protocol);
-    }
-    let Some((harness, options)) = state.active_conversation_runtime(session_id) else {
-        return Err(runtime_unavailable(
-            "Starting runs requires the runtime conversation facade.",
-        ));
-    };
+    let (harness, options) =
+        if let Some(model_config_id) = conversation_model_config_id(&session_id, state)? {
+            let stream_permission_runtime =
+                state.stream_permission_runtime.as_ref().ok_or_else(|| {
+                    runtime_unavailable("Starting runs requires the desktop runtime.")
+                })?;
+            let (harness, model_id, protocol) = build_desktop_harness(
+                &state.workspace_root,
+                Arc::clone(stream_permission_runtime),
+                Some(&model_config_id),
+            )
+            .await?;
+            (
+                Arc::new(harness),
+                state.conversation_session_options_for_model(session_id, model_id, protocol),
+            )
+        } else {
+            let Some(runtime) = state.active_conversation_runtime(session_id) else {
+                return Err(runtime_unavailable(
+                    "Starting runs requires the runtime conversation facade.",
+                ));
+            };
+            runtime
+        };
     harness
         .open_or_create_conversation_session(options.clone())
         .await
@@ -4922,23 +4931,27 @@ async fn ensure_existing_conversation_session_with_harness(
     harness: &Harness,
 ) -> Result<(), CommandErrorPayload> {
     if session_id == state.default_conversation_id()
-        && list_runtime_conversation_summaries(harness, state)
+        && !state
+            .deleted_conversation_ids
+            .lock()
             .await
-            .iter()
-            .any(|summary| summary.session_id == session_id)
+            .contains(&session_id)
+    {
+        harness
+            .open_or_create_conversation_session(state.conversation_session_options(session_id))
+            .await
+            .map_err(|error| runtime_operation_failed(error.to_string()))?;
+        return Ok(());
+    }
+    if harness
+        .conversation_session_exists(state.conversation_session_options(session_id))
+        .await
+        .map_err(|error| runtime_operation_failed(error.to_string()))?
     {
         return Ok(());
     }
 
-    harness
-        .page_conversation_events(ConversationEventsPageRequest {
-            options: state.conversation_session_options(session_id),
-            after_event_id: None,
-            limit: 1,
-        })
-        .await
-        .map(|_| ())
-        .map_err(|_| not_found(format!("conversation not found: {session_id}")))
+    Err(not_found(format!("conversation not found: {session_id}")))
 }
 
 pub fn cancel_run_payload(
@@ -5102,6 +5115,51 @@ pub async fn get_replay_timeline_with_runtime_state(
     })
 }
 
+pub async fn page_conversation_timeline_with_runtime_state(
+    request: PageConversationTimelineRequest,
+    state: &DesktopRuntimeState,
+) -> Result<PageConversationTimelineResponse, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
+    let session_id = parse_session_id(&request.conversation_id)?;
+    if state
+        .deleted_conversation_ids
+        .lock()
+        .await
+        .contains(&session_id)
+    {
+        return Err(not_found(format!(
+            "conversation not found: {}",
+            request.conversation_id
+        )));
+    }
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Reading conversation timeline requires the runtime conversation facade.",
+        ));
+    };
+    let page = harness
+        .page_conversation_timeline(
+            &request.conversation_id,
+            request.after_cursor,
+            request
+                .limit
+                .unwrap_or(CONVERSATION_SUBSCRIPTION_BATCH_LIMIT),
+        )
+        .await
+        .map_err(conversation_read_error)?;
+    let events = page
+        .events
+        .into_iter()
+        .map(run_event_payload_from_read_model)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(PageConversationTimelineResponse {
+        events,
+        cursor: page.cursor,
+        gap: page.gap,
+    })
+}
+
 pub async fn subscribe_conversation_events_with_runtime_state(
     request: SubscribeConversationEventsRequest,
     state: &DesktopRuntimeState,
@@ -5136,20 +5194,18 @@ pub async fn subscribe_conversation_events_for_window_with_runtime_state(
         )));
     }
 
-    let after_cursor = request.after_cursor.clone();
-    let replay_events = read_replay_run_events_after(
-        ListActivityRequest {
-            conversation_id: Some(request.conversation_id.clone()),
-            run_id: None,
+    let replay_page = page_conversation_timeline_with_runtime_state(
+        PageConversationTimelineRequest {
+            conversation_id: request.conversation_id.clone(),
+            after_cursor: request.after_cursor,
+            limit: Some(CONVERSATION_SUBSCRIPTION_BATCH_LIMIT),
         },
         state,
-        after_cursor.clone(),
     )
     .await?;
-    let cursor = replay_events
-        .last()
-        .map(|event| event.id.clone())
-        .or(after_cursor);
+    let cursor = replay_page.cursor;
+    let replay_events = replay_page.events;
+    let gap = replay_page.gap;
     let subscription_id = format!("subscription-{}", EventId::new());
 
     let handle = spawn_conversation_event_subscription(
@@ -5174,7 +5230,7 @@ pub async fn subscribe_conversation_events_for_window_with_runtime_state(
         conversation_id: request.conversation_id,
         replay_events,
         cursor,
-        gap: false,
+        gap,
     })
 }
 
@@ -5238,7 +5294,7 @@ pub fn unsubscribe_conversation_events_payload(
 fn spawn_conversation_event_subscription(
     subscription_id: String,
     conversation_id: String,
-    initial_cursor: Option<String>,
+    initial_cursor: Option<ConversationCursor>,
     window_label: String,
     emitter: ConversationEventBatchEmitter,
     state: DesktopRuntimeState,
@@ -5248,23 +5304,23 @@ fn spawn_conversation_event_subscription(
 
         loop {
             tokio::time::sleep(CONVERSATION_SUBSCRIPTION_POLL_INTERVAL).await;
-            let events = match read_replay_run_events_after(
-                ListActivityRequest {
-                    conversation_id: Some(conversation_id.clone()),
-                    run_id: None,
+            let page = match page_conversation_timeline_with_runtime_state(
+                PageConversationTimelineRequest {
+                    conversation_id: conversation_id.clone(),
+                    after_cursor: cursor.clone(),
+                    limit: Some(CONVERSATION_SUBSCRIPTION_BATCH_LIMIT),
                 },
                 &state,
-                cursor.clone(),
             )
             .await
             {
-                Ok(events) => events,
+                Ok(page) => page,
                 Err(_) => {
                     let _ = emitter(ConversationEventBatchPayload {
                         subscription_id: subscription_id.clone(),
                         conversation_id: conversation_id.clone(),
                         events: Vec::new(),
-                        cursor: cursor.clone(),
+                        cursor: None,
                         gap: true,
                         phase: "live",
                     });
@@ -5272,19 +5328,20 @@ fn spawn_conversation_event_subscription(
                 }
             };
 
-            if events.is_empty() {
+            if page.events.is_empty() {
+                cursor = page.cursor.or(cursor);
                 continue;
             }
 
             let mut emit_failed = false;
-            for chunk in events.chunks(CONVERSATION_SUBSCRIPTION_BATCH_LIMIT) {
-                cursor = chunk.last().map(|event| event.id.clone());
+            for chunk in page.events.chunks(CONVERSATION_SUBSCRIPTION_BATCH_LIMIT) {
+                cursor = page.cursor.clone();
                 let batch = ConversationEventBatchPayload {
                     subscription_id: subscription_id.clone(),
                     conversation_id: conversation_id.clone(),
                     events: chunk.to_vec(),
                     cursor: cursor.clone(),
-                    gap: false,
+                    gap: page.gap,
                     phase: "live",
                 };
                 if emitter(batch).is_err() {
@@ -6618,6 +6675,70 @@ fn to_harness_decision(decision: PermissionDecision) -> Decision {
     }
 }
 
+fn run_event_payload_from_read_model(
+    event: harness_contracts::ConversationTimelineEvent,
+) -> Result<RunEventPayload, CommandErrorPayload> {
+    Ok(RunEventPayload {
+        id: event.id,
+        conversation_sequence: event.cursor.conversation_sequence,
+        payload: event.payload,
+        run_id: event.run_id,
+        sequence: event.sequence,
+        source: run_event_source_label(&event.source)?,
+        timestamp: event.timestamp.to_rfc3339(),
+        event_type: run_event_type_label(&event.event_type)?,
+        visibility: run_event_visibility_label(&event.visibility)?,
+    })
+}
+
+fn run_event_source_label(value: &str) -> Result<&'static str, CommandErrorPayload> {
+    match value {
+        "user" => Ok("user"),
+        "assistant" => Ok("assistant"),
+        "tool" => Ok("tool"),
+        "engine" => Ok("engine"),
+        "policy" => Ok("policy"),
+        _ => Err(runtime_operation_failed(
+            "conversation timeline source is invalid".to_owned(),
+        )),
+    }
+}
+
+fn run_event_visibility_label(value: &str) -> Result<&'static str, CommandErrorPayload> {
+    match value {
+        "public" => Ok("public"),
+        "redacted" => Ok("redacted"),
+        "withheld" => Ok("withheld"),
+        _ => Err(runtime_operation_failed(
+            "conversation timeline visibility is invalid".to_owned(),
+        )),
+    }
+}
+
+fn run_event_type_label(value: &str) -> Result<&'static str, CommandErrorPayload> {
+    match value {
+        "run.started" => Ok("run.started"),
+        "run.ended" => Ok("run.ended"),
+        "user.message.appended" => Ok("user.message.appended"),
+        "assistant.delta" => Ok("assistant.delta"),
+        "assistant.thinking.delta" => Ok("assistant.thinking.delta"),
+        "assistant.completed" => Ok("assistant.completed"),
+        "tool.requested" => Ok("tool.requested"),
+        "tool.approved" => Ok("tool.approved"),
+        "tool.denied" => Ok("tool.denied"),
+        "tool.completed" => Ok("tool.completed"),
+        "tool.failed" => Ok("tool.failed"),
+        "permission.requested" => Ok("permission.requested"),
+        "permission.resolved" => Ok("permission.resolved"),
+        "artifact.created" => Ok("artifact.created"),
+        "artifact.updated" => Ok("artifact.updated"),
+        "engine.failed" => Ok("engine.failed"),
+        _ => Err(runtime_operation_failed(
+            "conversation timeline event type is invalid".to_owned(),
+        )),
+    }
+}
+
 fn permission_requested_run_event(
     event_id: String,
     event: &Event,
@@ -6893,67 +7014,6 @@ async fn read_activity_replay_events(
     state: &DesktopRuntimeState,
 ) -> Result<Vec<RunEventPayload>, CommandErrorPayload> {
     read_replay_run_events(request.clone(), state).await
-}
-
-async fn read_conversation_messages(
-    session_id: SessionId,
-    state: &DesktopRuntimeState,
-) -> Result<Vec<ConversationMessagePayload>, CommandErrorPayload> {
-    let Some(harness) = state.harness() else {
-        return Err(runtime_unavailable(
-            "Reading conversation messages requires the runtime conversation facade.",
-        ));
-    };
-    let redactor = DefaultRedactor::default();
-    let mut after_event_id = None;
-    let mut messages = Vec::new();
-
-    loop {
-        let page = harness
-            .page_conversation_events(ConversationEventsPageRequest {
-                options: state.conversation_session_options(session_id),
-                after_event_id,
-                limit: 200,
-            })
-            .await
-            .map_err(conversation_read_error)?;
-        if page.events.is_empty() {
-            break;
-        }
-
-        for envelope in page.events {
-            match envelope.payload {
-                Event::UserMessageAppended(event) => {
-                    messages.push(ConversationMessagePayload {
-                        author: "user",
-                        body: message_content_display(&event.content, &redactor),
-                        client_message_id: event
-                            .metadata
-                            .labels
-                            .get("clientMessageId")
-                            .filter(|client_message_id| is_uuid_v4_like(client_message_id))
-                            .cloned(),
-                        id: event.message_id.to_string(),
-                        timestamp: event.at.to_rfc3339(),
-                    });
-                }
-                Event::AssistantMessageCompleted(event) => {
-                    messages.push(ConversationMessagePayload {
-                        author: "assistant",
-                        body: message_content_display(&event.content, &redactor),
-                        client_message_id: None,
-                        id: event.message_id.to_string(),
-                        timestamp: event.at.to_rfc3339(),
-                    });
-                }
-                _ => {}
-            }
-        }
-
-        after_event_id = page.next_event_id;
-    }
-
-    Ok(messages)
 }
 
 fn message_content_display(content: &MessageContent, redactor: &dyn Redactor) -> String {
@@ -7910,21 +7970,20 @@ pub async fn list_skills(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn get_skill(
+pub async fn get_skill_detail(
     id: String,
-    include_body: Option<bool>,
-    selected_file_path: Option<String>,
     runtime_state: tauri::State<'_, DesktopRuntimeState>,
-) -> Result<GetSkillResponse, CommandErrorPayload> {
-    get_skill_with_runtime_state(
-        GetSkillRequest {
-            id,
-            include_body: include_body.unwrap_or(false),
-            selected_file_path,
-        },
-        runtime_state.inner(),
-    )
-    .await
+) -> Result<GetSkillDetailResponse, CommandErrorPayload> {
+    get_skill_detail_with_runtime_state(GetSkillDetailRequest { id }, runtime_state.inner()).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_skill_file(
+    id: String,
+    path: String,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<GetSkillFileResponse, CommandErrorPayload> {
+    get_skill_file_with_runtime_state(GetSkillFileRequest { id, path }, runtime_state.inner()).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -8195,9 +8254,27 @@ pub async fn get_replay_timeline(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub async fn page_conversation_timeline(
+    conversation_id: String,
+    after_cursor: Option<ConversationCursor>,
+    limit: Option<usize>,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<PageConversationTimelineResponse, CommandErrorPayload> {
+    page_conversation_timeline_with_runtime_state(
+        PageConversationTimelineRequest {
+            conversation_id,
+            after_cursor,
+            limit,
+        },
+        runtime_state.inner(),
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub async fn subscribe_conversation_events(
     conversation_id: String,
-    after_cursor: Option<String>,
+    after_cursor: Option<ConversationCursor>,
     window: tauri::Window,
     runtime_state: tauri::State<'_, DesktopRuntimeState>,
 ) -> Result<SubscribeConversationEventsResponse, CommandErrorPayload> {

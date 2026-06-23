@@ -113,6 +113,35 @@ async fn run_contract<S: EventStore>(store: &S) {
     assert_eq!(envelopes[0].offset, JournalOffset(0));
     assert_eq!(envelopes[1].offset, JournalOffset(1));
 
+    let first_page = store
+        .page_session_envelopes(TenantId::SINGLE, session, None, 1)
+        .await
+        .expect("first page succeeds");
+    assert_eq!(first_page.envelopes.len(), 1);
+    assert_eq!(first_page.envelopes[0].event_id, envelopes[0].event_id);
+    assert_eq!(first_page.next_event_id, Some(envelopes[0].event_id));
+
+    let second_page = store
+        .page_session_envelopes(
+            TenantId::SINGLE,
+            session,
+            Some(first_page.next_event_id.expect("cursor exists")),
+            10,
+        )
+        .await
+        .expect("second page succeeds");
+    assert_eq!(second_page.envelopes.len(), 1);
+    assert_eq!(second_page.envelopes[0].event_id, envelopes[1].event_id);
+    assert_eq!(second_page.next_event_id, Some(envelopes[1].event_id));
+
+    let unknown_cursor_error = store
+        .page_session_envelopes(TenantId::SINGLE, session, Some(EventId::new()), 10)
+        .await
+        .expect_err("unknown cursor fails closed");
+    assert!(unknown_cursor_error
+        .to_string()
+        .contains("cursor is unknown"));
+
     let queried = store
         .query_after(TenantId::SINGLE, None, 10)
         .await

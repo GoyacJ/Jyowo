@@ -22,6 +22,10 @@ type ModelCatalogEntry = ModelProviderCatalogResponse['providers'][number]['mode
 
 const timestamp = '2026-06-17T00:00:00.000Z'
 
+function cursor(_label: string, conversationSequence = 1) {
+  return { eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV', conversationSequence }
+}
+
 function renderConversationWorkspace(
   commandClient: CommandClient = createMockCommandClient(),
   conversationId?: string,
@@ -88,7 +92,9 @@ function createStreamingClient(events: RunEvent[]) {
       subscriptionId: 'subscription-001',
       conversationId: 'conversation-001',
       replayEvents: events,
-      cursor: events.at(-1)?.id ?? null,
+      cursor: events.at(-1)
+        ? cursor(events.at(-1)?.id ?? 'evt-stream', events.at(-1)?.conversationSequence ?? 1)
+        : undefined,
       gap: false,
     },
   })
@@ -380,7 +386,7 @@ describe('ConversationWorkspace', () => {
           visibility: 'public',
         }),
       ],
-      cursor: 'evt-first-ended',
+      cursor: cursor(''),
       gap: false,
       phase: 'live',
     })
@@ -448,7 +454,7 @@ describe('ConversationWorkspace', () => {
           visibility: 'public',
         }),
       ],
-      cursor: 'evt-started',
+      cursor: cursor(''),
       gap: false,
       phase: 'live',
     })
@@ -472,7 +478,7 @@ describe('ConversationWorkspace', () => {
           visibility: 'public',
         }),
       ],
-      cursor: 'evt-ended',
+      cursor: cursor(''),
       gap: false,
       phase: 'live',
     })
@@ -537,7 +543,7 @@ describe('ConversationWorkspace', () => {
             visibility: 'public',
           }),
         ],
-        cursor: 'evt-started',
+        cursor: cursor(''),
         gap: false,
         phase: 'live',
       })
@@ -560,7 +566,7 @@ describe('ConversationWorkspace', () => {
             visibility: 'public',
           }),
         ],
-        cursor: 'evt-ended',
+        cursor: cursor(''),
         gap: false,
         phase: 'live',
       })
@@ -622,7 +628,6 @@ describe('ConversationWorkspace', () => {
         subscriptionId: 'subscription-001',
         conversationId: 'conversation-001',
         replayEvents: [],
-        cursor: null,
         gap: false,
       }),
     } satisfies CommandClient
@@ -645,7 +650,7 @@ describe('ConversationWorkspace', () => {
           visibility: 'public',
         }),
       ],
-      cursor: 'evt-stale',
+      cursor: cursor(''),
       gap: false,
       phase: 'live',
     })
@@ -673,7 +678,7 @@ describe('ConversationWorkspace', () => {
                 }),
               ]
             : [],
-        cursor: conversationId === 'conversation-001' ? 'evt-old-cursor' : null,
+        cursor: conversationId === 'conversation-001' ? cursor('evt-old-cursor') : undefined,
         gap: false,
       }),
     )
@@ -729,39 +734,58 @@ describe('ConversationWorkspace', () => {
     )
     expect(subscribeConversationEvents).not.toHaveBeenCalledWith({
       conversationId: 'conversation-002',
-      afterCursor: 'evt-old-cursor',
+      afterCursor: cursor(''),
     })
   })
 
-  it('resubscribes from the beginning when the event stream detects a sequence gap', async () => {
+  it('recovers a sequence gap by paging the conversation timeline', async () => {
     let listener: ((batch: ConversationEventBatchPayload) => void) | undefined
-    const subscribeConversationEvents = vi
-      .fn()
-      .mockResolvedValueOnce({
-        subscriptionId: 'subscription-001',
-        conversationId: 'conversation-001',
-        replayEvents: [
-          runEvent({
-            id: 'evt-run',
-            payload: { sessionId: 'conversation-001' },
-            runId: 'run-001',
-            sequence: 1,
-            source: 'engine',
-            timestamp,
-            type: 'run.started',
-            visibility: 'public',
-          }),
-        ],
-        cursor: 'evt-run',
-        gap: false,
-      })
-      .mockResolvedValue({
-        subscriptionId: 'subscription-002',
-        conversationId: 'conversation-001',
-        replayEvents: [],
-        cursor: null,
-        gap: false,
-      })
+    const subscribeConversationEvents = vi.fn().mockResolvedValueOnce({
+      subscriptionId: 'subscription-001',
+      conversationId: 'conversation-001',
+      replayEvents: [
+        runEvent({
+          id: 'evt-run',
+          payload: { sessionId: 'conversation-001' },
+          runId: 'run-001',
+          sequence: 1,
+          source: 'engine',
+          timestamp,
+          type: 'run.started',
+          visibility: 'public',
+        }),
+      ],
+      cursor: cursor('evt-run', 1),
+      gap: false,
+    })
+    const pageConversationTimeline = vi.fn(async () => ({
+      events: [
+        runEvent({
+          conversationSequence: 2,
+          id: 'evt-missing-delta',
+          payload: { text: 'recovered missing ' },
+          runId: 'run-001',
+          sequence: 2,
+          source: 'assistant',
+          timestamp,
+          type: 'assistant.delta',
+          visibility: 'public',
+        }),
+        runEvent({
+          conversationSequence: 3,
+          id: 'evt-gap-delta',
+          payload: { text: 'future delta' },
+          runId: 'run-001',
+          sequence: 3,
+          source: 'assistant',
+          timestamp,
+          type: 'assistant.delta',
+          visibility: 'public',
+        }),
+      ],
+      cursor: cursor('evt-gap-delta', 3),
+      gap: false,
+    }))
     const commandClient = {
       ...createMockCommandClient({
         conversation: {
@@ -778,6 +802,7 @@ describe('ConversationWorkspace', () => {
         listener = callback
         return vi.fn()
       }),
+      pageConversationTimeline,
       subscribeConversationEvents,
     } satisfies CommandClient
 
@@ -785,6 +810,9 @@ describe('ConversationWorkspace', () => {
 
     expect(await screen.findByRole('heading', { name: 'Gap recovery' })).toBeInTheDocument()
     await waitFor(() => expect(subscribeConversationEvents).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      await flushAnimationFrames()
+    })
 
     listener?.({
       subscriptionId: 'subscription-001',
@@ -802,15 +830,20 @@ describe('ConversationWorkspace', () => {
           visibility: 'public',
         }),
       ],
-      cursor: 'evt-gap-delta',
+      cursor: cursor('evt-gap-delta', 3),
       gap: false,
       phase: 'live',
     })
 
-    await waitFor(() => expect(subscribeConversationEvents).toHaveBeenCalledTimes(2))
-    expect(subscribeConversationEvents).toHaveBeenLastCalledWith({
-      conversationId: 'conversation-001',
-    })
+    await waitFor(() =>
+      expect(pageConversationTimeline).toHaveBeenCalledWith({
+        conversationId: 'conversation-001',
+        afterCursor: cursor('evt-run', 1),
+        limit: 200,
+      }),
+    )
+    expect(subscribeConversationEvents).toHaveBeenCalledTimes(1)
     expect(screen.queryByText('untrusted future delta')).not.toBeInTheDocument()
+    expect(await screen.findByText('recovered missing future delta')).toBeInTheDocument()
   })
 })

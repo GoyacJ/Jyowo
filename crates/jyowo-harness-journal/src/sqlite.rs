@@ -14,8 +14,8 @@ use tokio::sync::Mutex;
 
 use crate::{
     apply_cursor, event_type, journal_error, session_end_reason, AppendMetadata, CompactionLineage,
-    EventEnvelope, EventStore, JournalRedaction, PrunePolicy, PruneReport, ReplayCursor,
-    SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
+    EventEnvelope, EventEnvelopePage, EventStore, JournalRedaction, PrunePolicy, PruneReport,
+    ReplayCursor, SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
 };
 
 pub struct SqliteEventStore {
@@ -259,6 +259,70 @@ impl EventStore for SqliteEventStore {
         let mut envelopes = Self::load_envelopes(&connection, tenant, session_id)?;
         apply_cursor(&mut envelopes, cursor);
         Ok(Box::pin(stream::iter(envelopes)))
+    }
+
+    async fn page_session_envelopes(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        after_event_id: Option<EventId>,
+        limit: usize,
+    ) -> Result<EventEnvelopePage, JournalError> {
+        let connection = self.connection.lock().await;
+        let after_offset = match after_event_id {
+            Some(event_id) => Some(
+                connection
+                    .query_row(
+                        "SELECT offset FROM events
+                         WHERE tenant_id = ?1 AND session_id = ?2 AND event_id = ?3",
+                        params![
+                            tenant.to_string(),
+                            session_id.to_string(),
+                            event_id.to_string()
+                        ],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(|error| match error {
+                        rusqlite::Error::QueryReturnedNoRows => {
+                            journal_error("conversation cursor is unknown")
+                        }
+                        other => journal_error(other),
+                    })?,
+            ),
+            None => None,
+        };
+        let limit = limit.clamp(1, 200) as i64;
+        let mut statement = connection
+            .prepare(
+                "SELECT body FROM events
+                 WHERE tenant_id = ?1
+                   AND session_id = ?2
+                   AND (?3 IS NULL OR offset > ?3)
+                 ORDER BY offset ASC
+                 LIMIT ?4",
+            )
+            .map_err(journal_error)?;
+        let rows = statement
+            .query_map(
+                params![
+                    tenant.to_string(),
+                    session_id.to_string(),
+                    after_offset,
+                    limit
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(journal_error)?;
+        let mut envelopes: Vec<EventEnvelope> = Vec::new();
+        for row in rows {
+            let body = row.map_err(journal_error)?;
+            envelopes.push(serde_json::from_str(&body).map_err(journal_error)?);
+        }
+        let next_event_id = envelopes.last().map(|envelope| envelope.event_id);
+        Ok(EventEnvelopePage {
+            envelopes,
+            next_event_id,
+        })
     }
 
     async fn query_after(

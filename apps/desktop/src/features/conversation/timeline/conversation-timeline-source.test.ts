@@ -7,6 +7,10 @@ import { createConversationTimelineSource } from './conversation-timeline-source
 
 const timestamp = '2026-06-17T00:00:00.000Z'
 
+function cursor(_label: string, conversationSequence = 1) {
+  return { eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV', conversationSequence }
+}
+
 const replayEvent: RunEvent = {
   id: 'evt-replay',
   conversationSequence: 1,
@@ -44,7 +48,7 @@ function createClient(overrides: Partial<CommandClient> = {}) {
       subscriptionId: 'subscription-001',
       conversationId: 'conversation-001',
       replayEvents: [replayEvent],
-      cursor: 'evt-replay',
+      cursor: cursor(''),
       gap: false,
     })),
     unsubscribeConversationEvents: vi.fn(async (subscriptionId: string) => ({
@@ -75,14 +79,14 @@ describe('createConversationTimelineSource', () => {
       subscriptionId: 'subscription-001',
       conversationId: 'conversation-001',
       events: [liveEvent],
-      cursor: 'evt-live',
+      cursor: cursor(''),
       gap: false,
       phase: 'live',
     })
 
     expect(actions).toEqual([
-      { type: 'applyEvents', events: [replayEvent], cursor: 'evt-replay' },
-      { type: 'applyEvents', events: [liveEvent], cursor: 'evt-live' },
+      { type: 'applyEvents', events: [replayEvent], cursor: cursor('') },
+      { type: 'applyEvents', events: [liveEvent], cursor: cursor('') },
     ])
   })
 
@@ -97,7 +101,7 @@ describe('createConversationTimelineSource', () => {
       subscriptionId: 'subscription-old',
       conversationId: 'conversation-001',
       events: [liveEvent],
-      cursor: 'evt-live',
+      cursor: cursor(''),
       gap: false,
       phase: 'live',
     })
@@ -105,19 +109,19 @@ describe('createConversationTimelineSource', () => {
       subscriptionId: 'subscription-001',
       conversationId: 'conversation-999',
       events: [liveEvent],
-      cursor: 'evt-live',
+      cursor: cursor(''),
       gap: false,
       phase: 'live',
     })
 
-    expect(actions).toEqual([{ type: 'applyEvents', events: [replayEvent], cursor: 'evt-replay' }])
+    expect(actions).toEqual([{ type: 'applyEvents', events: [replayEvent], cursor: cursor('') }])
   })
 
   it('unsubscribes and removes the shared tauri listener on cleanup', async () => {
     const { client, unlisten } = createClient()
     const cleanup = await createConversationTimelineSource(client).subscribe(
       'conversation-001',
-      'evt-before',
+      cursor('evt-before'),
       () => undefined,
     )
 
@@ -125,7 +129,7 @@ describe('createConversationTimelineSource', () => {
 
     expect(client.subscribeConversationEvents).toHaveBeenCalledWith({
       conversationId: 'conversation-001',
-      afterCursor: 'evt-before',
+      afterCursor: cursor(''),
     })
     expect(unlisten).toHaveBeenCalledTimes(1)
     expect(client.unsubscribeConversationEvents).toHaveBeenCalledWith('subscription-001')
@@ -137,7 +141,7 @@ describe('createConversationTimelineSource', () => {
         subscriptionId: 'subscription-001',
         conversationId: 'conversation-001',
         replayEvents: [],
-        cursor: 'evt-replay',
+        cursor: cursor(''),
         gap: true,
       })),
     })
@@ -150,16 +154,16 @@ describe('createConversationTimelineSource', () => {
       subscriptionId: 'subscription-001',
       conversationId: 'conversation-001',
       events: [liveEvent],
-      cursor: 'evt-live',
+      cursor: cursor(''),
       gap: true,
       phase: 'live',
     })
 
     expect(actions).toEqual([
-      { type: 'applyEvents', events: [], cursor: 'evt-replay' },
-      { type: 'markGap', afterCursor: 'evt-replay' },
-      { type: 'applyEvents', events: [liveEvent], cursor: 'evt-live' },
-      { type: 'markGap', afterCursor: 'evt-live' },
+      { type: 'applyEvents', events: [], cursor: cursor('') },
+      { type: 'markGap', afterCursor: cursor('') },
+      { type: 'applyEvents', events: [liveEvent], cursor: cursor('') },
+      { type: 'markGap', afterCursor: cursor('') },
     ])
   })
 
@@ -173,12 +177,12 @@ describe('createConversationTimelineSource', () => {
 
     await createConversationTimelineSource(client).subscribe(
       'conversation-001',
-      'evt-before',
+      cursor('evt-before'),
       (action) => {
         actions.push(action)
       },
     )
 
-    expect(actions).toEqual([{ type: 'markGap', afterCursor: 'evt-before' }])
+    expect(actions).toEqual([{ type: 'markGap', afterCursor: cursor('') }])
   })
 })
