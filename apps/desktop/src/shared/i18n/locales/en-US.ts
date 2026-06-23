@@ -93,6 +93,7 @@ export const enUS = {
       searchReferences: 'Search references',
       loadingReferences: 'Loading references...',
       noReferences: 'No references found.',
+      cancelRun: 'Cancel run',
       sendMessage: 'Send message',
     },
     continue: 'Continue',

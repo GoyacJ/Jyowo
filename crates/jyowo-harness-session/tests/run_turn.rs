@@ -2,6 +2,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
+use std::{future, time::Duration};
 
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
@@ -182,6 +183,43 @@ async fn run_turn_records_run_end_on_model_stream_error() {
         .any(|event| matches!(event, Event::RunEnded(ended)
             if matches!(&ended.reason, harness_contracts::EndReason::Error(message)
                 if message.contains("bad chunk")))));
+}
+
+#[tokio::test]
+async fn run_turn_finalizes_when_model_stream_message_stop_arrives_without_eof() {
+    let harness = TestHarness::new(text_events("unused")).await;
+    harness
+        .model
+        .replace_response(ModelResponse::EventsThenPending(text_events(
+            "complete answer",
+        )))
+        .await;
+
+    let result = tokio::time::timeout(
+        Duration::from_millis(200),
+        harness.session.run_turn("hello"),
+    )
+    .await
+    .expect("run should finalize after MessageStop without waiting for stream EOF");
+
+    result.unwrap();
+
+    let events = harness.events().await;
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            Event::AssistantMessageCompleted(completed)
+                if completed.content
+                    == harness_contracts::MessageContent::Text("complete answer".to_owned())
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            Event::RunEnded(ended)
+                if matches!(ended.reason, harness_contracts::EndReason::Completed)
+        )
+    }));
 }
 
 #[tokio::test]
@@ -386,6 +424,16 @@ impl ModelProvider for RecordingModelProvider {
         self.requests.lock().await.push(req);
         match self.response.lock().await.clone() {
             ModelResponse::Events(events) => Ok(Box::pin(stream::iter(events))),
+            ModelResponse::EventsThenPending(events) => Ok(Box::pin(stream::unfold(
+                events.into_iter(),
+                |mut events| async move {
+                    if let Some(event) = events.next() {
+                        Some((event, events))
+                    } else {
+                        future::pending().await
+                    }
+                },
+            ))),
             ModelResponse::Error(error) => Err(error),
         }
     }
@@ -398,6 +446,7 @@ impl ModelProvider for RecordingModelProvider {
 #[derive(Clone)]
 enum ModelResponse {
     Events(Vec<ModelStreamEvent>),
+    EventsThenPending(Vec<ModelStreamEvent>),
     Error(ModelError),
 }
 

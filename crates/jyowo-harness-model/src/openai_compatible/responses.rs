@@ -65,6 +65,9 @@ pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
                             for mapped in state.map_event(event) {
                                 yield mapped;
                             }
+                            if state.stopped {
+                                return;
+                            }
                         }
                     }
                     Err(error) => yield stream_error(error, ErrorClass::Fatal),
@@ -443,4 +446,69 @@ struct ResponseContent {
     #[serde(rename = "type")]
     kind: String,
     text: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future;
+    use std::time::Duration;
+
+    use futures::StreamExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::{response_to_stream, ResponsesStreamState, SseEvent};
+    use crate::ModelStreamEvent;
+
+    #[test]
+    fn completed_marks_stream_stopped_after_message_stop() {
+        let mut state = ResponsesStreamState::default();
+
+        let events = state.map_event(SseEvent {
+            event: Some("response.completed".to_owned()),
+            data: "{\"response\":{\"id\":\"resp_1\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}".to_owned(),
+        });
+
+        assert!(events.contains(&ModelStreamEvent::MessageStop));
+        assert!(state.stopped);
+    }
+
+    #[tokio::test]
+    async fn completed_terminates_response_stream_without_waiting_for_eof() {
+        let response = pending_sse_response(
+            "event: response.completed\ndata: {\"response\":{\"id\":\"resp_1\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n",
+        )
+        .await;
+        let mut stream = response_to_stream(response);
+
+        let mut events = Vec::new();
+        while let Some(event) = tokio::time::timeout(Duration::from_millis(200), stream.next())
+            .await
+            .expect("stream should terminate after response.completed without EOF")
+        {
+            events.push(event);
+        }
+
+        assert!(events.contains(&ModelStreamEvent::MessageStop));
+    }
+
+    async fn pending_sse_response(frame: &'static str) -> reqwest::Response {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            let header =
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n";
+            socket.write_all(header.as_bytes()).await.unwrap();
+            let chunk = format!("{:x}\r\n{}\r\n", frame.len(), frame);
+            socket.write_all(chunk.as_bytes()).await.unwrap();
+            socket.flush().await.unwrap();
+            future::pending::<()>().await;
+        });
+
+        reqwest::get(url).await.unwrap()
+    }
 }

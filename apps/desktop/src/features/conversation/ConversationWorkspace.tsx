@@ -115,8 +115,13 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
         <Composer
           disabled={composerDisabled}
           errorMessage={
-            timeline.submitError ? getCommandErrorMessage(timeline.submitError) : undefined
+            timeline.cancelError
+              ? getCommandErrorMessage(timeline.cancelError)
+              : timeline.submitError
+                ? getCommandErrorMessage(timeline.submitError)
+                : undefined
           }
+          cancelPending={timeline.isCancelling}
           modelCapability={currentModelProfile?.modelDescriptor?.conversationCapability ?? null}
           modelConfigDisabled={
             timeline.isSubmitting || composerDisabled || setModelConfigMutation.isPending
@@ -125,6 +130,7 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
           modelConfigs={modelConfigs}
           mode={timeline.composerMode}
           onCreateAttachmentFromPath={commandClient.createAttachmentFromPath}
+          onCancelRun={timeline.cancelActiveRun}
           onListReferenceCandidates={() =>
             commandClient.listReferenceCandidates({ conversationId: activeConversation.id })
           }

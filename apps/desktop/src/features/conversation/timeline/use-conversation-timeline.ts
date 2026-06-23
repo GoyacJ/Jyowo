@@ -308,6 +308,17 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     },
   })
 
+  const cancelMutation = useMutation({
+    mutationFn: async () => {
+      const runId = displayState.activeRunIds.at(-1)
+      if (!runId) {
+        throw new Error('No active run to cancel')
+      }
+
+      await commandClient.cancelRun(runId)
+    },
+  })
+
   return {
     blocks: selectBlocks(displayState),
     composerMode: submitMutation.isPending
@@ -319,8 +330,11 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
       getConversationTimelineState(root, targetConversationId),
     isEmpty: conversation.isEmpty,
     isLoading: conversation.isLoading,
+    isCancelling: cancelMutation.isPending,
     isSubmitting: submitMutation.isPending,
     pendingPermissionBlocks: selectPendingPermissionBlocks(displayState),
+    cancelActiveRun: cancelMutation.mutateAsync,
+    cancelError: cancelMutation.error,
     submitError: submitMutation.error,
     submitPrompt: submitMutation.mutateAsync,
     resolvePermission: permissionMutation.mutateAsync,

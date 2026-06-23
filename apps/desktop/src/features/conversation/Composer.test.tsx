@@ -328,6 +328,23 @@ describe('Composer', () => {
     expect(screen.getByPlaceholderText('Ask Jyowo anything about this project...')).toBeEnabled()
   })
 
+  it('shows a cancel action while a run is active', () => {
+    const onCancelRun = vi.fn()
+
+    render(
+      <Composer
+        mode={{ kind: 'running-disabled', canCancel: true }}
+        onCancelRun={onCancelRun}
+        onSubmit={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel run' }))
+
+    expect(onCancelRun).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+  })
+
   it('keeps text and chips when submit fails', async () => {
     render(
       <Composer

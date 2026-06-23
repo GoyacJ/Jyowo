@@ -18,7 +18,7 @@ export type ComposerSubmitPayload = Omit<StartRunRequest, 'conversationId'>
 export type ComposerMode =
   | { kind: 'ready' }
   | { kind: 'submitting' }
-  | { kind: 'running-disabled' }
+  | { kind: 'running-disabled'; canCancel?: boolean }
   | { kind: 'clarification-reply' }
   | { kind: 'review-comment' }
   | { kind: 'retry' }
@@ -36,6 +36,8 @@ type ComposerProps = {
   pending?: boolean
   disabled?: boolean
   errorMessage?: string
+  cancelPending?: boolean
+  onCancelRun?: () => Promise<void> | void
   onRetry?: () => void
   onPickAttachmentPath?: (modalities: AttachmentInputModality[]) => Promise<string | null>
   onCreateAttachmentFromPath?: (path: string) => Promise<{ attachment: AttachmentReference }>
@@ -71,6 +73,8 @@ export function Composer({
   pending = false,
   disabled = false,
   errorMessage,
+  cancelPending = false,
+  onCancelRun,
   onRetry,
   onPickAttachmentPath,
   onCreateAttachmentFromPath,
@@ -89,6 +93,10 @@ export function Composer({
     effectiveMode.kind === 'submitting' || effectiveMode.kind === 'running-disabled'
   const canSubmit = draft.text.trim().length > 0 && !isDisabled
   const visibleError = composerError ?? errorMessage
+  const canCancelRun =
+    effectiveMode.kind === 'running-disabled' &&
+    effectiveMode.canCancel !== false &&
+    Boolean(onCancelRun)
   const acceptedAttachmentModalities = getAcceptedAttachmentModalities(modelCapability)
   const supportsAttachments = acceptedAttachmentModalities.length > 0
 
@@ -134,6 +142,19 @@ export function Composer({
         ...currentDraft,
         attachments: addUniqueAttachment(currentDraft.attachments, attachment),
       }))
+    } catch (error) {
+      setComposerError(getCommandErrorMessage(error))
+    }
+  }
+
+  async function handleCancelRun() {
+    if (!onCancelRun || cancelPending) {
+      return
+    }
+
+    try {
+      setComposerError(null)
+      await onCancelRun()
     } catch (error) {
       setComposerError(getCommandErrorMessage(error))
     }
@@ -223,14 +244,29 @@ export function Composer({
           onModelConfigChange={onModelConfigChange}
           onSelectReference={addContextReference}
         />
-        <button
-          aria-label={t('conversation:composer.sendMessage')}
-          className="rounded-md bg-primary p-2 text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={!canSubmit}
-          type="submit"
-        >
-          <Send className="size-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          {canCancelRun ? (
+            <button
+              aria-label={t('conversation:composer.cancelRun')}
+              className="rounded-md border border-border p-2 text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={cancelPending}
+              onClick={() => {
+                void handleCancelRun()
+              }}
+              type="button"
+            >
+              <X className="size-4" />
+            </button>
+          ) : null}
+          <button
+            aria-label={t('conversation:composer.sendMessage')}
+            className="rounded-md bg-primary p-2 text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={!canSubmit}
+            type="submit"
+          >
+            <Send className="size-4" />
+          </button>
+        </div>
       </div>
     </form>
   )
