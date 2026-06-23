@@ -128,6 +128,7 @@ fn count_part(part: &MessagePart, model: &str, counter: &dyn TokenCounter) -> us
                 model,
             )
             .unwrap_or(0),
+        MessagePart::Video { .. } | MessagePart::File { .. } => 0,
         MessagePart::ToolUse { name, input, .. } => {
             counter.count_tokens(name, model) + counter.count_tokens(&input.to_string(), model)
         }

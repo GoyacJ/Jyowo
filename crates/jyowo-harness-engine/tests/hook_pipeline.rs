@@ -21,8 +21,8 @@ use harness_hook::{
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
-    ApiMode, ContentDelta, HealthStatus, InferContext, ModelCapabilities, ModelDescriptor,
-    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
+    ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
+    ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_sandbox::{ExecSpec, SandboxBaseConfig, StdioSpec};
@@ -388,8 +388,8 @@ async fn tool_search_hooks_are_emitted() {
         .unwrap();
     let hook_dispatcher = HookDispatcher::new(hook_registry.snapshot());
     let mut caps = CapabilityRegistry::default();
-    let model_caps = ModelCapabilities {
-        supports_tool_reference: true,
+    let model_caps = ConversationModelCapability {
+        tool_calling: true,
         ..Default::default()
     };
     let search_runtime: Arc<dyn ToolSearchRuntimeCap> = Arc::new(EngineToolSearchRuntime {
@@ -421,7 +421,7 @@ async fn tool_search_hooks_are_emitted() {
         .with_permission_broker(Arc::new(RecordingBroker::new(Decision::AllowOnce)))
         .with_workspace_root(workspace.path())
         .with_model_id("mock-model")
-        .with_api_mode(ApiMode::Messages)
+        .with_protocol(ModelProtocol::Messages)
         .with_cap_registry(Arc::new(caps))
         .build()
         .unwrap();
@@ -521,7 +521,7 @@ impl TestHarness {
             .with_permission_broker(broker)
             .with_workspace_root(workspace.path())
             .with_model_id("mock-model")
-            .with_api_mode(ApiMode::Messages)
+            .with_protocol(ModelProtocol::Messages)
             .with_cap_registry(Arc::new(CapabilityRegistry::default()))
             .build()
             .unwrap();
@@ -588,12 +588,14 @@ impl ModelProvider for SequenceModel {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "mock".to_owned(),
             model_id: "mock-model".to_owned(),
             display_name: "Mock model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
     }

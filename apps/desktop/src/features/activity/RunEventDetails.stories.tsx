@@ -26,10 +26,10 @@ export const ToolSucceeded: Story = {
   args: {
     event: {
       toolCall: {
-        argumentsSummary: 'Read apps/desktop/src/features/conversation/ConversationWorkspace.tsx',
+        argumentsSummary: 'Input withheld from conversation timeline.',
         durationMs: 438,
         endedAt: '2026-06-17T10:21:14.000Z',
-        outputSummary: 'Rendered 214 lines.',
+        outputSummary: 'Output withheld from conversation timeline.',
         permissionState: 'not_required',
         startedAt: '2026-06-17T10:21:13.562Z',
         status: 'success',
@@ -43,7 +43,7 @@ export const ToolFailed: Story = {
   args: {
     event: {
       toolCall: {
-        argumentsSummary: 'Build Storybook static output',
+        argumentsSummary: 'Input withheld from conversation timeline.',
         errorDetails: 'Storybook build exited with code 1.',
         permissionState: 'not_required',
         status: 'failed',
@@ -102,8 +102,8 @@ export const RedactedPayload: Story = {
         withheld: true,
       },
       toolCall: {
-        argumentsSummary: 'Inspect provider configuration',
-        outputSummary: 'Raw provider payload withheld by policy.',
+        argumentsSummary: 'Input withheld from conversation timeline.',
+        outputSummary: 'Output withheld from conversation timeline.',
         permissionState: 'approved',
         status: 'redacted',
         toolName: 'provider.inspect',
@@ -125,8 +125,8 @@ export const LargeOutput: Story = {
         },
       },
       toolCall: {
-        argumentsSummary: 'Render large output preview',
-        outputSummary: 'Output preview truncated before rendering.',
+        argumentsSummary: 'Input withheld from conversation timeline.',
+        outputSummary: 'Output withheld from conversation timeline.',
         permissionState: 'not_required',
         status: 'running',
         toolName: 'output.preview',

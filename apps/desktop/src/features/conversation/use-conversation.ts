@@ -1,10 +1,11 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 
 import { useUiStore } from '@/shared/state/ui-store'
 import {
   type GetConversationResponse,
   getConversation,
   listConversations,
+  type StartRunRequest,
   startRun,
 } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
@@ -22,10 +23,10 @@ type UseConversationOptions = {
 }
 
 export type ConversationRecord = GetConversationResponse['conversation']
+export type ConversationSubmitDraft = Omit<StartRunRequest, 'conversationId'>
 
 export function useConversation(options: UseConversationOptions = {}) {
   const commandClient = useCommandClient()
-  const queryClient = useQueryClient()
   const setActiveRun = useUiStore((state) => state.setActiveRun)
   const includeDetail = options.includeDetail ?? true
 
@@ -36,53 +37,61 @@ export function useConversation(options: UseConversationOptions = {}) {
 
   const selectedConversationId =
     options.conversationId ?? conversationsQuery.data?.conversations[0]?.id
+  const selectedConversationListed = options.conversationId
+    ? conversationsQuery.data?.conversations.some(
+        (conversation) => conversation.id === options.conversationId,
+      ) === true
+    : Boolean(selectedConversationId)
+  const isDraft = Boolean(
+    options.conversationId && conversationsQuery.isSuccess && !selectedConversationListed,
+  )
+  const shouldLoadDetail =
+    includeDetail &&
+    Boolean(selectedConversationId) &&
+    (!options.conversationId || selectedConversationListed)
 
   const conversationQuery = useQuery({
     queryKey: conversationQueryKeys.detail(selectedConversationId ?? 'none'),
     queryFn: () => getConversation(selectedConversationId ?? '', commandClient),
-    enabled: includeDetail && Boolean(selectedConversationId),
+    enabled: shouldLoadDetail,
   })
 
   const startRunMutation = useMutation({
-    mutationFn: (prompt: string) => {
+    mutationFn: (draft: ConversationSubmitDraft) => {
       if (!selectedConversationId) {
         throw new Error('No conversation selected')
       }
 
       return startRun(
         {
+          ...draft,
           conversationId: selectedConversationId,
-          prompt,
         },
         commandClient,
       )
     },
-    onSuccess: async (response) => {
+    onSuccess: (response) => {
       if (selectedConversationId) {
         setActiveRun({
           conversationId: selectedConversationId,
           runId: response.runId,
         })
-        await queryClient.invalidateQueries({
-          queryKey: conversationQueryKeys.detail(selectedConversationId),
-        })
-        await queryClient.invalidateQueries({
-          queryKey: conversationQueryKeys.list(),
-        })
       }
     },
   })
 
-  const isEmpty = conversationsQuery.isSuccess && conversationsQuery.data.conversations.length === 0
+  const isEmpty =
+    !options.conversationId &&
+    conversationsQuery.isSuccess &&
+    conversationsQuery.data.conversations.length === 0
 
   return {
     conversation: conversationQuery.data?.conversation ?? null,
     conversations: conversationsQuery.data?.conversations ?? [],
     error: conversationsQuery.error ?? conversationQuery.error,
+    isDraft,
     isEmpty,
-    isLoading:
-      conversationsQuery.isLoading ||
-      (includeDetail && Boolean(selectedConversationId) && conversationQuery.isLoading),
+    isLoading: conversationsQuery.isLoading || (shouldLoadDetail && conversationQuery.isLoading),
     isSubmitting: startRunMutation.isPending,
     selectedConversationId,
     submitError: startRunMutation.error,

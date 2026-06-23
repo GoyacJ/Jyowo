@@ -12,7 +12,7 @@ use harness_contracts::{
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
-    AuxModelProvider, AuxOptions, AuxTask, HealthStatus, InferContext, ModelCapabilities,
+    AuxModelProvider, AuxOptions, AuxTask, ConversationModelCapability, HealthStatus, InferContext,
     ModelDescriptor, ModelProvider, ModelRequest, ModelStream,
 };
 use harness_subagent::{
@@ -927,12 +927,14 @@ impl ModelProvider for DummyModelProvider {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "dummy".to_owned(),
             model_id: "dummy-aux".to_owned(),
             display_name: "Dummy Aux".to_owned(),
             context_window: 1_000,
             max_output_tokens: 100,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
     }

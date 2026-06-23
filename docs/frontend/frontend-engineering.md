@@ -101,6 +101,9 @@ Forbidden:
   `shared/ui` primitive
 - hand-writing SVG icons when a lucide icon exists
 - storing provider keys, tokens, or credentials in `@tauri-apps/plugin-store`
+- returning provider keys through list/save settings payloads; explicit key display
+  must request a short-lived reveal token and render the returned key only in the
+  settings reveal UI
 - using Markdown rendering to pass through raw HTML from model output
 - using `shiki` in render paths without caching or lazy loading
 - exposing plugin names as the product's main user language
@@ -381,7 +384,13 @@ get_conversation(conversationId: string): {
   }
 }
 
+delete_conversation(conversationId: string): {
+  conversationId: string
+  status: 'deleted'
+}
+
 start_run(request: {
+  clientMessageId: string
   contextReferences?: string[]
   conversationId: string
   prompt: string
@@ -431,15 +440,15 @@ export_support_bundle(request: {
   redacted: true
 }
 
-list_artifacts(): {
+list_artifacts({
+  conversationId: string
+}): {
   artifacts: Array<{
     actionLabel: string
     description: string
     id: string
     kind: string
     preview?: string
-    sourceMessageId?: string
-    sourceRunId: string
     status: 'failed' | 'pending' | 'ready' | 'running'
     title: string
   }>
@@ -494,14 +503,58 @@ validate_provider_settings(request: {
 }
 
 save_provider_settings(request: {
-  apiKey: string
+  apiKey?: string
+  baseUrl?: string
+  configId?: string
+  displayName?: string
   modelId: string
   providerId: string
+  setDefault?: boolean
 }): {
+  config: ProviderConfig
+  status: 'saved'
+}
+
+list_provider_settings(): {
+  defaultConfigId: string | null
+  configs: ProviderConfig[]
+}
+
+get_provider_config_api_key(request: {
+  configId: string
+  revealToken: string
+}): {
+  apiKey: string
+  configId: string
+}
+
+request_provider_config_api_key_reveal(request: {
+  configId: string
+}): {
+  configId: string
+  expiresInSeconds: number
+  revealToken: string
+  status: 'ready'
+}
+
+set_conversation_model_config(request: {
+  conversationId: string
+  modelConfigId: string
+}): {
+  conversationId: string
+  modelConfigId: string
+  status: 'saved'
+}
+
+type ProviderConfig = {
+  baseUrl?: string
+  displayName: string
+  hasApiKey: boolean
+  id: string
+  isDefault: boolean
+  protocol: 'chat_completions' | 'responses' | 'messages' | 'generate_content'
   modelId: string
   providerId: string
-  secretRef: string
-  status: 'saved'
 }
 
 list_mcp_servers(): {
@@ -561,6 +614,51 @@ export_memory_items(): {
   itemCount: number
   path: string
 }
+
+list_skills(): {
+  skills: SkillSummary[]
+}
+
+get_skill(request: {
+  id: string
+  includeBody?: boolean
+}): {
+  skill: SkillDetail
+}
+
+import_skill(request: {
+  sourcePath: string
+}): {
+  skill: SkillSummary
+}
+
+set_skill_enabled(request: {
+  id: string
+  enabled: boolean
+}): {
+  skill: SkillSummary
+}
+
+delete_skill(id: string): {
+  id: string
+  status: 'deleted'
+}
+
+subscribe_conversation_events(request: {
+  conversationId: string
+  afterCursor?: string | null
+}): {
+  subscriptionId: string
+  conversationId: string
+  replayEvents: RunEvent[]
+  cursor?: string | null
+  gap: boolean
+}
+
+unsubscribe_conversation_events(subscriptionId: string): {
+  subscriptionId: string
+  status: 'unsubscribed' | 'alreadyClosed'
+}
 ```
 
 Command naming:
@@ -577,11 +675,43 @@ JSON file under `.jyowo/runtime/exports` and returns only the relative `path`,
 `itemCount`, `format`, and `exportedAt`; export content must not be stored in
 frontend state or rendered into the DOM.
 
+Skill IPC payloads must be Zod validated in `shared/tauri`, loaded through
+TanStack Query, and rendered with sanitized error text. The frontend may show
+user-imported skill Markdown in the detail pane, but must not store skill body
+content outside the query cache or render backend error bodies. Config display
+must show keys only, never secret values. Skill import must use the system
+directory picker and pass a local skill package directory containing `SKILL.md`;
+the frontend must not offer single Markdown file import.
+
 Streaming:
 
-- streamed events must have `runId`, `sequence`, `timestamp`, `type`
+- streamed events must have `runId`, `sequence`, `conversationSequence`,
+  `timestamp`, `type`
 - frontend reducers must be idempotent by `id` and sequence-aware
 - UI must batch streaming updates
+
+Conversation timeline:
+
+- `ConversationBlock[]` is the only render source for the conversation canvas.
+- `get_conversation`, replay events, live `conversation_event_batch` events,
+  artifact snapshots, local submits, and command results feed the timeline
+  reducer.
+- `ConversationWorkspace` composes `useConversationTimeline`,
+  `ConversationTimeline`, and `Composer`; it must not merge messages, activity
+  events, artifacts, and local optimistic arrays itself.
+- `clientMessageId` is generated before `start_run` and is the only key that
+  confirms an optimistic user message. Body text must not be used for matching.
+- `conversationSequence` is the backend-provided conversation order key.
+  Frontend code must not sort conversation blocks by `(runId, sequence)`.
+- Feature code must not call Tauri `listen` directly. `shared/tauri` owns the
+  typed listener for `conversation_event_batch` and exposes parsed payloads.
+- Replay returned by `subscribe_conversation_events` must be applied before
+  live batches for the same `subscriptionId`.
+- Gaps or cursor mismatches mark the reducer gap state and request replay or
+  snapshot recovery. The UI must not guess missing event order locally.
+- Streaming assistant text stays in the reducer buffer until
+  `assistant.completed` provides a redacted final body or snapshot
+  reconciliation finds the final message by `messageId`.
 
 IPC error shape:
 

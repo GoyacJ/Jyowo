@@ -29,7 +29,7 @@ fn request_with_messages(messages: Vec<Message>) -> ModelRequest {
         max_tokens: Some(128),
         stream: false,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::Messages,
+        protocol: ModelProtocol::Messages,
         extra: Value::Null,
     }
 }

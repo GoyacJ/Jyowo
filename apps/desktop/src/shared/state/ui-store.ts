@@ -5,51 +5,85 @@ import { type AppLocale, DEFAULT_APP_LOCALE } from '@/shared/i18n/locales'
 
 type ThemeMode = 'light' | 'dark' | 'system'
 
+type TimelineScrollRequest = {
+  blockId: string
+  nonce: number
+}
+
 export interface UiState {
   activeRunConversationId: string | undefined
   activeRunId: string | undefined
+  activeRunsByConversation: Record<string, string>
   theme: ThemeMode
   locale: AppLocale
   sidebarCollapsed: boolean
   contextPanelCollapsed: boolean
-  activityRailCollapsed: boolean
-  activityRailExpanded: boolean
   inspectorOpen: boolean
-  clearActiveRun: () => void
+  timelineScrollRequest: TimelineScrollRequest | null
+  clearActiveRun: (conversationId?: string) => void
   setActiveRun: (activeRun: { conversationId: string; runId: string }) => void
   setTheme: (theme: ThemeMode) => void
   setLocale: (locale: AppLocale) => void
   setSidebarCollapsed: (sidebarCollapsed: boolean) => void
   setContextPanelCollapsed: (contextPanelCollapsed: boolean) => void
-  setActivityRailCollapsed: (activityRailCollapsed: boolean) => void
-  setActivityRailExpanded: (activityRailExpanded: boolean) => void
   setInspectorOpen: (inspectorOpen: boolean) => void
+  requestTimelineScroll: (blockId: string) => void
+  clearTimelineScrollRequest: () => void
 }
 
 export function createUiStore() {
   return createStore<UiState>()((set) => ({
     activeRunConversationId: undefined,
     activeRunId: undefined,
+    activeRunsByConversation: {},
     theme: 'light',
     locale: DEFAULT_APP_LOCALE,
     sidebarCollapsed: false,
-    contextPanelCollapsed: false,
-    activityRailCollapsed: false,
-    activityRailExpanded: false,
+    contextPanelCollapsed: true,
     inspectorOpen: true,
-    clearActiveRun: () => set({ activeRunConversationId: undefined, activeRunId: undefined }),
+    timelineScrollRequest: null,
+    clearActiveRun: (conversationId) =>
+      set((state) => {
+        if (!conversationId) {
+          return {
+            activeRunConversationId: undefined,
+            activeRunId: undefined,
+            activeRunsByConversation: {},
+          }
+        }
+
+        const { [conversationId]: _removedRunId, ...activeRunsByConversation } =
+          state.activeRunsByConversation
+        const nextActiveRun = latestActiveRun(activeRunsByConversation)
+
+        return {
+          activeRunConversationId: nextActiveRun?.conversationId,
+          activeRunId: nextActiveRun?.runId,
+          activeRunsByConversation,
+        }
+      }),
     setActiveRun: (activeRun) =>
-      set({
+      set((state) => ({
         activeRunConversationId: activeRun.conversationId,
         activeRunId: activeRun.runId,
-      }),
+        activeRunsByConversation: {
+          ...state.activeRunsByConversation,
+          [activeRun.conversationId]: activeRun.runId,
+        },
+      })),
     setTheme: (theme) => set({ theme }),
     setLocale: (locale) => set({ locale }),
     setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
     setContextPanelCollapsed: (contextPanelCollapsed) => set({ contextPanelCollapsed }),
-    setActivityRailCollapsed: (activityRailCollapsed) => set({ activityRailCollapsed }),
-    setActivityRailExpanded: (activityRailExpanded) => set({ activityRailExpanded }),
     setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
+    requestTimelineScroll: (blockId) =>
+      set((state) => ({
+        timelineScrollRequest: {
+          blockId,
+          nonce: (state.timelineScrollRequest?.nonce ?? 0) + 1,
+        },
+      })),
+    clearTimelineScrollRequest: () => set({ timelineScrollRequest: null }),
   }))
 }
 
@@ -57,4 +91,14 @@ export const uiStore = createUiStore()
 
 export function useUiStore<T>(selector: (state: UiState) => T) {
   return useStore(uiStore, selector)
+}
+
+function latestActiveRun(activeRunsByConversation: Record<string, string>) {
+  const [conversationId, runId] = Object.entries(activeRunsByConversation).at(-1) ?? []
+
+  if (!conversationId || !runId) {
+    return undefined
+  }
+
+  return { conversationId, runId }
 }

@@ -44,7 +44,7 @@ async fn sdk_workspace_flow_binds_session_loads_bootstrap_and_merges_defaults() 
                 .with_bootstrap_files(vec![BootstrapFileSpec::required("AGENTS.md")])
                 .with_default_session_options(
                     SessionOptions::default()
-                        .with_model_id("workspace-model")
+                        .with_model_id("mock-model")
                         .with_model_extra(json!({ "source": "workspace" }))
                         .with_system_prompt_addendum("workspace default"),
                 ),
@@ -68,7 +68,7 @@ async fn sdk_workspace_flow_binds_session_loads_bootstrap_and_merges_defaults() 
         .into_iter()
         .next()
         .expect("model should receive one request");
-    assert_eq!(request.model_id, "workspace-model");
+    assert_eq!(request.model_id, "mock-model");
     assert_eq!(request.extra["source"], json!("workspace"));
     assert!(request.extra["relay_logical_call_key"]
         .as_str()

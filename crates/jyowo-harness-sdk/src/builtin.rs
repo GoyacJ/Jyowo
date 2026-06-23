@@ -70,5 +70,14 @@ pub use harness_tool::{
     ListDirTool, ReadBlobTool, SendMessageTool, TaskStopTool, TodoTool, WebFetchTool,
     WebSearchTool,
 };
+#[cfg(feature = "minimax-tools")]
+pub use harness_tool::{
+    MiniMaxDeleteVoiceTool, MiniMaxFirstLastFrameToVideoTool, MiniMaxImageToImageTool,
+    MiniMaxImageToVideoTool, MiniMaxListVoicesTool, MiniMaxLyricsGenerationTool,
+    MiniMaxMusicCoverPreprocessTool, MiniMaxMusicGenerationTool, MiniMaxSubjectReferenceVideoTool,
+    MiniMaxTextToImageTool, MiniMaxTextToSpeechAsyncTool, MiniMaxTextToSpeechTool,
+    MiniMaxTextToVideoTool, MiniMaxVideoTemplateTool, MiniMaxVoiceCloneTool,
+    MiniMaxVoiceDesignTool,
+};
 #[cfg(any(feature = "builtin-toolset", feature = "skill-tools"))]
 pub use harness_tool::{SkillsInvokeTool, SkillsListTool, SkillsViewTool};

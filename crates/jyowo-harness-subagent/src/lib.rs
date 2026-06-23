@@ -33,7 +33,7 @@ use harness_contracts::{
     ToolUseId, TranscriptRef, TurnInput, UsageSnapshot, UserMessageAppendedEvent,
 };
 use harness_journal::{AppendMetadata, EventStore, ReplayCursor};
-use harness_model::{ApiMode, AuxExecutor, AuxModelProvider, AuxTask, ModelRequest};
+use harness_model::{AuxExecutor, AuxModelProvider, AuxTask, ModelProtocol, ModelRequest};
 use harness_permission::{PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest};
 use harness_session::{Session, SessionOptions};
 use harness_tool::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
@@ -830,7 +830,7 @@ fn aux_summary_request(
         max_tokens: Some(256),
         stream: false,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::Messages,
+        protocol: ModelProtocol::Messages,
         extra: Value::Null,
     }
 }

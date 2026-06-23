@@ -18,8 +18,8 @@ describe('CommandPalette', () => {
     expect(screen.getByRole('option', { name: 'New conversation' })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: 'Open artifact' })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: 'Open evals' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'Search files' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'View activity' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Search files' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'View activity' })).not.toBeInTheDocument()
     expect(screen.getByRole('option', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.queryByText(/reducer|router|cache|plugin|store/i)).not.toBeInTheDocument()
   })
@@ -31,11 +31,11 @@ describe('CommandPalette', () => {
 
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
     const searchInput = screen.getByRole('combobox', { name: 'Search commands' })
-    fireEvent.change(searchInput, { target: { value: 'activity' } })
+    fireEvent.change(searchInput, { target: { value: 'settings' } })
     fireEvent.keyDown(searchInput, { key: 'Enter' })
 
     await waitFor(() => {
-      expect(onAction).toHaveBeenCalledWith('view-activity')
+      expect(onAction).toHaveBeenCalledWith('settings')
     })
     expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument()
   })

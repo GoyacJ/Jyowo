@@ -1,12 +1,4 @@
-import {
-  Check,
-  Clock,
-  ExternalLink,
-  FileText,
-  Loader2,
-  type LucideIcon,
-  TriangleAlert,
-} from 'lucide-react'
+import { Check, Clock, ExternalLink, Loader2, type LucideIcon, TriangleAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/shared/lib/utils'
@@ -20,8 +12,6 @@ interface ArtifactHistoryItem {
   id: string
   kind: string
   preview?: string
-  sourceMessageId?: string
-  sourceRunId: string
   status: ArtifactStatus
   title: string
 }
@@ -30,7 +20,6 @@ interface ArtifactHistoryProps {
   activeArtifactId?: string
   artifacts: readonly ArtifactHistoryItem[]
   onOpenArtifact?: (artifactId: string) => void
-  onOpenSource?: (messageId: string) => void
   variant?: 'compact' | 'default'
 }
 
@@ -52,7 +41,6 @@ export function ArtifactHistory({
   activeArtifactId,
   artifacts,
   onOpenArtifact,
-  onOpenSource,
   variant = 'default',
 }: ArtifactHistoryProps) {
   const { t } = useTranslation(['artifacts', 'common'])
@@ -121,15 +109,6 @@ export function ArtifactHistory({
                 >
                   {artifact.description}
                 </p>
-                {compact ? null : (
-                  <div className="mt-2 flex flex-wrap items-center gap-3 text-muted-foreground text-xs">
-                    <span className="inline-flex items-center gap-1">
-                      <FileText className="size-3.5" />
-                      {t('artifacts:sourceRun')}
-                    </span>
-                    <span>{artifact.sourceRunId}</span>
-                  </div>
-                )}
               </div>
 
               <div className="flex shrink-0 items-center gap-2">
@@ -142,17 +121,6 @@ export function ArtifactHistory({
                   <ExternalLink className="size-4" />
                   {artifact.actionLabel}
                 </Button>
-                {artifact.sourceMessageId ? (
-                  <Button
-                    aria-label={t('artifacts:showSourceMessage')}
-                    size="icon"
-                    type="button"
-                    variant="outline"
-                    onClick={() => onOpenSource?.(artifact.sourceMessageId ?? '')}
-                  >
-                    <FileText className="size-4" />
-                  </Button>
-                ) : null}
               </div>
             </div>
           </article>

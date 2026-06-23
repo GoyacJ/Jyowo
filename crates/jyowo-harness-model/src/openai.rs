@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use crate::openai_compatible::{OpenAiCompatibleClient, OpenAiCompatibleProviderExt};
 use crate::{
-    InferContext, ModelCapabilities, ModelCredentialResolver, ModelDescriptor, ModelProvider,
-    ModelRequest, ModelStream, PromptCacheStyle,
+    ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
+    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
+    PromptCacheStyle,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
@@ -21,13 +22,22 @@ impl OpenAiProvider {
     pub fn from_api_key(api_key: impl Into<String>) -> Self {
         Self {
             client: OpenAiCompatibleClient::from_api_key(api_key, DEFAULT_BASE_URL)
-                .with_provider_id(PROVIDER_ID),
+                .with_provider_id(PROVIDER_ID)
+                .with_responses_path("/v1/responses"),
         }
     }
 
     #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.client = self.client.with_base_url(base_url);
+        self
+    }
+
+    #[must_use]
+    pub fn with_chat_completions_api(mut self) -> Self {
+        self.client = self
+            .client
+            .with_chat_completions_path("/v1/chat/completions");
         self
     }
 
@@ -51,9 +61,14 @@ impl ModelProvider for OpenAiProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
+        // Verified 2026-06-21: https://platform.openai.com/docs/models
         vec![
-            descriptor("gpt-4o-mini", "GPT-4o mini"),
-            descriptor("gpt-4o", "GPT-4o"),
+            descriptor("gpt-5.5-pro", "GPT-5.5 Pro", 1_050_000, 128_000),
+            descriptor("gpt-5.5", "GPT-5.5", 1_000_000, 128_000),
+            descriptor("gpt-5.4-pro", "GPT-5.4 Pro", 1_050_000, 128_000),
+            descriptor("gpt-5.4", "GPT-5.4", 1_000_000, 128_000),
+            descriptor("gpt-5.4-mini", "GPT-5.4 mini", 400_000, 128_000),
+            descriptor("gpt-5.4-nano", "GPT-5.4 nano", 400_000, 128_000),
         ]
     }
 
@@ -61,38 +76,40 @@ impl ModelProvider for OpenAiProvider {
         self.infer_openai_compatible(req, ctx).await
     }
 
+    fn default_protocol(&self) -> ModelProtocol {
+        ModelProtocol::Responses
+    }
+
     fn prompt_cache_style(&self) -> PromptCacheStyle {
         PromptCacheStyle::OpenAi { auto: true }
     }
-
-    fn supports_tools(&self) -> bool {
-        true
-    }
-
-    fn supports_vision(&self) -> bool {
-        true
-    }
-
-    fn supports_thinking(&self) -> bool {
-        false
-    }
 }
 
-fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {
+fn descriptor(
+    model_id: &str,
+    display_name: &str,
+    context_window: u32,
+    max_output_tokens: u32,
+) -> ModelDescriptor {
     ModelDescriptor {
         provider_id: "openai".to_owned(),
         model_id: model_id.to_owned(),
         display_name: display_name.to_owned(),
-        context_window: 128_000,
-        max_output_tokens: 16_384,
-        capabilities: ModelCapabilities {
-            supports_tools: true,
-            supports_vision: true,
-            supports_thinking: false,
-            supports_prompt_cache: true,
-            supports_tool_reference: false,
-            tool_reference_beta_header: None,
+        protocol: ModelProtocol::Responses,
+        context_window,
+        max_output_tokens,
+        conversation_capability: ConversationModelCapability {
+            context_window,
+            max_output_tokens,
+            tool_calling: true,
+            reasoning: false,
+            prompt_cache: true,
+            streaming: true,
+            structured_output: true,
+            input_modalities: vec![ModelModality::Text],
+            output_modalities: vec![ModelModality::Text],
         },
+        lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }
 }

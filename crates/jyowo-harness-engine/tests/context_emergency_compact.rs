@@ -12,8 +12,8 @@ use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};
 use harness_journal::InMemoryEventStore;
 use harness_model::{
-    ContentDelta, HealthStatus, InferContext, ModelCapabilities, ModelDescriptor, ModelProvider,
-    ModelRequest, ModelStream, ModelStreamEvent,
+    ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
+    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_tool::ToolPool;
@@ -104,12 +104,14 @@ impl ModelProvider for ContextTooLongThenOkModel {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "mock".to_owned(),
             model_id: "mock-model".to_owned(),
             display_name: "Mock model".to_owned(),
             context_window: 100,
             max_output_tokens: 10,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
     }

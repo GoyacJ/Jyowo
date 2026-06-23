@@ -12,7 +12,7 @@ use wiremock::{
 
 fn request(stream: bool) -> ModelRequest {
     ModelRequest {
-        model_id: "gpt-5.4-codex".to_owned(),
+        model_id: "gpt-5.3-codex".to_owned(),
         messages: vec![Message {
             id: MessageId::new(),
             role: MessageRole::User,
@@ -25,7 +25,7 @@ fn request(stream: bool) -> ModelRequest {
         max_tokens: Some(128),
         stream,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::Responses,
+        protocol: ModelProtocol::Responses,
         extra: Value::Null,
     }
 }
@@ -36,12 +36,12 @@ fn codex_provider_metadata_is_stable() {
 
     assert_eq!(provider.provider_id(), "codex");
     assert_eq!(CODEX_API_KEY_ENV, "CODEX_API_KEY");
-    assert!(provider.supports_tools());
-    assert!(provider.supports_thinking());
     assert!(provider
         .supported_models()
         .iter()
-        .any(|model| model.model_id == "gpt-5.4-codex"));
+        .any(|model| model.model_id == "gpt-5.3-codex"
+            && model.conversation_capability.tool_calling
+            && model.conversation_capability.reasoning));
 }
 
 #[tokio::test]
@@ -110,7 +110,7 @@ async fn codex_streams_responses_text_reasoning_tool_and_usage() {
 
     let requests = server.received_requests().await.unwrap();
     let body: Value = requests[0].body_json().unwrap();
-    assert_eq!(body["model"], "gpt-5.4-codex");
+    assert_eq!(body["model"], "gpt-5.3-codex");
     assert_eq!(body["stream"], true);
     assert_eq!(body["input"][0]["role"], "system");
     assert_eq!(body["input"][1]["content"], "build");
@@ -119,7 +119,7 @@ async fn codex_streams_responses_text_reasoning_tool_and_usage() {
 #[tokio::test]
 async fn codex_rejects_chat_completions_mode() {
     let mut req = request(false);
-    req.api_mode = ApiMode::ChatCompletions;
+    req.protocol = ModelProtocol::ChatCompletions;
 
     let error = match CodexResponsesProvider::from_api_key("test-key")
         .infer(req, InferContext::for_test())

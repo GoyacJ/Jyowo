@@ -371,6 +371,45 @@ impl EventStore for SqliteEventStore {
         Ok(())
     }
 
+    async fn delete_session(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+    ) -> Result<bool, JournalError> {
+        let mut connection = self.connection.lock().await;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(journal_error)?;
+        let tenant_id = tenant.to_string();
+        let session_id_text = session_id.to_string();
+        let events_removed = tx
+            .execute(
+                "DELETE FROM events WHERE tenant_id = ?1 AND session_id = ?2",
+                params![tenant_id, session_id_text],
+            )
+            .map_err(journal_error)?;
+        tx.execute(
+            "DELETE FROM events_fts WHERE tenant_id = ?1 AND session_id = ?2",
+            params![tenant.to_string(), session_id.to_string()],
+        )
+        .map_err(journal_error)?;
+        let snapshots_removed = tx
+            .execute(
+                "DELETE FROM snapshots WHERE tenant_id = ?1 AND session_id = ?2",
+                params![tenant.to_string(), session_id.to_string()],
+            )
+            .map_err(journal_error)?;
+        let lineage_removed = tx
+            .execute(
+                "DELETE FROM compaction_lineage
+                 WHERE parent_session = ?1 OR child_session = ?1",
+                params![session_id.to_string()],
+            )
+            .map_err(journal_error)?;
+        tx.commit().map_err(journal_error)?;
+        Ok(events_removed > 0 || snapshots_removed > 0 || lineage_removed > 0)
+    }
+
     async fn list_sessions(
         &self,
         tenant: TenantId,

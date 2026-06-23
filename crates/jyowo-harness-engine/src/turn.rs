@@ -30,8 +30,8 @@ use harness_hook::{
 use harness_journal::EventStore;
 use harness_model::{
     apply_before_request_middlewares, apply_request_end_middlewares, wrap_stream_with_middlewares,
-    BillingMode, InferContext, ModelRequest, PricingSnapshotResolveContext, PricingSource, Ratio,
-    StreamAggregate, StreamAggregator,
+    BillingMode, InferContext, ModelModality, ModelRequest, PricingSnapshotResolveContext,
+    PricingSource, Ratio, StreamAggregate, StreamAggregator,
 };
 use harness_observability::{Span, SpanAttributes};
 use harness_permission::{
@@ -64,6 +64,11 @@ pub(crate) async fn run_turn(
     let _span = TurnSpanGuard::new(engine);
 
     let mut emitted = Vec::new();
+    let client_message_id = input
+        .metadata
+        .get("clientMessageId")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
     let correlation_id = ctx.correlation_id;
     let run_started = Event::RunStarted(RunStartedEvent {
         run_id: ctx.run_id,
@@ -182,7 +187,7 @@ pub(crate) async fn run_turn(
             team_id: ctx.team_id,
             system: engine.system_prompt.clone(),
             messages: working_messages.clone(),
-            tools: prompt_visible_tools(&engine.tools),
+            tools: prompt_visible_tools_for_model(engine),
         };
         let assembled = engine
             .context
@@ -199,17 +204,24 @@ pub(crate) async fn run_turn(
             )
             .await?;
         }
+        validate_model_input_modalities(
+            &assembled.messages,
+            &engine
+                .model_snapshot
+                .conversation_capability
+                .input_modalities,
+        )?;
 
         let mut request = ModelRequest {
             model_id: engine.model_id.clone(),
             messages: assembled.messages,
-            tools: (!assembled.tools_snapshot.is_empty()).then_some(assembled.tools_snapshot),
+            tools: model_request_tools(engine, assembled.tools_snapshot),
             system: assembled.system,
             temperature: None,
             max_tokens: None,
             stream: true,
             cache_breakpoints: assembled.cache_breakpoints,
-            api_mode: engine.api_mode,
+            protocol: engine.protocol,
             extra: model_extra_with_relay_logical_call_key(
                 engine.model_extra.clone(),
                 ctx.run_id,
@@ -221,6 +233,7 @@ pub(crate) async fn run_turn(
         infer_ctx.session_id = Some(session.session_id);
         infer_ctx.run_id = Some(ctx.run_id);
         infer_ctx.middlewares = engine.model_middlewares.clone();
+        infer_ctx.blob_store = engine.blob_store.clone();
 
         let pre_model_hook_events = dispatch_pre_model_hooks(
             engine,
@@ -289,14 +302,13 @@ pub(crate) async fn run_turn(
                 request = ModelRequest {
                     model_id: engine.model_id.clone(),
                     messages: compacted.prompt.messages,
-                    tools: (!compacted.prompt.tools_snapshot.is_empty())
-                        .then_some(compacted.prompt.tools_snapshot),
+                    tools: model_request_tools(engine, compacted.prompt.tools_snapshot),
                     system: compacted.prompt.system,
                     temperature: None,
                     max_tokens: None,
                     stream: true,
                     cache_breakpoints: compacted.prompt.cache_breakpoints,
-                    api_mode: engine.api_mode,
+                    protocol: engine.protocol,
                     extra: model_extra_with_relay_logical_call_key(
                         engine.model_extra.clone(),
                         ctx.run_id,
@@ -407,8 +419,9 @@ pub(crate) async fn run_turn(
                         .await?;
                     }
                     StreamAggregate::ThinkingChunk { thinking } => {
-                        if let Some(text) = thinking.text.clone() {
-                            assistant_text.push_str(&text);
+                        let text = thinking.text.unwrap_or_default();
+                        if text.is_empty() {
+                            continue;
                         }
                         append(
                             engine,
@@ -419,8 +432,8 @@ pub(crate) async fn run_turn(
                                 run_id: ctx.run_id,
                                 message_id: assistant_message_id,
                                 delta: DeltaChunk::Thought(harness_contracts::ThoughtChunk {
-                                    text: thinking.text,
-                                    provider_id: "model".to_owned(),
+                                    text: Some(text),
+                                    provider_id: "harness_model".to_owned(),
                                     provider_native: thinking.provider_native,
                                     signature: thinking.signature,
                                 }),
@@ -581,7 +594,7 @@ pub(crate) async fn run_turn(
                         run_id: ctx.run_id,
                         message_id: next_input.message.id,
                         content: message_content(&next_input.message),
-                        metadata: MessageMetadata::default(),
+                        metadata: message_metadata(client_message_id.as_deref()),
                         at: harness_contracts::now(),
                     },
                 )],
@@ -879,7 +892,7 @@ pub(crate) async fn run_turn(
             team_id: ctx.team_id,
             system: engine.system_prompt.clone(),
             messages: context_messages,
-            tools: prompt_visible_tools(&engine.tools),
+            tools: prompt_visible_tools_for_model(engine),
         };
         if let Err(error) = engine
             .context
@@ -1495,7 +1508,7 @@ fn model_endpoint(engine: &Engine, request: &ModelRequest) -> String {
     format!(
         "{}:{:?}:{}",
         engine.model.provider_id(),
-        request.api_mode,
+        request.protocol,
         request.model_id
     )
 }
@@ -1671,6 +1684,51 @@ async fn finalize_run_error(
 
 fn prompt_visible_tools(tools: &harness_tool::ToolPool) -> Vec<ToolDescriptor> {
     tools.prompt_visible_descriptors()
+}
+
+fn prompt_visible_tools_for_model(engine: &Engine) -> Vec<ToolDescriptor> {
+    if !engine.model_snapshot.conversation_capability.tool_calling {
+        return Vec::new();
+    }
+    prompt_visible_tools(&engine.tools)
+}
+
+fn model_request_tools(
+    engine: &Engine,
+    tools_snapshot: Vec<ToolDescriptor>,
+) -> Option<Vec<ToolDescriptor>> {
+    if !engine.model_snapshot.conversation_capability.tool_calling || tools_snapshot.is_empty() {
+        return None;
+    }
+    Some(tools_snapshot)
+}
+
+fn validate_model_input_modalities(
+    messages: &[Message],
+    supported: &[ModelModality],
+) -> Result<(), EngineError> {
+    for message in messages {
+        for part in &message.parts {
+            let required = match part {
+                MessagePart::Image { .. } => Some(ModelModality::Image),
+                MessagePart::Video { .. } => Some(ModelModality::Video),
+                MessagePart::File { .. } => Some(ModelModality::File),
+                MessagePart::Text(_)
+                | MessagePart::ToolUse { .. }
+                | MessagePart::ToolResult { .. }
+                | MessagePart::Thinking(_) => None,
+                _ => None,
+            };
+            if let Some(required) = required {
+                if !supported.contains(&required) {
+                    return Err(engine_error(format!(
+                        "model does not support {required:?} input"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -2162,6 +2220,16 @@ fn message_content(message: &Message) -> MessageContent {
         return MessageContent::Text(text.clone());
     }
     MessageContent::Multimodal(message.parts.clone())
+}
+
+fn message_metadata(client_message_id: Option<&str>) -> MessageMetadata {
+    let mut metadata = MessageMetadata::default();
+    if let Some(client_message_id) = client_message_id {
+        metadata
+            .labels
+            .insert("clientMessageId".to_owned(), client_message_id.to_owned());
+    }
+    metadata
 }
 
 fn collected_messages(events: &[Event]) -> Vec<Message> {

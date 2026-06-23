@@ -572,6 +572,14 @@ impl EventStore for FailingEventStore {
         Ok(())
     }
 
+    async fn delete_session(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+    ) -> Result<bool, JournalError> {
+        Err(JournalError::Message("delete failed".to_owned()))
+    }
+
     async fn list_sessions(
         &self,
         _tenant: TenantId,

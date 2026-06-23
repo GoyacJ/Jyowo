@@ -42,7 +42,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-fn request(model_id: &str, api_mode: ApiMode) -> ModelRequest {
+fn request(model_id: &str, protocol: ModelProtocol) -> ModelRequest {
     ModelRequest {
         model_id: model_id.to_owned(),
         messages: vec![Message {
@@ -57,7 +57,7 @@ fn request(model_id: &str, api_mode: ApiMode) -> ModelRequest {
         max_tokens: Some(64),
         stream: true,
         cache_breakpoints: Vec::new(),
-        api_mode,
+        protocol,
         extra: Value::Null,
     }
 }
@@ -102,7 +102,7 @@ where
 async fn contract_mock_provider() {
     run_contract_tests(
         MockProvider::default(),
-        request("mock-model", ApiMode::Messages),
+        request("mock-model", ModelProtocol::Messages),
     )
     .await;
 }
@@ -131,7 +131,7 @@ async fn contract_anthropic_provider() {
 
     run_contract_tests(
         AnthropicProvider::from_api_key("test-key").with_base_url(server.uri()),
-        request("claude-3-5-sonnet-20241022", ApiMode::Messages),
+        request("claude-sonnet-4-6", ModelProtocol::Messages),
     )
     .await;
 }
@@ -139,10 +139,10 @@ async fn contract_anthropic_provider() {
 #[cfg(feature = "openai")]
 #[tokio::test]
 async fn contract_openai_provider() {
-    let server = openai_server("/v1/chat/completions").await;
+    let server = responses_server().await;
     run_contract_tests(
         OpenAiProvider::from_api_key("test-key").with_base_url(server.uri()),
-        request("gpt-4o-mini", ApiMode::ChatCompletions),
+        request("gpt-5.4-mini", ModelProtocol::Responses),
     )
     .await;
 }
@@ -153,7 +153,7 @@ async fn contract_openrouter_provider() {
     let server = openai_server("/v1/chat/completions").await;
     run_contract_tests(
         OpenRouterProvider::from_api_key("test-key").with_base_url(server.uri()),
-        request("openai/gpt-4o-mini", ApiMode::ChatCompletions),
+        request("openai/gpt-5.5", ModelProtocol::ChatCompletions),
     )
     .await;
 }
@@ -179,7 +179,7 @@ async fn contract_gemini_provider() {
 
     run_contract_tests(
         GeminiProvider::from_api_key("test-key").with_base_url(server.uri()),
-        request("gemini-2.5-flash", ApiMode::GenerateContent),
+        request("gemini-2.5-flash", ModelProtocol::GenerateContent),
     )
     .await;
 }
@@ -191,7 +191,7 @@ async fn contract_bedrock_provider() {
         BedrockProvider::from_events(vec![ModelStreamEvent::MessageStop]),
         request(
             "anthropic.claude-3-5-sonnet-20241022-v2:0",
-            ApiMode::Messages,
+            ModelProtocol::Messages,
         ),
     )
     .await;
@@ -203,7 +203,7 @@ async fn contract_codex_provider() {
     let server = responses_server().await;
     run_contract_tests(
         CodexResponsesProvider::from_api_key("test-key").with_base_url(server.uri()),
-        request("gpt-5.4-codex", ApiMode::Responses),
+        request("gpt-5.3-codex", ModelProtocol::Responses),
     )
     .await;
 }
@@ -214,7 +214,7 @@ async fn contract_local_llama_provider() {
     let server = openai_server("/v1/chat/completions").await;
     run_contract_tests(
         LocalLlamaProvider::new(server.uri()),
-        request("llama3.1", ApiMode::ChatCompletions),
+        request("llama3.1", ModelProtocol::ChatCompletions),
     )
     .await;
 }
@@ -227,7 +227,7 @@ macro_rules! domestic_contract {
             let server = openai_server($path).await;
             run_contract_tests(
                 $provider::from_api_key("test-key").with_base_url(server.uri()),
-                request($model, ApiMode::ChatCompletions),
+                request($model, ModelProtocol::ChatCompletions),
             )
             .await;
         }
@@ -238,7 +238,7 @@ domestic_contract!(
     "deepseek",
     contract_deepseek_provider,
     DeepSeekProvider,
-    "deepseek-chat",
+    "deepseek-v4-flash",
     "/v1/chat/completions"
 );
 domestic_contract!(
@@ -252,7 +252,7 @@ domestic_contract!(
     "qwen",
     contract_qwen_provider,
     QwenProvider,
-    "qwen3-max",
+    "qwen3.7-max",
     "/v1/chat/completions"
 );
 domestic_contract!(
@@ -308,7 +308,7 @@ async fn openai_server(expected_path: &str) -> MockServer {
     server
 }
 
-#[cfg(feature = "codex")]
+#[cfg(any(feature = "openai", feature = "codex"))]
 async fn responses_server() -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

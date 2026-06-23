@@ -24,7 +24,7 @@ fn request() -> ModelRequest {
         max_tokens: None,
         stream: true,
         cache_breakpoints: Vec::new(),
-        api_mode: harness_model::ApiMode::Messages,
+        protocol: harness_model::ModelProtocol::Messages,
         extra: json!({}),
     }
 }

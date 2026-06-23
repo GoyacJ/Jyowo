@@ -7,7 +7,7 @@ use harness_contracts::{
     ContextError, ContextStageId, Message, MessageId, MessagePart, MessageRole,
 };
 use harness_model::{
-    ApiMode, AuxExecutor, AuxModelProvider, AuxTask, ModelMetricsSink, ModelRequest,
+    AuxExecutor, AuxModelProvider, AuxTask, ModelMetricsSink, ModelProtocol, ModelRequest,
 };
 use tokio::sync::Mutex;
 
@@ -299,7 +299,7 @@ pub(crate) fn aux_request(
         max_tokens: Some(limits.max_output_tokens),
         stream: false,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::Responses,
+        protocol: ModelProtocol::Responses,
         extra: serde_json::Value::default(),
     }
 }

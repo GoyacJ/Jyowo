@@ -8,7 +8,7 @@ use harness_contracts::{
     ProviderRestriction, RunId, SessionId, TenantId, ToolDescriptor, ToolError, ToolGroup,
     ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel,
 };
-use harness_model::ModelCapabilities;
+use harness_model::ConversationModelCapability;
 use harness_tool::{
     InterruptToken, PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
     Tool, ToolContext,
@@ -71,7 +71,7 @@ async fn select_query_materializes_only_deferred_matches() {
         loaded_tool_names: BTreeSet::from(["AlreadyLoaded".to_owned()]),
         discovered_tool_names: BTreeSet::new(),
         pending_mcp_servers: Vec::new(),
-        model_caps: Arc::new(ModelCapabilities::default()),
+        model_caps: Arc::new(ConversationModelCapability::default()),
         reload_handle: None,
     }));
     let tool = ToolSearchTool::builder()
@@ -127,7 +127,7 @@ async fn keyword_query_scores_and_clamps_results() {
         loaded_tool_names: BTreeSet::new(),
         discovered_tool_names: BTreeSet::from(["mcp__slack__list_channels".to_owned()]),
         pending_mcp_servers: vec!["slow-server".to_owned()],
-        model_caps: Arc::new(ModelCapabilities::default()),
+        model_caps: Arc::new(ConversationModelCapability::default()),
         reload_handle: None,
     }));
     let tool = ToolSearchTool::builder()
@@ -155,7 +155,7 @@ async fn no_match_does_not_materialize() {
         loaded_tool_names: BTreeSet::new(),
         discovered_tool_names: BTreeSet::new(),
         pending_mcp_servers: Vec::new(),
-        model_caps: Arc::new(ModelCapabilities::default()),
+        model_caps: Arc::new(ConversationModelCapability::default()),
         reload_handle: None,
     }));
     let tool = ToolSearchTool::builder()
@@ -173,12 +173,14 @@ async fn no_match_does_not_materialize() {
 #[tokio::test]
 async fn default_backend_uses_inline_reinjection_for_non_tool_reference_models() {
     let reload = Arc::new(RecordingReloadHandle::default());
+    let mut model_caps = ConversationModelCapability::default();
+    model_caps.tool_calling = false;
     let runtime = Arc::new(FakeRuntime::new(ToolSearchRuntimeSnapshot {
         deferred_tools: vec![descriptor("ReadFile", "Read file contents", None)],
         loaded_tool_names: BTreeSet::new(),
         discovered_tool_names: BTreeSet::new(),
         pending_mcp_servers: Vec::new(),
-        model_caps: Arc::new(ModelCapabilities::default()),
+        model_caps: Arc::new(model_caps),
         reload_handle: Some(reload.clone()),
     }));
     let tool = ToolSearchTool::builder()
@@ -217,12 +219,14 @@ async fn default_backend_uses_inline_reinjection_for_non_tool_reference_models()
 
 #[tokio::test]
 async fn default_backend_rejects_inline_reinjection_when_reload_handle_is_missing() {
+    let mut model_caps = ConversationModelCapability::default();
+    model_caps.tool_calling = false;
     let runtime = Arc::new(FakeRuntime::new(ToolSearchRuntimeSnapshot {
         deferred_tools: vec![descriptor("ReadFile", "Read file contents", None)],
         loaded_tool_names: BTreeSet::new(),
         discovered_tool_names: BTreeSet::new(),
         pending_mcp_servers: Vec::new(),
-        model_caps: Arc::new(ModelCapabilities::default()),
+        model_caps: Arc::new(model_caps),
         reload_handle: None,
     }));
     let tool = ToolSearchTool::builder()

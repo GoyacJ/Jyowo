@@ -110,19 +110,6 @@ impl ModelProvider for CassetteProvider {
     fn prompt_cache_style(&self) -> PromptCacheStyle {
         self.inner.prompt_cache_style()
     }
-
-    fn supports_tools(&self) -> bool {
-        self.inner.supports_tools()
-    }
-
-    fn supports_vision(&self) -> bool {
-        self.inner.supports_vision()
-    }
-
-    fn supports_thinking(&self) -> bool {
-        self.inner.supports_thinking()
-    }
-
     async fn health(&self) -> HealthStatus {
         self.inner.health().await
     }

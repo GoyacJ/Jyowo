@@ -7,6 +7,7 @@ export const runEventSourceSchema = z.enum(['user', 'assistant', 'tool', 'engine
 export const runEventContractTypeSchema = z.enum([
   'run_started',
   'run_ended',
+  'user_message_appended',
   'assistant_delta_produced',
   'assistant_message_completed',
   'tool_use_requested',
@@ -16,22 +17,38 @@ export const runEventContractTypeSchema = z.enum([
   'tool_use_failed',
   'permission_requested',
   'permission_resolved',
+  'artifact_created',
+  'artifact_updated',
   'engine_failed',
 ])
 
 const payloadSchema = z.record(z.string(), z.unknown())
 const unredactedSecretPatterns = [
   /\bAuthorization:?\s*Bearer\s+\S+/i,
+  /\bAuthorization:?\s*Basic\s+\S+/i,
+  /\bBasic\s+[A-Za-z0-9+/=]{8,}\b/,
   /\b(?:api[_-]?key|token|secret|password)\b\s*(?:=|\s+)\s*\S+/i,
   /\b--(?:api-key|token|secret|password)\b\s+\S+/i,
   /\b[A-Za-z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|ACCESS_KEY)[A-Za-z0-9_]*\s*=\s*\S+/i,
   /\b[A-Za-z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|ACCESS_KEY)[A-Za-z0-9_]*\s+\S+/i,
   /\bsk-[A-Za-z0-9]{12,}/i,
   /\bgh[pousr]_[A-Za-z0-9_]{20,}/i,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bAIza[0-9A-Za-z_-]{30,}\b/,
+  /\bxox[baprs]-[0-9A-Za-z-]{20,}\b/,
+  /\b(?:rk|sk)_(?:live|test)_[0-9A-Za-z]{12,}\b/i,
+  /\bnpm_[0-9A-Za-z]{20,}\b/,
+  /\blin_api_[0-9A-Za-z]{20,}\b/,
+  /\bsecret_[0-9A-Za-z]{20,}\b/,
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}\b/,
 ]
 
 function hasObviousUnredactedSecret(value: string): boolean {
   return unredactedSecretPatterns.some((pattern) => pattern.test(value))
+}
+
+function hasPrivateAbsolutePath(value: string): boolean {
+  return /(?:\/Users\/|\/home\/|\/private\/var\/|[A-Za-z]:\\)/.test(value)
 }
 
 function containsObviousUnredactedSecret(value: unknown): boolean {
@@ -50,6 +67,22 @@ function containsObviousUnredactedSecret(value: unknown): boolean {
   return false
 }
 
+function containsPrivateAbsolutePath(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return hasPrivateAbsolutePath(value)
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((item) => containsPrivateAbsolutePath(item))
+  }
+
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value).some((item) => containsPrivateAbsolutePath(item))
+  }
+
+  return false
+}
+
 const permissionDisplayTextSchema = z
   .string()
   .trim()
@@ -57,19 +90,18 @@ const permissionDisplayTextSchema = z
   .refine((value) => !hasObviousUnredactedSecret(value), {
     message: 'permission review payload must not contain obvious unredacted secrets',
   })
+  .refine((value) => !hasPrivateAbsolutePath(value), {
+    message: 'permission review payload must not contain private absolute paths',
+  })
 const requestIdSchema = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/, {
   message: 'requestId must be a canonical ULID',
 })
-const permissionArgsSchema = z.array(permissionDisplayTextSchema).superRefine((argv, context) => {
-  if (!hasObviousUnredactedSecret(argv.join(' '))) {
-    return
-  }
-
-  context.addIssue({
-    code: 'custom',
-    message: 'permission command args must not contain obvious unredacted secrets',
-  })
-})
+const uuidV4Schema = z
+  .uuid()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+const toolInputWithheldMessage = 'Input withheld from conversation timeline.'
+const toolOutputWithheldMessage = 'Output withheld from conversation timeline.'
+const toolErrorWithheldMessage = 'Tool error withheld from conversation timeline.'
 const runStartedPayloadSchema = z
   .object({
     sessionId: z.string().min(1),
@@ -96,14 +128,22 @@ const assistantDeltaPayloadSchema = z
     text: z.string(),
   })
   .strict()
+const userMessageAppendedPayloadSchema = z
+  .object({
+    body: z.string(),
+    clientMessageId: uuidV4Schema.optional(),
+    messageId: z.string().min(1),
+  })
+  .strict()
 const assistantCompletedPayloadSchema = z
   .object({
+    body: z.string().optional(),
     messageId: z.string().min(1),
   })
   .strict()
 const toolRequestedPayloadSchema = z
   .object({
-    argumentsSummary: z.string().optional(),
+    argumentsSummary: z.literal(toolInputWithheldMessage).optional(),
     toolName: z.string().min(1),
     toolUseId: z.string().min(1),
   })
@@ -116,27 +156,19 @@ const toolResolvedPayloadSchema = z
 const toolCompletedPayloadSchema = z
   .object({
     durationMs: z.number().int().nonnegative().optional(),
-    outputSummary: z.string().optional(),
+    outputSummary: z.literal(toolOutputWithheldMessage).optional(),
     toolUseId: z.string().min(1),
   })
   .strict()
 const toolFailedPayloadSchema = z
   .object({
-    code: z.string().min(1),
-    message: z.string().optional(),
+    code: z.literal('tool_error'),
+    message: z.literal(toolErrorWithheldMessage).optional(),
     toolUseId: z.string().min(1),
-  })
-  .strict()
-const permissionCommandSchema = z
-  .object({
-    argv: permissionArgsSchema.optional(),
-    cwd: permissionDisplayTextSchema.optional(),
-    executable: permissionDisplayTextSchema,
   })
   .strict()
 const permissionRequestedPayloadSchema = z
   .object({
-    command: permissionCommandSchema.optional(),
     decisionScope: permissionDisplayTextSchema,
     diffSummary: permissionDisplayTextSchema.optional(),
     exposure: permissionDisplayTextSchema,
@@ -154,6 +186,12 @@ const permissionResolvedPayloadSchema = z
     requestId: requestIdSchema,
   })
   .strict()
+const artifactLifecyclePayloadSchema = z
+  .object({
+    artifactId: z.string().min(1),
+    status: z.enum(['failed', 'pending', 'ready', 'running']).optional(),
+  })
+  .strict()
 const engineFailedPayloadSchema = z
   .object({
     message: z.string().min(1),
@@ -163,6 +201,7 @@ const engineFailedPayloadSchema = z
 const baseRunEventSchema = z
   .object({
     id: z.string().min(1),
+    conversationSequence: z.number().int().positive(),
     runId: z.string().min(1),
     sequence: z.number().int().nonnegative(),
     timestamp: z.string().datetime({ offset: true }),
@@ -182,11 +221,19 @@ function eventSchema<TType extends string, TPayloadSchema extends z.ZodType>(
   })
 }
 
+const assistantThinkingDeltaPayloadSchema = z
+  .object({
+    text: z.string(),
+  })
+  .strict()
+
 export const runEventSchema = z
   .discriminatedUnion('type', [
     eventSchema('run.started', runStartedPayloadSchema),
     eventSchema('run.ended', runEndedPayloadSchema),
+    eventSchema('user.message.appended', userMessageAppendedPayloadSchema),
     eventSchema('assistant.delta', assistantDeltaPayloadSchema),
+    eventSchema('assistant.thinking.delta', assistantThinkingDeltaPayloadSchema),
     eventSchema('assistant.completed', assistantCompletedPayloadSchema),
     eventSchema('tool.requested', toolRequestedPayloadSchema),
     eventSchema('tool.approved', toolResolvedPayloadSchema),
@@ -195,6 +242,8 @@ export const runEventSchema = z
     eventSchema('tool.failed', toolFailedPayloadSchema),
     eventSchema('permission.requested', permissionRequestedPayloadSchema),
     eventSchema('permission.resolved', permissionResolvedPayloadSchema),
+    eventSchema('artifact.created', artifactLifecyclePayloadSchema),
+    eventSchema('artifact.updated', artifactLifecyclePayloadSchema),
     eventSchema('engine.failed', engineFailedPayloadSchema),
   ])
   .superRefine((event, context) => {
@@ -230,6 +279,14 @@ export const runEventSchema = z
         })
       }
 
+      if (containsPrivateAbsolutePath(event.payload)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'visible event payload must not contain private absolute paths',
+          path: ['payload'],
+        })
+      }
+
       return
     }
 
@@ -242,8 +299,21 @@ export const runEventSchema = z
 
 export const runEventsSchema = z.array(runEventSchema).superRefine((events, context) => {
   const lastSequenceByRun = new Map<string, number>()
+  let lastConversationSequence: number | undefined
 
   events.forEach((event, index) => {
+    if (
+      lastConversationSequence !== undefined &&
+      event.conversationSequence <= lastConversationSequence
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: '`conversationSequence` must be strictly monotonic',
+        path: [index, 'conversationSequence'],
+      })
+    }
+    lastConversationSequence = event.conversationSequence
+
     const lastSequence = lastSequenceByRun.get(event.runId)
 
     if (lastSequence !== undefined && event.sequence <= lastSequence) {
@@ -270,6 +340,8 @@ export function mapRunEventContractType(contractType: RunEventContractType): Run
       return 'run.started'
     case 'run_ended':
       return 'run.ended'
+    case 'user_message_appended':
+      return 'user.message.appended'
     case 'assistant_delta_produced':
       return 'assistant.delta'
     case 'assistant_message_completed':
@@ -288,6 +360,10 @@ export function mapRunEventContractType(contractType: RunEventContractType): Run
       return 'permission.requested'
     case 'permission_resolved':
       return 'permission.resolved'
+    case 'artifact_created':
+      return 'artifact.created'
+    case 'artifact_updated':
+      return 'artifact.updated'
     case 'engine_failed':
       return 'engine.failed'
     default:
@@ -385,8 +461,12 @@ export const runEventFixtures: Array<Record<string, unknown>> = [
     timestamp,
     type: 'tool.failed',
     source: 'tool',
-    visibility: 'public',
-    payload: { toolUseId: 'tool-003', code: 'failed' },
+    visibility: 'redacted',
+    payload: {
+      toolUseId: 'tool-003',
+      code: 'tool_error',
+      message: toolErrorWithheldMessage,
+    },
   },
   {
     id: 'evt-010',
@@ -422,12 +502,32 @@ export const runEventFixtures: Array<Record<string, unknown>> = [
     runId: 'run-001',
     sequence: 12,
     timestamp,
+    type: 'artifact.created',
+    source: 'engine',
+    visibility: 'public',
+    payload: { artifactId: 'artifact-001', status: 'ready' },
+  },
+  {
+    id: 'evt-013',
+    runId: 'run-001',
+    sequence: 13,
+    timestamp,
+    type: 'artifact.updated',
+    source: 'engine',
+    visibility: 'public',
+    payload: { artifactId: 'artifact-001', status: 'running' },
+  },
+  {
+    id: 'evt-014',
+    runId: 'run-001',
+    sequence: 14,
+    timestamp,
     type: 'engine.failed',
     source: 'engine',
     visibility: 'public',
     payload: { message: 'model stream failed' },
   },
-]
+].map((event, index) => ({ conversationSequence: index + 1, ...event }))
 
 export function getRunEventLabel(event: RunEvent): string {
   switch (event.type) {
@@ -435,8 +535,12 @@ export function getRunEventLabel(event: RunEvent): string {
       return 'Run started'
     case 'run.ended':
       return 'Run ended'
+    case 'user.message.appended':
+      return 'User message appended'
     case 'assistant.delta':
       return 'Assistant delta'
+    case 'assistant.thinking.delta':
+      return 'Assistant thinking delta'
     case 'assistant.completed':
       return 'Assistant completed'
     case 'tool.requested':
@@ -453,6 +557,10 @@ export function getRunEventLabel(event: RunEvent): string {
       return 'Permission requested'
     case 'permission.resolved':
       return 'Permission resolved'
+    case 'artifact.created':
+      return 'Artifact created'
+    case 'artifact.updated':
+      return 'Artifact updated'
     case 'engine.failed':
       return 'Engine failed'
     default:

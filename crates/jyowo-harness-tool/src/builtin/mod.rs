@@ -12,6 +12,8 @@ mod glob;
 mod grep;
 #[cfg(feature = "builtin-toolset")]
 mod list_dir;
+#[cfg(feature = "minimax-tools")]
+mod minimax;
 #[cfg(feature = "builtin-toolset")]
 mod read;
 #[cfg(feature = "builtin-toolset")]
@@ -46,6 +48,20 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 #[cfg(feature = "builtin-toolset")]
 pub use list_dir::ListDirTool;
+#[cfg(feature = "minimax-tools")]
+pub use minimax::{
+    MiniMaxAnthropicCountTokensTool, MiniMaxAnthropicMessagesTool,
+    MiniMaxAnthropicModelRetrieveTool, MiniMaxAnthropicModelsListTool, MiniMaxDeleteVoiceTool,
+    MiniMaxFileDeleteTool, MiniMaxFileListTool, MiniMaxFileRetrieveTool, MiniMaxFileUploadTool,
+    MiniMaxFirstLastFrameToVideoTool, MiniMaxImageToImageTool, MiniMaxImageToVideoTool,
+    MiniMaxListVoicesTool, MiniMaxLyricsGenerationTool, MiniMaxModelRetrieveTool,
+    MiniMaxModelsListTool, MiniMaxMusicCoverPreprocessTool, MiniMaxMusicGenerationTool,
+    MiniMaxResponsesInputTokensTool, MiniMaxResponsesTool, MiniMaxSubjectReferenceVideoTool,
+    MiniMaxTextToImageTool, MiniMaxTextToSpeechAsyncQueryTool, MiniMaxTextToSpeechAsyncTool,
+    MiniMaxTextToSpeechTool, MiniMaxTextToVideoTool, MiniMaxVideoGenerationQueryTool,
+    MiniMaxVideoTemplateQueryTool, MiniMaxVideoTemplateTool, MiniMaxVoiceCloneTool,
+    MiniMaxVoiceDesignTool,
+};
 #[cfg(feature = "builtin-toolset")]
 pub use read::FileReadTool;
 #[cfg(feature = "builtin-toolset")]

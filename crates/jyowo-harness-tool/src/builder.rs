@@ -58,6 +58,83 @@ impl ToolRegistryBuilder {
                     registry.register(Box::<crate::builtin::SkillsInvokeTool>::default())?;
                     #[cfg(feature = "programmatic-tool-calling")]
                     registry.register(Box::<crate::builtin::ExecuteCodeTool>::default())?;
+                    #[cfg(feature = "minimax-tools")]
+                    {
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxTextToImageTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxImageToImageTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxTextToVideoTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxImageToVideoTool>::default())?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxFirstLastFrameToVideoTool>::default(),
+                        )?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxSubjectReferenceVideoTool>::default(),
+                        )?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxVideoGenerationQueryTool>::default(),
+                        )?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxVideoTemplateTool>::default())?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxVideoTemplateQueryTool>::default(),
+                        )?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxTextToSpeechTool>::default())?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxTextToSpeechAsyncTool>::default(),
+                        )?;
+                        registry.register(Box::<
+                            crate::builtin::MiniMaxTextToSpeechAsyncQueryTool,
+                        >::default())?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxVoiceCloneTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxVoiceDesignTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxListVoicesTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxDeleteVoiceTool>::default())?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxLyricsGenerationTool>::default(),
+                        )?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxMusicGenerationTool>::default(),
+                        )?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxMusicCoverPreprocessTool>::default(),
+                        )?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxFileUploadTool>::default())?;
+                        registry.register(Box::<crate::builtin::MiniMaxFileListTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxFileRetrieveTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxFileDeleteTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxModelsListTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxModelRetrieveTool>::default())?;
+                        registry.register(Box::<crate::builtin::MiniMaxResponsesTool>::default())?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxResponsesInputTokensTool>::default(),
+                        )?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxAnthropicMessagesTool>::default(),
+                        )?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxAnthropicCountTokensTool>::default(),
+                        )?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxAnthropicModelsListTool>::default(),
+                        )?;
+                        registry.register(Box::<
+                            crate::builtin::MiniMaxAnthropicModelRetrieveTool,
+                        >::default())?;
+                    }
                 }
             }
             BuiltinToolset::Empty => {}

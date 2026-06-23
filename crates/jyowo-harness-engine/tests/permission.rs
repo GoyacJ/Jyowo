@@ -15,8 +15,8 @@ use harness_engine::{Engine, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
-    ApiMode, ContentDelta, HealthStatus, InferContext, ModelCapabilities, ModelDescriptor,
-    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
+    ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
+    ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_tool::{
@@ -67,7 +67,7 @@ async fn permission_suppression_emits_event() {
         .with_permission_broker(broker.clone())
         .with_workspace_root(workspace.path())
         .with_model_id("mock-model")
-        .with_api_mode(ApiMode::Messages)
+        .with_protocol(ModelProtocol::Messages)
         .with_cap_registry(Arc::new(CapabilityRegistry::default()))
         .build()
         .unwrap();
@@ -150,12 +150,14 @@ impl ModelProvider for TwoStepModel {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "mock".to_owned(),
             model_id: "mock-model".to_owned(),
             display_name: "Mock model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
     }

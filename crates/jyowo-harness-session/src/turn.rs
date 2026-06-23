@@ -6,21 +6,23 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use harness_context::{ContextEngine, ContextSessionView};
 use harness_contracts::{
-    AssistantMessageCompletedEvent, BlobStore, CapabilityRegistry, CausationId, CorrelationId,
-    DecidedBy, Decision, DecisionId, DenyReason, EndReason, Event, EventId, FallbackPolicy,
-    InteractivityLevel, Message, MessageContent, MessageId, MessageMetadata, MessagePart,
-    MessageRole, NoopRedactor, PermissionMode, PermissionRequestedEvent, PermissionResolvedEvent,
-    Redactor, RunEndedEvent, RunId, RunStartedEvent, SessionError, SessionId, StopReason, TeamId,
-    TenantId, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseApprovedEvent,
-    ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
-    ToolUseRequestedEvent, ToolUseSummary, TrustLevel, TurnInput, UsageSnapshot,
+    AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobStore, CapabilityRegistry,
+    CausationId, CorrelationId, DecidedBy, Decision, DecisionId, DeltaChunk, DenyReason, EndReason,
+    Event, EventId, FallbackPolicy, InteractivityLevel, Message, MessageContent, MessageId,
+    MessageMetadata, MessagePart, MessageRole, NoopRedactor, PermissionMode,
+    PermissionRequestedEvent, PermissionResolvedEvent, Redactor, RunEndedEvent, RunId,
+    RunStartedEvent, SessionError, SessionId, StopReason, TeamId, TenantId, ToolDescriptor,
+    ToolError, ToolErrorPayload, ToolResult, ToolUseApprovedEvent, ToolUseCompletedEvent,
+    ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseSummary,
+    TrustLevel, TurnInput, UsageSnapshot,
 };
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookMessageView, HookOutcome, HookSessionView,
     ReplayMode, ToolDescriptorView,
 };
 use harness_model::{
-    ApiMode, ContentDelta, InferContext, ModelProvider, ModelRequest, ModelStreamEvent,
+    ContentDelta, InferContext, ModelModality, ModelProtocol, ModelProvider, ModelRequest,
+    ModelStreamEvent,
 };
 use harness_permission::{
     PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision, RuleSnapshot,
@@ -47,25 +49,30 @@ pub struct SessionTurnRuntime {
     pub blob_store: Option<Arc<dyn BlobStore>>,
     pub model_id: String,
     pub model_extra: Value,
-    pub api_mode: ApiMode,
+    pub protocol: ModelProtocol,
     pub system_prompt: Option<String>,
 }
 
 pub(crate) async fn run_turn(
     session: &Session,
     runtime: SessionTurnRuntime,
-    prompt: String,
+    parts: Vec<MessagePart>,
+    client_message_id: Option<String>,
 ) -> Result<(), SessionError> {
     let run_id = RunId::new();
     let projection = session.projection().await;
+    let prompt = text_from_parts(&parts);
     let turn_input = TurnInput {
         message: Message {
             id: MessageId::new(),
             role: MessageRole::User,
-            parts: vec![MessagePart::Text(prompt.clone())],
+            parts,
             created_at: harness_contracts::now(),
         },
-        metadata: json!({ "turn": next_turn_index(&projection.messages) }),
+        metadata: turn_metadata(
+            next_turn_index(&projection.messages),
+            client_message_id.clone(),
+        ),
     };
 
     let run_started = Event::RunStarted(RunStartedEvent {
@@ -139,6 +146,29 @@ pub(crate) async fn run_turn(
             return finalize_run_error(session, run_id, &mut projection_events, error).await
         }
     };
+    if let Err(error) = validate_model_input_modalities(
+        &assembled.messages,
+        &runtime
+            .model
+            .snapshot_for_model(&runtime.model_id)
+            .conversation_capability
+            .input_modalities,
+    ) {
+        return finalize_run_error(session, run_id, &mut projection_events, error).await;
+    }
+
+    let user_message_appended =
+        Event::UserMessageAppended(harness_contracts::UserMessageAppendedEvent {
+            run_id,
+            message_id: turn_input.message.id,
+            content: message_content(&turn_input.message),
+            metadata: message_metadata(client_message_id.as_deref()),
+            at: harness_contracts::now(),
+        });
+    session
+        .append_events(std::slice::from_ref(&user_message_appended))
+        .await?;
+    projection_events.push(user_message_appended);
 
     let request = ModelRequest {
         model_id: runtime.model_id.clone(),
@@ -149,13 +179,14 @@ pub(crate) async fn run_turn(
         max_tokens: None,
         stream: true,
         cache_breakpoints: assembled.cache_breakpoints,
-        api_mode: runtime.api_mode,
+        protocol: runtime.protocol,
         extra: runtime.model_extra.clone(),
     };
     let mut infer_ctx = InferContext::for_test();
     infer_ctx.tenant_id = session.tenant_id();
     infer_ctx.session_id = Some(session.session_id());
     infer_ctx.run_id = Some(run_id);
+    infer_ctx.blob_store = runtime.blob_store.clone();
 
     let mut stream = match runtime.model.infer(request, infer_ctx).await {
         Ok(stream) => stream,
@@ -164,6 +195,7 @@ pub(crate) async fn run_turn(
         }
     };
     let mut assistant_text = String::new();
+    let assistant_message_id = MessageId::new();
     let mut tool_calls = Vec::new();
     let mut usage = UsageSnapshot::default();
     let mut stop_reason = StopReason::EndTurn;
@@ -174,12 +206,20 @@ pub(crate) async fn run_turn(
                 usage: start_usage, ..
             } => add_usage(&mut usage, &start_usage),
             ModelStreamEvent::ContentBlockDelta { delta, .. } => match delta {
-                ContentDelta::Text(text) => assistant_text.push_str(&text),
-                ContentDelta::Thinking(thinking) => {
-                    if let Some(text) = thinking.text {
-                        assistant_text.push_str(&text);
-                    }
+                ContentDelta::Text(text) => {
+                    assistant_text.push_str(&text);
+                    let delta_event = Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                        run_id,
+                        message_id: assistant_message_id,
+                        delta: DeltaChunk::Text(text),
+                        at: harness_contracts::now(),
+                    });
+                    session
+                        .append_events(std::slice::from_ref(&delta_event))
+                        .await?;
+                    projection_events.push(delta_event);
                 }
+                ContentDelta::Thinking(_) => {}
                 ContentDelta::ToolUseComplete { id, name, input } => {
                     tool_calls.push(ToolCall {
                         tool_use_id: id,
@@ -213,15 +253,7 @@ pub(crate) async fn run_turn(
         }
     }
 
-    let mut pre_tool_events = vec![Event::UserMessageAppended(
-        harness_contracts::UserMessageAppendedEvent {
-            run_id,
-            message_id: turn_input.message.id,
-            content: message_content(&turn_input.message),
-            metadata: MessageMetadata::default(),
-            at: harness_contracts::now(),
-        },
-    )];
+    let mut pre_tool_events = Vec::with_capacity(tool_calls.len());
     for call in &tool_calls {
         let Some(descriptor) = runtime.tools.descriptor(&call.tool_name) else {
             return finalize_run_error(
@@ -303,7 +335,7 @@ pub(crate) async fn run_turn(
     let final_events = vec![
         Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
             run_id,
-            message_id: MessageId::new(),
+            message_id: assistant_message_id,
             content: MessageContent::Text(answer),
             tool_uses: tool_summaries,
             usage: usage.clone(),
@@ -321,6 +353,45 @@ pub(crate) async fn run_turn(
     session.append_events(&final_events).await?;
     projection_events.extend(final_events);
     session.apply_projection_events(&projection_events).await;
+    Ok(())
+}
+
+fn text_from_parts(parts: &[MessagePart]) -> String {
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            MessagePart::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn validate_model_input_modalities(
+    messages: &[Message],
+    supported: &[ModelModality],
+) -> Result<(), SessionError> {
+    for message in messages {
+        for part in &message.parts {
+            let required = match part {
+                MessagePart::Image { .. } => Some(ModelModality::Image),
+                MessagePart::Video { .. } => Some(ModelModality::Video),
+                MessagePart::File { .. } => Some(ModelModality::File),
+                MessagePart::Text(_)
+                | MessagePart::ToolUse { .. }
+                | MessagePart::ToolResult { .. }
+                | MessagePart::Thinking(_) => None,
+                _ => None,
+            };
+            if let Some(required) = required {
+                if !supported.contains(&required) {
+                    return Err(SessionError::Message(format!(
+                        "model does not support {required:?} input"
+                    )));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -627,15 +698,11 @@ fn assistant_answer(
         }
         match &result.result {
             Ok(tool_result) => {
-                let _ = write!(
-                    assistant_text,
-                    "{} result: {}",
-                    result.tool_name,
-                    tool_result_summary(tool_result)
-                );
+                let _ = write!(assistant_text, "{}", tool_result_summary(tool_result));
             }
             Err(error) => {
-                let _ = write!(assistant_text, "{} error: {error}", result.tool_name);
+                let _ = error;
+                assistant_text.push_str("Tool error withheld from conversation transcript.");
             }
         }
     }
@@ -643,13 +710,8 @@ fn assistant_answer(
 }
 
 fn tool_result_summary(result: &ToolResult) -> String {
-    match result {
-        ToolResult::Text(text) => text.clone(),
-        ToolResult::Structured(value) => value.to_string(),
-        ToolResult::Blob { blob_ref, .. } => format!("{blob_ref:?}"),
-        ToolResult::Mixed(parts) => format!("{parts:?}"),
-        _ => format!("{result:?}"),
-    }
+    let _ = result;
+    "Tool result withheld from conversation transcript.".to_owned()
 }
 
 fn message_content(message: &Message) -> MessageContent {
@@ -657,6 +719,75 @@ fn message_content(message: &Message) -> MessageContent {
         return MessageContent::Text(text.clone());
     }
     MessageContent::Multimodal(message.parts.clone())
+}
+
+fn turn_metadata(turn_index: u32, client_message_id: Option<String>) -> Value {
+    let mut metadata = json!({ "turn": turn_index });
+    if let Some(client_message_id) = client_message_id.filter(|value| is_uuid_v4_like(value)) {
+        metadata["clientMessageId"] = json!(client_message_id);
+    }
+    metadata
+}
+
+fn message_metadata(client_message_id: Option<&str>) -> MessageMetadata {
+    let mut metadata = MessageMetadata::default();
+    if let Some(client_message_id) = client_message_id.filter(|value| is_uuid_v4_like(value)) {
+        metadata
+            .labels
+            .insert("clientMessageId".to_owned(), client_message_id.to_owned());
+    }
+    metadata
+}
+
+fn is_uuid_v4_like(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+
+    for index in [8, 13, 18, 23] {
+        if bytes[index] != b'-' {
+            return false;
+        }
+    }
+    if bytes[14] != b'4' || !matches!(bytes[19], b'8' | b'9' | b'a' | b'b' | b'A' | b'B') {
+        return false;
+    }
+
+    bytes
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !matches!(index, 8 | 13 | 18 | 23))
+        .all(|(_, byte)| byte.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{message_metadata, turn_metadata};
+
+    #[test]
+    fn turn_and_message_metadata_keep_only_uuid_v4_client_message_ids() {
+        let uuid_v4 = "00000000-0000-4000-8000-000000000001";
+        let uuid_v1 = "00000000-0000-1000-8000-000000000001";
+
+        assert_eq!(
+            turn_metadata(1, Some(uuid_v4.to_owned()))["clientMessageId"],
+            uuid_v4
+        );
+        assert!(turn_metadata(1, Some(uuid_v1.to_owned()))
+            .get("clientMessageId")
+            .is_none());
+        assert_eq!(
+            message_metadata(Some(uuid_v4))
+                .labels
+                .get("clientMessageId")
+                .map(String::as_str),
+            Some(uuid_v4)
+        );
+        assert!(!message_metadata(Some(uuid_v1))
+            .labels
+            .contains_key("clientMessageId"));
+    }
 }
 
 #[cfg(feature = "steering")]

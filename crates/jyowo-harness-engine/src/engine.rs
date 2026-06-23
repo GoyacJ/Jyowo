@@ -36,7 +36,7 @@ use harness_journal::EventStore;
 #[cfg(feature = "subagent-tool")]
 use harness_mcp::{McpRegistry, McpServerPattern, McpServerRef, RequiredEvaluation};
 use harness_model::{
-    ApiMode, InferMiddleware, ModelProvider, ModelRuntimeSnapshot, PricingSnapshotResolver,
+    InferMiddleware, ModelProtocol, ModelProvider, ModelRuntimeSnapshot, PricingSnapshotResolver,
 };
 use harness_observability::{Observer, Tracer};
 use harness_permission::PermissionBroker;
@@ -91,7 +91,7 @@ pub struct Engine {
     pub(crate) workspace_root: PathBuf,
     pub(crate) model_id: String,
     pub(crate) model_extra: Value,
-    pub(crate) api_mode: ApiMode,
+    pub(crate) protocol: ModelProtocol,
     pub(crate) system_prompt: Option<String>,
     pub(crate) sandbox: Option<Arc<dyn SandboxBackend>>,
     #[cfg(feature = "programmatic-tool-calling")]
@@ -121,7 +121,7 @@ pub struct EngineBuilder {
     workspace_root: Option<PathBuf>,
     model_id: Option<String>,
     model_extra: Value,
-    api_mode: ApiMode,
+    protocol: ModelProtocol,
     system_prompt: Option<String>,
     sandbox: Option<Arc<dyn SandboxBackend>>,
     #[cfg(feature = "programmatic-tool-calling")]
@@ -168,7 +168,7 @@ impl Engine {
             workspace_root: Some(self.workspace_root),
             model_id: Some(self.model_id),
             model_extra: self.model_extra,
-            api_mode: self.api_mode,
+            protocol: self.protocol,
             system_prompt: self.system_prompt,
             sandbox: self.sandbox,
             #[cfg(feature = "programmatic-tool-calling")]
@@ -206,7 +206,7 @@ impl Default for EngineBuilder {
             workspace_root: None,
             model_id: None,
             model_extra: Value::Null,
-            api_mode: ApiMode::Messages,
+            protocol: ModelProtocol::Messages,
             system_prompt: None,
             sandbox: None,
             #[cfg(feature = "programmatic-tool-calling")]
@@ -320,8 +320,8 @@ impl EngineBuilder {
     }
 
     #[must_use]
-    pub fn with_api_mode(mut self, api_mode: ApiMode) -> Self {
-        self.api_mode = api_mode;
+    pub fn with_protocol(mut self, protocol: ModelProtocol) -> Self {
+        self.protocol = protocol;
         self
     }
 
@@ -527,7 +527,7 @@ impl EngineBuilder {
             workspace_root,
             model_id,
             model_extra: self.model_extra,
-            api_mode: self.api_mode,
+            protocol: self.protocol,
             system_prompt: self.system_prompt,
             sandbox: self.sandbox,
             #[cfg(feature = "programmatic-tool-calling")]

@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use harness_contracts::{BlobStore, CapabilityRegistry, HarnessError};
 #[cfg(feature = "agents-subagent")]
-use harness_contracts::{SubagentRunnerCap, ToolCapability};
+use harness_contracts::SubagentRunnerCap;
+use harness_contracts::{BlobStore, CapabilityRegistry, HarnessError, ToolCapability};
 use harness_hook::HookRegistry;
 use harness_journal::EventStore;
 use harness_mcp::{ElicitationHandler, StreamElicitationHandler};
@@ -84,6 +84,7 @@ pub struct HarnessBuilder<ModelState = Unset, StoreState = Unset, SandboxState =
     pub(crate) store: StoreState,
     pub(crate) sandbox: SandboxState,
     pub(crate) options: HarnessOptions,
+    pub(crate) model_id_explicit: bool,
     pub(crate) extras: BuilderExtras,
 }
 
@@ -95,6 +96,7 @@ impl HarnessBuilder<Unset, Unset, Unset> {
             store: Unset,
             sandbox: Unset,
             options: HarnessOptions::default(),
+            model_id_explicit: false,
             extras: BuilderExtras::default(),
         }
     }
@@ -110,6 +112,7 @@ impl<M, S, SB> HarnessBuilder<M, S, SB> {
     #[must_use]
     pub fn with_options(mut self, options: HarnessOptions) -> Self {
         self.options = options;
+        self.model_id_explicit = true;
         self
     }
 
@@ -124,6 +127,7 @@ impl<M, S, SB> HarnessBuilder<M, S, SB> {
     #[must_use]
     pub fn with_model_id(mut self, model_id: impl Into<String>) -> Self {
         self.options.model_id = model_id.into();
+        self.model_id_explicit = true;
         self
     }
 
@@ -284,6 +288,17 @@ impl<M, S, SB> HarnessBuilder<M, S, SB> {
     }
 
     #[must_use]
+    pub fn with_capability<T>(mut self, capability: ToolCapability, implementation: Arc<T>) -> Self
+    where
+        T: ?Sized + Send + Sync + 'static,
+    {
+        let mut registry = self.extras.cap_registry.take().unwrap_or_default();
+        registry.install::<T>(capability, implementation);
+        self.extras.cap_registry = Some(registry);
+        self
+    }
+
+    #[must_use]
     pub fn with_skill_loader(mut self, loader: SkillLoader) -> Self {
         self.extras.skill_loader = Some(loader);
         self
@@ -414,6 +429,7 @@ impl<S, SB> HarnessBuilder<Unset, S, SB> {
             store: self.store,
             sandbox: self.sandbox,
             options: self.options,
+            model_id_explicit: self.model_id_explicit,
             extras: self.extras,
         }
     }
@@ -438,6 +454,7 @@ impl<S, SB> HarnessBuilder<Set<Arc<dyn ModelProvider>>, S, SB> {
             store: self.store,
             sandbox: self.sandbox,
             options: self.options,
+            model_id_explicit: self.model_id_explicit,
             extras: self.extras,
         }
     }
@@ -462,6 +479,7 @@ impl<M, SB> HarnessBuilder<M, Unset, SB> {
             store: Set(store),
             sandbox: self.sandbox,
             options: self.options,
+            model_id_explicit: self.model_id_explicit,
             extras: self.extras,
         }
     }
@@ -486,6 +504,7 @@ impl<M, SB> HarnessBuilder<M, Set<Arc<dyn EventStore>>, SB> {
             store: Set(store),
             sandbox: self.sandbox,
             options: self.options,
+            model_id_explicit: self.model_id_explicit,
             extras: self.extras,
         }
     }
@@ -510,6 +529,7 @@ impl<M, S> HarnessBuilder<M, S, Unset> {
             store: self.store,
             sandbox: Set(sandbox),
             options: self.options,
+            model_id_explicit: self.model_id_explicit,
             extras: self.extras,
         }
     }
@@ -534,6 +554,7 @@ impl<M, S> HarnessBuilder<M, S, Set<Arc<dyn SandboxBackend>>> {
             store: self.store,
             sandbox: Set(sandbox),
             options: self.options,
+            model_id_explicit: self.model_id_explicit,
             extras: self.extras,
         }
     }
@@ -547,6 +568,23 @@ impl
     >
 {
     pub async fn build(self) -> Result<Harness, HarnessError> {
-        Harness::from_builder(self).await
+        let mut builder = self;
+        if !builder.model_id_explicit {
+            let model = &builder.model.0;
+            let provider_id = model.provider_id();
+            let supported_models = model.supported_models();
+            if !supported_models.iter().any(|descriptor| {
+                descriptor.provider_id == provider_id
+                    && descriptor.model_id == builder.options.model_id
+            }) {
+                if let Some(descriptor) = supported_models
+                    .iter()
+                    .find(|descriptor| descriptor.provider_id == provider_id)
+                {
+                    builder.options.model_id = descriptor.model_id.clone();
+                }
+            }
+        }
+        Harness::from_builder(builder).await
     }
 }

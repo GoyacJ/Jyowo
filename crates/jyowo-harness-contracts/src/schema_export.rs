@@ -35,6 +35,34 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "tool_result_part", ToolResultPart);
     insert_schema!(schemas, "message", Message);
     insert_schema!(schemas, "message_part", MessagePart);
+    insert_schema!(schemas, "model_protocol", ModelProtocol);
+    insert_schema!(schemas, "model_modality", ModelModality);
+    insert_schema!(
+        schemas,
+        "conversation_model_capability",
+        ConversationModelCapability
+    );
+    insert_schema!(
+        schemas,
+        "provider_service_capability",
+        ProviderServiceCapability
+    );
+    insert_schema!(
+        schemas,
+        "provider_runtime_capability",
+        ProviderRuntimeCapability
+    );
+    insert_schema!(
+        schemas,
+        "conversation_context_reference",
+        ConversationContextReference
+    );
+    insert_schema!(
+        schemas,
+        "conversation_attachment_reference",
+        ConversationAttachmentReference
+    );
+    insert_schema!(schemas, "conversation_turn_input", ConversationTurnInput);
     insert_schema!(schemas, "blob_ref", BlobRef);
     insert_schema!(schemas, "blob_meta", BlobMeta);
     insert_schema!(schemas, "redact_rules", RedactRules);
@@ -136,6 +164,10 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         "assistant_message_completed",
         AssistantMessageCompletedEvent
     );
+    insert_schema!(schemas, "artifact_created", ArtifactCreatedEvent);
+    insert_schema!(schemas, "artifact_updated", ArtifactUpdatedEvent);
+    insert_schema!(schemas, "artifact_status", ArtifactStatus);
+    insert_schema!(schemas, "artifact_source", ArtifactSource);
     insert_schema!(schemas, "tool_use_requested", ToolUseRequestedEvent);
     insert_schema!(schemas, "tool_use_approved", ToolUseApprovedEvent);
     insert_schema!(schemas, "tool_use_denied", ToolUseDeniedEvent);

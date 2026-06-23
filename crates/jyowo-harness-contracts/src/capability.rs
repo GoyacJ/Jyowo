@@ -95,6 +95,30 @@ pub trait UserMessengerCap: Send + Sync + 'static {
         message: OutboundUserMessage,
     ) -> BoxFuture<'static, Result<UserMessageDelivery, ToolError>>;
 }
+
+pub trait ProviderCredentialResolverCap: Send + Sync + 'static {
+    fn resolve_provider_credential(
+        &self,
+        context: ProviderCredentialResolveContext,
+    ) -> BoxFuture<'_, Result<ProviderCredential, ToolError>>;
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderCredentialResolveContext {
+    pub tenant_id: TenantId,
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub provider_id: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderCredential {
+    pub provider_id: String,
+    pub config_id: String,
+    pub api_key: String,
+    pub base_url: Option<String>,
+}
+
 pub trait BlobReaderCap: Send + Sync + 'static {
     fn read_blob(
         &self,

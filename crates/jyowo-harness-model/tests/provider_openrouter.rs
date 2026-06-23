@@ -3,7 +3,9 @@
 use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{Message, MessageId, MessagePart, MessageRole, StopReason, UsageSnapshot};
-use harness_model::{openrouter::OpenRouterProvider, *};
+use harness_model::{
+    openrouter::inventory_from_models_api_json, openrouter::OpenRouterProvider, *,
+};
 use serde_json::{json, Value};
 use wiremock::{
     matchers::{header, method, path},
@@ -12,7 +14,7 @@ use wiremock::{
 
 fn request(stream: bool) -> ModelRequest {
     ModelRequest {
-        model_id: "openai/gpt-4o-mini".to_owned(),
+        model_id: "openai/gpt-5.5".to_owned(),
         messages: vec![Message {
             id: MessageId::new(),
             role: MessageRole::User,
@@ -25,7 +27,7 @@ fn request(stream: bool) -> ModelRequest {
         max_tokens: Some(64),
         stream,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::ChatCompletions,
+        protocol: ModelProtocol::ChatCompletions,
         extra: Value::Null,
     }
 }
@@ -40,13 +42,96 @@ fn openrouter_provider_metadata_is_stable() {
 
     assert_eq!(provider.provider_id(), "openrouter");
     assert_eq!(provider.prompt_cache_style(), PromptCacheStyle::None);
-    assert!(provider.supports_tools());
-    assert!(provider.supports_vision());
-    assert!(!provider.supports_thinking());
     assert!(provider
         .supported_models()
         .iter()
-        .any(|model| model.model_id == "openai/gpt-4o-mini"));
+        .any(|model| model.model_id == "openai/gpt-5.5"
+            && model.conversation_capability.tool_calling
+            && !model
+                .conversation_capability
+                .input_modalities
+                .contains(&ModelModality::Image)
+            && !model.conversation_capability.reasoning));
+}
+
+#[test]
+fn openrouter_models_api_inventory_marks_non_text_models_unsupported() {
+    let inventory = inventory_from_models_api_json(
+        json!({
+            "data": [
+                {
+                    "id": "openai/gpt-text",
+                    "name": "GPT Text",
+                    "context_length": 128000,
+                    "architecture": {
+                        "input_modalities": ["text"],
+                        "output_modalities": ["text"]
+                    },
+                    "top_provider": {
+                        "max_completion_tokens": 8192
+                    },
+                    "supported_parameters": [
+                        "tools",
+                        "response_format",
+                        "structured_outputs",
+                        "reasoning",
+                        "web_search_options"
+                    ]
+                },
+                {
+                    "id": "openai/gpt-image",
+                    "name": "GPT Image",
+                    "context_length": 32000,
+                    "architecture": {
+                        "input_modalities": ["text"],
+                        "output_modalities": ["image"]
+                    },
+                    "top_provider": {
+                        "max_completion_tokens": 4096
+                    },
+                    "supported_parameters": []
+                }
+            ]
+        })
+        .to_string()
+        .as_bytes(),
+    )
+    .expect("models api response should parse");
+
+    let text = inventory
+        .iter()
+        .find(|model| model.model_id == "openai/gpt-text")
+        .expect("text model should be present");
+    assert!(matches!(text.runtime_status, ModelRuntimeStatus::Runnable));
+    assert!(text.conversation_capability.tool_calling);
+    assert!(text.conversation_capability.structured_output);
+    assert!(text.conversation_capability.reasoning);
+    assert_eq!(
+        text.conversation_capability.input_modalities,
+        vec![ModelModality::Text]
+    );
+    assert_eq!(
+        text.conversation_capability.output_modalities,
+        vec![ModelModality::Text]
+    );
+
+    let image = inventory
+        .iter()
+        .find(|model| model.model_id == "openai/gpt-image")
+        .expect("image output model should be present");
+    assert!(matches!(
+        image.runtime_status,
+        ModelRuntimeStatus::Unsupported { .. }
+    ));
+    assert!(!image.conversation_capability.streaming);
+    assert_eq!(
+        image.conversation_capability.input_modalities,
+        vec![ModelModality::Text]
+    );
+    assert_eq!(
+        image.conversation_capability.output_modalities,
+        vec![ModelModality::Image]
+    );
 }
 
 #[tokio::test]
@@ -94,7 +179,7 @@ async fn openrouter_posts_chat_completions_with_provider_auth() {
 
     let requests = server.received_requests().await.unwrap();
     let body: Value = requests[0].body_json().unwrap();
-    assert_eq!(body["model"], "openai/gpt-4o-mini");
+    assert_eq!(body["model"], "openai/gpt-5.5");
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(body["messages"][0]["content"], "hello");
 }

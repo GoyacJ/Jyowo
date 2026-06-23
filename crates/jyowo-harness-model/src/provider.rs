@@ -2,15 +2,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use futures::stream::BoxStream;
 use harness_contracts::{
-    Message, MessageId, ModelError, ModelRef, PricingId, PricingSnapshotId, RequestId, RunId,
-    SessionId, StopReason, TenantId, ToolDescriptor, ToolUseId, UsageSnapshot,
+    BlobStore, ConversationModelCapability, Message, MessageId, ModelError, ModelModality,
+    ModelProtocol, ModelRef, PricingId, PricingSnapshotId, RequestId, RunId, SessionId, StopReason,
+    TenantId, ToolDescriptor, ToolUseId, UsageSnapshot,
 };
 use http::HeaderMap;
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -26,6 +26,10 @@ pub trait ModelProvider: Send + Sync + 'static {
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError>;
 
+    fn default_protocol(&self) -> ModelProtocol {
+        ModelProtocol::Messages
+    }
+
     fn snapshot_for_model(&self, model_id: &str) -> ModelRuntimeSnapshot {
         let provider_id = self.provider_id().to_owned();
         if let Some(descriptor) = self.supported_models().into_iter().find(|descriptor| {
@@ -34,41 +38,36 @@ pub trait ModelProvider: Send + Sync + 'static {
             return ModelRuntimeSnapshot {
                 provider_id: descriptor.provider_id,
                 model_id: descriptor.model_id,
+                protocol: descriptor.protocol,
                 context_window: descriptor.context_window,
-                capabilities: descriptor.capabilities,
+                conversation_capability: descriptor.conversation_capability,
+                lifecycle: descriptor.lifecycle,
                 pricing: descriptor.pricing,
             };
         }
         ModelRuntimeSnapshot {
             provider_id,
             model_id: model_id.to_owned(),
+            protocol: self.default_protocol(),
             context_window: 0,
-            capabilities: ModelCapabilities {
-                supports_tools: self.supports_tools(),
-                supports_vision: self.supports_vision(),
-                supports_thinking: self.supports_thinking(),
-                supports_prompt_cache: !matches!(self.prompt_cache_style(), PromptCacheStyle::None),
-                supports_tool_reference: false,
-                tool_reference_beta_header: None,
+            conversation_capability: ConversationModelCapability {
+                input_modalities: vec![ModelModality::Text],
+                output_modalities: vec![ModelModality::Text],
+                context_window: 0,
+                max_output_tokens: 0,
+                streaming: true,
+                tool_calling: true,
+                reasoning: false,
+                prompt_cache: !matches!(self.prompt_cache_style(), PromptCacheStyle::None),
+                structured_output: false,
             },
+            lifecycle: ModelLifecycle::Stable,
             pricing: None,
         }
     }
 
     fn prompt_cache_style(&self) -> PromptCacheStyle {
         PromptCacheStyle::None
-    }
-
-    fn supports_tools(&self) -> bool {
-        true
-    }
-
-    fn supports_vision(&self) -> bool {
-        false
-    }
-
-    fn supports_thinking(&self) -> bool {
-        false
     }
 
     async fn health(&self) -> HealthStatus {
@@ -87,6 +86,7 @@ pub struct InferContext {
     pub retry_policy: RetryPolicy,
     pub tracing: Option<TraceContext>,
     pub middlewares: Vec<Arc<dyn InferMiddleware>>,
+    pub blob_store: Option<Arc<dyn BlobStore>>,
 }
 
 impl InferContext {
@@ -101,6 +101,7 @@ impl InferContext {
             retry_policy: RetryPolicy::default(),
             tracing: None,
             middlewares: Vec::new(),
+            blob_store: None,
         }
     }
 }
@@ -167,9 +168,11 @@ pub struct ModelDescriptor {
     pub provider_id: String,
     pub model_id: String,
     pub display_name: String,
+    pub protocol: ModelProtocol,
     pub context_window: u32,
     pub max_output_tokens: u32,
-    pub capabilities: ModelCapabilities,
+    pub conversation_capability: ConversationModelCapability,
+    pub lifecycle: ModelLifecycle,
     pub pricing: Option<ModelPricing>,
 }
 
@@ -177,8 +180,10 @@ pub struct ModelDescriptor {
 pub struct ModelRuntimeSnapshot {
     pub provider_id: String,
     pub model_id: String,
+    pub protocol: ModelProtocol,
     pub context_window: u32,
-    pub capabilities: ModelCapabilities,
+    pub conversation_capability: ConversationModelCapability,
+    pub lifecycle: ModelLifecycle,
     pub pricing: Option<ModelPricing>,
 }
 
@@ -195,24 +200,71 @@ impl ModelRuntimeSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelCapabilities {
-    pub supports_tools: bool,
-    pub supports_vision: bool,
-    pub supports_thinking: bool,
-    pub supports_prompt_cache: bool,
-    pub supports_tool_reference: bool,
-    pub tool_reference_beta_header: Option<&'static str>,
+pub enum ModelLifecycle {
+    Stable,
+    Preview,
+    Deprecated { retirement_date: NaiveDate },
 }
 
-impl Default for ModelCapabilities {
-    fn default() -> Self {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelRuntimeStatus {
+    Runnable,
+    Unsupported { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelInventoryEntry {
+    pub provider_id: String,
+    pub model_id: String,
+    pub display_name: String,
+    pub protocol: ModelProtocol,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+    pub conversation_capability: ConversationModelCapability,
+    pub lifecycle: ModelLifecycle,
+    pub pricing: Option<ModelPricing>,
+    pub runtime_status: ModelRuntimeStatus,
+}
+
+impl ModelInventoryEntry {
+    #[must_use]
+    pub fn runnable(descriptor: ModelDescriptor) -> Self {
         Self {
-            supports_tools: true,
-            supports_vision: false,
-            supports_thinking: false,
-            supports_prompt_cache: false,
-            supports_tool_reference: false,
-            tool_reference_beta_header: None,
+            provider_id: descriptor.provider_id,
+            model_id: descriptor.model_id,
+            display_name: descriptor.display_name,
+            protocol: descriptor.protocol,
+            context_window: descriptor.context_window,
+            max_output_tokens: descriptor.max_output_tokens,
+            conversation_capability: descriptor.conversation_capability,
+            lifecycle: descriptor.lifecycle,
+            pricing: descriptor.pricing,
+            runtime_status: ModelRuntimeStatus::Runnable,
+        }
+    }
+
+    #[must_use]
+    pub fn unsupported(
+        provider_id: impl Into<String>,
+        model_id: impl Into<String>,
+        display_name: impl Into<String>,
+        protocol: ModelProtocol,
+        conversation_capability: ConversationModelCapability,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+            display_name: display_name.into(),
+            protocol,
+            context_window: 0,
+            max_output_tokens: 0,
+            conversation_capability,
+            lifecycle: ModelLifecycle::Stable,
+            pricing: None,
+            runtime_status: ModelRuntimeStatus::Unsupported {
+                reason: reason.into(),
+            },
         }
     }
 }
@@ -269,17 +321,8 @@ pub struct ModelRequest {
     pub max_tokens: Option<u32>,
     pub stream: bool,
     pub cache_breakpoints: Vec<CacheBreakpoint>,
-    pub api_mode: ApiMode,
+    pub protocol: ModelProtocol,
     pub extra: Value,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApiMode {
-    ChatCompletions,
-    Responses,
-    Messages,
-    GenerateContent,
 }
 
 #[derive(Debug, Clone, PartialEq)]

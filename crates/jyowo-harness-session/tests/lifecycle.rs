@@ -14,8 +14,8 @@ use harness_journal::{
     SessionFilter, SessionSnapshot, SessionSummary,
 };
 use harness_model::{
-    ApiMode, ContentDelta, HealthStatus, InferContext, ModelCapabilities, ModelDescriptor,
-    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
+    ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
+    ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_session::SessionProjection;
@@ -173,7 +173,7 @@ async fn session_fallback_run_started_uses_config_hash() {
         blob_store: None,
         model_id: "test-model".to_owned(),
         model_extra: serde_json::Value::Null,
-        api_mode: ApiMode::Messages,
+        protocol: ModelProtocol::Messages,
         system_prompt: None,
     };
     let session = Session::builder()
@@ -217,12 +217,14 @@ impl ModelProvider for TextModelProvider {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "test".to_owned(),
             model_id: "test-model".to_owned(),
             display_name: "Test model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
     }
@@ -347,6 +349,17 @@ impl EventStore for RecordingEventStore {
         _reason: ForkReason,
     ) -> Result<(), JournalError> {
         Ok(())
+    }
+
+    async fn delete_session(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+    ) -> Result<bool, JournalError> {
+        let mut guard = self.events.lock().await;
+        let deleted = !guard.is_empty();
+        guard.clear();
+        Ok(deleted)
     }
 
     async fn list_sessions(

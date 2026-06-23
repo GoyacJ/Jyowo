@@ -81,7 +81,7 @@ const markdownComponents: Components = {
 export function MarkdownMessage({ children, className }: MarkdownMessageProps) {
   return (
     <div className={cn('space-y-3 overflow-wrap-anywhere text-sm', className)}>
-      <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]} skipHtml>
+      <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
         {children}
       </ReactMarkdown>
     </div>

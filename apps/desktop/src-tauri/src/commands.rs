@@ -1,37 +1,64 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::io::Write;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use bytes::Bytes;
+use chrono::{NaiveDate, Utc};
 use jyowo_harness_sdk::builtin::{
-    AnthropicProvider, CodexResponsesProvider, DeepSeekProvider, DefaultRedactor, DoubaoProvider,
-    GeminiProvider, InMemoryMemoryProvider, JsonlEventStore, LocalLlamaProvider, LocalSandbox,
-    MinimaxProvider, OpenAiProvider, OpenRouterProvider, QwenProvider, ZhipuProvider,
+    DefaultRedactor, FileBlobStore, InMemoryMemoryProvider, JsonlEventStore, LocalLlamaProvider,
+    LocalSandbox,
 };
+use jyowo_harness_sdk::ext::inventory_from_models_api_json;
 use jyowo_harness_sdk::ext::{
-    now, AgentId, Decision, DecisionScope, Event, EventId, InteractivityLevel, McpConnectionState,
-    McpEventSink, McpRegistry, McpServerId, McpServerScope, McpServerSource, McpServerSpec,
-    MemoryId, MemoryKind, MemoryRecord, MemorySource, MemorySummary, MemoryVisibility,
-    MessageContent, MessagePart, ModelProvider, PendingPermissionRequest, PermissionRequest,
-    PermissionSubject, RedactPatternSet, RedactRules, RedactScope, Redactor, RequestId, RunId,
-    SessionId, Severity, StdioEnv, StdioPolicy, StdioTransport, TenantId, ToolUseId,
-    TransportChoice,
+    build_provider, now, provider_catalog_entries, resolve_model_descriptor,
+    runnable_inventory_models, AgentId, BlobMeta, BlobRef, BlobRetention, BlobStore,
+    ConversationModelCapability, Decision, DecisionScope, DeltaChunk, DirectorySourceKind,
+    EndReason, Event, EventId, InteractivityLevel, McpConnectionState, McpEventSink, McpRegistry,
+    McpServerId, McpServerScope, McpServerSource, McpServerSpec, MemoryId, MemoryKind,
+    MemoryRecord, MemorySource, MemorySummary, MemoryVisibility, MessageContent, MessagePart,
+    ModelDescriptor, ModelInventoryEntry, ModelLifecycle, ModelModality, ModelProtocol,
+    ModelProvider, ModelRuntimeStatus, PendingPermissionRequest, PermissionMode,
+    PermissionSubject, ProviderAuthScheme, ProviderBaseUrlRegion, ProviderBuildConfig,
+    ProviderCredential, ProviderCredentialResolveContext, ProviderCredentialResolverCap,
+    ProviderRegistryError, ProviderRuntimeCapability, ProviderServiceCapability,
+    ProviderServiceCategory, ProviderServiceCostRisk, ProviderServiceExecution, RedactPatternSet,
+    RedactRules, RedactScope, Redactor, RequestId, RunId, SessionId, Severity, SkillLoader,
+    SkillSourceConfig, StdioEnv, StdioPolicy, StdioTransport, TenantId, ToolCapability, ToolError,
+    ToolUseId, TransportChoice,
 };
 use jyowo_harness_sdk::{
-    ConversationEventsPageRequest, ConversationSessionSummary, ConversationTurnRequest, Harness,
-    McpConfig, SessionOptions, StreamPermissionRuntime,
+    ConversationAttachmentReference, ConversationContextReference, ConversationEventsPageRequest,
+    ConversationSessionSummary, ConversationTurnInput, ConversationTurnRequest, Harness, McpConfig,
+    RuntimeSkillSummary, RuntimeSkillView, SessionOptions, StreamPermissionRuntime,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tauri::Emitter;
+use tokio::task::JoinHandle;
 
 const PLACEHOLDER_TIMESTAMP: &str = "2026-06-17T00:00:00.000Z";
 const START_RUN_STARTED_TIMEOUT: Duration = Duration::from_secs(5);
 const WORKSPACE_ROOT_ENV: &str = "JYOWO_WORKSPACE_ROOT";
 const MAX_MEMORY_CONTENT_BYTES: usize = 64 * 1024;
 const MAX_ARTIFACT_PREVIEW_BYTES: usize = 16 * 1024;
+const MAX_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_TOTAL_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_OPENROUTER_MODELS_API_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SKILL_MARKDOWN_BYTES: u64 = 256 * 1024;
+const MAX_SKILL_PACKAGE_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_SKILL_PACKAGE_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_SKILL_PACKAGE_FILES: usize = 200;
+const SKILL_PACKAGE_ENTRY_FILE: &str = "SKILL.md";
+const CONVERSATION_SUBSCRIPTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const CONVERSATION_SUBSCRIPTION_BATCH_LIMIT: usize = 50;
+
+pub type ConversationEventBatchEmitter =
+    Arc<dyn Fn(ConversationEventBatchPayload) -> Result<(), String> + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,9 +86,18 @@ pub struct HarnessHealthcheckPayload {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSettingsRequest {
-    pub api_key: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub config_id: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub model_id: String,
     pub provider_id: String,
+    #[serde(default = "default_true")]
+    pub set_default: bool,
 }
 
 #[derive(Deserialize)]
@@ -82,20 +118,281 @@ pub struct ValidateProviderSettingsResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveProviderSettingsResponse {
-    pub model_id: String,
-    pub provider_id: String,
-    pub secret_ref: String,
+    pub config: ProviderConfigPayload,
     pub status: &'static str,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderSettingsRecord {
+pub struct RequestProviderConfigApiKeyRevealRequest {
+    pub config_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestProviderConfigApiKeyRevealResponse {
+    pub config_id: String,
+    pub expires_in_seconds: u64,
+    pub reveal_token: String,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetProviderConfigApiKeyRequest {
+    pub config_id: String,
+    pub reveal_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetProviderConfigApiKeyResponse {
+    pub api_key: String,
+    pub config_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderConfigRecord {
+    pub api_key: String,
+    pub protocol: ModelProtocol,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    pub display_name: String,
+    pub id: String,
     pub model_id: String,
     pub provider_id: String,
-    pub secret_ref: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub stale_secret_refs: Vec<String>,
+    pub model_descriptor: ProviderModelDescriptorRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderModelDescriptorRecord {
+    pub protocol: ModelProtocol,
+    pub conversation_capability: ConversationModelCapabilityRecord,
+    pub context_window: u32,
+    pub display_name: String,
+    pub lifecycle: ProviderModelLifecycleRecord,
+    pub max_output_tokens: u32,
+    pub model_id: String,
+    pub provider_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConversationModelCapabilityRecord {
+    pub input_modalities: Vec<ProviderModelModalityRecord>,
+    pub output_modalities: Vec<ProviderModelModalityRecord>,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+    pub streaming: bool,
+    pub tool_calling: bool,
+    pub reasoning: bool,
+    pub prompt_cache: bool,
+    pub structured_output: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "camelCase")]
+pub enum ProviderModelLifecycleRecord {
+    Stable,
+    Preview,
+    Deprecated { retirement_date: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderModelModalityRecord {
+    Text,
+    Image,
+    Audio,
+    Video,
+    File,
+    Embedding,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSettingsRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_config_id: Option<String>,
+    pub configs: Vec<ProviderConfigRecord>,
+}
+
+impl<'de> Deserialize<'de> for ProviderSettingsRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields, rename_all = "camelCase")]
+        struct WireRecord {
+            #[serde(default)]
+            default_config_id: Option<String>,
+            configs: Vec<ProviderConfigRecord>,
+        }
+
+        let record = WireRecord::deserialize(deserializer)?;
+        if record.configs.is_empty() {
+            if record.default_config_id.is_some() {
+                return Err(serde::de::Error::custom(
+                    "defaultConfigId requires at least one provider config",
+                ));
+            }
+            return Ok(Self {
+                default_config_id: None,
+                configs: Vec::new(),
+            });
+        }
+
+        let Some(default_config_id) = record
+            .default_config_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Err(serde::de::Error::custom(
+                "defaultConfigId is required when provider configs exist",
+            ));
+        };
+        if !record
+            .configs
+            .iter()
+            .any(|config| config.id == default_config_id)
+        {
+            return Err(serde::de::Error::custom(
+                "defaultConfigId must reference an existing provider config",
+            ));
+        }
+        if record
+            .configs
+            .iter()
+            .any(|config| config.api_key.trim().is_empty())
+        {
+            return Err(serde::de::Error::custom(
+                "apiKey is required for every provider config",
+            ));
+        }
+
+        Ok(Self {
+            default_config_id: Some(default_config_id.to_owned()),
+            configs: record.configs,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConfigPayload {
+    pub protocol: ModelProtocol,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    pub display_name: String,
+    pub has_api_key: bool,
+    pub id: String,
+    pub is_default: bool,
+    pub model_id: String,
+    pub provider_id: String,
+    pub model_descriptor: ModelCatalogEntry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListProviderSettingsResponse {
+    pub default_config_id: Option<String>,
+    pub configs: Vec<ProviderConfigPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelProviderCatalogResponse {
+    pub providers: Vec<ModelProviderCatalogEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelProviderCatalogEntry {
+    pub default_base_url: String,
+    pub display_name: String,
+    pub models: Vec<ModelCatalogEntry>,
+    pub provider_id: String,
+    pub runtime_capability: ProviderRuntimeCapabilityPayload,
+    pub service_capabilities: Vec<ProviderServiceCapabilityPayload>,
+    pub source_url: String,
+    pub verified_date: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRuntimeCapabilityPayload {
+    pub auth_scheme: &'static str,
+    pub base_url_regions: Vec<ProviderBaseUrlRegionPayload>,
+    pub supports_live_validation: bool,
+    pub supports_streaming_validation: bool,
+    pub secret_reveal_supported: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderBaseUrlRegionPayload {
+    pub id: String,
+    pub label: String,
+    pub base_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderServiceCapabilityPayload {
+    pub operation_id: String,
+    pub category: &'static str,
+    pub input_modalities: Vec<ProviderModelModalityRecord>,
+    pub output_artifact: ProviderModelModalityRecord,
+    pub execution: &'static str,
+    pub requires_polling: bool,
+    pub permission_subject: String,
+    pub cost_risk: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCatalogEntry {
+    pub protocol: ModelProtocol,
+    pub conversation_capability: ConversationModelCapabilityRecord,
+    pub context_window: u32,
+    pub display_name: String,
+    pub lifecycle: ModelLifecyclePayload,
+    pub max_output_tokens: u32,
+    pub model_id: String,
+    pub runtime_status: ModelRuntimeStatusPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelLifecyclePayload {
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retirement_date: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRuntimeStatusPayload {
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl Default for ProviderSettingsRecord {
+    fn default() -> Self {
+        Self {
+            default_config_id: None,
+            configs: Vec::new(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -158,6 +455,153 @@ pub struct SaveMcpServerResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteMcpServerResponse {
+    pub id: String,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ImportSkillRequest {
+    pub source_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GetSkillRequest {
+    pub id: String,
+    #[serde(default)]
+    pub include_body: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SetSkillEnabledRequest {
+    pub id: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DeleteSkillRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SkillStoreRecord {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub enabled: bool,
+    pub content_hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub package_dir: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file_name: String,
+    pub imported_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_validation_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSummaryPayload {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub source_kind: String,
+    pub enabled: bool,
+    pub manageable: bool,
+    pub status: String,
+    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imported_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillParameterPayload {
+    pub name: String,
+    pub param_type: String,
+    pub required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillFilePayload {
+    pub path: String,
+    pub name: String,
+    pub kind: &'static str,
+    pub depth: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillFileContentPayload {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillDetailPayload {
+    pub summary: SkillSummaryPayload,
+    pub parameters: Vec<SkillParameterPayload>,
+    pub config_keys: Vec<String>,
+    pub files: Vec<SkillFilePayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_file: Option<SkillFileContentPayload>,
+    pub body_preview: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_full: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListSkillsResponse {
+    pub skills: Vec<SkillSummaryPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetSkillResponse {
+    pub skill: SkillDetailPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSkillResponse {
+    pub skill: SkillSummaryPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetSkillEnabledResponse {
+    pub skill: SkillSummaryPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSkillResponse {
     pub id: String,
     pub status: &'static str,
 }
@@ -251,18 +695,119 @@ pub trait PermissionResolver: Send + Sync {
 }
 
 pub trait ProviderSettingsStore: Send + Sync {
-    fn secret_ref(&self, provider_id: &str) -> String;
-    fn secret_ref_prefix(&self, provider_id: &str) -> String;
-    fn save_secret(&self, secret_ref: &str, api_key: &str) -> Result<(), CommandErrorPayload>;
-    fn delete_secret(&self, secret_ref: &str) -> Result<(), CommandErrorPayload>;
     fn load_record(&self) -> Result<Option<ProviderSettingsRecord>, CommandErrorPayload>;
     fn save_record(&self, record: &ProviderSettingsRecord) -> Result<(), CommandErrorPayload>;
+}
+
+pub trait ConversationModelConfigStore: Send + Sync {
+    fn load_records(&self) -> Result<HashMap<String, String>, CommandErrorPayload>;
+    fn save_records(&self, records: &HashMap<String, String>) -> Result<(), CommandErrorPayload>;
 }
 
 pub trait McpServerStore: Send + Sync {
     fn load_records(&self) -> Result<Vec<McpServerConfigRecord>, CommandErrorPayload>;
     fn save_record(&self, record: &McpServerConfigRecord) -> Result<(), CommandErrorPayload>;
     fn delete_record(&self, id: &str) -> Result<(), CommandErrorPayload>;
+}
+
+pub trait SkillStore: Send + Sync {
+    fn enabled_dir(&self) -> PathBuf;
+    fn load_records(&self) -> Result<Vec<SkillStoreRecord>, CommandErrorPayload>;
+    fn save_records(&self, records: &[SkillStoreRecord]) -> Result<(), CommandErrorPayload>;
+    fn write_skill_package(
+        &self,
+        id: &str,
+        enabled: bool,
+        source_path: &Path,
+    ) -> Result<(), CommandErrorPayload>;
+    fn read_skill_entry_file(
+        &self,
+        record: &SkillStoreRecord,
+    ) -> Result<String, CommandErrorPayload>;
+    fn list_skill_package_files(
+        &self,
+        record: &SkillStoreRecord,
+    ) -> Result<Vec<SkillFilePayload>, CommandErrorPayload>;
+    fn read_skill_package_file(
+        &self,
+        record: &SkillStoreRecord,
+        relative_path: &str,
+    ) -> Result<SkillFileContentPayload, CommandErrorPayload>;
+    fn move_skill_package(&self, id: &str, enabled: bool) -> Result<(), CommandErrorPayload>;
+    fn delete_skill_package(&self, id: &str) -> Result<(), CommandErrorPayload>;
+}
+
+#[derive(Clone)]
+struct DesktopProviderCredentialResolver {
+    conversation_model_config_store: Arc<dyn ConversationModelConfigStore>,
+    provider_settings_store: Arc<dyn ProviderSettingsStore>,
+}
+
+impl DesktopProviderCredentialResolver {
+    fn new(
+        conversation_model_config_store: Arc<dyn ConversationModelConfigStore>,
+        provider_settings_store: Arc<dyn ProviderSettingsStore>,
+    ) -> Self {
+        Self {
+            conversation_model_config_store,
+            provider_settings_store,
+        }
+    }
+}
+
+impl ProviderCredentialResolverCap for DesktopProviderCredentialResolver {
+    fn resolve_provider_credential(
+        &self,
+        context: ProviderCredentialResolveContext,
+    ) -> futures::future::BoxFuture<'_, Result<ProviderCredential, ToolError>> {
+        Box::pin(async move {
+            let record = self
+                .provider_settings_store
+                .load_record()
+                .map_err(|error| ToolError::PermissionDenied(error.message))?
+                .ok_or_else(|| {
+                    ToolError::PermissionDenied(
+                        "MiniMax provider config is not configured".to_owned(),
+                    )
+                })?;
+            let bound_config_id = self
+                .conversation_model_config_store
+                .load_records()
+                .map_err(|error| ToolError::PermissionDenied(error.message))?
+                .get(&context.session_id.to_string())
+                .cloned();
+            let selected = bound_config_id
+                .as_deref()
+                .and_then(|config_id| {
+                    record.configs.iter().find(|config| {
+                        config.id == config_id && config.provider_id == context.provider_id
+                    })
+                })
+                .or_else(|| {
+                    record.default_config_id.as_deref().and_then(|config_id| {
+                        record.configs.iter().find(|config| {
+                            config.id == config_id && config.provider_id == context.provider_id
+                        })
+                    })
+                })
+                .ok_or_else(|| {
+                    ToolError::PermissionDenied(
+                        "MiniMax provider config is not configured".to_owned(),
+                    )
+                })?;
+            if selected.api_key.trim().is_empty() {
+                return Err(ToolError::PermissionDenied(
+                    "MiniMax provider config has no api key".to_owned(),
+                ));
+            }
+            Ok(ProviderCredential {
+                provider_id: selected.provider_id.clone(),
+                config_id: selected.id.clone(),
+                api_key: selected.api_key.clone(),
+                base_url: selected.base_url.clone(),
+            })
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -284,42 +829,17 @@ impl DesktopProviderSettingsStore {
 }
 
 impl ProviderSettingsStore for DesktopProviderSettingsStore {
-    fn secret_ref(&self, provider_id: &str) -> String {
-        format!("{}{}", self.secret_ref_prefix(provider_id), RunId::new())
-    }
-
-    fn secret_ref_prefix(&self, provider_id: &str) -> String {
-        provider_secret_ref_prefix(&self.workspace_root, provider_id)
-    }
-
-    fn save_secret(&self, secret_ref: &str, api_key: &str) -> Result<(), CommandErrorPayload> {
-        let entry = keyring::Entry::new("jyowo.provider", secret_ref).map_err(|error| {
-            runtime_operation_failed(format!("provider secret store unavailable: {error}"))
-        })?;
-        entry.set_password(api_key).map_err(|error| {
-            runtime_operation_failed(format!("provider secret save failed: {error}"))
-        })
-    }
-
-    fn delete_secret(&self, secret_ref: &str) -> Result<(), CommandErrorPayload> {
-        let entry = keyring::Entry::new("jyowo.provider", secret_ref).map_err(|error| {
-            runtime_operation_failed(format!("provider secret store unavailable: {error}"))
-        })?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(runtime_operation_failed(format!(
-                "provider secret cleanup failed: {error}"
-            ))),
-        }
-    }
-
     fn load_record(&self) -> Result<Option<ProviderSettingsRecord>, CommandErrorPayload> {
         let settings_path = self.settings_path();
         ensure_no_symlink_components(&settings_path, "provider settings file")?;
         match std::fs::read(&settings_path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
-                runtime_operation_failed(format!("provider settings parse failed: {error}"))
-            }),
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(record) => Ok(Some(record)),
+                Err(_) => {
+                    remove_invalid_provider_settings_file(&settings_path)?;
+                    Ok(None)
+                }
+            },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(runtime_operation_failed(format!(
                 "provider settings read failed: {error}"
@@ -328,6 +848,7 @@ impl ProviderSettingsStore for DesktopProviderSettingsStore {
     }
 
     fn save_record(&self, record: &ProviderSettingsRecord) -> Result<(), CommandErrorPayload> {
+        ensure_provider_settings_record(record)?;
         let settings_path = self.settings_path();
         let parent = settings_path.parent().ok_or_else(|| {
             runtime_operation_failed("provider settings path has no parent".to_owned())
@@ -377,6 +898,284 @@ impl ProviderSettingsStore for DesktopProviderSettingsStore {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ExecutionSettingsRecord {
+    #[serde(default = "default_permission_mode")]
+    pub permission_mode: PermissionMode,
+}
+
+fn default_permission_mode() -> PermissionMode {
+    PermissionMode::Default
+}
+
+#[derive(Clone)]
+pub struct DesktopExecutionSettingsStore {
+    workspace_root: PathBuf,
+}
+
+impl DesktopExecutionSettingsStore {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root }
+    }
+
+    fn settings_path(&self) -> PathBuf {
+        self.workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("execution-settings.json")
+    }
+
+    pub fn load_record(&self) -> Result<ExecutionSettingsRecord, CommandErrorPayload> {
+        let settings_path = self.settings_path();
+        ensure_no_symlink_components(&settings_path, "execution settings file")?;
+        match std::fs::read(&settings_path) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(record) => {
+                    ensure_execution_settings_record(&record)?;
+                    Ok(record)
+                }
+                Err(_) => {
+                    remove_invalid_execution_settings_file(&settings_path)?;
+                    Ok(ExecutionSettingsRecord {
+                        permission_mode: PermissionMode::Default,
+                    })
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(ExecutionSettingsRecord {
+                    permission_mode: PermissionMode::Default,
+                })
+            }
+            Err(error) => Err(runtime_operation_failed(format!(
+                "execution settings read failed: {error}"
+            ))),
+        }
+    }
+
+    pub fn save_record(&self, record: &ExecutionSettingsRecord) -> Result<(), CommandErrorPayload> {
+        ensure_execution_settings_record(record)?;
+        let settings_path = self.settings_path();
+        let parent = settings_path.parent().ok_or_else(|| {
+            runtime_operation_failed("execution settings path has no parent".to_owned())
+        })?;
+        ensure_no_symlink_components(parent, "execution settings directory")?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            runtime_operation_failed(format!("execution settings directory unavailable: {error}"))
+        })?;
+        ensure_no_symlink_components(parent, "execution settings directory")?;
+        let bytes = serde_json::to_vec_pretty(record).map_err(|error| {
+            runtime_operation_failed(format!("execution settings serialization failed: {error}"))
+        })?;
+        let temp_path = settings_path.with_file_name(format!(
+            "{}.{}.tmp",
+            settings_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("execution-settings.json"),
+            RunId::new()
+        ));
+        ensure_no_symlink_components(&temp_path, "execution settings temp file")?;
+        let mut temp_file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .map_err(|error| {
+                runtime_operation_failed(format!("execution settings temp open failed: {error}"))
+            })?;
+        if let Err(error) = temp_file.write_all(&bytes) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(runtime_operation_failed(format!(
+                "execution settings write failed: {error}"
+            )));
+        }
+        if let Err(error) = temp_file.sync_all() {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(runtime_operation_failed(format!(
+                "execution settings sync failed: {error}"
+            )));
+        }
+        drop(temp_file);
+        ensure_no_symlink_components(&settings_path, "execution settings file")?;
+        std::fs::rename(&temp_path, &settings_path).map_err(|error| {
+            let _ = std::fs::remove_file(&temp_path);
+            runtime_operation_failed(format!("execution settings commit failed: {error}"))
+        })
+    }
+}
+
+fn remove_invalid_execution_settings_file(settings_path: &Path) -> Result<(), CommandErrorPayload> {
+    match std::fs::remove_file(settings_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(runtime_operation_failed(format!(
+            "execution settings cleanup failed: {error}"
+        ))),
+    }
+}
+
+fn ensure_execution_settings_record(
+    record: &ExecutionSettingsRecord,
+) -> Result<(), CommandErrorPayload> {
+    match record.permission_mode {
+        PermissionMode::Default | PermissionMode::Auto | PermissionMode::BypassPermissions => {
+            Ok(())
+        }
+        _ => Err(invalid_payload(
+            "permissionMode must be default, auto, or bypass_permissions".to_owned(),
+        )),
+    }
+}
+
+fn auto_mode_available() -> bool {
+    cfg!(feature = "auto-mode")
+}
+
+fn remove_invalid_provider_settings_file(settings_path: &Path) -> Result<(), CommandErrorPayload> {
+    match std::fs::remove_file(settings_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(runtime_operation_failed(format!(
+            "provider settings cleanup failed: {error}"
+        ))),
+    }
+}
+
+fn ensure_provider_settings_record(
+    record: &ProviderSettingsRecord,
+) -> Result<(), CommandErrorPayload> {
+    if record.configs.is_empty() {
+        if record.default_config_id.is_some() {
+            return Err(runtime_operation_failed(
+                "defaultConfigId requires at least one provider config".to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+
+    let Some(default_config_id) = record
+        .default_config_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Err(runtime_operation_failed(
+            "defaultConfigId is required when provider configs exist".to_owned(),
+        ));
+    };
+    if !record
+        .configs
+        .iter()
+        .any(|config| config.id == default_config_id)
+    {
+        return Err(runtime_operation_failed(
+            "defaultConfigId must reference an existing provider config".to_owned(),
+        ));
+    }
+    if record
+        .configs
+        .iter()
+        .any(|config| config.api_key.trim().is_empty())
+    {
+        return Err(runtime_operation_failed(
+            "apiKey is required for every provider config".to_owned(),
+        ));
+    }
+
+    Ok(())
+}
+
+#[derive(Clone)]
+pub struct DesktopConversationModelConfigStore {
+    workspace_root: PathBuf,
+}
+
+impl DesktopConversationModelConfigStore {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root }
+    }
+
+    fn settings_path(&self) -> PathBuf {
+        self.workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("conversation-model-settings.json")
+    }
+}
+
+impl ConversationModelConfigStore for DesktopConversationModelConfigStore {
+    fn load_records(&self) -> Result<HashMap<String, String>, CommandErrorPayload> {
+        let settings_path = self.settings_path();
+        ensure_no_symlink_components(&settings_path, "conversation model settings file")?;
+        match std::fs::read(&settings_path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+                runtime_operation_failed(format!(
+                    "conversation model settings parse failed: {error}"
+                ))
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(error) => Err(runtime_operation_failed(format!(
+                "conversation model settings read failed: {error}"
+            ))),
+        }
+    }
+
+    fn save_records(&self, records: &HashMap<String, String>) -> Result<(), CommandErrorPayload> {
+        let settings_path = self.settings_path();
+        let parent = settings_path.parent().ok_or_else(|| {
+            runtime_operation_failed("conversation model settings path has no parent".to_owned())
+        })?;
+        ensure_no_symlink_components(parent, "conversation model settings directory")?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            runtime_operation_failed(format!(
+                "conversation model settings directory unavailable: {error}"
+            ))
+        })?;
+        ensure_no_symlink_components(parent, "conversation model settings directory")?;
+        let bytes = serde_json::to_vec_pretty(records).map_err(|error| {
+            runtime_operation_failed(format!(
+                "conversation model settings serialization failed: {error}"
+            ))
+        })?;
+        let temp_path = settings_path.with_file_name(format!(
+            "{}.{}.tmp",
+            settings_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("conversation-model-settings.json"),
+            RunId::new()
+        ));
+        ensure_no_symlink_components(&temp_path, "conversation model settings temp file")?;
+        let mut temp_file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .map_err(|error| {
+                runtime_operation_failed(format!(
+                    "conversation model settings temp open failed: {error}"
+                ))
+            })?;
+        if let Err(error) = temp_file.write_all(&bytes) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(runtime_operation_failed(format!(
+                "conversation model settings write failed: {error}"
+            )));
+        }
+        if let Err(error) = temp_file.sync_all() {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(runtime_operation_failed(format!(
+                "conversation model settings sync failed: {error}"
+            )));
+        }
+        drop(temp_file);
+        ensure_no_symlink_components(&settings_path, "conversation model settings file")?;
+        std::fs::rename(&temp_path, &settings_path).map_err(|error| {
+            let _ = std::fs::remove_file(&temp_path);
+            runtime_operation_failed(format!("conversation model settings save failed: {error}"))
+        })
+    }
+}
+
 #[derive(Clone)]
 struct DesktopMcpServerStore {
     workspace_root: PathBuf,
@@ -421,6 +1220,222 @@ impl McpServerStore for DesktopMcpServerStore {
         let mut records = self.load_records()?;
         records.retain(|existing| existing.id != id);
         write_mcp_server_records(&self.settings_path(), &records)
+    }
+}
+
+#[derive(Clone)]
+pub struct DesktopSkillStore {
+    workspace_root: PathBuf,
+}
+
+impl DesktopSkillStore {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root }
+    }
+
+    fn root_dir(&self) -> PathBuf {
+        self.workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("skills")
+    }
+
+    fn index_path(&self) -> PathBuf {
+        self.root_dir().join("index.json")
+    }
+
+    fn disabled_dir(&self) -> PathBuf {
+        self.root_dir().join("disabled")
+    }
+
+    fn skill_dir(&self, id: &str, enabled: bool) -> PathBuf {
+        let dir = if enabled {
+            self.enabled_dir()
+        } else {
+            self.disabled_dir()
+        };
+        dir.join(id)
+    }
+
+    fn legacy_skill_file_path(&self, id: &str, enabled: bool) -> PathBuf {
+        let dir = if enabled {
+            self.enabled_dir()
+        } else {
+            self.disabled_dir()
+        };
+        dir.join(format!("{id}.md"))
+    }
+}
+
+impl SkillStore for DesktopSkillStore {
+    fn enabled_dir(&self) -> PathBuf {
+        self.root_dir().join("enabled")
+    }
+
+    fn load_records(&self) -> Result<Vec<SkillStoreRecord>, CommandErrorPayload> {
+        let index_path = self.index_path();
+        ensure_no_symlink_components(&index_path, "skill index file")?;
+        match std::fs::read(&index_path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+                runtime_operation_failed(format!("skill index parse failed: {error}"))
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(runtime_operation_failed(format!(
+                "skill index read failed: {error}"
+            ))),
+        }
+    }
+
+    fn save_records(&self, records: &[SkillStoreRecord]) -> Result<(), CommandErrorPayload> {
+        write_skill_records(&self.index_path(), records)
+    }
+
+    fn write_skill_package(
+        &self,
+        id: &str,
+        enabled: bool,
+        source_path: &Path,
+    ) -> Result<(), CommandErrorPayload> {
+        ensure_skill_id(id)?;
+        let path = self.skill_dir(id, enabled);
+        let parent = path.parent().ok_or_else(|| {
+            runtime_operation_failed("skill package path has no parent".to_owned())
+        })?;
+        ensure_no_symlink_components(parent, "skill directory")?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            runtime_operation_failed(format!("skill directory unavailable: {error}"))
+        })?;
+        ensure_no_symlink_components(parent, "skill directory")?;
+        ensure_no_symlink_components(&path, "skill package")?;
+        copy_skill_package(source_path, &path)
+    }
+
+    fn read_skill_entry_file(
+        &self,
+        record: &SkillStoreRecord,
+    ) -> Result<String, CommandErrorPayload> {
+        ensure_skill_id(&record.id)?;
+        let path = self
+            .skill_dir(&record.id, record.enabled)
+            .join(SKILL_PACKAGE_ENTRY_FILE);
+        ensure_no_symlink_components(&path, "skill entry file")?;
+        if path.exists() {
+            return std::fs::read_to_string(&path).map_err(|error| {
+                runtime_operation_failed(format!("skill entry file read failed: {error}"))
+            });
+        }
+        let path = self.legacy_skill_file_path(&record.id, record.enabled);
+        ensure_no_symlink_components(&path, "legacy skill file")?;
+        std::fs::read_to_string(&path).map_err(|error| {
+            runtime_operation_failed(format!("legacy skill file read failed: {error}"))
+        })
+    }
+
+    fn list_skill_package_files(
+        &self,
+        record: &SkillStoreRecord,
+    ) -> Result<Vec<SkillFilePayload>, CommandErrorPayload> {
+        ensure_skill_id(&record.id)?;
+        let package_root = self.skill_dir(&record.id, record.enabled);
+        ensure_no_symlink_components(&package_root, "skill package")?;
+        if package_root.is_dir() {
+            return list_skill_package_files(&package_root);
+        }
+        let legacy_path = self.legacy_skill_file_path(&record.id, record.enabled);
+        ensure_no_symlink_components(&legacy_path, "legacy skill file")?;
+        if legacy_path.is_file() {
+            let metadata = std::fs::metadata(&legacy_path).map_err(|error| {
+                runtime_operation_failed(format!("legacy skill file metadata failed: {error}"))
+            })?;
+            return Ok(vec![SkillFilePayload {
+                path: SKILL_PACKAGE_ENTRY_FILE.to_owned(),
+                name: SKILL_PACKAGE_ENTRY_FILE.to_owned(),
+                kind: "file",
+                depth: 0,
+                size_bytes: Some(metadata.len()),
+            }]);
+        }
+        Ok(Vec::new())
+    }
+
+    fn read_skill_package_file(
+        &self,
+        record: &SkillStoreRecord,
+        relative_path: &str,
+    ) -> Result<SkillFileContentPayload, CommandErrorPayload> {
+        ensure_skill_id(&record.id)?;
+        let relative_path = normalize_skill_relative_path(relative_path)?;
+        let package_root = self.skill_dir(&record.id, record.enabled);
+        ensure_no_symlink_components(&package_root, "skill package")?;
+        if package_root.is_dir() {
+            return read_skill_package_file(&package_root, &relative_path);
+        }
+        if path_to_workspace_string(&relative_path) != SKILL_PACKAGE_ENTRY_FILE {
+            return Err(invalid_payload("skill file not found".to_owned()));
+        }
+        let legacy_path = self.legacy_skill_file_path(&record.id, record.enabled);
+        ensure_no_symlink_components(&legacy_path, "legacy skill file")?;
+        read_skill_package_file_at(&legacy_path, SKILL_PACKAGE_ENTRY_FILE)
+    }
+
+    fn move_skill_package(&self, id: &str, enabled: bool) -> Result<(), CommandErrorPayload> {
+        ensure_skill_id(id)?;
+        let from = self.skill_dir(id, !enabled);
+        let to = self.skill_dir(id, enabled);
+        let parent = to.parent().ok_or_else(|| {
+            runtime_operation_failed("skill package path has no parent".to_owned())
+        })?;
+        ensure_no_symlink_components(parent, "skill directory")?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            runtime_operation_failed(format!("skill directory unavailable: {error}"))
+        })?;
+        ensure_no_symlink_components(&from, "skill package")?;
+        ensure_no_symlink_components(&to, "skill package")?;
+        if from.exists() {
+            std::fs::rename(&from, &to).map_err(|error| {
+                runtime_operation_failed(format!("skill package move failed: {error}"))
+            })?;
+            return Ok(());
+        }
+        let from = self.legacy_skill_file_path(id, !enabled);
+        let to = self.legacy_skill_file_path(id, enabled);
+        ensure_no_symlink_components(&from, "legacy skill file")?;
+        ensure_no_symlink_components(&to, "legacy skill file")?;
+        if from.exists() {
+            std::fs::rename(&from, &to).map_err(|error| {
+                runtime_operation_failed(format!("legacy skill file move failed: {error}"))
+            })?;
+        }
+        Ok(())
+    }
+
+    fn delete_skill_package(&self, id: &str) -> Result<(), CommandErrorPayload> {
+        ensure_skill_id(id)?;
+        for enabled in [true, false] {
+            let path = self.skill_dir(id, enabled);
+            ensure_no_symlink_components(&path, "skill package")?;
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(runtime_operation_failed(format!(
+                        "skill package delete failed: {error}"
+                    )));
+                }
+            }
+            let legacy_path = self.legacy_skill_file_path(id, enabled);
+            ensure_no_symlink_components(&legacy_path, "legacy skill file")?;
+            match std::fs::remove_file(&legacy_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(runtime_operation_failed(format!(
+                        "legacy skill file delete failed: {error}"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -477,6 +1492,69 @@ fn write_mcp_server_records(
     })
 }
 
+fn write_skill_records(
+    index_path: &Path,
+    records: &[SkillStoreRecord],
+) -> Result<(), CommandErrorPayload> {
+    let parent = index_path
+        .parent()
+        .ok_or_else(|| runtime_operation_failed("skill index path has no parent".to_owned()))?;
+    ensure_no_symlink_components(parent, "skill index directory")?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        runtime_operation_failed(format!("skill index directory unavailable: {error}"))
+    })?;
+    ensure_no_symlink_components(parent, "skill index directory")?;
+    let bytes = serde_json::to_vec_pretty(records).map_err(|error| {
+        runtime_operation_failed(format!("skill index serialization failed: {error}"))
+    })?;
+    let temp_path = index_path.with_file_name(format!(
+        "{}.{}.tmp",
+        index_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("index.json"),
+        RunId::new()
+    ));
+    ensure_no_symlink_components(&temp_path, "skill index temp file")?;
+    let mut temp_file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp_path)
+        .map_err(|error| {
+            runtime_operation_failed(format!("skill index temp open failed: {error}"))
+        })?;
+    if let Err(error) = temp_file.write_all(&bytes) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(runtime_operation_failed(format!(
+            "skill index write failed: {error}"
+        )));
+    }
+    if let Err(error) = temp_file.sync_all() {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(runtime_operation_failed(format!(
+            "skill index sync failed: {error}"
+        )));
+    }
+    drop(temp_file);
+    ensure_no_symlink_components(index_path, "skill index file")?;
+    std::fs::rename(&temp_path, index_path).map_err(|error| {
+        let _ = std::fs::remove_file(&temp_path);
+        runtime_operation_failed(format!("skill index commit failed: {error}"))
+    })
+}
+
+fn ensure_skill_id(id: &str) -> Result<(), CommandErrorPayload> {
+    if id.is_empty()
+        || id.len() > 96
+        || !id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(invalid_payload("skill id is invalid".to_owned()));
+    }
+    Ok(())
+}
+
 fn ensure_no_symlink_components(path: &Path, label: &str) -> Result<(), CommandErrorPayload> {
     let mut current = PathBuf::new();
     for component in path.components() {
@@ -500,19 +1578,361 @@ fn ensure_no_symlink_components(path: &Path, label: &str) -> Result<(), CommandE
     Ok(())
 }
 
+fn hash_skill_package(source_path: &Path) -> Result<String, CommandErrorPayload> {
+    let mut hasher = blake3::Hasher::new();
+    let mut file_count = 0_usize;
+    let mut total_bytes = 0_u64;
+    hash_skill_package_dir(
+        source_path,
+        source_path,
+        &mut hasher,
+        &mut file_count,
+        &mut total_bytes,
+    )?;
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn hash_skill_package_dir(
+    root: &Path,
+    dir: &Path,
+    hasher: &mut blake3::Hasher,
+    file_count: &mut usize,
+    total_bytes: &mut u64,
+) -> Result<(), CommandErrorPayload> {
+    ensure_no_symlink_components(dir, "skill package directory")?;
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|error| runtime_operation_failed(format!("skill package read failed: {error}")))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| runtime_operation_failed(format!("skill package read failed: {error}")))?;
+    entries.sort();
+    for path in entries {
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+            runtime_operation_failed(format!("skill package metadata failed: {error}"))
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(runtime_operation_failed(
+                "skill package must not use symlinks".to_owned(),
+            ));
+        }
+        if metadata.is_dir() {
+            hash_skill_package_dir(root, &path, hasher, file_count, total_bytes)?;
+            continue;
+        }
+        if !metadata.is_file() {
+            return Err(invalid_payload(
+                "skill package may contain only files and directories".to_owned(),
+            ));
+        }
+        *file_count += 1;
+        if *file_count > MAX_SKILL_PACKAGE_FILES {
+            return Err(invalid_payload(
+                "skill package has too many files".to_owned(),
+            ));
+        }
+        if metadata.len() > MAX_SKILL_PACKAGE_FILE_BYTES {
+            return Err(invalid_payload(
+                "skill package file is too large".to_owned(),
+            ));
+        }
+        *total_bytes = total_bytes.saturating_add(metadata.len());
+        if *total_bytes > MAX_SKILL_PACKAGE_BYTES {
+            return Err(invalid_payload("skill package is too large".to_owned()));
+        }
+        let relative_path = path.strip_prefix(root).map_err(|_| {
+            runtime_operation_failed("skill package path escaped its root".to_owned())
+        })?;
+        let bytes = std::fs::read(&path).map_err(|error| {
+            runtime_operation_failed(format!("skill package file read failed: {error}"))
+        })?;
+        hasher.update(path_to_workspace_string(relative_path).as_bytes());
+        hasher.update(&[0]);
+        hasher.update(&bytes);
+        hasher.update(&[0]);
+    }
+    Ok(())
+}
+
+fn copy_skill_package(
+    source_path: &Path,
+    destination_path: &Path,
+) -> Result<(), CommandErrorPayload> {
+    ensure_no_symlink_components(source_path, "skill source package")?;
+    ensure_no_symlink_components(destination_path, "skill package")?;
+    let _ = hash_skill_package(source_path)?;
+    if destination_path.exists() {
+        std::fs::remove_dir_all(destination_path).map_err(|error| {
+            runtime_operation_failed(format!("skill package cleanup failed: {error}"))
+        })?;
+    }
+    std::fs::create_dir_all(destination_path).map_err(|error| {
+        runtime_operation_failed(format!("skill package directory unavailable: {error}"))
+    })?;
+    let mut file_count = 0_usize;
+    let mut total_bytes = 0_u64;
+    match copy_skill_package_dir(
+        source_path,
+        source_path,
+        destination_path,
+        &mut file_count,
+        &mut total_bytes,
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(destination_path);
+            Err(error)
+        }
+    }
+}
+
+fn copy_skill_package_dir(
+    root: &Path,
+    dir: &Path,
+    destination_root: &Path,
+    file_count: &mut usize,
+    total_bytes: &mut u64,
+) -> Result<(), CommandErrorPayload> {
+    ensure_no_symlink_components(dir, "skill source package")?;
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|error| runtime_operation_failed(format!("skill package read failed: {error}")))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| runtime_operation_failed(format!("skill package read failed: {error}")))?;
+    entries.sort();
+    for path in entries {
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+            runtime_operation_failed(format!("skill package metadata failed: {error}"))
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(runtime_operation_failed(
+                "skill package must not use symlinks".to_owned(),
+            ));
+        }
+        let relative_path = path.strip_prefix(root).map_err(|_| {
+            runtime_operation_failed("skill package path escaped its root".to_owned())
+        })?;
+        let destination_path = destination_root.join(relative_path);
+        ensure_no_symlink_components(&destination_path, "skill package")?;
+        if metadata.is_dir() {
+            std::fs::create_dir_all(&destination_path).map_err(|error| {
+                runtime_operation_failed(format!("skill package directory copy failed: {error}"))
+            })?;
+            copy_skill_package_dir(root, &path, destination_root, file_count, total_bytes)?;
+            continue;
+        }
+        if !metadata.is_file() {
+            return Err(invalid_payload(
+                "skill package may contain only files and directories".to_owned(),
+            ));
+        }
+        *file_count += 1;
+        if *file_count > MAX_SKILL_PACKAGE_FILES {
+            return Err(invalid_payload(
+                "skill package has too many files".to_owned(),
+            ));
+        }
+        if metadata.len() > MAX_SKILL_PACKAGE_FILE_BYTES {
+            return Err(invalid_payload(
+                "skill package file is too large".to_owned(),
+            ));
+        }
+        *total_bytes = total_bytes.saturating_add(metadata.len());
+        if *total_bytes > MAX_SKILL_PACKAGE_BYTES {
+            return Err(invalid_payload("skill package is too large".to_owned()));
+        }
+        let parent = destination_path.parent().ok_or_else(|| {
+            runtime_operation_failed("skill package file path has no parent".to_owned())
+        })?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            runtime_operation_failed(format!("skill package directory copy failed: {error}"))
+        })?;
+        std::fs::copy(&path, &destination_path).map_err(|error| {
+            runtime_operation_failed(format!("skill package file copy failed: {error}"))
+        })?;
+    }
+    Ok(())
+}
+
+fn list_skill_package_files(
+    package_root: &Path,
+) -> Result<Vec<SkillFilePayload>, CommandErrorPayload> {
+    let mut files = Vec::new();
+    collect_skill_package_files(package_root, package_root, &mut files)?;
+    files.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.kind.cmp(right.kind))
+    });
+    Ok(files)
+}
+
+fn collect_skill_package_files(
+    package_root: &Path,
+    dir: &Path,
+    files: &mut Vec<SkillFilePayload>,
+) -> Result<(), CommandErrorPayload> {
+    ensure_no_symlink_components(dir, "skill package directory")?;
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|error| runtime_operation_failed(format!("skill package read failed: {error}")))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| runtime_operation_failed(format!("skill package read failed: {error}")))?;
+    entries.sort();
+    for path in entries {
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+            runtime_operation_failed(format!("skill package metadata failed: {error}"))
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(runtime_operation_failed(
+                "skill package must not use symlinks".to_owned(),
+            ));
+        }
+        let relative_path = path.strip_prefix(package_root).map_err(|_| {
+            runtime_operation_failed("skill package path escaped its root".to_owned())
+        })?;
+        let normalized_path = path_to_workspace_string(relative_path);
+        let name = path
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_else(|| normalized_path.clone());
+        let depth = relative_path.components().count().saturating_sub(1) as u32;
+        if metadata.is_dir() {
+            files.push(SkillFilePayload {
+                path: normalized_path,
+                name,
+                kind: "directory",
+                depth,
+                size_bytes: None,
+            });
+            collect_skill_package_files(package_root, &path, files)?;
+        } else if metadata.is_file() {
+            files.push(SkillFilePayload {
+                path: normalized_path,
+                name,
+                kind: "file",
+                depth,
+                size_bytes: Some(metadata.len()),
+            });
+        } else {
+            return Err(invalid_payload(
+                "skill package may contain only files and directories".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn read_skill_package_file(
+    package_root: &Path,
+    relative_path: &Path,
+) -> Result<SkillFileContentPayload, CommandErrorPayload> {
+    let display_path = path_to_workspace_string(relative_path);
+    let path = package_root.join(relative_path);
+    ensure_no_symlink_components(&path, "skill package file")?;
+    let normalized_root = package_root.canonicalize().map_err(|error| {
+        runtime_operation_failed(format!("skill package path unavailable: {error}"))
+    })?;
+    let normalized_path = path.canonicalize().map_err(|error| {
+        runtime_operation_failed(format!("skill package file unavailable: {error}"))
+    })?;
+    if !normalized_path.starts_with(normalized_root) {
+        return Err(invalid_payload(
+            "skill file path escaped package".to_owned(),
+        ));
+    }
+    read_skill_package_file_at(&path, &display_path)
+}
+
+fn read_skill_package_file_at(
+    path: &Path,
+    display_path: &str,
+) -> Result<SkillFileContentPayload, CommandErrorPayload> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        runtime_operation_failed(format!("skill package file metadata failed: {error}"))
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(runtime_operation_failed(
+            "skill package must not use symlinks".to_owned(),
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(invalid_payload("skill file not found".to_owned()));
+    }
+    if metadata.len() > MAX_SKILL_PACKAGE_FILE_BYTES {
+        return Err(invalid_payload(
+            "skill package file is too large".to_owned(),
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(|error| {
+        runtime_operation_failed(format!("skill package file read failed: {error}"))
+    })?;
+    let content = String::from_utf8(bytes)
+        .map_err(|_| invalid_payload("skill package file must be valid UTF-8".to_owned()))?;
+    Ok(SkillFileContentPayload {
+        path: display_path.to_owned(),
+        content,
+    })
+}
+
+fn normalize_skill_relative_path(value: &str) -> Result<PathBuf, CommandErrorPayload> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(invalid_payload("skill file path is required".to_owned()));
+    }
+    let path = PathBuf::from(trimmed);
+    if path.is_absolute() {
+        return Err(invalid_payload(
+            "skill file path must be relative".to_owned(),
+        ));
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(value) => normalized.push(value),
+            _ => return Err(invalid_payload("skill file path is invalid".to_owned())),
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        return Err(invalid_payload("skill file path is required".to_owned()));
+    }
+    Ok(normalized)
+}
+
 #[derive(Clone)]
 pub struct DesktopRuntimeState {
+    active_runtime: Arc<RwLock<DesktopActiveRuntime>>,
+    conversation_model_config_lock: Arc<tokio::sync::Mutex<()>>,
+    conversation_model_config_store: Arc<dyn ConversationModelConfigStore>,
+    conversation_event_subscriptions:
+        Arc<tokio::sync::Mutex<HashMap<String, ConversationSubscriptionHandle>>>,
     default_conversation_id: SessionId,
-    harness: Option<Arc<Harness>>,
+    deleted_conversation_ids: Arc<tokio::sync::Mutex<HashSet<SessionId>>>,
     memory_lock: Arc<tokio::sync::Mutex<()>>,
     mcp_server_lock: Arc<tokio::sync::Mutex<()>>,
     mcp_server_store: Arc<dyn McpServerStore>,
     permission_resolver: Option<Arc<dyn PermissionResolver>>,
     provider_settings_lock: Arc<tokio::sync::Mutex<()>>,
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
+    execution_settings_lock: Arc<tokio::sync::Mutex<()>>,
+    execution_settings_store: Arc<DesktopExecutionSettingsStore>,
+    skill_store: Arc<dyn SkillStore>,
+    skill_store_lock: Arc<tokio::sync::Mutex<()>>,
     start_run_lock: Arc<tokio::sync::Mutex<()>>,
     stream_permission_runtime: Option<Arc<StreamPermissionRuntime>>,
     workspace_root: PathBuf,
+}
+
+#[derive(Clone)]
+struct DesktopActiveRuntime {
+    default_model_id: String,
+    default_protocol: ModelProtocol,
+    harness: Option<Arc<Harness>>,
+}
+
+struct ConversationSubscriptionHandle {
+    conversation_id: String,
+    task: JoinHandle<()>,
+    window_label: String,
 }
 
 impl DesktopRuntimeState {
@@ -520,8 +1940,18 @@ impl DesktopRuntimeState {
         let workspace_root = canonical_workspace_root(workspace_root, "workspace root".to_owned())?;
 
         Ok(Self {
+            active_runtime: Arc::new(RwLock::new(DesktopActiveRuntime {
+                default_model_id: "llama3.1".to_owned(),
+                default_protocol: ModelProtocol::ChatCompletions,
+                harness: None,
+            })),
+            conversation_model_config_lock: Arc::new(tokio::sync::Mutex::new(())),
+            conversation_model_config_store: Arc::new(DesktopConversationModelConfigStore::new(
+                workspace_root.clone(),
+            )),
+            conversation_event_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             default_conversation_id: SessionId::new(),
-            harness: None,
+            deleted_conversation_ids: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             memory_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_server_store: Arc::new(DesktopMcpServerStore::new(workspace_root.clone())),
@@ -530,6 +1960,12 @@ impl DesktopRuntimeState {
             provider_settings_store: Arc::new(DesktopProviderSettingsStore::new(
                 workspace_root.clone(),
             )),
+            execution_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
+            execution_settings_store: Arc::new(DesktopExecutionSettingsStore::new(
+                workspace_root.clone(),
+            )),
+            skill_store: Arc::new(DesktopSkillStore::new(workspace_root.clone())),
+            skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             start_run_lock: Arc::new(tokio::sync::Mutex::new(())),
             stream_permission_runtime: None,
             workspace_root,
@@ -564,6 +2000,34 @@ impl DesktopRuntimeState {
         harness: Arc<Harness>,
         stream_permission_runtime: Arc<StreamPermissionRuntime>,
     ) -> Result<Self, CommandErrorPayload> {
+        let provider = harness.model_provider();
+        let mut default_model_id = harness.options().model_id.clone();
+        let supported_models = provider.supported_models();
+        if !supported_models
+            .iter()
+            .any(|model| model.model_id == default_model_id)
+        {
+            if let Some(model) = supported_models.first() {
+                default_model_id = model.model_id.clone();
+            }
+        }
+        let default_protocol = provider.snapshot_for_model(&default_model_id).protocol;
+        Self::with_harness_stream_permission_runtime_and_model_for_workspace(
+            workspace_root,
+            harness,
+            stream_permission_runtime,
+            default_model_id,
+            default_protocol,
+        )
+    }
+
+    fn with_harness_stream_permission_runtime_and_model_for_workspace(
+        workspace_root: PathBuf,
+        harness: Arc<Harness>,
+        stream_permission_runtime: Arc<StreamPermissionRuntime>,
+        default_model_id: String,
+        default_protocol: ModelProtocol,
+    ) -> Result<Self, CommandErrorPayload> {
         let Some(permission_broker) = harness.permission_broker() else {
             return Err(runtime_unavailable(
                 "Permission decisions require a Harness PermissionBroker.",
@@ -577,8 +2041,18 @@ impl DesktopRuntimeState {
         let permission_resolver: Arc<dyn PermissionResolver> = stream_permission_runtime.clone();
 
         Ok(Self {
+            active_runtime: Arc::new(RwLock::new(DesktopActiveRuntime {
+                default_model_id,
+                default_protocol,
+                harness: Some(harness),
+            })),
+            conversation_model_config_lock: Arc::new(tokio::sync::Mutex::new(())),
+            conversation_model_config_store: Arc::new(DesktopConversationModelConfigStore::new(
+                workspace_root.clone(),
+            )),
+            conversation_event_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             default_conversation_id: SessionId::new(),
-            harness: Some(harness),
+            deleted_conversation_ids: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             memory_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_server_store: Arc::new(DesktopMcpServerStore::new(workspace_root.clone())),
@@ -587,6 +2061,12 @@ impl DesktopRuntimeState {
             provider_settings_store: Arc::new(DesktopProviderSettingsStore::new(
                 workspace_root.clone(),
             )),
+            execution_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
+            execution_settings_store: Arc::new(DesktopExecutionSettingsStore::new(
+                workspace_root.clone(),
+            )),
+            skill_store: Arc::new(DesktopSkillStore::new(workspace_root.clone())),
+            skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             start_run_lock: Arc::new(tokio::sync::Mutex::new(())),
             stream_permission_runtime: Some(stream_permission_runtime),
             workspace_root,
@@ -595,7 +2075,47 @@ impl DesktopRuntimeState {
 
     #[must_use]
     pub fn harness(&self) -> Option<Arc<Harness>> {
-        self.harness.as_ref().map(Arc::clone)
+        self.active_runtime
+            .read()
+            .expect("desktop active runtime lock should not be poisoned")
+            .harness
+            .as_ref()
+            .map(Arc::clone)
+    }
+
+    pub fn replace_harness(
+        &self,
+        harness: Arc<Harness>,
+        default_model_id: String,
+        default_protocol: ModelProtocol,
+    ) {
+        *self
+            .active_runtime
+            .write()
+            .expect("desktop active runtime lock should not be poisoned") = DesktopActiveRuntime {
+            default_model_id,
+            default_protocol,
+            harness: Some(harness),
+        };
+    }
+
+    #[must_use]
+    pub fn active_conversation_runtime(
+        &self,
+        session_id: SessionId,
+    ) -> Option<(Arc<Harness>, SessionOptions)> {
+        let active_runtime = self
+            .active_runtime
+            .read()
+            .expect("desktop active runtime lock should not be poisoned");
+        let harness = active_runtime.harness.as_ref().map(Arc::clone)?;
+        let options = SessionOptions::new(&self.workspace_root)
+            .with_tenant_id(TenantId::SINGLE)
+            .with_session_id(session_id)
+            .with_interactivity(InteractivityLevel::FullyInteractive)
+            .with_model_id(active_runtime.default_model_id.clone())
+            .with_protocol(active_runtime.default_protocol);
+        Some((harness, options))
     }
 
     #[must_use]
@@ -607,10 +2127,36 @@ impl DesktopRuntimeState {
 
     #[must_use]
     pub fn conversation_session_options(&self, session_id: SessionId) -> SessionOptions {
+        let active_runtime = self
+            .active_runtime
+            .read()
+            .expect("desktop active runtime lock should not be poisoned");
+        self.conversation_session_options_for_model(
+            session_id,
+            active_runtime.default_model_id.clone(),
+            active_runtime.default_protocol,
+        )
+    }
+
+    #[must_use]
+    pub fn conversation_session_options_for_model(
+        &self,
+        session_id: SessionId,
+        model_id: String,
+        protocol: ModelProtocol,
+    ) -> SessionOptions {
+        let permission_mode = self
+            .execution_settings_store
+            .load_record()
+            .map(|record| record.permission_mode)
+            .unwrap_or(PermissionMode::Default);
         SessionOptions::new(&self.workspace_root)
             .with_tenant_id(TenantId::SINGLE)
             .with_session_id(session_id)
             .with_interactivity(InteractivityLevel::FullyInteractive)
+            .with_model_id(model_id)
+            .with_protocol(protocol)
+            .with_permission_mode(permission_mode)
     }
 
     #[must_use]
@@ -645,20 +2191,28 @@ async fn runtime_state_from_stream_permission_runtime(
     workspace_root: PathBuf,
     stream_permission_runtime: Arc<StreamPermissionRuntime>,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
-    let harness =
-        build_desktop_harness(&workspace_root, Arc::clone(&stream_permission_runtime)).await?;
+    let workspace_root = canonical_workspace_root(workspace_root, "workspace root".to_owned())?;
+    let (harness, model_id, protocol) = build_desktop_harness(
+        &workspace_root,
+        Arc::clone(&stream_permission_runtime),
+        None,
+    )
+    .await?;
 
-    DesktopRuntimeState::with_harness_stream_permission_runtime_for_workspace(
+    DesktopRuntimeState::with_harness_stream_permission_runtime_and_model_for_workspace(
         workspace_root,
         Arc::new(harness),
         stream_permission_runtime,
+        model_id,
+        protocol,
     )
 }
 
 async fn build_desktop_harness(
     workspace_root: &Path,
     stream_permission_runtime: Arc<StreamPermissionRuntime>,
-) -> Result<Harness, CommandErrorPayload> {
+    model_config_id: Option<&str>,
+) -> Result<(Harness, String, ModelProtocol), CommandErrorPayload> {
     let event_store = JsonlEventStore::open(
         workspace_root.join(".jyowo").join("runtime").join("events"),
         Arc::new(DefaultRedactor::default()),
@@ -672,21 +2226,62 @@ async fn build_desktop_harness(
         AgentId::new(),
     )
     .await?;
+    let provider_settings_store = DesktopProviderSettingsStore::new(workspace_root.to_path_buf());
+    let conversation_model_config_store =
+        DesktopConversationModelConfigStore::new(workspace_root.to_path_buf());
+    let (model_provider, model_id, protocol) =
+        model_from_provider_settings(&provider_settings_store, model_config_id)?.unwrap_or_else(
+            || {
+                (
+                    Arc::new(LocalLlamaProvider::default()) as Arc<dyn ModelProvider>,
+                    "llama3.1".to_owned(),
+                    ModelProtocol::ChatCompletions,
+                )
+            },
+        );
+    let skill_store = DesktopSkillStore::new(workspace_root.to_path_buf());
+    let skill_loader = SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
+        path: skill_store.enabled_dir(),
+        source_kind: DirectorySourceKind::Workspace,
+    });
+    let blob_store = FileBlobStore::open(
+        workspace_root.join(".jyowo").join("runtime").join("blobs"),
+    )
+    .map_err(|error| runtime_init_failed(format!("blob store initialization failed: {error}")))?;
+    let provider_credential_resolver: Arc<dyn ProviderCredentialResolverCap> =
+        Arc::new(DesktopProviderCredentialResolver::new(
+            Arc::new(conversation_model_config_store),
+            Arc::new(provider_settings_store.clone()),
+        ));
 
-    Harness::builder()
+    let harness = Harness::builder()
         .with_workspace_root(workspace_root)
-        .with_model(LocalLlamaProvider::default())
+        .with_model_arc(model_provider)
+        .with_model_id(model_id.clone())
+        .with_default_session_options(
+            SessionOptions::new(workspace_root)
+                .with_model_id(model_id.clone())
+                .with_protocol(protocol),
+        )
         .with_store(event_store)
         .with_sandbox(LocalSandbox::new(workspace_root))
+        .with_blob_store(blob_store)
+        .with_capability(
+            ToolCapability::ProviderCredentialResolver,
+            provider_credential_resolver,
+        )
         .with_mcp_config(mcp_config)
         .with_memory_provider(InMemoryMemoryProvider::new("desktop-memory"))
+        .with_skill_loader(skill_loader)
         .with_stream_permission_broker_arc(
             stream_permission_runtime.broker(),
             stream_permission_runtime.resolver_handle(),
         )
         .build()
         .await
-        .map_err(|error| runtime_init_failed(format!("harness initialization failed: {error}")))
+        .map_err(|error| runtime_init_failed(format!("harness initialization failed: {error}")))?;
+
+    Ok((harness, model_id, protocol))
 }
 
 fn current_workspace_root() -> Result<PathBuf, CommandErrorPayload> {
@@ -754,6 +2349,7 @@ pub struct CommandErrorPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSummaryPayload {
     pub id: String,
+    pub is_empty: bool,
     pub last_message_preview: Option<String>,
     pub title: String,
     pub updated_at: String,
@@ -764,6 +2360,8 @@ pub struct ConversationSummaryPayload {
 pub struct ConversationMessagePayload {
     pub author: &'static str,
     pub body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_message_id: Option<String>,
     pub id: String,
     pub timestamp: String,
 }
@@ -773,6 +2371,7 @@ pub struct ConversationMessagePayload {
 pub struct ConversationPayload {
     pub id: String,
     pub messages: Vec<ConversationMessagePayload>,
+    pub model_config_id: Option<String>,
     pub title: String,
     pub updated_at: String,
 }
@@ -781,6 +2380,12 @@ pub struct ConversationPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ListConversationsResponse {
     pub conversations: Vec<ConversationSummaryPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateConversationResponse {
+    pub conversation: ConversationSummaryPayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -797,10 +2402,74 @@ pub struct GetConversationResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SetConversationModelConfigRequest {
+    pub conversation_id: String,
+    pub model_config_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetConversationModelConfigResponse {
+    pub conversation_id: String,
+    pub model_config_id: String,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteConversationRequest {
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteConversationResponse {
+    pub conversation_id: String,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StartRunRequest {
-    pub context_references: Option<Vec<String>>,
+    #[serde(default)]
+    pub attachments: Option<Vec<AttachmentReferencePayload>>,
+    #[serde(default)]
+    pub client_message_id: Option<String>,
+    #[serde(default)]
+    pub context_references: Option<Vec<ContextReferencePayload>>,
     pub conversation_id: String,
     pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ContextReferencePayload {
+    WorkspaceFile { path: String, label: String },
+    Artifact { id: String, label: String },
+    Conversation { id: String, label: String },
+    Memory { id: String, label: String },
+    Skill { id: String, label: String },
+    Tool { id: String, label: String },
+    McpServer { id: String, label: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentReferencePayload {
+    pub id: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
+    pub blob_ref: AttachmentBlobRefPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentBlobRefPayload {
+    pub id: String,
+    pub size: u64,
+    pub content_hash: [u8; 32],
+    pub content_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -808,6 +2477,46 @@ pub struct StartRunRequest {
 pub struct StartRunResponse {
     pub run_id: String,
     pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAttachmentFromPathRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAttachmentFromPathResponse {
+    pub attachment: AttachmentReferencePayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferenceCandidatePayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListReferenceCandidatesResponse {
+    pub artifacts: Vec<ReferenceCandidatePayload>,
+    pub conversations: Vec<ReferenceCandidatePayload>,
+    pub files: Vec<ReferenceCandidatePayload>,
+    pub memories: Vec<ReferenceCandidatePayload>,
+    pub mcp_servers: Vec<ReferenceCandidatePayload>,
+    pub skills: Vec<ReferenceCandidatePayload>,
+    pub tools: Vec<ReferenceCandidatePayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListReferenceCandidatesRequest {
+    pub conversation_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -833,6 +2542,7 @@ pub enum PermissionDecision {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvePermissionRequest {
+    pub conversation_id: String,
     pub decision: PermissionDecision,
     pub request_id: String,
 }
@@ -852,10 +2562,52 @@ pub struct ListActivityRequest {
     pub run_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscribeConversationEventsRequest {
+    pub conversation_id: String,
+    pub after_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscribeConversationEventsResponse {
+    pub subscription_id: String,
+    pub conversation_id: String,
+    pub replay_events: Vec<RunEventPayload>,
+    pub cursor: Option<String>,
+    pub gap: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsubscribeConversationEventsRequest {
+    pub subscription_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsubscribeConversationEventsResponse {
+    pub subscription_id: String,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationEventBatchPayload {
+    pub subscription_id: String,
+    pub conversation_id: String,
+    pub events: Vec<RunEventPayload>,
+    pub cursor: Option<String>,
+    pub gap: bool,
+    pub phase: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunEventPayload {
     pub id: String,
+    pub conversation_sequence: u64,
     pub payload: Value,
     pub run_id: String,
     pub sequence: u64,
@@ -875,7 +2627,6 @@ pub enum RunEventBodyPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionRequestedRunEventPayload {
-    pub command: Option<PermissionCommandRunEventPayload>,
     pub decision_scope: String,
     pub exposure: String,
     pub operation: String,
@@ -884,14 +2635,6 @@ pub struct PermissionRequestedRunEventPayload {
     pub severity: &'static str,
     pub target: String,
     pub workspace_boundary: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PermissionCommandRunEventPayload {
-    pub argv: Vec<String>,
-    pub cwd: Option<String>,
-    pub executable: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -941,11 +2684,18 @@ pub struct ArtifactSummaryPayload {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing)]
     pub source_message_id: Option<String>,
+    #[serde(skip_serializing)]
     pub source_run_id: String,
     pub status: &'static str,
     pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListArtifactsRequest {
+    pub conversation_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -965,6 +2715,8 @@ pub struct GetContextSnapshotRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ContextDecisionPayload {
     pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
     pub title: String,
 }
 
@@ -985,6 +2737,26 @@ pub struct GetContextSnapshotResponse {
     pub next_actions: Vec<String>,
     pub path: String,
     pub project: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetExecutionSettingsResponse {
+    pub permission_mode: PermissionMode,
+    pub auto_mode_available: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetExecutionSettingsRequest {
+    pub permission_mode: PermissionMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetExecutionSettingsResponse {
+    pub permission_mode: PermissionMode,
+    pub auto_mode_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1058,8 +2830,172 @@ pub fn list_eval_cases_with_runtime_state(
     list_eval_cases_payload()
 }
 
+#[must_use]
+pub fn list_model_provider_catalog_payload() -> ModelProviderCatalogResponse {
+    model_provider_catalog_response(provider_catalog_entries())
+}
+
+pub async fn list_model_provider_catalog_payload_with_remote() -> ModelProviderCatalogResponse {
+    let mut entries = provider_catalog_entries();
+    if let Some(openrouter_inventory) = fetch_openrouter_inventory().await {
+        if let Some(openrouter) = entries
+            .iter_mut()
+            .find(|entry| entry.provider_id == "openrouter")
+        {
+            openrouter.models = runnable_inventory_models(&openrouter_inventory);
+        }
+    }
+    model_provider_catalog_response(entries)
+}
+
+fn model_provider_catalog_response(
+    entries: Vec<jyowo_harness_sdk::ext::ProviderCatalogEntry>,
+) -> ModelProviderCatalogResponse {
+    ModelProviderCatalogResponse {
+        providers: entries
+            .into_iter()
+            .map(|entry| ModelProviderCatalogEntry {
+                default_base_url: entry.default_base_url,
+                display_name: entry.display_name,
+                models: entry
+                    .models
+                    .into_iter()
+                    .map(model_descriptor_catalog_entry)
+                    .collect(),
+                provider_id: entry.provider_id,
+                runtime_capability: runtime_capability_payload(entry.runtime_capability),
+                service_capabilities: entry
+                    .service_capabilities
+                    .into_iter()
+                    .map(service_capability_payload)
+                    .collect(),
+                source_url: entry.source_url,
+                verified_date: entry.verified_date.to_string(),
+            })
+            .collect(),
+    }
+}
+
+fn runtime_capability_payload(
+    capability: ProviderRuntimeCapability,
+) -> ProviderRuntimeCapabilityPayload {
+    ProviderRuntimeCapabilityPayload {
+        auth_scheme: provider_auth_scheme_payload(capability.auth_scheme),
+        base_url_regions: capability
+            .base_url_regions
+            .into_iter()
+            .map(base_url_region_payload)
+            .collect(),
+        supports_live_validation: capability.supports_live_validation,
+        supports_streaming_validation: capability.supports_streaming_validation,
+        secret_reveal_supported: capability.secret_reveal_supported,
+    }
+}
+
+fn base_url_region_payload(region: ProviderBaseUrlRegion) -> ProviderBaseUrlRegionPayload {
+    ProviderBaseUrlRegionPayload {
+        id: region.id,
+        label: region.label,
+        base_url: region.base_url,
+    }
+}
+
+fn service_capability_payload(
+    capability: ProviderServiceCapability,
+) -> ProviderServiceCapabilityPayload {
+    ProviderServiceCapabilityPayload {
+        operation_id: capability.operation_id,
+        category: provider_service_category_payload(capability.category),
+        input_modalities: capability
+            .input_modalities
+            .iter()
+            .map(model_modality_record)
+            .collect(),
+        output_artifact: model_modality_record(&capability.output_artifact),
+        execution: provider_service_execution_payload(capability.execution),
+        requires_polling: capability.requires_polling,
+        permission_subject: capability.permission_subject,
+        cost_risk: provider_service_cost_risk_payload(capability.cost_risk),
+    }
+}
+
+fn provider_auth_scheme_payload(scheme: ProviderAuthScheme) -> &'static str {
+    match scheme {
+        ProviderAuthScheme::Bearer => "bearer",
+        ProviderAuthScheme::ApiKey => "api_key",
+        ProviderAuthScheme::XApiKey => "x_api_key",
+        ProviderAuthScheme::None => "none",
+    }
+}
+
+fn provider_service_category_payload(category: ProviderServiceCategory) -> &'static str {
+    match category {
+        ProviderServiceCategory::Conversation => "conversation",
+        ProviderServiceCategory::Image => "image",
+        ProviderServiceCategory::Video => "video",
+        ProviderServiceCategory::Audio => "audio",
+        ProviderServiceCategory::Music => "music",
+        ProviderServiceCategory::File => "file",
+        ProviderServiceCategory::Model => "model",
+    }
+}
+
+fn provider_service_execution_payload(execution: ProviderServiceExecution) -> &'static str {
+    match execution {
+        ProviderServiceExecution::Sync => "sync",
+        ProviderServiceExecution::AsyncJob => "async_job",
+        ProviderServiceExecution::Websocket => "websocket",
+    }
+}
+
+fn provider_service_cost_risk_payload(cost_risk: ProviderServiceCostRisk) -> &'static str {
+    match cost_risk {
+        ProviderServiceCostRisk::Low => "low",
+        ProviderServiceCostRisk::Medium => "medium",
+        ProviderServiceCostRisk::High => "high",
+    }
+}
+
+async fn fetch_openrouter_inventory() -> Option<Vec<ModelInventoryEntry>> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()?;
+    let mut response = client
+        .get("https://openrouter.ai/api/v1/models")
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_OPENROUTER_MODELS_API_BYTES as u64)
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_OPENROUTER_MODELS_API_BYTES {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    inventory_from_models_api_json(&bytes).ok()
+}
+
 pub async fn list_artifacts_with_runtime_state(
+    request: ListArtifactsRequest,
     state: &DesktopRuntimeState,
+) -> Result<ListArtifactsResponse, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
+    let session_id = parse_session_id(&request.conversation_id)?;
+    collect_artifacts_from_runtime_state(state, session_id).await
+}
+
+async fn collect_artifacts_from_runtime_state(
+    state: &DesktopRuntimeState,
+    session_id: SessionId,
 ) -> Result<ListArtifactsResponse, CommandErrorPayload> {
     let Some(harness) = state.harness() else {
         return Err(runtime_unavailable(
@@ -1068,12 +3004,13 @@ pub async fn list_artifacts_with_runtime_state(
     };
     let redactor = DefaultRedactor::default();
     let mut after_event_id = None;
-    let mut artifacts = Vec::new();
+    let mut artifacts_by_id = BTreeMap::<String, ArtifactSummaryPayload>::new();
+    let mut order = Vec::<String>::new();
 
     loop {
         let page = harness
             .page_conversation_events(ConversationEventsPageRequest {
-                options: state.conversation_session_options(state.default_conversation_id()),
+                options: state.conversation_session_options(session_id),
                 after_event_id,
                 limit: 200,
             })
@@ -1084,32 +3021,121 @@ pub async fn list_artifacts_with_runtime_state(
         }
 
         for envelope in page.events {
-            if let Event::AssistantMessageCompleted(event) = envelope.payload {
-                let preview = message_content_display(&event.content, &redactor);
-                if preview.trim().is_empty() {
-                    continue;
-                }
-                let preview = truncate_utf8(preview, MAX_ARTIFACT_PREVIEW_BYTES);
-                let title = artifact_title_from_preview(&preview);
-                artifacts.push(ArtifactSummaryPayload {
-                    action_label: "Open".to_owned(),
-                    description: "Generated from the runtime conversation.".to_owned(),
-                    id: format!("artifact-{}", event.message_id),
-                    kind: "markdown".to_owned(),
-                    preview: Some(preview),
-                    source_message_id: Some(event.message_id.to_string()),
-                    source_run_id: event.run_id.to_string(),
-                    status: "ready",
-                    title,
-                });
-            }
+            project_artifact_event(
+                envelope.payload,
+                session_id,
+                &redactor,
+                &mut artifacts_by_id,
+                &mut order,
+            );
         }
 
         after_event_id = page.next_event_id;
     }
 
+    let mut artifacts = order
+        .into_iter()
+        .filter_map(|artifact_id| artifacts_by_id.remove(&artifact_id))
+        .collect::<Vec<_>>();
     artifacts.reverse();
     Ok(ListArtifactsResponse { artifacts })
+}
+
+fn project_artifact_event(
+    event: Event,
+    session_id: SessionId,
+    redactor: &dyn Redactor,
+    artifacts_by_id: &mut BTreeMap<String, ArtifactSummaryPayload>,
+    order: &mut Vec<String>,
+) {
+    match event {
+        Event::ArtifactCreated(event) => {
+            if event.session_id != session_id {
+                return;
+            }
+            let artifact_id = event.artifact_id;
+            if !artifacts_by_id.contains_key(&artifact_id) {
+                order.push(artifact_id.clone());
+            }
+            artifacts_by_id.insert(
+                artifact_id.clone(),
+                ArtifactSummaryPayload {
+                    action_label: "Open".to_owned(),
+                    description: artifact_description_from_source(event.source),
+                    id: artifact_id,
+                    kind: redacted_display(event.kind, redactor),
+                    preview: event.preview.map(|preview| {
+                        truncate_utf8(
+                            redactor.redact(&preview, &RedactRules::default()),
+                            MAX_ARTIFACT_PREVIEW_BYTES,
+                        )
+                    }),
+                    source_message_id: event
+                        .source_message_id
+                        .map(|message_id| message_id.to_string()),
+                    source_run_id: event.run_id.to_string(),
+                    status: artifact_status_label(event.status),
+                    title: redacted_display(event.title, redactor),
+                },
+            );
+        }
+        Event::ArtifactUpdated(event) => {
+            if event.session_id != session_id {
+                return;
+            }
+            let Some(artifact) = artifacts_by_id.get_mut(&event.artifact_id) else {
+                return;
+            };
+            if let Some(kind) = event.kind {
+                artifact.kind = redacted_display(kind, redactor);
+            }
+            if let Some(preview) = event.preview {
+                artifact.preview = Some(truncate_utf8(
+                    redactor.redact(&preview, &RedactRules::default()),
+                    MAX_ARTIFACT_PREVIEW_BYTES,
+                ));
+            }
+            if let Some(source_message_id) = event.source_message_id {
+                artifact.source_message_id = Some(source_message_id.to_string());
+            }
+            artifact.source_run_id = event.run_id.to_string();
+            if let Some(status) = event.status {
+                artifact.status = artifact_status_label(status);
+            }
+            if let Some(title) = event.title {
+                artifact.title = redacted_display(title, redactor);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn artifact_status_label(status: jyowo_harness_sdk::ext::ArtifactStatus) -> &'static str {
+    match status {
+        jyowo_harness_sdk::ext::ArtifactStatus::Pending => "pending",
+        jyowo_harness_sdk::ext::ArtifactStatus::Running => "running",
+        jyowo_harness_sdk::ext::ArtifactStatus::Ready => "ready",
+        jyowo_harness_sdk::ext::ArtifactStatus::Failed => "failed",
+        _ => "ready",
+    }
+}
+
+fn artifact_description_from_source(source: jyowo_harness_sdk::ext::ArtifactSource) -> String {
+    match source {
+        jyowo_harness_sdk::ext::ArtifactSource::Assistant => {
+            "Generated by the assistant as a durable artifact.".to_owned()
+        }
+        jyowo_harness_sdk::ext::ArtifactSource::Tool => {
+            "Generated by a tool as a durable artifact.".to_owned()
+        }
+        jyowo_harness_sdk::ext::ArtifactSource::File => {
+            "Linked from the workspace as a durable artifact.".to_owned()
+        }
+        jyowo_harness_sdk::ext::ArtifactSource::ModelService => {
+            "Generated by the model service as a durable artifact.".to_owned()
+        }
+        _ => "Generated as a durable artifact.".to_owned(),
+    }
 }
 
 pub fn run_eval_case_payload(
@@ -1132,8 +3158,7 @@ pub fn run_eval_case_with_runtime_state(
 pub async fn validate_provider_settings_payload(
     request: ValidateProviderSettingsRequest,
 ) -> Result<ValidateProviderSettingsResponse, CommandErrorPayload> {
-    ensure_provider_metadata(&request.provider_id, &request.model_id)?;
-    ensure_provider_model_supported(&request)?;
+    ensure_provider_model_supported(&request).await?;
 
     Ok(ValidateProviderSettingsResponse {
         model_id: request.model_id,
@@ -1142,53 +3167,194 @@ pub async fn validate_provider_settings_payload(
     })
 }
 
+pub fn get_execution_settings_with_store(
+    store: &DesktopExecutionSettingsStore,
+) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
+    let record = store.load_record()?;
+    Ok(GetExecutionSettingsResponse {
+        permission_mode: record.permission_mode,
+        auto_mode_available: auto_mode_available(),
+    })
+}
+
+pub fn set_execution_settings_with_store(
+    request: SetExecutionSettingsRequest,
+    store: &DesktopExecutionSettingsStore,
+) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
+    ensure_execution_settings_record(&ExecutionSettingsRecord {
+        permission_mode: request.permission_mode,
+    })?;
+    if request.permission_mode == PermissionMode::Auto && !auto_mode_available() {
+        return Err(invalid_payload(
+            "auto permission mode is unavailable in this desktop build".to_owned(),
+        ));
+    }
+    let record = ExecutionSettingsRecord {
+        permission_mode: request.permission_mode,
+    };
+    store.save_record(&record)?;
+    Ok(SetExecutionSettingsResponse {
+        permission_mode: record.permission_mode,
+        auto_mode_available: auto_mode_available(),
+    })
+}
+
+pub async fn list_provider_settings_with_store(
+    store: &dyn ProviderSettingsStore,
+) -> Result<ListProviderSettingsResponse, CommandErrorPayload> {
+    let record = store.load_record()?.unwrap_or_default();
+
+    Ok(ListProviderSettingsResponse {
+        default_config_id: record.default_config_id.clone(),
+        configs: provider_config_payloads(&record)?,
+    })
+}
+
+pub async fn request_provider_config_api_key_reveal_with_store(
+    request: RequestProviderConfigApiKeyRevealRequest,
+    store: &dyn ProviderSettingsStore,
+) -> Result<(), CommandErrorPayload> {
+    ensure_non_empty("configId", &request.config_id)?;
+    let record = store.load_record()?.unwrap_or_default();
+    let Some(config) = record
+        .configs
+        .iter()
+        .find(|config| config.id == request.config_id)
+    else {
+        return Err(not_found(format!(
+            "provider config not found: {}",
+            request.config_id
+        )));
+    };
+    ensure_provider_config_has_api_key(config)?;
+    Err(invalid_payload(
+        "provider API key reveal is disabled".to_owned(),
+    ))
+}
+
+pub async fn request_provider_config_api_key_reveal_with_runtime_state(
+    request: RequestProviderConfigApiKeyRevealRequest,
+    runtime_state: &DesktopRuntimeState,
+) -> Result<RequestProviderConfigApiKeyRevealResponse, CommandErrorPayload> {
+    Err(
+        match request_provider_config_api_key_reveal_with_store(
+            request.clone(),
+            runtime_state.provider_settings_store.as_ref(),
+        )
+        .await
+        {
+            Ok(()) => invalid_payload("provider API key reveal is disabled".to_owned()),
+            Err(error) => error,
+        },
+    )
+}
+
+pub async fn get_provider_config_api_key_with_store(
+    request: GetProviderConfigApiKeyRequest,
+    store: &dyn ProviderSettingsStore,
+) -> Result<GetProviderConfigApiKeyResponse, CommandErrorPayload> {
+    ensure_non_empty("configId", &request.config_id)?;
+    ensure_non_empty("revealToken", &request.reveal_token)?;
+    let record = store.load_record()?.unwrap_or_default();
+    let Some(config) = record
+        .configs
+        .iter()
+        .find(|config| config.id == request.config_id)
+    else {
+        return Err(not_found(format!(
+            "provider config not found: {}",
+            request.config_id
+        )));
+    };
+    ensure_provider_config_has_api_key(config)?;
+
+    Err(invalid_payload(
+        "provider API key reveal is disabled".to_owned(),
+    ))
+}
+
+pub async fn get_provider_config_api_key_with_runtime_state(
+    request: GetProviderConfigApiKeyRequest,
+    runtime_state: &DesktopRuntimeState,
+) -> Result<GetProviderConfigApiKeyResponse, CommandErrorPayload> {
+    get_provider_config_api_key_with_store(request, runtime_state.provider_settings_store.as_ref())
+        .await
+}
+
 pub async fn save_provider_settings_with_store(
     request: ProviderSettingsRequest,
     store: &dyn ProviderSettingsStore,
 ) -> Result<SaveProviderSettingsResponse, CommandErrorPayload> {
     ensure_provider_settings(&request)?;
-    ensure_provider_model_supported(&request)?;
-    let secret_ref = store.secret_ref(&request.provider_id);
-    let previous_record = store.load_record()?;
-    let allowed_stale_secret_ref_prefixes = supported_provider_ids()
+    let base_url = normalized_base_url(request.base_url.as_deref())?;
+    let mut record = store.load_record()?.unwrap_or_default();
+    let config_id = provider_config_id(&record, &request);
+    let previous_config = record
+        .configs
         .iter()
-        .map(|provider_id| store.secret_ref_prefix(provider_id))
-        .collect::<Vec<_>>();
-    let stale_secret_refs = stale_provider_secret_refs(
-        previous_record.as_ref(),
-        &secret_ref,
-        &allowed_stale_secret_ref_prefixes,
-    );
-    let record = ProviderSettingsRecord {
+        .find(|config| config.id == config_id)
+        .cloned();
+    let descriptor = provider_settings_descriptor(&request, previous_config.as_ref()).await?;
+    let api_key = request
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let config_api_key = if let Some(api_key) = api_key {
+        api_key.to_owned()
+    } else if let Some(config) = previous_config.as_ref() {
+        if config.provider_id != request.provider_id || config.base_url != base_url {
+            return Err(invalid_payload(
+                "apiKey is required when changing provider or baseUrl".to_owned(),
+            ));
+        }
+        let api_key = match ensure_provider_config_has_api_key(config) {
+            Ok(api_key) => api_key,
+            Err(_) => {
+                return Err(invalid_payload(
+                    "apiKey is required for provider configs without a stored key".to_owned(),
+                ));
+            }
+        };
+        api_key.to_owned()
+    } else {
+        return Err(invalid_payload(
+            "apiKey is required for new provider configs".to_owned(),
+        ));
+    };
+    let config = ProviderConfigRecord {
+        api_key: config_api_key,
+        protocol: descriptor.protocol,
+        base_url,
+        display_name: request
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| provider_display_name(&request.provider_id)),
+        id: config_id.clone(),
         model_id: request.model_id.clone(),
         provider_id: request.provider_id.clone(),
-        secret_ref: secret_ref.clone(),
-        stale_secret_refs,
+        model_descriptor: model_descriptor_record(&descriptor),
     };
-    store.save_secret(&secret_ref, &request.api_key)?;
-    if let Err(save_record_error) = store.save_record(&record) {
-        if let Err(rollback_error) = store.delete_secret(&secret_ref) {
-            return Err(runtime_operation_failed(format!(
-                "{}; {}",
-                save_record_error.message, rollback_error.message
-            )));
-        }
-
-        return Err(save_record_error);
+    record.configs.retain(|existing| existing.id != config_id);
+    record.configs.push(config);
+    record.configs.sort_by(|left, right| left.id.cmp(&right.id));
+    if request.set_default || record.default_config_id.is_none() {
+        record.default_config_id = Some(config_id.clone());
     }
-    let failed_cleanup_refs = cleanup_stale_provider_secrets(store, &record.stale_secret_refs);
-    if failed_cleanup_refs != record.stale_secret_refs {
-        let cleaned_record = ProviderSettingsRecord {
-            stale_secret_refs: failed_cleanup_refs,
-            ..record.clone()
-        };
-        let _ = store.save_record(&cleaned_record);
-    }
+    store.save_record(&record)?;
 
     Ok(SaveProviderSettingsResponse {
-        model_id: request.model_id,
-        provider_id: request.provider_id,
-        secret_ref,
+        config: provider_config_payload(
+            record
+                .configs
+                .iter()
+                .find(|config| config.id == config_id)
+                .expect("saved config should exist"),
+            record.default_config_id.as_deref(),
+        )?,
         status: "saved",
     })
 }
@@ -1292,6 +3458,419 @@ pub async fn delete_mcp_server_with_runtime_state(
         id: id.to_owned(),
         status: "deleted",
     })
+}
+
+pub async fn list_skills_with_runtime_state(
+    state: &DesktopRuntimeState,
+) -> Result<ListSkillsResponse, CommandErrorPayload> {
+    let records = state.skill_store.load_records()?;
+    let runtime = state
+        .harness()
+        .map(|harness| harness.list_runtime_skills())
+        .unwrap_or_default();
+    Ok(ListSkillsResponse {
+        skills: skill_summaries_from_records_and_runtime(&records, &runtime),
+    })
+}
+
+pub async fn import_skill_with_runtime_state(
+    request: ImportSkillRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ImportSkillResponse, CommandErrorPayload> {
+    let harness = state.harness().ok_or_else(|| {
+        runtime_unavailable("Importing skills requires the runtime skill facade.")
+    })?;
+    let source_path = ensure_import_skill_source_path(&request.source_path)?;
+    let entry_path = source_path.join(SKILL_PACKAGE_ENTRY_FILE);
+    let entry_metadata = std::fs::metadata(&entry_path).map_err(|error| {
+        runtime_operation_failed(format!("skill entry metadata failed: {error}"))
+    })?;
+    if entry_metadata.len() > MAX_SKILL_MARKDOWN_BYTES {
+        return Err(invalid_payload("skill entry file is too large".to_owned()));
+    }
+    let bytes = std::fs::read(&entry_path)
+        .map_err(|error| runtime_operation_failed(format!("skill entry read failed: {error}")))?;
+    let markdown = String::from_utf8(bytes)
+        .map_err(|_| invalid_payload("skill entry file must be valid UTF-8".to_owned()))?;
+    let validated = harness
+        .validate_workspace_skill_markdown(&markdown, Some(entry_path))
+        .await
+        .map_err(|error| invalid_payload(error.to_string()))?;
+    let content_hash = hash_skill_package(&source_path)?;
+
+    let mut records = state.skill_store.load_records()?;
+    let previous_records = records.clone();
+    if records
+        .iter()
+        .any(|record| record.enabled && record.name == validated.summary.name)
+        || harness
+            .list_runtime_skills()
+            .iter()
+            .any(|skill| skill.name == validated.summary.name)
+    {
+        return Err(invalid_payload(format!(
+            "active skill name already exists: {}",
+            validated.summary.name
+        )));
+    }
+
+    let id = skill_import_id();
+    let now = now().to_rfc3339();
+    let record = SkillStoreRecord {
+        id: id.clone(),
+        name: validated.summary.name,
+        description: validated.summary.description,
+        enabled: true,
+        content_hash,
+        package_dir: id.clone(),
+        file_name: String::new(),
+        imported_at: now.clone(),
+        updated_at: now,
+        tags: validated.summary.tags,
+        category: validated.summary.category,
+        last_validation_error: None,
+    };
+    state
+        .skill_store
+        .write_skill_package(&record.id, true, &source_path)?;
+    records.retain(|existing| existing.id != record.id);
+    records.push(record.clone());
+    records.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
+    if let Err(error) = state.skill_store.save_records(&records) {
+        let _ = state.skill_store.delete_skill_package(&record.id);
+        return Err(error);
+    }
+    if let Err(error) = reload_managed_skills(state, &harness).await {
+        let _ = state.skill_store.delete_skill_package(&record.id);
+        let _ = state.skill_store.save_records(&previous_records);
+        let _ = reload_managed_skills(state, &harness).await;
+        return Err(error);
+    }
+
+    Ok(ImportSkillResponse {
+        skill: managed_skill_summary(&record, runtime_status_for_name(&harness, &record.name)),
+    })
+}
+
+pub async fn get_skill_with_runtime_state(
+    request: GetSkillRequest,
+    state: &DesktopRuntimeState,
+) -> Result<GetSkillResponse, CommandErrorPayload> {
+    ensure_skill_id(&request.id)?;
+    let records = state.skill_store.load_records()?;
+    let record = records.iter().find(|record| record.id == request.id);
+    let harness = state.harness();
+
+    let Some(record) = record else {
+        let harness = harness
+            .as_ref()
+            .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
+        let view = harness
+            .view_runtime_skill(&request.id, request.include_body)
+            .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
+        return Ok(GetSkillResponse {
+            skill: skill_detail_from_runtime_view(
+                runtime_skill_summary_payload(&view.summary),
+                view,
+                Vec::new(),
+                None,
+                None,
+            ),
+        });
+    };
+
+    let runtime_view = harness.as_ref().and_then(|harness| {
+        record
+            .enabled
+            .then(|| harness.view_runtime_skill(&record.name, request.include_body))
+            .flatten()
+    });
+    let files = state.skill_store.list_skill_package_files(record)?;
+    let selected_file_path = request
+        .selected_file_path
+        .as_deref()
+        .unwrap_or(SKILL_PACKAGE_ENTRY_FILE);
+    let selected_file = if files
+        .iter()
+        .any(|file| file.kind == "file" && file.path == selected_file_path)
+    {
+        Some(
+            state
+                .skill_store
+                .read_skill_package_file(record, selected_file_path)?,
+        )
+    } else if request.selected_file_path.is_some() {
+        return Err(invalid_payload("skill file not found".to_owned()));
+    } else {
+        None
+    };
+    let detail = if let Some(view) = runtime_view {
+        let status = skill_status_string(&view.summary.status);
+        skill_detail_from_runtime_view(
+            managed_skill_summary(record, Some(status)),
+            view,
+            files,
+            selected_file,
+            record.last_validation_error.clone(),
+        )
+    } else {
+        let markdown = state.skill_store.read_skill_entry_file(record)?;
+        let body = markdown_body_preview(&markdown);
+        SkillDetailPayload {
+            summary: managed_skill_summary(record, None),
+            parameters: Vec::new(),
+            config_keys: Vec::new(),
+            files,
+            selected_file,
+            body_preview: body.chars().take(1024).collect(),
+            body_full: request.include_body.then_some(body),
+            validation_error: record.last_validation_error.clone(),
+        }
+    };
+    Ok(GetSkillResponse { skill: detail })
+}
+
+pub async fn set_skill_enabled_with_runtime_state(
+    request: SetSkillEnabledRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SetSkillEnabledResponse, CommandErrorPayload> {
+    ensure_skill_id(&request.id)?;
+    let harness = state.harness().ok_or_else(|| {
+        runtime_unavailable("Changing skill state requires the runtime skill facade.")
+    })?;
+    let mut records = state.skill_store.load_records()?;
+    let record_index = records
+        .iter()
+        .position(|record| record.id == request.id)
+        .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
+    let record_name = records[record_index].name.clone();
+    if records[record_index].enabled != request.enabled {
+        if request.enabled
+            && (records.iter().any(|candidate| {
+                candidate.enabled && candidate.name == record_name && candidate.id != request.id
+            }) || harness
+                .list_runtime_skills()
+                .iter()
+                .any(|skill| skill.name == record_name))
+        {
+            return Err(invalid_payload(format!(
+                "active skill name already exists: {}",
+                record_name
+            )));
+        }
+        state
+            .skill_store
+            .move_skill_package(&request.id, request.enabled)?;
+        records[record_index].enabled = request.enabled;
+        records[record_index].updated_at = now().to_rfc3339();
+        records[record_index].last_validation_error = None;
+        state.skill_store.save_records(&records)?;
+        reload_managed_skills(state, &harness).await?;
+    }
+    let record = records[record_index].clone();
+    Ok(SetSkillEnabledResponse {
+        skill: managed_skill_summary(&record, runtime_status_for_name(&harness, &record.name)),
+    })
+}
+
+pub async fn delete_skill_with_runtime_state(
+    request: DeleteSkillRequest,
+    state: &DesktopRuntimeState,
+) -> Result<DeleteSkillResponse, CommandErrorPayload> {
+    ensure_skill_id(&request.id)?;
+    let harness = state
+        .harness()
+        .ok_or_else(|| runtime_unavailable("Deleting skills requires the runtime skill facade."))?;
+    let mut records = state.skill_store.load_records()?;
+    let original_len = records.len();
+    records.retain(|record| record.id != request.id);
+    if records.len() == original_len {
+        return Err(invalid_payload("skill not found".to_owned()));
+    }
+    state.skill_store.delete_skill_package(&request.id)?;
+    state.skill_store.save_records(&records)?;
+    reload_managed_skills(state, &harness).await?;
+    Ok(DeleteSkillResponse {
+        id: request.id,
+        status: "deleted",
+    })
+}
+
+async fn reload_managed_skills(
+    state: &DesktopRuntimeState,
+    harness: &Harness,
+) -> Result<(), CommandErrorPayload> {
+    harness
+        .reload_workspace_managed_skills(state.skill_store.enabled_dir())
+        .await
+        .map_err(|error| runtime_operation_failed(format!("skill reload failed: {error}")))
+}
+
+fn ensure_import_skill_source_path(value: &str) -> Result<PathBuf, CommandErrorPayload> {
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err(invalid_payload(
+            "skill source path must be absolute".to_owned(),
+        ));
+    }
+    ensure_no_symlink_components(&path, "skill source directory")?;
+    let path = path.canonicalize().map_err(|error| {
+        runtime_operation_failed(format!("skill source path unavailable: {error}"))
+    })?;
+    ensure_no_symlink_components(&path, "skill source directory")?;
+    if !path.is_dir() {
+        return Err(invalid_payload(
+            "skill source path must point to a directory".to_owned(),
+        ));
+    }
+    let entry_path = path.join(SKILL_PACKAGE_ENTRY_FILE);
+    ensure_no_symlink_components(&entry_path, "skill entry file")?;
+    if !entry_path.is_file() {
+        return Err(invalid_payload(
+            "skill package must contain SKILL.md".to_owned(),
+        ));
+    }
+    Ok(path)
+}
+
+fn skill_import_id() -> String {
+    RunId::new().to_string().to_ascii_lowercase()
+}
+
+fn skill_summaries_from_records_and_runtime(
+    records: &[SkillStoreRecord],
+    runtime: &[RuntimeSkillSummary],
+) -> Vec<SkillSummaryPayload> {
+    let managed_names = records
+        .iter()
+        .map(|record| record.name.as_str())
+        .collect::<HashSet<_>>();
+    let mut skills = records
+        .iter()
+        .map(|record| {
+            let status = runtime
+                .iter()
+                .find(|skill| skill.name == record.name)
+                .map(|skill| skill_status_string(&skill.status));
+            managed_skill_summary(record, status)
+        })
+        .collect::<Vec<_>>();
+    skills.extend(
+        runtime
+            .iter()
+            .filter(|skill| !managed_names.contains(skill.name.as_str()))
+            .map(runtime_skill_summary_payload),
+    );
+    skills.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
+    skills
+}
+
+fn managed_skill_summary(
+    record: &SkillStoreRecord,
+    runtime_status: Option<&'static str>,
+) -> SkillSummaryPayload {
+    let status = if record.last_validation_error.is_some() {
+        "rejected"
+    } else if !record.enabled {
+        "disabled"
+    } else {
+        runtime_status.unwrap_or("ready")
+    };
+    SkillSummaryPayload {
+        id: record.id.clone(),
+        name: record.name.clone(),
+        description: record.description.clone(),
+        source_kind: "workspace".to_owned(),
+        enabled: record.enabled,
+        manageable: true,
+        status: status.to_owned(),
+        tags: record.tags.clone(),
+        category: record.category.clone(),
+        imported_at: Some(record.imported_at.clone()),
+        updated_at: Some(record.updated_at.clone()),
+    }
+}
+
+fn runtime_skill_summary_payload(skill: &RuntimeSkillSummary) -> SkillSummaryPayload {
+    SkillSummaryPayload {
+        id: skill.name.clone(),
+        name: skill.name.clone(),
+        description: skill.description.clone(),
+        source_kind: skill_source_string(&skill.source).to_owned(),
+        enabled: true,
+        manageable: false,
+        status: skill_status_string(&skill.status).to_owned(),
+        tags: skill.tags.clone(),
+        category: skill.category.clone(),
+        imported_at: None,
+        updated_at: None,
+    }
+}
+
+fn skill_detail_from_runtime_view(
+    summary: SkillSummaryPayload,
+    view: RuntimeSkillView,
+    files: Vec<SkillFilePayload>,
+    selected_file: Option<SkillFileContentPayload>,
+    validation_error: Option<String>,
+) -> SkillDetailPayload {
+    SkillDetailPayload {
+        summary,
+        parameters: view
+            .parameters
+            .into_iter()
+            .map(|parameter| SkillParameterPayload {
+                name: parameter.name,
+                param_type: parameter.param_type,
+                required: parameter.required,
+                default: parameter.default,
+                description: parameter.description,
+            })
+            .collect(),
+        config_keys: view.config_keys,
+        files,
+        selected_file,
+        body_preview: view.body_preview,
+        body_full: view.body_full,
+        validation_error,
+    }
+}
+
+fn runtime_status_for_name(harness: &Harness, name: &str) -> Option<&'static str> {
+    harness
+        .list_runtime_skills()
+        .iter()
+        .find(|skill| skill.name == name)
+        .map(|skill| skill_status_string(&skill.status))
+}
+
+fn skill_status_string(status: &jyowo_harness_sdk::ext::SkillStatus) -> &'static str {
+    match status {
+        jyowo_harness_sdk::ext::SkillStatus::Ready => "ready",
+        jyowo_harness_sdk::ext::SkillStatus::PrerequisiteMissing { .. } => "prerequisite_missing",
+    }
+}
+
+fn skill_source_string(source: &jyowo_harness_sdk::ext::SkillSourceKind) -> &'static str {
+    match source {
+        jyowo_harness_sdk::ext::SkillSourceKind::Bundled => "bundled",
+        jyowo_harness_sdk::ext::SkillSourceKind::Workspace => "workspace",
+        jyowo_harness_sdk::ext::SkillSourceKind::User => "user",
+        jyowo_harness_sdk::ext::SkillSourceKind::Plugin(_) => "plugin",
+        jyowo_harness_sdk::ext::SkillSourceKind::Mcp(_) => "mcp",
+        _ => "workspace",
+    }
+}
+
+fn markdown_body_preview(markdown: &str) -> String {
+    markdown
+        .split_once("\n---")
+        .map(|(_, body)| {
+            body.trim_start_matches("\r\n")
+                .trim_start_matches('\n')
+                .to_owned()
+        })
+        .unwrap_or_default()
 }
 
 pub async fn list_memory_items_with_runtime_state(
@@ -1706,46 +4285,6 @@ fn mcp_server_summary_from_record(record: &McpServerConfigRecord) -> McpServerSu
     }
 }
 
-fn stale_provider_secret_refs(
-    previous_record: Option<&ProviderSettingsRecord>,
-    next_secret_ref: &str,
-    allowed_prefixes: &[String],
-) -> Vec<String> {
-    let Some(previous_record) = previous_record else {
-        return Vec::new();
-    };
-
-    let mut stale_secret_refs = previous_record
-        .stale_secret_refs
-        .iter()
-        .filter(|secret_ref| provider_secret_ref_has_allowed_prefix(secret_ref, allowed_prefixes))
-        .cloned()
-        .collect::<Vec<_>>();
-    if previous_record.secret_ref != next_secret_ref {
-        stale_secret_refs.push(previous_record.secret_ref.clone());
-    }
-    stale_secret_refs
-        .retain(|secret_ref| provider_secret_ref_has_allowed_prefix(secret_ref, allowed_prefixes));
-    stale_secret_refs.sort();
-    stale_secret_refs.dedup();
-    stale_secret_refs
-}
-
-fn cleanup_stale_provider_secrets(
-    store: &dyn ProviderSettingsStore,
-    stale_secret_refs: &[String],
-) -> Vec<String> {
-    stale_secret_refs
-        .iter()
-        .filter_map(|secret_ref| {
-            store
-                .delete_secret(secret_ref)
-                .err()
-                .map(|_| secret_ref.clone())
-        })
-        .collect()
-}
-
 pub async fn list_conversations_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> ListConversationsResponse {
@@ -1767,6 +4306,37 @@ pub async fn list_conversations_with_runtime_state(
     ListConversationsResponse { conversations }
 }
 
+pub async fn create_conversation_with_runtime_state(
+    state: &DesktopRuntimeState,
+) -> Result<CreateConversationResponse, CommandErrorPayload> {
+    let session_id = SessionId::new();
+    let Some((harness, options)) = state.active_conversation_runtime(session_id) else {
+        return Err(runtime_unavailable(
+            "Creating conversations requires the runtime conversation facade.",
+        ));
+    };
+    harness
+        .open_or_create_conversation_session(options)
+        .await
+        .map_err(|error| {
+            runtime_operation_failed(format!("conversation create failed: {error}"))
+        })?;
+
+    let summary = harness
+        .list_conversation_sessions(TenantId::SINGLE, 50)
+        .await
+        .map_err(|error| {
+            runtime_operation_failed(format!("conversation list failed after create: {error}"))
+        })?
+        .into_iter()
+        .find(|summary| summary.session_id == session_id)
+        .ok_or_else(|| not_found(format!("conversation not found: {session_id}")))?;
+
+    Ok(CreateConversationResponse {
+        conversation: conversation_summary_payload(summary, &[]),
+    })
+}
+
 async fn list_runtime_conversation_summaries(
     harness: &Harness,
     state: &DesktopRuntimeState,
@@ -1776,10 +4346,18 @@ async fn list_runtime_conversation_summaries(
         .await
         .unwrap_or_default();
 
+    let default_conversation_id = state.default_conversation_id();
+    let default_conversation_deleted = state
+        .deleted_conversation_ids
+        .lock()
+        .await
+        .contains(&default_conversation_id);
+
     if summaries.is_empty()
+        && !default_conversation_deleted
         && harness
             .open_or_create_conversation_session(
-                state.conversation_session_options(state.default_conversation_id()),
+                state.conversation_session_options(default_conversation_id),
             )
             .await
             .is_ok()
@@ -1799,6 +4377,7 @@ fn conversation_summary_payload(
 ) -> ConversationSummaryPayload {
     ConversationSummaryPayload {
         id: summary.session_id.to_string(),
+        is_empty: messages.is_empty(),
         last_message_preview: Some(conversation_preview(messages)),
         title: conversation_title(messages),
         updated_at: messages
@@ -1857,9 +4436,139 @@ pub async fn get_conversation_with_runtime_state(
         conversation: ConversationPayload {
             id: request.conversation_id,
             messages,
+            model_config_id: conversation_model_config_id(&session_id, state)?,
             title,
             updated_at,
         },
+    })
+}
+
+fn conversation_model_config_id(
+    session_id: &SessionId,
+    state: &DesktopRuntimeState,
+) -> Result<Option<String>, CommandErrorPayload> {
+    Ok(state
+        .conversation_model_config_store
+        .load_records()?
+        .get(&session_id.to_string())
+        .cloned())
+}
+
+async fn persist_conversation_model_config_id(
+    session_id: SessionId,
+    model_config_id: &str,
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let _guard = state.conversation_model_config_lock.lock().await;
+    let mut records = state.conversation_model_config_store.load_records()?;
+    records.insert(session_id.to_string(), model_config_id.to_owned());
+    state.conversation_model_config_store.save_records(&records)
+}
+
+pub async fn set_conversation_model_config_with_runtime_state(
+    request: SetConversationModelConfigRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SetConversationModelConfigResponse, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
+    ensure_non_empty("modelConfigId", &request.model_config_id)?;
+    let session_id = parse_session_id(&request.conversation_id)?;
+    ensure_existing_conversation_session(session_id, state).await?;
+    let provider_record = state
+        .provider_settings_store
+        .load_record()?
+        .unwrap_or_default();
+    let Some(config) = provider_record
+        .configs
+        .iter()
+        .find(|config| config.id == request.model_config_id)
+    else {
+        return Err(not_found(format!(
+            "provider config not found: {}",
+            request.model_config_id
+        )));
+    };
+    if ensure_provider_config_has_api_key(config).is_err() {
+        return Err(invalid_payload(
+            "apiKey is required before selecting a provider config".to_owned(),
+        ));
+    }
+    let stream_permission_runtime = state
+        .stream_permission_runtime
+        .as_ref()
+        .ok_or_else(|| runtime_unavailable("Selecting models requires the desktop runtime."))?;
+    let (harness, model_id, protocol) = build_desktop_harness(
+        &state.workspace_root,
+        Arc::clone(stream_permission_runtime),
+        Some(&request.model_config_id),
+    )
+    .await?;
+    let harness = Arc::new(harness);
+    harness
+        .open_or_create_conversation_session(state.conversation_session_options_for_model(
+            session_id,
+            model_id.clone(),
+            protocol,
+        ))
+        .await
+        .map_err(|error| {
+            runtime_operation_failed(format!("conversation model switch failed: {error}"))
+        })?;
+    persist_conversation_model_config_id(session_id, &request.model_config_id, state).await?;
+    let _start_run_guard = state.start_run_lock.lock().await;
+    state.replace_harness(harness, model_id, protocol);
+
+    Ok(SetConversationModelConfigResponse {
+        conversation_id: request.conversation_id,
+        model_config_id: request.model_config_id,
+        status: "saved",
+    })
+}
+
+pub fn delete_conversation_payload(
+    request: DeleteConversationRequest,
+) -> Result<DeleteConversationResponse, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
+    let _session_id = parse_session_id(&request.conversation_id)?;
+
+    Err(runtime_unavailable(
+        "Deleting conversations requires the runtime conversation facade.",
+    ))
+}
+
+pub async fn delete_conversation_with_runtime_state(
+    request: DeleteConversationRequest,
+    state: &DesktopRuntimeState,
+) -> Result<DeleteConversationResponse, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
+    let session_id = parse_session_id(&request.conversation_id)?;
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Deleting conversations requires the runtime conversation facade.",
+        ));
+    };
+
+    let deleted = harness
+        .delete_conversation_session(state.conversation_session_options(session_id))
+        .await
+        .map_err(|error| {
+            runtime_operation_failed(format!("conversation delete failed: {error}"))
+        })?;
+    if !deleted {
+        return Err(not_found(format!(
+            "conversation not found: {}",
+            request.conversation_id
+        )));
+    }
+
+    state
+        .deleted_conversation_ids
+        .lock()
+        .await
+        .insert(session_id);
+
+    Ok(DeleteConversationResponse {
+        conversation_id: request.conversation_id,
+        status: "deleted",
     })
 }
 
@@ -1869,7 +4578,11 @@ pub fn start_run_payload(
     ensure_non_empty("conversationId", &request.conversation_id)?;
     let _session_id = parse_session_id(&request.conversation_id)?;
     ensure_non_empty("prompt", &request.prompt)?;
-    ensure_optional_values("contextReferences", request.context_references.as_deref())?;
+    if let Some(client_message_id) = request.client_message_id.as_deref() {
+        validate_client_message_id(client_message_id)?;
+    }
+    validate_context_reference_payloads(request.context_references.as_deref())?;
+    validate_attachment_reference_payloads(request.attachments.as_deref())?;
 
     Err(runtime_unavailable(
         "Starting runs requires the runtime conversation facade.",
@@ -1883,15 +4596,41 @@ pub async fn start_run_with_runtime_state(
     ensure_non_empty("conversationId", &request.conversation_id)?;
     let session_id = parse_session_id(&request.conversation_id)?;
     ensure_non_empty("prompt", &request.prompt)?;
-    ensure_optional_values("contextReferences", request.context_references.as_deref())?;
+    if let Some(client_message_id) = request.client_message_id.as_deref() {
+        validate_client_message_id(client_message_id)?;
+    }
+    if state
+        .deleted_conversation_ids
+        .lock()
+        .await
+        .contains(&session_id)
+    {
+        return Err(not_found(format!(
+            "conversation not found: {}",
+            request.conversation_id
+        )));
+    }
 
-    let Some(harness) = state.harness() else {
+    let input = build_conversation_turn_input(&request, state).await?;
+    let _start_run_guard = state.start_run_lock.lock().await;
+    if let Some(model_config_id) = conversation_model_config_id(&session_id, state)? {
+        let stream_permission_runtime = state
+            .stream_permission_runtime
+            .as_ref()
+            .ok_or_else(|| runtime_unavailable("Starting runs requires the desktop runtime."))?;
+        let (harness, model_id, protocol) = build_desktop_harness(
+            &state.workspace_root,
+            Arc::clone(stream_permission_runtime),
+            Some(&model_config_id),
+        )
+        .await?;
+        state.replace_harness(Arc::new(harness), model_id, protocol);
+    }
+    let Some((harness, options)) = state.active_conversation_runtime(session_id) else {
         return Err(runtime_unavailable(
             "Starting runs requires the runtime conversation facade.",
         ));
     };
-    let _start_run_guard = state.start_run_lock.lock().await;
-    let options = state.conversation_session_options(session_id);
     harness
         .open_or_create_conversation_session(options.clone())
         .await
@@ -1903,7 +4642,7 @@ pub async fn start_run_with_runtime_state(
         run_harness
             .submit_conversation_turn(ConversationTurnRequest {
                 options: run_options,
-                prompt: request.prompt,
+                input,
             })
             .await
     });
@@ -1923,6 +4662,283 @@ pub async fn start_run_with_runtime_state(
         run_id: run_id.to_string(),
         status: "started",
     })
+}
+
+pub fn create_attachment_from_path_payload(
+    request: CreateAttachmentFromPathRequest,
+) -> Result<CreateAttachmentFromPathResponse, CommandErrorPayload> {
+    ensure_non_empty("path", &request.path)?;
+
+    Err(runtime_unavailable(
+        "Creating attachments requires the runtime workspace state.",
+    ))
+}
+
+pub fn list_reference_candidates_payload(
+) -> Result<ListReferenceCandidatesResponse, CommandErrorPayload> {
+    Err(runtime_unavailable(
+        "Listing reference candidates requires the runtime workspace state.",
+    ))
+}
+
+pub async fn create_attachment_from_path_with_runtime_state(
+    request: CreateAttachmentFromPathRequest,
+    state: &DesktopRuntimeState,
+) -> Result<CreateAttachmentFromPathResponse, CommandErrorPayload> {
+    ensure_non_empty("path", &request.path)?;
+    let requested_path = Path::new(&request.path);
+    let candidate_path = if requested_path.is_absolute() {
+        if requested_path.strip_prefix(state.workspace_root()).is_err() {
+            let Some(parent) = requested_path.parent() else {
+                return Err(invalid_payload(
+                    "attachment path must stay inside the workspace".to_owned(),
+                ));
+            };
+            let Ok(parent) = parent.canonicalize() else {
+                return Err(invalid_payload(
+                    "attachment path must stay inside the workspace".to_owned(),
+                ));
+            };
+            if workspace_relative_path(&parent, state.workspace_root()).is_none() {
+                return Err(invalid_payload(
+                    "attachment path must stay inside the workspace".to_owned(),
+                ));
+            }
+            let Some(file_name) = requested_path.file_name() else {
+                return Err(invalid_payload("path must point to a file".to_owned()));
+            };
+            parent.join(file_name)
+        } else {
+            requested_path.to_path_buf()
+        }
+    } else {
+        state.workspace_root().join(requested_path)
+    };
+    let source_path = canonicalize_existing_file(&candidate_path, "path")?;
+    if workspace_relative_path(&source_path, state.workspace_root()).is_none() {
+        return Err(invalid_payload(
+            "attachment path must stay inside the workspace".to_owned(),
+        ));
+    }
+    let metadata = source_path.metadata().map_err(|error| {
+        runtime_operation_failed(format!("attachment metadata failed: {error}"))
+    })?;
+    if !metadata.is_file() {
+        return Err(invalid_payload("path must point to a file".to_owned()));
+    }
+    if metadata.len() > MAX_ATTACHMENT_BYTES {
+        return Err(invalid_payload(format!(
+            "attachment must be at most {} MB",
+            MAX_ATTACHMENT_BYTES / 1024 / 1024
+        )));
+    }
+
+    let name = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("attachment")
+        .to_owned();
+    let id = attachment_id(&source_path, metadata.len());
+    let mime_type = infer_mime_type(&source_path);
+    let bytes = std::fs::read(&source_path)
+        .map_err(|error| runtime_operation_failed(format!("attachment read failed: {error}")))?;
+    let hash = blake3::hash(&bytes);
+    let blob_store = FileBlobStore::open(
+        state
+            .workspace_root()
+            .join(".jyowo")
+            .join("runtime")
+            .join("blobs"),
+    )
+    .map_err(|error| runtime_operation_failed(format!("attachment store unavailable: {error}")))?;
+    let blob_ref = blob_store
+        .put(
+            TenantId::SINGLE,
+            Bytes::from(bytes),
+            BlobMeta {
+                content_type: Some(mime_type.clone()),
+                size: metadata.len(),
+                content_hash: *hash.as_bytes(),
+                created_at: Utc::now(),
+                retention: BlobRetention::TenantScoped,
+            },
+        )
+        .await
+        .map_err(|error| {
+            runtime_operation_failed(format!("attachment blob write failed: {error}"))
+        })?;
+    let attachment = AttachmentReferencePayload {
+        id: id.clone(),
+        name,
+        mime_type,
+        size_bytes: metadata.len(),
+        blob_ref: attachment_blob_ref_payload(&blob_ref),
+    };
+
+    write_attachment_record(
+        state.workspace_root(),
+        &AttachmentRecord {
+            attachment: attachment.clone(),
+            blob_ref,
+        },
+    )?;
+
+    Ok(CreateAttachmentFromPathResponse { attachment })
+}
+
+pub async fn list_reference_candidates_with_runtime_state(
+    request: ListReferenceCandidatesRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ListReferenceCandidatesResponse, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
+    let session_id = parse_session_id(&request.conversation_id)?;
+    ensure_reference_conversation_exists(session_id, state).await?;
+    let files = context_files_from_workspace(state.workspace_root())
+        .into_iter()
+        .map(|file| ReferenceCandidatePayload {
+            id: None,
+            label: file.label.clone(),
+            path: Some(file.label),
+        })
+        .collect();
+    let artifacts = list_artifacts_with_runtime_state(
+        ListArtifactsRequest {
+            conversation_id: request.conversation_id.clone(),
+        },
+        state,
+    )
+    .await?
+    .artifacts
+    .into_iter()
+    .map(|artifact| ReferenceCandidatePayload {
+        id: Some(artifact.id),
+        label: artifact.title,
+        path: None,
+    })
+    .collect();
+    let conversations = list_conversations_with_runtime_state(state)
+        .await
+        .conversations
+        .into_iter()
+        .map(|conversation| ReferenceCandidatePayload {
+            id: Some(conversation.id),
+            label: conversation.title,
+            path: None,
+        })
+        .collect();
+    let memories = match list_memory_items_with_runtime_state(state).await {
+        Ok(payload) => payload
+            .items
+            .into_iter()
+            .map(|item| ReferenceCandidatePayload {
+                id: Some(item.id),
+                label: item.content_preview,
+                path: None,
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    let skills = match list_skills_with_runtime_state(state).await {
+        Ok(payload) => payload
+            .skills
+            .into_iter()
+            .map(|skill| ReferenceCandidatePayload {
+                id: Some(skill.id),
+                label: skill.name,
+                path: None,
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    let tools = state.harness().map_or_else(Vec::new, |harness| {
+        let mut tools = harness
+            .tool_registry()
+            .snapshot()
+            .as_descriptors()
+            .into_iter()
+            .map(|descriptor| ReferenceCandidatePayload {
+                id: Some(descriptor.name.clone()),
+                label: descriptor.display_name.clone(),
+                path: None,
+            })
+            .collect::<Vec<_>>();
+        tools.sort_by(|left, right| left.label.cmp(&right.label).then(left.id.cmp(&right.id)));
+        tools
+    });
+    let mcp_servers = match list_mcp_servers_with_runtime_state(state).await {
+        Ok(payload) => payload
+            .servers
+            .into_iter()
+            .map(|server| ReferenceCandidatePayload {
+                id: Some(server.id),
+                label: server.display_name,
+                path: None,
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    Ok(ListReferenceCandidatesResponse {
+        artifacts,
+        conversations,
+        files,
+        memories,
+        mcp_servers,
+        skills,
+        tools,
+    })
+}
+
+async fn ensure_reference_conversation_exists(
+    session_id: SessionId,
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Listing reference candidates requires the runtime conversation facade.",
+        ));
+    };
+
+    ensure_existing_conversation_session_with_harness(session_id, state, &harness).await
+}
+
+async fn ensure_existing_conversation_session(
+    session_id: SessionId,
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Reading conversations requires the runtime conversation facade.",
+        ));
+    };
+
+    ensure_existing_conversation_session_with_harness(session_id, state, &harness).await
+}
+
+async fn ensure_existing_conversation_session_with_harness(
+    session_id: SessionId,
+    state: &DesktopRuntimeState,
+    harness: &Harness,
+) -> Result<(), CommandErrorPayload> {
+    if session_id == state.default_conversation_id()
+        && list_runtime_conversation_summaries(harness, state)
+            .await
+            .iter()
+            .any(|summary| summary.session_id == session_id)
+    {
+        return Ok(());
+    }
+
+    harness
+        .page_conversation_events(ConversationEventsPageRequest {
+            options: state.conversation_session_options(session_id),
+            after_event_id: None,
+            limit: 1,
+        })
+        .await
+        .map(|_| ())
+        .map_err(|_| not_found(format!("conversation not found: {session_id}")))
 }
 
 pub fn cancel_run_payload(
@@ -1960,6 +4976,8 @@ pub async fn cancel_run_with_runtime_state(
 pub fn resolve_permission_payload(
     request: ResolvePermissionRequest,
 ) -> Result<ResolvePermissionResponse, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
+    let _session_id = parse_session_id(&request.conversation_id)?;
     ensure_non_empty("requestId", &request.request_id)?;
     let _request_id = parse_request_id(&request.request_id)?;
 
@@ -1972,8 +4990,10 @@ pub async fn resolve_permission_with_runtime_state(
     request: ResolvePermissionRequest,
     state: &DesktopRuntimeState,
 ) -> Result<ResolvePermissionResponse, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
     ensure_non_empty("requestId", &request.request_id)?;
 
+    let session_id = parse_session_id(&request.conversation_id)?;
     let request_id = parse_request_id(&request.request_id)?;
     let decision = to_harness_decision(request.decision);
     let Some(resolver) = state.permission_resolver.as_ref() else {
@@ -1982,6 +5002,22 @@ pub async fn resolve_permission_with_runtime_state(
         ));
     };
 
+    let Some(pending) = state
+        .pending_permission_requests()
+        .into_iter()
+        .find(|pending| pending.request.request_id == request_id)
+    else {
+        return Err(not_found(format!(
+            "permission request not found: {}",
+            request.request_id
+        )));
+    };
+    if pending.request.session_id != session_id {
+        return Err(invalid_payload(
+            "permission request does not belong to conversationId".to_owned(),
+        ));
+    }
+
     resolver.resolve_permission(request_id, decision).await?;
 
     Ok(ResolvePermissionResponse {
@@ -1989,6 +5025,34 @@ pub async fn resolve_permission_with_runtime_state(
         request_id: request.request_id,
         status: "resolved",
     })
+}
+
+pub async fn resolve_permission_for_window_with_runtime_state(
+    request: ResolvePermissionRequest,
+    window_label: String,
+    state: &DesktopRuntimeState,
+) -> Result<ResolvePermissionResponse, CommandErrorPayload> {
+    ensure_non_empty("windowLabel", &window_label)?;
+    ensure_window_subscribed_to_conversation(state, &window_label, &request.conversation_id)
+        .await?;
+    resolve_permission_with_runtime_state(request, state).await
+}
+
+async fn ensure_window_subscribed_to_conversation(
+    state: &DesktopRuntimeState,
+    window_label: &str,
+    conversation_id: &str,
+) -> Result<(), CommandErrorPayload> {
+    let subscriptions = state.conversation_event_subscriptions.lock().await;
+    if subscriptions.values().any(|subscription| {
+        subscription.window_label == window_label && subscription.conversation_id == conversation_id
+    }) {
+        return Ok(());
+    }
+
+    Err(invalid_payload(
+        "permission request is not visible in this window".to_owned(),
+    ))
 }
 
 pub fn list_activity_payload(
@@ -2009,39 +5073,8 @@ pub async fn list_activity_with_runtime_state(
     ensure_optional("runId", request.run_id.as_deref())?;
     require_conversation_id_for_activity(request.conversation_id.as_deref())?;
 
-    let mut pending_requests = state.pending_permission_requests();
-    pending_requests.sort_by_key(|pending| {
-        (
-            pending.request.created_at,
-            pending.request.request_id.to_string(),
-        )
-    });
-    let Some(harness) = state.harness() else {
-        return Err(runtime_unavailable(
-            "Listing runtime activity requires the runtime conversation facade.",
-        ));
-    };
-    let redactor = DefaultRedactor::default();
     let mut events = read_activity_replay_events(&request, state).await?;
-    for permission_request in pending_requests.iter().filter(|permission_request| {
-        permission_request_matches_activity_request(permission_request, &request)
-    }) {
-        if events.iter().any(|event| {
-            event_has_permission_request_id(event, &permission_request.request.request_id)
-        }) {
-            continue;
-        }
-
-        if let Some(permission_event) =
-            durable_permission_requested_event(&harness, state, permission_request).await?
-        {
-            events.push(permission_requested_run_event(
-                &permission_event,
-                events.len() as u64,
-                &redactor,
-            ));
-        }
-    }
+    events.retain(|event| event.event_type != "assistant.thinking.delta");
 
     Ok(ListActivityResponse { events })
 }
@@ -2066,6 +5099,210 @@ pub async fn get_replay_timeline_with_runtime_state(
     Ok(ReplayTimelineResponse {
         events,
         replayed: true,
+    })
+}
+
+pub async fn subscribe_conversation_events_with_runtime_state(
+    request: SubscribeConversationEventsRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SubscribeConversationEventsResponse, CommandErrorPayload> {
+    subscribe_conversation_events_for_window_with_runtime_state(
+        request,
+        "default".to_owned(),
+        Arc::new(|_batch| Ok(())),
+        state,
+    )
+    .await
+}
+
+pub async fn subscribe_conversation_events_for_window_with_runtime_state(
+    request: SubscribeConversationEventsRequest,
+    window_label: String,
+    emitter: ConversationEventBatchEmitter,
+    state: &DesktopRuntimeState,
+) -> Result<SubscribeConversationEventsResponse, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
+    ensure_non_empty("windowLabel", &window_label)?;
+    let session_id = parse_session_id(&request.conversation_id)?;
+    if state
+        .deleted_conversation_ids
+        .lock()
+        .await
+        .contains(&session_id)
+    {
+        return Err(not_found(format!(
+            "conversation not found: {}",
+            request.conversation_id
+        )));
+    }
+
+    let after_cursor = request.after_cursor.clone();
+    let replay_events = read_replay_run_events_after(
+        ListActivityRequest {
+            conversation_id: Some(request.conversation_id.clone()),
+            run_id: None,
+        },
+        state,
+        after_cursor.clone(),
+    )
+    .await?;
+    let cursor = replay_events
+        .last()
+        .map(|event| event.id.clone())
+        .or(after_cursor);
+    let subscription_id = format!("subscription-{}", EventId::new());
+
+    let handle = spawn_conversation_event_subscription(
+        subscription_id.clone(),
+        request.conversation_id.clone(),
+        cursor.clone(),
+        window_label.clone(),
+        Arc::clone(&emitter),
+        state.clone(),
+    );
+    state.conversation_event_subscriptions.lock().await.insert(
+        subscription_id.clone(),
+        ConversationSubscriptionHandle {
+            conversation_id: request.conversation_id.clone(),
+            task: handle,
+            window_label,
+        },
+    );
+
+    Ok(SubscribeConversationEventsResponse {
+        subscription_id,
+        conversation_id: request.conversation_id,
+        replay_events,
+        cursor,
+        gap: false,
+    })
+}
+
+pub async fn unsubscribe_conversation_events_with_runtime_state(
+    request: UnsubscribeConversationEventsRequest,
+    state: &DesktopRuntimeState,
+) -> Result<UnsubscribeConversationEventsResponse, CommandErrorPayload> {
+    unsubscribe_conversation_events_for_window_with_runtime_state(
+        request,
+        "default".to_owned(),
+        state,
+    )
+    .await
+}
+
+pub async fn unsubscribe_conversation_events_for_window_with_runtime_state(
+    request: UnsubscribeConversationEventsRequest,
+    window_label: String,
+    state: &DesktopRuntimeState,
+) -> Result<UnsubscribeConversationEventsResponse, CommandErrorPayload> {
+    ensure_non_empty("subscriptionId", &request.subscription_id)?;
+    ensure_non_empty("windowLabel", &window_label)?;
+    let mut subscriptions = state.conversation_event_subscriptions.lock().await;
+    let removed = match subscriptions.get(&request.subscription_id) {
+        Some(subscription) if subscription.window_label != window_label => {
+            return Err(invalid_payload(
+                "subscription does not belong to this window".to_owned(),
+            ));
+        }
+        Some(_) => subscriptions.remove(&request.subscription_id),
+        None => None,
+    };
+    drop(subscriptions);
+
+    if let Some(subscription) = removed {
+        let _ = &subscription.conversation_id;
+        subscription.task.abort();
+        return Ok(UnsubscribeConversationEventsResponse {
+            subscription_id: request.subscription_id,
+            status: "unsubscribed",
+        });
+    }
+
+    Ok(UnsubscribeConversationEventsResponse {
+        subscription_id: request.subscription_id,
+        status: "alreadyClosed",
+    })
+}
+
+pub fn unsubscribe_conversation_events_payload(
+    request: UnsubscribeConversationEventsRequest,
+) -> Result<UnsubscribeConversationEventsResponse, CommandErrorPayload> {
+    ensure_non_empty("subscriptionId", &request.subscription_id)?;
+
+    Ok(UnsubscribeConversationEventsResponse {
+        subscription_id: request.subscription_id,
+        status: "alreadyClosed",
+    })
+}
+
+fn spawn_conversation_event_subscription(
+    subscription_id: String,
+    conversation_id: String,
+    initial_cursor: Option<String>,
+    window_label: String,
+    emitter: ConversationEventBatchEmitter,
+    state: DesktopRuntimeState,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut cursor = initial_cursor;
+
+        loop {
+            tokio::time::sleep(CONVERSATION_SUBSCRIPTION_POLL_INTERVAL).await;
+            let events = match read_replay_run_events_after(
+                ListActivityRequest {
+                    conversation_id: Some(conversation_id.clone()),
+                    run_id: None,
+                },
+                &state,
+                cursor.clone(),
+            )
+            .await
+            {
+                Ok(events) => events,
+                Err(_) => {
+                    let _ = emitter(ConversationEventBatchPayload {
+                        subscription_id: subscription_id.clone(),
+                        conversation_id: conversation_id.clone(),
+                        events: Vec::new(),
+                        cursor: cursor.clone(),
+                        gap: true,
+                        phase: "live",
+                    });
+                    break;
+                }
+            };
+
+            if events.is_empty() {
+                continue;
+            }
+
+            let mut emit_failed = false;
+            for chunk in events.chunks(CONVERSATION_SUBSCRIPTION_BATCH_LIMIT) {
+                cursor = chunk.last().map(|event| event.id.clone());
+                let batch = ConversationEventBatchPayload {
+                    subscription_id: subscription_id.clone(),
+                    conversation_id: conversation_id.clone(),
+                    events: chunk.to_vec(),
+                    cursor: cursor.clone(),
+                    gap: false,
+                    phase: "live",
+                };
+                if emitter(batch).is_err() {
+                    emit_failed = true;
+                    break;
+                }
+            }
+            if emit_failed {
+                break;
+            }
+        }
+
+        state
+            .conversation_event_subscriptions
+            .lock()
+            .await
+            .remove(&subscription_id);
+        let _ = window_label;
     })
 }
 
@@ -2136,54 +5373,27 @@ pub async fn get_context_snapshot_with_runtime_state(
         None => state.default_conversation_id(),
     };
     let run_id = request.run_id.as_deref().map(parse_run_id).transpose()?;
-    let Some(harness) = state.harness() else {
+    let Some(_harness) = state.harness() else {
         return Err(runtime_unavailable(
             "Reading context snapshot requires the runtime conversation facade.",
         ));
     };
     let redactor = DefaultRedactor::default();
-    let mut after_event_id = None;
     let mut active_artifact = None;
     let mut next_actions = Vec::new();
 
-    loop {
-        let page = match harness
-            .page_conversation_events(ConversationEventsPageRequest {
-                options: state.conversation_session_options(session_id),
-                after_event_id,
-                limit: 200,
-            })
-            .await
-        {
-            Ok(page) => page,
-            Err(_) => {
-                // Context snapshot is display-only metadata. If a selected conversation has no
-                // event stream yet, keep the workspace metadata visible instead of failing the UI.
-                break;
-            }
-        };
-        if page.events.is_empty() {
-            break;
-        }
-
-        for envelope in page.events {
-            if let Event::AssistantMessageCompleted(event) = envelope.payload {
-                if run_id
+    // Context snapshot is display-only metadata. If a selected conversation has no event stream
+    // yet, keep the workspace metadata visible instead of failing the UI.
+    if let Ok(payload) = collect_artifacts_from_runtime_state(state, session_id).await {
+        active_artifact = payload
+            .artifacts
+            .into_iter()
+            .find(|artifact| {
+                run_id
                     .as_ref()
-                    .is_some_and(|run_id| event.run_id != *run_id)
-                {
-                    continue;
-                }
-                let preview = message_content_display(&event.content, &redactor);
-                if preview.trim().is_empty() {
-                    continue;
-                }
-                let title = artifact_title_from_preview(&preview);
-                active_artifact = Some(title);
-            }
-        }
-
-        after_event_id = page.next_event_id;
+                    .is_none_or(|run_id| artifact.source_run_id == run_id.to_string())
+            })
+            .map(|artifact| artifact.title);
     }
 
     if let Some(title) = active_artifact.as_ref() {
@@ -2203,7 +5413,7 @@ pub async fn get_context_snapshot_with_runtime_state(
         decisions,
         files: context_files_from_workspace(state.workspace_root()),
         next_actions,
-        path: redacted_display(state.workspace_root().display().to_string(), &redactor),
+        path: "workspace://local".to_owned(),
         project: redacted_display(workspace_project_name(state.workspace_root()), &redactor),
     })
 }
@@ -2290,51 +5500,6 @@ async fn wait_for_started_conversation_run(
     }
 }
 
-async fn durable_permission_requested_event(
-    harness: &Harness,
-    state: &DesktopRuntimeState,
-    pending: &PendingPermissionRequest,
-) -> Result<Option<Event>, CommandErrorPayload> {
-    let options = state.conversation_session_options(pending.request.session_id);
-    if pending.request.tenant_id != options.tenant_id {
-        return Ok(None);
-    }
-    let Some(pending_run_id) = pending.context.run_id else {
-        return Ok(None);
-    };
-
-    let mut after_event_id = None;
-    loop {
-        let page = harness
-            .page_conversation_events(ConversationEventsPageRequest {
-                options: options.clone(),
-                after_event_id,
-                limit: 200,
-            })
-            .await
-            .map_err(|error| {
-                runtime_operation_failed(format!("conversation event page failed: {error}"))
-            })?;
-
-        for envelope in &page.events {
-            if let Event::PermissionRequested(requested) = &envelope.payload {
-                if requested.request_id == pending.request.request_id
-                    && requested.session_id == pending.request.session_id
-                    && requested.tenant_id == pending.request.tenant_id
-                    && requested.run_id == pending_run_id
-                {
-                    return Ok(Some(envelope.payload.clone()));
-                }
-            }
-        }
-
-        let Some(next_event_id) = page.next_event_id else {
-            return Ok(None);
-        };
-        after_event_id = Some(next_event_id);
-    }
-}
-
 fn ensure_non_empty(field: &'static str, value: &str) -> Result<(), CommandErrorPayload> {
     if value.trim().is_empty() {
         return Err(invalid_payload(format!("{field} must not be empty")));
@@ -2365,17 +5530,303 @@ fn ensure_optional(field: &'static str, value: Option<&str>) -> Result<(), Comma
     Ok(())
 }
 
-fn ensure_optional_values(
-    field: &'static str,
-    values: Option<&[String]>,
+fn validate_context_reference_payloads(
+    references: Option<&[ContextReferencePayload]>,
 ) -> Result<(), CommandErrorPayload> {
-    if let Some(values) = values {
-        for value in values {
-            ensure_non_empty(field, value)?;
+    if let Some(references) = references {
+        for reference in references {
+            match reference {
+                ContextReferencePayload::WorkspaceFile { path, label } => {
+                    ensure_non_empty("contextReferences.path", path)?;
+                    ensure_non_empty("contextReferences.label", label)?;
+                }
+                ContextReferencePayload::Artifact { id, label }
+                | ContextReferencePayload::Conversation { id, label }
+                | ContextReferencePayload::Memory { id, label }
+                | ContextReferencePayload::Skill { id, label }
+                | ContextReferencePayload::Tool { id, label }
+                | ContextReferencePayload::McpServer { id, label } => {
+                    ensure_non_empty("contextReferences.id", id)?;
+                    ensure_non_empty("contextReferences.label", label)?;
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+fn validate_attachment_reference_payloads(
+    attachments: Option<&[AttachmentReferencePayload]>,
+) -> Result<(), CommandErrorPayload> {
+    if let Some(attachments) = attachments {
+        let mut total_size = 0_u64;
+        for attachment in attachments {
+            ensure_attachment_id(&attachment.id)?;
+            ensure_non_empty("attachments.name", &attachment.name)?;
+            ensure_non_empty("attachments.mimeType", &attachment.mime_type)?;
+            if attachment.size_bytes > MAX_ATTACHMENT_BYTES {
+                return Err(invalid_payload(format!(
+                    "attachment must be at most {} MB",
+                    MAX_ATTACHMENT_BYTES / 1024 / 1024
+                )));
+            }
+            total_size = total_size.saturating_add(attachment.size_bytes);
+        }
+        if total_size > MAX_TOTAL_ATTACHMENT_BYTES {
+            return Err(invalid_payload(format!(
+                "attachments must total at most {} MB",
+                MAX_TOTAL_ATTACHMENT_BYTES / 1024 / 1024
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_attachment_id(value: &str) -> Result<(), CommandErrorPayload> {
+    const PREFIX: &str = "attachment-";
+
+    ensure_non_empty("attachments.id", value)?;
+    let Some(hex) = value.strip_prefix(PREFIX) else {
+        return Err(invalid_payload(
+            "attachments.id must be a generated attachment id".to_owned(),
+        ));
+    };
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(invalid_payload(
+            "attachments.id must be a generated attachment id".to_owned(),
+        ));
+    }
+
+    Ok(())
+}
+
+async fn build_conversation_turn_input(
+    request: &StartRunRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ConversationTurnInput, CommandErrorPayload> {
+    validate_context_reference_payloads(request.context_references.as_deref())?;
+    validate_attachment_reference_payloads(request.attachments.as_deref())?;
+    let session_id = parse_session_id(&request.conversation_id)?;
+
+    Ok(ConversationTurnInput {
+        prompt: request.prompt.clone(),
+        client_message_id: request.client_message_id.clone(),
+        context_references: validate_context_references(
+            request.context_references.as_deref().unwrap_or_default(),
+            session_id,
+            state,
+        )
+        .await?,
+        attachments: validate_attachment_references(
+            request.attachments.as_deref().unwrap_or_default(),
+            state.workspace_root(),
+        )?,
+    })
+}
+
+async fn validate_context_references(
+    references: &[ContextReferencePayload],
+    session_id: SessionId,
+    state: &DesktopRuntimeState,
+) -> Result<Vec<ConversationContextReference>, CommandErrorPayload> {
+    let mut validated = Vec::with_capacity(references.len());
+
+    for reference in references {
+        validated.push(match reference {
+            ContextReferencePayload::WorkspaceFile { path, label } => {
+                let absolute_path = state.workspace_root().join(path);
+                let canonical_path = absolute_path.canonicalize().map_err(|error| {
+                    invalid_payload(format!("workspace file reference is invalid: {error}"))
+                })?;
+                let relative_path = workspace_relative_path(
+                    &canonical_path,
+                    state.workspace_root(),
+                )
+                .ok_or_else(|| {
+                    invalid_payload(
+                        "workspace file reference must stay inside the workspace".to_owned(),
+                    )
+                })?;
+                ConversationContextReference::WorkspaceFile {
+                    path: relative_path,
+                    label: label.clone(),
+                }
+            }
+            ContextReferencePayload::Artifact { id, label } => {
+                ensure_artifact_exists(id, session_id, state).await?;
+                ConversationContextReference::Artifact {
+                    id: id.clone(),
+                    label: label.clone(),
+                }
+            }
+            ContextReferencePayload::Conversation { id, label } => {
+                ensure_conversation_exists(id, state).await?;
+                ConversationContextReference::Conversation {
+                    id: id.clone(),
+                    label: label.clone(),
+                }
+            }
+            ContextReferencePayload::Memory { id, label } => {
+                ensure_memory_exists(id, state).await?;
+                ConversationContextReference::Memory {
+                    id: id.clone(),
+                    label: label.clone(),
+                }
+            }
+            ContextReferencePayload::Skill { id, label } => {
+                ensure_skill_exists(id, state).await?;
+                ConversationContextReference::Skill {
+                    id: id.clone(),
+                    label: label.clone(),
+                }
+            }
+            ContextReferencePayload::Tool { id, label } => {
+                ensure_tool_exists(id, state)?;
+                ConversationContextReference::Tool {
+                    id: id.clone(),
+                    label: label.clone(),
+                }
+            }
+            ContextReferencePayload::McpServer { id, label } => {
+                ensure_mcp_server_exists(id, state).await?;
+                ConversationContextReference::McpServer {
+                    id: id.clone(),
+                    label: label.clone(),
+                }
+            }
+        });
+    }
+
+    Ok(validated)
+}
+
+fn validate_attachment_references(
+    attachments: &[AttachmentReferencePayload],
+    workspace_root: &Path,
+) -> Result<Vec<ConversationAttachmentReference>, CommandErrorPayload> {
+    let mut validated = Vec::with_capacity(attachments.len());
+
+    for attachment in attachments {
+        let record = read_attachment_record(workspace_root, &attachment.id)?;
+        if record.attachment != *attachment {
+            return Err(invalid_payload(
+                "attachment reference does not match stored metadata".to_owned(),
+            ));
+        }
+        validated.push(ConversationAttachmentReference {
+            id: attachment.id.clone(),
+            name: attachment.name.clone(),
+            mime_type: attachment.mime_type.clone(),
+            size_bytes: attachment.size_bytes,
+            blob_ref: record.blob_ref.clone(),
+        });
+    }
+
+    Ok(validated)
+}
+
+fn attachment_blob_ref_payload(blob_ref: &BlobRef) -> AttachmentBlobRefPayload {
+    AttachmentBlobRefPayload {
+        id: blob_ref.id.to_string(),
+        size: blob_ref.size,
+        content_hash: blob_ref.content_hash,
+        content_type: blob_ref.content_type.clone(),
+    }
+}
+
+async fn ensure_artifact_exists(
+    id: &str,
+    session_id: SessionId,
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let artifacts = list_artifacts_with_runtime_state(
+        ListArtifactsRequest {
+            conversation_id: session_id.to_string(),
+        },
+        state,
+    )
+    .await?;
+    if artifacts.artifacts.iter().any(|artifact| artifact.id == id) {
+        Ok(())
+    } else {
+        Err(invalid_payload(
+            "artifact reference does not exist".to_owned(),
+        ))
+    }
+}
+
+async fn ensure_conversation_exists(
+    id: &str,
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let conversations = list_conversations_with_runtime_state(state).await;
+    if conversations
+        .conversations
+        .iter()
+        .any(|conversation| conversation.id == id)
+    {
+        Ok(())
+    } else {
+        Err(invalid_payload(
+            "conversation reference does not exist".to_owned(),
+        ))
+    }
+}
+
+async fn ensure_memory_exists(
+    id: &str,
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let memories = list_memory_items_with_runtime_state(state).await?;
+    if memories.items.iter().any(|memory| memory.id == id) {
+        Ok(())
+    } else {
+        Err(invalid_payload(
+            "memory reference does not exist".to_owned(),
+        ))
+    }
+}
+
+async fn ensure_skill_exists(
+    id: &str,
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let skills = list_skills_with_runtime_state(state).await?;
+    if skills.skills.iter().any(|skill| skill.id == id) {
+        Ok(())
+    } else {
+        Err(invalid_payload("skill reference does not exist".to_owned()))
+    }
+}
+
+fn ensure_tool_exists(id: &str, state: &DesktopRuntimeState) -> Result<(), CommandErrorPayload> {
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Validating tool references requires the runtime tool registry.",
+        ));
+    };
+
+    if harness.tool_registry().snapshot().descriptor(id).is_some() {
+        Ok(())
+    } else {
+        Err(invalid_payload("tool reference does not exist".to_owned()))
+    }
+}
+
+async fn ensure_mcp_server_exists(
+    id: &str,
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let servers = list_mcp_servers_with_runtime_state(state).await?;
+    if servers.servers.iter().any(|server| server.id == id) {
+        Ok(())
+    } else {
+        Err(invalid_payload(
+            "mcp server reference does not exist".to_owned(),
+        ))
+    }
 }
 
 fn ensure_eval_case_id(value: &str) -> Result<(), CommandErrorPayload> {
@@ -2419,22 +5870,40 @@ fn require_conversation_id_for_activity(value: Option<&str>) -> Result<(), Comma
 }
 
 fn ensure_provider_settings(request: &ProviderSettingsRequest) -> Result<(), CommandErrorPayload> {
-    ensure_provider_metadata(&request.provider_id, &request.model_id)?;
-    ensure_non_empty("apiKey", &request.api_key)?;
+    ensure_provider_metadata_shape(&request.provider_id, &request.model_id)?;
+    if let Some(config_id) = &request.config_id {
+        ensure_provider_config_id(config_id)?;
+    }
+    if let Some(display_name) = &request.display_name {
+        ensure_optional("displayName", Some(display_name))?;
+    }
+    let _ = normalized_base_url(request.base_url.as_deref())?;
 
     Ok(())
 }
 
-fn ensure_provider_metadata(provider_id: &str, model_id: &str) -> Result<(), CommandErrorPayload> {
+fn ensure_provider_metadata_shape(
+    provider_id: &str,
+    model_id: &str,
+) -> Result<(), CommandErrorPayload> {
     ensure_non_empty("providerId", provider_id)?;
-    ensure_non_empty("modelId", model_id)?;
+    ensure_non_empty("modelId", model_id)
+}
 
-    if !is_supported_provider(provider_id) {
+fn ensure_provider_config_id(value: &str) -> Result<(), CommandErrorPayload> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(invalid_payload("configId must not be empty".to_owned()));
+    }
+    if trimmed.len() > 64
+        || !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
         return Err(invalid_payload(
-            "providerId must be a supported model provider".to_owned(),
+            "configId must contain only letters, numbers, dot, dash, or underscore".to_owned(),
         ));
     }
-
     Ok(())
 }
 
@@ -2630,95 +6099,451 @@ impl ProviderSettingsMetadata for ValidateProviderSettingsRequest {
     }
 }
 
-fn ensure_provider_model_supported<T: ProviderSettingsMetadata>(
+async fn ensure_provider_model_supported<T: ProviderSettingsMetadata>(
     request: &T,
-) -> Result<(), CommandErrorPayload> {
-    let provider = provider_from_settings(request)?;
-    let provider_id = provider.provider_id().to_owned();
-    let supports_model = provider
-        .supported_models()
-        .into_iter()
-        .any(|model| model.provider_id == provider_id && model.model_id == request.model_id());
-
-    if supports_model {
-        return Ok(());
-    }
-
-    Err(invalid_payload(
-        "modelId must be supported by the selected provider".to_owned(),
-    ))
+) -> Result<ModelDescriptor, CommandErrorPayload> {
+    ensure_provider_metadata_shape(request.provider_id(), request.model_id())?;
+    resolve_provider_model_descriptor(request.provider_id(), request.model_id()).await
 }
 
-fn is_supported_provider(provider_id: &str) -> bool {
-    supported_provider_ids().contains(&provider_id)
-}
-
-fn supported_provider_ids() -> &'static [&'static str] {
-    &[
-        "anthropic",
-        "codex",
-        "deepseek",
-        "doubao",
-        "gemini",
-        "local-llama",
-        "minimax",
-        "openai",
-        "openrouter",
-        "qwen",
-        "zhipu",
-    ]
-}
-
-#[must_use]
-pub fn provider_secret_ref(workspace_root: &Path, provider_id: &str, secret_id: &str) -> String {
-    format!(
-        "{}{secret_id}",
-        provider_secret_ref_prefix(workspace_root, provider_id)
-    )
-}
-
-#[must_use]
-pub fn provider_secret_ref_prefix(workspace_root: &Path, provider_id: &str) -> String {
-    let workspace_scope = blake3::hash(workspace_root.to_string_lossy().as_bytes()).to_hex();
-    format!("provider/workspace-{workspace_scope}/{provider_id}/")
-}
-
-fn provider_secret_ref_has_allowed_prefix(secret_ref: &str, allowed_prefixes: &[String]) -> bool {
-    allowed_prefixes
-        .iter()
-        .any(|prefix| secret_ref.starts_with(prefix))
-}
-
-fn provider_from_settings(
-    request: &impl ProviderSettingsMetadata,
-) -> Result<Box<dyn ModelProvider>, CommandErrorPayload> {
-    provider_from_parts(request.provider_id(), String::new())
-}
-
-fn provider_from_parts(
-    provider_id: &str,
-    api_key: String,
-) -> Result<Box<dyn ModelProvider>, CommandErrorPayload> {
-    let provider: Box<dyn ModelProvider> = match provider_id {
-        "anthropic" => Box::new(AnthropicProvider::from_api_key(api_key)),
-        "codex" => Box::new(CodexResponsesProvider::from_api_key(api_key)),
-        "deepseek" => Box::new(DeepSeekProvider::from_api_key(api_key)),
-        "doubao" => Box::new(DoubaoProvider::from_api_key(api_key)),
-        "gemini" => Box::new(GeminiProvider::from_api_key(api_key)),
-        "local-llama" => Box::new(LocalLlamaProvider::default().with_api_key(api_key)),
-        "minimax" => Box::new(MinimaxProvider::from_api_key(api_key)),
-        "openai" => Box::new(OpenAiProvider::from_api_key(api_key)),
-        "openrouter" => Box::new(OpenRouterProvider::from_api_key(api_key)),
-        "qwen" => Box::new(QwenProvider::from_api_key(api_key)),
-        "zhipu" => Box::new(ZhipuProvider::from_api_key(api_key)),
-        _ => {
-            return Err(invalid_payload(
-                "providerId must be a supported model provider".to_owned(),
-            ));
+async fn provider_settings_descriptor(
+    request: &ProviderSettingsRequest,
+    previous_config: Option<&ProviderConfigRecord>,
+) -> Result<ModelDescriptor, CommandErrorPayload> {
+    ensure_provider_metadata_shape(&request.provider_id, &request.model_id)?;
+    match resolve_model_descriptor(&request.provider_id, &request.model_id) {
+        Ok(descriptor) => Ok(descriptor),
+        Err(error) if request.provider_id == "openrouter" => {
+            if let Some(previous_config) = previous_config {
+                if previous_config.provider_id == request.provider_id
+                    && previous_config.model_id == request.model_id
+                {
+                    return provider_config_descriptor(previous_config);
+                }
+            }
+            resolve_provider_model_descriptor(&request.provider_id, &request.model_id)
+                .await
+                .map_err(|_| provider_registry_error(error))
         }
-    };
+        Err(error) => Err(provider_registry_error(error)),
+    }
+}
 
-    Ok(provider)
+async fn resolve_provider_model_descriptor(
+    provider_id: &str,
+    model_id: &str,
+) -> Result<ModelDescriptor, CommandErrorPayload> {
+    match resolve_model_descriptor(provider_id, model_id) {
+        Ok(descriptor) => Ok(descriptor),
+        Err(error) if provider_id == "openrouter" => {
+            let Some(inventory) = fetch_openrouter_inventory().await else {
+                return Err(provider_registry_error(error));
+            };
+            let Some(model) = inventory
+                .into_iter()
+                .find(|model| model.model_id == model_id)
+            else {
+                return Err(provider_registry_error(error));
+            };
+            descriptor_from_inventory_model(model)
+        }
+        Err(error) => Err(provider_registry_error(error)),
+    }
+}
+
+fn provider_registry_error(error: ProviderRegistryError) -> CommandErrorPayload {
+    invalid_payload(error.to_string())
+}
+
+fn provider_registry_init_error(error: ProviderRegistryError) -> CommandErrorPayload {
+    runtime_init_failed(error.to_string())
+}
+
+fn provider_display_name(provider_id: &str) -> String {
+    provider_catalog_entries()
+        .into_iter()
+        .find(|entry| entry.provider_id == provider_id)
+        .map_or_else(|| provider_id.to_owned(), |entry| entry.display_name)
+}
+
+fn model_descriptor_catalog_entry(descriptor: ModelDescriptor) -> ModelCatalogEntry {
+    let conversation_capability = descriptor.conversation_capability;
+    ModelCatalogEntry {
+        protocol: descriptor.protocol,
+        conversation_capability: conversation_capability_record(&conversation_capability),
+        context_window: descriptor.context_window,
+        display_name: descriptor.display_name,
+        lifecycle: model_lifecycle_payload(descriptor.lifecycle),
+        max_output_tokens: descriptor.max_output_tokens,
+        model_id: descriptor.model_id,
+        runtime_status: ModelRuntimeStatusPayload {
+            kind: "runnable",
+            reason: None,
+        },
+    }
+}
+
+fn model_lifecycle_payload(lifecycle: ModelLifecycle) -> ModelLifecyclePayload {
+    match lifecycle {
+        ModelLifecycle::Stable => ModelLifecyclePayload {
+            kind: "stable",
+            retirement_date: None,
+        },
+        ModelLifecycle::Preview => ModelLifecyclePayload {
+            kind: "preview",
+            retirement_date: None,
+        },
+        ModelLifecycle::Deprecated { retirement_date } => ModelLifecyclePayload {
+            kind: "deprecated",
+            retirement_date: Some(retirement_date.to_string()),
+        },
+    }
+}
+
+fn model_descriptor_record(descriptor: &ModelDescriptor) -> ProviderModelDescriptorRecord {
+    ProviderModelDescriptorRecord {
+        protocol: descriptor.protocol,
+        conversation_capability: conversation_capability_record(
+            &descriptor.conversation_capability,
+        ),
+        context_window: descriptor.context_window,
+        display_name: descriptor.display_name.clone(),
+        lifecycle: model_lifecycle_record(&descriptor.lifecycle),
+        max_output_tokens: descriptor.max_output_tokens,
+        model_id: descriptor.model_id.clone(),
+        provider_id: descriptor.provider_id.clone(),
+    }
+}
+
+fn conversation_capability_record(
+    capabilities: &ConversationModelCapability,
+) -> ConversationModelCapabilityRecord {
+    ConversationModelCapabilityRecord {
+        input_modalities: capabilities
+            .input_modalities
+            .iter()
+            .map(model_modality_record)
+            .collect(),
+        output_modalities: capabilities
+            .output_modalities
+            .iter()
+            .map(model_modality_record)
+            .collect(),
+        context_window: capabilities.context_window,
+        max_output_tokens: capabilities.max_output_tokens,
+        streaming: capabilities.streaming,
+        tool_calling: capabilities.tool_calling,
+        reasoning: capabilities.reasoning,
+        prompt_cache: capabilities.prompt_cache,
+        structured_output: capabilities.structured_output,
+    }
+}
+
+fn model_lifecycle_record(lifecycle: &ModelLifecycle) -> ProviderModelLifecycleRecord {
+    match lifecycle {
+        ModelLifecycle::Stable => ProviderModelLifecycleRecord::Stable,
+        ModelLifecycle::Preview => ProviderModelLifecycleRecord::Preview,
+        ModelLifecycle::Deprecated { retirement_date } => {
+            ProviderModelLifecycleRecord::Deprecated {
+                retirement_date: retirement_date.to_string(),
+            }
+        }
+    }
+}
+
+fn model_modality_record(modality: &ModelModality) -> ProviderModelModalityRecord {
+    match modality {
+        ModelModality::Text => ProviderModelModalityRecord::Text,
+        ModelModality::Image => ProviderModelModalityRecord::Image,
+        ModelModality::Audio => ProviderModelModalityRecord::Audio,
+        ModelModality::Video => ProviderModelModalityRecord::Video,
+        ModelModality::File => ProviderModelModalityRecord::File,
+        ModelModality::Embedding => ProviderModelModalityRecord::Embedding,
+    }
+}
+
+fn model_descriptor_from_record(
+    record: &ProviderModelDescriptorRecord,
+) -> Result<ModelDescriptor, CommandErrorPayload> {
+    Ok(ModelDescriptor {
+        provider_id: record.provider_id.clone(),
+        model_id: record.model_id.clone(),
+        display_name: record.display_name.clone(),
+        protocol: record.protocol,
+        context_window: record.context_window,
+        max_output_tokens: record.max_output_tokens,
+        conversation_capability: conversation_capability_from_record(
+            &record.conversation_capability,
+        ),
+        lifecycle: model_lifecycle_from_record(&record.lifecycle)?,
+        pricing: None,
+    })
+}
+
+fn conversation_capability_from_record(
+    record: &ConversationModelCapabilityRecord,
+) -> ConversationModelCapability {
+    ConversationModelCapability {
+        input_modalities: record
+            .input_modalities
+            .iter()
+            .map(model_modality_from_record)
+            .collect(),
+        output_modalities: record
+            .output_modalities
+            .iter()
+            .map(model_modality_from_record)
+            .collect(),
+        context_window: record.context_window,
+        max_output_tokens: record.max_output_tokens,
+        streaming: record.streaming,
+        tool_calling: record.tool_calling,
+        reasoning: record.reasoning,
+        prompt_cache: record.prompt_cache,
+        structured_output: record.structured_output,
+    }
+}
+
+fn model_lifecycle_from_record(
+    record: &ProviderModelLifecycleRecord,
+) -> Result<ModelLifecycle, CommandErrorPayload> {
+    match record {
+        ProviderModelLifecycleRecord::Stable => Ok(ModelLifecycle::Stable),
+        ProviderModelLifecycleRecord::Preview => Ok(ModelLifecycle::Preview),
+        ProviderModelLifecycleRecord::Deprecated { retirement_date } => {
+            let retirement_date =
+                NaiveDate::parse_from_str(retirement_date, "%Y-%m-%d").map_err(|_| {
+                    runtime_init_failed("provider model descriptor is invalid".to_owned())
+                })?;
+            Ok(ModelLifecycle::Deprecated { retirement_date })
+        }
+    }
+}
+
+fn model_modality_from_record(record: &ProviderModelModalityRecord) -> ModelModality {
+    match record {
+        ProviderModelModalityRecord::Text => ModelModality::Text,
+        ProviderModelModalityRecord::Image => ModelModality::Image,
+        ProviderModelModalityRecord::Audio => ModelModality::Audio,
+        ProviderModelModalityRecord::Video => ModelModality::Video,
+        ProviderModelModalityRecord::File => ModelModality::File,
+        ProviderModelModalityRecord::Embedding => ModelModality::Embedding,
+    }
+}
+
+fn descriptor_from_inventory_model(
+    model: ModelInventoryEntry,
+) -> Result<ModelDescriptor, CommandErrorPayload> {
+    match model.runtime_status {
+        ModelRuntimeStatus::Runnable => Ok(ModelDescriptor {
+            provider_id: model.provider_id,
+            model_id: model.model_id,
+            display_name: model.display_name,
+            protocol: model.protocol,
+            context_window: model.context_window,
+            max_output_tokens: model.max_output_tokens,
+            conversation_capability: model.conversation_capability,
+            lifecycle: model.lifecycle,
+            pricing: model.pricing,
+        }),
+        ModelRuntimeStatus::Unsupported { reason } => Err(invalid_payload(format!(
+            "model is not supported by the current runtime: {reason}"
+        ))),
+    }
+}
+
+fn provider_config_id(
+    record: &ProviderSettingsRecord,
+    request: &ProviderSettingsRequest,
+) -> String {
+    if let Some(config_id) = request
+        .config_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return config_id.to_owned();
+    }
+    let provider_id = request.provider_id.clone();
+    if record.configs.iter().any(|config| config.id == provider_id) {
+        return format!("{provider_id}-{}", RunId::new());
+    }
+    provider_id
+}
+
+fn provider_config_payloads(
+    record: &ProviderSettingsRecord,
+) -> Result<Vec<ProviderConfigPayload>, CommandErrorPayload> {
+    record
+        .configs
+        .iter()
+        .map(|config| provider_config_payload(config, record.default_config_id.as_deref()))
+        .collect()
+}
+
+fn provider_config_payload(
+    config: &ProviderConfigRecord,
+    default_config_id: Option<&str>,
+) -> Result<ProviderConfigPayload, CommandErrorPayload> {
+    let descriptor = provider_config_descriptor(config)?;
+    Ok(ProviderConfigPayload {
+        protocol: descriptor.protocol,
+        base_url: config.base_url.clone(),
+        display_name: config.display_name.clone(),
+        has_api_key: provider_config_has_api_key(config),
+        id: config.id.clone(),
+        is_default: default_config_id.is_some_and(|id| id == config.id),
+        model_id: config.model_id.clone(),
+        provider_id: config.provider_id.clone(),
+        model_descriptor: model_descriptor_catalog_entry(descriptor),
+    })
+}
+
+fn provider_config_has_api_key(config: &ProviderConfigRecord) -> bool {
+    !config.api_key.trim().is_empty()
+}
+
+fn ensure_provider_config_has_api_key(
+    config: &ProviderConfigRecord,
+) -> Result<&str, CommandErrorPayload> {
+    config
+        .api_key
+        .trim()
+        .is_empty()
+        .then(|| invalid_payload("apiKey is not configured for this provider config".to_owned()))
+        .map_or_else(|| Ok(config.api_key.trim()), Err)
+}
+
+fn provider_config_descriptor(
+    config: &ProviderConfigRecord,
+) -> Result<ModelDescriptor, CommandErrorPayload> {
+    match resolve_model_descriptor(&config.provider_id, &config.model_id) {
+        Ok(descriptor) => Ok(descriptor),
+        Err(_) if config.provider_id == "openrouter" => {
+            let descriptor = model_descriptor_from_record(&config.model_descriptor)?;
+            if descriptor.provider_id != config.provider_id
+                || descriptor.model_id != config.model_id
+            {
+                return Err(runtime_init_failed(
+                    "provider model descriptor does not match provider config".to_owned(),
+                ));
+            }
+            if descriptor.protocol != ModelProtocol::ChatCompletions {
+                return Err(runtime_init_failed(
+                    "provider model descriptor protocol is not supported".to_owned(),
+                ));
+            }
+            if !descriptor.conversation_capability.streaming {
+                return Err(runtime_init_failed(
+                    "provider model descriptor is not runnable".to_owned(),
+                ));
+            }
+            if !descriptor_has_runtime_supported_modalities(&descriptor) {
+                return Err(runtime_init_failed(
+                    "provider model descriptor is not supported by the current runtime".to_owned(),
+                ));
+            }
+            Ok(descriptor)
+        }
+        Err(error) => Err(provider_registry_error(error)),
+    }
+}
+
+fn descriptor_has_runtime_supported_modalities(descriptor: &ModelDescriptor) -> bool {
+    descriptor
+        .conversation_capability
+        .input_modalities
+        .iter()
+        .all(|modality| matches!(modality, ModelModality::Text))
+        && descriptor
+            .conversation_capability
+            .output_modalities
+            .iter()
+            .all(|modality| matches!(modality, ModelModality::Text))
+        && !descriptor
+            .conversation_capability
+            .input_modalities
+            .is_empty()
+        && !descriptor
+            .conversation_capability
+            .output_modalities
+            .is_empty()
+}
+
+fn normalized_base_url(value: Option<&str>) -> Result<Option<String>, CommandErrorPayload> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if !(value.starts_with("https://") || value.starts_with("http://")) {
+        return Err(invalid_payload(
+            "baseUrl must start with http:// or https://".to_owned(),
+        ));
+    }
+    if value.contains('?') || value.contains('#') {
+        return Err(invalid_payload(
+            "baseUrl must not include query parameters or fragments".to_owned(),
+        ));
+    }
+    let parsed = reqwest::Url::parse(value)
+        .map_err(|_| invalid_payload("baseUrl must be a valid http(s) URL".to_owned()))?;
+    if parsed.host_str().is_none() || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(invalid_payload(
+            "baseUrl must not include credentials".to_owned(),
+        ));
+    }
+    if parsed.scheme() == "http" && !url_targets_loopback(&parsed) {
+        return Err(invalid_payload(
+            "baseUrl must use https:// unless it targets localhost".to_owned(),
+        ));
+    }
+    Ok(Some(value.trim_end_matches('/').to_owned()))
+}
+
+fn url_targets_loopback(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+fn model_from_provider_settings(
+    store: &dyn ProviderSettingsStore,
+    selected_config_id: Option<&str>,
+) -> Result<Option<(Arc<dyn ModelProvider>, String, ModelProtocol)>, CommandErrorPayload> {
+    let Some(record) = store.load_record()? else {
+        return Ok(None);
+    };
+    let Some(config_id) = selected_config_id.or(record.default_config_id.as_deref()) else {
+        return Ok(None);
+    };
+    let Some(config) = record.configs.iter().find(|config| config.id == config_id) else {
+        return Err(runtime_init_failed("provider config is missing".to_owned()));
+    };
+    let descriptor = provider_config_descriptor(config)?;
+    let api_key = config.api_key.trim();
+    if api_key.is_empty() {
+        return Err(runtime_init_failed(
+            "provider config has no api key".to_owned(),
+        ));
+    }
+    let base_url = normalized_base_url(config.base_url.as_deref())?;
+    let provider = build_provider(ProviderBuildConfig {
+        provider_id: config.provider_id.clone(),
+        api_key: api_key.to_owned(),
+        base_url,
+        model_descriptor: Some(descriptor.clone()),
+    })
+    .map_err(provider_registry_init_error)?;
+    let protocol = descriptor.protocol;
+
+    Ok(Some((
+        Arc::from(provider),
+        config.model_id.clone(),
+        protocol,
+    )))
 }
 
 fn parse_request_id(value: &str) -> Result<RequestId, CommandErrorPayload> {
@@ -2753,6 +6578,39 @@ fn parse_session_id(value: &str) -> Result<SessionId, CommandErrorPayload> {
     Ok(session_id)
 }
 
+fn validate_client_message_id(value: &str) -> Result<(), CommandErrorPayload> {
+    ensure_non_empty("clientMessageId", value)?;
+    if is_uuid_v4_like(value) {
+        return Ok(());
+    }
+
+    Err(invalid_payload(
+        "clientMessageId must be a UUID generated by the desktop client".to_owned(),
+    ))
+}
+
+fn is_uuid_v4_like(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+
+    for index in [8, 13, 18, 23] {
+        if bytes[index] != b'-' {
+            return false;
+        }
+    }
+    if bytes[14] != b'4' || !matches!(bytes[19], b'8' | b'9' | b'a' | b'b' | b'A' | b'B') {
+        return false;
+    }
+
+    bytes
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !matches!(index, 8 | 13 | 18 | 23))
+        .all(|(_, byte)| byte.is_ascii_hexdigit())
+}
+
 fn to_harness_decision(decision: PermissionDecision) -> Decision {
     match decision {
         PermissionDecision::Approve => Decision::AllowOnce,
@@ -2761,6 +6619,7 @@ fn to_harness_decision(decision: PermissionDecision) -> Decision {
 }
 
 fn permission_requested_run_event(
+    event_id: String,
     event: &Event,
     sequence: u64,
     redactor: &dyn Redactor,
@@ -2771,10 +6630,10 @@ fn permission_requested_run_event(
     let subject = permission_subject_display(&event.subject, redactor);
 
     RunEventPayload {
-        id: format!("permission-requested-{}", event.request_id),
+        id: event_id,
+        conversation_sequence: sequence,
         payload: serde_json::to_value(PermissionRequestedRunEventPayload {
-            command: subject.command,
-            decision_scope: redacted_display(decision_scope_display(&event.scope_hint), redactor),
+            decision_scope: decision_scope_display(&event.scope_hint, redactor),
             exposure: subject.exposure,
             operation: subject.operation,
             reason: "The runtime requires approval before continuing.".to_owned(),
@@ -2794,7 +6653,6 @@ fn permission_requested_run_event(
 }
 
 struct PermissionSubjectDisplay {
-    command: Option<PermissionCommandRunEventPayload>,
     exposure: String,
     operation: String,
     target: String,
@@ -2805,46 +6663,27 @@ fn permission_subject_display(
     redactor: &dyn Redactor,
 ) -> PermissionSubjectDisplay {
     match subject {
-        PermissionSubject::CommandExec {
-            argv, command, cwd, ..
-        } => PermissionSubjectDisplay {
-            command: Some(PermissionCommandRunEventPayload {
-                argv: argv
-                    .iter()
-                    .map(|arg| redacted_display(arg.clone(), redactor))
-                    .collect(),
-                cwd: cwd
-                    .as_ref()
-                    .map(|path| redacted_display(path.display().to_string(), redactor)),
-                executable: redacted_display(
-                    argv.first().cloned().unwrap_or_else(|| command.clone()),
-                    redactor,
-                ),
-            }),
+        PermissionSubject::CommandExec { command, .. } => PermissionSubjectDisplay {
             exposure: "Can execute a command inside the workspace boundary.".to_owned(),
             operation: "Execute command".to_owned(),
-            target: redacted_display(command.clone(), redactor),
+            target: safe_command_label(command, redactor),
         },
         PermissionSubject::ToolInvocation { tool, .. } => PermissionSubjectDisplay {
-            command: None,
             exposure: "Can invoke a runtime tool.".to_owned(),
             operation: "Use tool".to_owned(),
             target: redacted_display(tool.clone(), redactor),
         },
         PermissionSubject::FileWrite { path, .. } => PermissionSubjectDisplay {
-            command: None,
             exposure: "Can write a file in the workspace.".to_owned(),
             operation: "Write file".to_owned(),
-            target: redacted_display(path.display().to_string(), redactor),
+            target: safe_path_label(path),
         },
         PermissionSubject::FileDelete { path } => PermissionSubjectDisplay {
-            command: None,
             exposure: "Can delete a file in the workspace.".to_owned(),
             operation: "Delete file".to_owned(),
-            target: redacted_display(path.display().to_string(), redactor),
+            target: safe_path_label(path),
         },
         PermissionSubject::NetworkAccess { host, port } => PermissionSubjectDisplay {
-            command: None,
             exposure: "Can access a network endpoint.".to_owned(),
             operation: "Access network".to_owned(),
             target: redacted_display(
@@ -2853,29 +6692,21 @@ fn permission_subject_display(
             ),
         },
         PermissionSubject::DangerousCommand { command, .. } => PermissionSubjectDisplay {
-            command: Some(PermissionCommandRunEventPayload {
-                argv: vec![redacted_display(command.clone(), redactor)],
-                cwd: None,
-                executable: redacted_display(command.clone(), redactor),
-            }),
             exposure: "Can execute a dangerous command.".to_owned(),
             operation: "Execute dangerous command".to_owned(),
-            target: redacted_display(command.clone(), redactor),
+            target: safe_command_label(command, redactor),
         },
         PermissionSubject::McpToolCall { server, tool, .. } => PermissionSubjectDisplay {
-            command: None,
             exposure: "Can invoke an MCP tool.".to_owned(),
             operation: "Use MCP tool".to_owned(),
             target: redacted_display(format!("{server}/{tool}"), redactor),
         },
         PermissionSubject::Custom { kind, .. } => PermissionSubjectDisplay {
-            command: None,
             exposure: "Can perform a custom permission-gated operation.".to_owned(),
             operation: "Review custom operation".to_owned(),
             target: redacted_display(kind.clone(), redactor),
         },
         _ => PermissionSubjectDisplay {
-            command: None,
             exposure: "Can continue a permission-gated operation.".to_owned(),
             operation: "Review permission".to_owned(),
             target: "runtime operation".to_owned(),
@@ -2883,62 +6714,51 @@ fn permission_subject_display(
     }
 }
 
-fn decision_scope_display(scope: &DecisionScope) -> String {
+fn decision_scope_display(scope: &DecisionScope, redactor: &dyn Redactor) -> String {
     match scope {
-        DecisionScope::ExactCommand { command, cwd } => cwd.as_ref().map_or_else(
-            || format!("exact command: {command}"),
-            |cwd| format!("exact command: {command} in {}", cwd.display()),
-        ),
-        DecisionScope::ExactArgs(value) => format!("exact args: {value}"),
-        DecisionScope::ToolName(tool) => format!("tool: {tool}"),
-        DecisionScope::Category(category) => format!("category: {category}"),
-        DecisionScope::PathPrefix(path) => format!("path prefix: {}", path.display()),
-        DecisionScope::GlobPattern(pattern) => format!("glob: {pattern}"),
+        DecisionScope::ExactCommand { .. } => "this exact command".to_owned(),
+        DecisionScope::ExactArgs(_) => "these exact command arguments".to_owned(),
+        DecisionScope::ToolName(_) => "this tool".to_owned(),
+        DecisionScope::Category(_) => "this tool category".to_owned(),
+        DecisionScope::PathPrefix(_) => "this workspace path scope".to_owned(),
+        DecisionScope::GlobPattern(_) => "this workspace glob".to_owned(),
         DecisionScope::ExecuteCodeScript { .. } => "execute code script".to_owned(),
         DecisionScope::Any => "any matching operation".to_owned(),
-        _ => "current operation".to_owned(),
+        _ => redacted_display("current operation".to_owned(), redactor),
     }
 }
 
-fn pending_permission_run_id(pending: &PendingPermissionRequest) -> Option<String> {
-    pending.context.run_id.map(|run_id| run_id.to_string())
+fn safe_command_label(command: &str, redactor: &dyn Redactor) -> String {
+    let executable_token = command.split_whitespace().next().unwrap_or(command);
+    let executable = Path::new(executable_token)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(executable_token);
+    redacted_display(executable.to_owned(), redactor)
 }
 
-fn permission_request_conversation_id(request: &PermissionRequest) -> String {
-    request.session_id.to_string()
-}
-
-fn permission_request_matches_activity_request(
-    pending_permission_request: &PendingPermissionRequest,
-    activity_request: &ListActivityRequest,
-) -> bool {
-    let permission_request = &pending_permission_request.request;
-    let matches_run_id = activity_request.run_id.as_deref().map(|run_id| {
-        pending_permission_run_id(pending_permission_request)
-            .map(|permission_run_id| run_id == permission_run_id)
-            .unwrap_or(false)
-    });
-    let matches_conversation_id =
-        activity_request
-            .conversation_id
-            .as_deref()
-            .map(|conversation_id| {
-                conversation_id == permission_request_conversation_id(permission_request)
-            });
-
-    match (matches_conversation_id, matches_run_id) {
-        (Some(matches_conversation_id), Some(matches_run_id)) => {
-            matches_conversation_id && matches_run_id
-        }
-        (Some(matches_conversation_id), None) => matches_conversation_id,
-        (None, Some(matches_run_id)) => matches_run_id,
-        (None, None) => false,
-    }
+fn safe_path_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map_or_else(
+            || "workspace file".to_owned(),
+            |name| format!("workspace file: {name}"),
+        )
 }
 
 async fn read_replay_run_events(
     request: ListActivityRequest,
     state: &DesktopRuntimeState,
+) -> Result<Vec<RunEventPayload>, CommandErrorPayload> {
+    read_replay_run_events_after(request, state, None).await
+}
+
+async fn read_replay_run_events_after(
+    request: ListActivityRequest,
+    state: &DesktopRuntimeState,
+    after_cursor: Option<String>,
 ) -> Result<Vec<RunEventPayload>, CommandErrorPayload> {
     let session_id = match request.conversation_id.as_deref() {
         Some(conversation_id) => parse_session_id(conversation_id)?,
@@ -2952,7 +6772,26 @@ async fn read_replay_run_events(
     };
     let redactor = DefaultRedactor::default();
     let mut mapper = RunEventMapper::default();
-    let mut after_event_id = None;
+    let mut after_event_id = after_cursor
+        .as_deref()
+        .map(EventId::parse)
+        .transpose()
+        .map_err(|error| invalid_payload(format!("conversation cursor is invalid: {error}")))?;
+    let mut conversation_sequence = 0;
+    let mut run_sequences: HashMap<String, u64> = HashMap::new();
+    if let Some(cursor_event_id) = after_event_id {
+        let seed = seed_run_event_mapper_until_cursor(
+            &harness,
+            state.conversation_session_options(session_id),
+            session_id,
+            cursor_event_id,
+            &mut mapper,
+            &redactor,
+        )
+        .await?;
+        conversation_sequence = seed.conversation_sequence;
+        run_sequences = seed.run_sequences;
+    }
     let mut events = Vec::new();
 
     loop {
@@ -2969,9 +6808,12 @@ async fn read_replay_run_events(
         }
 
         for envelope in page.events {
-            let Some(event) =
-                mapper.map(envelope.event_id.to_string(), envelope.payload, &redactor)
-            else {
+            let Some(event) = mapper.map(
+                envelope.event_id.to_string(),
+                envelope.payload,
+                session_id,
+                &redactor,
+            ) else {
                 continue;
             };
             if run_id
@@ -2980,16 +6822,70 @@ async fn read_replay_run_events(
             {
                 continue;
             }
+            let event_conversation_sequence = conversation_sequence + 1;
+            conversation_sequence += 1;
+            let run_sequence = run_sequences.entry(event.run_id.clone()).or_insert(0);
             events.push(RunEventPayload {
-                sequence: events.len() as u64,
+                conversation_sequence: event_conversation_sequence,
+                sequence: *run_sequence + 1,
                 ..event
             });
+            *run_sequence += 1;
         }
 
         after_event_id = page.next_event_id;
     }
 
     Ok(events)
+}
+
+struct RunEventMapperSeed {
+    conversation_sequence: u64,
+    run_sequences: HashMap<String, u64>,
+}
+
+async fn seed_run_event_mapper_until_cursor(
+    harness: &Harness,
+    options: SessionOptions,
+    session_id: SessionId,
+    cursor_event_id: EventId,
+    mapper: &mut RunEventMapper,
+    redactor: &dyn Redactor,
+) -> Result<RunEventMapperSeed, CommandErrorPayload> {
+    let mut after_event_id = None;
+    let mut conversation_sequence = 0;
+    let mut run_sequences: HashMap<String, u64> = HashMap::new();
+
+    loop {
+        let page = harness
+            .page_conversation_events(ConversationEventsPageRequest {
+                options: options.clone(),
+                after_event_id,
+                limit: 200,
+            })
+            .await
+            .map_err(|error| runtime_operation_failed(format!("replay read failed: {error}")))?;
+        if page.events.is_empty() {
+            return Err(invalid_payload("conversation cursor is unknown".to_owned()));
+        }
+
+        for envelope in page.events {
+            let event_id = envelope.event_id;
+            if let Some(event) =
+                mapper.map(event_id.to_string(), envelope.payload, session_id, redactor)
+            {
+                conversation_sequence += 1;
+                *run_sequences.entry(event.run_id).or_insert(0) += 1;
+            }
+            if event_id == cursor_event_id {
+                return Ok(RunEventMapperSeed {
+                    conversation_sequence,
+                    run_sequences,
+                });
+            }
+            after_event_id = Some(event_id);
+        }
+    }
 }
 
 async fn read_activity_replay_events(
@@ -3020,9 +6916,7 @@ async fn read_conversation_messages(
                 limit: 200,
             })
             .await
-            .map_err(|error| {
-                runtime_operation_failed(format!("conversation read failed: {error}"))
-            })?;
+            .map_err(conversation_read_error)?;
         if page.events.is_empty() {
             break;
         }
@@ -3033,6 +6927,12 @@ async fn read_conversation_messages(
                     messages.push(ConversationMessagePayload {
                         author: "user",
                         body: message_content_display(&event.content, &redactor),
+                        client_message_id: event
+                            .metadata
+                            .labels
+                            .get("clientMessageId")
+                            .filter(|client_message_id| is_uuid_v4_like(client_message_id))
+                            .cloned(),
                         id: event.message_id.to_string(),
                         timestamp: event.at.to_rfc3339(),
                     });
@@ -3041,6 +6941,7 @@ async fn read_conversation_messages(
                     messages.push(ConversationMessagePayload {
                         author: "assistant",
                         body: message_content_display(&event.content, &redactor),
+                        client_message_id: None,
                         id: event.message_id.to_string(),
                         timestamp: event.at.to_rfc3339(),
                     });
@@ -3069,7 +6970,52 @@ fn message_content_display(content: &MessageContent, redactor: &dyn Redactor) ->
             .join("\n"),
     };
 
-    redacted_display(value, redactor)
+    redact_private_absolute_paths(redacted_display(value, redactor))
+}
+
+fn redact_private_absolute_paths(value: String) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut index = 0;
+
+    while index < value.len() {
+        if private_absolute_path_starts_at(&value, index) {
+            output.push_str("[REDACTED]");
+            index = private_absolute_path_end(&value, index);
+            continue;
+        }
+
+        let ch = value[index..]
+            .chars()
+            .next()
+            .expect("index is within string bounds");
+        output.push(ch);
+        index += ch.len_utf8();
+    }
+
+    output
+}
+
+fn private_absolute_path_starts_at(value: &str, index: usize) -> bool {
+    let tail = &value[index..];
+    tail.starts_with("/Users/")
+        || tail.starts_with("/home/")
+        || tail.starts_with("/private/var/")
+        || is_windows_absolute_path_start(tail)
+}
+
+fn is_windows_absolute_path_start(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
+}
+
+fn private_absolute_path_end(value: &str, start: usize) -> usize {
+    for (offset, ch) in value[start..].char_indices() {
+        if ch.is_whitespace() || matches!(ch, '"' | '\'' | '`' | ',' | ';' | ')' | ']' | '}') {
+            return start + offset;
+        }
+    }
+
+    value.len()
 }
 
 fn truncate_utf8(value: String, max_bytes: usize) -> String {
@@ -3082,18 +7028,6 @@ fn truncate_utf8(value: String, max_bytes: usize) -> String {
         end -= 1;
     }
     value[..end].to_owned()
-}
-
-fn artifact_title_from_preview(preview: &str) -> String {
-    let title = preview
-        .lines()
-        .find_map(|line| {
-            let line = line.trim().trim_start_matches('#').trim();
-            (!line.is_empty()).then(|| line.to_owned())
-        })
-        .unwrap_or_else(|| "Generated artifact".to_owned());
-
-    truncate_utf8(title, 120)
 }
 
 fn context_decisions_from_pending_requests(
@@ -3122,6 +7056,7 @@ fn context_decisions_from_pending_requests(
                 severity_display(pending.request.severity),
                 pending.request.request_id
             ),
+            request_id: Some(pending.request.request_id.to_string()),
             title: format!(
                 "Approve {}",
                 redacted_display(pending.request.tool_name, redactor)
@@ -3152,6 +7087,113 @@ fn context_files_from_workspace(workspace_root: &Path) -> Vec<ContextFilePayload
     .collect()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentRecord {
+    attachment: AttachmentReferencePayload,
+    blob_ref: BlobRef,
+}
+
+fn canonicalize_existing_file(
+    path: &Path,
+    field: &'static str,
+) -> Result<PathBuf, CommandErrorPayload> {
+    path.canonicalize()
+        .map_err(|error| invalid_payload(format!("{field} is invalid: {error}")))
+}
+
+fn workspace_relative_path(path: &Path, workspace_root: &Path) -> Option<String> {
+    let workspace_root = workspace_root.canonicalize().ok()?;
+    path.strip_prefix(workspace_root)
+        .ok()
+        .map(path_to_workspace_string)
+}
+
+fn path_to_workspace_string(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn attachment_id(path: &Path, size_bytes: u64) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(path.to_string_lossy().as_bytes());
+    hasher.update(&size_bytes.to_le_bytes());
+    if let Ok(metadata) = path.metadata() {
+        if let Ok(modified_at) = metadata.modified() {
+            if let Ok(duration) = modified_at.duration_since(std::time::UNIX_EPOCH) {
+                hasher.update(&duration.as_nanos().to_le_bytes());
+            }
+        }
+    }
+    format!("attachment-{}", hasher.finalize().to_hex())
+}
+
+fn attachment_record_path(workspace_root: &Path, attachment_id: &str) -> PathBuf {
+    workspace_root
+        .join(".jyowo")
+        .join("runtime")
+        .join("attachments")
+        .join("records")
+        .join(format!("{attachment_id}.json"))
+}
+
+fn write_attachment_record(
+    workspace_root: &Path,
+    record: &AttachmentRecord,
+) -> Result<(), CommandErrorPayload> {
+    let path = attachment_record_path(workspace_root, &record.attachment.id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            runtime_operation_failed(format!("attachment record store unavailable: {error}"))
+        })?;
+    }
+    let content = serde_json::to_vec_pretty(record)
+        .map_err(|error| runtime_operation_failed(format!("attachment record failed: {error}")))?;
+    std::fs::write(path, content).map_err(|error| {
+        runtime_operation_failed(format!("attachment record write failed: {error}"))
+    })
+}
+
+fn read_attachment_record(
+    workspace_root: &Path,
+    attachment_id: &str,
+) -> Result<AttachmentRecord, CommandErrorPayload> {
+    ensure_attachment_id(attachment_id)?;
+    let path = attachment_record_path(workspace_root, attachment_id);
+    let content = std::fs::read_to_string(path)
+        .map_err(|_| invalid_payload("attachment reference does not exist".to_owned()))?;
+    serde_json::from_str(&content)
+        .map_err(|_| invalid_payload("attachment record is invalid".to_owned()))
+}
+
+fn infer_mime_type(path: &Path) -> String {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "css" => "text/css",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "json" => "application/json",
+        "md" | "markdown" => "text/markdown",
+        "rs" | "tsx" | "ts" | "js" | "jsx" | "txt" | "toml" | "yaml" | "yml" => "text/plain",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        _ => "application/octet-stream",
+    }
+    .to_owned()
+}
+
 fn workspace_project_name(workspace_root: &Path) -> String {
     workspace_root
         .file_name()
@@ -3161,40 +7203,50 @@ fn workspace_project_name(workspace_root: &Path) -> String {
         .to_owned()
 }
 
-fn event_has_permission_request_id(event: &RunEventPayload, request_id: &RequestId) -> bool {
-    event
-        .payload
-        .get("requestId")
-        .and_then(Value::as_str)
-        .is_some_and(|value| value == request_id.to_string())
-}
-
 #[derive(Default)]
 struct RunEventMapper {
+    allowed_run_ids: HashSet<RunId>,
     permission_run_ids: HashMap<RequestId, RunId>,
     tool_run_ids: HashMap<ToolUseId, RunId>,
 }
 
 impl RunEventMapper {
+    fn is_allowed_run(&self, run_id: &RunId) -> bool {
+        self.allowed_run_ids.contains(run_id)
+    }
+
     fn map(
         &mut self,
         event_id: String,
         event: Event,
+        requested_session_id: SessionId,
         redactor: &dyn Redactor,
     ) -> Option<RunEventPayload> {
         match event {
-            Event::RunStarted(event) => Some(RunEventPayload {
-                id: event_id,
-                payload: json!({ "sessionId": event.session_id.to_string() }),
-                run_id: event.run_id.to_string(),
-                sequence: 0,
-                source: "engine",
-                timestamp: event.started_at.to_rfc3339(),
-                event_type: "run.started",
-                visibility: "public",
-            }),
+            Event::RunStarted(event) => {
+                if event.session_id != requested_session_id {
+                    return None;
+                }
+
+                self.allowed_run_ids.insert(event.run_id);
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({ "sessionId": event.session_id.to_string() }),
+                    run_id: event.run_id.to_string(),
+                    sequence: 0,
+                    source: "engine",
+                    timestamp: event.started_at.to_rfc3339(),
+                    event_type: "run.started",
+                    visibility: "public",
+                })
+            }
             Event::RunEnded(event) => {
-                let mut payload = json!({ "reason": event.reason });
+                if !self.is_allowed_run(&event.run_id) {
+                    return None;
+                }
+
+                let mut payload = json!({ "reason": run_end_reason_display(&event.reason, redactor) });
                 if let Some(usage) = event.usage {
                     payload["usage"] = json!({
                         "cacheReadTokens": usage.cache_read_tokens,
@@ -3208,6 +7260,7 @@ impl RunEventMapper {
 
                 Some(RunEventPayload {
                     id: event_id,
+                    conversation_sequence: 0,
                     payload,
                     run_id: event.run_id.to_string(),
                     sequence: 0,
@@ -3217,32 +7270,153 @@ impl RunEventMapper {
                     visibility: "public",
                 })
             }
-            Event::AssistantDeltaProduced(event) => Some(RunEventPayload {
-                id: event_id,
-                payload: json!({ "text": assistant_delta_text(event.delta, redactor) }),
-                run_id: event.run_id.to_string(),
-                sequence: 0,
-                source: "assistant",
-                timestamp: event.at.to_rfc3339(),
-                event_type: "assistant.delta",
-                visibility: "public",
-            }),
-            Event::AssistantMessageCompleted(event) => Some(RunEventPayload {
-                id: event_id,
-                payload: json!({ "messageId": event.message_id.to_string() }),
-                run_id: event.run_id.to_string(),
-                sequence: 0,
-                source: "assistant",
-                timestamp: event.at.to_rfc3339(),
-                event_type: "assistant.completed",
-                visibility: "public",
-            }),
+            Event::UserMessageAppended(event) => {
+                if !self.is_allowed_run(&event.run_id) {
+                    return None;
+                }
+
+                let mut payload = json!({
+                    "messageId": event.message_id.to_string(),
+                    "body": message_content_display(&event.content, redactor),
+                });
+                if let Some(client_message_id) = event
+                    .metadata
+                    .labels
+                    .get("clientMessageId")
+                    .filter(|client_message_id| is_uuid_v4_like(client_message_id))
+                {
+                    payload["clientMessageId"] = json!(client_message_id);
+                }
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload,
+                    run_id: event.run_id.to_string(),
+                    sequence: 0,
+                    source: "user",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "user.message.appended",
+                    visibility: "public",
+                })
+            }
+            Event::AssistantDeltaProduced(event) => match event.delta {
+                DeltaChunk::Text(text) => {
+                    if !self.is_allowed_run(&event.run_id) {
+                        return None;
+                    }
+
+                    Some(RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({ "text": redact_private_absolute_paths(redacted_display(text, redactor)) }),
+                        run_id: event.run_id.to_string(),
+                        sequence: 0,
+                        source: "assistant",
+                        timestamp: event.at.to_rfc3339(),
+                        event_type: "assistant.delta",
+                        visibility: "public",
+                    })
+                }
+                DeltaChunk::Thought(thought) => {
+                    if !self.is_allowed_run(&event.run_id) {
+                        return None;
+                    }
+
+                    let text = thought.text.unwrap_or_default();
+                    if text.is_empty() {
+                        return None;
+                    }
+
+                    Some(RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({ "text": redact_private_absolute_paths(redacted_display(text, redactor)) }),
+                        run_id: event.run_id.to_string(),
+                        sequence: 0,
+                        source: "assistant",
+                        timestamp: event.at.to_rfc3339(),
+                        event_type: "assistant.thinking.delta",
+                        visibility: "public",
+                    })
+                }
+                DeltaChunk::ToolUseStart { .. }
+                | DeltaChunk::ToolUseInputDelta { .. }
+                | DeltaChunk::ToolUseEnd { .. } => None,
+                _ => None,
+            },
+            Event::AssistantMessageCompleted(event) => {
+                if !self.is_allowed_run(&event.run_id) {
+                    return None;
+                }
+
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "messageId": event.message_id.to_string(),
+                        "body": message_content_display(&event.content, redactor),
+                    }),
+                    run_id: event.run_id.to_string(),
+                    sequence: 0,
+                    source: "assistant",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "assistant.completed",
+                    visibility: "public",
+                })
+            }
+            Event::ArtifactCreated(event) => {
+                if event.session_id != requested_session_id || !self.is_allowed_run(&event.run_id) {
+                    return None;
+                }
+
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "artifactId": event.artifact_id,
+                        "status": artifact_status_label(event.status),
+                    }),
+                    run_id: event.run_id.to_string(),
+                    sequence: 0,
+                    source: "engine",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "artifact.created",
+                    visibility: "public",
+                })
+            }
+            Event::ArtifactUpdated(event) => {
+                if event.session_id != requested_session_id || !self.is_allowed_run(&event.run_id) {
+                    return None;
+                }
+
+                let mut payload = json!({ "artifactId": event.artifact_id });
+                if let Some(status) = event.status {
+                    payload["status"] = json!(artifact_status_label(status));
+                }
+
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload,
+                    run_id: event.run_id.to_string(),
+                    sequence: 0,
+                    source: "engine",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "artifact.updated",
+                    visibility: "public",
+                })
+            }
             Event::ToolUseRequested(event) => {
+                if !self.is_allowed_run(&event.run_id) {
+                    return None;
+                }
+
                 self.tool_run_ids.insert(event.tool_use_id, event.run_id);
                 Some(RunEventPayload {
                     id: event_id,
+                    conversation_sequence: 0,
                     payload: json!({
-                        "argumentsSummary": redacted_display(event.input.to_string(), redactor),
+                        "argumentsSummary": "Input withheld from conversation timeline.",
                         "toolName": redacted_display(event.tool_name, redactor),
                         "toolUseId": event.tool_use_id.to_string(),
                     }),
@@ -3257,6 +7431,7 @@ impl RunEventMapper {
             Event::ToolUseApproved(event) => self.tool_run_ids.get(&event.tool_use_id).map(|run_id| {
                 RunEventPayload {
                     id: event_id,
+                    conversation_sequence: 0,
                     payload: json!({ "toolUseId": event.tool_use_id.to_string() }),
                     run_id: run_id.to_string(),
                     sequence: 0,
@@ -3269,6 +7444,7 @@ impl RunEventMapper {
             Event::ToolUseDenied(event) => self.tool_run_ids.get(&event.tool_use_id).map(|run_id| {
                 RunEventPayload {
                     id: event_id,
+                    conversation_sequence: 0,
                     payload: json!({ "toolUseId": event.tool_use_id.to_string() }),
                     run_id: run_id.to_string(),
                     sequence: 0,
@@ -3281,9 +7457,10 @@ impl RunEventMapper {
             Event::ToolUseCompleted(event) => {
                 self.tool_run_ids.get(&event.tool_use_id).map(|run_id| RunEventPayload {
                     id: event_id,
+                    conversation_sequence: 0,
                     payload: json!({
                         "durationMs": event.duration_ms,
-                        "outputSummary": tool_result_summary(event.result, redactor),
+                        "outputSummary": tool_result_summary(event.result),
                         "toolUseId": event.tool_use_id.to_string(),
                     }),
                     run_id: run_id.to_string(),
@@ -3297,9 +7474,10 @@ impl RunEventMapper {
             Event::ToolUseFailed(event) => self.tool_run_ids.get(&event.tool_use_id).map(|run_id| {
                 RunEventPayload {
                     id: event_id,
+                    conversation_sequence: 0,
                     payload: json!({
-                        "code": redacted_display(event.error.code, redactor),
-                        "message": redacted_display(event.error.message, redactor),
+                        "code": "tool_error",
+                        "message": "Tool error withheld from conversation timeline.",
                         "toolUseId": event.tool_use_id.to_string(),
                     }),
                     run_id: run_id.to_string(),
@@ -3311,8 +7489,13 @@ impl RunEventMapper {
                 }
             }),
             Event::PermissionRequested(event) => {
+                if event.session_id != requested_session_id || !self.is_allowed_run(&event.run_id) {
+                    return None;
+                }
+
                 self.permission_run_ids.insert(event.request_id, event.run_id);
                 Some(permission_requested_run_event(
+                    event_id,
                     &Event::PermissionRequested(event),
                     0,
                     redactor,
@@ -3323,6 +7506,7 @@ impl RunEventMapper {
                 .get(&event.request_id)
                 .map(|run_id| RunEventPayload {
                     id: event_id,
+                    conversation_sequence: 0,
                     payload: json!({
                         "decision": permission_decision_payload(event.decision),
                         "requestId": event.request_id.to_string(),
@@ -3334,29 +7518,26 @@ impl RunEventMapper {
                     event_type: "permission.resolved",
                     visibility: "public",
                 }),
-            Event::EngineFailed(event) => event.run_id.map(|run_id| RunEventPayload {
-                id: event_id,
-                payload: json!({ "message": redacted_display(format!("{:?}", event.error), redactor) }),
-                run_id: run_id.to_string(),
-                sequence: 0,
-                source: "engine",
-                timestamp: event.at.to_rfc3339(),
-                event_type: "engine.failed",
-                visibility: "redacted",
+            Event::EngineFailed(event) => event.run_id.and_then(|run_id| {
+                self.is_allowed_run(&run_id).then(|| RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({ "message": "Engine error withheld from conversation timeline." }),
+                    run_id: run_id.to_string(),
+                    sequence: 0,
+                    source: "engine",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "engine.failed",
+                    visibility: "redacted",
+                })
             }),
             _ => None,
         }
     }
 }
 
-fn assistant_delta_text(delta: impl Serialize, redactor: &dyn Redactor) -> String {
-    let summary = serde_json::to_string(&delta).unwrap_or_default();
-    redacted_display(summary, redactor)
-}
-
-fn tool_result_summary(result: impl Serialize, redactor: &dyn Redactor) -> String {
-    let summary = serde_json::to_string(&result).unwrap_or_default();
-    redacted_display(summary, redactor)
+fn tool_result_summary(_result: impl Serialize) -> String {
+    "Output withheld from conversation timeline.".to_owned()
 }
 
 fn permission_decision_payload(decision: Decision) -> &'static str {
@@ -3364,6 +7545,31 @@ fn permission_decision_payload(decision: Decision) -> &'static str {
         Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent => "approve",
         Decision::DenyOnce | Decision::DenyPermanent | Decision::Escalate => "deny",
         _ => "deny",
+    }
+}
+
+fn run_end_reason_display(reason: &EndReason, redactor: &dyn Redactor) -> String {
+    if matches!(reason, EndReason::Error(_)) {
+        return "Run error withheld from conversation timeline.".to_owned();
+    }
+
+    let value = match reason {
+        EndReason::Completed => "completed".to_owned(),
+        EndReason::MaxIterationsReached => "max iterations reached".to_owned(),
+        EndReason::TokenBudgetExhausted => "token budget exhausted".to_owned(),
+        EndReason::BudgetExhausted(_) => "budget exhausted".to_owned(),
+        EndReason::Interrupted => "interrupted".to_owned(),
+        EndReason::Cancelled { .. } => "cancelled".to_owned(),
+        EndReason::Error(_) => unreachable!("error reasons return before redaction"),
+        EndReason::Compacted => "compacted".to_owned(),
+        _ => "ended".to_owned(),
+    };
+
+    let value = redacted_display(value, redactor);
+    if value.trim().is_empty() {
+        "error".to_owned()
+    } else {
+        value
     }
 }
 
@@ -3428,6 +7634,21 @@ fn runtime_operation_failed(message: String) -> CommandErrorPayload {
         code: "RUNTIME_OPERATION_FAILED",
         message,
     }
+}
+
+fn not_found(message: String) -> CommandErrorPayload {
+    CommandErrorPayload {
+        code: "NOT_FOUND",
+        message,
+    }
+}
+
+fn conversation_read_error(error: impl std::fmt::Display) -> CommandErrorPayload {
+    let message = error.to_string();
+    if message.contains("session not found") {
+        return not_found(message);
+    }
+    runtime_operation_failed(format!("conversation read failed: {message}"))
 }
 
 fn memory_operation_failed(message: &'static str) -> CommandErrorPayload {
@@ -3532,6 +7753,65 @@ pub fn harness_healthcheck() -> HarnessHealthcheckPayload {
     harness_healthcheck_payload()
 }
 
+#[tauri::command]
+pub async fn list_model_provider_catalog() -> ModelProviderCatalogResponse {
+    list_model_provider_catalog_payload_with_remote().await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn get_execution_settings(
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
+    get_execution_settings_with_store(runtime_state.execution_settings_store.as_ref())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn set_execution_settings(
+    permission_mode: PermissionMode,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
+    let _execution_settings_guard = runtime_state.execution_settings_lock.lock().await;
+    set_execution_settings_with_store(
+        SetExecutionSettingsRequest { permission_mode },
+        runtime_state.execution_settings_store.as_ref(),
+    )
+}
+
+#[tauri::command]
+pub async fn list_provider_settings(
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<ListProviderSettingsResponse, CommandErrorPayload> {
+    list_provider_settings_with_store(runtime_state.provider_settings_store.as_ref()).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn request_provider_config_api_key_reveal(
+    config_id: String,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<RequestProviderConfigApiKeyRevealResponse, CommandErrorPayload> {
+    request_provider_config_api_key_reveal_with_runtime_state(
+        RequestProviderConfigApiKeyRevealRequest { config_id },
+        &runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_provider_config_api_key(
+    config_id: String,
+    reveal_token: String,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<GetProviderConfigApiKeyResponse, CommandErrorPayload> {
+    get_provider_config_api_key_with_runtime_state(
+        GetProviderConfigApiKeyRequest {
+            config_id,
+            reveal_token,
+        },
+        &runtime_state,
+    )
+    .await
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub async fn validate_provider_settings(
     model_id: String,
@@ -3546,18 +7826,43 @@ pub async fn validate_provider_settings(
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn save_provider_settings(
-    api_key: String,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    config_id: Option<String>,
+    display_name: Option<String>,
     model_id: String,
     provider_id: String,
+    set_default: Option<bool>,
     runtime_state: tauri::State<'_, DesktopRuntimeState>,
 ) -> Result<SaveProviderSettingsResponse, CommandErrorPayload> {
     let _provider_settings_guard = runtime_state.provider_settings_lock.lock().await;
     let request = ProviderSettingsRequest {
         api_key,
+        base_url,
+        config_id,
+        display_name,
         model_id,
         provider_id,
+        set_default: set_default.unwrap_or(true),
     };
-    save_provider_settings_with_store(request, runtime_state.provider_settings_store.as_ref()).await
+    let response =
+        save_provider_settings_with_store(request, runtime_state.provider_settings_store.as_ref())
+            .await?;
+    if response.config.is_default {
+        let stream_permission_runtime = runtime_state
+            .stream_permission_runtime
+            .as_ref()
+            .ok_or_else(|| runtime_unavailable("Provider settings require the desktop runtime."))?;
+        let (harness, model_id, protocol) = build_desktop_harness(
+            &runtime_state.workspace_root,
+            Arc::clone(stream_permission_runtime),
+            Some(&response.config.id),
+        )
+        .await?;
+        let _start_run_guard = runtime_state.start_run_lock.lock().await;
+        runtime_state.replace_harness(Arc::new(harness), model_id, protocol);
+    }
+    Ok(response)
 }
 
 #[tauri::command]
@@ -3595,6 +7900,63 @@ pub async fn delete_mcp_server(
 ) -> Result<DeleteMcpServerResponse, CommandErrorPayload> {
     let _mcp_server_guard = runtime_state.mcp_server_lock.lock().await;
     delete_mcp_server_with_runtime_state(DeleteMcpServerRequest { id }, runtime_state.inner()).await
+}
+
+#[tauri::command]
+pub async fn list_skills(
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<ListSkillsResponse, CommandErrorPayload> {
+    list_skills_with_runtime_state(runtime_state.inner()).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_skill(
+    id: String,
+    include_body: Option<bool>,
+    selected_file_path: Option<String>,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<GetSkillResponse, CommandErrorPayload> {
+    get_skill_with_runtime_state(
+        GetSkillRequest {
+            id,
+            include_body: include_body.unwrap_or(false),
+            selected_file_path,
+        },
+        runtime_state.inner(),
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn import_skill(
+    source_path: String,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<ImportSkillResponse, CommandErrorPayload> {
+    let _skill_store_guard = runtime_state.skill_store_lock.lock().await;
+    import_skill_with_runtime_state(ImportSkillRequest { source_path }, runtime_state.inner()).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn set_skill_enabled(
+    id: String,
+    enabled: bool,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<SetSkillEnabledResponse, CommandErrorPayload> {
+    let _skill_store_guard = runtime_state.skill_store_lock.lock().await;
+    set_skill_enabled_with_runtime_state(
+        SetSkillEnabledRequest { id, enabled },
+        runtime_state.inner(),
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn delete_skill(
+    id: String,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<DeleteSkillResponse, CommandErrorPayload> {
+    let _skill_store_guard = runtime_state.skill_store_lock.lock().await;
+    delete_skill_with_runtime_state(DeleteSkillRequest { id }, runtime_state.inner()).await
 }
 
 #[tauri::command]
@@ -3652,17 +8014,29 @@ pub async fn list_conversations(
 }
 
 #[tauri::command]
+pub async fn create_conversation(
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<CreateConversationResponse, CommandErrorPayload> {
+    create_conversation_with_runtime_state(runtime_state.inner()).await
+}
+
+#[tauri::command]
 pub async fn list_eval_cases(
     runtime_state: tauri::State<'_, DesktopRuntimeState>,
 ) -> Result<ListEvalCasesResponse, CommandErrorPayload> {
     list_eval_cases_with_runtime_state(runtime_state.inner())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn list_artifacts(
+    conversation_id: String,
     runtime_state: tauri::State<'_, DesktopRuntimeState>,
 ) -> Result<ListArtifactsResponse, CommandErrorPayload> {
-    list_artifacts_with_runtime_state(runtime_state.inner()).await
+    list_artifacts_with_runtime_state(
+        ListArtifactsRequest { conversation_id },
+        runtime_state.inner(),
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -3686,18 +8060,74 @@ pub async fn get_conversation(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub async fn set_conversation_model_config(
+    conversation_id: String,
+    model_config_id: String,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<SetConversationModelConfigResponse, CommandErrorPayload> {
+    set_conversation_model_config_with_runtime_state(
+        SetConversationModelConfigRequest {
+            conversation_id,
+            model_config_id,
+        },
+        runtime_state.inner(),
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn delete_conversation(
+    conversation_id: String,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<DeleteConversationResponse, CommandErrorPayload> {
+    delete_conversation_with_runtime_state(
+        DeleteConversationRequest { conversation_id },
+        runtime_state.inner(),
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub async fn start_run(
-    context_references: Option<Vec<String>>,
+    attachments: Option<Vec<AttachmentReferencePayload>>,
+    client_message_id: Option<String>,
+    context_references: Option<Vec<ContextReferencePayload>>,
     conversation_id: String,
     prompt: String,
     runtime_state: tauri::State<'_, DesktopRuntimeState>,
 ) -> Result<StartRunResponse, CommandErrorPayload> {
     start_run_with_runtime_state(
         StartRunRequest {
+            attachments,
+            client_message_id,
             context_references,
             conversation_id,
             prompt,
         },
+        runtime_state.inner(),
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn create_attachment_from_path(
+    path: String,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<CreateAttachmentFromPathResponse, CommandErrorPayload> {
+    create_attachment_from_path_with_runtime_state(
+        CreateAttachmentFromPathRequest { path },
+        runtime_state.inner(),
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_reference_candidates(
+    conversation_id: String,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<ListReferenceCandidatesResponse, CommandErrorPayload> {
+    list_reference_candidates_with_runtime_state(
+        ListReferenceCandidatesRequest { conversation_id },
         runtime_state.inner(),
     )
     .await
@@ -3713,15 +8143,20 @@ pub async fn cancel_run(
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn resolve_permission(
+    conversation_id: String,
     decision: PermissionDecision,
     request_id: String,
+    window: tauri::Window,
     runtime_state: tauri::State<'_, DesktopRuntimeState>,
 ) -> Result<ResolvePermissionResponse, CommandErrorPayload> {
-    resolve_permission_with_runtime_state(
+    let window_label = window.label().to_owned();
+    resolve_permission_for_window_with_runtime_state(
         ResolvePermissionRequest {
+            conversation_id,
             decision,
             request_id,
         },
+        window_label,
         runtime_state.inner(),
     )
     .await
@@ -3760,6 +8195,45 @@ pub async fn get_replay_timeline(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub async fn subscribe_conversation_events(
+    conversation_id: String,
+    after_cursor: Option<String>,
+    window: tauri::Window,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<SubscribeConversationEventsResponse, CommandErrorPayload> {
+    let window_label = window.label().to_owned();
+    let emitter = Arc::new(move |batch: ConversationEventBatchPayload| {
+        window
+            .emit("conversation_event_batch", batch)
+            .map_err(|error| error.to_string())
+    });
+    subscribe_conversation_events_for_window_with_runtime_state(
+        SubscribeConversationEventsRequest {
+            conversation_id,
+            after_cursor,
+        },
+        window_label,
+        emitter,
+        runtime_state.inner(),
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn unsubscribe_conversation_events(
+    subscription_id: String,
+    window: tauri::Window,
+    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+) -> Result<UnsubscribeConversationEventsResponse, CommandErrorPayload> {
+    unsubscribe_conversation_events_for_window_with_runtime_state(
+        UnsubscribeConversationEventsRequest { subscription_id },
+        window.label().to_owned(),
+        runtime_state.inner(),
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub async fn export_support_bundle(
     conversation_id: Option<String>,
     run_id: Option<String>,
@@ -3789,4 +8263,112 @@ pub async fn get_context_snapshot(
         runtime_state.inner(),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct EmptyRedactor;
+
+    impl Redactor for EmptyRedactor {
+        fn redact(&self, _input: &str, _rules: &RedactRules) -> String {
+            String::new()
+        }
+    }
+
+    #[test]
+    fn run_end_reason_display_returns_non_empty_error_fallback() {
+        assert_eq!(
+            run_end_reason_display(
+                &EndReason::Error(String::new()),
+                &DefaultRedactor::default()
+            ),
+            "Run error withheld from conversation timeline."
+        );
+        assert_eq!(
+            run_end_reason_display(
+                &EndReason::Error("provider failed".to_owned()),
+                &EmptyRedactor,
+            ),
+            "Run error withheld from conversation timeline."
+        );
+    }
+
+    #[test]
+    fn run_end_reason_display_withholds_error_reason() {
+        let reason = run_end_reason_display(
+            &EndReason::Error("provider failed with sk-abcdefghijklmnopqrstuvwxyz".to_owned()),
+            &DefaultRedactor::default(),
+        );
+
+        assert_eq!(reason, "Run error withheld from conversation timeline.");
+        assert!(!reason.contains("provider failed"));
+        assert!(!reason.contains("sk-abcdefghijklmnopqrstuvwxyz"));
+    }
+
+    #[test]
+    fn message_content_display_redacts_private_absolute_paths() {
+        let body = message_content_display(
+            &MessageContent::Text(
+                "read /Users/goya/.ssh/config and C:\\Users\\goya\\.ssh\\config".to_owned(),
+            ),
+            &DefaultRedactor::default(),
+        );
+
+        assert_eq!(body, "read [REDACTED] and [REDACTED]");
+    }
+
+    #[tokio::test]
+    async fn create_conversation_does_not_wait_for_start_run_lock() {
+        let workspace = std::env::temp_dir().join(format!("jyowo-create-lock-{}", RunId::new()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace = workspace.canonicalize().unwrap();
+        DesktopProviderSettingsStore::new(workspace.clone())
+            .save_record(&ProviderSettingsRecord {
+                default_config_id: Some("openai-work".to_owned()),
+                configs: vec![ProviderConfigRecord {
+                    api_key: "provider-test-token".to_owned(),
+                    protocol: ModelProtocol::Responses,
+                    base_url: None,
+                    display_name: "OpenAI Work".to_owned(),
+                    id: "openai-work".to_owned(),
+                    model_id: "gpt-5.4-mini".to_owned(),
+                    provider_id: "openai".to_owned(),
+                    model_descriptor: ProviderModelDescriptorRecord {
+                        protocol: ModelProtocol::Responses,
+                        conversation_capability: ConversationModelCapabilityRecord {
+                            input_modalities: vec![ProviderModelModalityRecord::Text],
+                            output_modalities: vec![ProviderModelModalityRecord::Text],
+                            context_window: 128_000,
+                            max_output_tokens: 16_384,
+                            streaming: true,
+                            tool_calling: true,
+                            reasoning: false,
+                            prompt_cache: true,
+                            structured_output: true,
+                        },
+                        context_window: 128_000,
+                        display_name: "GPT-5.4 mini".to_owned(),
+                        lifecycle: ProviderModelLifecycleRecord::Stable,
+                        max_output_tokens: 16_384,
+                        model_id: "gpt-5.4-mini".to_owned(),
+                        provider_id: "openai".to_owned(),
+                    },
+                }],
+            })
+            .unwrap();
+        let state = runtime_state_for_workspace(workspace).await.unwrap();
+        let _start_guard = state.start_run_lock.lock().await;
+
+        let created = tokio::time::timeout(
+            Duration::from_millis(250),
+            create_conversation_with_runtime_state(&state),
+        )
+        .await
+        .expect("creating an empty conversation must not wait for the start-run lock")
+        .expect("conversation should be created");
+
+        assert!(created.conversation.is_empty);
+    }
 }

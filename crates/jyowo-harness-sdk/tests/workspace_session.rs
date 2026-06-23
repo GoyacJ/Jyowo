@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use futures::executor::block_on;
 use harness_contracts::{NoopRedactor, TenantId};
-use harness_model::ApiMode;
+use harness_model::ModelProtocol;
 use jyowo_harness_sdk::{builtin::*, prelude::*, testing::*};
 use serde_json::json;
 
@@ -47,8 +47,8 @@ fn workspace_bound_session_applies_defaults_and_bootstrap() {
                     .with_bootstrap_files(vec![BootstrapFileSpec::required("AGENTS.md")])
                     .with_default_session_options(
                         SessionOptions::default()
-                            .with_model_id("workspace-model")
-                            .with_api_mode(ApiMode::Responses)
+                            .with_model_id("mock-model")
+                            .with_protocol(ModelProtocol::Responses)
                             .with_model_extra(json!({ "from": "workspace" })),
                     ),
             )
@@ -66,8 +66,8 @@ fn workspace_bound_session_applies_defaults_and_bootstrap() {
         session.run_turn("hello").await.unwrap();
 
         let requests = model.requests().await;
-        assert_eq!(requests[0].model_id, "workspace-model");
-        assert_eq!(requests[0].api_mode, ApiMode::Responses);
+        assert_eq!(requests[0].model_id, "mock-model");
+        assert_eq!(requests[0].protocol, ModelProtocol::Responses);
         assert_eq!(requests[0].extra["from"], json!("workspace"));
         assert!(requests[0].extra["relay_logical_call_key"]
             .as_str()
@@ -89,7 +89,7 @@ fn explicit_session_options_override_workspace_defaults() {
             .create_workspace(
                 WorkspaceSpec::new(&root, "Overrides").with_default_session_options(
                     SessionOptions::default()
-                        .with_model_id("workspace-model")
+                        .with_model_id("mock-model")
                         .with_model_extra(json!({ "from": "workspace" })),
                 ),
             )
@@ -100,7 +100,7 @@ fn explicit_session_options_override_workspace_defaults() {
             .create_session(
                 SessionOptions::default()
                     .with_workspace(workspace.id)
-                    .with_model_id("explicit-model")
+                    .with_model_id("mock-model")
                     .with_model_extra(json!({ "from": "explicit" })),
             )
             .await
@@ -108,7 +108,7 @@ fn explicit_session_options_override_workspace_defaults() {
         session.run_turn("hello").await.unwrap();
 
         let requests = model.requests().await;
-        assert_eq!(requests[0].model_id, "explicit-model");
+        assert_eq!(requests[0].model_id, "mock-model");
         assert_eq!(requests[0].extra["from"], json!("explicit"));
         assert!(requests[0].extra["relay_logical_call_key"]
             .as_str()
@@ -164,7 +164,7 @@ fn default_session_options_apply_to_normal_create_session() {
         let harness = test_harness_with_defaults(
             model.clone(),
             SessionOptions::default()
-                .with_model_id("default-session-model")
+                .with_model_id("mock-model")
                 .with_model_extra(json!({ "from": "default" }))
                 .with_system_prompt_addendum("default addendum"),
         )
@@ -177,7 +177,7 @@ fn default_session_options_apply_to_normal_create_session() {
         session.run_turn("hello").await.unwrap();
 
         let requests = model.requests().await;
-        assert_eq!(requests[0].model_id, "default-session-model");
+        assert_eq!(requests[0].model_id, "mock-model");
         assert_eq!(requests[0].extra["from"], json!("default"));
         assert!(requests[0].extra["relay_logical_call_key"]
             .as_str()

@@ -18,7 +18,7 @@ use harness_memory::{
     MemorySummary,
 };
 use harness_model::{
-    AuxModelProvider, AuxOptions, AuxTask, HealthStatus, InferContext, ModelCapabilities,
+    AuxModelProvider, AuxOptions, AuxTask, ConversationModelCapability, HealthStatus, InferContext,
     ModelDescriptor, ModelMetricsSink, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use parking_lot::Mutex as ParkingMutex;
@@ -652,12 +652,14 @@ impl ModelProvider for TestModelProvider {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "test".to_owned(),
             model_id: "test-aux".to_owned(),
             display_name: "Test Aux".to_owned(),
             context_window: 8_192,
             max_output_tokens: 1_024,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
     }

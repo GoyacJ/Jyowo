@@ -21,7 +21,7 @@ fn request() -> ModelRequest {
         max_tokens: Some(64),
         stream: true,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::Messages,
+        protocol: ModelProtocol::Messages,
         extra: Value::Null,
     }
 }
@@ -31,14 +31,15 @@ fn bedrock_provider_metadata_is_stable() {
     let provider = BedrockProvider::from_events(vec![ModelStreamEvent::MessageStop]);
 
     assert_eq!(provider.provider_id(), "bedrock");
-    assert!(provider.supports_tools());
-    assert!(provider.supports_vision());
-    assert!(provider.supports_thinking());
     assert!(provider.supported_models().iter().any(|model| {
         model.provider_id == "bedrock"
             && model.model_id == "anthropic.claude-3-5-sonnet-20241022-v2:0"
-            && model.capabilities.supports_tools
-            && model.capabilities.supports_thinking
+            && model.conversation_capability.tool_calling
+            && model
+                .conversation_capability
+                .input_modalities
+                .contains(&ModelModality::Image)
+            && model.conversation_capability.reasoning
     }));
 }
 
@@ -66,7 +67,7 @@ async fn bedrock_uses_transport_without_aws_environment_in_tests() {
 #[tokio::test]
 async fn bedrock_rejects_non_messages_mode() {
     let mut req = request();
-    req.api_mode = ApiMode::ChatCompletions;
+    req.protocol = ModelProtocol::ChatCompletions;
 
     let error = match BedrockProvider::from_events(vec![ModelStreamEvent::MessageStop])
         .infer(req, InferContext::for_test())

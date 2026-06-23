@@ -19,8 +19,8 @@ use harness_memory::{
     MemorySummary,
 };
 use harness_model::{
-    ApiMode, HealthStatus, InferContext, ModelCapabilities, ModelDescriptor, ModelProvider,
-    ModelRequest, ModelStream, ModelStreamEvent,
+    ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor, ModelProtocol,
+    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_tool::ToolPool;
@@ -52,7 +52,7 @@ async fn engine_calls_memory_lifecycle_at_turn_start() {
         .with_permission_broker(Arc::new(DenyBroker))
         .with_workspace_root(workspace.path())
         .with_model_id("stop")
-        .with_api_mode(ApiMode::Messages)
+        .with_protocol(ModelProtocol::Messages)
         .with_cap_registry(Arc::new(CapabilityRegistry::default()))
         .build()
         .unwrap();
@@ -155,12 +155,14 @@ impl ModelProvider for StopModel {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "test".to_owned(),
             model_id: "stop".to_owned(),
             display_name: "Stop".to_owned(),
             context_window: 8_192,
             max_output_tokens: 1_024,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
     }

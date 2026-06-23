@@ -27,7 +27,7 @@ fn request() -> ModelRequest {
         max_tokens: Some(64),
         stream: true,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::ChatCompletions,
+        protocol: ModelProtocol::ChatCompletions,
         extra: Value::Null,
     }
 }
@@ -37,12 +37,15 @@ fn local_llama_provider_metadata_is_stable() {
     let provider = LocalLlamaProvider::default();
 
     assert_eq!(provider.provider_id(), "local-llama");
-    assert!(provider.supports_tools());
-    assert!(!provider.supports_vision());
     assert!(provider
         .supported_models()
         .iter()
-        .any(|model| model.model_id == "llama3.1"));
+        .any(|model| model.model_id == "llama3.1"
+            && model.conversation_capability.tool_calling
+            && !model
+                .conversation_capability
+                .input_modalities
+                .contains(&ModelModality::Image)));
 }
 
 #[tokio::test]

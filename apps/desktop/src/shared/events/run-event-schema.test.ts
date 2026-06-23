@@ -37,6 +37,7 @@ describe('RunEvent schema', () => {
     const mappings: Array<[RunEventContractType, RunEventType]> = [
       ['run_started', 'run.started'],
       ['run_ended', 'run.ended'],
+      ['user_message_appended', 'user.message.appended'],
       ['assistant_delta_produced', 'assistant.delta'],
       ['assistant_message_completed', 'assistant.completed'],
       ['tool_use_requested', 'tool.requested'],
@@ -46,6 +47,8 @@ describe('RunEvent schema', () => {
       ['tool_use_failed', 'tool.failed'],
       ['permission_requested', 'permission.requested'],
       ['permission_resolved', 'permission.resolved'],
+      ['artifact_created', 'artifact.created'],
+      ['artifact_updated', 'artifact.updated'],
       ['engine_failed', 'engine.failed'],
     ]
 
@@ -73,8 +76,143 @@ describe('RunEvent schema', () => {
       'tool.failed',
       'permission.requested',
       'permission.resolved',
+      'artifact.created',
+      'artifact.updated',
       'engine.failed',
     ])
+  })
+
+  it('accepts artifact lifecycle events without artifact content', () => {
+    const event = runEventSchema.parse({
+      id: 'evt-artifact-created',
+      conversationSequence: 12,
+      runId: 'run-001',
+      sequence: 12,
+      timestamp: '2026-06-17T00:00:00.000Z',
+      type: 'artifact.created',
+      source: 'engine',
+      visibility: 'public',
+      payload: {
+        artifactId: 'artifact-001',
+        status: 'ready',
+      },
+    })
+
+    expect(event.payload).toEqual({
+      artifactId: 'artifact-001',
+      status: 'ready',
+    })
+  })
+
+  it('rejects non-v4 client message ids on user message events', () => {
+    expect(() =>
+      runEventSchema.parse({
+        id: 'evt-user-message',
+        conversationSequence: 12,
+        runId: 'run-001',
+        sequence: 12,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'user.message.appended',
+        source: 'user',
+        visibility: 'public',
+        payload: {
+          body: 'Continue',
+          clientMessageId: '00000000-0000-1000-8000-000000000001',
+          messageId: 'message-001',
+        },
+      }),
+    ).toThrow()
+  })
+
+  it('rejects raw permission command payloads at the renderer boundary', () => {
+    expect(() =>
+      runEventSchema.parse({
+        id: 'evt-permission',
+        conversationSequence: 12,
+        runId: 'run-001',
+        sequence: 12,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'permission.requested',
+        source: 'policy',
+        visibility: 'public',
+        payload: {
+          command: {
+            executable: 'bash',
+            argv: ['-lc', 'echo hello'],
+            cwd: 'workspace',
+          },
+          decisionScope: 'current run',
+          exposure: 'Can run a command.',
+          operation: 'Run command',
+          reason: 'The run requested a command.',
+          requestId: '01HZ0000000000000000000001',
+          severity: 'high',
+          target: 'workspace command',
+          workspaceBoundary: 'workspace://local',
+        },
+      }),
+    ).toThrow()
+  })
+
+  it.each([
+    'AKIAIOSFODNN7EXAMPLE',
+    'AIzaSyD-123456789012345678901234567890123',
+    'Basic dXNlcjpwYXNz',
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature',
+  ])('rejects backend-redactor secret pattern %s', (secret) => {
+    expect(() =>
+      runEventSchema.parse({
+        id: `evt-secret-${secret.slice(0, 4)}`,
+        conversationSequence: 12,
+        runId: 'run-001',
+        sequence: 12,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'engine.failed',
+        source: 'engine',
+        visibility: 'redacted',
+        payload: {
+          message: secret,
+        },
+      }),
+    ).toThrow()
+  })
+
+  it('rejects backend-redactor slack token pattern', () => {
+    const secret = ['xoxb', '123456789012', '123456789012', 'abcdefghijklmnopqrstuvwx'].join('-')
+
+    expect(() =>
+      runEventSchema.parse({
+        id: 'evt-secret-slack',
+        conversationSequence: 12,
+        runId: 'run-001',
+        sequence: 12,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'engine.failed',
+        source: 'engine',
+        visibility: 'redacted',
+        payload: {
+          message: secret,
+        },
+      }),
+    ).toThrow()
+  })
+
+  it('rejects private paths adjacent to punctuation in event payloads', () => {
+    expect(() =>
+      runEventSchema.parse({
+        id: 'evt-private-path',
+        conversationSequence: 12,
+        runId: 'run-001',
+        sequence: 12,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'assistant.delta',
+        source: 'assistant',
+        visibility: 'public',
+        payload: {
+          text: 'error(path=/Users/alice/.ssh/config)',
+        },
+      }),
+    ).toThrow()
   })
 
   it('accepts redacted-safe usage summaries on run ended events', () => {
@@ -103,6 +241,7 @@ describe('RunEvent schema', () => {
   })
 
   it.each([
+    'conversationSequence',
     'runId',
     'sequence',
     'timestamp',
@@ -126,6 +265,29 @@ describe('RunEvent schema', () => {
       runEventsSchema.parse([
         { ...runEventFixtures[0], sequence: 2 },
         { ...runEventFixtures[1], sequence: 1 },
+      ]),
+    ).toThrow()
+  })
+
+  it('rejects duplicate or decreasing conversation sequence values', () => {
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[0],
+        conversationSequence: 0,
+      }),
+    ).toThrow()
+
+    expect(() =>
+      runEventsSchema.parse([
+        { ...runEventFixtures[0], conversationSequence: 2 },
+        { ...runEventFixtures[1], conversationSequence: 2 },
+      ]),
+    ).toThrow()
+
+    expect(() =>
+      runEventsSchema.parse([
+        { ...runEventFixtures[0], conversationSequence: 2 },
+        { ...runEventFixtures[1], conversationSequence: 1 },
       ]),
     ).toThrow()
   })
@@ -173,15 +335,44 @@ describe('RunEvent schema', () => {
     ).toThrow()
   })
 
+  it('rejects free-form tool summaries and errors at the renderer boundary', () => {
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[4],
+        payload: {
+          argumentsSummary: 'read /Users/goya/.ssh/config',
+          toolName: 'read_file',
+          toolUseId: 'tool-001',
+        },
+      }),
+    ).toThrow()
+
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[7],
+        payload: {
+          outputSummary: 'read 4 files',
+          toolUseId: 'tool-001',
+        },
+      }),
+    ).toThrow()
+
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[8],
+        payload: {
+          code: 'execution',
+          message: 'permission denied',
+          toolUseId: 'tool-001',
+        },
+      }),
+    ).toThrow()
+  })
+
   it('parses permission request details needed for human review', () => {
     const event = runEventSchema.parse({
       ...runEventFixtures[9],
       payload: {
-        command: {
-          argv: ['pnpm', 'install'],
-          cwd: 'workspace://local',
-          executable: 'pnpm',
-        },
         decisionScope: 'current run',
         exposure: 'Can modify package metadata and lockfile.',
         operation: 'Install dependencies',
@@ -196,10 +387,6 @@ describe('RunEvent schema', () => {
     expect(event.payload).toMatchObject({
       operation: 'Install dependencies',
       target: 'workspace package manager',
-      command: {
-        executable: 'pnpm',
-        argv: ['pnpm', 'install'],
-      },
     })
   })
 
@@ -254,32 +441,6 @@ describe('RunEvent schema', () => {
         payload: {
           ...(runEventFixtures[9].payload as Record<string, unknown>),
           requestId: ' 01HZ0000000000000000000001 ',
-        },
-      }),
-    ).toThrow()
-
-    expect(() =>
-      runEventSchema.parse({
-        ...runEventFixtures[9],
-        payload: {
-          ...(runEventFixtures[9].payload as Record<string, unknown>),
-          command: {
-            argv: ['env', 'github_token', 'secret-token'],
-            executable: 'env',
-          },
-        },
-      }),
-    ).toThrow()
-
-    expect(() =>
-      runEventSchema.parse({
-        ...runEventFixtures[9],
-        payload: {
-          ...(runEventFixtures[9].payload as Record<string, unknown>),
-          command: {
-            argv: ['env', 'aws_secret_access_key', 'secret-token'],
-            executable: 'env',
-          },
         },
       }),
     ).toThrow()

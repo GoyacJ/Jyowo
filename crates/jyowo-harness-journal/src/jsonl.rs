@@ -476,6 +476,52 @@ impl EventStore for JsonlEventStore {
         Ok(())
     }
 
+    async fn delete_session(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+    ) -> Result<bool, JournalError> {
+        let mut removed = false;
+        for path in self.segment_paths(tenant, session_id)? {
+            match fs::remove_file(path) {
+                Ok(()) => removed = true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(journal_error(error)),
+            }
+        }
+        match fs::remove_file(self.lock_path(tenant, session_id)) {
+            Ok(()) => removed = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(journal_error(error)),
+        }
+        match fs::remove_file(self.snapshot_path(tenant, session_id)) {
+            Ok(()) => removed = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(journal_error(error)),
+        }
+        if self
+            .snapshots
+            .lock()
+            .await
+            .remove(&(tenant, session_id))
+            .is_some()
+        {
+            removed = true;
+        }
+
+        let mut lineage = self.read_lineage(tenant)?;
+        let original_len = lineage.len();
+        lineage.retain(|entry| {
+            entry.parent_session != session_id && entry.child_session != session_id
+        });
+        if lineage.len() != original_len {
+            self.write_lineage(tenant, &lineage)?;
+            removed = true;
+        }
+
+        Ok(removed)
+    }
+
     async fn list_sessions(
         &self,
         tenant: TenantId,

@@ -9,12 +9,18 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as SkillsRouteImport } from './routes/skills'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as MemoryRouteImport } from './routes/memory'
 import { Route as EvalsRouteImport } from './routes/evals'
 import { Route as ArtifactsRouteImport } from './routes/artifacts'
 import { Route as IndexRouteImport } from './routes/index'
 
+const SkillsRoute = SkillsRouteImport.update({
+  id: '/skills',
+  path: '/skills',
+  getParentRoute: () => rootRouteImport,
+} as any).lazy(() => import('./routes/skills.lazy').then((d) => d.Route))
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -47,6 +53,7 @@ export interface FileRoutesByFullPath {
   '/evals': typeof EvalsRoute
   '/memory': typeof MemoryRoute
   '/settings': typeof SettingsRoute
+  '/skills': typeof SkillsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -54,6 +61,7 @@ export interface FileRoutesByTo {
   '/evals': typeof EvalsRoute
   '/memory': typeof MemoryRoute
   '/settings': typeof SettingsRoute
+  '/skills': typeof SkillsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -62,13 +70,21 @@ export interface FileRoutesById {
   '/evals': typeof EvalsRoute
   '/memory': typeof MemoryRoute
   '/settings': typeof SettingsRoute
+  '/skills': typeof SkillsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/artifacts' | '/evals' | '/memory' | '/settings'
+  fullPaths: '/' | '/artifacts' | '/evals' | '/memory' | '/settings' | '/skills'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/artifacts' | '/evals' | '/memory' | '/settings'
-  id: '__root__' | '/' | '/artifacts' | '/evals' | '/memory' | '/settings'
+  to: '/' | '/artifacts' | '/evals' | '/memory' | '/settings' | '/skills'
+  id:
+    | '__root__'
+    | '/'
+    | '/artifacts'
+    | '/evals'
+    | '/memory'
+    | '/settings'
+    | '/skills'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -77,10 +93,18 @@ export interface RootRouteChildren {
   EvalsRoute: typeof EvalsRoute
   MemoryRoute: typeof MemoryRoute
   SettingsRoute: typeof SettingsRoute
+  SkillsRoute: typeof SkillsRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/skills': {
+      id: '/skills'
+      path: '/skills'
+      fullPath: '/skills'
+      preLoaderRoute: typeof SkillsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -125,6 +149,7 @@ const rootRouteChildren: RootRouteChildren = {
   EvalsRoute: EvalsRoute,
   MemoryRoute: MemoryRoute,
   SettingsRoute: SettingsRoute,
+  SkillsRoute: SkillsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

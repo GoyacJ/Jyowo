@@ -23,8 +23,8 @@ use harness_journal::{
     ReplayCursor, SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
 };
 use harness_model::{
-    ContentDelta, HealthStatus, InferContext, ModelCapabilities, ModelDescriptor, ModelProvider,
-    ModelRequest, ModelStream, ModelStreamEvent,
+    ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
+    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest};
 use harness_team::{
@@ -807,12 +807,14 @@ impl ModelProvider for ScriptedModel {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "sdk-test".to_owned(),
             model_id: "base-model".to_owned(),
             display_name: "SDK Test".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_024,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
     }

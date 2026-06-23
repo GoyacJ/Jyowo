@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use harness_contracts::{Decision, Message, MessagePart, MessageRole, PermissionError};
-use harness_model::{ApiMode, AuxExecutor, AuxModelProvider, AuxOptions, AuxTask, ModelRequest};
+use harness_model::{
+    AuxExecutor, AuxModelProvider, AuxOptions, AuxTask, ModelProtocol, ModelRequest,
+};
 use serde_json::json;
 
 use crate::{
@@ -91,7 +93,7 @@ fn advisory_request(request: &PermissionRequest, ctx: &PermissionContext) -> Mod
         max_tokens: Some(8),
         stream: false,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::Responses,
+        protocol: ModelProtocol::Responses,
         extra: serde_json::Value::Null,
     }
 }

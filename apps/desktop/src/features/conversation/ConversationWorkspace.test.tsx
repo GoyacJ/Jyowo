@@ -1,16 +1,26 @@
 import '@testing-library/jest-dom/vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { RunEvent } from '@/shared/events/run-event-schema'
 import { uiStore } from '@/shared/state/ui-store'
-import type { CommandClient, StartRunResponse } from '@/shared/tauri/commands'
+import type {
+  CommandClient,
+  ConversationEventBatchPayload,
+  ModelProviderCatalogResponse,
+  StartRunResponse,
+} from '@/shared/tauri/commands'
 import { createMockCommandClient, createRejectedCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
 
 import { ConversationWorkspace } from './ConversationWorkspace'
+
+type ModelCatalogEntry = ModelProviderCatalogResponse['providers'][number]['models'][number]
+
+const timestamp = '2026-06-17T00:00:00.000Z'
 
 function renderConversationWorkspace(
   commandClient: CommandClient = createMockCommandClient(),
@@ -31,7 +41,72 @@ function renderConversationWorkspace(
     )
   }
 
-  return render(<ConversationWorkspace conversationId={conversationId} />, { wrapper: Wrapper })
+  return render(<ConversationWorkspace conversationId={conversationId} />, {
+    wrapper: Wrapper,
+  })
+}
+
+const openAiModelDescriptor: ModelCatalogEntry = {
+  protocol: 'responses',
+  conversationCapability: {
+    inputModalities: ['text'],
+    outputModalities: ['text'],
+    contextWindow: 128000,
+    maxOutputTokens: 16384,
+    streaming: true,
+    toolCalling: true,
+    reasoning: false,
+    promptCache: false,
+    structuredOutput: true,
+  },
+  contextWindow: 128000,
+  displayName: 'GPT-5.4 mini',
+  lifecycle: { kind: 'stable' },
+  maxOutputTokens: 16384,
+  modelId: 'gpt-5.4-mini',
+  runtimeStatus: { kind: 'runnable' },
+}
+
+function runEvent(
+  event: Omit<RunEvent, 'conversationSequence'> & { conversationSequence?: number },
+): RunEvent {
+  return { conversationSequence: event.sequence, ...event } as RunEvent
+}
+
+function createStreamingClient(events: RunEvent[]) {
+  return createMockCommandClient({
+    conversation: {
+      conversation: {
+        id: 'conversation-001',
+        messages: [],
+        modelConfigId: null,
+        title: 'Streaming conversation',
+        updatedAt: timestamp,
+      },
+    },
+    subscribeConversationEvents: {
+      subscriptionId: 'subscription-001',
+      conversationId: 'conversation-001',
+      replayEvents: events,
+      cursor: events.at(-1)?.id ?? null,
+      gap: false,
+    },
+  })
+}
+
+function flushAnimationFrames(frameCount = 2) {
+  return new Promise<void>((resolve) => {
+    const step = (remaining: number) => {
+      if (remaining <= 0) {
+        resolve()
+        return
+      }
+
+      requestAnimationFrame(() => step(remaining - 1))
+    }
+
+    step(frameCount)
+  })
 }
 
 describe('ConversationWorkspace', () => {
@@ -40,256 +115,185 @@ describe('ConversationWorkspace', () => {
     uiStore.getState().clearActiveRun()
   })
 
-  it('renders the command-backed conversation surface', async () => {
-    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView')
-
+  it('renders the conversation body from timeline blocks', async () => {
     renderConversationWorkspace()
 
     expect(
       await screen.findByRole('heading', { name: 'Build the desktop foundation' }),
     ).toBeInTheDocument()
-    expect(
-      screen.getByPlaceholderText('Ask Jyowo anything about this project...'),
-    ).toBeInTheDocument()
-    expect(screen.queryByText('Plan')).not.toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Work progress' })).toBeInTheDocument()
+    expect(screen.getByText(/runtime conversation is connected/)).toBeInTheDocument()
     expect(screen.getByText('Desktop foundation created')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Run app' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Review request' })).toBeInTheDocument()
-    expect(screen.getByText('Verification notes')).toBeInTheDocument()
-    expect(screen.queryByText('Loading artifact preview.')).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Inspect' }))
-    expect(screen.getByText('Loading artifact preview.')).toBeInTheDocument()
-
-    fireEvent.click(screen.getAllByRole('button', { name: 'Show source message' })[0] as Element)
-    expect(scrollIntoView).toHaveBeenCalled()
-    expect(screen.queryByText(/Tauri command boundary/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Work progress' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show source message' })).not.toBeInTheDocument()
   })
 
-  it('shows loading, empty, and error states for command-backed data', async () => {
+  it('loads artifacts and reference candidates for the selected conversation', async () => {
+    const commandClient = createMockCommandClient()
+    const listArtifacts = vi.fn(commandClient.listArtifacts)
+    const listReferenceCandidates = vi.fn(commandClient.listReferenceCandidates)
+    const trackedClient = {
+      ...commandClient,
+      listArtifacts,
+      listReferenceCandidates,
+    } satisfies CommandClient
+
+    renderConversationWorkspace(trackedClient, 'conversation-001')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Reference project object' }))
+
+    await waitFor(() => {
+      expect(listArtifacts).toHaveBeenCalledWith({ conversationId: 'conversation-001' })
+      expect(listReferenceCandidates).toHaveBeenCalledWith({ conversationId: 'conversation-001' })
+    })
+  })
+
+  it('shows loading, empty, and command error states', async () => {
     const { unmount } = renderConversationWorkspace(createMockCommandClient({ delayMs: 10 }))
 
-    expect(screen.getByText('Loading conversation')).toBeInTheDocument()
+    expect(screen.getByText('Loading conversation...')).toBeInTheDocument()
     expect(
       await screen.findByRole('heading', { name: 'Build the desktop foundation' }),
     ).toBeInTheDocument()
 
     unmount()
 
-    renderConversationWorkspace(
-      createMockCommandClient({
-        conversations: { conversations: [] },
-      }),
-    )
-
+    renderConversationWorkspace(createMockCommandClient({ conversations: { conversations: [] } }))
     expect(await screen.findByText('No conversations yet')).toBeInTheDocument()
 
     unmount()
 
     renderConversationWorkspace(createRejectedCommandClient(new Error('IPC unavailable')))
-
     expect(await screen.findByText('IPC unavailable')).toBeInTheDocument()
   })
 
-  it('renders object-shaped command errors through their message', async () => {
-    renderConversationWorkspace(
-      createRejectedCommandClient({
-        code: 'RUNTIME_OPERATION_FAILED',
-        message: 'conversation read failed',
-      }),
-    )
-
-    expect(await screen.findByText('conversation read failed')).toBeInTheDocument()
-    expect(screen.queryByText('[object Object]')).not.toBeInTheDocument()
-  })
-
-  it('mounts conversation work once on the latest assistant message', async () => {
-    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView')
-
+  it('leaves the model selector empty when no model is selected and no default exists', async () => {
     renderConversationWorkspace(
       createMockCommandClient({
-        artifacts: {
-          artifacts: [
+        conversation: {
+          conversation: {
+            id: 'conversation-001',
+            messages: [
+              {
+                author: 'user',
+                body: 'Start without a selected model',
+                id: 'message-001',
+                timestamp,
+              },
+            ],
+            modelConfigId: null,
+            title: 'No selected model',
+            updatedAt: timestamp,
+          },
+        },
+        providerSettingsList: {
+          defaultConfigId: null,
+          configs: [
             {
-              actionLabel: 'Run app',
-              description: 'Tauri + React + TypeScript with Vite',
-              id: 'artifact-desktop-foundation',
-              kind: 'app',
-              preview:
-                'Tauri command boundary, React renderer shell, and Vite development scripts.',
-              sourceMessageId: 'message-004',
-              sourceRunId: 'run-001',
-              status: 'ready',
-              title: 'Desktop foundation created',
+              protocol: 'responses',
+              displayName: 'OpenAI Work',
+              hasApiKey: true,
+              id: 'openai-work',
+              isDefault: false,
+              modelDescriptor: openAiModelDescriptor,
+              modelId: 'gpt-5.4-mini',
+              providerId: 'openai',
             },
           ],
         },
-        conversation: {
-          conversation: {
-            id: 'conversation-001',
-            messages: [
-              {
-                author: 'user',
-                body: 'Start',
-                id: 'message-001',
-                timestamp: '2026-06-17T00:00:00.000Z',
-              },
-              {
-                author: 'assistant',
-                body: 'First assistant turn',
-                id: 'message-002',
-                timestamp: '2026-06-17T00:00:01.000Z',
-              },
-              {
-                author: 'user',
-                body: 'Continue',
-                id: 'message-003',
-                timestamp: '2026-06-17T00:00:02.000Z',
-              },
-              {
-                author: 'assistant',
-                body: 'Second assistant turn\n\nPrepare shell and add verification tests.',
-                id: 'message-004',
-                timestamp: '2026-06-17T00:00:03.000Z',
-              },
-            ],
-            title: 'Build the desktop foundation',
-            updatedAt: '2026-06-17T00:00:03.000Z',
-          },
-        },
       }),
     )
 
-    expect(await screen.findByText('Second assistant turn')).toBeInTheDocument()
-    expect(screen.queryByText('Plan')).not.toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: 'Run app' })).toHaveLength(1)
+    const modelSelector = (await screen.findByLabelText('Model')) as HTMLSelectElement
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Show source message' })[0] as Element)
-
-    expect(scrollIntoView).toHaveBeenCalled()
-    expect(document.activeElement).toHaveAttribute('id', 'conversation-message-message-004')
+    expect(modelSelector.value).toBe('')
   })
 
-  it('renders an inline plan parsed from the latest assistant message', async () => {
+  it('renders replayed streaming and final assistant events without route switching', async () => {
     renderConversationWorkspace(
-      createMockCommandClient({
-        conversation: {
-          conversation: {
-            id: 'conversation-001',
-            messages: [
-              {
-                author: 'user',
-                body: 'Build it',
-                id: 'message-001',
-                timestamp: '2026-06-17T00:00:00.000Z',
-              },
-              {
-                author: 'assistant',
-                body: [
-                  'Plan:',
-                  '- [x] Create the Tauri shell',
-                  '- [ ] Wire the conversation canvas',
-                  '- [ ] Add verification coverage',
-                ].join('\n'),
-                id: 'message-002',
-                timestamp: '2026-06-17T00:00:01.000Z',
-              },
-            ],
-            title: 'Build the desktop foundation',
-            updatedAt: '2026-06-17T00:00:01.000Z',
-          },
-        },
-      }),
+      createStreamingClient([
+        runEvent({
+          id: 'evt-run',
+          payload: { sessionId: 'conversation-001' },
+          runId: 'run-001',
+          sequence: 1,
+          source: 'engine',
+          timestamp,
+          type: 'run.started',
+          visibility: 'public',
+        }),
+        runEvent({
+          id: 'evt-delta',
+          payload: { text: 'Draft answer' },
+          runId: 'run-001',
+          sequence: 2,
+          source: 'assistant',
+          timestamp,
+          type: 'assistant.delta',
+          visibility: 'public',
+        }),
+        runEvent({
+          id: 'evt-completed',
+          payload: { messageId: 'message-002', body: 'Final answer' },
+          runId: 'run-001',
+          sequence: 3,
+          source: 'assistant',
+          timestamp,
+          type: 'assistant.completed',
+          visibility: 'public',
+        }),
+      ]),
     )
 
-    const planBlock = await screen.findByRole('region', { name: 'Plan' })
-
-    expect(within(planBlock).getByText('Plan')).toBeInTheDocument()
-    expect(within(planBlock).getByText('Create the Tauri shell')).toBeInTheDocument()
-    expect(within(planBlock).getByText('Wire the conversation canvas')).toBeInTheDocument()
-    expect(within(planBlock).getByText('Add verification coverage')).toBeInTheDocument()
-    expect(within(planBlock).getByText('1 / 3 completed')).toBeInTheDocument()
-    expect(screen.queryByText('Plan:')).not.toBeInTheDocument()
-    expect(screen.getAllByText('Create the Tauri shell')).toHaveLength(1)
+    expect(
+      await screen.findByRole('heading', { name: 'Streaming conversation' }),
+    ).toBeInTheDocument()
+    expect(await screen.findByText('Final answer')).toBeInTheDocument()
+    expect(screen.queryByText('Draft answer')).not.toBeInTheDocument()
   })
 
-  it('does not treat ordinary assistant lists as inline plans', async () => {
-    renderConversationWorkspace(
-      createMockCommandClient({
-        conversation: {
-          conversation: {
-            id: 'conversation-001',
-            messages: [
-              {
-                author: 'user',
-                body: 'What changed?',
-                id: 'message-001',
-                timestamp: '2026-06-17T00:00:00.000Z',
-              },
-              {
-                author: 'assistant',
-                body: ['Here is the summary:', '1. Read the docs', '2. Run the checks'].join('\n'),
-                id: 'message-002',
-                timestamp: '2026-06-17T00:00:01.000Z',
-              },
-            ],
-            title: 'Build the desktop foundation',
-            updatedAt: '2026-06-17T00:00:01.000Z',
-          },
+  it('renders permission requests as inline timeline blocks and sends decisions through commands', async () => {
+    const commandClient = createStreamingClient([
+      runEvent({
+        id: 'evt-permission',
+        payload: {
+          requestId: '01HZ0000000000000000000001',
+          operation: 'Install dependencies',
+          reason: 'The run requested package installation.',
+          target: 'workspace package manager',
+          severity: 'high',
+          decisionScope: 'current run',
+          exposure: 'Can modify package metadata and lockfile.',
+          workspaceBoundary: 'workspace://local',
         },
+        runId: 'run-001',
+        sequence: 1,
+        source: 'policy',
+        timestamp,
+        type: 'permission.requested',
+        visibility: 'public',
+      }),
+    ])
+    const resolvePermission = vi.fn(commandClient.resolvePermission)
+    const trackedClient = {
+      ...commandClient,
+      resolvePermission,
+    } satisfies CommandClient
+
+    renderConversationWorkspace(trackedClient)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
+
+    await waitFor(() =>
+      expect(resolvePermission).toHaveBeenCalledWith({
+        conversationId: 'conversation-001',
+        requestId: '01HZ0000000000000000000001',
+        decision: 'approve',
       }),
     )
-
-    expect(await screen.findByText('Here is the summary:')).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: 'Plan' })).not.toBeInTheDocument()
-    expect(screen.getByText('Read the docs')).toBeInTheDocument()
-    expect(screen.getByText('Run the checks')).toBeInTheDocument()
   })
 
-  it('keeps an older assistant plan visible after a newer assistant reply', async () => {
-    renderConversationWorkspace(
-      createMockCommandClient({
-        conversation: {
-          conversation: {
-            id: 'conversation-001',
-            messages: [
-              {
-                author: 'user',
-                body: 'Build it',
-                id: 'message-001',
-                timestamp: '2026-06-17T00:00:00.000Z',
-              },
-              {
-                author: 'assistant',
-                body: ['Plan:', '1. Create the Tauri shell', '2. Add verification coverage'].join(
-                  '\n',
-                ),
-                id: 'message-002',
-                timestamp: '2026-06-17T00:00:01.000Z',
-              },
-              {
-                author: 'assistant',
-                body: 'The first step is complete.',
-                id: 'message-003',
-                timestamp: '2026-06-17T00:00:02.000Z',
-              },
-            ],
-            title: 'Build the desktop foundation',
-            updatedAt: '2026-06-17T00:00:02.000Z',
-          },
-        },
-      }),
-    )
-
-    expect(await screen.findByText('Plan:')).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: 'Plan' })).not.toBeInTheDocument()
-    expect(screen.getByText('Create the Tauri shell')).toBeInTheDocument()
-    expect(screen.getByText('Add verification coverage')).toBeInTheDocument()
-    expect(screen.getByText('The first step is complete.')).toBeInTheDocument()
-  })
-
-  it('submits one review continue action while the first request is pending', async () => {
+  it('submits an optimistic user block and passes clientMessageId into startRun', async () => {
     const commandClient = createMockCommandClient()
     const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
     let resolveStartRun: ((response: StartRunResponse) => void) | undefined
@@ -305,31 +309,45 @@ describe('ConversationWorkspace', () => {
 
     renderConversationWorkspace(trackedClient)
 
-    const continueButton = await screen.findByRole('button', { name: 'Continue' })
-    fireEvent.click(continueButton)
-    fireEvent.click(continueButton)
+    fireEvent.change(
+      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
+      {
+        target: { value: 'Continue the Tauri setup' },
+      },
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
+    expect(await screen.findByText('Continue the Tauri setup')).toBeInTheDocument()
     await waitFor(() => {
       expect(startRunCalls).toEqual([
-        {
+        expect.objectContaining({
+          attachments: [],
           conversationId: 'conversation-001',
-          prompt: 'Continue',
-        },
+          contextReferences: [],
+          prompt: 'Continue the Tauri setup',
+          clientMessageId: expect.any(String),
+        }),
       ])
     })
 
     resolveStartRun?.({ runId: 'run-001', status: 'started' })
   })
 
-  it('submits composer text through start_run without putting it in the query cache', async () => {
+  it('keeps same-body submits distinct through separate clientMessageIds', async () => {
     const commandClient = createMockCommandClient()
-    let listConversationsCallCount = 0
     const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
+    let listener: ((batch: ConversationEventBatchPayload) => void) | undefined
+    let subscriptionId: string | undefined
     const trackedClient = {
       ...commandClient,
-      listConversations: async () => {
-        listConversationsCallCount += 1
-        return commandClient.listConversations()
+      listenConversationEventBatches: async (callback) => {
+        listener = callback
+        return () => undefined
+      },
+      subscribeConversationEvents: async (request) => {
+        const subscription = await commandClient.subscribeConversationEvents(request)
+        subscriptionId = subscription.subscriptionId
+        return subscription
       },
       startRun: async (request: Parameters<CommandClient['startRun']>[0]) => {
         startRunCalls.push(request)
@@ -342,44 +360,221 @@ describe('ConversationWorkspace', () => {
     fireEvent.change(
       await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
       {
-        target: { value: 'Continue the Tauri setup' },
+        target: { value: 'Repeat this' },
+      },
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(startRunCalls).toHaveLength(1))
+    listener?.({
+      subscriptionId: subscriptionId ?? 'subscription-mock',
+      conversationId: 'conversation-001',
+      events: [
+        runEvent({
+          id: 'evt-first-ended',
+          payload: { reason: 'completed' },
+          runId: 'run-001',
+          sequence: 1,
+          source: 'engine',
+          timestamp,
+          type: 'run.ended',
+          visibility: 'public',
+        }),
+      ],
+      cursor: 'evt-first-ended',
+      gap: false,
+      phase: 'live',
+    })
+    await waitFor(() => {
+      expect(
+        screen.getByPlaceholderText('Ask Jyowo anything about this project...'),
+      ).not.toBeDisabled()
+    })
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+      target: { value: 'Repeat this' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(startRunCalls).toHaveLength(2))
+
+    expect(startRunCalls[0].clientMessageId).toEqual(expect.any(String))
+    expect(startRunCalls[1].clientMessageId).toEqual(expect.any(String))
+    expect(startRunCalls[0].clientMessageId).not.toBe(startRunCalls[1].clientMessageId)
+    expect(screen.getAllByText('Repeat this').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('clears active run state when the timeline observes run end', async () => {
+    const commandClient = createMockCommandClient()
+    let listener: ((batch: ConversationEventBatchPayload) => void) | undefined
+    let subscriptionId: string | undefined
+    const trackedClient = {
+      ...commandClient,
+      listenConversationEventBatches: async (callback) => {
+        listener = callback
+        return () => undefined
+      },
+      subscribeConversationEvents: async (request) => {
+        const subscription = await commandClient.subscribeConversationEvents(request)
+        subscriptionId = subscription.subscriptionId
+        return subscription
+      },
+    } satisfies CommandClient
+
+    renderConversationWorkspace(trackedClient, 'conversation-001')
+
+    fireEvent.change(
+      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
+      {
+        target: { value: 'Finish the run' },
       },
     )
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
-    expect(screen.getByText('Continue the Tauri setup')).toBeInTheDocument()
     await waitFor(() => {
-      expect(startRunCalls).toEqual([
-        {
-          conversationId: 'conversation-001',
-          prompt: 'Continue the Tauri setup',
-        },
-      ])
-      expect(uiStore.getState().activeRunConversationId).toBe('conversation-001')
       expect(uiStore.getState().activeRunId).toBe('run-001')
-      expect(listConversationsCallCount).toBeGreaterThanOrEqual(2)
+    })
+
+    listener?.({
+      subscriptionId: subscriptionId ?? 'subscription-mock',
+      conversationId: 'conversation-001',
+      events: [
+        runEvent({
+          id: 'evt-started',
+          payload: { sessionId: 'conversation-001' },
+          runId: 'run-001',
+          sequence: 1,
+          source: 'engine',
+          timestamp,
+          type: 'run.started',
+          visibility: 'public',
+        }),
+      ],
+      cursor: 'evt-started',
+      gap: false,
+      phase: 'live',
+    })
+
+    await act(async () => {
+      await flushAnimationFrames()
+    })
+
+    listener?.({
+      subscriptionId: subscriptionId ?? 'subscription-mock',
+      conversationId: 'conversation-001',
+      events: [
+        runEvent({
+          id: 'evt-ended',
+          payload: { reason: 'completed' },
+          runId: 'run-001',
+          sequence: 2,
+          source: 'engine',
+          timestamp,
+          type: 'run.ended',
+          visibility: 'public',
+        }),
+      ],
+      cursor: 'evt-ended',
+      gap: false,
+      phase: 'live',
+    })
+
+    await act(async () => {
+      await flushAnimationFrames()
+    })
+
+    await waitFor(() => {
+      expect(uiStore.getState().activeRunId).toBeUndefined()
+      expect(uiStore.getState().activeRunsByConversation).toEqual({})
     })
   })
 
-  it('loads the selected conversation id from props', async () => {
+  it('clears only the ended conversation run when multiple conversations are active', async () => {
     const commandClient = createMockCommandClient()
-    const getConversationCalls: string[] = []
+    let listener: ((batch: ConversationEventBatchPayload) => void) | undefined
+    let subscriptionId: string | undefined
     const trackedClient = {
       ...commandClient,
-      getConversation: async (conversationId: string) => {
-        getConversationCalls.push(conversationId)
-        return commandClient.getConversation(conversationId)
+      listenConversationEventBatches: async (callback) => {
+        listener = callback
+        return () => undefined
+      },
+      subscribeConversationEvents: async (request) => {
+        const subscription = await commandClient.subscribeConversationEvents(request)
+        subscriptionId = subscription.subscriptionId
+        return subscription
       },
     } satisfies CommandClient
 
-    renderConversationWorkspace(trackedClient, 'conversation-002')
+    act(() => {
+      uiStore.getState().setActiveRun({
+        conversationId: 'conversation-001',
+        runId: 'run-001',
+      })
+      uiStore.getState().setActiveRun({
+        conversationId: 'conversation-002',
+        runId: 'run-002',
+      })
+    })
 
-    await screen.findByRole('heading', { name: 'Build the desktop foundation' })
+    renderConversationWorkspace(trackedClient, 'conversation-001')
 
-    expect(getConversationCalls).toEqual(['conversation-002'])
+    await waitFor(() => {
+      expect(listener).toBeDefined()
+    })
+
+    await act(async () => {
+      listener?.({
+        subscriptionId: subscriptionId ?? 'subscription-mock',
+        conversationId: 'conversation-001',
+        events: [
+          runEvent({
+            id: 'evt-started',
+            payload: { sessionId: 'conversation-001' },
+            runId: 'run-001',
+            sequence: 1,
+            source: 'engine',
+            timestamp,
+            type: 'run.started',
+            visibility: 'public',
+          }),
+        ],
+        cursor: 'evt-started',
+        gap: false,
+        phase: 'live',
+      })
+      await flushAnimationFrames()
+    })
+
+    await act(async () => {
+      listener?.({
+        subscriptionId: subscriptionId ?? 'subscription-mock',
+        conversationId: 'conversation-001',
+        events: [
+          runEvent({
+            id: 'evt-ended',
+            payload: { reason: 'completed' },
+            runId: 'run-001',
+            sequence: 2,
+            source: 'engine',
+            timestamp,
+            type: 'run.ended',
+            visibility: 'public',
+          }),
+        ],
+        cursor: 'evt-ended',
+        gap: false,
+        phase: 'live',
+      })
+      await flushAnimationFrames()
+    })
+
+    await waitFor(() => {
+      expect(uiStore.getState().activeRunsByConversation).toEqual({
+        'conversation-002': 'run-002',
+      })
+    })
   })
 
-  it('keeps the loaded conversation visible when start_run fails', async () => {
+  it('keeps the loaded conversation visible and recoverable when startRun fails', async () => {
     const commandClient = createMockCommandClient()
     const failingClient = {
       ...commandClient,
@@ -399,96 +594,223 @@ describe('ConversationWorkspace', () => {
     expect(
       screen.getByRole('heading', { name: 'Build the desktop foundation' }),
     ).toBeInTheDocument()
-    expect(screen.getByText('Continue the Tauri setup')).toBeInTheDocument()
-    expect(await screen.findByText('Runtime unavailable')).toBeInTheDocument()
+    expect(await screen.findAllByText('Runtime unavailable')).not.toHaveLength(0)
+    expect(screen.getByDisplayValue('Continue the Tauri setup')).toBeInTheDocument()
     expect(screen.queryByText('Conversation unavailable')).not.toBeInTheDocument()
   })
 
-  it('allows repeated user messages with identical text', async () => {
-    const commandClient = createMockCommandClient()
-    renderConversationWorkspace(commandClient)
-
-    fireEvent.change(
-      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
-      {
-        target: { value: 'Continue the Tauri setup' },
+  it('ignores stale live event batches after subscribing to the selected conversation', async () => {
+    let listener: ((batch: ConversationEventBatchPayload) => void) | undefined
+    const commandClient = createMockCommandClient({
+      conversation: {
+        conversation: {
+          id: 'conversation-001',
+          messages: [],
+          modelConfigId: null,
+          title: 'Live conversation',
+          updatedAt: timestamp,
+        },
       },
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
-      target: { value: 'Continue the Tauri setup' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
-
-    expect(screen.getAllByText('Continue the Tauri setup')).toHaveLength(2)
-  })
-
-  it('merges an optimistic message when the refreshed conversation contains it', async () => {
-    const commandClient = createMockCommandClient()
-    let includePersistedMessage = false
-    let getConversationCallCount = 0
     const trackedClient = {
       ...commandClient,
-      getConversation: async () => {
-        getConversationCallCount += 1
-        return {
-          conversation: {
-            id: 'conversation-001',
-            messages: includePersistedMessage
-              ? [
-                  {
-                    author: 'user',
-                    body: 'Persist this turn',
-                    id: 'message-persisted-user',
-                    timestamp: '2026-06-17T00:00:00.000Z',
-                  },
-                ]
-              : [],
-            title: 'Build the desktop foundation',
-            updatedAt: includePersistedMessage
-              ? '2026-06-17T00:00:01.000Z'
-              : '2026-06-17T00:00:00.000Z',
-          },
-        }
+      listenConversationEventBatches: async (callback) => {
+        listener = callback
+        return () => undefined
       },
-      startRun: async (request: Parameters<CommandClient['startRun']>[0]) => {
-        includePersistedMessage = true
-        return commandClient.startRun(request)
-      },
+      subscribeConversationEvents: async () => ({
+        subscriptionId: 'subscription-001',
+        conversationId: 'conversation-001',
+        replayEvents: [],
+        cursor: null,
+        gap: false,
+      }),
     } satisfies CommandClient
 
     renderConversationWorkspace(trackedClient)
 
-    fireEvent.change(
-      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
-      {
-        target: { value: 'Persist this turn' },
-      },
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(await screen.findByRole('heading', { name: 'Live conversation' })).toBeInTheDocument()
+    listener?.({
+      subscriptionId: 'subscription-old',
+      conversationId: 'conversation-001',
+      events: [
+        runEvent({
+          id: 'evt-stale',
+          payload: { text: 'stale text' },
+          runId: 'run-001',
+          sequence: 1,
+          source: 'assistant',
+          timestamp,
+          type: 'assistant.delta',
+          visibility: 'public',
+        }),
+      ],
+      cursor: 'evt-stale',
+      gap: false,
+      phase: 'live',
+    })
 
-    await waitFor(() => {
-      expect(getConversationCallCount).toBeGreaterThanOrEqual(2)
-      expect(screen.getAllByText('Persist this turn')).toHaveLength(1)
+    expect(screen.queryByText('stale text')).not.toBeInTheDocument()
+  })
+
+  it('does not reuse the previous conversation cursor when switching conversations', async () => {
+    const subscribeConversationEvents = vi.fn(
+      async ({ conversationId }: { conversationId: string }) => ({
+        subscriptionId: `subscription-${conversationId}`,
+        conversationId,
+        replayEvents:
+          conversationId === 'conversation-001'
+            ? [
+                runEvent({
+                  id: 'evt-old-cursor',
+                  payload: { text: 'Old live text' },
+                  runId: 'run-001',
+                  sequence: 1,
+                  source: 'assistant',
+                  timestamp,
+                  type: 'assistant.delta',
+                  visibility: 'public',
+                }),
+              ]
+            : [],
+        cursor: conversationId === 'conversation-001' ? 'evt-old-cursor' : null,
+        gap: false,
+      }),
+    )
+    const commandClient = {
+      ...createMockCommandClient(),
+      listConversations: async () => ({
+        conversations: [
+          {
+            id: 'conversation-001',
+            isEmpty: false,
+            lastMessagePreview: 'Old',
+            title: 'Old conversation',
+            updatedAt: timestamp,
+          },
+          {
+            id: 'conversation-002',
+            isEmpty: false,
+            lastMessagePreview: 'New',
+            title: 'New conversation',
+            updatedAt: timestamp,
+          },
+        ],
+      }),
+      getConversation: async (conversationId: string) => ({
+        conversation: {
+          id: conversationId,
+          messages: [],
+          modelConfigId: null,
+          title: conversationId === 'conversation-001' ? 'Old conversation' : 'New conversation',
+          updatedAt: timestamp,
+        },
+      }),
+      subscribeConversationEvents,
+    } satisfies CommandClient
+
+    const rendered = renderConversationWorkspace(commandClient, 'conversation-001')
+
+    expect(await screen.findByRole('heading', { name: 'Old conversation' })).toBeInTheDocument()
+    await waitFor(() =>
+      expect(subscribeConversationEvents).toHaveBeenCalledWith({
+        conversationId: 'conversation-001',
+      }),
+    )
+
+    rendered.rerender(<ConversationWorkspace conversationId="conversation-002" />)
+
+    expect(await screen.findByRole('heading', { name: 'New conversation' })).toBeInTheDocument()
+    expect(screen.queryByText('Old live text')).not.toBeInTheDocument()
+    await waitFor(() =>
+      expect(subscribeConversationEvents).toHaveBeenCalledWith({
+        conversationId: 'conversation-002',
+      }),
+    )
+    expect(subscribeConversationEvents).not.toHaveBeenCalledWith({
+      conversationId: 'conversation-002',
+      afterCursor: 'evt-old-cursor',
     })
   })
 
-  it('shows the ask, work, review, and continue path after submit', async () => {
-    renderConversationWorkspace()
+  it('resubscribes from the beginning when the event stream detects a sequence gap', async () => {
+    let listener: ((batch: ConversationEventBatchPayload) => void) | undefined
+    const subscribeConversationEvents = vi
+      .fn()
+      .mockResolvedValueOnce({
+        subscriptionId: 'subscription-001',
+        conversationId: 'conversation-001',
+        replayEvents: [
+          runEvent({
+            id: 'evt-run',
+            payload: { sessionId: 'conversation-001' },
+            runId: 'run-001',
+            sequence: 1,
+            source: 'engine',
+            timestamp,
+            type: 'run.started',
+            visibility: 'public',
+          }),
+        ],
+        cursor: 'evt-run',
+        gap: false,
+      })
+      .mockResolvedValue({
+        subscriptionId: 'subscription-002',
+        conversationId: 'conversation-001',
+        replayEvents: [],
+        cursor: null,
+        gap: false,
+      })
+    const commandClient = {
+      ...createMockCommandClient({
+        conversation: {
+          conversation: {
+            id: 'conversation-001',
+            messages: [],
+            modelConfigId: null,
+            title: 'Gap recovery',
+            updatedAt: timestamp,
+          },
+        },
+      }),
+      listenConversationEventBatches: vi.fn(async (callback) => {
+        listener = callback
+        return vi.fn()
+      }),
+      subscribeConversationEvents,
+    } satisfies CommandClient
 
-    fireEvent.change(
-      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
-      {
-        target: { value: 'Build the local app foundation' },
-      },
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    renderConversationWorkspace(commandClient, 'conversation-001')
 
-    expect(screen.getByText('Build the local app foundation')).toBeInTheDocument()
-    expect(screen.queryByText('Plan')).not.toBeInTheDocument()
-    expect(screen.getByText('Working: run')).toBeInTheDocument()
-    expect(screen.getByText('Desktop foundation created')).toBeInTheDocument()
-    expect(screen.getByText('Review generated foundation')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Gap recovery' })).toBeInTheDocument()
+    await waitFor(() => expect(subscribeConversationEvents).toHaveBeenCalledTimes(1))
+
+    listener?.({
+      subscriptionId: 'subscription-001',
+      conversationId: 'conversation-001',
+      events: [
+        runEvent({
+          conversationSequence: 3,
+          id: 'evt-gap-delta',
+          payload: { text: 'untrusted future delta' },
+          runId: 'run-001',
+          sequence: 3,
+          source: 'assistant',
+          timestamp,
+          type: 'assistant.delta',
+          visibility: 'public',
+        }),
+      ],
+      cursor: 'evt-gap-delta',
+      gap: false,
+      phase: 'live',
+    })
+
+    await waitFor(() => expect(subscribeConversationEvents).toHaveBeenCalledTimes(2))
+    expect(subscribeConversationEvents).toHaveBeenLastCalledWith({
+      conversationId: 'conversation-001',
+    })
+    expect(screen.queryByText('untrusted future delta')).not.toBeInTheDocument()
   })
 })

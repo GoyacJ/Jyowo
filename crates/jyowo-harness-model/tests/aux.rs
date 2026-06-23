@@ -8,9 +8,9 @@ use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{Message, MessagePart, MessageRole, ModelError};
 use harness_model::{
-    ApiMode, AuxExecutor, AuxModelProvider, AuxOptions, AuxTask, BasicAuxProvider, ContentDelta,
-    InferContext, ModelCapabilities, ModelDescriptor, ModelMetricsSink, ModelProvider,
-    ModelRequest, ModelStream, ModelStreamEvent,
+    AuxExecutor, AuxModelProvider, AuxOptions, AuxTask, BasicAuxProvider, ContentDelta,
+    ConversationModelCapability, InferContext, ModelDescriptor, ModelMetricsSink, ModelProtocol,
+    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use parking_lot::Mutex as ParkingMutex;
 use tokio::sync::Mutex;
@@ -261,19 +261,21 @@ fn request(text: &str) -> ModelRequest {
         max_tokens: None,
         stream: false,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::Responses,
+        protocol: ModelProtocol::Responses,
         extra: serde_json::Value::Null,
     }
 }
 
 fn descriptor() -> ModelDescriptor {
     ModelDescriptor {
+        protocol: harness_model::ModelProtocol::Messages,
+        lifecycle: harness_model::ModelLifecycle::Stable,
         provider_id: "test".to_owned(),
         model_id: "test".to_owned(),
         display_name: "Test".to_owned(),
         context_window: 1_000,
         max_output_tokens: 100,
-        capabilities: ModelCapabilities::default(),
+        conversation_capability: ConversationModelCapability::default(),
         pricing: None,
     }
 }

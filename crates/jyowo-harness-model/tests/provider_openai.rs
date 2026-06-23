@@ -31,7 +31,7 @@ fn message(role: MessageRole, parts: Vec<MessagePart>) -> Message {
 
 fn request(stream: bool) -> ModelRequest {
     ModelRequest {
-        model_id: "gpt-4o-mini".to_owned(),
+        model_id: "gpt-5.4-mini".to_owned(),
         messages: vec![message(
             MessageRole::User,
             vec![MessagePart::Text("hello".to_owned())],
@@ -42,7 +42,7 @@ fn request(stream: bool) -> ModelRequest {
         max_tokens: Some(128),
         stream,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::ChatCompletions,
+        protocol: ModelProtocol::ChatCompletions,
         extra: Value::Null,
     }
 }
@@ -85,7 +85,9 @@ fn tool_descriptor() -> ToolDescriptor {
 }
 
 fn provider(server: &MockServer) -> OpenAiProvider {
-    OpenAiProvider::from_api_key("test-key").with_base_url(server.uri())
+    OpenAiProvider::from_api_key("test-key")
+        .with_chat_completions_api()
+        .with_base_url(server.uri())
 }
 
 fn openai_tool_argument_frame(fragment: &str, include_identity: bool) -> String {
@@ -156,13 +158,13 @@ fn openai_provider_metadata_is_stable() {
         provider.prompt_cache_style(),
         PromptCacheStyle::OpenAi { auto: true }
     );
-    assert!(provider.supports_tools());
-    assert!(provider.supports_vision());
-    assert!(!provider.supports_thinking());
     assert!(provider
         .supported_models()
         .iter()
-        .any(|model| model.model_id == "gpt-4o-mini"));
+        .any(|model| model.model_id == "gpt-5.4-mini"
+            && model.conversation_capability.tool_calling
+            && !model.conversation_capability.reasoning));
+    assert_eq!(provider.default_protocol(), ModelProtocol::Responses);
 }
 
 #[tokio::test]
@@ -235,7 +237,7 @@ async fn openai_non_stream_request_posts_chat_completions_and_maps_events() {
 
     let requests = server.received_requests().await.unwrap();
     let body: Value = requests[0].body_json().unwrap();
-    assert_eq!(body["model"], "gpt-4o-mini");
+    assert_eq!(body["model"], "gpt-5.4-mini");
     assert_eq!(body["stream"], false);
     assert_eq!(body["max_tokens"], 128);
     assert!((body["temperature"].as_f64().unwrap() - 0.2).abs() < 0.0001);
@@ -476,8 +478,7 @@ async fn openai_retries_rate_limit_and_transient_errors_but_not_auth() {
 async fn openai_rejects_unsupported_request_shapes() {
     let provider = OpenAiProvider::from_api_key("test-key");
 
-    let mut unsupported_mode = request(false);
-    unsupported_mode.api_mode = ApiMode::Responses;
+    let unsupported_mode = request(false);
     assert!(matches!(
         provider
             .infer(unsupported_mode, InferContext::for_test())
@@ -488,6 +489,7 @@ async fn openai_rejects_unsupported_request_shapes() {
     ));
 
     let mut cache = request(false);
+    cache.protocol = ModelProtocol::Responses;
     cache.cache_breakpoints.push(CacheBreakpoint {
         after_message_id: cache.messages[0].id,
         reason: BreakpointReason::RecentMessage,
@@ -502,6 +504,7 @@ async fn openai_rejects_unsupported_request_shapes() {
     ));
 
     let mut thinking = request(false);
+    thinking.protocol = ModelProtocol::Responses;
     thinking.messages[0].parts = vec![MessagePart::Thinking(harness_contracts::ThinkingBlock {
         text: Some("think".to_owned()),
         provider_id: "openai".to_owned(),

@@ -47,12 +47,12 @@ Required test groups:
 | Tool | registry behavior, orchestration, builtin filesystem/shell IO, result budgets, permission checks |
 | Journal | append/read order, snapshots, migrations, version handling, audit query behavior |
 | Redaction | Redactor before every durable store path |
-| Replay | cursor behavior, redacted output, snapshot reads |
-| Tauri command | command payload identity, shell metadata, SDK availability |
+| Replay | cursor behavior, redacted output, snapshot reads, conversation event ordering |
+| Tauri command | command payload identity, shell metadata, SDK availability, replay-before-live conversation subscription, window-scoped event batches, unsubscribe cleanup |
 | SDK | builder requirements, runtime assembly, mock/testing adapters |
 | Budget | quota serialization and token budget defaults |
 | Search | SQLite FTS5 indexing, query behavior, deleted item removal, visibility filtering |
-| Secret | keyring reference handling, missing secret behavior, no raw Secret serialization |
+| Secret | explicit reveal handling, missing secret behavior, no raw Secret serialization |
 | Migration | forward migration, idempotence, incompatible schema rejection, rollback-safe failure |
 | Property | permission, redaction, budget, event ordering, and migration invariants |
 

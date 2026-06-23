@@ -188,6 +188,35 @@ impl EventStore for InMemoryEventStore {
         Ok(())
     }
 
+    async fn delete_session(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+    ) -> Result<bool, JournalError> {
+        let mut removed = self
+            .events
+            .lock()
+            .await
+            .remove(&(tenant, session_id))
+            .is_some();
+        if self
+            .snapshots
+            .lock()
+            .await
+            .remove(&(tenant, session_id))
+            .is_some()
+        {
+            removed = true;
+        }
+        let mut lineage = self.lineage.lock().await;
+        let original_len = lineage.len();
+        lineage.retain(|(parent, child, _)| *parent != session_id && *child != session_id);
+        if lineage.len() != original_len {
+            removed = true;
+        }
+        Ok(removed)
+    }
+
     async fn list_sessions(
         &self,
         tenant: TenantId,

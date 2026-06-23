@@ -28,7 +28,7 @@ fn request() -> ModelRequest {
         max_tokens: Some(16),
         stream: false,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::ChatCompletions,
+        protocol: ModelProtocol::ChatCompletions,
         extra: serde_json::Value::Null,
     }
 }

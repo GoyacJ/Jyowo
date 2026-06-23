@@ -17,6 +17,50 @@ pub struct TurnInput {
     pub metadata: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConversationContextReference {
+    WorkspaceFile { path: String, label: String },
+    Artifact { id: String, label: String },
+    Conversation { id: String, label: String },
+    Memory { id: String, label: String },
+    Skill { id: String, label: String },
+    Tool { id: String, label: String },
+    McpServer { id: String, label: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ConversationAttachmentReference {
+    pub id: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
+    pub blob_ref: BlobRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ConversationTurnInput {
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_message_id: Option<String>,
+    #[serde(default)]
+    pub context_references: Vec<ConversationContextReference>,
+    #[serde(default)]
+    pub attachments: Vec<ConversationAttachmentReference>,
+}
+
+impl ConversationTurnInput {
+    #[must_use]
+    pub fn ask(prompt: impl Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            client_message_id: None,
+            context_references: Vec::new(),
+            attachments: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Message {
     pub id: MessageId,
@@ -49,6 +93,14 @@ pub enum MessageContent {
 pub enum MessagePart {
     Text(String),
     Image {
+        mime_type: String,
+        blob_ref: BlobRef,
+    },
+    Video {
+        mime_type: String,
+        blob_ref: BlobRef,
+    },
+    File {
         mime_type: String,
         blob_ref: BlobRef,
     },

@@ -112,7 +112,7 @@ fn harness_builder_accepts_full_facade_dependencies_and_overrides() {
             .with_model_id("first-model")
             .with_model_arc(first_model_provider)
             .with_model_arc(second_model_provider)
-            .with_model_id("second-model")
+            .with_model_id("mock-model")
             .with_store_arc(first_store)
             .with_store_arc(second_store)
             .with_sandbox_arc(first_sandbox)
@@ -137,7 +137,7 @@ fn harness_builder_accepts_full_facade_dependencies_and_overrides() {
 
         let harness = builder.build().await.expect("full builder should build");
 
-        assert_eq!(harness.options().model_id, "second-model");
+        assert_eq!(harness.options().model_id, "mock-model");
         assert_eq!(harness.options().tenant_policy.display_name, "second");
         assert_eq!(
             harness

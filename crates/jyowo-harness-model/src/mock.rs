@@ -8,9 +8,9 @@ use secrecy::SecretString;
 use tokio::sync::Mutex;
 
 use crate::{
-    CredentialError, CredentialKey, CredentialMetadata, CredentialSource, CredentialValue,
-    HealthStatus, InferContext, ModelCapabilities, ModelDescriptor, ModelProvider, ModelRequest,
-    ModelStream, ModelStreamEvent,
+    ConversationModelCapability, CredentialError, CredentialKey, CredentialMetadata,
+    CredentialSource, CredentialValue, HealthStatus, InferContext, ModelDescriptor, ModelLifecycle,
+    ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 
 pub struct MockProvider {
@@ -196,9 +196,11 @@ fn mock_descriptor() -> ModelDescriptor {
         provider_id: "mock".to_owned(),
         model_id: "mock-model".to_owned(),
         display_name: "Mock model".to_owned(),
+        protocol: ModelProtocol::Messages,
         context_window: 128_000,
         max_output_tokens: 8192,
-        capabilities: ModelCapabilities::default(),
+        conversation_capability: ConversationModelCapability::default(),
+        lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }
 }

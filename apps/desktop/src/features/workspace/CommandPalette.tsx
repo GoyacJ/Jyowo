@@ -1,11 +1,4 @@
-import {
-  FileSearch,
-  FileText,
-  FlaskConical,
-  MessageSquarePlus,
-  Settings,
-  TerminalSquare,
-} from 'lucide-react'
+import { FileText, FlaskConical, MessageSquarePlus, Settings } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -19,13 +12,7 @@ import {
 } from '@/shared/ui/command-menu'
 import { Dialog, DialogContent, DialogTitle } from '@/shared/ui/dialog'
 
-export type CommandPaletteAction =
-  | 'new-conversation'
-  | 'open-evals'
-  | 'open-artifact'
-  | 'search-files'
-  | 'view-activity'
-  | 'settings'
+export type CommandPaletteAction = 'new-conversation' | 'open-evals' | 'open-artifact' | 'settings'
 
 type CommandPaletteCommand = {
   action: CommandPaletteAction
@@ -41,8 +28,6 @@ const commands: CommandPaletteCommand[] = [
   },
   { action: 'open-artifact', icon: FileText, labelKey: 'commandPalette.openArtifact' },
   { action: 'open-evals', icon: FlaskConical, labelKey: 'commandPalette.openEvals' },
-  { action: 'search-files', icon: FileSearch, labelKey: 'commandPalette.searchFiles' },
-  { action: 'view-activity', icon: TerminalSquare, labelKey: 'commandPalette.viewActivity' },
   { action: 'settings', icon: Settings, labelKey: 'commandPalette.settings' },
 ]
 

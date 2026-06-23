@@ -1,170 +1,1089 @@
-import { KeyRound, Save } from 'lucide-react'
-import { useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { Plus, Save, Star, Wifi } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { type UseFormSetValue, useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
-import { z } from 'zod'
 
-import type { SaveProviderSettingsResponse } from '@/shared/tauri/commands'
+import type {
+  ModelProviderCatalogResponse,
+  ProviderConfig,
+  ProviderSettingsRequest,
+} from '@/shared/tauri/commands'
+import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { useCommandClient } from '@/shared/tauri/react'
+import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/shared/ui/dialog'
+import { Toast } from '@/shared/ui/toast'
 
-const providerIds = [
-  'anthropic',
-  'codex',
-  'deepseek',
-  'doubao',
-  'gemini',
-  'local-llama',
-  'minimax',
-  'openai',
-  'openrouter',
-  'qwen',
-  'zhipu',
-] as const
+type ProviderId = ProviderSettingsRequest['providerId']
+type ProviderCatalogEntry = ModelProviderCatalogResponse['providers'][number]
+type ModelCatalogEntry = ProviderCatalogEntry['models'][number]
 
 type ProviderSettingsFormValues = {
   apiKey: string
+  baseUrl: string
+  configId: string
+  displayName: string
   modelId: string
-  providerId: (typeof providerIds)[number]
+  providerId: ProviderId
 }
+
+type ProviderToast = {
+  description?: string
+  id: number
+  title: string
+  variant: 'destructive' | 'success'
+}
+
+const MINIMAX_BASE_URLS = {
+  china: 'https://api.minimaxi.com',
+  international: 'https://api.minimax.io',
+} as const
+const SAVED_API_KEY_MASK = '\u2022'.repeat(32)
+
+const modelCapabilities = [
+  ['toolCalling', 'provider.capability.tools'],
+  ['vision', 'provider.capability.vision'],
+  ['videoInput', 'provider.capability.videoInput'],
+  ['reasoning', 'provider.capability.thinking'],
+  ['streaming', 'provider.capability.streaming'],
+  ['structuredOutput', 'provider.capability.structuredOutput'],
+  ['promptCache', 'provider.capability.promptCache'],
+] as const
 
 export function ProviderSettingsForm() {
   const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
+  const [catalog, setCatalog] = useState<ModelProviderCatalogResponse['providers']>([])
+  const [profiles, setProfiles] = useState<ProviderConfig[]>([])
   const [formError, setFormError] = useState<string | null>(null)
-  const [savedSettings, setSavedSettings] = useState<SaveProviderSettingsResponse | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [selectedConfigId, setSelectedConfigId] = useState<string | null>(null)
+  const [isSettingDefault, setIsSettingDefault] = useState(false)
+  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
+  const [testLatencies, setTestLatencies] = useState<Record<string, number>>({})
+  const [testingConfigIds, setTestingConfigIds] = useState<Record<string, true>>({})
+  const [toast, setToast] = useState<ProviderToast | null>(null)
   const {
+    clearErrors,
     formState: { errors, isSubmitting },
     handleSubmit,
     register,
+    reset,
     setError,
     setValue,
+    watch,
   } = useForm<ProviderSettingsFormValues>({
     defaultValues: {
       apiKey: '',
+      baseUrl: '',
+      configId: '',
+      displayName: '',
       modelId: '',
       providerId: 'openai',
     },
   })
-  const providerSettingsFormSchema = z
-    .object({
-      apiKey: z.string().trim().min(1, t('provider.errors.apiKeyRequired')),
-      modelId: z.string().trim().min(1, t('provider.errors.modelRequired')),
-      providerId: z.enum(providerIds),
-    })
-    .strict()
+  const {
+    clearErrors: clearEditErrors,
+    formState: { errors: editErrors, isSubmitting: isEditSubmitting },
+    handleSubmit: handleEditSubmit,
+    register: registerEdit,
+    reset: resetEdit,
+    setError: setEditError,
+    setValue: setEditValue,
+    watch: watchEdit,
+  } = useForm<ProviderSettingsFormValues>({
+    defaultValues: {
+      apiKey: '',
+      baseUrl: '',
+      configId: '',
+      displayName: '',
+      modelId: '',
+      providerId: 'openai',
+    },
+  })
 
-  async function submit(values: ProviderSettingsFormValues) {
+  const selectedProviderId = watch('providerId')
+  const editProviderId = watchEdit('providerId')
+  const editApiKey = watchEdit('apiKey')
+  const selectedProfile = useMemo(
+    () => profiles.find((profile) => profile.id === selectedConfigId) ?? null,
+    [profiles, selectedConfigId],
+  )
+  const selectedProvider = useMemo(
+    () => catalog.find((provider) => provider.providerId === selectedProviderId),
+    [catalog, selectedProviderId],
+  )
+  const selectedEditProvider = useMemo(
+    () => catalog.find((provider) => provider.providerId === editProviderId),
+    [catalog, editProviderId],
+  )
+  const selectedProfileProvider = useMemo(
+    () => catalog.find((provider) => provider.providerId === selectedProfile?.providerId),
+    [catalog, selectedProfile],
+  )
+  const selectedProfileServiceCapabilities = selectedProfileProvider?.serviceCapabilities ?? []
+  const selectedProfileModel = useMemo(
+    () =>
+      selectedProfile?.modelDescriptor ??
+      selectedProfileProvider?.models.find((model) => model.modelId === selectedProfile?.modelId),
+    [selectedProfile, selectedProfileProvider],
+  )
+  const selectedRunnableModels = useMemo(
+    () => runnableModels(selectedProvider, profiles),
+    [profiles, selectedProvider],
+  )
+  const selectedEditRunnableModels = useMemo(() => {
+    const models = runnableModels(selectedEditProvider, profiles)
+    if (
+      selectedProfile?.providerId === editProviderId &&
+      selectedProfileModel &&
+      !models.some((model) => model.modelId === selectedProfileModel.modelId)
+    ) {
+      return [...models, selectedProfileModel]
+    }
+    return models
+  }, [editProviderId, profiles, selectedEditProvider, selectedProfile, selectedProfileModel])
+  const selectedTestLatencyMs = selectedConfigId ? testLatencies[selectedConfigId] : undefined
+  const isSelectedProfileTesting = selectedConfigId
+    ? testingConfigIds[selectedConfigId] === true
+    : false
+  const shouldShowSavedApiKeyMask = selectedProfile?.hasApiKey === true && editApiKey.length === 0
+
+  function clearEditApiKey() {
+    setEditValue('apiKey', '')
+  }
+
+  function resetCreateForm(provider: ProviderCatalogEntry | undefined = catalog[0]) {
+    if (provider) {
+      reset(createFormValuesFromProvider(provider))
+    } else {
+      reset({
+        apiKey: '',
+        baseUrl: '',
+        configId: '',
+        displayName: '',
+        modelId: '',
+        providerId: 'openai',
+      })
+    }
+    clearErrors()
     setFormError(null)
-    setSavedSettings(null)
+  }
 
-    const parsed = providerSettingsFormSchema.safeParse(values)
-    if (!parsed.success) {
-      for (const issue of parsed.error.issues) {
-        const field = issue.path[0]
-        if (field === 'apiKey' || field === 'modelId' || field === 'providerId') {
-          setError(field, { message: issue.message, type: 'manual' })
+  function handleCreateDialogOpenChange(open: boolean) {
+    setIsCreateDialogOpen(open)
+    if (open) {
+      resetCreateForm()
+      clearEditApiKey()
+    }
+  }
+
+  function replaceSavedProfile(savedConfig: ProviderConfig) {
+    setProfiles((currentProfiles) => {
+      const nextProfiles = currentProfiles.filter((profile) => profile.id !== savedConfig.id)
+      nextProfiles.push(savedConfig)
+      return nextProfiles
+        .map((profile) =>
+          savedConfig.isDefault
+            ? {
+                ...profile,
+                isDefault: profile.id === savedConfig.id,
+              }
+            : profile,
+        )
+        .sort((left, right) => left.id.localeCompare(right.id))
+    })
+  }
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadProviderSettings() {
+      setIsLoading(true)
+      setLoadError(null)
+
+      try {
+        const [catalogResponse, settingsResponse] = await Promise.all([
+          commandClient.listModelProviderCatalog(),
+          commandClient.listProviderSettings(),
+        ])
+
+        if (cancelled) {
+          return
+        }
+
+        setCatalog(catalogResponse.providers)
+        setProfiles(settingsResponse.configs)
+
+        const defaultProfile =
+          settingsResponse.configs.find(
+            (profile) => profile.id === settingsResponse.defaultConfigId,
+          ) ?? settingsResponse.configs[0]
+
+        if (defaultProfile) {
+          setSelectedConfigId(defaultProfile.id)
+        } else if (catalogResponse.providers[0]) {
+          reset(createFormValuesFromProvider(catalogResponse.providers[0]))
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setLoadError(getCommandErrorMessage(error))
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false)
         }
       }
+    }
+
+    void loadProviderSettings()
+
+    return () => {
+      cancelled = true
+    }
+  }, [commandClient, reset])
+
+  useEffect(() => {
+    if (!selectedProfile) {
+      resetEdit({
+        apiKey: '',
+        baseUrl: '',
+        configId: '',
+        displayName: '',
+        modelId: '',
+        providerId: 'openai',
+      })
       return
     }
 
-    const request = parsed.data
+    resetEdit(createFormValuesFromProfile(selectedProfile))
+    clearEditErrors()
+  }, [
+    selectedProfile?.baseUrl,
+    selectedProfile?.displayName,
+    selectedProfile?.id,
+    selectedProfile?.modelId,
+    selectedProfile?.providerId,
+    selectedProfileProvider,
+  ])
+
+  async function submit(values: ProviderSettingsFormValues) {
+    setFormError(null)
+    clearEditApiKey()
+
+    const provider = catalog.find(
+      (currentProvider) => currentProvider.providerId === values.providerId,
+    )
+    const model = runnableModels(provider, profiles).find(
+      (currentModel) => currentModel.modelId === values.modelId,
+    )
+    const trimmedApiKey = values.apiKey.trim()
+    let hasValidationError = false
+
+    if (!provider) {
+      setError('providerId', {
+        message: t('provider.errors.providerRequired'),
+        type: 'manual',
+      })
+      hasValidationError = true
+    }
+
+    if (!model) {
+      setError('modelId', {
+        message: t('provider.errors.modelRequired'),
+        type: 'manual',
+      })
+      hasValidationError = true
+    }
+
+    if (!trimmedApiKey) {
+      setError('apiKey', {
+        message: t('provider.errors.apiKeyRequired'),
+        type: 'manual',
+      })
+      hasValidationError = true
+    }
+
+    if (hasValidationError || !provider || !model) {
+      return
+    }
+
     setValue('apiKey', '')
+
+    const request: ProviderSettingsRequest = {
+      baseUrl: optionalTrimmed(values.baseUrl),
+      displayName: optionalTrimmed(values.displayName),
+      modelId: model.modelId,
+      providerId: provider.providerId,
+      setDefault: true,
+    }
+
+    if (trimmedApiKey) {
+      request.apiKey = trimmedApiKey
+    }
 
     try {
       const saved = await commandClient.saveProviderSettings(request)
-      setSavedSettings(saved)
-    } catch {
-      setFormError(t('provider.saveError'))
+      replaceSavedProfile(saved.config)
+      setSelectedConfigId(saved.config.id)
+      setIsCreateDialogOpen(false)
+      reset(createFormValuesFromProvider(provider))
+    } catch (error) {
+      setFormError(getCommandErrorMessage(error))
+    }
+  }
+
+  async function saveSelectedProfile(values: ProviderSettingsFormValues) {
+    if (!selectedProfile) {
+      return
+    }
+
+    setFormError(null)
+    clearEditApiKey()
+
+    const providerId = values.providerId || selectedProfile.providerId
+    const modelId = values.modelId || selectedProfile.modelId
+    const provider =
+      catalog.find((currentProvider) => currentProvider.providerId === providerId) ??
+      selectedProfileProvider
+    const models = runnableModels(provider, profiles)
+    const model =
+      models.find((currentModel) => currentModel.modelId === modelId) ??
+      (selectedProfileModel?.modelId === modelId ? selectedProfileModel : undefined)
+    const trimmedApiKey = values.apiKey.trim()
+    let hasValidationError = false
+
+    if (!provider) {
+      setEditError('providerId', {
+        message: t('provider.errors.providerRequired'),
+        type: 'manual',
+      })
+      hasValidationError = true
+    }
+
+    if (!model) {
+      setEditError('modelId', {
+        message: t('provider.errors.modelRequired'),
+        type: 'manual',
+      })
+      hasValidationError = true
+    }
+
+    if (!selectedProfile.hasApiKey && !trimmedApiKey) {
+      setEditError('apiKey', {
+        message: t('provider.errors.apiKeyRequired'),
+        type: 'manual',
+      })
+      hasValidationError = true
+    }
+
+    if (hasValidationError || !provider || !model) {
+      return
+    }
+
+    setEditValue('apiKey', '')
+
+    const request: ProviderSettingsRequest = {
+      configId: selectedProfile.id,
+      baseUrl: optionalTrimmed(values.baseUrl),
+      displayName: optionalTrimmed(values.displayName),
+      modelId: model.modelId,
+      providerId: provider.providerId,
+      setDefault: selectedProfile.isDefault,
+    }
+
+    if (trimmedApiKey) {
+      request.apiKey = trimmedApiKey
+    }
+
+    try {
+      const saved = await commandClient.saveProviderSettings(request)
+      replaceSavedProfile(saved.config)
+      setSelectedConfigId(saved.config.id)
+      resetEdit(createFormValuesFromProfile(saved.config))
+    } catch (error) {
+      setFormError(getCommandErrorMessage(error))
+    }
+  }
+
+  const setProfileTesting = useCallback((configId: string, isTesting: boolean) => {
+    setTestingConfigIds((currentTestingConfigIds) => {
+      if (isTesting) {
+        return {
+          ...currentTestingConfigIds,
+          [configId]: true,
+        }
+      }
+
+      const { [configId]: _removed, ...nextTestingConfigIds } = currentTestingConfigIds
+      return nextTestingConfigIds
+    })
+  }, [])
+
+  const testProviderConfiguration = useCallback(
+    async (profile: ProviderConfig | null, options: { showToast: boolean }) => {
+      if (!profile) {
+        return
+      }
+
+      if (options.showToast) {
+        setFormError(null)
+      }
+
+      setProfileTesting(profile.id, true)
+      const startedAt = performance.now()
+      try {
+        await commandClient.validateProviderSettings({
+          modelId: profile.modelId,
+          providerId: profile.providerId,
+        })
+        const latencyMs = Math.max(0, Math.round(performance.now() - startedAt))
+        setTestLatencies((currentLatencies) => ({
+          ...currentLatencies,
+          [profile.id]: latencyMs,
+        }))
+        if (options.showToast) {
+          setToast({
+            description: t('provider.testSuccessToastDescription', { latencyMs }),
+            id: Date.now(),
+            title: t('provider.testSuccessToastTitle'),
+            variant: 'success',
+          })
+        }
+      } catch (error) {
+        const latencyMs = Math.max(0, Math.round(performance.now() - startedAt))
+        setTestLatencies((currentLatencies) => ({
+          ...currentLatencies,
+          [profile.id]: latencyMs,
+        }))
+        if (options.showToast) {
+          setToast({
+            description: getCommandErrorMessage(error),
+            id: Date.now(),
+            title: t('provider.testErrorToastTitle'),
+            variant: 'destructive',
+          })
+        }
+      } finally {
+        setProfileTesting(profile.id, false)
+      }
+    },
+    [commandClient, setProfileTesting, t],
+  )
+
+  useEffect(() => {
+    if (!selectedProfile) {
+      return
+    }
+
+    void testProviderConfiguration(selectedProfile, { showToast: false })
+  }, [selectedProfile, testProviderConfiguration])
+
+  async function setSelectedProfileAsDefault() {
+    if (!selectedProfile) {
+      return
+    }
+
+    setFormError(null)
+    clearEditApiKey()
+    setIsSettingDefault(true)
+
+    const request: ProviderSettingsRequest = {
+      configId: selectedProfile.id,
+      displayName: selectedProfile.displayName,
+      modelId: selectedProfile.modelId,
+      providerId: selectedProfile.providerId,
+      setDefault: true,
+    }
+    if (selectedProfile.baseUrl) {
+      request.baseUrl = selectedProfile.baseUrl
+    }
+
+    try {
+      const saved = await commandClient.saveProviderSettings(request)
+      replaceSavedProfile(saved.config)
+      setSelectedConfigId(saved.config.id)
+    } catch (error) {
+      setFormError(getCommandErrorMessage(error))
+    } finally {
+      setIsSettingDefault(false)
     }
   }
 
   return (
-    <form
-      className="space-y-5 rounded-md border border-border bg-surface p-5"
-      onSubmit={handleSubmit(submit)}
-    >
-      <div className="flex items-start gap-3">
-        <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
-          <KeyRound className="size-4" />
-        </div>
-        <div>
-          <h2 className="font-semibold text-base">{t('provider.title')}</h2>
-          <p className="mt-1 text-muted-foreground text-sm">{t('provider.description')}</p>
-        </div>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <label className="space-y-2 text-sm">
-          <span className="font-medium">{t('provider.provider')}</span>
-          <select
-            className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            disabled={isSubmitting}
-            {...register('providerId')}
-          >
-            <option value="openai">OpenAI</option>
-            <option value="local-llama">Local Llama</option>
-            <option value="anthropic">Anthropic</option>
-            <option value="openrouter">OpenRouter</option>
-            <option value="codex">Codex</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="qwen">Qwen</option>
-            <option value="gemini">Gemini</option>
-            <option value="doubao">Doubao</option>
-            <option value="zhipu">Zhipu</option>
-            <option value="minimax">Minimax</option>
-          </select>
-        </label>
-
-        <label className="space-y-2 text-sm">
-          <span className="font-medium">{t('provider.model')}</span>
-          <input
-            className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            disabled={isSubmitting}
-            placeholder="gpt-4o-mini"
-            {...register('modelId')}
-          />
-          {errors.modelId ? (
-            <span className="block text-destructive text-xs">{errors.modelId.message}</span>
-          ) : null}
-        </label>
-      </div>
-
-      <label className="block space-y-2 text-sm">
-        <span className="font-medium">{t('provider.apiKey')}</span>
-        <input
-          className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          disabled={isSubmitting}
-          placeholder={t('provider.apiKeyPlaceholder')}
-          type="password"
-          {...register('apiKey')}
+    <div className="space-y-4">
+      {toast ? (
+        <Toast
+          closeLabel={t('provider.closeToast')}
+          description={toast.description}
+          key={toast.id}
+          onClose={() => setToast(null)}
+          title={toast.title}
+          variant={toast.variant}
         />
-        {errors.apiKey ? (
-          <span className="block text-destructive text-xs">{errors.apiKey.message}</span>
-        ) : null}
-      </label>
+      ) : null}
 
-      {formError ? (
+      {loadError ? (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
-          {formError}
+          {loadError}
         </div>
       ) : null}
 
-      {savedSettings ? (
-        <div className="rounded-md border border-border bg-background px-3 py-2 text-sm">
-          <div className="font-medium">{t('provider.saved')}</div>
-          <div className="mt-1 text-muted-foreground">{t('provider.secretReference')}</div>
-          <div className="mt-1 break-all font-mono text-xs">{savedSettings.secretRef}</div>
-        </div>
-      ) : null}
+      <div className="grid min-h-[560px] gap-4 lg:grid-cols-[minmax(240px,300px)_minmax(0,1fr)]">
+        <section
+          aria-label={t('provider.savedProfiles')}
+          className="flex min-h-0 flex-col rounded-md border border-border bg-background"
+        >
+          <div className="flex items-center justify-between gap-3 border-border border-b px-3 py-2">
+            <div className="text-muted-foreground text-sm">{t('provider.savedProfiles')}</div>
+            <Dialog open={isCreateDialogOpen} onOpenChange={handleCreateDialogOpenChange}>
+              <DialogTrigger asChild>
+                <Button disabled={isLoading || catalog.length === 0} size="sm" type="button">
+                  <Plus className="size-4" />
+                  {t('provider.newConfig')}
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="w-[min(calc(100vw-2rem),42rem)]">
+                <DialogHeader>
+                  <DialogTitle>{t('provider.createTitle')}</DialogTitle>
+                  <DialogDescription>{t('provider.createDescription')}</DialogDescription>
+                </DialogHeader>
 
-      <div className="flex justify-end">
-        <Button disabled={isSubmitting} type="submit">
-          <Save className="size-4" />
-          {isSubmitting ? t('provider.saving') : t('provider.save')}
-        </Button>
+                <form className="space-y-5" onSubmit={handleSubmit(submit)}>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label className="space-y-2 text-sm">
+                      <span className="font-medium">{t('provider.profileName')}</span>
+                      <input
+                        className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        disabled={isSubmitting || isLoading}
+                        placeholder={selectedProvider?.displayName ?? 'OpenAI'}
+                        {...register('displayName')}
+                      />
+                    </label>
+
+                    <label className="space-y-2 text-sm">
+                      <span className="font-medium">{t('provider.provider')}</span>
+                      <select
+                        className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        disabled={isSubmitting || isLoading}
+                        {...register('providerId', {
+                          onChange: (event) => {
+                            const provider = catalog.find(
+                              (currentProvider) =>
+                                currentProvider.providerId === event.target.value,
+                            )
+                            if (provider) {
+                              setFormFromProvider(provider, setValue)
+                            }
+                          },
+                        })}
+                      >
+                        {catalog.map((provider) => (
+                          <option key={provider.providerId} value={provider.providerId}>
+                            {provider.displayName}
+                          </option>
+                        ))}
+                      </select>
+                      {errors.providerId ? (
+                        <span className="block text-destructive text-xs">
+                          {errors.providerId.message}
+                        </span>
+                      ) : null}
+                    </label>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label className="space-y-2 text-sm">
+                      <span className="font-medium">{t('provider.model')}</span>
+                      <select
+                        className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        disabled={isSubmitting || isLoading || !selectedProvider}
+                        {...register('modelId')}
+                      >
+                        {selectedRunnableModels.map((model) => (
+                          <option key={model.modelId} value={model.modelId}>
+                            {model.displayName}
+                          </option>
+                        ))}
+                      </select>
+                      {errors.modelId ? (
+                        <span className="block text-destructive text-xs">
+                          {errors.modelId.message}
+                        </span>
+                      ) : null}
+                    </label>
+
+                    <label className="space-y-2 text-sm">
+                      <span className="font-medium">{t('provider.baseUrl')}</span>
+                      <input
+                        className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        disabled={isSubmitting || isLoading}
+                        placeholder={selectedProvider?.defaultBaseUrl}
+                        {...register('baseUrl')}
+                      />
+                    </label>
+                  </div>
+
+                  {selectedProvider?.providerId === 'minimax' ? (
+                    <div className="rounded-md border border-border bg-surface px-3 py-2">
+                      <div className="text-muted-foreground text-xs">
+                        {t('provider.baseUrlRegion')}
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <Button
+                          disabled={isSubmitting || isLoading}
+                          onClick={() => setValue('baseUrl', MINIMAX_BASE_URLS.international)}
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          {t('provider.baseUrlInternational')}
+                        </Button>
+                        <Button
+                          disabled={isSubmitting || isLoading}
+                          onClick={() => setValue('baseUrl', MINIMAX_BASE_URLS.china)}
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          {t('provider.baseUrlChina')}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <label className="block space-y-2 text-sm">
+                    <span className="font-medium">{t('provider.apiKey')}</span>
+                    <input
+                      className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      disabled={isSubmitting || isLoading}
+                      placeholder={t('provider.apiKeyPlaceholder')}
+                      type="password"
+                      {...register('apiKey')}
+                    />
+                    {errors.apiKey ? (
+                      <span className="block text-destructive text-xs">
+                        {errors.apiKey.message}
+                      </span>
+                    ) : null}
+                  </label>
+
+                  {formError ? (
+                    <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
+                      {formError}
+                    </div>
+                  ) : null}
+
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button
+                      disabled={isSubmitting || isLoading || catalog.length === 0}
+                      type="submit"
+                    >
+                      <Save className="size-4" />
+                      {isSubmitting ? t('provider.saving') : t('provider.save')}
+                    </Button>
+                  </div>
+                </form>
+              </DialogContent>
+            </Dialog>
+          </div>
+          <nav className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+            {profiles.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border px-4 py-6 text-center text-muted-foreground text-sm">
+                {t('provider.emptyProfiles')}
+              </div>
+            ) : null}
+            {profiles.map((profile) => {
+              const latencyMs = testLatencies[profile.id]
+              const isProfileTesting = testingConfigIds[profile.id] === true
+
+              return (
+                <button
+                  aria-pressed={selectedConfigId === profile.id}
+                  className="block w-full rounded-md border border-border bg-surface px-2.5 py-2 text-left text-sm transition-colors hover:bg-muted/45 disabled:cursor-not-allowed disabled:opacity-60 aria-pressed:border-primary aria-pressed:bg-muted/35"
+                  disabled={isSubmitting || isLoading}
+                  key={profile.id}
+                  onClick={() => {
+                    setSelectedConfigId(profile.id)
+                    clearEditApiKey()
+                    setFormError(null)
+                  }}
+                  type="button"
+                >
+                  <span className="flex items-center justify-between gap-3">
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium text-foreground">
+                        {profile.displayName}
+                      </span>
+                      <span className="mt-0.5 block truncate text-muted-foreground text-xs">
+                        {profile.providerId} / {profile.modelId}
+                      </span>
+                    </span>
+                    <span className="flex shrink-0 flex-col items-end gap-1">
+                      {isProfileTesting ? (
+                        <Badge variant="outline">{t('provider.testing')}</Badge>
+                      ) : latencyMs !== undefined ? (
+                        <Badge variant="outline">{t('provider.latencyMs', { latencyMs })}</Badge>
+                      ) : null}
+                      {profile.isDefault ? (
+                        <Badge variant="secondary">{t('provider.default')}</Badge>
+                      ) : null}
+                    </span>
+                  </span>
+                </button>
+              )
+            })}
+          </nav>
+        </section>
+
+        <section
+          aria-label={t('provider.detailsTitle')}
+          className="min-h-[420px] rounded-md border border-border bg-background p-5"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="flex min-w-0 flex-wrap items-center gap-2 font-semibold text-base">
+                <span className="truncate">
+                  {selectedProfile?.displayName ?? t('provider.emptyDetails')}
+                </span>
+                {selectedTestLatencyMs !== undefined ? (
+                  <Badge aria-hidden="true" variant="outline">
+                    {t('provider.latencyMs', { latencyMs: selectedTestLatencyMs })}
+                  </Badge>
+                ) : null}
+              </h2>
+            </div>
+            {selectedProfile ? (
+              <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                {!selectedProfile.isDefault ? (
+                  <Button
+                    disabled={isSettingDefault || isLoading}
+                    onClick={() => void setSelectedProfileAsDefault()}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    <Star className="size-4" />
+                    {isSettingDefault ? t('provider.settingDefault') : t('provider.setDefault')}
+                  </Button>
+                ) : null}
+                <Button
+                  disabled={isSelectedProfileTesting || isLoading}
+                  onClick={() =>
+                    void testProviderConfiguration(selectedProfile, { showToast: true })
+                  }
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <Wifi className="size-4" />
+                  {isSelectedProfileTesting ? t('provider.testing') : t('provider.test')}
+                </Button>
+              </div>
+            ) : null}
+          </div>
+
+          {selectedProfile ? (
+            <form className="mt-6 space-y-5" onSubmit={handleEditSubmit(saveSelectedProfile)}>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium">{t('provider.profileName')}</span>
+                  <input
+                    aria-label={t('provider.profileName')}
+                    className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    disabled={isEditSubmitting || isLoading}
+                    {...registerEdit('displayName')}
+                  />
+                </label>
+
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium">{t('provider.provider')}</span>
+                  <select
+                    aria-label={t('provider.provider')}
+                    className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    disabled={isEditSubmitting || isLoading}
+                    {...registerEdit('providerId', {
+                      onChange: (event) => {
+                        const provider = catalog.find(
+                          (currentProvider) => currentProvider.providerId === event.target.value,
+                        )
+                        if (provider) {
+                          setEditValue('apiKey', '')
+                          setEditValue('baseUrl', defaultBaseUrlForProvider(provider))
+                          setEditValue(
+                            'modelId',
+                            runnableModels(provider, profiles)[0]?.modelId ?? '',
+                          )
+                        }
+                      },
+                    })}
+                  >
+                    {catalog.map((provider) => (
+                      <option key={provider.providerId} value={provider.providerId}>
+                        {provider.displayName}
+                      </option>
+                    ))}
+                  </select>
+                  {editErrors.providerId ? (
+                    <span className="block text-destructive text-xs">
+                      {editErrors.providerId.message}
+                    </span>
+                  ) : null}
+                </label>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium">{t('provider.model')}</span>
+                  <select
+                    aria-label={t('provider.model')}
+                    className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    disabled={isEditSubmitting || isLoading || !selectedEditProvider}
+                    {...registerEdit('modelId')}
+                  >
+                    {selectedEditRunnableModels.map((model) => (
+                      <option key={model.modelId} value={model.modelId}>
+                        {model.displayName}
+                      </option>
+                    ))}
+                  </select>
+                  {editErrors.modelId ? (
+                    <span className="block text-destructive text-xs">
+                      {editErrors.modelId.message}
+                    </span>
+                  ) : null}
+                </label>
+
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium">{t('provider.baseUrl')}</span>
+                  <input
+                    aria-label={t('provider.baseUrl')}
+                    className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    disabled={isEditSubmitting || isLoading}
+                    placeholder={selectedEditProvider?.defaultBaseUrl}
+                    {...registerEdit('baseUrl')}
+                  />
+                </label>
+              </div>
+
+              {selectedEditProvider?.providerId === 'minimax' ? (
+                <div className="rounded-md border border-border bg-surface px-3 py-2">
+                  <div className="text-muted-foreground text-xs">{t('provider.baseUrlRegion')}</div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button
+                      disabled={isEditSubmitting || isLoading}
+                      onClick={() => setEditValue('baseUrl', MINIMAX_BASE_URLS.international)}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      {t('provider.baseUrlInternational')}
+                    </Button>
+                    <Button
+                      disabled={isEditSubmitting || isLoading}
+                      onClick={() => setEditValue('baseUrl', MINIMAX_BASE_URLS.china)}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      {t('provider.baseUrlChina')}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+
+              {selectedProfileModel ? (
+                <div className="rounded-md border border-border bg-surface px-3 py-3">
+                  <div className="text-muted-foreground text-xs">{t('provider.capabilities')}</div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                    {modelCapabilities.map(([key, labelKey]) => {
+                      const capability = selectedProfileModel.conversationCapability
+                      const supported =
+                        key === 'vision'
+                          ? capability.inputModalities.includes('image')
+                          : key === 'videoInput'
+                            ? capability.inputModalities.includes('video')
+                            : capability[key]
+                      return (
+                        <div
+                          className="flex items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2 text-sm"
+                          key={key}
+                        >
+                          <span>{t(labelKey)}</span>
+                          <Badge variant={supported ? 'success' : 'outline'}>
+                            {supported
+                              ? t('provider.capability.supported')
+                              : t('provider.capability.unsupported')}
+                          </Badge>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
+              {selectedProfileServiceCapabilities.length > 0 ? (
+                <div className="rounded-md border border-border bg-surface px-3 py-3">
+                  <div className="text-muted-foreground text-xs">
+                    {t('provider.serviceCapabilities')}
+                  </div>
+                  <div className="mt-3 grid gap-2">
+                    {selectedProfileServiceCapabilities.map((capability) => (
+                      <div
+                        className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2 text-sm"
+                        key={capability.operationId}
+                      >
+                        <span className="break-all font-medium">{capability.operationId}</span>
+                        <Badge variant="outline">
+                          {t(`provider.serviceCategory.${capability.category}`)}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="rounded-md border border-border bg-surface px-3 py-2">
+                <label className="block space-y-2 text-sm">
+                  <span className="flex items-center justify-between gap-3">
+                    <span className="font-medium">{t('provider.apiKey')}</span>
+                    <span className="text-muted-foreground text-xs">
+                      {selectedProfile.hasApiKey
+                        ? t('provider.savedApiKeyAvailable')
+                        : t('provider.savedApiKeyMissing')}
+                    </span>
+                  </span>
+                  <div className="relative">
+                    <input
+                      aria-label={t('provider.apiKey')}
+                      className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      disabled={isEditSubmitting || isLoading}
+                      placeholder={
+                        shouldShowSavedApiKeyMask
+                          ? ''
+                          : selectedProfile.hasApiKey
+                            ? t('provider.apiKeyExistingPlaceholder')
+                            : t('provider.apiKeyPlaceholder')
+                      }
+                      type="password"
+                      {...registerEdit('apiKey')}
+                    />
+                    {shouldShowSavedApiKeyMask ? (
+                      <div
+                        aria-hidden="true"
+                        className="pointer-events-none absolute top-1/2 right-3 left-3 -translate-y-1/2 truncate font-mono text-foreground text-sm"
+                      >
+                        {SAVED_API_KEY_MASK}
+                      </div>
+                    ) : null}
+                  </div>
+                  {editErrors.apiKey ? (
+                    <span className="block text-destructive text-xs">
+                      {editErrors.apiKey.message}
+                    </span>
+                  ) : null}
+                </label>
+              </div>
+
+              {formError ? (
+                <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
+                  {formError}
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button
+                  disabled={isEditSubmitting || isLoading || catalog.length === 0}
+                  type="submit"
+                >
+                  <Save className="size-4" />
+                  {isEditSubmitting ? t('provider.saving') : t('provider.save')}
+                </Button>
+              </div>
+            </form>
+          ) : (
+            <div className="mt-6 rounded-md border border-dashed border-border px-4 py-10 text-center text-muted-foreground text-sm">
+              {t('provider.emptyDetails')}
+            </div>
+          )}
+        </section>
       </div>
-    </form>
+    </div>
   )
+}
+
+function optionalTrimmed(value: string) {
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+function setFormFromProvider(
+  provider: ProviderCatalogEntry,
+  setValue: UseFormSetValue<ProviderSettingsFormValues>,
+) {
+  setValue('apiKey', '')
+  setValue('baseUrl', defaultBaseUrlForProvider(provider))
+  setValue('configId', '')
+  setValue('displayName', provider.displayName)
+  setValue('modelId', runnableModels(provider)[0]?.modelId ?? '')
+  setValue('providerId', provider.providerId)
+}
+
+function createFormValuesFromProvider(provider: ProviderCatalogEntry): ProviderSettingsFormValues {
+  return {
+    apiKey: '',
+    baseUrl: defaultBaseUrlForProvider(provider),
+    configId: '',
+    displayName: provider.displayName,
+    modelId: runnableModels(provider)[0]?.modelId ?? '',
+    providerId: provider.providerId,
+  }
+}
+
+function createFormValuesFromProfile(profile: ProviderConfig): ProviderSettingsFormValues {
+  return {
+    apiKey: '',
+    baseUrl: profile.baseUrl ?? '',
+    configId: profile.id,
+    displayName: profile.displayName,
+    modelId: profile.modelId,
+    providerId: profile.providerId,
+  }
+}
+
+function defaultBaseUrlForProvider(provider: ProviderCatalogEntry): string {
+  if (provider.providerId === 'minimax') {
+    return MINIMAX_BASE_URLS.international
+  }
+  return provider.defaultBaseUrl
+}
+
+function runnableModels(
+  provider: ProviderCatalogEntry | undefined,
+  profiles: ProviderConfig[] = [],
+): ModelCatalogEntry[] {
+  const models = new Map<string, ModelCatalogEntry>()
+  for (const model of provider?.models ?? []) {
+    if (model.runtimeStatus.kind === 'runnable') {
+      models.set(model.modelId, model)
+    }
+  }
+  for (const profile of profiles) {
+    if (
+      profile.providerId === provider?.providerId &&
+      profile.modelDescriptor.runtimeStatus.kind === 'runnable'
+    ) {
+      models.set(profile.modelDescriptor.modelId, profile.modelDescriptor)
+    }
+  }
+  return [...models.values()]
 }

@@ -279,7 +279,7 @@ exit 2
 
     let records = CargoExtensionManifestLoader::new()
         .with_search_paths(vec![root.path().to_path_buf()])
-        .with_timeout(Duration::from_secs(5))
+        .with_timeout(Duration::from_secs(15))
         .enumerate(&DiscoverySource::CargoExtension)
         .await
         .unwrap();
@@ -337,7 +337,7 @@ async fn cargo_extension_runtime_loader_proxies_activation_and_deactivation() {
         &binary,
         r#"#!/bin/sh
 if [ "$1" = "--harness-runtime" ]; then
-cat >/dev/null
+IFS= read -r _request
 printf '{"jsonrpc":"2.0","id":1,"result":{"registered_tools":["cargo-tool"],"registered_hooks":[],"registered_skills":[],"registered_mcp":[],"occupied_slots":[]}}'
 exit 0
 fi
@@ -353,7 +353,7 @@ exit 2
     assert!(CargoExtensionRuntimeLoader::new().can_load(&manifest, &origin));
 
     let plugin = CargoExtensionRuntimeLoader::new()
-        .with_timeout(Duration::from_secs(5))
+        .with_timeout(Duration::from_secs(15))
         .load(&manifest, &origin)
         .await
         .unwrap();

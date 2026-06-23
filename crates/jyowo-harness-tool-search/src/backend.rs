@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 pub use harness_contracts::ToolLoadingBackendName;
 use harness_contracts::{CacheImpact, HarnessError, RunId, SessionId, ToolName};
-use harness_model::ModelCapabilities;
+use harness_model::ConversationModelCapability;
 
 use crate::ToolLoadingError;
 
@@ -27,7 +27,7 @@ pub trait ToolLoadingBackendSelector: Send + Sync + 'static {
 pub struct ToolLoadingContext {
     pub session_id: SessionId,
     pub run_id: RunId,
-    pub model_caps: Arc<ModelCapabilities>,
+    pub model_caps: Arc<ConversationModelCapability>,
     pub reload_handle: Option<Arc<dyn ReloadHandle>>,
 }
 

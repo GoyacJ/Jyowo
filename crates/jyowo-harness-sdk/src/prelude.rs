@@ -6,7 +6,8 @@ pub use crate::{
     WorkspaceBootstrap, WorkspaceCreateRequest, WorkspaceSpec,
 };
 pub use harness_contracts::{
-    Decision, Event, MessageId, PermissionMode, RunId, SessionId, TenantId, ToolUseId, TurnInput,
+    ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput, Decision,
+    Event, MessageId, PermissionMode, RunId, SessionId, TenantId, ToolUseId, TurnInput,
     WorkspaceId,
 };
 pub use harness_hook::HookRegistry;

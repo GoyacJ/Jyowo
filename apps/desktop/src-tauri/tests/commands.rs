@@ -1,40 +1,69 @@
 use async_trait::async_trait;
 use futures::stream;
+use harness_contracts::{
+    AssistantDeltaProducedEvent, ConfigHash, CorrelationId, EngineError, EngineFailedEvent,
+    EventId, MessageId, PermissionRequestedEvent, RunStartedEvent, SnapshotId, ToolErrorPayload,
+    ToolUseFailedEvent, ToolUseRequestedEvent, TurnInput,
+};
+use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
 use jyowo_desktop_shell::commands::{
-    cancel_run_payload, cancel_run_with_runtime_state, delete_mcp_server_with_runtime_state,
+    cancel_run_payload, cancel_run_with_runtime_state,
+    create_attachment_from_path_with_runtime_state, create_conversation_with_runtime_state,
+    delete_conversation_with_runtime_state, delete_mcp_server_with_runtime_state,
     delete_mcp_server_with_store, delete_memory_item_with_runtime_state,
-    export_memory_items_with_runtime_state, export_support_bundle_with_runtime_state,
-    get_app_info_payload, get_context_snapshot_with_runtime_state,
-    get_conversation_with_runtime_state, get_memory_item_with_runtime_state,
-    get_replay_timeline_with_runtime_state, harness_healthcheck_payload, list_activity_payload,
+    delete_skill_with_runtime_state, export_memory_items_with_runtime_state,
+    export_support_bundle_with_runtime_state, get_app_info_payload,
+    get_context_snapshot_with_runtime_state, get_conversation_with_runtime_state,
+    get_execution_settings_with_store, get_memory_item_with_runtime_state,
+    get_provider_config_api_key_with_runtime_state, get_provider_config_api_key_with_store,
+    get_replay_timeline_with_runtime_state, get_skill_with_runtime_state,
+    harness_healthcheck_payload, import_skill_with_runtime_state, list_activity_payload,
     list_activity_with_runtime_state, list_artifacts_with_runtime_state,
     list_conversations_with_runtime_state, list_eval_cases_payload,
     list_eval_cases_with_runtime_state, list_mcp_servers_with_runtime_state,
-    list_memory_items_with_runtime_state, provider_secret_ref, provider_secret_ref_prefix,
-    resolve_permission_payload, resolve_permission_with_runtime_state, run_eval_case_payload,
-    run_eval_case_with_runtime_state, runtime_state_async, runtime_state_for_workspace,
-    save_mcp_server_with_runtime_state, save_mcp_server_with_store,
-    save_provider_settings_with_store, start_run_payload, start_run_with_runtime_state,
+    list_memory_items_with_runtime_state, list_model_provider_catalog_payload,
+    list_provider_settings_with_store, list_reference_candidates_with_runtime_state,
+    list_skills_with_runtime_state, request_provider_config_api_key_reveal_with_runtime_state,
+    request_provider_config_api_key_reveal_with_store,
+    resolve_permission_for_window_with_runtime_state, resolve_permission_payload,
+    resolve_permission_with_runtime_state, run_eval_case_payload, run_eval_case_with_runtime_state,
+    runtime_state_async, runtime_state_for_workspace, save_mcp_server_with_runtime_state,
+    save_mcp_server_with_store, save_provider_settings_with_store,
+    set_conversation_model_config_with_runtime_state, set_execution_settings_with_store,
+    set_skill_enabled_with_runtime_state, start_run_payload, start_run_with_runtime_state,
+    subscribe_conversation_events_for_window_with_runtime_state,
+    unsubscribe_conversation_events_for_window_with_runtime_state,
     update_memory_item_with_runtime_state, validate_provider_settings_payload,
-    ArtifactSummaryPayload, CancelRunRequest, DeleteMcpServerRequest, DeleteMemoryItemRequest,
-    DesktopProviderSettingsStore, DesktopRuntimeState, ExportSupportBundleRequest,
-    GetContextSnapshotRequest, GetConversationRequest, GetMemoryItemRequest, ListActivityRequest,
+    ArtifactSummaryPayload, AttachmentBlobRefPayload, AttachmentReferencePayload, CancelRunRequest,
+    ContextReferencePayload, ConversationEventBatchPayload, ConversationModelCapabilityRecord,
+    CreateAttachmentFromPathRequest, DeleteConversationRequest, DeleteMcpServerRequest,
+    DeleteMemoryItemRequest, DeleteSkillRequest, DesktopExecutionSettingsStore,
+    DesktopProviderSettingsStore, DesktopRuntimeState, DesktopSkillStore,
+    ExportSupportBundleRequest, GetContextSnapshotRequest, GetConversationRequest,
+    GetMemoryItemRequest, GetProviderConfigApiKeyRequest, GetSkillRequest, ImportSkillRequest,
+    ListActivityRequest, ListArtifactsRequest, ListReferenceCandidatesRequest,
     McpServerConfigRecord, McpServerStore, McpServerTransportConfig, PermissionDecision,
-    ProviderSettingsRecord, ProviderSettingsRequest, ProviderSettingsStore, ReplayTimelineRequest,
-    ResolvePermissionRequest, RunEvalCaseRequest, SaveMcpServerRequest, StartRunRequest,
-    UpdateMemoryItemRequest, ValidateProviderSettingsRequest,
+    ProviderConfigRecord, ProviderModelDescriptorRecord, ProviderModelLifecycleRecord,
+    ProviderModelModalityRecord, ProviderSettingsRecord, ProviderSettingsRequest,
+    ProviderSettingsStore, ReplayTimelineRequest, RequestProviderConfigApiKeyRevealRequest,
+    ResolvePermissionRequest, RunEvalCaseRequest, SaveMcpServerRequest,
+    SetConversationModelConfigRequest, SetExecutionSettingsRequest, SetSkillEnabledRequest,
+    SkillStore, SkillStoreRecord, StartRunRequest, SubscribeConversationEventsRequest,
+    UnsubscribeConversationEventsRequest, UpdateMemoryItemRequest, ValidateProviderSettingsRequest,
 };
 use jyowo_harness_sdk::builtin::DefaultRedactor;
 use jyowo_harness_sdk::ext::{
-    now, BudgetMetric, Decision, DecisionScope, DeferPolicy, Event, FallbackPolicy,
+    now, ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, ArtifactUpdatedEvent, BudgetMetric,
+    Decision, DecisionScope, DeferPolicy, DeltaChunk, Event, EventStore, FallbackPolicy,
     InteractivityLevel, McpConnection, McpError, McpRegistry, McpServerId, McpServerScope,
     McpServerSource, McpServerSpec, McpToolDescriptor, McpToolResult, MemoryId, MemoryKind,
-    MemoryMetadata, MemoryRecord, MemorySource, MemoryStore, MemoryVisibility, OverflowAction,
-    PermissionCheck, PermissionContext, PermissionMode, PermissionRequest, PermissionSubject,
-    ProviderRestriction, RedactPatternSet, RedactRules, RedactScope, Redactor, RequestId,
-    ResultBudget, RuleSnapshot, RunId, SessionId, Severity, StreamBrokerConfig, TenantId, Tool,
-    ToolContext, ToolDescriptor, ToolError, ToolEvent, ToolGroup, ToolProperties, ToolRegistry,
-    ToolResult, ToolStream, ToolUseId, TransportChoice, TrustLevel, UsageSnapshot, ValidationError,
+    MemoryMetadata, MemoryRecord, MemorySource, MemoryStore, MemoryVisibility, Message,
+    MessagePart, MessageRole, ModelError, ModelProtocol, OverflowAction, PermissionCheck,
+    PermissionContext, PermissionMode, PermissionRequest, PermissionSubject, ProviderRestriction,
+    RedactPatternSet, RedactRules, RedactScope, Redactor, RequestId, ResultBudget, RuleSnapshot,
+    RunId, SessionId, Severity, StreamBrokerConfig, TenantId, ThinkingDelta, Tool, ToolContext,
+    ToolDescriptor, ToolError, ToolEvent, ToolGroup, ToolProperties, ToolRegistry, ToolResult,
+    ToolStream, ToolUseId, TransportChoice, TrustLevel, UsageSnapshot, ValidationError,
 };
 use jyowo_harness_sdk::ext::{ContentDelta, ModelStreamEvent};
 use jyowo_harness_sdk::testing::{
@@ -45,7 +74,7 @@ use jyowo_harness_sdk::{
     ConversationEventsPageRequest, Harness, McpConfig, StreamPermissionRuntime,
 };
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -121,6 +150,436 @@ fn artifact_payload_skips_missing_optional_fields() {
 
     assert_eq!(value.get("preview"), None);
     assert_eq!(value.get("sourceMessageId"), None);
+    assert_eq!(value.get("sourceRunId"), None);
+}
+
+#[tokio::test]
+async fn import_skill_persists_enabled_skill_without_exposing_source_path() {
+    let workspace = unique_workspace("skill-import");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let source_dir = unique_workspace("skill-source");
+    let source_path = write_skill_package(
+        &source_dir,
+        "summarize",
+        "summarize",
+        "Summarize project notes",
+        Some(("references/style.md", "Use concise bullets.")),
+    );
+    let state = runtime_state_for_workspace(workspace.clone())
+        .await
+        .unwrap();
+
+    let imported = import_skill_with_runtime_state(
+        ImportSkillRequest {
+            source_path: source_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let serialized = serde_json::to_string(&imported).unwrap();
+
+    assert_eq!(imported.skill.name, "summarize");
+    assert!(imported.skill.enabled);
+    assert!(imported.skill.manageable);
+    assert_eq!(imported.skill.source_kind, "workspace");
+    assert!(!serialized.contains(&source_dir.to_string_lossy().to_string()));
+    assert!(workspace
+        .join(".jyowo/runtime/skills/enabled")
+        .join(&imported.skill.id)
+        .join("SKILL.md")
+        .exists());
+    assert!(workspace
+        .join(".jyowo/runtime/skills/enabled")
+        .join(&imported.skill.id)
+        .join("references/style.md")
+        .exists());
+}
+
+#[tokio::test]
+async fn import_skill_rejects_single_markdown_files() {
+    let workspace = unique_workspace("skill-import-reject-file");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let source_dir = unique_workspace("skill-file-source");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let source_path = source_dir.join("summarize.md");
+    std::fs::write(
+        &source_path,
+        skill_markdown("summarize", "Summarize project notes"),
+    )
+    .unwrap();
+    let source_path = source_path.canonicalize().unwrap();
+    let state = runtime_state_for_workspace(workspace).await.unwrap();
+
+    let error = import_skill_with_runtime_state(
+        ImportSkillRequest {
+            source_path: source_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error
+        .message
+        .contains("skill source path must point to a directory"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn import_skill_rejects_symlink_source_package() {
+    let workspace = unique_workspace("skill-import-reject-source-symlink");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let source_dir = unique_workspace("skill-source-real");
+    let source_path = write_skill_package(
+        &source_dir,
+        "symlinked",
+        "symlinked",
+        "Should be rejected",
+        None,
+    );
+    let link_dir = unique_workspace("skill-source-link");
+    std::fs::create_dir_all(&link_dir).unwrap();
+    let linked_path = link_dir.join("linked-package");
+    std::os::unix::fs::symlink(&source_path, &linked_path).unwrap();
+    let state = runtime_state_for_workspace(workspace).await.unwrap();
+
+    let error = import_skill_with_runtime_state(
+        ImportSkillRequest {
+            source_path: linked_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.message.contains("must not use symlinks"));
+}
+
+#[tokio::test]
+async fn disabling_skill_moves_file_and_removes_it_from_runtime_list() {
+    let workspace = unique_workspace("skill-disable");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let source_dir = unique_workspace("skill-disable-source");
+    let source_path =
+        write_skill_package(&source_dir, "draft", "draft", "Draft release notes", None);
+    let state = runtime_state_for_workspace(workspace.clone())
+        .await
+        .unwrap();
+    let imported = import_skill_with_runtime_state(
+        ImportSkillRequest {
+            source_path: source_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let disabled = set_skill_enabled_with_runtime_state(
+        SetSkillEnabledRequest {
+            id: imported.skill.id.clone(),
+            enabled: false,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let listed = list_skills_with_runtime_state(&state).await.unwrap();
+
+    assert!(!disabled.skill.enabled);
+    assert_eq!(disabled.skill.status, "disabled");
+    assert!(workspace
+        .join(".jyowo/runtime/skills/disabled")
+        .join(&imported.skill.id)
+        .join("SKILL.md")
+        .exists());
+    assert!(listed
+        .skills
+        .iter()
+        .any(|skill| skill.id == imported.skill.id && !skill.enabled));
+    assert!(listed
+        .skills
+        .iter()
+        .all(|skill| skill.name != "draft" || !skill.enabled));
+
+    let enabled = set_skill_enabled_with_runtime_state(
+        SetSkillEnabledRequest {
+            id: imported.skill.id.clone(),
+            enabled: true,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let listed = list_skills_with_runtime_state(&state).await.unwrap();
+
+    assert!(enabled.skill.enabled);
+    assert_eq!(enabled.skill.status, "ready");
+    assert!(workspace
+        .join(".jyowo/runtime/skills/enabled")
+        .join(&imported.skill.id)
+        .join("SKILL.md")
+        .exists());
+    assert!(listed
+        .skills
+        .iter()
+        .any(|skill| skill.id == imported.skill.id && skill.enabled));
+}
+
+#[tokio::test]
+async fn enabling_skill_rejects_runtime_duplicate_name() {
+    let workspace = unique_workspace("skill-enable-duplicate-runtime");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let disabled_id = "managed-disabled";
+    let disabled_dir = workspace
+        .join(".jyowo/runtime/skills/disabled")
+        .join(disabled_id);
+    std::fs::create_dir_all(&disabled_dir).unwrap();
+    std::fs::write(
+        disabled_dir.join("SKILL.md"),
+        skill_markdown("shared-name", "Workspace skill"),
+    )
+    .unwrap();
+    let record = SkillStoreRecord {
+        id: disabled_id.to_owned(),
+        name: "shared-name".to_owned(),
+        description: "Workspace skill".to_owned(),
+        enabled: false,
+        content_hash: "test-hash".to_owned(),
+        package_dir: disabled_id.to_owned(),
+        file_name: String::new(),
+        imported_at: now().to_rfc3339(),
+        updated_at: now().to_rfc3339(),
+        tags: Vec::new(),
+        category: None,
+        last_validation_error: None,
+    };
+    let index_path = workspace.join(".jyowo/runtime/skills/index.json");
+    std::fs::write(
+        &index_path,
+        serde_json::to_vec_pretty(&vec![record]).unwrap(),
+    )
+    .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
+    register_test_skill(&state, "shared-name", "Runtime skill");
+
+    let error = set_skill_enabled_with_runtime_state(
+        SetSkillEnabledRequest {
+            id: disabled_id.to_owned(),
+            enabled: true,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error
+        .message
+        .contains("active skill name already exists: shared-name"));
+    assert!(workspace
+        .join(".jyowo/runtime/skills/disabled")
+        .join(disabled_id)
+        .join("SKILL.md")
+        .exists());
+    assert!(!workspace
+        .join(".jyowo/runtime/skills/enabled")
+        .join(disabled_id)
+        .exists());
+}
+
+#[tokio::test]
+async fn delete_skill_removes_managed_record_and_file() {
+    let workspace = unique_workspace("skill-delete");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let source_dir = unique_workspace("skill-delete-source");
+    let source_path = write_skill_package(
+        &source_dir,
+        "cleanup",
+        "cleanup",
+        "Clean up workspace",
+        None,
+    );
+    let state = runtime_state_for_workspace(workspace.clone())
+        .await
+        .unwrap();
+    let imported = import_skill_with_runtime_state(
+        ImportSkillRequest {
+            source_path: source_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let deleted = delete_skill_with_runtime_state(
+        DeleteSkillRequest {
+            id: imported.skill.id.clone(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let listed = list_skills_with_runtime_state(&state).await.unwrap();
+
+    assert_eq!(deleted.id, imported.skill.id);
+    assert_eq!(deleted.status, "deleted");
+    assert!(!workspace
+        .join(".jyowo/runtime/skills/enabled")
+        .join(&imported.skill.id)
+        .exists());
+    assert!(listed
+        .skills
+        .iter()
+        .all(|skill| skill.id != imported.skill.id));
+}
+
+#[tokio::test]
+async fn delete_skill_removes_disabled_managed_record_and_file() {
+    let workspace = unique_workspace("skill-delete-disabled");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let source_dir = unique_workspace("skill-delete-disabled-source");
+    let source_path = write_skill_package(
+        &source_dir,
+        "disabled-cleanup",
+        "disabled-cleanup",
+        "Clean up disabled workspace",
+        None,
+    );
+    let state = runtime_state_for_workspace(workspace.clone())
+        .await
+        .unwrap();
+    let imported = import_skill_with_runtime_state(
+        ImportSkillRequest {
+            source_path: source_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    set_skill_enabled_with_runtime_state(
+        SetSkillEnabledRequest {
+            id: imported.skill.id.clone(),
+            enabled: false,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let deleted = delete_skill_with_runtime_state(
+        DeleteSkillRequest {
+            id: imported.skill.id.clone(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let listed = list_skills_with_runtime_state(&state).await.unwrap();
+
+    assert_eq!(deleted.id, imported.skill.id);
+    assert_eq!(deleted.status, "deleted");
+    assert!(!workspace
+        .join(".jyowo/runtime/skills/disabled")
+        .join(&imported.skill.id)
+        .exists());
+    assert!(listed
+        .skills
+        .iter()
+        .all(|skill| skill.id != imported.skill.id));
+}
+
+#[tokio::test]
+async fn get_skill_returns_parameters_config_keys_and_body_for_managed_skill() {
+    let workspace = unique_workspace("skill-detail");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let source_dir = unique_workspace("skill-detail-source");
+    let source_path = source_dir.join("outline");
+    std::fs::create_dir_all(&source_path).unwrap();
+    std::fs::write(
+        source_path.join("SKILL.md"),
+        "---\nname: outline\ndescription: Build an outline\nparameters:\n  - name: topic\n    type: string\n    required: true\nconfig:\n  - key: STYLE_GUIDE\n    type: string\n---\nUse ${topic} and ${config.STYLE_GUIDE}.\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(source_path.join("references")).unwrap();
+    std::fs::write(
+        source_path.join("references/style.md"),
+        "Use terse outline headings.\n",
+    )
+    .unwrap();
+    let source_path = source_path.canonicalize().unwrap();
+    let state = runtime_state_for_workspace(workspace).await.unwrap();
+    let imported = import_skill_with_runtime_state(
+        ImportSkillRequest {
+            source_path: source_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let detail = get_skill_with_runtime_state(
+        GetSkillRequest {
+            id: imported.skill.id.clone(),
+            include_body: true,
+            selected_file_path: None,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(detail.skill.summary.name, "outline");
+    assert_eq!(detail.skill.parameters[0].name, "topic");
+    assert_eq!(detail.skill.config_keys, vec!["STYLE_GUIDE"]);
+    assert_eq!(
+        detail.skill.body_full.as_deref(),
+        Some("Use ${topic} and ${config.STYLE_GUIDE}.\n")
+    );
+    assert!(detail
+        .skill
+        .files
+        .iter()
+        .any(|file| file.path == "SKILL.md" && file.kind == "file"));
+    assert!(detail
+        .skill
+        .files
+        .iter()
+        .any(|file| file.path == "references" && file.kind == "directory"));
+    assert!(detail
+        .skill
+        .files
+        .iter()
+        .any(|file| file.path == "references/style.md" && file.kind == "file"));
+    assert_eq!(
+        detail
+            .skill
+            .selected_file
+            .as_ref()
+            .map(|file| file.path.as_str()),
+        Some("SKILL.md")
+    );
+
+    let selected = get_skill_with_runtime_state(
+        GetSkillRequest {
+            id: imported.skill.id,
+            include_body: true,
+            selected_file_path: Some("references/style.md".to_owned()),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        selected
+            .skill
+            .selected_file
+            .as_ref()
+            .map(|file| file.content.as_str()),
+        Some("Use terse outline headings.\n")
+    );
 }
 
 #[test]
@@ -141,7 +600,7 @@ fn run_eval_case_payload_requires_runtime_for_valid_case_ids_and_rejects_malform
 #[tokio::test]
 async fn validate_provider_settings_payload_accepts_supported_provider_metadata() {
     let payload = validate_provider_settings_payload(ValidateProviderSettingsRequest {
-        model_id: "gpt-4o-mini".to_owned(),
+        model_id: "gpt-5.4-mini".to_owned(),
         provider_id: "openai".to_owned(),
     })
     .await
@@ -151,23 +610,100 @@ async fn validate_provider_settings_payload_accepts_supported_provider_metadata(
     assert_eq!(
         value,
         json!({
-            "modelId": "gpt-4o-mini",
+            "modelId": "gpt-5.4-mini",
             "providerId": "openai",
             "status": "accepted"
         })
     );
 }
 
+#[test]
+fn list_model_provider_catalog_payload_exposes_models_and_default_base_urls() {
+    let payload = list_model_provider_catalog_payload();
+    let value = serde_json::to_value(payload).unwrap();
+    let providers = value["providers"].as_array().unwrap();
+
+    let openai = providers
+        .iter()
+        .find(|provider| provider["providerId"] == "openai")
+        .unwrap();
+    assert_eq!(openai["displayName"], "OpenAI");
+    assert_eq!(openai["defaultBaseUrl"], "https://api.openai.com");
+    assert!(openai["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|model| model["modelId"] == "gpt-5.4-mini"));
+    assert_eq!(openai["runtimeCapability"]["authScheme"], "bearer");
+    assert!(openai["runtimeCapability"].get("auth_scheme").is_none());
+
+    let anthropic = providers
+        .iter()
+        .find(|provider| provider["providerId"] == "anthropic")
+        .unwrap();
+    assert_eq!(anthropic["runtimeCapability"]["authScheme"], "x_api_key");
+
+    let gemini = providers
+        .iter()
+        .find(|provider| provider["providerId"] == "gemini")
+        .unwrap();
+    assert_eq!(gemini["runtimeCapability"]["authScheme"], "api_key");
+
+    let local_llama = providers
+        .iter()
+        .find(|provider| provider["providerId"] == "local-llama")
+        .unwrap();
+    assert_eq!(local_llama["runtimeCapability"]["authScheme"], "none");
+
+    let km = providers
+        .iter()
+        .find(|provider| provider["providerId"] == "km")
+        .unwrap();
+    assert_eq!(km["displayName"], "Kimi");
+    assert_eq!(km["defaultBaseUrl"], "https://api.moonshot.cn");
+    assert!(km["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|model| model["modelId"] == "kimi-k2.5"));
+
+    let minimax = providers
+        .iter()
+        .find(|provider| provider["providerId"] == "minimax")
+        .unwrap();
+    let service = minimax["serviceCapabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|service| service["operationId"] == "minimax.image_generation")
+        .unwrap();
+    assert_eq!(service["requiresPolling"], false);
+    assert!(service.get("operation_id").is_none());
+    assert!(!minimax["serviceCapabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|service| service["operationId"] == "minimax.text_to_speech.websocket"));
+    assert!(!minimax["serviceCapabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|service| service["execution"] == "websocket"));
+}
+
 #[tokio::test]
-async fn save_provider_settings_payload_stores_secret_and_returns_reference_without_raw_key() {
+async fn save_provider_settings_payload_stores_viewable_api_key_but_omits_key_from_list_payload() {
     let raw_key = "provider-test-token";
     let store = RecordingProviderSettingsStore::default();
-    let expected_secret_ref = store.secret_ref("openai");
     let payload = save_provider_settings_with_store(
         ProviderSettingsRequest {
-            api_key: raw_key.to_owned(),
-            model_id: "gpt-4o-mini".to_owned(),
+            api_key: Some(raw_key.to_owned()),
+            base_url: None,
+            config_id: None,
+            display_name: Some("OpenAI Mini".to_owned()),
+            model_id: "gpt-5.4-mini".to_owned(),
             provider_id: "openai".to_owned(),
+            set_default: true,
         },
         &store,
     )
@@ -175,36 +711,647 @@ async fn save_provider_settings_payload_stores_secret_and_returns_reference_with
     .unwrap();
     let serialized = serde_json::to_string(&payload).unwrap();
 
-    assert!(serialized.contains(&format!("\"secretRef\":\"{expected_secret_ref}\"")));
     assert!(serialized.contains("\"status\":\"saved\""));
+    assert!(serialized.contains("\"displayName\":\"OpenAI Mini\""));
+    assert!(serialized.contains("\"isDefault\":true"));
+    assert!(serialized.contains("\"hasApiKey\":true"));
     assert!(!serialized.contains(raw_key));
-    assert_eq!(
-        store.secret.lock().unwrap().as_ref().unwrap(),
-        &(expected_secret_ref.clone(), raw_key.to_owned())
-    );
-    assert_eq!(
-        store.record.lock().unwrap().as_ref().unwrap(),
-        &ProviderSettingsRecord {
-            model_id: "gpt-4o-mini".to_owned(),
+    let record = store.record.lock().unwrap().clone().unwrap();
+    assert_eq!(record.default_config_id.as_deref(), Some("openai"));
+    assert_eq!(record.configs.len(), 1);
+    assert_eq!(record.configs[0].protocol, ModelProtocol::Responses);
+    assert!(!record.configs[0].api_key.trim().is_empty());
+    assert_eq!(record.configs[0].display_name, "OpenAI Mini");
+    assert_eq!(record.configs[0].model_descriptor.model_id, "gpt-5.4-mini");
+
+    let listed = list_provider_settings_with_store(&store).await.unwrap();
+    let listed_serialized = serde_json::to_string(&listed).unwrap();
+    assert_eq!(listed.default_config_id.as_deref(), Some("openai"));
+    assert!(listed_serialized.contains("\"hasApiKey\":true"));
+    assert!(!listed_serialized.contains(raw_key));
+}
+
+#[tokio::test]
+async fn get_provider_config_api_key_with_store_rejects_plaintext_reveal() {
+    let raw_key = "provider-test-token";
+    let store = RecordingProviderSettingsStore {
+        record: Mutex::new(Some(ProviderSettingsRecord {
+            default_config_id: Some("openai".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: raw_key.to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI".to_owned(),
+                id: "openai".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })),
+        ..RecordingProviderSettingsStore::default()
+    };
+
+    let error = get_provider_config_api_key_with_store(
+        GetProviderConfigApiKeyRequest {
+            config_id: "openai".to_owned(),
+            reveal_token: "test-reveal-token".to_owned(),
+        },
+        &store,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("disabled"));
+}
+
+#[tokio::test]
+async fn get_provider_config_api_key_with_runtime_state_rejects_plaintext_reveal() {
+    let raw_key = "provider-test-token";
+    let workspace = unique_workspace("provider-key-reveal-token");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    DesktopProviderSettingsStore::new(workspace.clone())
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some("openai".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: raw_key.to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI".to_owned(),
+                id: "openai".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })
+        .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+
+    let error = get_provider_config_api_key_with_runtime_state(
+        GetProviderConfigApiKeyRequest {
+            config_id: "openai".to_owned(),
+            reveal_token: "test-reveal-token".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+
+    let reveal_error = request_provider_config_api_key_reveal_with_runtime_state(
+        RequestProviderConfigApiKeyRevealRequest {
+            config_id: "openai".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(reveal_error.code, "INVALID_PAYLOAD");
+    assert!(reveal_error.message.contains("disabled"));
+}
+
+#[tokio::test]
+async fn request_provider_config_api_key_reveal_with_store_is_disabled() {
+    let store = RecordingProviderSettingsStore {
+        record: Mutex::new(Some(ProviderSettingsRecord {
+            default_config_id: Some("openai".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "provider-test-token".to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI".to_owned(),
+                id: "openai".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })),
+        ..RecordingProviderSettingsStore::default()
+    };
+
+    let error = request_provider_config_api_key_reveal_with_store(
+        RequestProviderConfigApiKeyRevealRequest {
+            config_id: "openai".to_owned(),
+        },
+        &store,
+    )
+    .await
+    .expect_err("plaintext key reveal should fail closed");
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("disabled"));
+}
+
+#[tokio::test]
+async fn save_provider_settings_payload_allows_same_provider_model_multiple_keys() {
+    let store = RecordingProviderSettingsStore::default();
+
+    let work = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("work-token".to_owned()),
+            base_url: None,
+            config_id: Some("openai-work".to_owned()),
+            display_name: Some("OpenAI Work".to_owned()),
+            model_id: "gpt-5.4-mini".to_owned(),
             provider_id: "openai".to_owned(),
-            secret_ref: expected_secret_ref,
-            stale_secret_refs: Vec::new(),
-        }
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+    let personal = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("personal-token".to_owned()),
+            base_url: None,
+            config_id: Some("openai-personal".to_owned()),
+            display_name: Some("OpenAI Personal".to_owned()),
+            model_id: "gpt-5.4-mini".to_owned(),
+            provider_id: "openai".to_owned(),
+            set_default: false,
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+
+    assert!(work.config.is_default);
+    assert!(!personal.config.is_default);
+    let record = store.record.lock().unwrap().clone().unwrap();
+    assert_eq!(record.default_config_id.as_deref(), Some("openai-work"));
+    assert_eq!(record.configs.len(), 2);
+    assert_eq!(record.configs[0].model_id, record.configs[1].model_id);
+    assert_ne!(record.configs[0].api_key, record.configs[1].api_key);
+}
+
+#[tokio::test]
+async fn list_provider_settings_payload_returns_profiles_without_raw_keys() {
+    let store = RecordingProviderSettingsStore {
+        record: Mutex::new(Some(ProviderSettingsRecord {
+            default_config_id: Some("openai".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "provider-test-token".to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: Some("https://gateway.example.com".to_owned()),
+                display_name: "OpenAI gateway".to_owned(),
+                id: "openai".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })),
+        ..RecordingProviderSettingsStore::default()
+    };
+
+    let payload = list_provider_settings_with_store(&store).await.unwrap();
+    let serialized = serde_json::to_string(&payload).unwrap();
+
+    assert!(serialized.contains("\"defaultConfigId\":\"openai\""));
+    assert!(serialized.contains("\"baseUrl\":\"https://gateway.example.com\""));
+    assert!(serialized.contains("\"hasApiKey\":true"));
+    assert!(!serialized.contains("provider-test-token"));
+}
+
+#[tokio::test]
+async fn list_provider_settings_payload_returns_saved_openrouter_dynamic_descriptor() {
+    let store = RecordingProviderSettingsStore {
+        record: Mutex::new(Some(ProviderSettingsRecord {
+            default_config_id: Some("openrouter".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "provider-test-token".to_owned(),
+                protocol: ModelProtocol::ChatCompletions,
+                base_url: None,
+                display_name: "OpenRouter dynamic".to_owned(),
+                id: "openrouter".to_owned(),
+                model_id: "dynamic/provider-model".to_owned(),
+                provider_id: "openrouter".to_owned(),
+                model_descriptor: openrouter_descriptor_record(
+                    "dynamic/provider-model",
+                    vec![ProviderModelModalityRecord::Text],
+                    vec![ProviderModelModalityRecord::Text],
+                    true,
+                ),
+            }],
+        })),
+        ..RecordingProviderSettingsStore::default()
+    };
+
+    let payload = list_provider_settings_with_store(&store).await.unwrap();
+
+    assert_eq!(payload.configs[0].protocol, ModelProtocol::ChatCompletions);
+    let descriptor = &payload.configs[0].model_descriptor;
+    assert_eq!(descriptor.model_id, "dynamic/provider-model");
+    assert_eq!(descriptor.runtime_status.kind, "runnable");
+    assert_eq!(
+        descriptor.conversation_capability.input_modalities,
+        vec![ProviderModelModalityRecord::Text]
     );
 }
 
 #[tokio::test]
-async fn save_provider_settings_payload_rolls_back_secret_when_record_write_fails() {
+async fn list_provider_settings_payload_rejects_openrouter_descriptor_with_unsupported_modalities()
+{
+    let store = RecordingProviderSettingsStore {
+        record: Mutex::new(Some(ProviderSettingsRecord {
+            default_config_id: Some("openrouter".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "provider-test-token".to_owned(),
+                protocol: ModelProtocol::ChatCompletions,
+                base_url: None,
+                display_name: "OpenRouter image".to_owned(),
+                id: "openrouter".to_owned(),
+                model_id: "dynamic/image-model".to_owned(),
+                provider_id: "openrouter".to_owned(),
+                model_descriptor: openrouter_descriptor_record(
+                    "dynamic/image-model",
+                    vec![
+                        ProviderModelModalityRecord::Text,
+                        ProviderModelModalityRecord::Image,
+                    ],
+                    vec![ProviderModelModalityRecord::Text],
+                    true,
+                ),
+            }],
+        })),
+        ..RecordingProviderSettingsStore::default()
+    };
+
+    let error = list_provider_settings_with_store(&store).await.unwrap_err();
+
+    assert_eq!(error.code, "RUNTIME_INIT_FAILED");
+}
+
+#[tokio::test]
+async fn list_provider_settings_payload_rejects_openrouter_descriptor_with_wrong_protocol() {
+    let mut descriptor = openrouter_descriptor_record(
+        "dynamic/messages-model",
+        vec![ProviderModelModalityRecord::Text],
+        vec![ProviderModelModalityRecord::Text],
+        true,
+    );
+    descriptor.protocol = ModelProtocol::Messages;
+    let store = RecordingProviderSettingsStore {
+        record: Mutex::new(Some(ProviderSettingsRecord {
+            default_config_id: Some("openrouter".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "provider-test-token".to_owned(),
+                protocol: ModelProtocol::Messages,
+                base_url: None,
+                display_name: "OpenRouter wrong protocol".to_owned(),
+                id: "openrouter".to_owned(),
+                model_id: "dynamic/messages-model".to_owned(),
+                provider_id: "openrouter".to_owned(),
+                model_descriptor: descriptor,
+            }],
+        })),
+        ..RecordingProviderSettingsStore::default()
+    };
+
+    let error = list_provider_settings_with_store(&store).await.unwrap_err();
+
+    assert_eq!(error.code, "RUNTIME_INIT_FAILED");
+}
+
+#[test]
+fn provider_settings_record_rejects_legacy_single_provider_shape() {
+    let legacy = json!({
+        "modelId": "gpt-5.4-mini",
+        "providerId": "openai",
+        "secretRef": "provider/workspace-local/openai/default"
+    });
+
+    assert!(serde_json::from_value::<ProviderSettingsRecord>(legacy).is_err());
+}
+
+#[test]
+fn provider_settings_record_rejects_config_without_new_model_descriptor() {
+    let legacy = json!({
+        "defaultConfigId": "openai",
+        "configs": [{
+            "apiKey": "provider-test-token",
+            "baseUrl": "https://gateway.example.com",
+            "displayName": "OpenAI gateway",
+            "id": "openai",
+            "modelId": "gpt-5.4-mini",
+            "providerId": "openai"
+        }]
+    });
+
+    assert!(serde_json::from_value::<ProviderSettingsRecord>(legacy).is_err());
+}
+
+#[test]
+fn desktop_provider_settings_store_deletes_legacy_provider_settings_file() {
+    let workspace = unique_workspace("provider-settings-legacy-provider-settings");
+    let settings_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&settings_dir).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let settings_dir = workspace.join(".jyowo").join("runtime");
+    let settings_path = settings_dir.join("provider-settings.json");
+    let mut descriptor = serde_json::to_value(openai_descriptor_record("gpt-5.4-mini")).unwrap();
+    let descriptor_object = descriptor.as_object_mut().unwrap();
+    let protocol = descriptor_object.remove("protocol").unwrap();
+    descriptor_object.insert("apiMode".to_owned(), protocol);
+    descriptor_object.remove("conversationCapability").unwrap();
+    descriptor_object.insert(
+        "capabilities".to_owned(),
+        json!({
+            "supportsTools": true,
+            "supportsVision": true,
+            "supportsThinking": false,
+            "supportsStreaming": true,
+            "supportsStructuredOutput": true,
+            "supportsJsonMode": true,
+            "supportsParallelToolCalls": true,
+            "supportsBuiltinWebSearch": false,
+            "supportsBuiltinCodeExecution": false,
+            "supportsPromptCache": true,
+            "inputModalities": ["text", "image"],
+            "outputModalities": ["text"]
+        }),
+    );
+    let record = json!({
+        "defaultConfigId": "openai",
+        "configs": [{
+            "apiKey": "provider-test-token",
+            "apiMode": "responses",
+            "displayName": "OpenAI",
+            "id": "openai",
+            "modelId": "gpt-5.4-mini",
+            "providerId": "openai",
+            "modelDescriptor": descriptor
+        }]
+    });
+    std::fs::write(&settings_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    let store = DesktopProviderSettingsStore::new(workspace);
+
+    assert_eq!(store.load_record().unwrap(), None);
+    assert!(!settings_path.exists());
+}
+
+fn openrouter_descriptor_record(
+    model_id: &str,
+    input_modalities: Vec<ProviderModelModalityRecord>,
+    output_modalities: Vec<ProviderModelModalityRecord>,
+    supports_streaming: bool,
+) -> ProviderModelDescriptorRecord {
+    ProviderModelDescriptorRecord {
+        protocol: ModelProtocol::ChatCompletions,
+        conversation_capability: ConversationModelCapabilityRecord {
+            input_modalities,
+            output_modalities,
+            context_window: 128_000,
+            max_output_tokens: 8_192,
+            streaming: supports_streaming,
+            tool_calling: true,
+            reasoning: false,
+            prompt_cache: false,
+            structured_output: true,
+        },
+        context_window: 128_000,
+        display_name: "Dynamic OpenRouter model".to_owned(),
+        lifecycle: ProviderModelLifecycleRecord::Stable,
+        max_output_tokens: 8_192,
+        model_id: model_id.to_owned(),
+        provider_id: "openrouter".to_owned(),
+    }
+}
+
+fn openai_descriptor_record(model_id: &str) -> ProviderModelDescriptorRecord {
+    ProviderModelDescriptorRecord {
+        protocol: ModelProtocol::Responses,
+        conversation_capability: ConversationModelCapabilityRecord {
+            input_modalities: vec![ProviderModelModalityRecord::Text],
+            output_modalities: vec![ProviderModelModalityRecord::Text],
+            context_window: 128_000,
+            max_output_tokens: 16_384,
+            streaming: true,
+            tool_calling: true,
+            reasoning: false,
+            prompt_cache: true,
+            structured_output: true,
+        },
+        context_window: 128_000,
+        display_name: "GPT-5.4 mini".to_owned(),
+        lifecycle: ProviderModelLifecycleRecord::Stable,
+        max_output_tokens: 16_384,
+        model_id: model_id.to_owned(),
+        provider_id: "openai".to_owned(),
+    }
+}
+
+#[test]
+fn provider_settings_record_rejects_config_secret_ref() {
+    let record = json!({
+        "defaultConfigId": "openai-gateway",
+        "configs": [{
+            "apiKey": "provider-test-token",
+            "protocol": "responses",
+            "baseUrl": "https://gateway.example.com",
+            "displayName": "OpenAI gateway",
+            "id": "openai-gateway",
+            "modelId": "gpt-5.4-mini",
+            "providerId": "openai",
+            "secretRef": "provider/workspace-local/openai/default"
+        }]
+    });
+
+    assert!(serde_json::from_value::<ProviderSettingsRecord>(record).is_err());
+}
+
+#[test]
+fn provider_settings_record_rejects_config_without_api_key() {
+    let record = json!({
+        "defaultConfigId": "openai",
+        "configs": [{
+            "protocol": "responses",
+            "displayName": "OpenAI",
+            "id": "openai",
+            "modelId": "gpt-5.4-mini",
+            "providerId": "openai"
+        }]
+    });
+
+    assert!(serde_json::from_value::<ProviderSettingsRecord>(record).is_err());
+}
+
+#[test]
+fn provider_settings_record_rejects_configs_without_default_config_id() {
+    let record = json!({
+        "configs": [{
+            "apiKey": "provider-test-token",
+            "protocol": "responses",
+            "displayName": "OpenAI",
+            "id": "openai",
+            "modelId": "gpt-5.4-mini",
+            "providerId": "openai"
+        }]
+    });
+
+    assert!(serde_json::from_value::<ProviderSettingsRecord>(record).is_err());
+}
+
+#[test]
+fn provider_settings_record_rejects_default_config_id_missing_from_configs() {
+    let record = json!({
+        "defaultConfigId": "missing",
+        "configs": [{
+            "apiKey": "provider-test-token",
+            "protocol": "responses",
+            "displayName": "OpenAI",
+            "id": "openai",
+            "modelId": "gpt-5.4-mini",
+            "providerId": "openai"
+        }]
+    });
+
+    assert!(serde_json::from_value::<ProviderSettingsRecord>(record).is_err());
+}
+
+#[tokio::test]
+async fn save_provider_settings_payload_reuses_saved_openrouter_dynamic_descriptor() {
+    let store = RecordingProviderSettingsStore::default();
+    *store.record.lock().unwrap() = Some(ProviderSettingsRecord {
+        default_config_id: Some("openrouter".to_owned()),
+        configs: vec![ProviderConfigRecord {
+            api_key: "provider-test-token".to_owned(),
+            protocol: ModelProtocol::ChatCompletions,
+            base_url: Some("https://openrouter.ai/api".to_owned()),
+            display_name: "OpenRouter dynamic".to_owned(),
+            id: "openrouter".to_owned(),
+            model_id: "dynamic/provider-model".to_owned(),
+            provider_id: "openrouter".to_owned(),
+            model_descriptor: openrouter_descriptor_record(
+                "dynamic/provider-model",
+                vec![ProviderModelModalityRecord::Text],
+                vec![ProviderModelModalityRecord::Text],
+                true,
+            ),
+        }],
+    });
+
+    let payload = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: None,
+            base_url: Some("https://openrouter.ai/api".to_owned()),
+            config_id: Some("openrouter".to_owned()),
+            display_name: Some("OpenRouter dynamic".to_owned()),
+            model_id: "dynamic/provider-model".to_owned(),
+            provider_id: "openrouter".to_owned(),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(payload.config.model_id, "dynamic/provider-model");
+    assert_eq!(payload.config.protocol, ModelProtocol::ChatCompletions);
+    assert_eq!(
+        payload.config.model_descriptor.model_id,
+        "dynamic/provider-model"
+    );
+}
+
+#[tokio::test]
+async fn save_provider_settings_payload_requires_api_key_when_base_url_changes() {
+    let store = RecordingProviderSettingsStore::default();
+    *store.record.lock().unwrap() = Some(ProviderSettingsRecord {
+        default_config_id: Some("openai-gateway".to_owned()),
+        configs: vec![ProviderConfigRecord {
+            api_key: "provider-test-token".to_owned(),
+            protocol: ModelProtocol::Responses,
+            base_url: Some("https://gateway.example.com".to_owned()),
+            display_name: "OpenAI gateway".to_owned(),
+            id: "openai-gateway".to_owned(),
+            model_id: "gpt-5.4-mini".to_owned(),
+            provider_id: "openai".to_owned(),
+            model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+        }],
+    });
+
+    let error = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: None,
+            base_url: Some("https://attacker.example.com".to_owned()),
+            config_id: Some("openai-gateway".to_owned()),
+            display_name: Some("OpenAI gateway".to_owned()),
+            model_id: "gpt-5.4-mini".to_owned(),
+            provider_id: "openai".to_owned(),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("apiKey is required"));
+}
+
+#[tokio::test]
+async fn save_provider_settings_payload_rejects_http_base_url_with_loopback_prefix_domain() {
+    let store = RecordingProviderSettingsStore::default();
+    let error = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("provider-test-token".to_owned()),
+            base_url: Some("http://127.attacker.example".to_owned()),
+            config_id: None,
+            display_name: Some("OpenAI gateway".to_owned()),
+            model_id: "gpt-5.4-mini".to_owned(),
+            provider_id: "openai".to_owned(),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error
+        .message
+        .contains("baseUrl must use https:// unless it targets localhost"));
+}
+
+#[tokio::test]
+async fn save_provider_settings_payload_accepts_http_loopback_base_url() {
+    let store = RecordingProviderSettingsStore::default();
+    let payload = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("provider-test-token".to_owned()),
+            base_url: Some("http://127.0.0.1:11434/v1".to_owned()),
+            config_id: None,
+            display_name: Some("OpenAI gateway".to_owned()),
+            model_id: "gpt-5.4-mini".to_owned(),
+            provider_id: "openai".to_owned(),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        payload.config.base_url.as_deref(),
+        Some("http://127.0.0.1:11434/v1")
+    );
+}
+
+#[tokio::test]
+async fn save_provider_settings_payload_does_not_save_record_when_record_write_fails() {
     let store = RecordingProviderSettingsStore {
         fail_record: true,
         ..RecordingProviderSettingsStore::default()
     };
-    let expected_secret_ref = store.secret_ref("openai");
     let error = save_provider_settings_with_store(
         ProviderSettingsRequest {
-            api_key: "provider-test-token".to_owned(),
-            model_id: "gpt-4o-mini".to_owned(),
+            api_key: Some("provider-test-token".to_owned()),
+            base_url: None,
+            config_id: None,
+            display_name: None,
+            model_id: "gpt-5.4-mini".to_owned(),
             provider_id: "openai".to_owned(),
+            set_default: true,
         },
         &store,
     )
@@ -212,154 +1359,103 @@ async fn save_provider_settings_payload_rolls_back_secret_when_record_write_fail
     .unwrap_err();
 
     assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
-    assert_eq!(
-        store.deleted_secrets.lock().unwrap().as_slice(),
-        &[expected_secret_ref]
-    );
 }
 
 #[tokio::test]
-async fn save_provider_settings_payload_deletes_previous_secret_after_successful_rotation() {
-    let previous_secret_ref = provider_secret_ref(
-        PathBuf::from("/test/workspace").as_path(),
-        "openai",
-        "previous",
-    );
-    let store = RecordingProviderSettingsStore {
-        record: Mutex::new(Some(ProviderSettingsRecord {
-            model_id: "gpt-4o-mini".to_owned(),
-            provider_id: "openai".to_owned(),
-            secret_ref: previous_secret_ref.clone(),
-            stale_secret_refs: Vec::new(),
-        })),
-        ..RecordingProviderSettingsStore::default()
-    };
-    let payload = save_provider_settings_with_store(
-        ProviderSettingsRequest {
-            api_key: "new-provider-token".to_owned(),
-            model_id: "gpt-4o-mini".to_owned(),
-            provider_id: "openai".to_owned(),
+async fn set_conversation_model_config_with_runtime_state_persists_selection() {
+    let workspace = unique_workspace("conversation-model-config");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
+    provider_store
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some("openai-work".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "provider-test-token".to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI Work".to_owned(),
+                id: "openai-work".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })
+        .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
+    let session_id = SessionId::new();
+    open_conversation_session(&state, session_id).await;
+    let conversation_id = session_id.to_string();
+
+    let payload = set_conversation_model_config_with_runtime_state(
+        SetConversationModelConfigRequest {
+            conversation_id: conversation_id.clone(),
+            model_config_id: "openai-work".to_owned(),
         },
-        &store,
+        &state,
     )
     .await
     .unwrap();
 
-    assert_ne!(payload.secret_ref, previous_secret_ref);
+    assert_eq!(payload.conversation_id, conversation_id);
+    assert_eq!(payload.model_config_id, "openai-work");
+    assert_eq!(payload.status, "saved");
+    let saved: HashMap<String, String> = serde_json::from_slice(
+        &std::fs::read(
+            workspace
+                .join(".jyowo")
+                .join("runtime")
+                .join("conversation-model-settings.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
-        store.deleted_secrets.lock().unwrap().as_slice(),
-        &[previous_secret_ref]
-    );
-    assert_eq!(
-        store.record.lock().unwrap().as_ref().unwrap(),
-        &ProviderSettingsRecord {
-            model_id: "gpt-4o-mini".to_owned(),
-            provider_id: "openai".to_owned(),
-            secret_ref: payload.secret_ref,
-            stale_secret_refs: Vec::new(),
-        }
+        saved.get(&payload.conversation_id).map(String::as_str),
+        Some("openai-work")
     );
 }
 
 #[tokio::test]
-async fn save_provider_settings_payload_keeps_stale_secret_refs_when_cleanup_fails() {
-    let older_secret_ref = provider_secret_ref(
-        PathBuf::from("/test/workspace").as_path(),
-        "openai",
-        "older",
-    );
-    let previous_secret_ref = provider_secret_ref(
-        PathBuf::from("/test/workspace").as_path(),
-        "openai",
-        "previous",
-    );
-    let store = RecordingProviderSettingsStore {
-        delete_failures: Mutex::new(HashSet::from([older_secret_ref.clone()])),
-        record: Mutex::new(Some(ProviderSettingsRecord {
-            model_id: "gpt-4o-mini".to_owned(),
-            provider_id: "openai".to_owned(),
-            secret_ref: previous_secret_ref.clone(),
-            stale_secret_refs: vec![older_secret_ref.clone()],
-        })),
-        ..RecordingProviderSettingsStore::default()
-    };
-    let payload = save_provider_settings_with_store(
-        ProviderSettingsRequest {
-            api_key: "new-provider-token".to_owned(),
-            model_id: "gpt-4o-mini".to_owned(),
-            provider_id: "openai".to_owned(),
+async fn set_conversation_model_config_with_runtime_state_rejects_unknown_conversation_id() {
+    let workspace = unique_workspace("conversation-model-config-unknown");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    DesktopProviderSettingsStore::new(workspace.clone())
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some("openai-work".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "provider-test-token".to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI Work".to_owned(),
+                id: "openai-work".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })
+        .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
+    let unknown_conversation_id = SessionId::new().to_string();
+
+    let error = set_conversation_model_config_with_runtime_state(
+        SetConversationModelConfigRequest {
+            conversation_id: unknown_conversation_id.clone(),
+            model_config_id: "openai-work".to_owned(),
         },
-        &store,
+        &state,
     )
     .await
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(
-        store.deleted_secrets.lock().unwrap().as_slice(),
-        &[older_secret_ref.clone(), previous_secret_ref]
-    );
-    assert_eq!(
-        store.record.lock().unwrap().as_ref().unwrap(),
-        &ProviderSettingsRecord {
-            model_id: "gpt-4o-mini".to_owned(),
-            provider_id: "openai".to_owned(),
-            secret_ref: payload.secret_ref,
-            stale_secret_refs: vec![older_secret_ref],
-        }
-    );
-}
-
-#[tokio::test]
-async fn save_provider_settings_payload_ignores_tampered_stale_secret_refs() {
-    let store = RecordingProviderSettingsStore {
-        record: Mutex::new(Some(ProviderSettingsRecord {
-            model_id: "gpt-4o-mini".to_owned(),
-            provider_id: "openai".to_owned(),
-            secret_ref: "provider/workspace-other/openai/active".to_owned(),
-            stale_secret_refs: vec!["provider/workspace-other/openai/stale".to_owned()],
-        })),
-        ..RecordingProviderSettingsStore::default()
-    };
-    let payload = save_provider_settings_with_store(
-        ProviderSettingsRequest {
-            api_key: "new-provider-token".to_owned(),
-            model_id: "gpt-4o-mini".to_owned(),
-            provider_id: "openai".to_owned(),
-        },
-        &store,
-    )
-    .await
-    .unwrap();
-
-    assert!(store.deleted_secrets.lock().unwrap().is_empty());
-    assert_eq!(
-        store.record.lock().unwrap().as_ref().unwrap(),
-        &ProviderSettingsRecord {
-            model_id: "gpt-4o-mini".to_owned(),
-            provider_id: "openai".to_owned(),
-            secret_ref: payload.secret_ref,
-            stale_secret_refs: Vec::new(),
-        }
-    );
-}
-
-#[test]
-fn provider_secret_ref_is_scoped_to_workspace_without_exposing_path() {
-    let first = provider_secret_ref(
-        PathBuf::from("/workspace/one").as_path(),
-        "openai",
-        "secret",
-    );
-    let second = provider_secret_ref(
-        PathBuf::from("/workspace/two").as_path(),
-        "openai",
-        "secret",
-    );
-
-    assert_ne!(first, second);
-    assert!(first.starts_with("provider/workspace-"));
-    assert!(first.ends_with("/openai/secret"));
-    assert!(!first.contains("/workspace/one"));
+    assert_eq!(error.code, "NOT_FOUND");
+    assert!(error.message.contains(&unknown_conversation_id));
+    assert!(!workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("conversation-model-settings.json")
+        .exists());
 }
 
 #[tokio::test]
@@ -367,9 +1463,13 @@ async fn provider_settings_payload_rejects_invalid_provider_model_and_key() {
     let store = RecordingProviderSettingsStore::default();
     let invalid_provider = save_provider_settings_with_store(
         ProviderSettingsRequest {
-            api_key: "provider-test-token".to_owned(),
-            model_id: "gpt-4o-mini".to_owned(),
+            api_key: Some("provider-test-token".to_owned()),
+            base_url: None,
+            config_id: None,
+            display_name: None,
+            model_id: "gpt-5.4-mini".to_owned(),
             provider_id: "unknown".to_owned(),
+            set_default: true,
         },
         &store,
     )
@@ -389,9 +1489,13 @@ async fn provider_settings_payload_rejects_invalid_provider_model_and_key() {
 
     let invalid_key = save_provider_settings_with_store(
         ProviderSettingsRequest {
-            api_key: String::new(),
-            model_id: "gpt-4o-mini".to_owned(),
+            api_key: Some(String::new()),
+            base_url: None,
+            config_id: None,
+            display_name: None,
+            model_id: "gpt-5.4-mini".to_owned(),
             provider_id: "openai".to_owned(),
+            set_default: true,
         },
         &store,
     )
@@ -413,7 +1517,7 @@ async fn provider_settings_payload_rejects_invalid_provider_model_and_key() {
 #[tokio::test]
 async fn validate_provider_settings_payload_does_not_require_api_key() {
     let payload = validate_provider_settings_payload(ValidateProviderSettingsRequest {
-        model_id: "gpt-4o-mini".to_owned(),
+        model_id: "gpt-5.4-mini".to_owned(),
         provider_id: "openai".to_owned(),
     })
     .await
@@ -773,6 +1877,8 @@ async fn list_conversations_with_runtime_state_returns_startable_conversation_id
 
     let run = start_run_with_runtime_state(
         StartRunRequest {
+            client_message_id: None,
+            attachments: None,
             context_references: None,
             conversation_id,
             prompt: "Continue implementation".to_owned(),
@@ -789,6 +1895,139 @@ async fn list_conversations_with_runtime_state_returns_startable_conversation_id
             .to_string(),
         run.run_id
     );
+}
+
+#[tokio::test]
+async fn create_conversation_with_runtime_state_persists_empty_runtime_session() {
+    let state = runtime_state_with_harness().await;
+
+    let created = create_conversation_with_runtime_state(&state)
+        .await
+        .expect("create conversation should create a runtime session");
+    let conversation_id = created.conversation.id.clone();
+    assert!(created.conversation.is_empty);
+    SessionId::parse(&conversation_id).expect("conversation id should be a session id");
+
+    let listed = list_conversations_with_runtime_state(&state).await;
+    assert!(listed
+        .conversations
+        .iter()
+        .any(|conversation| conversation.id == conversation_id));
+
+    let detail = get_conversation_with_runtime_state(
+        GetConversationRequest {
+            conversation_id: conversation_id.clone(),
+        },
+        &state,
+    )
+    .await
+    .expect("created empty conversation should be readable");
+
+    assert_eq!(detail.conversation.id, conversation_id);
+    assert!(detail.conversation.messages.is_empty());
+}
+
+#[tokio::test]
+async fn create_conversation_with_runtime_state_does_not_bind_default_model_config() {
+    let workspace = unique_workspace("create-conversation-default-model");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    DesktopProviderSettingsStore::new(workspace.clone())
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some("openai-work".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "provider-test-token".to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI Work".to_owned(),
+                id: "openai-work".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })
+        .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+
+    let created = create_conversation_with_runtime_state(&state)
+        .await
+        .expect("create conversation should create a runtime session");
+    let detail = get_conversation_with_runtime_state(
+        GetConversationRequest {
+            conversation_id: created.conversation.id,
+        },
+        &state,
+    )
+    .await
+    .expect("created conversation should be readable");
+
+    assert_eq!(detail.conversation.model_config_id, None);
+}
+
+#[test]
+fn desktop_provider_settings_store_rejects_config_without_api_key() {
+    let workspace = unique_workspace("conversation-model-no-key");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let error = DesktopProviderSettingsStore::new(workspace)
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some("openai-work".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: String::new(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI Work".to_owned(),
+                id: "openai-work".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })
+        .unwrap_err();
+
+    assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+    assert!(error.message.contains("apiKey is required"));
+}
+
+#[tokio::test]
+async fn set_conversation_model_config_with_runtime_state_allows_cross_provider_known_models() {
+    let workspace = unique_workspace("conversation-cross-provider-model");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let state = runtime_state_for_workspace(workspace.clone())
+        .await
+        .expect("runtime should start with local llama fallback");
+    let created = create_conversation_with_runtime_state(&state)
+        .await
+        .expect("conversation should be created with fallback runtime");
+    DesktopProviderSettingsStore::new(workspace)
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some("openai-work".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "provider-test-token".to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI Work".to_owned(),
+                id: "openai-work".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })
+        .unwrap();
+
+    let saved = set_conversation_model_config_with_runtime_state(
+        SetConversationModelConfigRequest {
+            conversation_id: created.conversation.id.clone(),
+            model_config_id: "openai-work".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("known provider model switch should open the existing session");
+
+    assert_eq!(saved.conversation_id, created.conversation.id);
+    assert_eq!(saved.model_config_id, "openai-work");
 }
 
 #[tokio::test]
@@ -820,6 +2059,129 @@ async fn list_conversations_with_runtime_state_opens_listed_empty_conversation()
     assert_eq!(detail.conversation.id, conversation_id);
     assert!(detail.conversation.messages.is_empty());
     assert_eq!(detail.conversation.title, "New conversation");
+    assert!(payload.conversations[0].is_empty);
+}
+
+#[tokio::test]
+async fn delete_conversation_with_runtime_state_removes_session_from_runtime_list() {
+    let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Text("Deleted conversation should not return".to_owned()),
+        },
+        ModelStreamEvent::MessageStop,
+    ])])
+    .await;
+    let conversation_id = state.default_conversation_id().to_string();
+
+    start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            context_references: None,
+            conversation_id: conversation_id.clone(),
+            prompt: "Create a conversation".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("conversation should be created before deletion");
+
+    let deleted = delete_conversation_with_runtime_state(
+        DeleteConversationRequest {
+            conversation_id: conversation_id.clone(),
+        },
+        &state,
+    )
+    .await
+    .expect("conversation deletion should succeed");
+
+    assert_eq!(deleted.conversation_id, conversation_id);
+    assert_eq!(deleted.status, "deleted");
+
+    let payload = list_conversations_with_runtime_state(&state).await;
+    assert!(!payload
+        .conversations
+        .iter()
+        .any(|conversation| conversation.id == conversation_id));
+
+    let detail_error = get_conversation_with_runtime_state(
+        GetConversationRequest {
+            conversation_id: conversation_id.clone(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(detail_error.code, "NOT_FOUND");
+
+    let restart_error = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            context_references: None,
+            conversation_id,
+            prompt: "Do not recreate a deleted conversation".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(restart_error.code, "NOT_FOUND");
+}
+
+#[tokio::test]
+async fn get_and_delete_conversation_with_runtime_state_survive_runtime_option_changes() {
+    let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Text("Readable after runtime option change".to_owned()),
+        },
+        ModelStreamEvent::MessageStop,
+    ])])
+    .await;
+    let conversation_id = state.default_conversation_id().to_string();
+
+    start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            context_references: None,
+            conversation_id: conversation_id.clone(),
+            prompt: "Create a conversation before changing runtime options".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("conversation should be created before runtime option changes");
+
+    let harness = state
+        .harness()
+        .expect("runtime state should retain the configured harness");
+    state.replace_harness(harness, "mock-model".to_owned(), ModelProtocol::Responses);
+
+    let detail = get_conversation_with_runtime_state(
+        GetConversationRequest {
+            conversation_id: conversation_id.clone(),
+        },
+        &state,
+    )
+    .await
+    .expect("conversation reads should survive runtime option changes");
+    assert!(detail.conversation.messages.iter().any(|message| message
+        .body
+        .contains("Readable after runtime option change")));
+
+    let deleted = delete_conversation_with_runtime_state(
+        DeleteConversationRequest {
+            conversation_id: conversation_id.clone(),
+        },
+        &state,
+    )
+    .await
+    .expect("conversation delete should survive runtime option changes");
+    assert_eq!(deleted.conversation_id, conversation_id);
+    assert_eq!(deleted.status, "deleted");
 }
 
 #[tokio::test]
@@ -874,6 +2236,8 @@ async fn get_conversation_with_runtime_state_returns_runtime_messages() {
     let session_id = SessionId::new();
     start_run_with_runtime_state(
         StartRunRequest {
+            client_message_id: None,
+            attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             prompt: "Tell me status".to_owned(),
@@ -928,6 +2292,8 @@ async fn list_conversations_with_runtime_state_projects_runtime_summary() {
 
     start_run_with_runtime_state(
         StartRunRequest {
+            client_message_id: None,
+            attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             prompt: "Tell me status\nwith details".to_owned(),
@@ -947,6 +2313,7 @@ async fn list_conversations_with_runtime_state_projects_runtime_summary() {
             .expect("started session should be listed");
 
         if summary.last_message_preview.as_deref() == Some("Ready from runtime") {
+            assert!(!summary.is_empty);
             assert_eq!(summary.title, "Tell me status");
             assert_ne!(summary.updated_at, "2026-06-17T00:00:00.000Z");
             break;
@@ -961,7 +2328,69 @@ async fn list_conversations_with_runtime_state_projects_runtime_summary() {
 }
 
 #[tokio::test]
-async fn list_artifacts_with_runtime_state_projects_assistant_outputs() {
+async fn conversation_payloads_with_runtime_state_redact_private_paths() {
+    let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Text("Read /home/goya/.ssh/config".to_owned()),
+        },
+        ModelStreamEvent::MessageStop,
+    ])])
+    .await;
+    let session_id = SessionId::new();
+
+    start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            prompt: "Read /Users/goya/.ssh/config".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("start_run should start a conversation run");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let detail = get_conversation_with_runtime_state(
+            GetConversationRequest {
+                conversation_id: session_id.to_string(),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+
+        if detail.conversation.messages.len() >= 2 {
+            assert_eq!(detail.conversation.messages[0].body, "Read [REDACTED]");
+            assert_eq!(detail.conversation.messages[1].body, "Read [REDACTED]");
+
+            let list = list_conversations_with_runtime_state(&state).await;
+            let summary = list
+                .conversations
+                .iter()
+                .find(|conversation| conversation.id == session_id.to_string())
+                .expect("started session should be listed");
+            assert_eq!(summary.title, "Read [REDACTED]");
+            assert_eq!(
+                summary.last_message_preview.as_deref(),
+                Some("Read [REDACTED]")
+            );
+            break;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!("conversation payloads should include redacted runtime messages");
+        }
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+#[tokio::test]
+async fn list_artifacts_with_runtime_state_ignores_assistant_outputs() {
     let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
         ModelStreamEvent::ContentBlockDelta {
             index: 0,
@@ -976,6 +2405,8 @@ async fn list_artifacts_with_runtime_state_projects_assistant_outputs() {
 
     start_run_with_runtime_state(
         StartRunRequest {
+            client_message_id: None,
+            attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             prompt: "Create an artifact".to_owned(),
@@ -987,43 +2418,458 @@ async fn list_artifacts_with_runtime_state_projects_assistant_outputs() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
 
     loop {
-        let payload = list_artifacts_with_runtime_state(&state)
-            .await
-            .expect("runtime artifact projection should load");
-
-        if let Some(artifact) = payload.artifacts.first() {
-            assert_eq!(artifact.kind, "markdown");
-            assert_eq!(artifact.status, "ready");
-            assert!(artifact
-                .preview
-                .as_deref()
-                .unwrap_or_default()
-                .contains("Runtime artifact"));
-            assert!(artifact.source_message_id.is_some());
-            assert_eq!(
-                RunId::parse(&artifact.source_run_id)
-                    .expect("source run id should be canonical")
-                    .to_string(),
-                artifact.source_run_id
-            );
-            return;
+        let conversation = get_conversation_with_runtime_state(
+            GetConversationRequest {
+                conversation_id: session_id.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("runtime conversation should load");
+        if conversation
+            .conversation
+            .messages
+            .iter()
+            .any(|message| message.body.contains("Runtime artifact"))
+        {
+            break;
         }
 
         if tokio::time::Instant::now() >= deadline {
-            panic!("runtime assistant output should be projected as an artifact");
+            panic!("runtime assistant output should complete");
         }
 
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+
+    let payload = list_artifacts_with_runtime_state(
+        ListArtifactsRequest {
+            conversation_id: state.default_conversation_id().to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("runtime artifact projection should load");
+
+    assert!(payload.artifacts.is_empty());
+}
+
+#[tokio::test]
+async fn list_artifacts_with_runtime_state_projects_artifact_events() {
+    let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Text("Created a durable artifact.".to_owned()),
+        },
+        ModelStreamEvent::MessageStop,
+    ])])
+    .await;
+    let session_id = state.default_conversation_id();
+
+    start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            prompt: "Create an artifact".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("start_run should start a conversation run");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+
+    let run_id = loop {
+        let conversation = get_conversation_with_runtime_state(
+            GetConversationRequest {
+                conversation_id: session_id.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("runtime conversation should load");
+        if conversation
+            .conversation
+            .messages
+            .iter()
+            .any(|message| message.body.contains("Created a durable artifact"))
+        {
+            let activity = list_activity_with_runtime_state(
+                ListActivityRequest {
+                    conversation_id: Some(session_id.to_string()),
+                    run_id: None,
+                },
+                &state,
+            )
+            .await
+            .expect("activity should load");
+            let run_id = activity
+                .events
+                .iter()
+                .find(|event| event.event_type == "run.started")
+                .map(|event| event.run_id.clone())
+                .expect("run id should be visible in activity");
+            break RunId::parse(&run_id).expect("run id should be canonical");
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!("runtime assistant output should complete");
+        }
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    };
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                artifact_id: "artifact-runtime-notes".to_owned(),
+                at: now(),
+                blob_ref: None,
+                content_hash: None,
+                kind: "markdown".to_owned(),
+                preview: Some("# Runtime artifact\n\nGenerated as a durable result.".to_owned()),
+                run_id,
+                session_id,
+                source: ArtifactSource::Assistant,
+                source_message_id: None,
+                source_tool_use_id: None,
+                status: ArtifactStatus::Ready,
+                title: "Runtime artifact".to_owned(),
+            })],
+        )
+        .await
+        .expect("artifact event should append");
+
+    let payload = list_artifacts_with_runtime_state(
+        ListArtifactsRequest {
+            conversation_id: session_id.to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("runtime artifact projection should load");
+
+    let artifact = payload
+        .artifacts
+        .first()
+        .expect("artifact event should project");
+    assert_eq!(artifact.id, "artifact-runtime-notes");
+    assert_eq!(artifact.kind, "markdown");
+    assert_eq!(artifact.status, "ready");
+    assert_eq!(artifact.title, "Runtime artifact");
+    assert!(artifact
+        .preview
+        .as_deref()
+        .unwrap_or_default()
+        .contains("Runtime artifact"));
+    assert_eq!(artifact.source_message_id, None);
+    assert_eq!(artifact.source_run_id, run_id.to_string());
+}
+
+#[tokio::test]
+async fn list_artifacts_with_runtime_state_scopes_artifacts_to_requested_conversation() {
+    let state = runtime_state_with_harness().await;
+    let default_session_id = state.default_conversation_id();
+    let other_session_id = SessionId::new();
+    open_conversation_session(&state, default_session_id).await;
+    open_conversation_session(&state, other_session_id).await;
+    let run_id = RunId::new();
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            default_session_id,
+            &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                artifact_id: "artifact-default".to_owned(),
+                at: now(),
+                blob_ref: None,
+                content_hash: None,
+                kind: "markdown".to_owned(),
+                preview: Some("Default conversation artifact".to_owned()),
+                run_id,
+                session_id: default_session_id,
+                source: ArtifactSource::Assistant,
+                source_message_id: None,
+                source_tool_use_id: None,
+                status: ArtifactStatus::Ready,
+                title: "Default artifact".to_owned(),
+            })],
+        )
+        .await
+        .expect("default artifact should append");
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            other_session_id,
+            &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                artifact_id: "artifact-other".to_owned(),
+                at: now(),
+                blob_ref: None,
+                content_hash: None,
+                kind: "markdown".to_owned(),
+                preview: Some("Other conversation artifact".to_owned()),
+                run_id,
+                session_id: other_session_id,
+                source: ArtifactSource::Assistant,
+                source_message_id: None,
+                source_tool_use_id: None,
+                status: ArtifactStatus::Ready,
+                title: "Other artifact".to_owned(),
+            })],
+        )
+        .await
+        .expect("other artifact should append");
+
+    let payload = list_artifacts_with_runtime_state(
+        ListArtifactsRequest {
+            conversation_id: other_session_id.to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("runtime artifact projection should load");
+
+    assert_eq!(payload.artifacts.len(), 1);
+    assert_eq!(payload.artifacts[0].id, "artifact-other");
+}
+
+#[tokio::test]
+async fn list_artifacts_with_runtime_state_requires_conversation_id() {
+    let state = runtime_state_with_harness().await;
+
+    let error = list_artifacts_with_runtime_state(
+        ListArtifactsRequest {
+            conversation_id: String::new(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn list_artifacts_with_runtime_state_ignores_mismatched_artifact_session_ids() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                artifact_id: "artifact-mismatched".to_owned(),
+                at: now(),
+                blob_ref: None,
+                content_hash: None,
+                kind: "markdown".to_owned(),
+                preview: Some("Wrong session".to_owned()),
+                run_id: RunId::new(),
+                session_id: SessionId::new(),
+                source: ArtifactSource::Assistant,
+                source_message_id: None,
+                source_tool_use_id: None,
+                status: ArtifactStatus::Ready,
+                title: "Mismatched artifact".to_owned(),
+            })],
+        )
+        .await
+        .expect("artifact event should append");
+
+    let payload = list_artifacts_with_runtime_state(
+        ListArtifactsRequest {
+            conversation_id: session_id.to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("runtime artifact projection should load");
+
+    assert!(payload.artifacts.is_empty());
+}
+
+#[tokio::test]
+async fn list_reference_candidates_with_runtime_state_scopes_artifacts_to_requested_conversation() {
+    let state = runtime_state_with_harness().await;
+    let default_session_id = state.default_conversation_id();
+    let other_session_id = SessionId::new();
+    open_conversation_session(&state, default_session_id).await;
+    open_conversation_session(&state, other_session_id).await;
+    let run_id = RunId::new();
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            default_session_id,
+            &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                artifact_id: "artifact-default".to_owned(),
+                at: now(),
+                blob_ref: None,
+                content_hash: None,
+                kind: "markdown".to_owned(),
+                preview: Some("Default conversation artifact".to_owned()),
+                run_id,
+                session_id: default_session_id,
+                source: ArtifactSource::Assistant,
+                source_message_id: None,
+                source_tool_use_id: None,
+                status: ArtifactStatus::Ready,
+                title: "Default artifact".to_owned(),
+            })],
+        )
+        .await
+        .expect("default artifact should append");
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            other_session_id,
+            &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                artifact_id: "artifact-other".to_owned(),
+                at: now(),
+                blob_ref: None,
+                content_hash: None,
+                kind: "markdown".to_owned(),
+                preview: Some("Other conversation artifact".to_owned()),
+                run_id,
+                session_id: other_session_id,
+                source: ArtifactSource::Assistant,
+                source_message_id: None,
+                source_tool_use_id: None,
+                status: ArtifactStatus::Ready,
+                title: "Other artifact".to_owned(),
+            })],
+        )
+        .await
+        .expect("other artifact should append");
+
+    let payload = list_reference_candidates_with_runtime_state(
+        ListReferenceCandidatesRequest {
+            conversation_id: other_session_id.to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("reference candidates should load");
+
+    assert_eq!(payload.artifacts.len(), 1);
+    assert_eq!(payload.artifacts[0].id.as_deref(), Some("artifact-other"));
+}
+
+#[tokio::test]
+async fn list_reference_candidates_with_runtime_state_rejects_invalid_conversation_id() {
+    let state = runtime_state_with_harness().await;
+
+    let error = list_reference_candidates_with_runtime_state(
+        ListReferenceCandidatesRequest {
+            conversation_id: "not-a-session-id".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn list_reference_candidates_with_runtime_state_rejects_unknown_conversation_id() {
+    let state = runtime_state_with_harness().await;
+    open_conversation_session(&state, state.default_conversation_id()).await;
+
+    let error = list_reference_candidates_with_runtime_state(
+        ListReferenceCandidatesRequest {
+            conversation_id: SessionId::new().to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "NOT_FOUND");
+}
+
+#[tokio::test]
+async fn list_artifacts_with_runtime_state_redacts_artifact_metadata() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    open_conversation_session(&state, session_id).await;
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                artifact_id: "artifact-sensitive".to_owned(),
+                at: now(),
+                blob_ref: None,
+                content_hash: None,
+                kind: format!("markdown {token}"),
+                preview: None,
+                run_id: RunId::new(),
+                session_id,
+                source: ArtifactSource::Assistant,
+                source_message_id: None,
+                source_tool_use_id: None,
+                status: ArtifactStatus::Ready,
+                title: format!("Review {token}"),
+            })],
+        )
+        .await
+        .expect("artifact event should append");
+
+    let payload = list_artifacts_with_runtime_state(
+        ListArtifactsRequest {
+            conversation_id: session_id.to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("runtime artifact projection should load");
+    let serialized = serde_json::to_string(&payload).unwrap();
+
+    assert!(!serialized.contains(token));
+    assert!(serialized.contains("[REDACTED]"));
 }
 
 #[tokio::test]
 async fn list_artifacts_with_runtime_state_hides_runtime_read_errors() {
     let state = runtime_state_with_harness().await;
 
-    let error = list_artifacts_with_runtime_state(&state)
-        .await
-        .expect_err("missing conversation session should fail safely");
+    let error = list_artifacts_with_runtime_state(
+        ListArtifactsRequest {
+            conversation_id: SessionId::new().to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("missing conversation session should fail safely");
 
     assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
     assert_eq!(error.message, "artifact read failed");
@@ -1035,7 +2881,12 @@ async fn list_artifacts_with_runtime_state_hides_runtime_read_errors() {
 #[test]
 fn start_run_payload_validates_prompt_and_requires_runtime() {
     let error = start_run_payload(StartRunRequest {
-        context_references: Some(vec!["apps/desktop".to_owned()]),
+        client_message_id: None,
+        attachments: None,
+        context_references: Some(vec![ContextReferencePayload::WorkspaceFile {
+            label: "Desktop app".to_owned(),
+            path: "apps/desktop".to_owned(),
+        }]),
         conversation_id: SessionId::new().to_string(),
         prompt: "Continue implementation".to_owned(),
     })
@@ -1044,6 +2895,8 @@ fn start_run_payload_validates_prompt_and_requires_runtime() {
     assert_eq!(error.code, "RUNTIME_UNAVAILABLE");
 
     let error = start_run_payload(StartRunRequest {
+        client_message_id: None,
+        attachments: None,
         context_references: None,
         conversation_id: SessionId::new().to_string(),
         prompt: String::new(),
@@ -1051,11 +2904,316 @@ fn start_run_payload_validates_prompt_and_requires_runtime() {
     .unwrap_err();
 
     assert_eq!(error.code, "INVALID_PAYLOAD");
+
+    let error = start_run_payload(StartRunRequest {
+        client_message_id: Some("00000000-0000-1000-8000-000000000001".to_owned()),
+        attachments: None,
+        context_references: None,
+        conversation_id: SessionId::new().to_string(),
+        prompt: "Continue implementation".to_owned(),
+    })
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn create_attachment_from_path_writes_workspace_file_to_blob_store() {
+    let workspace = unique_workspace("attachment-workspace-file");
+    let attachment_path = workspace.join("notes.txt");
+    std::fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+    std::fs::write(&attachment_path, "local notes").unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
+
+    let payload = create_attachment_from_path_with_runtime_state(
+        CreateAttachmentFromPathRequest {
+            path: attachment_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("workspace file should become an attachment reference");
+
+    assert_eq!(payload.attachment.name, "notes.txt");
+    assert_eq!(payload.attachment.mime_type, "text/plain");
+
+    let record_path = workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("attachments")
+        .join("records")
+        .join(format!("{}.json", payload.attachment.id));
+    let record: Value = serde_json::from_slice(&std::fs::read(record_path).unwrap()).unwrap();
+    assert_eq!(
+        record["blobRef"]["size"].as_u64(),
+        Some("local notes".len() as u64)
+    );
+    assert_eq!(
+        record["attachment"]["blobRef"]["contentType"].as_str(),
+        Some("text/plain")
+    );
+    assert_eq!(
+        record["blobRef"]["content_type"].as_str(),
+        Some("text/plain")
+    );
+}
+
+#[tokio::test]
+async fn create_attachment_from_path_rejects_external_file_before_read() {
+    let workspace = unique_workspace("attachment-external-workspace");
+    let external = unique_workspace("attachment-external-source");
+    let attachment_path = external.join("outside.txt");
+    std::fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+    std::fs::write(&attachment_path, "external notes").unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
+
+    let error = create_attachment_from_path_with_runtime_state(
+        CreateAttachmentFromPathRequest {
+            path: attachment_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("workspace"));
+}
+
+#[tokio::test]
+async fn create_attachment_from_path_does_not_reveal_external_path_existence() {
+    let workspace = unique_workspace("attachment-existence-workspace");
+    let external = unique_workspace("attachment-existence-source");
+    let existing_path = external.join("outside.txt");
+    let missing_path = external.join("missing.txt");
+    std::fs::create_dir_all(existing_path.parent().unwrap()).unwrap();
+    std::fs::write(&existing_path, "external notes").unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+
+    let existing_error = create_attachment_from_path_with_runtime_state(
+        CreateAttachmentFromPathRequest {
+            path: existing_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    let missing_error = create_attachment_from_path_with_runtime_state(
+        CreateAttachmentFromPathRequest {
+            path: missing_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(existing_error.code, "INVALID_PAYLOAD");
+    assert_eq!(missing_error.code, "INVALID_PAYLOAD");
+    assert_eq!(existing_error.message, missing_error.message);
+    assert!(existing_error.message.contains("workspace"));
+}
+
+#[tokio::test]
+async fn create_attachment_from_path_rejects_files_larger_than_five_mb() {
+    let workspace = unique_workspace("attachment-too-large");
+    let attachment_path = workspace.join("large.txt");
+    std::fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+    std::fs::write(&attachment_path, vec![b'x'; 5 * 1024 * 1024 + 1]).unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+
+    let error = create_attachment_from_path_with_runtime_state(
+        CreateAttachmentFromPathRequest {
+            path: attachment_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("5 MB"));
+}
+
+#[tokio::test]
+async fn start_run_with_runtime_state_rejects_untrusted_attachment_id_before_record_read() {
+    let state = runtime_state_with_harness_for_workspace(unique_workspace("attachment-id")).await;
+
+    let error = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: Some(vec![AttachmentReferencePayload {
+                id: "../escape".to_owned(),
+                mime_type: "text/plain".to_owned(),
+                name: "notes.txt".to_owned(),
+                size_bytes: 128,
+                blob_ref: test_attachment_blob_ref(128, "text/plain"),
+            }]),
+            context_references: None,
+            conversation_id: SessionId::new().to_string(),
+            prompt: "Use this attachment".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("generated attachment id"));
+}
+
+#[tokio::test]
+async fn list_reference_candidates_includes_workspace_files() {
+    let workspace = unique_workspace("reference-candidates");
+    let file_path = workspace.join("apps/desktop/src-tauri/src/commands.rs");
+    std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+    std::fs::write(&file_path, "fn main() {}").unwrap();
+    let state =
+        runtime_state_with_mcp_registry_for_workspace(workspace, McpRegistry::new(), Vec::new())
+            .await;
+    register_test_skill(&state, "shell-state", "Shell state");
+    register_test_tool(&state, "list_dir", "List directory");
+    save_mcp_server_with_runtime_state(
+        SaveMcpServerRequest {
+            display_name: "Workspace Stdio".to_owned(),
+            id: "stdio".to_owned(),
+            scope: "global".to_owned(),
+            transport: McpServerTransportConfig::Stdio {
+                command: "/bin/sh".to_owned(),
+                args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
+            },
+        },
+        &state,
+    )
+    .await
+    .expect("mcp server should register");
+
+    let payload = list_reference_candidates_with_runtime_state(
+        ListReferenceCandidatesRequest {
+            conversation_id: state.default_conversation_id().to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("reference candidates should load");
+
+    assert!(payload.files.iter().any(|candidate| {
+        candidate.path.as_deref() == Some("apps/desktop/src-tauri/src/commands.rs")
+    }));
+    assert!(payload
+        .skills
+        .iter()
+        .any(|candidate| candidate.id.as_deref() == Some("shell-state")));
+    assert!(payload
+        .tools
+        .iter()
+        .any(|candidate| candidate.id.as_deref() == Some("mcp__stdio__echo")));
+    assert!(payload
+        .mcp_servers
+        .iter()
+        .any(|candidate| candidate.id.as_deref() == Some("stdio")));
+}
+
+#[tokio::test]
+async fn list_reference_candidates_accepts_conversation_beyond_summary_page() {
+    let state = runtime_state_with_harness().await;
+    let file_path = state.workspace_root().join("apps/desktop/src/main.tsx");
+    std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+    std::fs::write(&file_path, "export {}").unwrap();
+    let requested_session_id = SessionId::new();
+    open_conversation_session(&state, requested_session_id).await;
+    for _ in 0..60 {
+        open_conversation_session(&state, SessionId::new()).await;
+    }
+
+    let payload = list_reference_candidates_with_runtime_state(
+        ListReferenceCandidatesRequest {
+            conversation_id: requested_session_id.to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("reference candidates should load for existing conversations beyond summaries");
+
+    assert!(payload
+        .files
+        .iter()
+        .any(|candidate| candidate.path.as_deref() == Some("apps/desktop/src/main.tsx")));
+}
+
+#[tokio::test]
+async fn start_run_with_runtime_state_accepts_structured_context_and_attachments() {
+    let workspace = unique_workspace("structured-start-run");
+    let workspace_file = workspace.join("docs/notes.txt");
+    std::fs::create_dir_all(workspace_file.parent().unwrap()).unwrap();
+    std::fs::write(&workspace_file, "workspace context").unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+    let attachment = create_attachment_from_path_with_runtime_state(
+        CreateAttachmentFromPathRequest {
+            path: workspace_file.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("attachment should be stored")
+    .attachment;
+    let session_id = SessionId::new();
+
+    let payload = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: Some(vec![attachment]),
+            context_references: Some(vec![ContextReferencePayload::WorkspaceFile {
+                label: "Notes".to_owned(),
+                path: "docs/notes.txt".to_owned(),
+            }]),
+            conversation_id: session_id.to_string(),
+            prompt: "Run the relevant checks".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("structured composer draft should start a run");
+
+    assert_eq!(payload.status, "started");
+    assert!(RunId::parse(&payload.run_id).is_ok());
+    assert!(state.pending_permission_requests().is_empty());
+}
+
+#[tokio::test]
+async fn start_run_with_runtime_state_rejects_workspace_file_reference_outside_workspace() {
+    let workspace = unique_workspace("reference-workspace");
+    let external = unique_workspace("reference-external");
+    let external_file = external.join("outside.txt");
+    std::fs::create_dir_all(external_file.parent().unwrap()).unwrap();
+    std::fs::write(&external_file, "outside").unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+
+    let error = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            context_references: Some(vec![ContextReferencePayload::WorkspaceFile {
+                label: "Outside".to_owned(),
+                path: external_file.to_string_lossy().to_string(),
+            }]),
+            conversation_id: SessionId::new().to_string(),
+            prompt: "Use this file".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("inside the workspace"));
 }
 
 #[tokio::test]
 async fn start_run_with_runtime_state_returns_real_run_id_for_conversation() {
     let state = runtime_state_with_harness().await;
+    let context_file = state.workspace_root().join("apps/desktop/src/main.tsx");
+    std::fs::create_dir_all(context_file.parent().unwrap()).unwrap();
+    std::fs::write(&context_file, "export {}").unwrap();
     let harness = state
         .harness()
         .expect("runtime state should retain the configured harness");
@@ -1064,7 +3222,12 @@ async fn start_run_with_runtime_state_returns_real_run_id_for_conversation() {
 
     let payload = start_run_with_runtime_state(
         StartRunRequest {
-            context_references: Some(vec!["apps/desktop".to_owned()]),
+            client_message_id: None,
+            attachments: None,
+            context_references: Some(vec![ContextReferencePayload::WorkspaceFile {
+                label: "Desktop app".to_owned(),
+                path: "apps/desktop/src/main.tsx".to_owned(),
+            }]),
             conversation_id: conversation_id.clone(),
             prompt: "Continue implementation".to_owned(),
         },
@@ -1097,6 +3260,238 @@ async fn start_run_with_runtime_state_returns_real_run_id_for_conversation() {
 }
 
 #[tokio::test]
+async fn subscribe_conversation_events_emits_live_batches_and_unsubscribes() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    open_conversation_session(&state, session_id).await;
+    let conversation_id = session_id.to_string();
+    let batches = Arc::new(Mutex::new(Vec::<ConversationEventBatchPayload>::new()));
+    let emitted_batches = Arc::clone(&batches);
+
+    let subscription = subscribe_conversation_events_for_window_with_runtime_state(
+        SubscribeConversationEventsRequest {
+            conversation_id: conversation_id.clone(),
+            after_cursor: None,
+        },
+        "main".to_owned(),
+        Arc::new(move |batch| {
+            emitted_batches.lock().unwrap().push(batch);
+            Ok(())
+        }),
+        &state,
+    )
+    .await
+    .expect("subscription should be accepted");
+
+    assert_eq!(subscription.conversation_id, conversation_id);
+    assert!(subscription.replay_events.is_empty());
+    assert!(!subscription.gap);
+
+    let started = start_run_with_runtime_state(
+        StartRunRequest {
+            attachments: None,
+            client_message_id: Some("00000000-0000-4000-8000-000000000001".to_owned()),
+            context_references: None,
+            conversation_id: conversation_id.clone(),
+            prompt: "Continue implementation".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("run should start after subscribing");
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if batches.lock().unwrap().iter().any(|batch| {
+                batch.subscription_id == subscription.subscription_id
+                    && batch.conversation_id == conversation_id
+                    && batch.phase == "live"
+                    && batch.events.iter().any(|event| {
+                        event.run_id == started.run_id && event.event_type == "run.started"
+                    })
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("live subscription should emit the new run event");
+
+    let emitted = batches.lock().unwrap();
+    let live_events = emitted
+        .iter()
+        .filter(|batch| batch.subscription_id == subscription.subscription_id)
+        .flat_map(|batch| batch.events.iter())
+        .collect::<Vec<_>>();
+    let live_run_started = live_events
+        .iter()
+        .find(|event| event.run_id == started.run_id && event.event_type == "run.started")
+        .expect("live batch should include the started run event");
+    assert!(live_run_started.conversation_sequence > 0);
+    assert!(live_events
+        .windows(2)
+        .all(|pair| pair[0].conversation_sequence < pair[1].conversation_sequence));
+
+    let unsubscribed = unsubscribe_conversation_events_for_window_with_runtime_state(
+        UnsubscribeConversationEventsRequest {
+            subscription_id: subscription.subscription_id.clone(),
+        },
+        "main".to_owned(),
+        &state,
+    )
+    .await
+    .expect("unsubscribe should succeed");
+    assert_eq!(unsubscribed.status, "unsubscribed");
+
+    let already_closed = unsubscribe_conversation_events_for_window_with_runtime_state(
+        UnsubscribeConversationEventsRequest {
+            subscription_id: subscription.subscription_id,
+        },
+        "main".to_owned(),
+        &state,
+    )
+    .await
+    .expect("unsubscribe should be idempotent");
+    assert_eq!(already_closed.status, "alreadyClosed");
+}
+
+#[tokio::test]
+async fn unsubscribe_conversation_events_rejects_other_window_subscription() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    open_conversation_session(&state, session_id).await;
+    let conversation_id = session_id.to_string();
+    let subscription = subscribe_conversation_events_for_window_with_runtime_state(
+        SubscribeConversationEventsRequest {
+            conversation_id,
+            after_cursor: None,
+        },
+        "main".to_owned(),
+        Arc::new(|_batch| Ok(())),
+        &state,
+    )
+    .await
+    .expect("subscription should be created");
+
+    let denied = unsubscribe_conversation_events_for_window_with_runtime_state(
+        UnsubscribeConversationEventsRequest {
+            subscription_id: subscription.subscription_id.clone(),
+        },
+        "secondary".to_owned(),
+        &state,
+    )
+    .await
+    .expect_err("another window must not close the subscription");
+    assert_eq!(denied.code, "INVALID_PAYLOAD");
+
+    let unsubscribed = unsubscribe_conversation_events_for_window_with_runtime_state(
+        UnsubscribeConversationEventsRequest {
+            subscription_id: subscription.subscription_id,
+        },
+        "main".to_owned(),
+        &state,
+    )
+    .await
+    .expect("owning window can close the subscription");
+    assert_eq!(unsubscribed.status, "unsubscribed");
+}
+
+#[tokio::test]
+async fn subscribe_conversation_events_accepts_cursor_after_replayed_permission_request() {
+    let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::ToolUseComplete {
+                id: ToolUseId::new(),
+                name: "NeedsPermission".to_owned(),
+                input: json!({ "command": "pwd" }),
+            },
+        },
+        ModelStreamEvent::MessageStop,
+    ])])
+    .await;
+    let session_id = SessionId::new();
+    let conversation_id = session_id.to_string();
+
+    start_run_with_runtime_state(
+        StartRunRequest {
+            attachments: None,
+            client_message_id: Some("00000000-0000-4000-8000-000000000001".to_owned()),
+            context_references: None,
+            conversation_id: conversation_id.clone(),
+            prompt: "Run a command".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("run should start and wait on permission");
+    let pending = wait_for_pending_permission_for_session(&state, session_id).await;
+
+    let first_subscription = subscribe_conversation_events_for_window_with_runtime_state(
+        SubscribeConversationEventsRequest {
+            conversation_id: conversation_id.clone(),
+            after_cursor: None,
+        },
+        "main".to_owned(),
+        Arc::new(|_batch| Ok(())),
+        &state,
+    )
+    .await
+    .expect("subscription replay should include pending permission");
+    assert!(first_subscription
+        .replay_events
+        .iter()
+        .any(|event| event.event_type == "permission.requested"));
+    let cursor = first_subscription
+        .cursor
+        .clone()
+        .expect("subscription replay should return a cursor");
+
+    let second_subscription = subscribe_conversation_events_for_window_with_runtime_state(
+        SubscribeConversationEventsRequest {
+            conversation_id: conversation_id.clone(),
+            after_cursor: Some(cursor),
+        },
+        "main".to_owned(),
+        Arc::new(|_batch| Ok(())),
+        &state,
+    )
+    .await
+    .expect("cursor from permission replay should be accepted by the next subscription");
+    assert!(second_subscription.replay_events.is_empty());
+
+    unsubscribe_conversation_events_for_window_with_runtime_state(
+        UnsubscribeConversationEventsRequest {
+            subscription_id: first_subscription.subscription_id,
+        },
+        "main".to_owned(),
+        &state,
+    )
+    .await
+    .unwrap();
+    unsubscribe_conversation_events_for_window_with_runtime_state(
+        UnsubscribeConversationEventsRequest {
+            subscription_id: second_subscription.subscription_id,
+        },
+        "main".to_owned(),
+        &state,
+    )
+    .await
+    .unwrap();
+    resolve_permission_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id,
+            decision: PermissionDecision::Deny,
+            request_id: pending.request.request_id.to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn start_run_with_runtime_state_exposes_runtime_permission_request_to_activity() {
     let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
         ModelStreamEvent::ContentBlockDelta {
@@ -1116,6 +3511,8 @@ async fn start_run_with_runtime_state_exposes_runtime_permission_request_to_acti
     let started = tokio::time::timeout(Duration::from_secs(1), async {
         start_run_with_runtime_state(
             StartRunRequest {
+                client_message_id: None,
+                attachments: None,
                 context_references: None,
                 conversation_id: conversation_id.clone(),
                 prompt: "Run a command".to_owned(),
@@ -1172,9 +3569,14 @@ async fn start_run_with_runtime_state_exposes_runtime_permission_request_to_acti
         serde_json::Value::String(request_id.to_string())
     );
     assert_eq!(
-        permission_event["payload"]["command"]["executable"],
-        serde_json::Value::String("printf desktop-permission".to_owned())
+        permission_event["payload"]["operation"],
+        serde_json::Value::String("Execute command".to_owned())
     );
+    assert_eq!(
+        permission_event["payload"]["target"],
+        serde_json::Value::String("printf".to_owned())
+    );
+    assert!(permission_event["payload"].get("command").is_none());
 
     let payload = list_activity_with_runtime_state(
         ListActivityRequest {
@@ -1199,6 +3601,7 @@ async fn start_run_with_runtime_state_exposes_runtime_permission_request_to_acti
 
     resolve_permission_with_runtime_state(
         ResolvePermissionRequest {
+            conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
         },
@@ -1243,6 +3646,8 @@ async fn cancel_run_with_runtime_state_cancels_active_run_through_sdk() {
     let started = tokio::time::timeout(Duration::from_secs(1), async {
         start_run_with_runtime_state(
             StartRunRequest {
+                client_message_id: None,
+                attachments: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
                 prompt: "Run a cancellable command".to_owned(),
@@ -1270,7 +3675,9 @@ async fn cancel_run_with_runtime_state_cancels_active_run_through_sdk() {
 
 #[test]
 fn resolve_permission_payload_requires_runtime_permission_broker() {
+    let conversation_id = SessionId::new().to_string();
     let error = resolve_permission_payload(ResolvePermissionRequest {
+        conversation_id: conversation_id.clone(),
         decision: PermissionDecision::Approve,
         request_id: "01HZ0000000000000000000001".to_owned(),
     })
@@ -1279,6 +3686,7 @@ fn resolve_permission_payload_requires_runtime_permission_broker() {
     assert_eq!(error.code, "RUNTIME_UNAVAILABLE");
 
     let error = resolve_permission_payload(ResolvePermissionRequest {
+        conversation_id: conversation_id.clone(),
         decision: PermissionDecision::Deny,
         request_id: "01HZ0000000000000000000001".to_owned(),
     })
@@ -1287,6 +3695,7 @@ fn resolve_permission_payload_requires_runtime_permission_broker() {
     assert_eq!(error.code, "RUNTIME_UNAVAILABLE");
 
     let error = resolve_permission_payload(ResolvePermissionRequest {
+        conversation_id,
         decision: PermissionDecision::Approve,
         request_id: String::new(),
     })
@@ -1298,6 +3707,7 @@ fn resolve_permission_payload_requires_runtime_permission_broker() {
 #[test]
 fn resolve_permission_payload_rejects_invalid_request_id_before_runtime() {
     let error = resolve_permission_payload(ResolvePermissionRequest {
+        conversation_id: SessionId::new().to_string(),
         decision: PermissionDecision::Approve,
         request_id: "permission-001".to_owned(),
     })
@@ -1309,6 +3719,7 @@ fn resolve_permission_payload_rejects_invalid_request_id_before_runtime() {
 #[test]
 fn resolve_permission_payload_rejects_noncanonical_request_id_before_runtime() {
     let error = resolve_permission_payload(ResolvePermissionRequest {
+        conversation_id: SessionId::new().to_string(),
         decision: PermissionDecision::Approve,
         request_id: "01hz0000000000000000000001".to_owned(),
     })
@@ -1319,13 +3730,16 @@ fn resolve_permission_payload_rejects_noncanonical_request_id_before_runtime() {
 
 #[tokio::test]
 async fn runtime_state_routes_permission_decisions_to_permission_broker_resolver() {
-    let state = runtime_state_for_workspace(unique_workspace("runtime-state-routes"))
+    let workspace = unique_workspace("runtime-state-routes");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_for_workspace(workspace)
         .await
         .expect("runtime state should initialize");
     assert!(state.harness().is_some());
 
     let error = resolve_permission_with_runtime_state(
         ResolvePermissionRequest {
+            conversation_id: SessionId::new().to_string(),
             decision: PermissionDecision::Approve,
             request_id: "01HZ0000000000000000000001".to_owned(),
         },
@@ -1334,8 +3748,8 @@ async fn runtime_state_routes_permission_decisions_to_permission_broker_resolver
     .await
     .unwrap_err();
 
-    assert_eq!(error.code, "PERMISSION_RESOLVE_FAILED");
-    assert!(error.message.contains("not pending"));
+    assert_eq!(error.code, "NOT_FOUND");
+    assert!(error.message.contains("permission request not found"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1354,6 +3768,40 @@ async fn runtime_state_async_uses_explicit_workspace_root() {
         options.workspace_root,
         workspace_root.canonicalize().unwrap()
     );
+}
+
+#[test]
+fn execution_settings_persist_permission_mode_for_session_options() {
+    let workspace = unique_workspace("execution-settings-session-options");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::BypassPermissions,
+        },
+        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+    )
+    .expect("execution settings should save");
+
+    let options = state.conversation_session_options(SessionId::new());
+
+    assert_eq!(options.permission_mode, PermissionMode::BypassPermissions);
+}
+
+#[test]
+fn get_execution_settings_defaults_to_standard_mode() {
+    let workspace = unique_workspace("execution-settings-default");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    let settings = get_execution_settings_with_store(&DesktopExecutionSettingsStore::new(
+        state.workspace_root().to_path_buf(),
+    ))
+    .expect("execution settings should load");
+
+    assert_eq!(settings.permission_mode, PermissionMode::Default);
+    assert!(!settings.auto_mode_available);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1385,6 +3833,7 @@ async fn runtime_state_resolves_pending_permission_from_harness_broker() {
         .expect("harness should use the stream permission broker");
     let request = permission_request();
     let request_id = request.request_id;
+    let request_session_id = request.session_id;
 
     let decision_task =
         tokio::spawn(async move { broker.decide(request, permission_context()).await });
@@ -1393,6 +3842,7 @@ async fn runtime_state_resolves_pending_permission_from_harness_broker() {
 
     let payload = resolve_permission_with_runtime_state(
         ResolvePermissionRequest {
+            conversation_id: request_session_id.to_string(),
             decision: PermissionDecision::Approve,
             request_id: request_id.to_string(),
         },
@@ -1403,6 +3853,127 @@ async fn runtime_state_resolves_pending_permission_from_harness_broker() {
 
     assert_eq!(payload.status, "resolved");
     assert_eq!(decision_task.await.unwrap(), Decision::AllowOnce);
+}
+
+#[tokio::test]
+async fn runtime_state_rejects_permission_resolution_for_wrong_conversation() {
+    let state = runtime_state_with_harness().await;
+    let harness = state
+        .harness()
+        .expect("runtime state should retain the configured harness");
+    let broker = harness
+        .permission_broker()
+        .expect("harness should use the stream permission broker");
+    let request = permission_request();
+    let request_id = request.request_id;
+    let request_session_id = request.session_id;
+
+    let decision_task =
+        tokio::spawn(async move { broker.decide(request, permission_context()).await });
+
+    wait_for_pending_permission(&state, request_id).await;
+
+    let error = resolve_permission_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id: SessionId::new().to_string(),
+            decision: PermissionDecision::Approve,
+            request_id: request_id.to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error
+        .message
+        .contains("permission request does not belong to conversationId"));
+
+    resolve_permission_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id: request_session_id.to_string(),
+            decision: PermissionDecision::Deny,
+            request_id: request_id.to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    assert_eq!(decision_task.await.unwrap(), Decision::DenyOnce);
+}
+
+#[tokio::test]
+async fn runtime_state_requires_window_subscription_before_permission_resolution() {
+    let state = runtime_state_with_harness().await;
+    let harness = state
+        .harness()
+        .expect("runtime state should retain the configured harness");
+    let broker = harness
+        .permission_broker()
+        .expect("harness should use the stream permission broker");
+    let request = permission_request();
+    let request_id = request.request_id;
+    let request_session_id = request.session_id;
+    let conversation_id = request_session_id.to_string();
+    open_conversation_session(&state, request_session_id).await;
+
+    let decision_task =
+        tokio::spawn(async move { broker.decide(request, permission_context()).await });
+
+    wait_for_pending_permission(&state, request_id).await;
+
+    let error = resolve_permission_for_window_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id: conversation_id.clone(),
+            decision: PermissionDecision::Approve,
+            request_id: request_id.to_string(),
+        },
+        "main".to_owned(),
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error
+        .message
+        .contains("permission request is not visible in this window"));
+
+    let subscription = subscribe_conversation_events_for_window_with_runtime_state(
+        SubscribeConversationEventsRequest {
+            conversation_id: conversation_id.clone(),
+            after_cursor: None,
+        },
+        "main".to_owned(),
+        Arc::new(|_batch| Ok(())),
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let payload = resolve_permission_for_window_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id,
+            decision: PermissionDecision::Approve,
+            request_id: request_id.to_string(),
+        },
+        "main".to_owned(),
+        &state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(payload.status, "resolved");
+    assert_eq!(decision_task.await.unwrap(), Decision::AllowOnce);
+
+    let _ = unsubscribe_conversation_events_for_window_with_runtime_state(
+        UnsubscribeConversationEventsRequest {
+            subscription_id: subscription.subscription_id,
+        },
+        "main".to_owned(),
+        &state,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -1418,6 +3989,7 @@ async fn list_activity_with_runtime_state_hides_pending_permission_without_durab
         .expect("harness should use the stream permission broker");
     let request = permission_request();
     let request_id = request.request_id;
+    let request_session_id = request.session_id;
     let conversation_id = session_id.to_string();
 
     let decision_task =
@@ -1439,6 +4011,7 @@ async fn list_activity_with_runtime_state_hides_pending_permission_without_durab
 
     resolve_permission_with_runtime_state(
         ResolvePermissionRequest {
+            conversation_id: request_session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
         },
@@ -1450,7 +4023,7 @@ async fn list_activity_with_runtime_state_hides_pending_permission_without_durab
 }
 
 #[tokio::test]
-async fn list_activity_with_runtime_state_exposes_pending_permission_requests_by_run_id() {
+async fn list_activity_with_runtime_state_reads_journaled_permission_requests_by_run_id() {
     let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
         ModelStreamEvent::ContentBlockDelta {
             index: 0,
@@ -1466,6 +4039,8 @@ async fn list_activity_with_runtime_state_exposes_pending_permission_requests_by
     let session_id = SessionId::new();
     let started = start_run_with_runtime_state(
         StartRunRequest {
+            client_message_id: None,
+            attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             prompt: "Run a command".to_owned(),
@@ -1503,6 +4078,7 @@ async fn list_activity_with_runtime_state_exposes_pending_permission_requests_by
 
     resolve_permission_with_runtime_state(
         ResolvePermissionRequest {
+            conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
         },
@@ -1564,6 +4140,8 @@ async fn list_activity_with_runtime_state_reads_durable_run_events() {
     let session_id = SessionId::new();
     let started = start_run_with_runtime_state(
         StartRunRequest {
+            client_message_id: None,
+            attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             prompt: "Complete the task".to_owned(),
@@ -1616,6 +4194,698 @@ async fn list_activity_with_runtime_state_reads_durable_run_events() {
 }
 
 #[tokio::test]
+async fn list_activity_with_runtime_state_does_not_expose_thinking_deltas() {
+    let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Thinking(ThinkingDelta {
+                text: Some("private chain of thought".to_owned()),
+                provider_native: Some(json!({ "thinking": "provider native secret" })),
+                signature: Some("signature-secret".to_owned()),
+            }),
+        },
+        ModelStreamEvent::ContentBlockDelta {
+            index: 1,
+            delta: ContentDelta::Text("Visible answer".to_owned()),
+        },
+        ModelStreamEvent::MessageStop,
+    ])])
+    .await;
+    let session_id = SessionId::new();
+    let started = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            prompt: "Think privately".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("start_run should start a conversation run");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+
+    loop {
+        let payload = list_activity_with_runtime_state(
+            ListActivityRequest {
+                conversation_id: Some(session_id.to_string()),
+                run_id: Some(started.run_id.clone()),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+
+        if payload
+            .events
+            .iter()
+            .any(|event| event.event_type == "assistant.completed")
+        {
+            let serialized = serde_json::to_string(&payload).unwrap();
+            assert!(payload.events.iter().any(|event| {
+                event.event_type == "assistant.delta"
+                    && event.payload["text"] == json!("Visible answer")
+            }));
+            assert!(!serialized.contains("private chain of thought"));
+            assert!(!serialized.contains("provider native secret"));
+            assert!(!serialized.contains("signature-secret"));
+            break;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!("activity should include completed assistant event");
+        }
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+#[tokio::test]
+async fn list_activity_with_runtime_state_redacts_private_paths_from_assistant_deltas() {
+    let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Text("Read /Users/alice/.ssh/config".to_owned()),
+        },
+        ModelStreamEvent::MessageStop,
+    ])])
+    .await;
+    let session_id = SessionId::new();
+    let started = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            prompt: "Summarize path".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("start_run should start a conversation run");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+
+    loop {
+        let payload = list_activity_with_runtime_state(
+            ListActivityRequest {
+                conversation_id: Some(session_id.to_string()),
+                run_id: Some(started.run_id.clone()),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+
+        if let Some(delta) = payload
+            .events
+            .iter()
+            .find(|event| event.event_type == "assistant.delta")
+        {
+            let serialized = serde_json::to_string(&payload).unwrap();
+            assert!(!serialized.contains("/Users/alice/.ssh/config"));
+            assert_eq!(delta.payload["text"], json!("Read [REDACTED]"));
+            break;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!("activity should include assistant delta event");
+        }
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+#[tokio::test]
+async fn list_activity_with_runtime_state_maps_artifact_lifecycle_events() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+                Event::ArtifactCreated(ArtifactCreatedEvent {
+                    artifact_id: "artifact-runtime-notes".to_owned(),
+                    at: now(),
+                    blob_ref: None,
+                    content_hash: None,
+                    kind: "markdown".to_owned(),
+                    preview: Some("Runtime notes".to_owned()),
+                    run_id,
+                    session_id,
+                    source: ArtifactSource::Assistant,
+                    source_message_id: None,
+                    source_tool_use_id: None,
+                    status: ArtifactStatus::Running,
+                    title: "Runtime notes".to_owned(),
+                }),
+                Event::ArtifactUpdated(ArtifactUpdatedEvent {
+                    artifact_id: "artifact-runtime-notes".to_owned(),
+                    at: now(),
+                    blob_ref: None,
+                    content_hash: None,
+                    kind: None,
+                    preview: Some("Updated runtime notes".to_owned()),
+                    run_id,
+                    session_id,
+                    source: ArtifactSource::Assistant,
+                    source_message_id: None,
+                    source_tool_use_id: None,
+                    status: Some(ArtifactStatus::Ready),
+                    title: Some("Runtime notes".to_owned()),
+                }),
+                Event::ArtifactCreated(ArtifactCreatedEvent {
+                    artifact_id: "artifact-wrong-session".to_owned(),
+                    at: now(),
+                    blob_ref: None,
+                    content_hash: None,
+                    kind: "markdown".to_owned(),
+                    preview: Some("Wrong session".to_owned()),
+                    run_id,
+                    session_id: SessionId::new(),
+                    source: ArtifactSource::Assistant,
+                    source_message_id: None,
+                    source_tool_use_id: None,
+                    status: ArtifactStatus::Ready,
+                    title: "Wrong session".to_owned(),
+                }),
+            ],
+        )
+        .await
+        .expect("artifact event should append");
+
+    let payload = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: Some(run_id.to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("activity should load");
+
+    assert!(!payload
+        .events
+        .iter()
+        .any(|event| event.payload["artifactId"] == json!("artifact-wrong-session")));
+    let artifact_created = payload
+        .events
+        .iter()
+        .find(|event| event.event_type == "artifact.created")
+        .expect("activity should include artifact lifecycle event");
+    assert_eq!(artifact_created.source, "engine");
+    assert_eq!(artifact_created.visibility, "public");
+    assert_eq!(
+        artifact_created.payload["artifactId"],
+        json!("artifact-runtime-notes")
+    );
+    assert_eq!(artifact_created.payload["status"], json!("running"));
+
+    let artifact_updated = payload
+        .events
+        .iter()
+        .find(|event| event.event_type == "artifact.updated")
+        .expect("activity should include artifact update event");
+    assert_eq!(
+        artifact_updated.payload["artifactId"],
+        json!("artifact-runtime-notes")
+    );
+    assert_eq!(artifact_updated.payload["status"], json!("ready"));
+}
+
+#[tokio::test]
+async fn list_activity_with_runtime_state_filters_run_events_by_started_session() {
+    let state = runtime_state_with_harness().await;
+    let requested_session_id = SessionId::new();
+    let other_session_id = SessionId::new();
+    let requested_run_id = RunId::new();
+    let other_run_id = RunId::new();
+    open_conversation_session(&state, requested_session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            requested_session_id,
+            &[
+                Event::RunStarted(test_run_started_event(other_session_id, other_run_id)),
+                Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                    at: now(),
+                    delta: DeltaChunk::Text("Wrong session answer".to_owned()),
+                    message_id: MessageId::new(),
+                    run_id: other_run_id,
+                }),
+                Event::RunStarted(test_run_started_event(
+                    requested_session_id,
+                    requested_run_id,
+                )),
+                Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                    at: now(),
+                    delta: DeltaChunk::Text("Requested session answer".to_owned()),
+                    message_id: MessageId::new(),
+                    run_id: requested_run_id,
+                }),
+            ],
+        )
+        .await
+        .expect("activity events should append");
+
+    let payload = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(requested_session_id.to_string()),
+            run_id: None,
+        },
+        &state,
+    )
+    .await
+    .expect("activity should load");
+    let serialized = serde_json::to_string(&payload).unwrap();
+
+    assert!(serialized.contains("Requested session answer"));
+    assert!(!serialized.contains("Wrong session answer"));
+    assert!(!payload
+        .events
+        .iter()
+        .any(|event| event.run_id == other_run_id.to_string()));
+}
+
+#[tokio::test]
+async fn list_activity_with_runtime_state_filters_tool_and_permission_events_by_started_session() {
+    let state = runtime_state_with_harness().await;
+    let requested_session_id = SessionId::new();
+    let other_session_id = SessionId::new();
+    let requested_run_id = RunId::new();
+    let other_run_id = RunId::new();
+    let requested_tool_use_id = ToolUseId::new();
+    let other_tool_use_id = ToolUseId::new();
+    let requested_request_id = RequestId::new();
+    let other_request_id = RequestId::new();
+    open_conversation_session(&state, requested_session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            requested_session_id,
+            &[
+                Event::RunStarted(test_run_started_event(other_session_id, other_run_id)),
+                Event::ToolUseRequested(test_tool_use_requested_event(
+                    other_run_id,
+                    other_tool_use_id,
+                    "wrong-session-tool",
+                )),
+                Event::PermissionRequested(test_permission_requested_event(
+                    other_session_id,
+                    other_run_id,
+                    other_tool_use_id,
+                    other_request_id,
+                    "wrong-session-permission",
+                )),
+                Event::RunStarted(test_run_started_event(
+                    requested_session_id,
+                    requested_run_id,
+                )),
+                Event::ToolUseRequested(test_tool_use_requested_event(
+                    requested_run_id,
+                    requested_tool_use_id,
+                    "requested-tool",
+                )),
+                Event::PermissionRequested(test_permission_requested_event(
+                    requested_session_id,
+                    requested_run_id,
+                    requested_tool_use_id,
+                    requested_request_id,
+                    "requested-permission",
+                )),
+            ],
+        )
+        .await
+        .expect("activity events should append");
+
+    let payload = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(requested_session_id.to_string()),
+            run_id: None,
+        },
+        &state,
+    )
+    .await
+    .expect("activity should load");
+    let serialized = serde_json::to_string(&payload).unwrap();
+
+    assert!(serialized.contains("requested-tool"));
+    assert!(serialized.contains("requested-permission"));
+    assert!(serialized.contains(&requested_request_id.to_string()));
+    assert!(!serialized.contains("wrong-session-tool"));
+    assert!(!serialized.contains("wrong-session-permission"));
+    assert!(!serialized.contains(&other_request_id.to_string()));
+    assert!(!payload
+        .events
+        .iter()
+        .any(|event| event.run_id == other_run_id.to_string()));
+}
+
+#[tokio::test]
+async fn list_activity_with_runtime_state_redacts_permission_decision_scope_values() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let tool_use_id = ToolUseId::new();
+    let request_id = RequestId::new();
+    let secret_scope = "secret-internal-tool-name";
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+                Event::PermissionRequested(PermissionRequestedEvent {
+                    at: now(),
+                    causation_id: EventId::new(),
+                    fingerprint: None,
+                    interactivity: InteractivityLevel::FullyInteractive,
+                    presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+                    request_id,
+                    run_id,
+                    scope_hint: DecisionScope::ToolName(secret_scope.to_owned()),
+                    session_id,
+                    severity: Severity::Low,
+                    subject: PermissionSubject::CommandExec {
+                        argv: vec!["pwd".to_owned()],
+                        command: "pwd".to_owned(),
+                        cwd: None,
+                        fingerprint: None,
+                    },
+                    tenant_id: TenantId::SINGLE,
+                    tool_name: "pwd".to_owned(),
+                    tool_use_id,
+                }),
+            ],
+        )
+        .await
+        .expect("activity events should append");
+
+    let payload = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: None,
+        },
+        &state,
+    )
+    .await
+    .expect("activity should load");
+    let serialized = serde_json::to_string(&payload).unwrap();
+
+    assert!(!serialized.contains(secret_scope));
+    assert!(serialized.contains("\"decisionScope\":\"this tool\""));
+    assert!(serialized.contains("\"target\":\"pwd\""));
+}
+
+#[tokio::test]
+async fn get_conversation_with_runtime_state_includes_safe_client_message_id() {
+    let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Text("Done".to_owned()),
+        },
+        ModelStreamEvent::MessageStop,
+    ])])
+    .await;
+    let session_id = SessionId::new();
+    let client_message_id = "00000000-0000-4000-8000-000000000001".to_owned();
+
+    start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: Some(client_message_id.clone()),
+            attachments: None,
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            prompt: "Complete the task".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("start_run should start a conversation run");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        let payload = get_conversation_with_runtime_state(
+            GetConversationRequest {
+                conversation_id: session_id.to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("conversation should load");
+
+        if let Some(message) = payload
+            .conversation
+            .messages
+            .iter()
+            .find(|message| message.author == "user")
+        {
+            assert_eq!(
+                message.client_message_id.as_deref(),
+                Some(client_message_id.as_str())
+            );
+            break;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!("user message should be available");
+        }
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+#[tokio::test]
+async fn list_activity_with_runtime_state_withholds_tool_failure_messages() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let tool_use_id = ToolUseId::new();
+    let raw_error = "failed with AKIAIOSFODNN7EXAMPLE";
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+                Event::ToolUseRequested(test_tool_use_requested_event(
+                    run_id,
+                    tool_use_id,
+                    "ReadFile",
+                )),
+                Event::ToolUseFailed(ToolUseFailedEvent {
+                    at: now(),
+                    error: ToolErrorPayload {
+                        code: "execution".to_owned(),
+                        message: raw_error.to_owned(),
+                        retriable: false,
+                    },
+                    tool_use_id,
+                }),
+            ],
+        )
+        .await
+        .expect("activity events should append");
+
+    let payload = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: None,
+        },
+        &state,
+    )
+    .await
+    .expect("activity should load");
+    let serialized = serde_json::to_string(&payload).unwrap();
+    let failed = payload
+        .events
+        .iter()
+        .find(|event| event.event_type == "tool.failed")
+        .expect("tool failure should be projected");
+
+    assert!(!serialized.contains(raw_error));
+    assert_eq!(
+        failed.payload["message"],
+        json!("Tool error withheld from conversation timeline.")
+    );
+}
+
+#[tokio::test]
+async fn list_activity_with_runtime_state_withholds_failed_run_end_reason() {
+    let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Error(
+        ModelError::InvalidRequest("provider failed".to_owned()),
+    )])
+    .await;
+    let session_id = SessionId::new();
+    let started = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            prompt: "Trigger a provider failure".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("start_run should start a conversation run");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+
+    loop {
+        let payload = list_activity_with_runtime_state(
+            ListActivityRequest {
+                conversation_id: Some(session_id.to_string()),
+                run_id: Some(started.run_id.clone()),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+
+        if let Some(run_ended) = payload
+            .events
+            .iter()
+            .find(|event| event.event_type == "run.ended")
+        {
+            assert_eq!(
+                run_ended.payload["reason"],
+                json!("Run error withheld from conversation timeline.")
+            );
+            break;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!("activity should include failed run ended event");
+        }
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+#[tokio::test]
+async fn list_activity_with_runtime_state_redacts_private_paths_from_engine_failed_events() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let private_path = "/Users/alice/workspace/secret.txt";
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+                Event::EngineFailed(EngineFailedEvent {
+                    at: now(),
+                    error: EngineError::Message(format!("failed to read {private_path}")),
+                    run_id: Some(run_id),
+                    session_id: Some(session_id),
+                }),
+            ],
+        )
+        .await
+        .expect("activity events should append");
+
+    let payload = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: None,
+        },
+        &state,
+    )
+    .await
+    .expect("activity should load");
+    let serialized = serde_json::to_string(&payload).unwrap();
+    let failed = payload
+        .events
+        .iter()
+        .find(|event| event.event_type == "engine.failed")
+        .expect("engine failure should be projected");
+
+    assert!(!serialized.contains(private_path));
+    assert_eq!(
+        failed.payload["message"],
+        json!("Engine error withheld from conversation timeline.")
+    );
+}
+
+#[tokio::test]
+async fn list_activity_with_runtime_state_withholds_engine_failed_raw_message() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let raw_error = "provider error Authorization: Bearer secret-token path=/Users/alice/private";
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+                Event::EngineFailed(EngineFailedEvent {
+                    at: now(),
+                    error: EngineError::Message(raw_error.to_owned()),
+                    run_id: Some(run_id),
+                    session_id: Some(session_id),
+                }),
+            ],
+        )
+        .await
+        .expect("activity events should append");
+
+    let payload = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: None,
+        },
+        &state,
+    )
+    .await
+    .expect("activity should load");
+    let serialized = serde_json::to_string(&payload).unwrap();
+    let failed = payload
+        .events
+        .iter()
+        .find(|event| event.event_type == "engine.failed")
+        .expect("engine failure should be projected");
+
+    assert!(!serialized.contains(raw_error));
+    assert!(!serialized.contains("secret-token"));
+    assert!(!serialized.contains("/Users/alice/private"));
+    assert_eq!(
+        failed.payload["message"],
+        json!("Engine error withheld from conversation timeline.")
+    );
+}
+
+#[tokio::test]
 async fn list_activity_with_runtime_state_redacts_pending_permission_display_text() {
     let secret_command =
         "git push https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/org/repo";
@@ -1634,6 +4904,8 @@ async fn list_activity_with_runtime_state_redacts_pending_permission_display_tex
     let session_id = SessionId::new();
     let started = start_run_with_runtime_state(
         StartRunRequest {
+            client_message_id: None,
+            attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             prompt: "Run a command".to_owned(),
@@ -1657,10 +4929,12 @@ async fn list_activity_with_runtime_state_redacts_pending_permission_display_tex
     let value = serde_json::to_string(&payload).unwrap();
 
     assert!(!value.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"));
-    assert!(value.contains("[REDACTED]"));
+    assert!(!value.contains(secret_command));
+    assert!(value.contains("\"target\":\"git\""));
 
     resolve_permission_with_runtime_state(
         ResolvePermissionRequest {
+            conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
         },
@@ -1690,6 +4964,8 @@ async fn get_replay_timeline_with_runtime_state_reads_redacted_journal_events_wi
     let session_id = SessionId::new();
     let started = start_run_with_runtime_state(
         StartRunRequest {
+            client_message_id: None,
+            attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             prompt: "Run a command".to_owned(),
@@ -1722,7 +4998,8 @@ async fn get_replay_timeline_with_runtime_state_reads_redacted_journal_events_wi
         .iter()
         .any(|event| event.event_type == "permission.requested"));
     assert!(!serialized.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"));
-    assert!(serialized.contains("[REDACTED]"));
+    assert!(!serialized.contains(secret_command));
+    assert!(serialized.contains("\"target\":\"git\""));
     assert_eq!(
         state.pending_permission_requests().len(),
         1,
@@ -1731,6 +5008,7 @@ async fn get_replay_timeline_with_runtime_state_reads_redacted_journal_events_wi
 
     resolve_permission_with_runtime_state(
         ResolvePermissionRequest {
+            conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
         },
@@ -1754,6 +5032,8 @@ async fn get_replay_timeline_with_runtime_state_reads_beyond_first_event_page() 
     let session_id = SessionId::new();
     let started = start_run_with_runtime_state(
         StartRunRequest {
+            client_message_id: None,
+            attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             prompt: "Write many deltas".to_owned(),
@@ -1837,6 +5117,8 @@ async fn export_support_bundle_with_runtime_state_writes_redacted_files_under_wo
     let session_id = SessionId::new();
     let started = start_run_with_runtime_state(
         StartRunRequest {
+            client_message_id: None,
+            attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             prompt: "Run a command".to_owned(),
@@ -1870,12 +5152,14 @@ async fn export_support_bundle_with_runtime_state_writes_redacted_files_under_wo
     let markdown = std::fs::read_to_string(workspace.join(&payload.markdown_path)).unwrap();
     let exported = format!("{bundle}\n{jsonl}\n{markdown}");
 
-    assert!(exported.contains("[REDACTED]"));
     assert!(!exported.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"));
+    assert!(!exported.contains(secret_command));
+    assert!(exported.contains("\"target\":\"git\""));
     assert!(exported.contains("\"redacted\":true"));
 
     resolve_permission_with_runtime_state(
         ResolvePermissionRequest {
+            conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
         },
@@ -1902,15 +5186,41 @@ fn desktop_provider_settings_store_rejects_symlink_settings_file() {
 
     let error = store
         .save_record(&ProviderSettingsRecord {
-            model_id: "gpt-4o-mini".to_owned(),
-            provider_id: "openai".to_owned(),
-            secret_ref: "jyowo-provider-secret:test".to_owned(),
-            stale_secret_refs: Vec::new(),
+            default_config_id: Some("openai".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: String::new(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI".to_owned(),
+                id: "openai".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
         })
         .unwrap_err();
 
     assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
     assert!(!external.join("provider-settings.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn desktop_skill_store_rejects_symlink_index_file() {
+    let workspace = unique_workspace("skill-store-symlink-index");
+    let external = unique_workspace("skill-store-external-target");
+    let index_dir = workspace.join(".jyowo").join("runtime").join("skills");
+    let index_path = index_dir.join("index.json");
+    std::fs::create_dir_all(&index_dir).unwrap();
+    std::fs::create_dir_all(&external).unwrap();
+    std::fs::write(external.join("index.json"), "[]").unwrap();
+    std::os::unix::fs::symlink(external.join("index.json"), &index_path).unwrap();
+    let store = DesktopSkillStore::new(workspace);
+
+    let error = store.load_records().unwrap_err();
+
+    assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+    assert!(error.message.contains("must not use symlinks"));
 }
 
 #[cfg(unix)]
@@ -1956,6 +5266,7 @@ async fn list_activity_with_runtime_state_does_not_expose_other_conversation_pen
         .expect("harness should use the stream permission broker");
     let request = permission_request();
     let request_id = request.request_id;
+    let request_session_id = request.session_id;
 
     let decision_task =
         tokio::spawn(async move { broker.decide(request, permission_context()).await });
@@ -1976,6 +5287,7 @@ async fn list_activity_with_runtime_state_does_not_expose_other_conversation_pen
 
     resolve_permission_with_runtime_state(
         ResolvePermissionRequest {
+            conversation_id: request_session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
         },
@@ -1999,6 +5311,7 @@ async fn list_activity_with_runtime_state_rejects_conflicting_conversation_and_r
         .expect("harness should use the stream permission broker");
     let request = permission_request();
     let request_id = request.request_id;
+    let request_session_id = request.session_id;
     let run_id = RunId::new();
     let run_id_string = run_id.to_string();
 
@@ -2024,6 +5337,7 @@ async fn list_activity_with_runtime_state_rejects_conflicting_conversation_and_r
 
     resolve_permission_with_runtime_state(
         ResolvePermissionRequest {
+            conversation_id: request_session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
         },
@@ -2049,6 +5363,7 @@ async fn runtime_state_rejects_harness_and_stream_permission_runtime_from_differ
     let harness = Arc::new(
         Harness::builder()
             .with_model(MockProvider::default())
+            .with_model_id("mock-model")
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -2105,10 +5420,16 @@ struct NeedsPermissionTool {
 
 impl Default for NeedsPermissionTool {
     fn default() -> Self {
+        Self::named("NeedsPermission", "NeedsPermission")
+    }
+}
+
+impl NeedsPermissionTool {
+    fn named(name: &str, display_name: &str) -> Self {
         Self {
             descriptor: ToolDescriptor {
-                name: "NeedsPermission".to_owned(),
-                display_name: "NeedsPermission".to_owned(),
+                name: name.to_owned(),
+                display_name: display_name.to_owned(),
                 description: "Requests command permission for desktop tests.".to_owned(),
                 category: "test".to_owned(),
                 group: ToolGroup::Custom("test".to_owned()),
@@ -2293,6 +5614,80 @@ async fn open_conversation_session(state: &DesktopRuntimeState, session_id: Sess
         .expect("conversation session should open");
 }
 
+fn test_run_started_event(session_id: SessionId, run_id: RunId) -> RunStartedEvent {
+    RunStartedEvent {
+        correlation_id: CorrelationId::new(),
+        effective_config_hash: ConfigHash([0; 32]),
+        input: TurnInput {
+            message: Message {
+                created_at: now(),
+                id: MessageId::new(),
+                parts: vec![MessagePart::Text("Test run".to_owned())],
+                role: MessageRole::User,
+            },
+            metadata: json!({}),
+        },
+        parent_run_id: None,
+        run_id,
+        session_id,
+        snapshot_id: SnapshotId::new(),
+        started_at: now(),
+        tenant_id: TenantId::SINGLE,
+    }
+}
+
+fn test_tool_use_requested_event(
+    run_id: RunId,
+    tool_use_id: ToolUseId,
+    tool_name: &str,
+) -> ToolUseRequestedEvent {
+    ToolUseRequestedEvent {
+        at: now(),
+        causation_id: EventId::new(),
+        input: json!({ "toolName": tool_name }),
+        properties: ToolProperties {
+            is_concurrency_safe: true,
+            is_destructive: false,
+            is_read_only: false,
+            long_running: None,
+            defer_policy: DeferPolicy::AlwaysLoad,
+        },
+        run_id,
+        tool_name: tool_name.to_owned(),
+        tool_use_id,
+    }
+}
+
+fn test_permission_requested_event(
+    session_id: SessionId,
+    run_id: RunId,
+    tool_use_id: ToolUseId,
+    request_id: RequestId,
+    tool_name: &str,
+) -> PermissionRequestedEvent {
+    PermissionRequestedEvent {
+        at: now(),
+        causation_id: EventId::new(),
+        fingerprint: None,
+        interactivity: InteractivityLevel::FullyInteractive,
+        presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+        request_id,
+        run_id,
+        scope_hint: DecisionScope::ToolName(tool_name.to_owned()),
+        session_id,
+        severity: Severity::Low,
+        subject: PermissionSubject::CommandExec {
+            argv: vec![tool_name.to_owned()],
+            command: tool_name.to_owned(),
+            cwd: None,
+            fingerprint: None,
+        },
+        tenant_id: TenantId::SINGLE,
+        tool_name: tool_name.to_owned(),
+        tool_use_id,
+    }
+}
+
 async fn runtime_state_with_harness() -> DesktopRuntimeState {
     runtime_state_with_harness_for_workspace(unique_workspace("harness")).await
 }
@@ -2307,6 +5702,7 @@ async fn runtime_state_with_harness_for_workspace(workspace: PathBuf) -> Desktop
     let harness = Arc::new(
         Harness::builder()
             .with_model(MockProvider::default())
+            .with_model_id("mock-model")
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -2339,6 +5735,7 @@ async fn runtime_state_with_memory_provider(
     let harness = Arc::new(
         Harness::builder()
             .with_model(MockProvider::default())
+            .with_model_id("mock-model")
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -2385,6 +5782,7 @@ async fn runtime_state_with_mcp_registry_for_workspace(
     let harness = Arc::new(
         Harness::builder()
             .with_model(MockProvider::default())
+            .with_model_id("mock-model")
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -2428,6 +5826,7 @@ async fn runtime_state_with_scripted_model_for_workspace(
     let harness = Arc::new(
         Harness::builder()
             .with_model_arc(Arc::new(ScriptedProvider::new(responses)))
+            .with_model_id("mock-model")
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -2459,6 +5858,68 @@ fn unique_workspace(name: &str) -> PathBuf {
         std::process::id(),
         SessionId::new()
     ))
+}
+
+fn test_attachment_blob_ref(size: u64, content_type: &str) -> AttachmentBlobRefPayload {
+    AttachmentBlobRefPayload {
+        id: "01J00000000000000000000000".to_owned(),
+        size,
+        content_hash: [1; 32],
+        content_type: Some(content_type.to_owned()),
+    }
+}
+
+fn skill_markdown(name: &str, description: &str) -> String {
+    format!("---\nname: {name}\ndescription: {description}\n---\nSkill body for {name}.\n")
+}
+
+fn write_skill_package(
+    root: &std::path::Path,
+    package_name: &str,
+    skill_name: &str,
+    description: &str,
+    resource: Option<(&str, &str)>,
+) -> PathBuf {
+    let package_path = root.join(package_name);
+    std::fs::create_dir_all(&package_path).unwrap();
+    std::fs::write(
+        package_path.join("SKILL.md"),
+        skill_markdown(skill_name, description),
+    )
+    .unwrap();
+    if let Some((relative_path, content)) = resource {
+        let resource_path = package_path.join(relative_path);
+        std::fs::create_dir_all(resource_path.parent().unwrap()).unwrap();
+        std::fs::write(resource_path, content).unwrap();
+    }
+    package_path.canonicalize().unwrap()
+}
+
+fn register_test_skill(state: &DesktopRuntimeState, name: &str, description: &str) {
+    let harness = state
+        .harness()
+        .expect("runtime state should include harness");
+    let skill = parse_skill_markdown(
+        &skill_markdown(name, description),
+        SkillSource::Workspace("data/skills".into()),
+        None,
+        SkillPlatform::Macos,
+    )
+    .expect("test skill should parse");
+    harness
+        .skill_registry()
+        .register_batch(vec![skill])
+        .expect("test skill should register");
+}
+
+fn register_test_tool(state: &DesktopRuntimeState, name: &str, display_name: &str) {
+    let harness = state
+        .harness()
+        .expect("runtime state should include harness");
+    harness
+        .tool_registry()
+        .register(Box::new(NeedsPermissionTool::named(name, display_name)))
+        .expect("test tool should register");
 }
 
 struct EnvVarGuard {
@@ -2524,49 +5985,11 @@ impl McpConnection for StaticMcpConnection {
 
 #[derive(Default)]
 struct RecordingProviderSettingsStore {
-    delete_failures: Mutex<HashSet<String>>,
-    deleted_secrets: Mutex<Vec<String>>,
     fail_record: bool,
     record: Mutex<Option<ProviderSettingsRecord>>,
-    secret: Mutex<Option<(String, String)>>,
 }
 
 impl ProviderSettingsStore for RecordingProviderSettingsStore {
-    fn secret_ref(&self, provider_id: &str) -> String {
-        format!("{}recording", self.secret_ref_prefix(provider_id))
-    }
-
-    fn secret_ref_prefix(&self, provider_id: &str) -> String {
-        provider_secret_ref_prefix(PathBuf::from("/test/workspace").as_path(), provider_id)
-    }
-
-    fn save_secret(
-        &self,
-        secret_ref: &str,
-        api_key: &str,
-    ) -> Result<(), jyowo_desktop_shell::commands::CommandErrorPayload> {
-        *self.secret.lock().unwrap() = Some((secret_ref.to_owned(), api_key.to_owned()));
-        Ok(())
-    }
-
-    fn delete_secret(
-        &self,
-        secret_ref: &str,
-    ) -> Result<(), jyowo_desktop_shell::commands::CommandErrorPayload> {
-        self.deleted_secrets
-            .lock()
-            .unwrap()
-            .push(secret_ref.to_owned());
-        if self.delete_failures.lock().unwrap().contains(secret_ref) {
-            return Err(jyowo_desktop_shell::commands::CommandErrorPayload {
-                code: "RUNTIME_OPERATION_FAILED",
-                message: "secret cleanup failed".to_owned(),
-            });
-        }
-
-        Ok(())
-    }
-
     fn load_record(
         &self,
     ) -> Result<Option<ProviderSettingsRecord>, jyowo_desktop_shell::commands::CommandErrorPayload>
@@ -2665,9 +6088,7 @@ async fn get_context_snapshot_with_runtime_state_returns_workspace_metadata_with
         context.project,
         workspace.file_name().unwrap().to_string_lossy()
     );
-    assert!(context
-        .path
-        .contains(&workspace.file_name().unwrap().to_string_lossy().to_string()));
+    assert_eq!(context.path, "workspace://local");
     assert!(context.active_artifact.is_none());
     assert!(context.decisions.is_empty());
     assert_eq!(context.next_actions, vec!["Continue the conversation"]);
@@ -2681,7 +6102,7 @@ async fn get_context_snapshot_with_runtime_state_returns_workspace_metadata_with
 }
 
 #[tokio::test]
-async fn get_context_snapshot_with_runtime_state_projects_conversation_context() {
+async fn get_context_snapshot_with_runtime_state_does_not_project_assistant_reply_as_artifact() {
     let workspace = unique_workspace("context-snapshot");
     std::fs::create_dir_all(workspace.join("apps/desktop/src")).unwrap();
     std::fs::write(
@@ -2704,6 +6125,8 @@ async fn get_context_snapshot_with_runtime_state_projects_conversation_context()
 
     start_run_with_runtime_state(
         StartRunRequest {
+            client_message_id: None,
+            attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             prompt: "Create a context artifact".to_owned(),
@@ -2715,41 +6138,54 @@ async fn get_context_snapshot_with_runtime_state_projects_conversation_context()
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
 
     loop {
-        let payload = get_context_snapshot_with_runtime_state(
-            GetContextSnapshotRequest {
-                conversation_id: Some(session_id.to_string()),
-                run_id: None,
+        let conversation = get_conversation_with_runtime_state(
+            GetConversationRequest {
+                conversation_id: session_id.to_string(),
             },
             &state,
         )
         .await
-        .expect("runtime context snapshot should load");
-
-        if payload.active_artifact.as_deref() == Some("Runtime context artifact") {
-            assert_eq!(
-                payload.project,
-                workspace.file_name().unwrap().to_string_lossy()
-            );
-            assert_eq!(
-                payload.path,
-                workspace.canonicalize().unwrap().display().to_string()
-            );
-            assert!(payload.files.iter().any(|file| {
-                file.label == "apps/desktop/src/main.tsx" && file.state == Some("ready")
-            }));
-            assert!(payload
-                .next_actions
-                .iter()
-                .any(|action| action == "Review Runtime context artifact"));
-            return;
+        .expect("runtime conversation should load");
+        if conversation
+            .conversation
+            .messages
+            .iter()
+            .any(|message| message.body.contains("Runtime context artifact"))
+        {
+            break;
         }
 
         if tokio::time::Instant::now() >= deadline {
-            panic!("runtime context snapshot should include the latest assistant artifact");
+            panic!("runtime assistant output should complete");
         }
 
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+
+    let payload = get_context_snapshot_with_runtime_state(
+        GetContextSnapshotRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: None,
+        },
+        &state,
+    )
+    .await
+    .expect("runtime context snapshot should load");
+
+    assert_eq!(payload.active_artifact, None);
+    assert_eq!(
+        payload.project,
+        workspace.file_name().unwrap().to_string_lossy()
+    );
+    assert_eq!(payload.path, "workspace://local");
+    assert!(payload
+        .files
+        .iter()
+        .any(|file| { file.label == "apps/desktop/src/main.tsx" && file.state == Some("ready") }));
+    assert!(payload
+        .next_actions
+        .iter()
+        .any(|action| action == "Continue the conversation"));
 }
 
 #[tokio::test]
@@ -2769,6 +6205,8 @@ async fn get_context_snapshot_with_runtime_state_exposes_pending_decisions() {
     let session_id = SessionId::new();
     let started = start_run_with_runtime_state(
         StartRunRequest {
+            client_message_id: None,
+            attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             prompt: "Run a command".to_owned(),
@@ -2794,10 +6232,12 @@ async fn get_context_snapshot_with_runtime_state_exposes_pending_decisions() {
             && decision
                 .detail
                 .contains(&pending.request.request_id.to_string())
+            && decision.request_id.as_deref() == Some(&pending.request.request_id.to_string())
     }));
 
     resolve_permission_with_runtime_state(
         ResolvePermissionRequest {
+            conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: pending.request.request_id.to_string(),
         },
@@ -2861,6 +6301,7 @@ async fn get_context_snapshot_with_runtime_state_redacts_pending_decision_tool_n
 
     resolve_permission_with_runtime_state(
         ResolvePermissionRequest {
+            conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
         },
@@ -2891,7 +6332,7 @@ async fn get_context_snapshot_with_runtime_state_redacts_workspace_display_field
     let serialized = serde_json::to_string(&payload).unwrap();
 
     assert!(!serialized.contains(secret_workspace_segment));
-    assert!(payload.path.contains("[REDACTED]"));
+    assert_eq!(payload.path, "workspace://local");
     assert!(payload.project.contains("[REDACTED]"));
 }
 
@@ -2917,7 +6358,7 @@ async fn get_context_snapshot_with_runtime_state_hides_runtime_read_errors() {
             .and_then(|name| name.to_str())
             .unwrap()
     );
-    assert_eq!(payload.path, state.workspace_root().display().to_string());
+    assert_eq!(payload.path, "workspace://local");
     assert!(payload.files.is_empty());
     assert!(payload.decisions.is_empty());
 }

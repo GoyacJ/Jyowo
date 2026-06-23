@@ -41,6 +41,7 @@
     "@tanstack/react-router": "1.170.16",
     "@tanstack/react-virtual": "^3.14.3",
     "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-dialog": "^2.4.3",
     "@tauri-apps/plugin-store": "^2.4.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

@@ -2,6 +2,7 @@
 //!
 //! SPEC: docs/architecture/harness/event-schema.md
 
+pub mod artifact;
 pub mod context;
 pub mod error;
 pub mod execute_code;
@@ -27,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ToolLoadingBackendName, ToolName};
 
+pub use artifact::*;
 pub use context::*;
 pub use error::*;
 pub use execute_code::*;
@@ -63,6 +65,8 @@ pub enum Event {
     UserMessageAppended(UserMessageAppendedEvent),
     AssistantDeltaProduced(AssistantDeltaProducedEvent),
     AssistantMessageCompleted(AssistantMessageCompletedEvent),
+    ArtifactCreated(ArtifactCreatedEvent),
+    ArtifactUpdated(ArtifactUpdatedEvent),
     ToolUseRequested(ToolUseRequestedEvent),
     ToolUseApproved(ToolUseApprovedEvent),
     ToolUseDenied(ToolUseDeniedEvent),

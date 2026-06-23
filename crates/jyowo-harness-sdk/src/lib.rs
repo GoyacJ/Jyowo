@@ -34,12 +34,14 @@ pub use harness::StreamPermissionRuntime;
 pub use harness::{
     ConversationEventsPage, ConversationEventsPageRequest, ConversationSession,
     ConversationSessionSummary, ConversationTurnReceipt, ConversationTurnRequest, Harness,
-    HarnessOptions, HarnessSamplingProvider, McpConfig, TenantPolicy, WorkspaceCreateRequest,
+    HarnessOptions, HarnessSamplingProvider, McpConfig, RuntimeSkillParameter, RuntimeSkillSummary,
+    RuntimeSkillView, TenantPolicy, WorkspaceCreateRequest,
 };
 pub use harness_journal::{
     AuditFilter, AuditOrder, AuditPage, AuditQuery, AuditRecord, AuditScope,
 };
 pub use harness_session::{BootstrapFileSpec, Workspace, WorkspaceBootstrap, WorkspaceSpec};
+pub use harness_skill::{parse_skill_markdown, SkillSource};
 pub use options::{
     ConfigError, ConfigSource, ConfigWarning, LastKnownGoodConfig, OptionsParseMode,
     ParsedHarnessOptions,
@@ -56,8 +58,8 @@ pub use skill_pack_loader::{
 pub use team::{Team, TeamBuilder};
 
 pub use harness_contracts::{
-    AgentId, Event, MessageId, RunId, SessionId, TeamId, TenantId, ToolUseId, TurnInput,
-    WorkspaceId,
+    AgentId, ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput,
+    Event, MessageId, RunId, SessionId, TeamId, TenantId, ToolUseId, TurnInput, WorkspaceId,
 };
 
 #[cfg(feature = "agents-team")]

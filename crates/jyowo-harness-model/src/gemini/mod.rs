@@ -12,9 +12,10 @@ use secrecy::{ExposeSecret, SecretString};
 use serde_json::{json, Value};
 
 use crate::{
-    apply_response_headers_middlewares, wrap_stream_with_cancel_deadline, ApiMode, ContentDelta,
-    ContentType, ErrorClass, ErrorHints, GeminiCacheMode, InferContext, ModelCapabilities,
-    ModelDescriptor, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent, PromptCacheStyle,
+    apply_response_headers_middlewares, wrap_stream_with_cancel_deadline, ContentDelta,
+    ContentType, ConversationModelCapability, ErrorClass, ErrorHints, GeminiCacheMode,
+    InferContext, ModelDescriptor, ModelLifecycle, ModelModality, ModelProtocol, ModelProvider,
+    ModelRequest, ModelStream, ModelStreamEvent, PromptCacheStyle,
 };
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
@@ -100,6 +101,7 @@ impl ModelProvider for GeminiProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
+        // Verified 2026-06-21: https://ai.google.dev/gemini-api/docs/models
         vec![
             descriptor("gemini-2.5-pro", "Gemini 2.5 Pro", 32_000),
             descriptor("gemini-2.5-flash", "Gemini 2.5 Flash", 16_384),
@@ -126,25 +128,21 @@ impl ModelProvider for GeminiProvider {
         }
     }
 
+    fn default_protocol(&self) -> ModelProtocol {
+        ModelProtocol::GenerateContent
+    }
+
     fn prompt_cache_style(&self) -> PromptCacheStyle {
         PromptCacheStyle::Gemini {
             mode: GeminiCacheMode::ExternalReferenceOnly,
         }
     }
-
-    fn supports_tools(&self) -> bool {
-        true
-    }
-
-    fn supports_vision(&self) -> bool {
-        true
-    }
 }
 
 fn validate_request(req: &ModelRequest, ctx: &InferContext) -> Result<(), ModelError> {
-    if req.api_mode != ApiMode::GenerateContent {
+    if req.protocol != ModelProtocol::GenerateContent {
         return Err(ModelError::InvalidRequest(
-            "GeminiProvider only supports ApiMode::GenerateContent".to_owned(),
+            "GeminiProvider only supports ModelProtocol::GenerateContent".to_owned(),
         ));
     }
     if !req.cache_breakpoints.is_empty() {
@@ -227,7 +225,10 @@ fn part(part: &MessagePart) -> Result<Value, ModelError> {
                 "response": tool_result(content)?,
             },
         })),
-        MessagePart::Image { .. } | MessagePart::Thinking(_) => Err(ModelError::InvalidRequest(
+        MessagePart::Image { .. }
+        | MessagePart::Video { .. }
+        | MessagePart::File { .. }
+        | MessagePart::Thinking(_) => Err(ModelError::InvalidRequest(
             "GeminiProvider only supports text and tool parts in M2-T04.7".to_owned(),
         )),
         _ => Err(ModelError::InvalidRequest(
@@ -550,16 +551,21 @@ fn descriptor(model_id: &str, display_name: &str, max_output_tokens: u32) -> Mod
         provider_id: "gemini".to_owned(),
         model_id: model_id.to_owned(),
         display_name: display_name.to_owned(),
+        protocol: ModelProtocol::GenerateContent,
         context_window: 1_000_000,
         max_output_tokens,
-        capabilities: ModelCapabilities {
-            supports_tools: true,
-            supports_vision: true,
-            supports_thinking: false,
-            supports_prompt_cache: true,
-            supports_tool_reference: false,
-            tool_reference_beta_header: None,
+        conversation_capability: ConversationModelCapability {
+            context_window: 1_000_000,
+            max_output_tokens,
+            tool_calling: true,
+            reasoning: false,
+            prompt_cache: true,
+            streaming: true,
+            structured_output: false,
+            input_modalities: vec![ModelModality::Text],
+            output_modalities: vec![ModelModality::Text],
         },
+        lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }
 }

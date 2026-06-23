@@ -17,13 +17,18 @@ Test layers:
 Must test:
 
 - conversation list, conversation page, and natural composer behavior
-- `ConversationCanvas` loading, empty, streaming, completed, and error states
+- `ConversationTimeline` loading, empty, streaming, completed, permission,
+  artifact, review, withheld, and error states
+- timeline reducer idempotence, `clientMessageId` optimistic confirmation,
+  `conversationSequence` ordering, gap recovery, and snapshot reconciliation
 - `Composer` typing, submit, disabled, pending, retry, and continue states
 - `ContextPanel` file references, selected context, and empty context states
 - `ActivityRail` compact activity, failed activity, and drill-down behavior
 - `PlanBlock`, `ProgressBlock`, `ArtifactPreview`, `ReviewRequest`, and
   `DecisionCard` state transitions
 - `shared/events` valid and invalid RunEvent payloads
+- `shared/tauri` conversation event subscription parsing, replay-before-live
+  dispatch, stale subscription filtering, and listener cleanup
 - event renderer exhaustiveness
 - `shared/tauri` schema validation and error normalization
 - mock `CommandClient`
@@ -39,18 +44,16 @@ Must test:
 Storybook is required for complex business UI:
 
 ```text
-ConversationCanvas
-ConversationMessage
+ConversationTimeline
+conversation-block-renderer
 Composer
 ContextPanel
 ActivityRail
-PlanBlock
-ProgressBlock
-ArtifactPreview
-ReviewRequest
-DecisionCard
-PermissionDialog
-ToolCallCard
+PlanTimelineBlock
+ToolGroupBlock
+ArtifactBlock
+ReviewRequestBlock
+PermissionRequestBlock
 DiffViewer
 MCPServerCard
 MemoryItemCard
@@ -64,7 +67,7 @@ Component acceptance matrix:
 | Component class | Required coverage |
 |---|---|
 | `shared/ui` primitives | variants, keyboard behavior, focus state, disabled state, accessible name |
-| Conversation components | loading, empty, streaming, completed, error, retry, continue |
+| Conversation components | loading, empty, streaming, completed, permission, artifact, review, withheld, error, retry, continue |
 | Context components | no context, selected context, long lists, missing files, stale references |
 | Activity components | queued, running, success, failed, blocked, redacted, drill-down |
 | Execution components | permission pending, approved, denied, high risk, large output, Raw JSON |

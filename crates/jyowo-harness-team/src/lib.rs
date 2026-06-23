@@ -38,7 +38,7 @@ use harness_memory::{
     MemoryLifecycle, MemoryListScope, MemoryMetadata, MemoryQuery, MemoryRecord, MemoryStore,
     MemorySummary, MemoryVisibilityFilter,
 };
-use harness_model::{ApiMode, AuxExecutor, AuxModelProvider, AuxTask, ModelRequest};
+use harness_model::{AuxExecutor, AuxModelProvider, AuxTask, ModelProtocol, ModelRequest};
 use harness_session::{Session, SessionOptions};
 use parking_lot::{Mutex as SyncMutex, MutexGuard as SyncMutexGuard};
 use regex::Regex;
@@ -1241,7 +1241,7 @@ fn aux_classify_request(
         max_tokens: Some(128),
         stream: false,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::Messages,
+        protocol: ModelProtocol::Messages,
         extra: serde_json::Value::Null,
     }
 }

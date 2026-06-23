@@ -3,15 +3,12 @@ import '@testing-library/jest-dom/vitest'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { ArtifactSummary } from './ArtifactSummary'
 import { ConversationCanvas } from './ConversationCanvas'
-import { ConversationMessage } from './ConversationMessage'
 import { DecisionCard } from './DecisionCard'
 import { DiffPreview } from './DiffPreview'
 import { DiffViewer } from './DiffViewer'
 import type { PlanItem } from './PlanBlock'
 import { PlanBlock } from './PlanBlock'
-import { ProgressBlock } from './ProgressBlock'
 import { ReviewRequest } from './ReviewRequest'
 
 const storyPlanItems = [
@@ -44,19 +41,13 @@ describe('conversation components', () => {
   it('renders a conversation canvas title and messages', () => {
     render(
       <ConversationCanvas title="Build the desktop foundation">
-        <ConversationMessage
-          avatar="Y"
-          author="You"
-          body="Use Vite for the renderer."
-          time="10:21 AM"
-        />
+        <p>Use Vite for the renderer.</p>
       </ConversationCanvas>,
     )
 
     expect(
       screen.getByRole('heading', { name: 'Build the desktop foundation' }),
     ).toBeInTheDocument()
-    expect(screen.getByText('You')).toBeInTheDocument()
     expect(screen.getByText('Use Vite for the renderer.')).toBeInTheDocument()
   })
 
@@ -88,13 +79,12 @@ describe('conversation components', () => {
     expect(screen.getByRole('button', { name: 'Copy diff' })).toBeInTheDocument()
   })
 
-  it('renders progress, decision, review, and large diff states', () => {
+  it('renders decision, review, and large diff states', () => {
     const onContinue = vi.fn()
     const onCopy = vi.fn()
 
     render(
       <>
-        <ProgressBlock label="start_run" status="running" time="Now" />
         <DecisionCard detail="Before connecting runtime events" title="Review shell structure" />
         <ReviewRequest
           continueActionLabel="Continue"
@@ -115,8 +105,6 @@ describe('conversation components', () => {
       </>,
     )
 
-    expect(screen.getByRole('region', { name: 'Work progress' })).toBeInTheDocument()
-    expect(screen.getByText('Working: start_run')).toBeInTheDocument()
     expect(
       screen.getByRole('region', { name: 'Decision needed: Review shell structure' }),
     ).toBeInTheDocument()
@@ -130,77 +118,5 @@ describe('conversation components', () => {
 
     expect(onContinue).toHaveBeenCalledTimes(1)
     expect(onCopy).toHaveBeenCalledTimes(1)
-  })
-
-  it('renders artifact summary action labels', () => {
-    const onOpenArtifact = vi.fn()
-    const onOpenSource = vi.fn()
-
-    render(
-      <ArtifactSummary
-        activeArtifactId="artifact-failed"
-        artifacts={[
-          {
-            actionLabel: 'Run app',
-            description: 'Tauri + React + TypeScript with Vite',
-            id: 'artifact-desktop-foundation',
-            kind: 'app',
-            preview: 'Renderer shell preview',
-            previewState: 'ready',
-            sourceMessageId: 'message-001',
-            sourceRunId: 'run-001',
-            status: 'ready',
-            title: 'Desktop foundation created',
-          },
-          {
-            actionLabel: 'Inspect',
-            description: 'Follow-up verification checklist',
-            id: 'artifact-verification-notes',
-            kind: 'markdown',
-            preview: 'pnpm check:desktop',
-            previewState: 'loading',
-            sourceMessageId: 'message-002',
-            sourceRunId: 'run-002',
-            status: 'pending',
-            title: 'Verification notes',
-          },
-        ]}
-        onOpenArtifact={onOpenArtifact}
-        onOpenSource={onOpenSource}
-      />,
-    )
-
-    expect(screen.getByText('Desktop foundation created')).toBeInTheDocument()
-    expect(screen.getAllByText('Tauri + React + TypeScript with Vite').length).toBeGreaterThan(0)
-    expect(screen.getByRole('button', { name: 'Run app' })).toBeInTheDocument()
-
-    screen.getByRole('button', { name: 'Inspect' }).click()
-    screen.getAllByRole('button', { name: 'Show source message' })[1]?.click()
-
-    expect(onOpenArtifact).toHaveBeenCalledWith('artifact-verification-notes')
-    expect(onOpenSource).toHaveBeenCalledWith('message-002')
-  })
-
-  it('defaults failed artifact preview to error state', () => {
-    render(
-      <ArtifactSummary
-        activeArtifactId="artifact-failed"
-        artifacts={[
-          {
-            actionLabel: 'Inspect',
-            description: 'Artifact generation failed',
-            id: 'artifact-failed',
-            kind: 'markdown',
-            preview: '',
-            sourceRunId: 'run-003',
-            status: 'failed',
-            title: 'Failed artifact',
-          },
-        ]}
-      />,
-    )
-
-    expect(screen.getByText('Artifact preview unavailable.')).toBeInTheDocument()
-    expect(screen.queryByText('Loading artifact preview.')).not.toBeInTheDocument()
   })
 })

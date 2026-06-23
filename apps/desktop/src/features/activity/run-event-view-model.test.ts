@@ -14,7 +14,7 @@ describe('run-event-view-model', () => {
     const event = runEventSchema.parse({
       ...runEventFixtures[4],
       payload: {
-        argumentsSummary: 'Read package metadata',
+        argumentsSummary: 'Input withheld from conversation timeline.',
         toolName: 'read_file',
         toolUseId: 'tool-001',
       },
@@ -69,7 +69,7 @@ describe('run-event-view-model', () => {
       ...runEventFixtures[7],
       payload: {
         durationMs: 128,
-        outputSummary: 'Read 4 files',
+        outputSummary: 'Output withheld from conversation timeline.',
         toolUseId: 'tool-001',
       },
       visibility: 'redacted',
@@ -78,7 +78,7 @@ describe('run-event-view-model', () => {
     expect(toRunEventViewModel(event).rawJson).toEqual({
       payload: {
         durationMs: 128,
-        outputSummary: 'Read 4 files',
+        outputSummary: 'Output withheld from conversation timeline.',
         toolUseId: 'tool-001',
       },
     })
@@ -88,11 +88,6 @@ describe('run-event-view-model', () => {
     const event = runEventSchema.parse({
       ...runEventFixtures[9],
       payload: {
-        command: {
-          argv: ['pnpm', 'install'],
-          cwd: 'workspace://local',
-          executable: 'pnpm',
-        },
         decisionScope: 'current run',
         exposure: 'Can modify package metadata and lockfile.',
         operation: 'Install dependencies',
@@ -106,12 +101,6 @@ describe('run-event-view-model', () => {
 
     expect(toRunEventViewModel(event).details?.permissions).toEqual([
       {
-        command: {
-          args: ['install'],
-          cwd: 'workspace://local',
-          executable: 'pnpm',
-          risk: 'critical',
-        },
         decisionScope: 'current run',
         exposure: 'Can modify package metadata and lockfile.',
         id: '01HZ0000000000000000000001',
@@ -143,28 +132,6 @@ describe('run-event-view-model', () => {
         state: 'denied',
       },
     ])
-  })
-
-  it('does not drop permission command args when argv omits the executable', () => {
-    const event = runEventSchema.parse({
-      ...runEventFixtures[9],
-      payload: {
-        command: {
-          argv: ['install'],
-          executable: 'pnpm',
-        },
-        decisionScope: 'current run',
-        exposure: 'Can modify package metadata and lockfile.',
-        operation: 'Install dependencies',
-        reason: 'The run requested package installation.',
-        requestId: '01HZ0000000000000000000001',
-        severity: 'high',
-        target: 'workspace package manager',
-        workspaceBoundary: 'workspace://local',
-      },
-    })
-
-    expect(toRunEventViewModel(event).details?.permissions?.[0]?.command?.args).toEqual(['install'])
   })
 
   it('merges permission resolved events into the matching requested details', () => {

@@ -225,6 +225,7 @@ pub enum ToolCapability {
     ContextPatchSink,
     EmbeddedToolDispatcher,
     CodeRuntime,
+    ProviderCredentialResolver,
     Custom(String),
 }
 
@@ -243,6 +244,7 @@ impl fmt::Display for ToolCapability {
             Self::ContextPatchSink => f.write_str("context_patch_sink"),
             Self::EmbeddedToolDispatcher => f.write_str("embedded_tool_dispatcher"),
             Self::CodeRuntime => f.write_str("code_runtime"),
+            Self::ProviderCredentialResolver => f.write_str("provider_credential_resolver"),
             Self::Custom(value) => write!(f, "custom:{value}"),
         }
     }

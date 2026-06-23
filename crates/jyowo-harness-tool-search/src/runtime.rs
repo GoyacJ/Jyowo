@@ -6,7 +6,7 @@ use harness_contracts::{
     CacheImpact, Event, ToolDescriptor, ToolError, ToolLoadingBackendName, ToolName,
     ToolSearchQueryKind, ToolUseId,
 };
-use harness_model::ModelCapabilities;
+use harness_model::ConversationModelCapability;
 use harness_tool::ToolContext;
 
 use crate::ReloadHandle;
@@ -65,6 +65,6 @@ pub struct ToolSearchRuntimeSnapshot {
     pub loaded_tool_names: BTreeSet<ToolName>,
     pub discovered_tool_names: BTreeSet<ToolName>,
     pub pending_mcp_servers: Vec<String>,
-    pub model_caps: Arc<ModelCapabilities>,
+    pub model_caps: Arc<ConversationModelCapability>,
     pub reload_handle: Option<Arc<dyn ReloadHandle>>,
 }

@@ -32,7 +32,7 @@ fn request(messages: Vec<Message>, stream: bool) -> ModelRequest {
         max_tokens: Some(128),
         stream,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::Messages,
+        protocol: ModelProtocol::Messages,
         extra: Value::Null,
     }
 }

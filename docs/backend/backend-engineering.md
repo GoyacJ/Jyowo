@@ -21,7 +21,6 @@ tracing-appender
 rusqlite
 SQLite FTS5
 refinery
-keyring
 reqwest
 tokio::process
 portable-pty
@@ -67,8 +66,12 @@ Secrets:
 
 - `secrecy` owns in-memory secret handling.
 - `zeroize` owns explicit memory clearing where needed.
-- `keyring` owns OS-backed provider key and token storage.
-- UI and Journal state store secret references only.
+- Provider API keys are stored directly in the workspace provider settings file
+  because the product supports explicit user reveal.
+- List/save IPC payloads do not return raw provider API keys.
+- `get_provider_config_api_key` is the only provider key reveal command.
+- Prompt, Journal, Replay, logs, traces, screenshots, and support bundles must
+  not include raw provider API keys.
 
 Observability:
 
@@ -102,7 +105,7 @@ Forbidden:
 
 - adding an ORM on top of `rusqlite`
 - adding an external search service for local workspace search
-- using OS keyring values as prompt, event, log, trace, screenshot, or snapshot data
+- using provider API key values as prompt, event, log, trace, screenshot, or snapshot data
 - using `anyhow` across public crate, IPC, or contract boundaries
 - using `portable-pty` for simple non-interactive commands
 
@@ -190,8 +193,12 @@ Current Tauri commands:
 
 ```text
 cancel_run
+create_attachment_from_path
+create_conversation
+delete_conversation
 delete_mcp_server
 delete_memory_item
+delete_skill
 export_memory_items
 export_support_bundle
 list_artifacts
@@ -200,17 +207,29 @@ get_context_snapshot
 get_app_info
 get_conversation
 get_memory_item
+get_provider_config_api_key
 get_replay_timeline
+get_skill
 harness_healthcheck
 list_activity
 list_conversations
+list_reference_candidates
+list_model_provider_catalog
 list_mcp_servers
 list_memory_items
+list_provider_settings
+list_skills
 resolve_permission
+request_provider_config_api_key_reveal
 run_eval_case
 save_mcp_server
 save_provider_settings
+import_skill
+set_conversation_model_config
+set_skill_enabled
 start_run
+subscribe_conversation_events
+unsubscribe_conversation_events
 update_memory_item
 validate_provider_settings
 ```
@@ -219,14 +238,22 @@ Command payloads:
 
 ```rust
 cancel_run(run_id: String) -> Result<CancelRunResponse, CommandErrorPayload>
+create_attachment_from_path(
+  path: String
+) -> Result<CreateAttachmentFromPathResponse, CommandErrorPayload>
+create_conversation() -> Result<CreateConversationResponse, CommandErrorPayload>
+delete_conversation(conversation_id: String) -> Result<DeleteConversationResponse, CommandErrorPayload>
 delete_mcp_server(id: String) -> Result<DeleteMcpServerResponse, CommandErrorPayload>
 delete_memory_item(id: String) -> Result<DeleteMemoryItemResponse, CommandErrorPayload>
+delete_skill(id: String) -> Result<DeleteSkillResponse, CommandErrorPayload>
 export_memory_items() -> Result<ExportMemoryItemsResponse, CommandErrorPayload>
 export_support_bundle(
   conversation_id: Option<String>,
   run_id: Option<String>
 ) -> Result<ExportSupportBundleResponse, CommandErrorPayload>
-list_artifacts() -> Result<ListArtifactsResponse, CommandErrorPayload>
+list_artifacts(
+  conversation_id: String
+) -> Result<ListArtifactsResponse, CommandErrorPayload>
 list_eval_cases() -> Result<ListEvalCasesResponse, CommandErrorPayload>
 get_context_snapshot(
   conversation_id: Option<String>,
@@ -235,22 +262,39 @@ get_context_snapshot(
 get_app_info() -> AppInfoPayload
 get_conversation(conversation_id: String) -> Result<GetConversationResponse, CommandErrorPayload>
 get_memory_item(id: String) -> Result<GetMemoryItemResponse, CommandErrorPayload>
+get_provider_config_api_key(
+  config_id: String,
+  reveal_token: String
+) -> Result<GetProviderConfigApiKeyResponse, CommandErrorPayload>
 get_replay_timeline(
   conversation_id: Option<String>,
   run_id: Option<String>
 ) -> Result<ReplayTimelineResponse, CommandErrorPayload>
+get_skill(
+  id: String,
+  include_body: bool
+) -> Result<GetSkillResponse, CommandErrorPayload>
 harness_healthcheck() -> HarnessHealthcheckPayload
 list_activity(
   conversation_id: Option<String>,
   run_id: Option<String>
 ) -> Result<ListActivityResponse, CommandErrorPayload>
 list_conversations() -> Result<ListConversationsResponse, CommandErrorPayload>
+list_reference_candidates(
+  conversation_id: String
+) -> Result<ListReferenceCandidatesResponse, CommandErrorPayload>
+list_model_provider_catalog() -> ModelProviderCatalogResponse
 list_mcp_servers() -> Result<ListMcpServersResponse, CommandErrorPayload>
 list_memory_items() -> Result<ListMemoryItemsResponse, CommandErrorPayload>
+list_provider_settings() -> Result<ListProviderSettingsResponse, CommandErrorPayload>
+list_skills() -> Result<ListSkillsResponse, CommandErrorPayload>
 resolve_permission(
   decision: PermissionDecision,
   request_id: String
 ) -> Result<ResolvePermissionResponse, CommandErrorPayload>
+request_provider_config_api_key_reveal(
+  config_id: String
+) -> Result<RequestProviderConfigApiKeyRevealResponse, CommandErrorPayload>
 run_eval_case(case_id: String) -> Result<RunEvalCaseResponse, CommandErrorPayload>
 save_mcp_server(
   display_name: String,
@@ -259,15 +303,37 @@ save_mcp_server(
   transport: McpServerTransportConfig
 ) -> Result<SaveMcpServerResponse, CommandErrorPayload>
 save_provider_settings(
-  api_key: String,
+  api_key: Option<String>,
+  base_url: Option<String>,
+  config_id: Option<String>,
+  display_name: Option<String>,
   model_id: String,
-  provider_id: String
+  provider_id: String,
+  set_default: Option<bool>
 ) -> Result<SaveProviderSettingsResponse, CommandErrorPayload>
+import_skill(source_path: String) -> Result<ImportSkillResponse, CommandErrorPayload>
+set_conversation_model_config(
+  conversation_id: String,
+  model_config_id: String
+) -> Result<SetConversationModelConfigResponse, CommandErrorPayload>
+set_skill_enabled(
+  id: String,
+  enabled: bool
+) -> Result<SetSkillEnabledResponse, CommandErrorPayload>
 start_run(
-  context_references: Option<Vec<String>>,
+  client_message_id: Option<String>,
+  attachments: Option<Vec<AttachmentReferencePayload>>,
+  context_references: Option<Vec<ContextReferencePayload>>,
   conversation_id: String,
   prompt: String
 ) -> Result<StartRunResponse, CommandErrorPayload>
+subscribe_conversation_events(
+  conversation_id: String,
+  after_cursor: Option<String>
+) -> Result<SubscribeConversationEventsResponse, CommandErrorPayload>
+unsubscribe_conversation_events(
+  subscription_id: String
+) -> Result<UnsubscribeConversationEventsResponse, CommandErrorPayload>
 update_memory_item(
   content: String,
   id: String
@@ -282,9 +348,12 @@ validate_provider_settings(
 metadata support. It must not claim remote API availability unless the runtime
 provider implements a policy-governed network health check.
 
-`save_provider_settings` stores raw provider credentials only in the OS keyring.
-The returned `secret_ref` must include workspace scope and must not expose the
-raw workspace path.
+`save_provider_settings` stores provider credentials in the workspace provider
+settings record. `api_key` is required for new provider configs and optional
+when saving an existing config without changing provider or base URL. The save
+and list payloads must not return the raw key. `request_provider_config_api_key_reveal`
+issues a short-lived one-use reveal token; `get_provider_config_api_key` requires
+that token and is the explicit reveal path.
 
 `list_mcp_servers`, `save_mcp_server`, and `delete_mcp_server` expose only
 sanitized MCP server management payloads. They must not serialize raw env
@@ -301,17 +370,67 @@ audit events that contain hashes and counts, not raw memory content.
 returns only the relative path, item count, format, and timestamp over IPC; raw
 export content must not cross into frontend state.
 
+`list_skills`, `get_skill`, `import_skill`, `set_skill_enabled`, and
+`delete_skill` must go through the SDK skill facade. Tauri commands may manage
+the workspace skill store under `.jyowo/runtime/skills`, but runtime registry
+reload, validation, and hook replacement stay behind the SDK boundary. Imported
+source paths must not be returned over IPC. `import_skill(source_path)` accepts
+only a local skill package directory containing `SKILL.md`; single Markdown
+files are rejected. Workspace packages are persisted as
+`.jyowo/runtime/skills/enabled/<id>/SKILL.md` or
+`.jyowo/runtime/skills/disabled/<id>/SKILL.md`, with package resources copied
+under the same `<id>` directory. Disabled workspace skills remain in the store
+index but must not be loaded into the runtime registry.
+
 `start_run` and `cancel_run` must go through the runtime conversation facade.
 `resolve_permission` must go through `PermissionBroker`. These shell commands
 return `RUNTIME_UNAVAILABLE` when those runtime paths are not available.
 
-`list_artifacts` must read through the runtime conversation projection, not a
-static demo payload. Until a dedicated artifact store exists, it may project
-redacted assistant outputs from conversation events as reviewable artifacts.
+`start_run` accepts an optional `client_message_id` generated by the frontend.
+The conversation event projection must echo that value on
+`user.message.appended` when it is present. Optimistic user message
+confirmation depends on that id, not message body text.
+
+`subscribe_conversation_events` and `unsubscribe_conversation_events` expose the
+conversation timeline event stream to the desktop shell. Subscription handlers
+are thin Tauri boundaries around the runtime projection. The subscribe response
+returns replay events first. Live `conversation_event_batch` emissions for the
+same `subscription_id` start only after replay has been read. Emitted batches
+are scoped to the calling Tauri window and selected conversation id.
+
+Conversation event payloads must include:
+
+```text
+id
+conversationSequence
+runId
+sequence
+timestamp
+type
+source
+visibility
+payload
+```
+
+`conversationSequence` is the monotonic conversation order key derived from the
+durable conversation event page order. `sequence` remains run-local validation
+data and must not be used as the global timeline order.
+
+Live subscription delivery is a single-process guarantee. The durable replay
+and snapshot paths are the restart-stable guarantee. The desktop shell may poll
+the runtime journal tail on a documented interval for live delivery, but
+overflow, unknown ordering, or cursor mismatch must surface `gap: true` instead
+of silently dropping events.
+
+`list_artifacts` must require an explicit conversation id and read through that
+runtime conversation projection, not a static demo payload. It must project only explicit artifact lifecycle events.
+Artifact events whose `session_id` does not match the requested conversation are ignored.
+Assistant replies, assistant deltas, and reasoning summaries are conversation
+content, not artifacts.
 Optional fields must be omitted instead of serialized as `null`.
 
 `get_context_snapshot` must read through the runtime conversation projection and
-workspace root. It may project current files, latest redacted assistant artifact,
+workspace root. It may project current files, latest explicit artifact event,
 pending runtime decisions, and next actions until a dedicated context snapshot
 store exists. UI-visible workspace display fields must pass through Redactor
 before IPC. Runtime read failures must return a fixed safe error message over

@@ -31,6 +31,93 @@ Review body
 }
 
 #[tokio::test]
+async fn skill_loader_loads_skill_package_directories() {
+    let root = unique_temp_dir("package-source");
+    let package = root.join("release-notes");
+    std::fs::create_dir_all(package.join("references")).expect("package references dir");
+    std::fs::write(
+        package.join("SKILL.md"),
+        r"---
+name: release-notes
+description: Draft release notes
+---
+Read references/style.md before drafting.
+",
+    )
+    .expect("write package skill");
+    std::fs::write(
+        package.join("references").join("style.md"),
+        "Use concise bullets.",
+    )
+    .expect("write package resource");
+
+    let report = SkillLoader::default()
+        .with_source(SkillSourceConfig::Directory {
+            path: root.clone(),
+            source_kind: harness_skill::DirectorySourceKind::Workspace,
+        })
+        .with_runtime_platform(SkillPlatform::Macos)
+        .load_all()
+        .await
+        .expect("package source should load");
+
+    assert!(report.rejected.is_empty());
+    assert_eq!(report.loaded.len(), 1);
+    assert_eq!(report.loaded[0].name, "release-notes");
+    assert_eq!(report.loaded[0].raw_path, Some(package.join("SKILL.md")));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn skill_loader_package_source_ignores_root_markdown_files() {
+    let root = unique_temp_dir("package-only-source");
+    let package = root.join("release-notes");
+    std::fs::create_dir_all(&package).expect("package dir");
+    std::fs::write(
+        root.join("legacy.md"),
+        r"---
+name: legacy
+description: Legacy single file
+---
+Legacy body
+",
+    )
+    .expect("write legacy skill");
+    std::fs::write(
+        package.join("SKILL.md"),
+        r"---
+name: release-notes
+description: Draft release notes
+---
+Package body
+",
+    )
+    .expect("write package skill");
+
+    let report = SkillLoader::default()
+        .with_source(SkillSourceConfig::DirectoryPackages {
+            path: root.clone(),
+            source_kind: harness_skill::DirectorySourceKind::Workspace,
+        })
+        .with_runtime_platform(SkillPlatform::Macos)
+        .load_all()
+        .await
+        .expect("package source should load");
+
+    assert_eq!(
+        report
+            .loaded
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["release-notes"]
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn workspace_skill_overrides_user_skill_in_registry() {
     let user_root = unique_temp_dir("user-source");
     let workspace_root = unique_temp_dir("workspace-source");

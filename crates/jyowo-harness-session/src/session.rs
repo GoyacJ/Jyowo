@@ -5,12 +5,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use harness_contracts::{
     ConfigHash, ContextPatchRequest, ContextPatchSinkCap, DeferredToolsDeltaAttachment, EndReason,
-    Event, InteractivityLevel, MessageId, PermissionMode, RunId, SessionCreatedEvent,
+    Event, InteractivityLevel, MessageId, MessagePart, PermissionMode, RunId, SessionCreatedEvent,
     SessionEndedEvent, SessionError, SessionId, SnapshotId, TeamId, TenantId, ToolSearchMode,
     UsageSnapshot, WorkspaceId,
 };
 use harness_journal::EventStore;
-use harness_model::ApiMode;
+use harness_model::ModelProtocol;
 use harness_skill::SkillRegistration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,6 +35,7 @@ pub struct SessionTurnContext {
     pub started_from_scope_set: Vec<String>,
     pub run_id: RunId,
     pub message_id: MessageId,
+    pub client_message_id: Option<String>,
     pub turn_index: usize,
     pub permission_mode: PermissionMode,
     pub interactivity: InteractivityLevel,
@@ -90,7 +91,7 @@ pub struct SessionOptions {
     #[serde(default)]
     pub model_id: Option<String>,
     #[serde(default)]
-    pub api_mode: Option<ApiMode>,
+    pub protocol: Option<ModelProtocol>,
     #[serde(default)]
     pub model_extra: Value,
     #[serde(default = "default_permission_mode")]
@@ -117,7 +118,7 @@ impl SessionOptions {
             session_id: SessionId::new(),
             tool_search: ToolSearchMode::default(),
             model_id: None,
-            api_mode: None,
+            protocol: None,
             model_extra: Value::Null,
             permission_mode: PermissionMode::Default,
             interactivity: InteractivityLevel::NoInteractive,
@@ -165,8 +166,8 @@ impl SessionOptions {
     }
 
     #[must_use]
-    pub fn with_api_mode(mut self, api_mode: ApiMode) -> Self {
-        self.api_mode = Some(api_mode);
+    pub fn with_protocol(mut self, protocol: ModelProtocol) -> Self {
+        self.protocol = Some(protocol);
         self
     }
 
@@ -366,10 +367,29 @@ impl Session {
     }
 
     pub async fn run_turn(&self, prompt: impl Into<String>) -> Result<(), SessionError> {
+        self.run_turn_parts(vec![MessagePart::Text(prompt.into())])
+            .await
+    }
+
+    pub async fn run_turn_parts(&self, parts: Vec<MessagePart>) -> Result<(), SessionError> {
+        self.run_turn_parts_with_client_message_id(parts, None)
+            .await
+    }
+
+    pub async fn run_turn_parts_with_client_message_id(
+        &self,
+        parts: Vec<MessagePart>,
+        client_message_id: Option<String>,
+    ) -> Result<(), SessionError> {
         if self.state.lock().await.ended {
             return Err(SessionError::Message("session already ended".to_owned()));
         }
         if let Some(runner) = self.turn_runner() {
+            let Some(prompt) = text_only_parts(&parts) else {
+                return Err(SessionError::Message(
+                    "session turn runner does not support multimodal input".to_owned(),
+                ));
+            };
             let (projection, pending_deferred_tools_delta) = self.projection_for_turn().await;
             let run_id = RunId::new();
             let message_id = MessageId::new();
@@ -385,6 +405,7 @@ impl Session {
                 started_from_scope_set: self.started_from_scope_set(),
                 run_id,
                 message_id,
+                client_message_id,
                 turn_index: projection.messages.len(),
                 permission_mode: self.options.permission_mode,
                 interactivity: self.options.interactivity,
@@ -394,7 +415,7 @@ impl Session {
                 #[cfg(feature = "steering")]
                 steering_merge,
             };
-            let events = runner.run_turn(ctx, prompt.into()).await?;
+            let events = runner.run_turn(ctx, prompt).await?;
             self.apply_projection_events(&events).await;
             return Ok(());
         }
@@ -408,7 +429,7 @@ impl Session {
                 .push_deferred_tools_delta(self.tenant_id(), self.session_id(), delta)
                 .map_err(session_error)?;
         }
-        crate::turn::run_turn(self, runtime, prompt.into()).await
+        crate::turn::run_turn(self, runtime, parts, client_message_id).await
     }
 
     pub async fn interrupt(&self) -> Result<(), SessionError> {
@@ -566,7 +587,7 @@ pub fn session_options_hash(options: &SessionOptions) -> [u8; 32] {
         "session_id": options.session_id,
         "tool_search": options.tool_search,
         "model_id": options.model_id,
-        "api_mode": options.api_mode.map(api_mode_name),
+        "protocol": options.protocol.map(protocol_name),
         "model_extra": options.model_extra,
         "permission_mode": options.permission_mode,
         "interactivity": options.interactivity,
@@ -597,13 +618,24 @@ fn hash_json(value: &Value) -> [u8; 32] {
     blake3::hash(&bytes).into()
 }
 
-fn api_mode_name(mode: ApiMode) -> &'static str {
+fn protocol_name(mode: ModelProtocol) -> &'static str {
     match mode {
-        ApiMode::ChatCompletions => "chat_completions",
-        ApiMode::Responses => "responses",
-        ApiMode::Messages => "messages",
-        ApiMode::GenerateContent => "generate_content",
+        ModelProtocol::ChatCompletions => "chat_completions",
+        ModelProtocol::Responses => "responses",
+        ModelProtocol::Messages => "messages",
+        ModelProtocol::GenerateContent => "generate_content",
     }
+}
+
+fn text_only_parts(parts: &[MessagePart]) -> Option<String> {
+    let mut text = String::new();
+    for part in parts {
+        match part {
+            MessagePart::Text(value) => text.push_str(value),
+            _ => return None,
+        }
+    }
+    Some(text)
 }
 
 fn default_workspace_root() -> PathBuf {

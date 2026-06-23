@@ -33,9 +33,10 @@ use harness_contracts::{
 };
 use harness_contracts::{
     BlobReaderCapAdapter, BlobStore, CapabilityRegistry, ContextPatchRequest, ContextPatchSinkCap,
-    Decision, Event, EventId, HarnessError, HookEventKind, InteractivityLevel, JournalOffset,
+    ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput, Decision,
+    Event, EventId, HarnessError, HookEventKind, InteractivityLevel, JournalOffset,
     ManifestOriginRef, ManifestValidationFailedEvent, McpServerId, Message, MessageContent,
-    MessageId, MessagePart, MessageRole, PermissionError, PermissionMode,
+    MessageId, MessagePart, MessageRole, ModelModality, PermissionError, PermissionMode,
     PluginCapabilitiesSummary, PluginLifecycleStateDiscriminant, PluginLoadedEvent,
     PluginRejectedEvent, RedactPatternSet, RedactRules, RedactScope, Redactor, RejectionReason,
     RunId, SessionError, SessionId, TenantId, ToolCapability, ToolSearchMode, TrustLevel,
@@ -70,10 +71,9 @@ use harness_mcp::{ExposedCapability, HarnessMcpBackend, McpServerError, McpServe
 #[cfg(feature = "memory-consolidation")]
 use harness_memory::ConsolidationHook;
 use harness_memory::MemoryProvider;
-#[cfg(feature = "tool-search")]
-use harness_model::ModelRuntimeSnapshot;
+use harness_model::{provider_catalog_entries, ModelRuntimeSnapshot};
 use harness_model::{
-    ApiMode, AuxModelProvider, ContentDelta, InferContext, InferMiddleware, ModelMetricsSink,
+    AuxModelProvider, ContentDelta, InferContext, InferMiddleware, ModelMetricsSink, ModelProtocol,
     ModelProvider, ModelRequest, ModelStreamEvent,
 };
 #[cfg(feature = "observability-redactor")]
@@ -94,9 +94,10 @@ use harness_session::{
     SessionTurnRunner, SkillReloadCap, Workspace, WorkspaceRegistry, WorkspaceSpec,
 };
 use harness_skill::{
-    BuiltinHookKind, SkillHookBinding, SkillHookTransport, SkillLoader, SkillMetricsSink,
+    parse_skill_markdown, BuiltinHookKind, DirectorySourceKind, Skill, SkillHookBinding,
+    SkillHookTransport, SkillLoader, SkillMetricsSink, SkillParamType, SkillPlatform,
     SkillRegistration, SkillRegistry, SkillRegistryService, SkillRenderer, SkillSource,
-    SkillThreatEventScope, SkillValidator,
+    SkillSourceConfig, SkillThreatEventScope, SkillValidator,
 };
 use harness_tool::{
     SchemaResolverContext, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry,
@@ -161,6 +162,34 @@ impl Default for McpConfig {
             server_ids_to_inject: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeSkillParameter {
+    pub name: String,
+    pub param_type: String,
+    pub required: bool,
+    pub default: Option<Value>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeSkillSummary {
+    pub name: String,
+    pub description: String,
+    pub tags: Vec<String>,
+    pub category: Option<String>,
+    pub source: harness_contracts::SkillSourceKind,
+    pub status: harness_contracts::SkillStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeSkillView {
+    pub summary: RuntimeSkillSummary,
+    pub parameters: Vec<RuntimeSkillParameter>,
+    pub config_keys: Vec<String>,
+    pub body_preview: String,
+    pub body_full: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,7 +269,175 @@ pub struct ConversationSessionSummary {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversationTurnRequest {
     pub options: SessionOptions,
-    pub prompt: String,
+    pub input: ConversationTurnInput,
+}
+
+impl ConversationTurnRequest {
+    #[must_use]
+    pub fn from_prompt(options: SessionOptions, prompt: impl Into<String>) -> Self {
+        Self {
+            options,
+            input: ConversationTurnInput::ask(prompt),
+        }
+    }
+}
+
+fn render_conversation_turn_prompt(
+    input: &ConversationTurnInput,
+    supported_modalities: &[ModelModality],
+) -> String {
+    let text_attachments = input
+        .attachments
+        .iter()
+        .filter(|attachment| {
+            !is_image_attachment(attachment)
+                && !is_video_attachment(attachment)
+                && !(supports_file_input(supported_modalities) && is_file_attachment(attachment))
+        })
+        .collect::<Vec<_>>();
+    if input.context_references.is_empty() && text_attachments.is_empty() {
+        return input.prompt.clone();
+    }
+
+    let mut lines = vec!["<conversation-context>".to_owned()];
+
+    if !input.context_references.is_empty() {
+        lines.push("references:".to_owned());
+        lines.extend(
+            input
+                .context_references
+                .iter()
+                .map(render_context_reference),
+        );
+    }
+
+    if !text_attachments.is_empty() {
+        lines.push("attachments:".to_owned());
+        lines.extend(
+            text_attachments
+                .into_iter()
+                .map(render_attachment_reference),
+        );
+    }
+
+    lines.push("</conversation-context>".to_owned());
+    lines.push(input.prompt.clone());
+    lines.join("\n")
+}
+
+fn conversation_turn_parts(
+    input: &ConversationTurnInput,
+    supported_modalities: &[ModelModality],
+) -> Vec<MessagePart> {
+    let mut parts = vec![MessagePart::Text(render_conversation_turn_prompt(
+        input,
+        supported_modalities,
+    ))];
+    parts.extend(input.attachments.iter().filter_map(|attachment| {
+        if is_image_attachment(attachment) {
+            Some(MessagePart::Image {
+                mime_type: attachment.mime_type.clone(),
+                blob_ref: attachment.blob_ref.clone(),
+            })
+        } else if is_video_attachment(attachment) {
+            Some(MessagePart::Video {
+                mime_type: attachment.mime_type.clone(),
+                blob_ref: attachment.blob_ref.clone(),
+            })
+        } else if supports_file_input(supported_modalities) && is_file_attachment(attachment) {
+            Some(MessagePart::File {
+                mime_type: attachment.mime_type.clone(),
+                blob_ref: attachment.blob_ref.clone(),
+            })
+        } else {
+            None
+        }
+    }));
+    parts
+}
+
+fn is_image_attachment(attachment: &ConversationAttachmentReference) -> bool {
+    attachment.mime_type.starts_with("image/")
+}
+
+fn is_video_attachment(attachment: &ConversationAttachmentReference) -> bool {
+    attachment.mime_type.starts_with("video/")
+}
+
+fn is_file_attachment(attachment: &ConversationAttachmentReference) -> bool {
+    !is_image_attachment(attachment) && !is_video_attachment(attachment)
+}
+
+fn supports_file_input(supported_modalities: &[ModelModality]) -> bool {
+    supported_modalities.contains(&ModelModality::File)
+}
+
+fn render_context_reference(reference: &ConversationContextReference) -> String {
+    match reference {
+        ConversationContextReference::WorkspaceFile { path, label } => {
+            format!(
+                "- workspace_file: {} ({})",
+                sanitize_context_line(label),
+                sanitize_context_line(path)
+            )
+        }
+        ConversationContextReference::Artifact { id, label } => {
+            format!(
+                "- artifact: {} ({})",
+                sanitize_context_line(label),
+                sanitize_context_line(id)
+            )
+        }
+        ConversationContextReference::Conversation { id, label } => {
+            format!(
+                "- conversation: {} ({})",
+                sanitize_context_line(label),
+                sanitize_context_line(id)
+            )
+        }
+        ConversationContextReference::Memory { id, label } => {
+            format!(
+                "- memory: {} ({})",
+                sanitize_context_line(label),
+                sanitize_context_line(id)
+            )
+        }
+        ConversationContextReference::Skill { id, label } => {
+            format!(
+                "- skill: {} ({})",
+                sanitize_context_line(label),
+                sanitize_context_line(id)
+            )
+        }
+        ConversationContextReference::Tool { id, label } => {
+            format!(
+                "- tool: {} ({})",
+                sanitize_context_line(label),
+                sanitize_context_line(id)
+            )
+        }
+        ConversationContextReference::McpServer { id, label } => {
+            format!(
+                "- mcp_server: {} ({})",
+                sanitize_context_line(label),
+                sanitize_context_line(id)
+            )
+        }
+    }
+}
+
+fn render_attachment_reference(attachment: &ConversationAttachmentReference) -> String {
+    format!(
+        "- attachment: {} {} {} bytes {}",
+        sanitize_context_line(&attachment.name),
+        sanitize_context_line(&attachment.mime_type),
+        attachment.size_bytes,
+        sanitize_context_line(&attachment.id)
+    )
+}
+
+fn sanitize_context_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -361,7 +558,15 @@ struct HarnessInner {
     enabled_features: HashSet<String>,
     session_limits: Arc<SessionLimitState>,
     workspace_registry: Arc<WorkspaceRegistry>,
-    active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, CancellationToken>>>,
+    active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, ActiveConversationRun>>>,
+    deleted_conversation_sessions: Arc<parking_lot::Mutex<HashSet<(TenantId, SessionId)>>>,
+}
+
+#[derive(Clone)]
+struct ActiveConversationRun {
+    tenant_id: TenantId,
+    session_id: SessionId,
+    cancellation: CancellationToken,
 }
 
 struct SdkSessionState {
@@ -419,6 +624,8 @@ impl SamplingProvider for HarnessSamplingProvider {
             .model_id
             .clone()
             .unwrap_or_else(|| self.default_model_id.clone());
+        let model_snapshot = snapshot_for_supported_model(self.model.as_ref(), &model_id)
+            .map_err(|error| harness_mcp::McpError::Protocol(error.to_string()))?;
         let messages = sampling_messages_from_params(&request.params)?;
         let model_request = ModelRequest {
             model_id: model_id.clone(),
@@ -435,7 +642,7 @@ impl SamplingProvider for HarnessSamplingProvider {
                 .then(|| request.max_output_tokens.min(u64::from(u32::MAX)) as u32),
             stream: true,
             cache_breakpoints: Vec::new(),
-            api_mode: ApiMode::Messages,
+            protocol: model_snapshot.protocol,
             extra: json!({
                 "source": "mcp_sampling",
                 "server_id": request.server_id.0,
@@ -783,6 +990,7 @@ impl Harness {
                 session_limits,
                 workspace_registry: Arc::new(WorkspaceRegistry::new()),
                 active_conversation_runs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+                deleted_conversation_sessions: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             }),
         })
     }
@@ -798,12 +1006,21 @@ impl Harness {
         self.activate_plugins(&options).await?;
         #[cfg(feature = "memory-external-slot")]
         let memory_manager = self.memory_manager_for_session(&options).await?;
+        let pending_session_events = Arc::new(PendingSessionEvents::default());
         #[cfg(feature = "memory-external-slot")]
         let engine = self
-            .engine_for_session(&options, memory_manager.clone())
+            .engine_for_session(
+                &options,
+                memory_manager.clone(),
+                Some(Arc::clone(&pending_session_events)),
+            )
             .await?;
         #[cfg(not(feature = "memory-external-slot"))]
-        let engine = self.engine_for_session(&options).await?;
+        let engine = self
+            .engine_for_session(&options, Some(Arc::clone(&pending_session_events)))
+            .await?;
+        let tenant_id = options.tenant_id;
+        let session_id = options.session_id;
         let event_store: Arc<dyn EventStore> = Arc::new(LifecycleHookEventStore {
             inner: Arc::clone(&self.inner.event_store),
             hooks: HookDispatcher::new(self.inner.hook_registry.snapshot()),
@@ -816,6 +1033,7 @@ impl Harness {
             workspace_root: options.workspace_root.clone(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
+            deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
             summary_state: parking_lot::Mutex::new(MemorySessionSummaryState::default()),
             #[cfg(feature = "memory-external-slot")]
             memory_manager,
@@ -837,6 +1055,14 @@ impl Harness {
             .build()
             .await
             .map_err(HarnessError::from)?;
+        let pending_events = pending_session_events.drain();
+        if !pending_events.is_empty() {
+            self.inner
+                .event_store
+                .append(tenant_id, session_id, &pending_events)
+                .await
+                .map_err(HarnessError::Journal)?;
+        }
         limit_permit.disarm();
         Ok(session)
     }
@@ -846,6 +1072,7 @@ impl Harness {
         options: SessionOptions,
     ) -> Result<ConversationSession, HarnessError> {
         let effective = self.effective_sdk_session_options(options.clone())?;
+        self.ensure_conversation_session_not_deleted(effective.tenant_id, effective.session_id)?;
         match self.read_sdk_session_state(&effective).await? {
             Some(state) => Ok(ConversationSession {
                 tenant_id: state.projection.tenant_id,
@@ -869,7 +1096,7 @@ impl Harness {
         tenant_id: TenantId,
         limit: u32,
     ) -> Result<Vec<ConversationSessionSummary>, HarnessError> {
-        let mut sessions = self
+        let sessions = self
             .inner
             .event_store
             .list_sessions(
@@ -884,11 +1111,22 @@ impl Harness {
             .await
             .map_err(HarnessError::Journal)?;
 
-        sessions.retain(|session| session.end_reason.is_none());
-        sessions.sort_by_key(|session| session.last_event_at);
-        sessions.reverse();
+        let mut conversation_sessions = Vec::new();
+        for session in sessions {
+            if session.end_reason.is_some() {
+                continue;
+            }
+            if self
+                .is_conversation_session_stream(tenant_id, session.session_id)
+                .await?
+            {
+                conversation_sessions.push(session);
+            }
+        }
+        conversation_sessions.sort_by_key(|session| session.last_event_at);
+        conversation_sessions.reverse();
 
-        Ok(sessions
+        Ok(conversation_sessions
             .into_iter()
             .map(|session| ConversationSessionSummary {
                 session_id: session.session_id,
@@ -899,17 +1137,40 @@ impl Harness {
             .collect())
     }
 
+    pub async fn delete_conversation_session(
+        &self,
+        options: SessionOptions,
+    ) -> Result<bool, HarnessError> {
+        let options = self.effective_sdk_session_options(options)?;
+        let deleted = self
+            .inner
+            .event_store
+            .delete_session(options.tenant_id, options.session_id)
+            .await
+            .map_err(HarnessError::Journal)?;
+        if !deleted {
+            return Ok(false);
+        }
+        self.inner
+            .deleted_conversation_sessions
+            .lock()
+            .insert((options.tenant_id, options.session_id));
+        self.cancel_conversation_session_runs(options.tenant_id, options.session_id);
+        Ok(true)
+    }
+
     pub async fn submit_conversation_turn(
         &self,
         request: ConversationTurnRequest,
     ) -> Result<ConversationTurnReceipt, HarnessError> {
-        if request.prompt.trim().is_empty() {
+        if request.input.prompt.trim().is_empty() {
             return Err(HarnessError::Session(SessionError::Message(
                 "prompt must not be empty".to_owned(),
             )));
         }
 
         let options = self.effective_sdk_session_options(request.options)?;
+        self.ensure_conversation_session_not_deleted(options.tenant_id, options.session_id)?;
         let state = self
             .read_sdk_session_state(&options)
             .await?
@@ -921,10 +1182,21 @@ impl Harness {
             )));
         }
         let last_offset = projection.last_offset;
+        let model_id = options
+            .model_id
+            .clone()
+            .unwrap_or_else(|| self.inner.options.model_id.clone());
+        let model_snapshot = snapshot_for_supported_model(self.inner.model.as_ref(), &model_id)?;
+        let parts = conversation_turn_parts(
+            &request.input,
+            &model_snapshot.conversation_capability.input_modalities,
+        );
         let session = self
             .resume_sdk_session_from_projection(options.clone(), projection)
             .await?;
-        session.run_turn(request.prompt).await?;
+        session
+            .run_turn_parts_with_client_message_id(parts, request.input.client_message_id.clone())
+            .await?;
         let new_events = self
             .inner
             .event_store
@@ -991,20 +1263,63 @@ impl Harness {
     }
 
     pub async fn cancel_conversation_run(&self, run_id: RunId) -> Result<(), HarnessError> {
-        let cancellation = self
+        let active_run = self
             .inner
             .active_conversation_runs
             .lock()
             .get(&run_id)
             .cloned();
-        let Some(cancellation) = cancellation else {
+        let Some(active_run) = active_run else {
             return Err(HarnessError::Session(SessionError::Message(format!(
                 "run is not active or cannot be cancelled through this facade: {run_id}"
             ))));
         };
 
-        cancellation.cancel(InterruptCause::User);
+        active_run.cancellation.cancel(InterruptCause::User);
         Ok(())
+    }
+
+    fn cancel_conversation_session_runs(&self, tenant_id: TenantId, session_id: SessionId) {
+        let active_runs: Vec<_> = self
+            .inner
+            .active_conversation_runs
+            .lock()
+            .values()
+            .filter(|active_run| {
+                active_run.tenant_id == tenant_id && active_run.session_id == session_id
+            })
+            .cloned()
+            .collect();
+
+        for active_run in active_runs {
+            active_run.cancellation.cancel(InterruptCause::System {
+                reason: "conversation deleted".to_owned(),
+            });
+        }
+    }
+
+    fn ensure_conversation_session_not_deleted(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+    ) -> Result<(), HarnessError> {
+        if self
+            .inner
+            .deleted_conversation_sessions
+            .lock()
+            .contains(&(tenant_id, session_id))
+        {
+            return Err(sdk_session_not_found(session_id));
+        }
+
+        Ok(())
+    }
+
+    fn conversation_deletion_guarded_event_store(&self) -> Arc<dyn EventStore> {
+        Arc::new(ConversationDeletionGuardEventStore {
+            inner: Arc::clone(&self.inner.event_store),
+            deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
+        })
     }
 
     fn effective_sdk_session_options(
@@ -1047,6 +1362,29 @@ impl Harness {
         }))
     }
 
+    async fn is_conversation_session_stream(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+    ) -> Result<bool, HarnessError> {
+        let envelopes = self
+            .inner
+            .event_store
+            .read_envelopes(tenant_id, session_id, ReplayCursor::FromStart)
+            .await
+            .map_err(HarnessError::Journal)?
+            .take(1)
+            .collect::<Vec<_>>()
+            .await;
+        let Some(envelope) = envelopes.first() else {
+            return Ok(false);
+        };
+        let Event::SessionCreated(created) = &envelope.payload else {
+            return Ok(false);
+        };
+        Ok(created.tenant_id == tenant_id && created.session_id == session_id)
+    }
+
     fn enforce_sdk_session_options_hash(
         &self,
         options: &SessionOptions,
@@ -1066,18 +1404,24 @@ impl Harness {
             )))
         })?;
         let expected = session_options_hash(&canonical);
-        if created.options_hash != expected {
+        let matches_expected = created.options_hash == expected
+            || self.session_options_hash_matches_model_runtime_variant(
+                &canonical,
+                created.options_hash,
+            );
+        if !matches_expected {
             return Err(HarnessError::PermissionDenied(
                 "conversation session options do not match the existing session".to_owned(),
             ));
         }
+        let session_created_options_hash = created.options_hash;
         for envelope in envelopes.iter().skip(1) {
             let Event::SessionCreated(created) = &envelope.payload else {
                 continue;
             };
             if created.tenant_id != options.tenant_id
                 || created.session_id != options.session_id
-                || created.options_hash != expected
+                || created.options_hash != session_created_options_hash
             {
                 return Err(HarnessError::PermissionDenied(
                     "conversation session stream contains a mismatched SessionCreated event"
@@ -1086,6 +1430,54 @@ impl Harness {
             }
         }
         Ok(())
+    }
+
+    fn session_options_hash_matches_model_runtime_variant(
+        &self,
+        options: &SessionOptions,
+        actual: [u8; 32],
+    ) -> bool {
+        let mut model_ids = vec![None, options.model_id.clone()];
+        let mut protocols = vec![
+            None,
+            options.protocol,
+            Some(ModelProtocol::ChatCompletions),
+            Some(ModelProtocol::Responses),
+            Some(ModelProtocol::Messages),
+            Some(ModelProtocol::GenerateContent),
+        ];
+
+        for descriptor in self.inner.model.supported_models() {
+            model_ids.push(Some(descriptor.model_id));
+            protocols.push(Some(descriptor.protocol));
+        }
+        for entry in provider_catalog_entries() {
+            for descriptor in entry.models {
+                model_ids.push(Some(descriptor.model_id));
+                protocols.push(Some(descriptor.protocol));
+            }
+        }
+        model_ids.sort();
+        model_ids.dedup();
+        let mut deduped_protocols = Vec::new();
+        for protocol in protocols {
+            if !deduped_protocols.contains(&protocol) {
+                deduped_protocols.push(protocol);
+            }
+        }
+
+        for model_id in model_ids {
+            for protocol in &deduped_protocols {
+                let mut variant = options.clone();
+                variant.model_id = model_id.clone();
+                variant.protocol = *protocol;
+                if session_options_hash(&variant) == actual {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     async fn resume_sdk_session_from_projection(
@@ -1098,10 +1490,10 @@ impl Harness {
         let memory_manager = self.memory_manager_for_session(&options).await?;
         #[cfg(feature = "memory-external-slot")]
         let engine = self
-            .engine_for_session(&options, memory_manager.clone())
+            .engine_for_session(&options, memory_manager.clone(), None)
             .await?;
         #[cfg(not(feature = "memory-external-slot"))]
-        let engine = self.engine_for_session(&options).await?;
+        let engine = self.engine_for_session(&options, None).await?;
         let event_store: Arc<dyn EventStore> = Arc::new(LifecycleHookEventStore {
             inner: Arc::clone(&self.inner.event_store),
             hooks: HookDispatcher::new(self.inner.hook_registry.snapshot()),
@@ -1114,6 +1506,7 @@ impl Harness {
             workspace_root: options.workspace_root.clone(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
+            deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
             summary_state: parking_lot::Mutex::new(MemorySessionSummaryState::default()),
             #[cfg(feature = "memory-external-slot")]
             memory_manager,
@@ -1213,23 +1606,31 @@ impl Harness {
         &self,
         options: &SessionOptions,
         memory_manager: Option<Arc<harness_memory::MemoryManager>>,
+        pending_session_events: Option<Arc<PendingSessionEvents>>,
     ) -> Result<Engine, HarnessError> {
         self.activate_plugins(options).await?;
         let context = self.context_engine(options, memory_manager).await?;
-        self.engine_for_session_with_context(options, context).await
+        self.engine_for_session_with_context(options, context, pending_session_events)
+            .await
     }
 
     #[cfg(not(feature = "memory-external-slot"))]
-    async fn engine_for_session(&self, options: &SessionOptions) -> Result<Engine, HarnessError> {
+    async fn engine_for_session(
+        &self,
+        options: &SessionOptions,
+        pending_session_events: Option<Arc<PendingSessionEvents>>,
+    ) -> Result<Engine, HarnessError> {
         self.activate_plugins(options).await?;
         let context = self.context_engine(options).await?;
-        self.engine_for_session_with_context(options, context).await
+        self.engine_for_session_with_context(options, context, pending_session_events)
+            .await
     }
 
     async fn engine_for_session_with_context(
         &self,
         options: &SessionOptions,
         context: ContextEngine,
+        pending_session_events: Option<Arc<PendingSessionEvents>>,
     ) -> Result<Engine, HarnessError> {
         let mut cap_registry = (*self.inner.cap_registry).clone();
         if !cap_registry.contains(&ToolCapability::ContextPatchSink) {
@@ -1250,7 +1651,10 @@ impl Harness {
                 ))),
             );
         }
-        if let Some(skill_registry) = self.skill_registry_service(options).await? {
+        if let Some(skill_registry) = self
+            .skill_registry_service(options, pending_session_events)
+            .await?
+        {
             cap_registry.install::<dyn harness_contracts::SkillRegistryCap>(
                 ToolCapability::SkillRegistry,
                 Arc::new(skill_registry),
@@ -1261,7 +1665,8 @@ impl Harness {
             .model_id
             .clone()
             .unwrap_or_else(|| self.inner.options.model_id.clone());
-        let model_snapshot = self.inner.model.snapshot_for_model(&model_id);
+        let model_snapshot = snapshot_for_supported_model(self.inner.model.as_ref(), &model_id)?;
+        let protocol = options.protocol.unwrap_or(model_snapshot.protocol);
         self.enforce_provider_allowed(&model_snapshot.provider_id)?;
         let model_profile = ToolPoolModelProfile {
             provider: harness_contracts::ModelProvider(model_snapshot.provider_id.clone()),
@@ -1291,7 +1696,7 @@ impl Harness {
         self.install_tool_search_runtime(options, &mut tools, &mut cap_registry, &model_snapshot);
 
         let mut builder = Engine::builder()
-            .with_event_store(Arc::clone(&self.inner.event_store))
+            .with_event_store(self.conversation_deletion_guarded_event_store())
             .with_context(context)
             .with_hooks(HookDispatcher::new(self.inner.hook_registry.snapshot()))
             .with_model(Arc::clone(&self.inner.model))
@@ -1301,7 +1706,7 @@ impl Harness {
             .with_model_id(model_id)
             .with_model_snapshot(model_snapshot)
             .with_model_extra(options.model_extra.clone())
-            .with_api_mode(options.api_mode.unwrap_or(ApiMode::Messages))
+            .with_protocol(protocol)
             .with_system_prompt(self.session_system_prompt(options).await?)
             .with_sandbox(Arc::clone(&self.inner.sandbox))
             .with_cap_registry(Arc::new(cap_registry));
@@ -1332,21 +1737,29 @@ impl Harness {
     async fn skill_registry_service(
         &self,
         options: &SessionOptions,
+        pending_session_events: Option<Arc<PendingSessionEvents>>,
     ) -> Result<Option<SkillRegistryService>, HarnessError> {
         let registry = self.inner.skill_registry.clone();
         let metrics_sink = self.skill_metrics_sink();
         if let Some(loader) = &self.inner.skill_loader {
-            let mut loader = loader
-                .clone()
-                .with_event_sink(Arc::new(SdkSkillEventSink {
-                    event_store: Arc::clone(&self.inner.event_store),
-                    tenant_id: options.tenant_id,
-                    session_id: options.session_id,
-                }))
-                .with_event_scope(SkillThreatEventScope {
+            let event_sink: Arc<dyn harness_skill::SkillEventSink> =
+                if let Some(pending_session_events) = pending_session_events {
+                    Arc::new(BufferedSkillEventSink {
+                        pending_session_events,
+                    })
+                } else {
+                    Arc::new(SdkSkillEventSink {
+                        event_store: Arc::clone(&self.inner.event_store),
+                        tenant_id: options.tenant_id,
+                        session_id: options.session_id,
+                    })
+                };
+            let mut loader = loader.clone().with_event_sink(event_sink).with_event_scope(
+                SkillThreatEventScope {
                     session_id: Some(options.session_id),
                     run_id: None,
-                });
+                },
+            );
             if let Some(metrics_sink) = &metrics_sink {
                 loader = loader.with_metrics_sink(Arc::clone(metrics_sink));
             }
@@ -1600,7 +2013,7 @@ impl Harness {
         }
         let runtime = SdkToolSearchRuntime {
             tools: tools.clone(),
-            model_caps: Arc::new(model_snapshot.capabilities.clone()),
+            model_caps: Arc::new(model_snapshot.conversation_capability.clone()),
             mcp_config: self.inner.mcp_config.clone(),
             event_store: Arc::clone(&self.inner.event_store),
             hooks: HookDispatcher::new(self.inner.hook_registry.snapshot()),
@@ -2291,6 +2704,138 @@ impl Harness {
         &self.inner.skill_registry
     }
 
+    pub async fn validate_workspace_skill_markdown(
+        &self,
+        markdown: &str,
+        source_path: Option<PathBuf>,
+    ) -> Result<RuntimeSkillView, HarnessError> {
+        let source = SkillSource::Workspace(PathBuf::new());
+        let skill =
+            parse_skill_markdown(markdown, source, source_path, sdk_current_skill_platform())
+                .map_err(|error| HarnessError::Other(format!("parse skill failed: {error}")))?;
+        let validator = self
+            .inner
+            .skill_loader
+            .as_ref()
+            .map(SkillLoader::validator)
+            .unwrap_or_default();
+        let skill = validator
+            .validate_skill(skill)
+            .await
+            .map_err(|error| HarnessError::Other(format!("validate skill failed: {error}")))?;
+        Ok(runtime_skill_view(
+            &skill,
+            harness_contracts::SkillStatus::Ready,
+            true,
+        ))
+    }
+
+    pub async fn reload_workspace_managed_skills(
+        &self,
+        enabled_dir: impl AsRef<Path>,
+    ) -> Result<(), HarnessError> {
+        let enabled_dir = enabled_dir.as_ref().to_path_buf();
+        let source = SkillSource::Workspace(enabled_dir.clone());
+        let loader = SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
+            path: enabled_dir,
+            source_kind: DirectorySourceKind::Workspace,
+        });
+        let report = loader.load_all().await.map_err(|error| {
+            HarnessError::Other(format!("load workspace skills failed: {error}"))
+        })?;
+        self.replace_workspace_managed_skills(source, report.loaded)
+    }
+
+    pub fn list_runtime_skills(&self) -> Vec<RuntimeSkillSummary> {
+        let snapshot = self.inner.skill_registry.snapshot();
+        snapshot
+            .entries
+            .values()
+            .map(|skill| {
+                let status = snapshot
+                    .status
+                    .get(&skill.id)
+                    .cloned()
+                    .unwrap_or(harness_contracts::SkillStatus::Ready);
+                runtime_skill_summary(skill, status)
+            })
+            .collect()
+    }
+
+    pub fn view_runtime_skill(&self, name: &str, full: bool) -> Option<RuntimeSkillView> {
+        let snapshot = self.inner.skill_registry.snapshot();
+        let skill = snapshot.entries.get(name)?;
+        let status = snapshot
+            .status
+            .get(&skill.id)
+            .cloned()
+            .unwrap_or(harness_contracts::SkillStatus::Ready);
+        Some(runtime_skill_view(skill, status, full))
+    }
+
+    fn replace_workspace_managed_skills(
+        &self,
+        source: SkillSource,
+        skills: Vec<Skill>,
+    ) -> Result<(), HarnessError> {
+        let current = self.inner.skill_registry.snapshot();
+        let old_bindings = self
+            .inner
+            .skill_registry
+            .hook_bindings_in_snapshot(&current);
+        let mut next_skills = current
+            .entries
+            .values()
+            .filter(|skill| skill.source != source)
+            .map(|skill| skill.as_ref().clone())
+            .collect::<Vec<_>>();
+        next_skills.extend(skills);
+
+        let replacement = SkillRegistry::builder().with_skills(next_skills).build();
+        let mut candidate = replacement.snapshot().as_ref().clone();
+        if candidate.entries != current.entries {
+            candidate.generation = current.generation.saturating_add(1);
+        } else {
+            candidate.generation = current.generation;
+        }
+        let next_bindings = replacement.hook_bindings_in_snapshot(&candidate);
+        let next_handler_ids = next_bindings
+            .iter()
+            .map(|binding| binding.handler_id.clone())
+            .collect::<HashSet<_>>();
+
+        let mut registered = Vec::<String>::new();
+        for binding in next_bindings {
+            if self
+                .inner
+                .hook_registry
+                .origin_for(&binding.handler_id)
+                .is_some()
+            {
+                continue;
+            }
+            let handler_id = binding.handler_id.clone();
+            let handler = skill_hook_handler(binding)?;
+            if let Err(error) = self.inner.hook_registry.register(handler) {
+                for registered_id in registered {
+                    self.inner.hook_registry.deregister(&registered_id);
+                }
+                return Err(HarnessError::Hook(harness_contracts::HookError::Message(
+                    error.to_string(),
+                )));
+            }
+            registered.push(handler_id);
+        }
+
+        for binding in old_bindings {
+            if !next_handler_ids.contains(&binding.handler_id) {
+                self.inner.hook_registry.deregister(&binding.handler_id);
+            }
+        }
+        self.inner.skill_registry.commit_snapshot(candidate);
+        Ok(())
+    }
+
     pub fn register_locked_skill_versions(
         &self,
         snapshots: &[LockedSkillVersionSnapshot],
@@ -2807,12 +3352,12 @@ impl Harness {
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         #[cfg(feature = "memory-external-slot")]
         let engine = self
-            .engine_for_session(&options, memory_manager.clone())
+            .engine_for_session(&options, memory_manager.clone(), None)
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         #[cfg(not(feature = "memory-external-slot"))]
         let engine = self
-            .engine_for_session(&options)
+            .engine_for_session(&options, None)
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         let event_store: Arc<dyn EventStore> = Arc::new(LifecycleHookEventStore {
@@ -2827,6 +3372,7 @@ impl Harness {
             workspace_root: options.workspace_root.clone(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
+            deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
             summary_state: parking_lot::Mutex::new(MemorySessionSummaryState::default()),
             #[cfg(feature = "memory-external-slot")]
             memory_manager,
@@ -2836,6 +3382,7 @@ impl Harness {
             .with_event_store(event_store)
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine,
+                active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),
                 skill_config_snapshot: self.inner.skill_config_snapshot.clone(),
@@ -3098,6 +3645,31 @@ impl WorkspaceCreateRequest for &Path {
     }
 }
 
+fn snapshot_for_supported_model(
+    model: &dyn ModelProvider,
+    model_id: &str,
+) -> Result<ModelRuntimeSnapshot, HarnessError> {
+    let provider_id = model.provider_id().to_owned();
+    let descriptor = model
+        .supported_models()
+        .into_iter()
+        .find(|descriptor| descriptor.provider_id == provider_id && descriptor.model_id == model_id)
+        .ok_or_else(|| {
+            HarnessError::Engine(harness_contracts::EngineError::Message(format!(
+                "unsupported model id for provider {provider_id}: {model_id}"
+            )))
+        })?;
+    Ok(ModelRuntimeSnapshot {
+        provider_id: descriptor.provider_id,
+        model_id: descriptor.model_id,
+        protocol: descriptor.protocol,
+        context_window: descriptor.context_window,
+        conversation_capability: descriptor.conversation_capability,
+        lifecycle: descriptor.lifecycle,
+        pricing: descriptor.pricing,
+    })
+}
+
 fn apply_non_default_session_options(options: &mut SessionOptions, defaults: &SessionOptions) {
     if defaults.workspace_root != PathBuf::from(".") {
         options.workspace_root = defaults.workspace_root.clone();
@@ -3111,8 +3683,8 @@ fn apply_non_default_session_options(options: &mut SessionOptions, defaults: &Se
     if defaults.model_id.is_some() {
         options.model_id = defaults.model_id.clone();
     }
-    if defaults.api_mode.is_some() {
-        options.api_mode = defaults.api_mode;
+    if defaults.protocol.is_some() {
+        options.protocol = defaults.protocol;
     }
     if defaults.model_extra != Value::Null {
         options.model_extra = defaults.model_extra.clone();
@@ -3137,6 +3709,79 @@ fn apply_non_default_session_options(options: &mut SessionOptions, defaults: &Se
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use harness_contracts::{BlobId, BlobRef, ModelModality};
+
+    use super::*;
+
+    #[test]
+    fn conversation_turn_parts_promotes_file_attachment_when_model_accepts_file_input() {
+        let input = ConversationTurnInput {
+            client_message_id: None,
+            prompt: "Summarize this".to_owned(),
+            context_references: Vec::new(),
+            attachments: vec![attachment("notes.pdf", "application/pdf")],
+        };
+
+        let parts = conversation_turn_parts(&input, &[ModelModality::Text, ModelModality::File]);
+
+        assert!(parts.iter().any(|part| {
+            matches!(
+                part,
+                MessagePart::File {
+                    mime_type,
+                    blob_ref
+                } if mime_type == "application/pdf" && blob_ref.content_type.as_deref() == Some("application/pdf")
+            )
+        }));
+        assert!(
+            !parts
+                .iter()
+                .filter_map(|part| match part {
+                    MessagePart::Text(text) => Some(text),
+                    _ => None,
+                })
+                .any(|text| text.contains("notes.pdf")),
+            "file-capable models should receive files as model input, not text context"
+        );
+    }
+
+    #[test]
+    fn conversation_turn_parts_keeps_file_attachment_as_text_when_model_lacks_file_input() {
+        let input = ConversationTurnInput {
+            client_message_id: None,
+            prompt: "Summarize this".to_owned(),
+            context_references: Vec::new(),
+            attachments: vec![attachment("notes.pdf", "application/pdf")],
+        };
+
+        let parts = conversation_turn_parts(&input, &[ModelModality::Text]);
+
+        assert!(parts
+            .iter()
+            .any(|part| { matches!(part, MessagePart::Text(text) if text.contains("notes.pdf")) }));
+        assert!(!parts
+            .iter()
+            .any(|part| matches!(part, MessagePart::File { .. })));
+    }
+
+    fn attachment(name: &str, mime_type: &str) -> ConversationAttachmentReference {
+        ConversationAttachmentReference {
+            id: "attachment-test".to_owned(),
+            name: name.to_owned(),
+            mime_type: mime_type.to_owned(),
+            size_bytes: 42,
+            blob_ref: BlobRef {
+                id: BlobId::from_u128(42),
+                size: 42,
+                content_hash: [7; 32],
+                content_type: Some(mime_type.to_owned()),
+            },
+        }
+    }
+}
+
 fn apply_explicit_session_options(options: &mut SessionOptions, explicit: &SessionOptions) {
     if explicit.workspace_ref.is_some() {
         options.workspace_ref = explicit.workspace_ref;
@@ -3156,8 +3801,8 @@ fn apply_explicit_session_options(options: &mut SessionOptions, explicit: &Sessi
     if explicit.model_id.is_some() {
         options.model_id = explicit.model_id.clone();
     }
-    if explicit.api_mode.is_some() {
-        options.api_mode = explicit.api_mode;
+    if explicit.protocol.is_some() {
+        options.protocol = explicit.protocol;
     }
     if explicit.model_extra != Value::Null {
         options.model_extra = explicit.model_extra.clone();
@@ -3449,24 +4094,33 @@ fn rejection_reason(error: &PluginError) -> RejectionReason {
 
 struct EngineSessionTurnRunner {
     engine: Engine,
-    active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, CancellationToken>>>,
+    active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, ActiveConversationRun>>>,
     skill_registry: Option<SkillRegistry>,
     skill_metrics_sink: Option<Arc<dyn SkillMetricsSink>>,
     skill_config_snapshot: SkillConfigSnapshot,
 }
 
 struct ActiveConversationRunGuard {
-    active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, CancellationToken>>>,
+    active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, ActiveConversationRun>>>,
     run_id: RunId,
 }
 
 impl ActiveConversationRunGuard {
     fn register(
-        active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, CancellationToken>>>,
+        active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, ActiveConversationRun>>>,
+        tenant_id: TenantId,
+        session_id: SessionId,
         run_id: RunId,
         cancellation: CancellationToken,
     ) -> Self {
-        active_conversation_runs.lock().insert(run_id, cancellation);
+        active_conversation_runs.lock().insert(
+            run_id,
+            ActiveConversationRun {
+                tenant_id,
+                session_id,
+                cancellation,
+            },
+        );
         Self {
             active_conversation_runs,
             run_id,
@@ -3494,11 +4148,13 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
                 parts: vec![MessagePart::Text(prompt)],
                 created_at: harness_contracts::now(),
             },
-            metadata: json!({ "turn": ctx.turn_index }),
+            metadata: conversation_turn_metadata(ctx.turn_index, ctx.client_message_id.clone()),
         };
         let cancellation = CancellationToken::new();
         let _active_run = ActiveConversationRunGuard::register(
             Arc::clone(&self.active_conversation_runs),
+            ctx.tenant_id,
+            ctx.session_id,
             ctx.run_id,
             cancellation.clone(),
         );
@@ -3550,6 +4206,58 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
             .push_patch(request)
             .await
             .map_err(|error| SessionError::Message(error.to_string()))
+    }
+}
+
+fn conversation_turn_metadata(
+    turn_index: usize,
+    client_message_id: Option<String>,
+) -> serde_json::Value {
+    let mut metadata = json!({ "turn": turn_index });
+    if let Some(client_message_id) = client_message_id.filter(|value| is_uuid_v4_like(value)) {
+        metadata["clientMessageId"] = json!(client_message_id);
+    }
+    metadata
+}
+
+fn is_uuid_v4_like(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+
+    for index in [8, 13, 18, 23] {
+        if bytes[index] != b'-' {
+            return false;
+        }
+    }
+    if bytes[14] != b'4' || !matches!(bytes[19], b'8' | b'9' | b'a' | b'b' | b'A' | b'B') {
+        return false;
+    }
+
+    bytes
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !matches!(index, 8 | 13 | 18 | 23))
+        .all(|(_, byte)| byte.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod conversation_metadata_tests {
+    use super::conversation_turn_metadata;
+
+    #[test]
+    fn conversation_turn_metadata_keeps_only_uuid_v4_client_message_ids() {
+        let uuid_v4 = "00000000-0000-4000-8000-000000000001";
+        let uuid_v1 = "00000000-0000-1000-8000-000000000001";
+
+        assert_eq!(
+            conversation_turn_metadata(1, Some(uuid_v4.to_owned()))["clientMessageId"],
+            uuid_v4
+        );
+        assert!(conversation_turn_metadata(1, Some(uuid_v1.to_owned()))
+            .get("clientMessageId")
+            .is_none());
     }
 }
 
@@ -3870,6 +4578,7 @@ struct LifecycleHookEventStore {
     workspace_root: PathBuf,
     redactor: Arc<dyn Redactor>,
     session_limits: Arc<SessionLimitState>,
+    deleted_conversation_sessions: Arc<parking_lot::Mutex<HashSet<(TenantId, SessionId)>>>,
     summary_state: parking_lot::Mutex<MemorySessionSummaryState>,
     #[cfg(feature = "memory-external-slot")]
     memory_manager: Option<Arc<harness_memory::MemoryManager>>,
@@ -3882,6 +4591,125 @@ struct MemorySessionSummaryState {
     final_assistant_text: Option<String>,
 }
 
+struct ConversationDeletionGuardEventStore {
+    inner: Arc<dyn EventStore>,
+    deleted_conversation_sessions: Arc<parking_lot::Mutex<HashSet<(TenantId, SessionId)>>>,
+}
+
+impl ConversationDeletionGuardEventStore {
+    fn ensure_not_deleted(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+    ) -> Result<(), harness_contracts::JournalError> {
+        if self
+            .deleted_conversation_sessions
+            .lock()
+            .contains(&(tenant, session_id))
+        {
+            return Err(harness_contracts::JournalError::Message(format!(
+                "conversation session was deleted: {session_id}"
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl EventStore for ConversationDeletionGuardEventStore {
+    async fn append(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        events: &[Event],
+    ) -> Result<JournalOffset, harness_contracts::JournalError> {
+        self.ensure_not_deleted(tenant, session_id)?;
+        self.inner.append(tenant, session_id, events).await
+    }
+
+    async fn append_with_metadata(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        metadata: AppendMetadata,
+        events: &[Event],
+    ) -> Result<JournalOffset, harness_contracts::JournalError> {
+        self.ensure_not_deleted(tenant, session_id)?;
+        self.inner
+            .append_with_metadata(tenant, session_id, metadata, events)
+            .await
+    }
+
+    async fn read_envelopes(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        cursor: ReplayCursor,
+    ) -> Result<BoxStream<'static, EventEnvelope>, harness_contracts::JournalError> {
+        self.inner.read_envelopes(tenant, session_id, cursor).await
+    }
+
+    async fn query_after(
+        &self,
+        tenant: TenantId,
+        after: Option<harness_contracts::EventId>,
+        limit: usize,
+    ) -> Result<Vec<EventEnvelope>, harness_contracts::JournalError> {
+        self.inner.query_after(tenant, after, limit).await
+    }
+
+    async fn snapshot(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+    ) -> Result<Option<SessionSnapshot>, harness_contracts::JournalError> {
+        self.inner.snapshot(tenant, session_id).await
+    }
+
+    async fn save_snapshot(
+        &self,
+        tenant: TenantId,
+        snapshot: SessionSnapshot,
+    ) -> Result<(), harness_contracts::JournalError> {
+        self.ensure_not_deleted(tenant, snapshot.session_id)?;
+        self.inner.save_snapshot(tenant, snapshot).await
+    }
+
+    async fn compact_link(
+        &self,
+        parent: SessionId,
+        child: SessionId,
+        reason: harness_contracts::ForkReason,
+    ) -> Result<(), harness_contracts::JournalError> {
+        self.inner.compact_link(parent, child, reason).await
+    }
+
+    async fn delete_session(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+    ) -> Result<bool, harness_contracts::JournalError> {
+        self.inner.delete_session(tenant, session_id).await
+    }
+
+    async fn list_sessions(
+        &self,
+        tenant: TenantId,
+        filter: SessionFilter,
+    ) -> Result<Vec<SessionSummary>, harness_contracts::JournalError> {
+        self.inner.list_sessions(tenant, filter).await
+    }
+
+    async fn prune(
+        &self,
+        tenant: TenantId,
+        policy: PrunePolicy,
+    ) -> Result<PruneReport, harness_contracts::JournalError> {
+        self.inner.prune(tenant, policy).await
+    }
+}
+
 #[async_trait]
 impl EventStore for LifecycleHookEventStore {
     async fn append(
@@ -3890,6 +4718,15 @@ impl EventStore for LifecycleHookEventStore {
         session_id: harness_contracts::SessionId,
         events: &[Event],
     ) -> Result<JournalOffset, harness_contracts::JournalError> {
+        if self
+            .deleted_conversation_sessions
+            .lock()
+            .contains(&(tenant, session_id))
+        {
+            return Err(harness_contracts::JournalError::Message(format!(
+                "conversation session was deleted: {session_id}"
+            )));
+        }
         let mut combined = events.to_vec();
         combined.extend(self.lifecycle_hook_events(events).await?);
         let result = self.inner.append(tenant, session_id, &combined).await;
@@ -3910,6 +4747,15 @@ impl EventStore for LifecycleHookEventStore {
         metadata: AppendMetadata,
         events: &[Event],
     ) -> Result<JournalOffset, harness_contracts::JournalError> {
+        if self
+            .deleted_conversation_sessions
+            .lock()
+            .contains(&(tenant, session_id))
+        {
+            return Err(harness_contracts::JournalError::Message(format!(
+                "conversation session was deleted: {session_id}"
+            )));
+        }
         let mut combined = events.to_vec();
         combined.extend(self.lifecycle_hook_events(events).await?);
         let result = self
@@ -3967,6 +4813,14 @@ impl EventStore for LifecycleHookEventStore {
         reason: harness_contracts::ForkReason,
     ) -> Result<(), harness_contracts::JournalError> {
         self.inner.compact_link(parent, child, reason).await
+    }
+
+    async fn delete_session(
+        &self,
+        tenant: TenantId,
+        session_id: harness_contracts::SessionId,
+    ) -> Result<bool, harness_contracts::JournalError> {
+        self.inner.delete_session(tenant, session_id).await
     }
 
     async fn list_sessions(
@@ -4548,6 +5402,32 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
+#[derive(Default)]
+struct PendingSessionEvents {
+    events: parking_lot::Mutex<Vec<Event>>,
+}
+
+impl PendingSessionEvents {
+    fn push(&self, event: Event) {
+        self.events.lock().push(event);
+    }
+
+    fn drain(&self) -> Vec<Event> {
+        self.events.lock().drain(..).collect()
+    }
+}
+
+struct BufferedSkillEventSink {
+    pending_session_events: Arc<PendingSessionEvents>,
+}
+
+#[async_trait]
+impl harness_skill::SkillEventSink for BufferedSkillEventSink {
+    async fn emit(&self, event: Event) {
+        self.pending_session_events.push(event);
+    }
+}
+
 struct SdkSkillEventSink {
     event_store: Arc<dyn EventStore>,
     tenant_id: TenantId,
@@ -4826,6 +5706,75 @@ struct SdkSkillReloadCap {
     inner: Arc<HarnessInner>,
 }
 
+fn runtime_skill_summary(
+    skill: &Skill,
+    status: harness_contracts::SkillStatus,
+) -> RuntimeSkillSummary {
+    RuntimeSkillSummary {
+        name: skill.name.clone(),
+        description: skill.description.clone(),
+        tags: skill.frontmatter.tags.clone(),
+        category: skill.frontmatter.category.clone(),
+        source: skill.source.to_kind(),
+        status,
+    }
+}
+
+fn runtime_skill_view(
+    skill: &Skill,
+    status: harness_contracts::SkillStatus,
+    full: bool,
+) -> RuntimeSkillView {
+    RuntimeSkillView {
+        summary: runtime_skill_summary(skill, status),
+        parameters: skill
+            .frontmatter
+            .parameters
+            .iter()
+            .map(|parameter| RuntimeSkillParameter {
+                name: parameter.name.clone(),
+                param_type: skill_param_type_name(parameter.param_type).to_owned(),
+                required: parameter.required,
+                default: parameter.default.clone(),
+                description: parameter.description.clone(),
+            })
+            .collect(),
+        config_keys: skill
+            .frontmatter
+            .config
+            .iter()
+            .map(|config| config.key.clone())
+            .collect(),
+        body_preview: skill.body.chars().take(1024).collect(),
+        body_full: full.then(|| skill.body.clone()),
+    }
+}
+
+fn skill_param_type_name(param_type: SkillParamType) -> &'static str {
+    match param_type {
+        SkillParamType::String => "string",
+        SkillParamType::Number => "number",
+        SkillParamType::Boolean => "boolean",
+        SkillParamType::Path => "path",
+        SkillParamType::Url => "url",
+    }
+}
+
+fn sdk_current_skill_platform() -> SkillPlatform {
+    #[cfg(target_os = "macos")]
+    {
+        SkillPlatform::Macos
+    }
+    #[cfg(target_os = "linux")]
+    {
+        SkillPlatform::Linux
+    }
+    #[cfg(target_os = "windows")]
+    {
+        SkillPlatform::Windows
+    }
+}
+
 #[async_trait]
 impl SkillReloadCap for SdkSkillReloadCap {
     async fn reload_skills(&self, registrations: &[SkillRegistration]) -> Result<(), String> {
@@ -5072,7 +6021,7 @@ impl HookSessionView for SdkHookView {
 #[derive(Clone)]
 struct SdkToolSearchRuntime {
     tools: ToolPool,
-    model_caps: Arc<harness_model::ModelCapabilities>,
+    model_caps: Arc<harness_model::ConversationModelCapability>,
     mcp_config: Option<McpConfig>,
     event_store: Arc<dyn EventStore>,
     hooks: HookDispatcher,

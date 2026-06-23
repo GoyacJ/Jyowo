@@ -1,21 +1,24 @@
 pub use harness_contracts::{
-    now, AgentId, BlobError, BlobMeta, BlobRetention, BlobStore, BudgetMetric, ContentHash,
-    ContextPatchLifecycle, ContextPatchRequest, ContextPatchSource,
+    now, AgentId, ArtifactCreatedEvent, ArtifactId, ArtifactSource, ArtifactStatus,
+    ArtifactUpdatedEvent, BlobError, BlobMeta, BlobRef, BlobRetention, BlobStore, BudgetMetric,
+    ContentHash, ContextPatchLifecycle, ContextPatchRequest, ContextPatchSource,
     CredentialPoolSharedAcrossTenantsEvent, Decision, DecisionId, DecisionScope, DeferPolicy,
-    EndReason, Event, EventId, ExecuteCodeStepInvokedEvent, FallbackPolicy, ForkReason,
+    DeltaChunk, EndReason, Event, EventId, ExecuteCodeStepInvokedEvent, FallbackPolicy, ForkReason,
     HookEventKind, HookOutcomeSummary, HookTriggeredEvent, InteractivityLevel, JournalError,
     JournalOffset, ManifestOriginRef, McpServerId, McpServerSource, MemoryActor,
     MemoryExportedEvent, MemoryId, MemoryKind, MemorySource, MemoryThreatDetectedEvent,
     MemoryVisibility, Message, MessageContent, MessagePart, MessageRole, ModelError, ModelRef,
     OverflowAction, PermissionError, PermissionMode, PermissionRequestSuppressedEvent,
     PermissionSubject, PluginCapabilitiesSummary, PluginId, PluginLifecycleStateDiscriminant,
-    PluginLoadedEvent, PricingSnapshotId, ProviderRestriction, RedactPatternKind, RedactPatternSet,
+    PluginLoadedEvent, PricingSnapshotId, ProviderCredential, ProviderCredentialResolveContext,
+    ProviderCredentialResolverCap, ProviderRestriction, RedactPatternKind, RedactPatternSet,
     RedactRules, RedactScope, Redactor, RequestId, ResultBudget, RuleSource, RunId, SandboxError,
-    SessionId, Severity, SkillThreatDetectedEvent, StopReason, SubagentId,
-    SubagentPermissionForwardedEvent, SuppressionReason, TeamCreatedEvent, TeamId, TenantId,
-    ThreatAction, ThreatCategory, ThreatDirection, ToolDescriptor, ToolError, ToolGroup,
-    ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseCompletedEvent, ToolUseId,
-    TopologyKind, TrustLevel, UsageAccumulatedEvent, UsageSnapshot, WorkspaceId,
+    SessionId, Severity, SkillSourceKind, SkillStatus, SkillThreatDetectedEvent, StopReason,
+    SubagentId, SubagentPermissionForwardedEvent, SuppressionReason, TeamCreatedEvent, TeamId,
+    TenantId, ThoughtChunk, ThreatAction, ThreatCategory, ThreatDirection, ToolCapability,
+    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode,
+    ToolUseCompletedEvent, ToolUseId, TopologyKind, TrustLevel, UsageAccumulatedEvent,
+    UsageSnapshot, WorkspaceId,
 };
 pub use harness_hook::{HookEvent, HookHandler, HookOutcome, HookRegistry};
 pub use harness_journal::{
@@ -39,12 +42,20 @@ pub use harness_mcp::{
 pub use harness_memory::{
     MemoryLifecycle, MemoryMetadata, MemoryProvider, MemoryRecord, MemoryStore, MemorySummary,
 };
+#[cfg(feature = "provider-openrouter")]
+pub use harness_model::inventory_from_models_api_json;
 pub use harness_model::{
-    ApiMode, AuxModelProvider, BillingMode, ContentDelta, CredentialError, CredentialKey,
-    CredentialMetadata, CredentialPool, CredentialPoolAuditSink, CredentialSource, CredentialValue,
-    Currency, HealthStatus, InferContext, ModelCapabilities, ModelDescriptor, ModelPricing,
-    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent, PickedCredential, PoolStrategy,
-    PricingSnapshotResolveContext, PricingSnapshotResolver, PricingSource,
+    build_provider, provider_catalog_entries, provider_inventory_entries, resolve_model_descriptor,
+    runnable_inventory_models, AuxModelProvider, BillingMode, ContentDelta,
+    ConversationModelCapability, CredentialError, CredentialKey, CredentialMetadata,
+    CredentialPool, CredentialPoolAuditSink, CredentialSource, CredentialValue, Currency,
+    HealthStatus, InferContext, ModelDescriptor, ModelInventoryEntry, ModelLifecycle,
+    ModelModality, ModelPricing, ModelProtocol, ModelProvider, ModelRequest, ModelRuntimeStatus,
+    ModelStream, ModelStreamEvent, PickedCredential, PoolStrategy, PricingSnapshotResolveContext,
+    PricingSnapshotResolver, PricingSource, ProviderAuthScheme, ProviderBaseUrlRegion,
+    ProviderBuildConfig, ProviderCatalogEntry, ProviderInventoryEntry, ProviderRegistryError,
+    ProviderRuntimeCapability, ProviderServiceCapability, ProviderServiceCategory,
+    ProviderServiceCostRisk, ProviderServiceExecution, ThinkingDelta,
 };
 pub use harness_observability::{Observer, ObserverBuilder, Tracer, UsageAccumulator, UsageScope};
 pub use harness_permission::{
@@ -62,7 +73,8 @@ pub use harness_session::{
     BootstrapFileSpec, SessionOptions, Workspace, WorkspaceBootstrap, WorkspaceSpec,
 };
 pub use harness_skill::{
-    Skill, SkillCompatMode, SkillConfigResolver, SkillLoader, SkillParamType, SkillPlatform,
+    DirectorySourceKind, Skill, SkillCompatMode, SkillConfigResolver, SkillLoader, SkillParamType,
+    SkillPlatform, SkillSourceConfig,
 };
 pub use harness_tool::{
     BuiltinToolset, PermissionCheck, Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream,

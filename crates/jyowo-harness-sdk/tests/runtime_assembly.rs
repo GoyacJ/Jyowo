@@ -8,8 +8,9 @@ use std::sync::{
 use async_trait::async_trait;
 use futures::{executor::block_on, stream, StreamExt};
 use harness_contracts::{
-    ConfigHash, ContextPatchSource, ContextStageId, Decision, DeferPolicy, DeferredToolHint,
-    EndReason, Event, HookEventKind,
+    BlobId, BlobRef, ConfigHash, ContextPatchSource, ContextStageId,
+    ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput, Decision,
+    DeferPolicy, DeferredToolHint, EndReason, Event, HookEventKind,
     ManifestValidationFailure as ContractManifestValidationFailure, McpServerId, McpServerSource,
     MemoryError, MemoryId, MemoryKind, MemorySessionCtx, MemorySource, MemoryVisibility, MessageId,
     MessagePart, ModelError, PluginId, ProviderRestriction, RedactRules, Redactor, RequestId,
@@ -28,8 +29,8 @@ use harness_mcp::{
 use harness_memory::{ConsolidationHook, ConsolidationOutcome};
 use harness_memory::{MemoryLifecycle, MemoryMetadata, MemoryRecord, MemoryStore};
 use harness_model::{
-    ContentDelta, HealthStatus, InferContext, ModelCapabilities, ModelDescriptor, ModelProvider,
-    ModelRequest, ModelStream, ModelStreamEvent,
+    ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
+    ModelLifecycle, ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_observability::{
     AttributeValue, InMemorySpan, Observer, Span, SpanAttributes, TraceCarrier, TraceContext,
@@ -69,6 +70,184 @@ fn knowledge_retrieval_context_patch_source_has_sdk_facing_shape() {
     assert_eq!(value["provider_id"], "knowledge-runtime");
     assert_eq!(value["knowledge_base_ids"][0], "kb-runtime");
     assert_eq!(value["reference_chunk_count"], 2);
+}
+
+#[test]
+fn conversation_turn_input_ask_mode_preserves_prompt_text() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-turn-input-ask");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("answer".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ]],
+        ));
+        let harness = Harness::builder()
+            .with_model_arc(model.clone())
+            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+
+        harness
+            .open_or_create_conversation_session(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+            )
+            .await
+            .expect("session should open");
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: SessionOptions::new(&workspace).with_session_id(session_id),
+                input: ConversationTurnInput::ask("plain user question"),
+            })
+            .await
+            .expect("turn should run");
+
+        let requests = model.requests().await;
+        assert_eq!(request_text(&requests[0]), "plain user question");
+    });
+}
+
+#[test]
+fn conversation_session_uses_descriptor_protocol_when_options_omit_protocol() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-descriptor-api-mode");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let model = Arc::new(
+            CapabilityScriptedProvider::new(
+                ConversationModelCapability::default(),
+                vec![vec![
+                    ModelStreamEvent::ContentBlockDelta {
+                        index: 0,
+                        delta: ContentDelta::Text("answer".to_owned()),
+                    },
+                    ModelStreamEvent::MessageStop,
+                ]],
+            )
+            .with_protocol(ModelProtocol::Responses),
+        );
+        let harness = Harness::builder()
+            .with_model_arc(model.clone())
+            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+
+        let options = SessionOptions::new(&workspace)
+            .with_session_id(session_id)
+            .with_model_id("mock-model");
+        harness
+            .open_or_create_conversation_session(options.clone())
+            .await
+            .expect("session should open");
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options,
+                input: ConversationTurnInput::ask("plain user question"),
+            })
+            .await
+            .expect("turn should run");
+
+        let requests = model.requests().await;
+        assert_eq!(requests[0].protocol, ModelProtocol::Responses);
+    });
+}
+
+#[test]
+fn conversation_turn_input_renders_references_and_attachments_context_block() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-turn-input-command");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("answer".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ]],
+        ));
+        let harness = Harness::builder()
+            .with_model_arc(model.clone())
+            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+
+        harness
+            .open_or_create_conversation_session(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+            )
+            .await
+            .expect("session should open");
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: SessionOptions::new(&workspace).with_session_id(session_id),
+                input: ConversationTurnInput {
+                    client_message_id: None,
+                    prompt: "use these references".to_owned(),
+                    context_references: vec![
+                        ConversationContextReference::WorkspaceFile {
+                            path: "Cargo.toml".to_owned(),
+                            label: "Cargo manifest".to_owned(),
+                        },
+                        ConversationContextReference::Skill {
+                            id: "skill-review".to_owned(),
+                            label: "Code review skill".to_owned(),
+                        },
+                        ConversationContextReference::Tool {
+                            id: "builtin.grep".to_owned(),
+                            label: "Search files".to_owned(),
+                        },
+                        ConversationContextReference::McpServer {
+                            id: "mcp-filesystem".to_owned(),
+                            label: "Filesystem MCP".to_owned(),
+                        },
+                    ],
+                    attachments: vec![ConversationAttachmentReference {
+                        id: "attachment-001".to_owned(),
+                        name: "notes.txt".to_owned(),
+                        mime_type: "text/plain".to_owned(),
+                        size_bytes: 12,
+                        blob_ref: test_blob_ref(12, "text/plain"),
+                    }],
+                },
+            })
+            .await
+            .expect("turn should run");
+
+        let requests = model.requests().await;
+        let text = request_text(&requests[0]);
+        assert!(text.contains("<conversation-context>"));
+        assert!(text.contains("workspace_file: Cargo manifest (Cargo.toml)"));
+        assert!(text.contains("skill: Code review skill (skill-review)"));
+        assert!(text.contains("tool: Search files (builtin.grep)"));
+        assert!(text.contains("mcp_server: Filesystem MCP (mcp-filesystem)"));
+        assert!(text.contains("attachment: notes.txt text/plain 12 bytes attachment-001"));
+        assert!(!text.contains("Command intent only."));
+        assert!(text.ends_with("use these references"));
+    });
+}
+
+fn test_blob_ref(size: u64, content_type: &str) -> BlobRef {
+    BlobRef {
+        id: BlobId::new(),
+        size,
+        content_hash: [9; 32],
+        content_type: Some(content_type.to_owned()),
+    }
 }
 
 #[test]
@@ -120,6 +299,28 @@ fn create_session_uses_engine_runtime_path() {
 }
 
 #[test]
+fn create_session_rejects_unknown_model_id_fail_closed() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-unknown-model");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let harness = Harness::builder()
+            .with_model(MockProvider::default())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+
+        let error = harness
+            .create_session(SessionOptions::new(&workspace).with_model_id("missing-model"))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("unsupported model id"));
+    });
+}
+
+#[test]
 fn conversation_facade_opens_submits_and_pages_session_events() {
     block_on(async {
         let workspace = unique_workspace("sdk-conversation-facade");
@@ -154,7 +355,7 @@ fn conversation_facade_opens_submits_and_pages_session_events() {
         let submitted = harness
             .submit_conversation_turn(ConversationTurnRequest {
                 options: SessionOptions::new(&workspace).with_session_id(session_id),
-                prompt: "use facade path".to_owned(),
+                input: ConversationTurnInput::ask("use facade path"),
             })
             .await
             .expect("turn should run through the conversation facade");
@@ -205,6 +406,64 @@ fn conversation_facade_opens_submits_and_pages_session_events() {
     });
 }
 
+#[test]
+fn conversation_facade_pages_and_deletes_when_model_runtime_defaults_change() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-model-default-change");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let provider = Arc::new(TwoModelProvider);
+        let harness = Harness::builder()
+            .with_model_arc(provider)
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+
+        let created_options = SessionOptions::new(&workspace)
+            .with_session_id(session_id)
+            .with_model_id("model-a")
+            .with_protocol(ModelProtocol::Messages);
+        harness
+            .open_or_create_conversation_session(created_options)
+            .await
+            .expect("session should open with the original model defaults");
+
+        let changed_defaults_options = SessionOptions::new(&workspace)
+            .with_session_id(session_id)
+            .with_model_id("model-b")
+            .with_protocol(ModelProtocol::Responses);
+        let page = harness
+            .page_conversation_events(ConversationEventsPageRequest {
+                options: changed_defaults_options.clone(),
+                after_event_id: None,
+                limit: 10,
+            })
+            .await
+            .expect("historical conversation reads must survive model default changes");
+        assert!(page
+            .events
+            .iter()
+            .any(|envelope| matches!(envelope.payload, Event::SessionCreated(_))));
+
+        let submitted = harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: changed_defaults_options.clone(),
+                input: ConversationTurnInput::ask("continue with the selected model"),
+            })
+            .await
+            .expect("historical conversation submit must survive model default changes");
+        assert_eq!(submitted.session_id, session_id);
+
+        let deleted = harness
+            .delete_conversation_session(changed_defaults_options)
+            .await
+            .expect("historical conversation delete must survive model default changes");
+        assert!(deleted);
+    });
+}
+
 #[tokio::test]
 async fn conversation_facade_cancels_active_run_through_sdk_registry() {
     let workspace = unique_workspace("sdk-conversation-active-cancel");
@@ -233,7 +492,7 @@ async fn conversation_facade_cancels_active_run_through_sdk_registry() {
         run_harness
             .submit_conversation_turn(ConversationTurnRequest {
                 options: SessionOptions::new(&run_workspace).with_session_id(session_id),
-                prompt: "cancel active facade run".to_owned(),
+                input: ConversationTurnInput::ask("cancel active facade run"),
             })
             .await
     });
@@ -263,6 +522,138 @@ async fn conversation_facade_cancels_active_run_through_sdk_registry() {
         .await
         .expect("submit task should join")
         .expect("cancelled run should finish cleanly");
+}
+
+#[tokio::test]
+async fn conversation_facade_delete_cancels_active_run_and_blocks_late_appends() {
+    let workspace = unique_workspace("sdk-conversation-delete-active-run");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let session_id = SessionId::new();
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let provider = Arc::new(BlockingSkillListProvider::new(ToolUseId::new()));
+
+    let harness = Harness::builder()
+        .with_model_arc(provider.clone())
+        .with_store_arc(store.clone())
+        .with_sandbox(NoopSandbox::new())
+        .build()
+        .await
+        .expect("harness should build");
+    harness
+        .open_or_create_conversation_session(
+            SessionOptions::new(&workspace).with_session_id(session_id),
+        )
+        .await
+        .expect("session should open through the conversation facade");
+
+    let run_harness = harness.clone();
+    let run_workspace = workspace.clone();
+    let submitted = tokio::spawn(async move {
+        run_harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: SessionOptions::new(&run_workspace).with_session_id(session_id),
+                input: ConversationTurnInput::ask("delete active facade run"),
+            })
+            .await
+    });
+
+    provider.started.notified().await;
+    let deleted = harness
+        .delete_conversation_session(SessionOptions::new(&workspace).with_session_id(session_id))
+        .await
+        .expect("active conversation delete should reach the store");
+    assert!(deleted);
+
+    provider.release.notify_one();
+    let error = submitted
+        .await
+        .expect("submit task should join")
+        .expect_err("deleted sessions must reject late run appends");
+    assert!(error
+        .to_string()
+        .contains("conversation session was deleted"));
+
+    let sessions = harness
+        .list_conversation_sessions(TenantId::SINGLE, 50)
+        .await
+        .expect("sessions should list after delete");
+    assert!(sessions.is_empty());
+
+    let reopen_error = harness
+        .open_or_create_conversation_session(
+            SessionOptions::new(&workspace).with_session_id(session_id),
+        )
+        .await
+        .expect_err("deleted session ids must not be recreated in the same runtime");
+    assert!(reopen_error.to_string().contains("session not found"));
+}
+
+#[tokio::test]
+async fn conversation_facade_hides_and_deletes_malformed_session_streams() {
+    let workspace = unique_workspace("sdk-conversation-malformed-stream");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let session_id = SessionId::new();
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+
+    store
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::ToolDeferredPoolChanged(
+                ToolDeferredPoolChangedEvent {
+                    session_id,
+                    added: Vec::new(),
+                    removed: Vec::new(),
+                    source: ToolPoolChangeSource::InitialClassification,
+                    deferred_total: 0,
+                    at: harness_contracts::now(),
+                },
+            )],
+        )
+        .await
+        .expect("malformed stream should be written for the regression test");
+
+    let harness = Harness::builder()
+        .with_model(MockProvider::default())
+        .with_store_arc(store.clone())
+        .with_sandbox(NoopSandbox::new())
+        .build()
+        .await
+        .expect("harness should build");
+
+    let sessions = harness
+        .list_conversation_sessions(TenantId::SINGLE, 50)
+        .await
+        .expect("malformed streams should not break conversation listing");
+    assert!(sessions
+        .iter()
+        .all(|session| session.session_id != session_id));
+
+    let read_error = harness
+        .page_conversation_events(ConversationEventsPageRequest {
+            options: SessionOptions::new(&workspace).with_session_id(session_id),
+            after_event_id: None,
+            limit: 10,
+        })
+        .await
+        .expect_err("malformed streams must still fail closed on reads");
+    assert!(read_error
+        .to_string()
+        .contains("session event stream does not start with SessionCreated"));
+
+    let deleted = harness
+        .delete_conversation_session(SessionOptions::new(&workspace).with_session_id(session_id))
+        .await
+        .expect("malformed streams should be directly deletable");
+    assert!(deleted);
+
+    let remaining: Vec<_> = store
+        .read_envelopes(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .expect("store read should succeed after delete")
+        .collect()
+        .await;
+    assert!(remaining.is_empty());
 }
 
 #[test]
@@ -328,7 +719,7 @@ fn conversation_facade_rejects_tenant_policy_bypass_before_reading_events() {
                 options: SessionOptions::new(&workspace)
                     .with_tenant_id(TenantId::SHARED)
                     .with_session_id(session_id),
-                prompt: "must not read shared tenant".to_owned(),
+                input: ConversationTurnInput::ask("must not read shared tenant"),
             })
             .await
             .expect_err("restricted tenant policy must block submit before event replay");
@@ -360,7 +751,7 @@ fn conversation_facade_reopens_with_workspace_bound_options() {
             .create_workspace(
                 WorkspaceSpec::new(&workspace_root, "Conversation Workspace")
                     .with_default_session_options(
-                        SessionOptions::default().with_model_id("workspace-model"),
+                        SessionOptions::default().with_model_id("mock-model"),
                     ),
             )
             .await
@@ -376,13 +767,13 @@ fn conversation_facade_reopens_with_workspace_bound_options() {
         harness
             .submit_conversation_turn(ConversationTurnRequest {
                 options: options.clone(),
-                prompt: "use workspace model".to_owned(),
+                input: ConversationTurnInput::ask("use workspace model"),
             })
             .await
             .expect("workspace-bound conversation should submit");
 
         let requests = model.requests().await;
-        assert_eq!(requests[0].model_id, "workspace-model");
+        assert_eq!(requests[0].model_id, "mock-model");
 
         let mismatched = harness
             .page_conversation_events(ConversationEventsPageRequest {
@@ -982,15 +1373,15 @@ fn sdk_default_installs_builtin_toolset() {
 }
 
 #[test]
-fn tool_search_uses_provider_capabilities() {
+fn tool_search_uses_conversation_model_capabilities() {
     block_on(async {
         let workspace = unique_workspace("sdk-tool-search-provider-caps");
         std::fs::create_dir_all(&workspace).unwrap();
         let session_id = SessionId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let tool_use_id = ToolUseId::new();
-        let mut caps = ModelCapabilities::default();
-        caps.supports_tool_reference = true;
+        let mut caps = ConversationModelCapability::default();
+        caps.tool_calling = true;
         let model = Arc::new(CapabilityScriptedProvider::new(
             caps,
             vec![
@@ -1056,7 +1447,7 @@ fn tool_search_uses_provider_capabilities() {
                 event,
                 Event::ToolSchemaMaterialized(materialized)
                     if materialized.tool_use_id == tool_use_id
-                        && materialized.backend == "anthropic_tool_reference"
+                        && materialized.backend == "inline_reinjection"
                         && materialized.names == vec!["deferred_tool".to_owned()]
             )
         }));
@@ -1074,8 +1465,8 @@ fn tool_search_inline_reinjection_makes_deferred_schema_visible_to_next_turn_req
         let session_id = SessionId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let tool_use_id = ToolUseId::new();
-        let mut caps = ModelCapabilities::default();
-        caps.supports_tool_reference = false;
+        let mut caps = ConversationModelCapability::default();
+        caps.tool_calling = true;
         let model = Arc::new(CapabilityScriptedProvider::new(
             caps,
             vec![
@@ -1169,7 +1560,7 @@ fn deferred_pool_change_is_injected_into_next_sdk_turn_once() {
         let session_id = SessionId::new();
         let tool_use_id = ToolUseId::new();
         let model = Arc::new(CapabilityScriptedProvider::new(
-            ModelCapabilities::default(),
+            ConversationModelCapability::default(),
             vec![
                 vec![
                     ModelStreamEvent::ContentBlockDelta {
@@ -1253,8 +1644,8 @@ fn deferred_pool_change_is_injected_into_next_sdk_turn_once() {
 }
 
 #[test]
-fn tool_search_runtime_is_provider_backed() {
-    tool_search_uses_provider_capabilities();
+fn tool_search_runtime_uses_conversation_model_capabilities() {
+    tool_search_uses_conversation_model_capabilities();
 }
 
 #[test]
@@ -1406,6 +1797,58 @@ fn default_session_installs_skill_registry_cap_when_skill_loader_is_configured()
                         && format!("{:?}", completed.result).contains("brief")
             )
         }));
+    });
+}
+
+#[test]
+fn conversation_session_created_event_precedes_skill_loader_events() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-skill-event-order");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        let loader = SkillLoader::default().with_source(SkillSourceConfig::BundledRecords {
+            records: vec![BundledSkillRecord {
+                name: "brief".to_owned(),
+                description: "Write brief output.".to_owned(),
+                body: "Keep the answer short.".to_owned(),
+            }],
+        });
+
+        let harness = Harness::builder()
+            .with_model(MockProvider::default())
+            .with_store_arc(store.clone())
+            .with_sandbox(NoopSandbox::new())
+            .with_skill_loader(loader)
+            .build()
+            .await
+            .expect("harness should build");
+
+        harness
+            .open_or_create_conversation_session(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+            )
+            .await
+            .expect("conversation session should be created");
+
+        let events: Vec<_> = store
+            .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+            .await
+            .expect("events should be readable")
+            .collect()
+            .await;
+        assert!(matches!(events.first(), Some(Event::SessionCreated(_))));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, Event::SkillLoaded(_))));
+
+        let sessions = harness
+            .list_conversation_sessions(TenantId::SINGLE, 50)
+            .await
+            .expect("conversation sessions should list");
+        assert!(sessions
+            .iter()
+            .any(|session| session.session_id == session_id));
     });
 }
 
@@ -3577,18 +4020,28 @@ impl Tool for DeferredDeltaEmitterTool {
 }
 
 struct CapabilityScriptedProvider {
-    capabilities: ModelCapabilities,
+    protocol: ModelProtocol,
+    capabilities: ConversationModelCapability,
     responses: tokio::sync::Mutex<Vec<Vec<ModelStreamEvent>>>,
     requests: tokio::sync::Mutex<Vec<ModelRequest>>,
 }
 
 impl CapabilityScriptedProvider {
-    fn new(capabilities: ModelCapabilities, responses: Vec<Vec<ModelStreamEvent>>) -> Self {
+    fn new(
+        capabilities: ConversationModelCapability,
+        responses: Vec<Vec<ModelStreamEvent>>,
+    ) -> Self {
         Self {
+            protocol: ModelProtocol::Messages,
             capabilities,
             responses: tokio::sync::Mutex::new(responses),
             requests: tokio::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    fn with_protocol(mut self, protocol: ModelProtocol) -> Self {
+        self.protocol = protocol;
+        self
     }
 
     async fn requests(&self) -> Vec<ModelRequest> {
@@ -3607,9 +4060,11 @@ impl ModelProvider for CapabilityScriptedProvider {
             provider_id: "mock".to_owned(),
             model_id: "mock-model".to_owned(),
             display_name: "Mock model".to_owned(),
+            protocol: self.protocol,
             context_window: 128_000,
             max_output_tokens: 8_192,
-            capabilities: self.capabilities.clone(),
+            conversation_capability: self.capabilities.clone(),
+            lifecycle: ModelLifecycle::Stable,
             pricing: None,
         }]
     }
@@ -3633,6 +4088,52 @@ impl ModelProvider for CapabilityScriptedProvider {
 
     async fn health(&self) -> HealthStatus {
         HealthStatus::Healthy
+    }
+}
+
+struct TwoModelProvider;
+
+#[async_trait]
+impl ModelProvider for TwoModelProvider {
+    fn provider_id(&self) -> &str {
+        "mock"
+    }
+
+    fn supported_models(&self) -> Vec<ModelDescriptor> {
+        vec![
+            ModelDescriptor {
+                provider_id: "mock".to_owned(),
+                model_id: "model-a".to_owned(),
+                display_name: "Model A".to_owned(),
+                protocol: ModelProtocol::Messages,
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                conversation_capability: ConversationModelCapability::default(),
+                lifecycle: ModelLifecycle::Stable,
+                pricing: None,
+            },
+            ModelDescriptor {
+                provider_id: "mock".to_owned(),
+                model_id: "model-b".to_owned(),
+                display_name: "Model B".to_owned(),
+                protocol: ModelProtocol::Responses,
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                conversation_capability: ConversationModelCapability::default(),
+                lifecycle: ModelLifecycle::Stable,
+                pricing: None,
+            },
+        ]
+    }
+
+    async fn infer(
+        &self,
+        _req: ModelRequest,
+        _ctx: InferContext,
+    ) -> Result<ModelStream, ModelError> {
+        Ok(Box::pin(futures::stream::iter(vec![
+            ModelStreamEvent::MessageStop,
+        ])))
     }
 }
 

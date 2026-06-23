@@ -46,11 +46,17 @@ function createDeferredMockCommandClient(): CommandClient {
     async cancelRun(runId) {
       return (await getClient()).cancelRun(runId)
     },
+    async createAttachmentFromPath(path) {
+      return (await getClient()).createAttachmentFromPath(path)
+    },
     async deleteMcpServer(id) {
       return (await getClient()).deleteMcpServer(id)
     },
     async deleteMemoryItem(id) {
       return (await getClient()).deleteMemoryItem(id)
+    },
+    async deleteSkill(id) {
+      return (await getClient()).deleteSkill(id)
     },
     async exportMemoryItems() {
       return (await getClient()).exportMemoryItems()
@@ -64,6 +70,9 @@ function createDeferredMockCommandClient(): CommandClient {
     async getContextSnapshot(request) {
       return (await getClient()).getContextSnapshot(request)
     },
+    async getExecutionSettings() {
+      return (await getClient()).getExecutionSettings()
+    },
     async getConversation(conversationId) {
       return (await getClient()).getConversation(conversationId)
     },
@@ -73,20 +82,38 @@ function createDeferredMockCommandClient(): CommandClient {
     async getMemoryItem(id) {
       return (await getClient()).getMemoryItem(id)
     },
+    async getProviderConfigApiKey(configId, revealToken) {
+      return (await getClient()).getProviderConfigApiKey(configId, revealToken)
+    },
     async getReplayTimeline(request) {
       return (await getClient()).getReplayTimeline(request)
+    },
+    async getSkill(id, includeBody, selectedFilePath) {
+      return (await getClient()).getSkill(id, includeBody, selectedFilePath)
+    },
+    async importSkill(sourcePath) {
+      return (await getClient()).importSkill(sourcePath)
     },
     async listActivity(request) {
       return (await getClient()).listActivity(request)
     },
-    async listArtifacts() {
-      return (await getClient()).listArtifacts()
+    async listArtifacts(request) {
+      return (await getClient()).listArtifacts(request)
     },
     async listConversations() {
       return (await getClient()).listConversations()
     },
+    async createConversation() {
+      return (await getClient()).createConversation()
+    },
+    async deleteConversation(conversationId) {
+      return (await getClient()).deleteConversation(conversationId)
+    },
     async listEvalCases() {
       return (await getClient()).listEvalCases()
+    },
+    async listModelProviderCatalog() {
+      return (await getClient()).listModelProviderCatalog()
     },
     async listMcpServers() {
       return (await getClient()).listMcpServers()
@@ -94,8 +121,20 @@ function createDeferredMockCommandClient(): CommandClient {
     async listMemoryItems() {
       return (await getClient()).listMemoryItems()
     },
+    async listProviderSettings() {
+      return (await getClient()).listProviderSettings()
+    },
+    async listReferenceCandidates(request) {
+      return (await getClient()).listReferenceCandidates(request)
+    },
+    async listSkills() {
+      return (await getClient()).listSkills()
+    },
     async resolvePermission(request) {
       return (await getClient()).resolvePermission(request)
+    },
+    async requestProviderConfigApiKeyReveal(configId) {
+      return (await getClient()).requestProviderConfigApiKeyReveal(configId)
     },
     async runEvalCase(caseId) {
       return (await getClient()).runEvalCase(caseId)
@@ -106,8 +145,26 @@ function createDeferredMockCommandClient(): CommandClient {
     async saveProviderSettings(request) {
       return (await getClient()).saveProviderSettings(request)
     },
+    async setExecutionSettings(request) {
+      return (await getClient()).setExecutionSettings(request)
+    },
+    async setConversationModelConfig(conversationId, modelConfigId) {
+      return (await getClient()).setConversationModelConfig(conversationId, modelConfigId)
+    },
+    async setSkillEnabled(id, enabled) {
+      return (await getClient()).setSkillEnabled(id, enabled)
+    },
     async startRun(request) {
       return (await getClient()).startRun(request)
+    },
+    async subscribeConversationEvents(request) {
+      return (await getClient()).subscribeConversationEvents(request)
+    },
+    async listenConversationEventBatches(onBatch) {
+      return (await getClient()).listenConversationEventBatches(onBatch)
+    },
+    async unsubscribeConversationEvents(subscriptionId) {
+      return (await getClient()).unsubscribeConversationEvents(subscriptionId)
     },
     async updateMemoryItem(request) {
       return (await getClient()).updateMemoryItem(request)

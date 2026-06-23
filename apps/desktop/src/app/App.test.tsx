@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 
 import { QueryClient } from '@tanstack/react-query'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppProviders } from '@/app/providers'
 import { uiStore, useUiStore } from '@/shared/state/ui-store'
@@ -115,7 +115,8 @@ describe('App', () => {
       await screen.findByRole('heading', { name: 'Build the desktop foundation' }),
     ).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Workspace' })).toBeInTheDocument()
-    expect(screen.getByRole('complementary', { name: 'Context' })).toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Status' })).toBeInTheDocument()
     expect(
       screen.getByPlaceholderText('Ask Jyowo anything about this project...'),
     ).toBeInTheDocument()
@@ -138,7 +139,7 @@ describe('App', () => {
     expect(screen.getByRole('navigation', { name: 'Workspace' })).toBeInTheDocument()
   })
 
-  it('renders support routes for artifacts, settings, and evals', async () => {
+  it('renders support routes for artifacts, skills, settings, and evals', async () => {
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: {
@@ -154,12 +155,49 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Artifacts' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Artifact history' })).toBeInTheDocument()
 
+    window.history.pushState(null, '', '/skills')
+    rerender(<App commandClient={commandClient} queryClient={queryClient} />)
+
+    expect(await screen.findByRole('region', { name: 'Skills' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 1, name: 'Skills' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Skills' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Tools' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'MCP' })).toBeInTheDocument()
+    expect(
+      await screen.findByRole('button', { name: /Creates release notes from recent changes/ }),
+    ).toBeInTheDocument()
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Tools' }))
+
+    expect(screen.getByRole('heading', { name: 'Built-in tools' })).toBeInTheDocument()
+    expect(screen.getByText('FileRead')).toBeInTheDocument()
+    expect(screen.getByText('Bash')).toBeInTheDocument()
+    expect(screen.getByText('skills_invoke')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Model configuration' })).not.toBeInTheDocument()
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'MCP' }))
+
+    expect(await screen.findByRole('heading', { name: 'MCP servers' })).toBeInTheDocument()
+
     window.history.pushState(null, '', '/settings')
     rerender(<App commandClient={commandClient} queryClient={queryClient} />)
 
-    expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Provider settings' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'MCP servers' })).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Skills' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Tools' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'MCP' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Models' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Language' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Model configuration' })).not.toBeInTheDocument()
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Models' }))
+
+    expect(
+      await screen.findByRole('heading', {
+        name: 'Select a saved configuration to inspect details.',
+      }),
+    ).toBeInTheDocument()
 
     window.history.pushState(null, '', '/evals')
     rerender(<App commandClient={commandClient} queryClient={queryClient} />)

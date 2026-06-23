@@ -33,8 +33,8 @@ use harness_memory::{
     MemorySummary, RecallPolicy, RecallTriggerStrategy,
 };
 use harness_model::{
-    ApiMode, ContentDelta, ErrorClass, ErrorHints, HealthStatus, InferContext, ModelCapabilities,
-    ModelDescriptor, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
+    ContentDelta, ConversationModelCapability, ErrorClass, ErrorHints, HealthStatus, InferContext,
+    ModelDescriptor, ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_sandbox::{
@@ -113,6 +113,26 @@ async fn text_stream_records_deltas_completion_and_run_end() {
         Event::RunEnded(ended) if ended.reason == EndReason::Completed
     )));
     assert_eq!(harness.user_prompt_hooks.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn thinking_stream_keeps_thinking_out_of_final_assistant_message() {
+    let harness =
+        TestHarness::new(thinking_then_text_events("internal chain", "final answer")).await;
+
+    let events = harness.run("hello").await.unwrap();
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::AssistantDeltaProduced(delta)
+            if matches!(&delta.delta, DeltaChunk::Thought(thought)
+                if thought.text.as_deref() == Some("internal chain"))
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::AssistantMessageCompleted(completed)
+            if completed.content == harness_contracts::MessageContent::Text("final answer".to_owned())
+    )));
 }
 
 #[tokio::test]
@@ -689,7 +709,7 @@ impl TestHarness {
             .with_permission_broker(Arc::new(AllowBroker))
             .with_workspace_root(workspace.path())
             .with_model_id("mock-model")
-            .with_api_mode(ApiMode::Messages)
+            .with_protocol(ModelProtocol::Messages)
             .with_system_prompt(Some("system"))
             .with_cap_registry(Arc::new(CapabilityRegistry::default()));
         if let Some(blob_store) = blob_store {
@@ -972,12 +992,14 @@ impl ModelProvider for RecordingModelProvider {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "mock".to_owned(),
             model_id: "mock-model".to_owned(),
             display_name: "Mock model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
     }
@@ -1285,6 +1307,32 @@ fn text_events(text: &str) -> Vec<ModelStreamEvent> {
         },
         ModelStreamEvent::ContentBlockDelta {
             index: 0,
+            delta: ContentDelta::Text(text.to_owned()),
+        },
+        ModelStreamEvent::MessageDelta {
+            stop_reason: Some(StopReason::EndTurn),
+            usage_delta: UsageSnapshot::default(),
+        },
+        ModelStreamEvent::MessageStop,
+    ]
+}
+
+fn thinking_then_text_events(thinking: &str, text: &str) -> Vec<ModelStreamEvent> {
+    vec![
+        ModelStreamEvent::MessageStart {
+            message_id: "assistant-1".to_owned(),
+            usage: UsageSnapshot::default(),
+        },
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Thinking(harness_model::ThinkingDelta {
+                provider_native: None,
+                signature: None,
+                text: Some(thinking.to_owned()),
+            }),
+        },
+        ModelStreamEvent::ContentBlockDelta {
+            index: 1,
             delta: ContentDelta::Text(text.to_owned()),
         },
         ModelStreamEvent::MessageDelta {

@@ -35,7 +35,7 @@ fn sample_request(stream: bool) -> ModelRequest {
         max_tokens: Some(128),
         stream,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::Messages,
+        protocol: ModelProtocol::Messages,
         extra: Value::Null,
     }
 }
@@ -127,8 +127,8 @@ fn anthropic_provider_exports_required_models() {
         .map(|model| model.model_id)
         .collect::<Vec<_>>();
 
-    assert!(models.contains(&"claude-3-5-sonnet-20241022".to_owned()));
-    assert!(models.contains(&"claude-3-7-sonnet-20250219".to_owned()));
+    assert!(models.contains(&"claude-sonnet-4-6".to_owned()));
+    assert!(models.contains(&"claude-haiku-4-5".to_owned()));
 }
 
 #[tokio::test]

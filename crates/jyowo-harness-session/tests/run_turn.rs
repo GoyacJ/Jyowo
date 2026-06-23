@@ -18,8 +18,8 @@ use harness_hook::{
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
-    ApiMode, ContentDelta, ErrorClass, ErrorHints, HealthStatus, InferContext, ModelCapabilities,
-    ModelDescriptor, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
+    ContentDelta, ConversationModelCapability, ErrorClass, ErrorHints, HealthStatus, InferContext,
+    ModelDescriptor, ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_session::{Session, SessionOptions, SessionTurnRuntime};
@@ -53,7 +53,8 @@ async fn run_turn_executes_list_dir_with_formal_runtime() {
         .find(|message| message.role == MessageRole::Assistant)
         .map(message_text)
         .unwrap_or_default();
-    assert!(assistant.contains("marker.txt"));
+    assert!(!assistant.contains("marker.txt"));
+    assert!(assistant.contains("Tool result withheld from conversation transcript."));
     assert_eq!(harness.user_prompt_hooks.load(Ordering::SeqCst), 1);
 }
 
@@ -108,6 +109,36 @@ async fn run_turn_keeps_session_open_after_completed_run() {
     harness.session.run_turn("hello").await.unwrap();
 
     assert_eq!(harness.session.projection().await.end_reason, None);
+}
+
+#[tokio::test]
+async fn run_turn_keeps_thinking_out_of_durable_events() {
+    let harness =
+        TestHarness::new(thinking_then_text_events("internal chain", "final answer")).await;
+
+    harness.session.run_turn("hello").await.unwrap();
+
+    let events = harness.events().await;
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event,
+            Event::AssistantDeltaProduced(delta)
+                if matches!(&delta.delta, harness_contracts::DeltaChunk::Thought(thought)
+                    if thought.text.as_deref() == Some("internal chain"))
+        )
+    }));
+    let completed = events
+        .iter()
+        .find_map(|event| match event {
+            Event::AssistantMessageCompleted(completed) => Some(completed),
+            _ => None,
+        })
+        .expect("completed assistant message should be emitted");
+
+    assert_eq!(
+        completed.content,
+        harness_contracts::MessageContent::Text("final answer".to_owned())
+    );
 }
 
 #[tokio::test]
@@ -263,7 +294,7 @@ impl TestHarness {
             blob_store: None,
             model_id: "mock-model".to_owned(),
             model_extra: serde_json::Value::Null,
-            api_mode: ApiMode::Messages,
+            protocol: ModelProtocol::Messages,
             system_prompt: Some("system".to_owned()),
         };
         let session = Session::builder()
@@ -335,12 +366,14 @@ impl ModelProvider for RecordingModelProvider {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "mock".to_owned(),
             model_id: "mock-model".to_owned(),
             display_name: "Mock model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
     }
@@ -532,6 +565,32 @@ fn text_events(text: &str) -> Vec<ModelStreamEvent> {
         },
         ModelStreamEvent::ContentBlockDelta {
             index: 0,
+            delta: ContentDelta::Text(text.to_owned()),
+        },
+        ModelStreamEvent::MessageDelta {
+            stop_reason: Some(StopReason::EndTurn),
+            usage_delta: UsageSnapshot::default(),
+        },
+        ModelStreamEvent::MessageStop,
+    ]
+}
+
+fn thinking_then_text_events(thinking: &str, text: &str) -> Vec<ModelStreamEvent> {
+    vec![
+        ModelStreamEvent::MessageStart {
+            message_id: "assistant-1".to_owned(),
+            usage: UsageSnapshot::default(),
+        },
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Thinking(harness_model::ThinkingDelta {
+                provider_native: None,
+                signature: None,
+                text: Some(thinking.to_owned()),
+            }),
+        },
+        ModelStreamEvent::ContentBlockDelta {
+            index: 1,
             delta: ContentDelta::Text(text.to_owned()),
         },
         ModelStreamEvent::MessageDelta {

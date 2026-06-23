@@ -6,10 +6,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use futures::stream;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use futures::{stream, StreamExt};
 use harness_contracts::{
-    Message, MessagePart, MessageRole, ModelError, StopReason, ToolDescriptor, ToolResult,
-    ToolResultPart, UsageSnapshot,
+    BlobRef, BlobStore, Message, MessagePart, MessageRole, ModelError, StopReason, TenantId,
+    ToolDescriptor, ToolResult, ToolResultPart, UsageSnapshot,
 };
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
@@ -18,10 +19,10 @@ use serde_json::{json, Value};
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::{
-    apply_response_headers_middlewares, wrap_stream_with_cancel_deadline, ApiMode, Backoff,
-    ContentDelta, ContentType, CredentialValue, ErrorClass, InferContext,
-    ModelCredentialPickContext, ModelCredentialResolver, ModelRequest, ModelStream,
-    ModelStreamEvent, PickedCredential,
+    apply_response_headers_middlewares, wrap_stream_with_cancel_deadline, Backoff, ContentDelta,
+    ContentType, CredentialValue, ErrorClass, InferContext, ModelCredentialPickContext,
+    ModelCredentialResolver, ModelProtocol, ModelRequest, ModelStream, ModelStreamEvent,
+    PickedCredential,
 };
 
 use self::error::{map_response_error, map_transport_error, OpenAiCompatibleError};
@@ -37,7 +38,8 @@ pub(crate) struct OpenAiCompatibleClient {
     provider_id: String,
     base_url: String,
     path: String,
-    api_mode: ApiMode,
+    protocol: ModelProtocol,
+    max_tokens_field: &'static str,
     cooldown_until: Arc<Mutex<Option<Instant>>>,
     concurrency: Option<Arc<Semaphore>>,
 }
@@ -48,7 +50,7 @@ impl OpenAiCompatibleClient {
         Self::new(
             Some(api_key.into()),
             base_url,
-            ApiMode::ChatCompletions,
+            ModelProtocol::ChatCompletions,
             "/v1/chat/completions",
         )
     }
@@ -57,7 +59,7 @@ impl OpenAiCompatibleClient {
         Self::new(
             None,
             base_url,
-            ApiMode::ChatCompletions,
+            ModelProtocol::ChatCompletions,
             "/v1/chat/completions",
         )
     }
@@ -65,7 +67,7 @@ impl OpenAiCompatibleClient {
     fn new(
         api_key: Option<String>,
         base_url: impl Into<String>,
-        api_mode: ApiMode,
+        protocol: ModelProtocol,
         path: impl Into<String>,
     ) -> Self {
         Self {
@@ -75,7 +77,8 @@ impl OpenAiCompatibleClient {
             provider_id: "openai-compatible".to_owned(),
             base_url: base_url.into(),
             path: path.into(),
-            api_mode,
+            protocol,
+            max_tokens_field: "max_tokens",
             cooldown_until: Arc::new(Mutex::new(None)),
             concurrency: None,
         }
@@ -89,13 +92,14 @@ impl OpenAiCompatibleClient {
 
     #[must_use]
     pub(crate) fn with_chat_completions_path(mut self, path: impl Into<String>) -> Self {
+        self.protocol = ModelProtocol::ChatCompletions;
         self.path = path.into();
         self
     }
 
     #[must_use]
     pub(crate) fn with_responses_path(mut self, path: impl Into<String>) -> Self {
-        self.api_mode = ApiMode::Responses;
+        self.protocol = ModelProtocol::Responses;
         self.path = path.into();
         self
     }
@@ -109,6 +113,12 @@ impl OpenAiCompatibleClient {
     #[must_use]
     pub(crate) fn with_provider_id(mut self, provider_id: impl Into<String>) -> Self {
         self.provider_id = provider_id.into();
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_max_tokens_field(mut self, field: &'static str) -> Self {
+        self.max_tokens_field = field;
         self
     }
 
@@ -142,7 +152,7 @@ impl OpenAiCompatibleClient {
         ctx: InferContext,
     ) -> Result<ModelStream, ModelError> {
         self.validate_request(&req)?;
-        let body = self.request_body(&req)?;
+        let body = self.request_body(&req, &ctx).await?;
         let max_attempts = ctx.retry_policy.max_attempts.max(1);
         let mut attempt = 0;
 
@@ -166,9 +176,11 @@ impl OpenAiCompatibleClient {
                     let headers = response.headers().clone();
                     apply_response_headers_middlewares(&headers, &ctx).await?;
                     if req.stream {
-                        let stream = match self.api_mode {
-                            ApiMode::ChatCompletions => streaming::response_to_stream(response),
-                            ApiMode::Responses => responses::response_to_stream(response),
+                        let stream = match self.protocol {
+                            ModelProtocol::ChatCompletions => {
+                                streaming::response_to_stream(response)
+                            }
+                            ModelProtocol::Responses => responses::response_to_stream(response),
                             _ => unreachable!("validated OpenAI-compatible API mode"),
                         };
                         return Ok(wrap_stream_with_cancel_deadline(stream, &ctx));
@@ -178,9 +190,9 @@ impl OpenAiCompatibleClient {
                         .await
                         .map_err(map_transport_error)
                         .map_err(|error| error.error)?;
-                    return match self.api_mode {
-                        ApiMode::ChatCompletions => chat_response_to_stream(response),
-                        ApiMode::Responses => responses::json_response_to_stream(response),
+                    return match self.protocol {
+                        ModelProtocol::ChatCompletions => chat_response_to_stream(response),
+                        ModelProtocol::Responses => responses::json_response_to_stream(response),
                         _ => unreachable!("validated OpenAI-compatible API mode"),
                     };
                 }
@@ -278,7 +290,10 @@ impl OpenAiCompatibleClient {
             .map_err(map_transport_error)?;
 
         if !response.status().is_success() {
-            return Err(map_response_error(response).await);
+            let credential_secret = credential
+                .map(|credential| credential.secret.expose_secret())
+                .or_else(|| self.api_key.as_ref().map(|api_key| api_key.expose_secret()));
+            return Err(map_response_error(response, credential_secret).await);
         }
 
         Ok(response)
@@ -306,10 +321,10 @@ impl OpenAiCompatibleClient {
     }
 
     fn validate_request(&self, req: &ModelRequest) -> Result<(), ModelError> {
-        if req.api_mode != self.api_mode {
+        if req.protocol != self.protocol {
             return Err(ModelError::InvalidRequest(format!(
                 "OpenAI-compatible provider expected {:?}, got {:?}",
-                self.api_mode, req.api_mode
+                self.protocol, req.protocol
             )));
         }
         if !req.cache_breakpoints.is_empty() {
@@ -320,10 +335,16 @@ impl OpenAiCompatibleClient {
         Ok(())
     }
 
-    fn request_body(&self, req: &ModelRequest) -> Result<Value, ModelError> {
-        match self.api_mode {
-            ApiMode::ChatCompletions => chat_request_body(req),
-            ApiMode::Responses => responses_request_body(req),
+    async fn request_body(
+        &self,
+        req: &ModelRequest,
+        ctx: &InferContext,
+    ) -> Result<Value, ModelError> {
+        match self.protocol {
+            ModelProtocol::ChatCompletions => {
+                chat_request_body(req, self.max_tokens_field, ctx).await
+            }
+            ModelProtocol::Responses => responses_request_body(req, ctx).await,
             _ => Err(ModelError::InvalidRequest(
                 "unsupported OpenAI-compatible API mode".to_owned(),
             )),
@@ -366,7 +387,11 @@ pub(crate) trait OpenAiCompatibleProviderExt: Send + Sync + 'static {
     }
 }
 
-fn chat_request_body(req: &ModelRequest) -> Result<Value, ModelError> {
+async fn chat_request_body(
+    req: &ModelRequest,
+    max_tokens_field: &str,
+    ctx: &InferContext,
+) -> Result<Value, ModelError> {
     let mut messages = Vec::new();
     if let Some(system) = &req.system {
         messages.push(json!({
@@ -375,15 +400,15 @@ fn chat_request_body(req: &ModelRequest) -> Result<Value, ModelError> {
         }));
     }
     for message in &req.messages {
-        messages.push(chat_message(message)?);
+        messages.push(chat_message(message, ctx).await?);
     }
 
     let mut body = json!({
         "model": req.model_id,
         "messages": messages,
-        "max_tokens": req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
         "stream": req.stream,
     });
+    body[max_tokens_field] = json!(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS));
 
     if req.stream {
         body["stream_options"] = json!({ "include_usage": true });
@@ -394,11 +419,15 @@ fn chat_request_body(req: &ModelRequest) -> Result<Value, ModelError> {
     if let Some(tools) = &req.tools {
         body["tools"] = Value::Array(tools.iter().map(openai_tool).collect());
     }
+    merge_extra_object(&mut body, &req.extra)?;
 
     Ok(body)
 }
 
-fn responses_request_body(req: &ModelRequest) -> Result<Value, ModelError> {
+async fn responses_request_body(
+    req: &ModelRequest,
+    ctx: &InferContext,
+) -> Result<Value, ModelError> {
     let mut input = Vec::new();
     if let Some(system) = &req.system {
         input.push(json!({
@@ -407,7 +436,7 @@ fn responses_request_body(req: &ModelRequest) -> Result<Value, ModelError> {
         }));
     }
     for message in &req.messages {
-        input.push(chat_message(message)?);
+        input.push(chat_message(message, ctx).await?);
     }
 
     let mut body = json!({
@@ -423,19 +452,33 @@ fn responses_request_body(req: &ModelRequest) -> Result<Value, ModelError> {
     if let Some(tools) = &req.tools {
         body["tools"] = Value::Array(tools.iter().map(responses_tool).collect());
     }
+    merge_extra_object(&mut body, &req.extra)?;
 
     Ok(body)
 }
 
-fn chat_message(message: &Message) -> Result<Value, ModelError> {
+fn merge_extra_object(body: &mut Value, extra: &Value) -> Result<(), ModelError> {
+    if extra.is_null() {
+        return Ok(());
+    }
+    let extra = extra.as_object().ok_or_else(|| {
+        ModelError::InvalidRequest("model request extra must be an object".to_owned())
+    })?;
+    for (key, value) in extra {
+        body[key] = value.clone();
+    }
+    Ok(())
+}
+
+async fn chat_message(message: &Message, ctx: &InferContext) -> Result<Value, ModelError> {
     match message.role {
         MessageRole::System => Ok(json!({
             "role": "system",
-            "content": text_content(&message.parts)?,
+            "content": text_content(&message.parts, ctx).await?,
         })),
         MessageRole::User => Ok(json!({
             "role": "user",
-            "content": text_content(&message.parts)?,
+            "content": text_content(&message.parts, ctx).await?,
         })),
         MessageRole::Assistant => assistant_message(&message.parts),
         MessageRole::Tool => tool_message(&message.parts),
@@ -461,6 +504,8 @@ fn assistant_message(parts: &[MessagePart]) -> Result<Value, ModelError> {
                 },
             })),
             MessagePart::Image { .. }
+            | MessagePart::Video { .. }
+            | MessagePart::File { .. }
             | MessagePart::Thinking(_)
             | MessagePart::ToolResult { .. } => {
                 return Err(ModelError::InvalidRequest(
@@ -509,14 +554,51 @@ fn tool_message(parts: &[MessagePart]) -> Result<Value, ModelError> {
     }))
 }
 
-fn text_content(parts: &[MessagePart]) -> Result<String, ModelError> {
-    let mut text = String::new();
+async fn text_content(parts: &[MessagePart], ctx: &InferContext) -> Result<Value, ModelError> {
+    if parts
+        .iter()
+        .all(|part| matches!(part, MessagePart::Text(_)))
+    {
+        let mut text = String::new();
+        for part in parts {
+            if let MessagePart::Text(value) = part {
+                text.push_str(value);
+            }
+        }
+        return Ok(Value::String(text));
+    }
+    content_parts(parts, ctx).await
+}
+
+async fn content_parts(parts: &[MessagePart], ctx: &InferContext) -> Result<Value, ModelError> {
+    let mut content = Vec::new();
     for part in parts {
         match part {
-            MessagePart::Text(value) => text.push_str(value),
-            MessagePart::Image { .. } => {
+            MessagePart::Text(value) => content.push(json!({
+                "type": "text",
+                "text": value,
+            })),
+            MessagePart::Image {
+                mime_type,
+                blob_ref,
+            } => content.push(json!({
+                "type": "image_url",
+                "image_url": {
+                    "url": blob_data_url(ctx, mime_type, blob_ref).await?
+                },
+            })),
+            MessagePart::Video {
+                mime_type,
+                blob_ref,
+            } => content.push(json!({
+                "type": "video_url",
+                "video_url": {
+                    "url": blob_data_url(ctx, mime_type, blob_ref).await?
+                },
+            })),
+            MessagePart::File { .. } => {
                 return Err(ModelError::InvalidRequest(
-                    "image message parts are not supported by OpenAI-compatible providers in M2-T04.5"
+                    "file message parts require provider-specific upload support for OpenAI-compatible providers"
                         .to_owned(),
                 ));
             }
@@ -539,7 +621,38 @@ fn text_content(parts: &[MessagePart]) -> Result<String, ModelError> {
             }
         }
     }
-    Ok(text)
+    Ok(Value::Array(content))
+}
+
+async fn blob_data_url(
+    ctx: &InferContext,
+    mime_type: &str,
+    blob_ref: &BlobRef,
+) -> Result<String, ModelError> {
+    let store = ctx.blob_store.as_ref().ok_or_else(|| {
+        ModelError::InvalidRequest("blob store is required for multimodal model input".to_owned())
+    })?;
+    let bytes = read_blob_bytes(store.as_ref(), ctx.tenant_id, blob_ref).await?;
+    Ok(format!(
+        "data:{};base64,{}",
+        mime_type,
+        BASE64_STANDARD.encode(bytes)
+    ))
+}
+
+async fn read_blob_bytes(
+    store: &dyn BlobStore,
+    tenant_id: TenantId,
+    blob_ref: &BlobRef,
+) -> Result<Vec<u8>, ModelError> {
+    let mut stream = store.get(tenant_id, blob_ref).await.map_err(|_| {
+        ModelError::InvalidRequest("failed to read multimodal input blob".to_owned())
+    })?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 fn tool_result_content(content: &ToolResult) -> Result<String, ModelError> {
@@ -776,7 +889,7 @@ mod credential_pool_tests {
             ["primary", "backup"],
             |r| r,
         );
-        let client = client(&server, resolver);
+        let client = client_with_provider(&server, resolver, "openai-round-robin");
 
         client
             .infer(request(), test_context())
@@ -896,6 +1009,57 @@ mod credential_pool_tests {
         );
     }
 
+    #[tokio::test]
+    async fn provider_error_redacts_static_api_key() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "error": { "message": "bad key custom-provider-token" }
+            })))
+            .mount(&server)
+            .await;
+        let client = OpenAiCompatibleClient::from_api_key("custom-provider-token", server.uri());
+
+        let error = match client.infer(request(), test_context()).await {
+            Ok(_) => panic!("auth failure should be returned"),
+            Err(error) => error,
+        };
+
+        assert!(
+            matches!(error, ModelError::AuthExpired(message) if !message.contains("custom-provider-token") && message.contains("[REDACTED]"))
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_error_redacts_resolved_credential() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "error": { "message": "bad key tenant-provider-token" }
+            })))
+            .mount(&server)
+            .await;
+        let source = Arc::new(Source::default());
+        let resolver = resolver(
+            PoolStrategy::FillFirst,
+            source,
+            ["tenant-provider-token"],
+            |r| r,
+        );
+        let client = client(&server, resolver);
+
+        let error = match client.infer(request(), test_context()).await {
+            Ok(_) => panic!("auth failure should be returned"),
+            Err(error) => error,
+        };
+
+        assert!(
+            matches!(error, ModelError::AuthExpired(message) if !message.contains("tenant-provider-token") && message.contains("[REDACTED]"))
+        );
+    }
+
     fn resolver<I, S, F>(
         strategy: PoolStrategy,
         source: Arc<Source>,
@@ -920,8 +1084,16 @@ mod credential_pool_tests {
         server: &MockServer,
         resolver: Arc<dyn ModelCredentialResolver>,
     ) -> OpenAiCompatibleClient {
+        client_with_provider(server, resolver, "openai")
+    }
+
+    fn client_with_provider(
+        server: &MockServer,
+        resolver: Arc<dyn ModelCredentialResolver>,
+        provider_id: &'static str,
+    ) -> OpenAiCompatibleClient {
         OpenAiCompatibleClient::from_api_key("unused", server.uri())
-            .with_provider_id("openai")
+            .with_provider_id(provider_id)
             .with_credential_resolver(resolver)
     }
 
@@ -976,7 +1148,7 @@ mod credential_pool_tests {
             max_tokens: Some(32),
             stream: false,
             cache_breakpoints: Vec::new(),
-            api_mode: ApiMode::ChatCompletions,
+            protocol: ModelProtocol::ChatCompletions,
             extra: Value::Null,
         }
     }
@@ -985,111 +1157,6 @@ mod credential_pool_tests {
         InferContext::for_test()
     }
 }
-
-#[allow(unused_macros)]
-macro_rules! openai_compatible_provider {
-    (
-        provider = $provider:ident,
-        provider_id = $provider_id:literal,
-        env = $env_name:ident => $env_value:literal,
-        base_url = $base_url:literal,
-        path = $path:literal,
-        context_window = $context_window:literal,
-        max_output_tokens = $max_output_tokens:literal,
-        models = [$(($model_id:literal, $display_name:literal)),+ $(,)?]
-    ) => {
-        pub const $env_name: &str = $env_value;
-
-        #[derive(Clone)]
-        pub struct $provider {
-            client: $crate::openai_compatible::OpenAiCompatibleClient,
-        }
-
-        impl $provider {
-            pub fn from_api_key(api_key: impl Into<String>) -> Self {
-                Self {
-                    client: $crate::openai_compatible::OpenAiCompatibleClient::from_api_key(
-                        api_key,
-                        $base_url,
-                    )
-                    .with_provider_id($provider_id)
-                    .with_chat_completions_path($path),
-                }
-            }
-
-            #[must_use]
-            pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-                self.client = self.client.with_base_url(base_url);
-                self
-            }
-
-            #[must_use]
-            pub fn with_credential_resolver(
-                mut self,
-                resolver: std::sync::Arc<dyn $crate::ModelCredentialResolver>,
-            ) -> Self {
-                self.client = self.client.with_credential_resolver(resolver);
-                self
-            }
-        }
-
-        impl $crate::openai_compatible::OpenAiCompatibleProviderExt for $provider {
-            fn client(&self) -> &$crate::openai_compatible::OpenAiCompatibleClient {
-                &self.client
-            }
-        }
-
-        #[async_trait::async_trait]
-        impl $crate::ModelProvider for $provider {
-            fn provider_id(&self) -> &str {
-                $provider_id
-            }
-
-            fn supported_models(&self) -> Vec<$crate::ModelDescriptor> {
-                vec![$(descriptor($model_id, $display_name)),+]
-            }
-
-            async fn infer(
-                &self,
-                req: $crate::ModelRequest,
-                ctx: $crate::InferContext,
-            ) -> Result<$crate::ModelStream, harness_contracts::ModelError> {
-                $crate::openai_compatible::OpenAiCompatibleProviderExt::infer_openai_compatible(
-                    self,
-                    req,
-                    ctx,
-                )
-                .await
-            }
-
-            fn supports_tools(&self) -> bool {
-                true
-            }
-        }
-
-        fn descriptor(model_id: &str, display_name: &str) -> $crate::ModelDescriptor {
-            $crate::ModelDescriptor {
-                provider_id: $provider_id.to_owned(),
-                model_id: model_id.to_owned(),
-                display_name: display_name.to_owned(),
-                context_window: $context_window,
-                max_output_tokens: $max_output_tokens,
-                capabilities: $crate::ModelCapabilities {
-                    supports_tools: true,
-                    supports_vision: false,
-                    supports_thinking: false,
-                    supports_prompt_cache: false,
-                    supports_tool_reference: false,
-                    tool_reference_beta_header: None,
-                },
-                pricing: None,
-            }
-        }
-    };
-}
-
-#[allow(unused_imports)]
-pub(crate) use openai_compatible_provider;
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionResponse {

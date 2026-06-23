@@ -1,10 +1,11 @@
 import '@testing-library/jest-dom/vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { appI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
 import { createMockCommandClient } from '@/shared/tauri/mock-client'
@@ -45,32 +46,44 @@ function renderSidebarNav(commandClient: CommandClient = createMockCommandClient
 }
 
 function runtimeConversationClient() {
-  return createMockCommandClient({
-    contextSnapshot: {
-      activeArtifact: null,
-      decisions: [],
-      files: [],
-      nextActions: ['Continue the conversation'],
-      path: '/Users/goya/Repo/Git/Jyowo',
-      project: 'Jyowo',
+  const conversations = [
+    {
+      id: 'conversation-runtime-001',
+      isEmpty: false,
+      lastMessagePreview: 'Use the local journal',
+      title: 'Runtime session',
+      updatedAt: '2026-06-17T00:00:00.000Z',
     },
-    conversations: {
-      conversations: [
-        {
-          id: 'conversation-runtime-001',
-          lastMessagePreview: 'Use the local journal',
-          title: 'Runtime session',
-          updatedAt: '2026-06-17T00:00:00.000Z',
-        },
-        {
-          id: 'conversation-runtime-002',
-          lastMessagePreview: 'Auth runtime preview',
-          title: 'Auth runtime',
-          updatedAt: '2026-06-17T00:00:01.000Z',
-        },
-      ],
+    {
+      id: 'conversation-runtime-002',
+      isEmpty: false,
+      lastMessagePreview: 'Auth runtime preview',
+      title: 'Auth runtime',
+      updatedAt: '2026-06-17T00:00:01.000Z',
     },
-  })
+  ]
+  return {
+    ...createMockCommandClient({
+      contextSnapshot: {
+        activeArtifact: null,
+        decisions: [],
+        files: [],
+        nextActions: ['Continue the conversation'],
+        path: '/Users/goya/Repo/Git/Jyowo',
+        project: 'Jyowo',
+      },
+    }),
+    async deleteConversation(conversationId: string) {
+      const index = conversations.findIndex((conversation) => conversation.id === conversationId)
+      if (index >= 0) {
+        conversations.splice(index, 1)
+      }
+      return { conversationId, status: 'deleted' as const }
+    },
+    async listConversations() {
+      return { conversations: [...conversations] }
+    },
+  } satisfies CommandClient
 }
 
 vi.mock('@tanstack/react-router', async () => ({
@@ -94,40 +107,51 @@ vi.mock('@tanstack/react-router', async () => ({
 }))
 
 describe('SidebarNav', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     routerMock.navigate.mockClear()
+    await appI18n.changeLanguage('en-US')
     window.history.pushState(null, '', '/')
   })
 
   afterEach(() => {
     act(() => {
       uiStore.getState().setSidebarCollapsed(false)
-      uiStore.getState().setActivityRailExpanded(false)
-      uiStore.getState().setActivityRailCollapsed(false)
       uiStore.getState().setInspectorOpen(true)
+      uiStore.getState().clearActiveRun()
     })
   })
 
-  it('renders workspace navigation with active conversation and workspace summary', async () => {
+  it('renders workspace navigation without search or workspace summary capsules', async () => {
     renderSidebarNav(runtimeConversationClient())
 
     const navigation = screen.getByRole('navigation', { name: 'Workspace' })
 
-    expect(within(navigation).getByRole('searchbox', { name: 'Search' })).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    expect(within(navigation).getByRole('img', { name: 'Local workspace' })).toHaveAttribute(
+      'src',
+      expect.stringContaining('32x32.png'),
+    )
+    expect(within(navigation).queryByRole('searchbox', { name: 'Search' })).not.toBeInTheDocument()
     expect(within(navigation).getByText('Recent conversations')).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: 'New conversation' })).toBeInTheDocument()
     expect(
-      await within(navigation).findByRole('button', { name: /Runtime session/ }),
+      (await within(navigation).findByText('Runtime session')).closest('button'),
     ).toHaveAttribute('aria-current', 'page')
+    expect(
+      within(navigation).getByRole('button', { name: 'Delete Runtime session' }),
+    ).toBeInTheDocument()
     expect(within(navigation).queryByText('Build the desktop foundation')).not.toBeInTheDocument()
-    expect(within(navigation).getByText('Home')).toBeInTheDocument()
-    expect(within(navigation).getByText('Conversations')).toBeInTheDocument()
-    expect(within(navigation).getByText('Projects')).toBeInTheDocument()
-    expect(within(navigation).getByText('Artifacts')).toBeInTheDocument()
-    expect(within(navigation).getByText('Agents')).toBeInTheDocument()
-    expect(within(navigation).getByText('Tools')).toBeInTheDocument()
-    expect(within(navigation).getByText('Settings')).toBeInTheDocument()
-    expect(await within(navigation).findAllByText('Jyowo')).not.toHaveLength(0)
-    expect(within(navigation).getByText('/Users/goya/Repo/Git/Jyowo')).toBeInTheDocument()
+    const bottomNavigation = within(navigation).getByTestId('sidebar-bottom-navigation')
+    expect(within(bottomNavigation).getByText('Home')).toBeInTheDocument()
+    expect(within(bottomNavigation).getByText('Conversations')).toBeInTheDocument()
+    expect(within(bottomNavigation).getByText('Projects')).toBeInTheDocument()
+    expect(within(bottomNavigation).getByText('Artifacts')).toBeInTheDocument()
+    expect(within(bottomNavigation).queryByText('Agents')).not.toBeInTheDocument()
+    expect(within(bottomNavigation).queryByText('Tools')).not.toBeInTheDocument()
+    expect(within(bottomNavigation).queryByText('Skills')).not.toBeInTheDocument()
+    expect(within(navigation).queryByText('Settings')).not.toBeInTheDocument()
+    expect(within(navigation).queryByText('Jyowo')).not.toBeInTheDocument()
+    expect(within(navigation).queryByText('/Users/goya/Repo/Git/Jyowo')).not.toBeInTheDocument()
     expect(within(navigation).queryByText(['Jane', 'Doe'].join(' '))).not.toBeInTheDocument()
     expect(within(navigation).queryByText(['Design', 'sandbox'].join(' '))).not.toBeInTheDocument()
     expect(within(navigation).queryByText('Runs')).not.toBeInTheDocument()
@@ -137,21 +161,12 @@ describe('SidebarNav', () => {
     expect(within(navigation).queryByText('Models')).not.toBeInTheDocument()
   })
 
-  it('filters recent conversations from the sidebar search', async () => {
-    renderSidebarNav(runtimeConversationClient())
-
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Search' }), {
-      target: { value: 'auth' },
-    })
-
-    expect(await screen.findByRole('button', { name: /Auth runtime/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Runtime session/ })).not.toBeInTheDocument()
-  })
-
   it('routes selected conversation ids from real sidebar data', async () => {
     renderSidebarNav(runtimeConversationClient())
 
-    fireEvent.click(await screen.findByRole('button', { name: /Auth runtime/ }))
+    fireEvent.click(
+      (await screen.findByText('Auth runtime')).closest('button') as HTMLButtonElement,
+    )
 
     expect(routerMock.navigate).toHaveBeenCalledWith({
       search: { conversationId: 'conversation-runtime-002' },
@@ -159,14 +174,65 @@ describe('SidebarNav', () => {
     })
   })
 
-  it('runs command palette actions through sidebar UI state', () => {
+  it('localizes runtime default empty conversation labels', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    renderSidebarNav(
+      createMockCommandClient({
+        conversations: {
+          conversations: [
+            {
+              id: 'conversation-empty-001',
+              isEmpty: true,
+              lastMessagePreview: 'Start from the composer when ready.',
+              title: 'New conversation',
+              updatedAt: '2026-06-17T00:00:00.000Z',
+            },
+          ],
+        },
+      }),
+    )
+
+    const navigation = screen.getByRole('navigation', { name: '工作区' })
+
+    expect(await within(navigation).findByText('新建对话')).toBeInTheDocument()
+    expect(within(navigation).getByText('从输入框开始。')).toBeInTheDocument()
+    expect(within(navigation).queryByText('New conversation')).not.toBeInTheDocument()
+    expect(
+      within(navigation).queryByText('Start from the composer when ready.'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('keeps real conversation labels that match runtime default text', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    renderSidebarNav(
+      createMockCommandClient({
+        conversations: {
+          conversations: [
+            {
+              id: 'conversation-real-001',
+              isEmpty: false,
+              lastMessagePreview: 'Start from the composer when ready.',
+              title: 'New conversation',
+              updatedAt: '2026-06-17T00:00:00.000Z',
+            },
+          ],
+        },
+      }),
+    )
+
+    const navigation = screen.getByRole('navigation', { name: '工作区' })
+
+    expect(await within(navigation).findByText('New conversation')).toBeInTheDocument()
+    expect(within(navigation).getByText('Start from the composer when ready.')).toBeInTheDocument()
+    expect(within(navigation).queryByText('从输入框开始。')).not.toBeInTheDocument()
+  })
+
+  it('does not expose activity drilldown from the command palette', () => {
     renderSidebarNav()
 
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
-    fireEvent.click(screen.getByRole('option', { name: 'View activity' }))
 
-    expect(uiStore.getState().activityRailExpanded).toBe(true)
-    expect(uiStore.getState().activityRailCollapsed).toBe(false)
+    expect(screen.queryByRole('option', { name: 'View activity' })).not.toBeInTheDocument()
   })
 
   it('marks artifact and settings destinations from command palette actions', () => {
@@ -185,19 +251,221 @@ describe('SidebarNav', () => {
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
     fireEvent.click(screen.getByRole('option', { name: 'Settings' }))
 
-    expect(screen.getByRole('button', { name: 'Settings' })).toHaveAttribute('data-active', 'true')
-    expect(screen.getByRole('button', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
     expect(routerMock.navigate).toHaveBeenCalledWith({ to: '/settings' })
   })
 
-  it('routes new conversation to the conversation workspace before focusing composer', () => {
-    window.history.pushState(null, '', '/settings')
-
+  it('does not expose skills as a standalone sidebar destination', () => {
     renderSidebarNav()
 
-    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }))
+    expect(screen.queryByRole('button', { name: 'Skills' })).not.toBeInTheDocument()
+  })
 
-    expect(routerMock.navigate).toHaveBeenCalledWith({ to: '/' })
+  it('creates a runtime conversation before routing from the command palette', async () => {
+    window.history.pushState(null, '', '/settings')
+    act(() => {
+      uiStore.getState().setActiveRun({
+        conversationId: 'conversation-001',
+        runId: 'run-001',
+      })
+    })
+    const createConversation = vi.fn(async () => ({
+      conversation: {
+        id: 'conversation-created-001',
+        isEmpty: true,
+        lastMessagePreview: 'Start from the composer when ready.',
+        title: 'New conversation',
+        updatedAt: '2026-06-17T00:00:00.000Z',
+      },
+    }))
+
+    renderSidebarNav({
+      ...createMockCommandClient(),
+      createConversation,
+    })
+
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    fireEvent.click(screen.getByRole('option', { name: 'New conversation' }))
+
+    await waitFor(() => {
+      expect(createConversation).toHaveBeenCalledTimes(1)
+    })
+    await waitFor(() => {
+      expect(routerMock.navigate).toHaveBeenCalledWith({
+        search: {
+          conversationId: 'conversation-created-001',
+        },
+        to: '/',
+      })
+    })
+    expect(uiStore.getState().activeRunConversationId).toBe('conversation-001')
+    expect(uiStore.getState().activeRunId).toBe('run-001')
+  })
+
+  it('creates a runtime conversation from the recent conversation new action', async () => {
+    window.history.pushState(null, '', '/settings')
+    const createConversation = vi.fn(async () => ({
+      conversation: {
+        id: 'conversation-created-002',
+        isEmpty: true,
+        lastMessagePreview: 'Start from the composer when ready.',
+        title: 'New conversation',
+        updatedAt: '2026-06-17T00:00:00.000Z',
+      },
+    }))
+
+    renderSidebarNav({
+      ...runtimeConversationClient(),
+      createConversation,
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }))
+
+    await waitFor(() => {
+      expect(createConversation).toHaveBeenCalledTimes(1)
+    })
+    await waitFor(() => {
+      expect(routerMock.navigate).toHaveBeenCalledWith({
+        search: {
+          conversationId: 'conversation-created-002',
+        },
+        to: '/',
+      })
+    })
+  })
+
+  it('shows a create conversation failure from the recent conversation new action', async () => {
+    const createConversation = vi.fn(async () => {
+      throw new Error('conversation create failed: session event stream does not start')
+    })
+
+    renderSidebarNav({
+      ...createMockCommandClient(),
+      createConversation,
+      listConversations: vi.fn(async () => ({ conversations: [] })),
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }))
+
+    expect(
+      await screen.findByText('conversation create failed: session event stream does not start'),
+    ).toBeInTheDocument()
+    expect(routerMock.navigate).not.toHaveBeenCalledWith({
+      search: expect.anything(),
+      to: '/',
+    })
+  })
+
+  it('routes to a newly created conversation before the refreshed list finishes', async () => {
+    let listCallCount = 0
+    const createConversation = vi.fn(async () => ({
+      conversation: {
+        id: 'conversation-created-fast-route',
+        isEmpty: true,
+        lastMessagePreview: 'Start from the composer when ready.',
+        title: 'New conversation',
+        updatedAt: '2026-06-17T00:00:00.000Z',
+      },
+    }))
+    const listConversations = vi.fn(async () => {
+      listCallCount += 1
+      if (listCallCount > 1) {
+        return new Promise<Awaited<ReturnType<CommandClient['listConversations']>>>(() => {})
+      }
+      return { conversations: [] }
+    })
+
+    renderSidebarNav({
+      ...createMockCommandClient(),
+      createConversation,
+      listConversations,
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }))
+
+    await waitFor(() => {
+      expect(routerMock.navigate).toHaveBeenCalledWith({
+        search: {
+          conversationId: 'conversation-created-fast-route',
+        },
+        to: '/',
+      })
+    })
+  })
+
+  it('removes deleted conversations from the current sidebar list', async () => {
+    act(() => {
+      uiStore.getState().setActiveRun({
+        conversationId: 'conversation-runtime-002',
+        runId: 'run-runtime-002',
+      })
+    })
+
+    renderSidebarNav(runtimeConversationClient())
+
+    expect(await screen.findByText('Auth runtime')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Auth runtime' }))
+
+    await waitFor(() => {
+      expect(screen.queryByText('Auth runtime')).not.toBeInTheDocument()
+    })
+    expect(uiStore.getState().activeRunsByConversation['conversation-runtime-002']).toBeUndefined()
+  })
+
+  it('deletes conversations through the command client before refreshing the sidebar list', async () => {
+    const deleteConversation = vi.fn(async () => ({
+      conversationId: 'conversation-runtime-002',
+      status: 'deleted' as const,
+    }))
+    const listConversations = vi
+      .fn()
+      .mockResolvedValueOnce({
+        conversations: [
+          {
+            id: 'conversation-runtime-001',
+            isEmpty: false,
+            lastMessagePreview: 'Use the local journal',
+            title: 'Runtime session',
+            updatedAt: '2026-06-17T00:00:00.000Z',
+          },
+          {
+            id: 'conversation-runtime-002',
+            isEmpty: false,
+            lastMessagePreview: 'Auth runtime preview',
+            title: 'Auth runtime',
+            updatedAt: '2026-06-17T00:00:01.000Z',
+          },
+        ],
+      })
+      .mockResolvedValue({
+        conversations: [
+          {
+            id: 'conversation-runtime-001',
+            isEmpty: false,
+            lastMessagePreview: 'Use the local journal',
+            title: 'Runtime session',
+            updatedAt: '2026-06-17T00:00:00.000Z',
+          },
+        ],
+      })
+    const commandClient = {
+      ...createMockCommandClient(),
+      deleteConversation,
+      listConversations,
+    }
+
+    renderSidebarNav(commandClient)
+
+    expect(await screen.findByText('Auth runtime')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Auth runtime' }))
+
+    await waitFor(() => {
+      expect(deleteConversation).toHaveBeenCalledWith('conversation-runtime-002')
+    })
+    await waitFor(() => {
+      expect(listConversations).toHaveBeenCalledTimes(2)
+    })
+    expect(screen.queryByText('Auth runtime')).not.toBeInTheDocument()
   })
 
   it('routes evals from the command palette', () => {
@@ -207,6 +475,33 @@ describe('SidebarNav', () => {
     fireEvent.click(screen.getByRole('option', { name: 'Open evals' }))
 
     expect(routerMock.navigate).toHaveBeenCalledWith({ to: '/evals' })
+  })
+
+  it('does not render a sidebar skills entry on the legacy skills route', () => {
+    window.history.pushState(null, '', '/skills')
+
+    renderSidebarNav()
+
+    expect(screen.queryByRole('button', { name: 'Skills' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Conversations' })).toHaveAttribute(
+      'data-active',
+      'false',
+    )
+    expect(screen.getByRole('button', { name: 'Conversations' })).not.toHaveAttribute(
+      'aria-current',
+      'page',
+    )
+    expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Tools' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
+  })
+
+  it('does not expose skills on the settings route', () => {
+    window.history.pushState(null, '', '/settings')
+
+    renderSidebarNav()
+
+    expect(screen.queryByRole('button', { name: 'Skills' })).not.toBeInTheDocument()
   })
 
   it('renders a collapsed sidebar from local UI state', () => {
@@ -221,6 +516,27 @@ describe('SidebarNav', () => {
       'true',
     )
     expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Home' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Artifacts' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Skills' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
     expect(screen.queryByText('Recent conversations')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Artifacts' }))
+
+    expect(routerMock.navigate).toHaveBeenCalledWith({ to: '/artifacts' })
+  })
+
+  it('collapses the expanded sidebar from the navigation control', () => {
+    renderSidebarNav()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
+
+    expect(screen.getByRole('navigation', { name: 'Workspace' })).toHaveAttribute(
+      'data-collapsed',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
   })
 })

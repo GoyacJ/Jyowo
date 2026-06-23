@@ -89,6 +89,8 @@ fn schema_export_contains_required_surface() {
     assert!(schemas.contains_key("event"));
     assert!(schemas.contains_key("tool_descriptor"));
     assert!(schemas.contains_key("tool_use_requested"));
+    assert!(schemas.contains_key("artifact_created"));
+    assert!(schemas.contains_key("artifact_updated"));
     assert!(schemas.contains_key("credential_pool_shared_across_tenants"));
     assert!(schemas.contains_key("manifest_validation_failed"));
     assert!(schemas.contains_key("hook_failed"));
@@ -103,8 +105,17 @@ fn schema_export_contains_required_surface() {
     assert!(schemas.contains_key("skill_invocation_receipt"));
     assert!(schemas.contains_key("rendered_skill"));
     assert!(schemas.contains_key("skill_shell_invocation"));
+    assert!(schemas.contains_key("conversation_context_reference"));
+    assert!(schemas.contains_key("conversation_attachment_reference"));
+    assert!(schemas.contains_key("conversation_turn_input"));
+    assert!(!schemas.contains_key("conversation_intent_mode"));
     assert!(schemas.contains_key("sandbox_post_execution_failed"));
     assert!(schemas.contains_key("sandbox_backend_failed"));
+    assert!(schemas.contains_key("model_protocol"));
+    assert!(schemas.contains_key("model_modality"));
+    assert!(schemas.contains_key("conversation_model_capability"));
+    assert!(schemas.contains_key("provider_service_capability"));
+    assert!(schemas.contains_key("provider_runtime_capability"));
 
     for key in [
         "run_started",
@@ -121,6 +132,146 @@ fn schema_export_contains_required_surface() {
         "engine_failed",
     ] {
         assert!(schemas.contains_key(key), "missing MVP event schema: {key}");
+    }
+}
+
+#[test]
+fn model_capability_contract_rejects_old_flat_payload() {
+    let capability = ConversationModelCapability {
+        input_modalities: vec![ModelModality::Text, ModelModality::Image],
+        output_modalities: vec![ModelModality::Text],
+        context_window: 128_000,
+        max_output_tokens: 16_384,
+        streaming: true,
+        tool_calling: true,
+        reasoning: false,
+        prompt_cache: true,
+        structured_output: true,
+    };
+
+    let value = serde_json::to_value(&capability).unwrap();
+    assert_eq!(value["input_modalities"][0], "text");
+    assert_eq!(value["tool_calling"], true);
+
+    let old_flat_payload = json!({
+        "supports_tools": true,
+        "supports_vision": false,
+        "supports_thinking": false,
+        "supports_streaming": true,
+        "supports_structured_output": true,
+        "supports_json_mode": true,
+        "input_modalities": ["text"],
+        "output_modalities": ["text"]
+    });
+
+    assert!(serde_json::from_value::<ConversationModelCapability>(old_flat_payload).is_err());
+}
+
+#[test]
+fn provider_capability_contracts_use_stable_wire_names() {
+    let service = ProviderServiceCapability {
+        operation_id: "minimax.image_generation".to_owned(),
+        category: ProviderServiceCategory::Image,
+        input_modalities: vec![ModelModality::Text, ModelModality::Image],
+        output_artifact: ModelModality::Image,
+        execution: ProviderServiceExecution::AsyncJob,
+        requires_polling: true,
+        permission_subject: "network:minimax".to_owned(),
+        cost_risk: ProviderServiceCostRisk::High,
+    };
+    let runtime = ProviderRuntimeCapability {
+        auth_scheme: ProviderAuthScheme::Bearer,
+        base_url_regions: vec![
+            ProviderBaseUrlRegion {
+                id: "global".to_owned(),
+                label: "Global".to_owned(),
+                base_url: "https://api.minimax.io".to_owned(),
+            },
+            ProviderBaseUrlRegion {
+                id: "cn".to_owned(),
+                label: "China".to_owned(),
+                base_url: "https://api.minimaxi.com".to_owned(),
+            },
+        ],
+        supports_live_validation: true,
+        supports_streaming_validation: true,
+        secret_reveal_supported: true,
+    };
+
+    let service_value = serde_json::to_value(service).unwrap();
+    let runtime_value = serde_json::to_value(runtime).unwrap();
+
+    assert_eq!(service_value["category"], "image");
+    assert_eq!(service_value["execution"], "async_job");
+    assert_eq!(runtime_value["auth_scheme"], "bearer");
+    assert_eq!(
+        runtime_value["base_url_regions"][0]["base_url"],
+        "https://api.minimax.io"
+    );
+}
+
+#[test]
+fn conversation_turn_input_keeps_stable_wire_shape() {
+    let input = ConversationTurnInput {
+        client_message_id: None,
+        prompt: "Summarize this file".to_owned(),
+        context_references: vec![
+            ConversationContextReference::WorkspaceFile {
+                path: "apps/desktop/src/features/conversation/Composer.tsx".to_owned(),
+                label: "Composer.tsx".to_owned(),
+            },
+            ConversationContextReference::Artifact {
+                id: "artifact-001".to_owned(),
+                label: "Generated notes".to_owned(),
+            },
+            ConversationContextReference::Skill {
+                id: "skill-review".to_owned(),
+                label: "Code review skill".to_owned(),
+            },
+            ConversationContextReference::Tool {
+                id: "builtin.grep".to_owned(),
+                label: "Search files".to_owned(),
+            },
+            ConversationContextReference::McpServer {
+                id: "mcp-filesystem".to_owned(),
+                label: "Filesystem MCP".to_owned(),
+            },
+        ],
+        attachments: vec![ConversationAttachmentReference {
+            id: "attachment-001".to_owned(),
+            name: "notes.txt".to_owned(),
+            mime_type: "text/plain".to_owned(),
+            size_bytes: 128,
+            blob_ref: test_blob_ref(128, "text/plain"),
+        }],
+    };
+
+    let value = serde_json::to_value(&input).expect("conversation turn input should serialize");
+
+    assert_eq!(value["prompt"], "Summarize this file");
+    assert!(value.get("intent_mode").is_none());
+    assert_eq!(value["context_references"][0]["kind"], "workspace_file");
+    assert_eq!(
+        value["context_references"][0]["path"],
+        "apps/desktop/src/features/conversation/Composer.tsx"
+    );
+    assert_eq!(value["context_references"][1]["kind"], "artifact");
+    assert_eq!(value["context_references"][2]["kind"], "skill");
+    assert_eq!(value["context_references"][3]["kind"], "tool");
+    assert_eq!(value["context_references"][4]["kind"], "mcp_server");
+    assert_eq!(value["attachments"][0]["mime_type"], "text/plain");
+
+    let roundtrip: ConversationTurnInput =
+        serde_json::from_value(value).expect("conversation turn input should deserialize");
+    assert_eq!(roundtrip, input);
+}
+
+fn test_blob_ref(size: u64, content_type: &str) -> BlobRef {
+    BlobRef {
+        id: BlobId::new(),
+        size,
+        content_hash: [7; 32],
+        content_type: Some(content_type.to_owned()),
     }
 }
 

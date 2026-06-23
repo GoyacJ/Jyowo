@@ -5,7 +5,7 @@ import { PermissionDialog, type PermissionRequestDetails } from './PermissionDia
 import { type RawJsonDetails, RawJsonView } from './RawJsonView'
 import { ToolCallCard, type ToolCallDetails } from './ToolCallCard'
 
-export type RunEventDetailsModel = {
+type RunEventDetailsModel = {
   command?: CommandDetails
   permissions?: PermissionRequestDetails[]
   rawJson?: RawJsonDetails
@@ -16,6 +16,7 @@ type RunEventDetailsProps = {
   event: RunEventDetailsModel
   onApprovePermission?: (permissionId: string) => void
   onDenyPermission?: (permissionId: string) => void
+  readOnly?: boolean
   resolvingPermissionId?: string
 }
 
@@ -23,9 +24,11 @@ export function RunEventDetails({
   event,
   onApprovePermission,
   onDenyPermission,
+  readOnly = false,
   resolvingPermissionId,
 }: RunEventDetailsProps) {
   const { t } = useTranslation('activity')
+  const canResolvePermission = !readOnly
 
   return (
     <section aria-label={t('runEventDetails')} className="space-y-4">
@@ -34,8 +37,8 @@ export function RunEventDetails({
       {event.permissions?.map((permission) => (
         <PermissionDialog
           key={permission.id}
-          onApprove={onApprovePermission}
-          onDeny={onDenyPermission}
+          onApprove={canResolvePermission ? onApprovePermission : undefined}
+          onDeny={canResolvePermission ? onDenyPermission : undefined}
           permission={permission}
           resolving={resolvingPermissionId === permission.id}
         />

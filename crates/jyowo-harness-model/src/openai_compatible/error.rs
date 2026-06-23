@@ -29,7 +29,10 @@ pub(crate) fn map_transport_error(error: reqwest::Error) -> OpenAiCompatibleErro
     }
 }
 
-pub(crate) async fn map_response_error(response: reqwest::Response) -> OpenAiCompatibleError {
+pub(crate) async fn map_response_error(
+    response: reqwest::Response,
+    credential_secret: Option<&str>,
+) -> OpenAiCompatibleError {
     let status = response.status();
     let retry_after = response
         .headers()
@@ -48,8 +51,8 @@ pub(crate) async fn map_response_error(response: reqwest::Response) -> OpenAiCom
                 .and_then(|value| value.pointer("/error/code"))
                 .and_then(Value::as_str)
         })
-        .unwrap_or_else(|| status.canonical_reason().unwrap_or("provider error"))
-        .to_owned();
+        .unwrap_or_else(|| status.canonical_reason().unwrap_or("provider error"));
+    let message = redact_credential(message, credential_secret);
 
     match status {
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => OpenAiCompatibleError {
@@ -78,6 +81,13 @@ pub(crate) async fn map_response_error(response: reqwest::Response) -> OpenAiCom
             retry_after: None,
         },
     }
+}
+
+fn redact_credential(message: &str, credential_secret: Option<&str>) -> String {
+    let Some(secret) = credential_secret.filter(|secret| !secret.is_empty()) else {
+        return message.to_owned();
+    };
+    message.replace(secret, "[REDACTED]")
 }
 
 fn parse_retry_after(value: &str) -> Option<Duration> {

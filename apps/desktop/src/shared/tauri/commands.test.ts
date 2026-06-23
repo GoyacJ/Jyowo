@@ -1,10 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
 
+const tauriListenMock = vi.hoisted(() => vi.fn())
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: tauriListenMock,
+}))
+
 import {
   cancelRun,
+  createAttachmentFromPath,
+  createConversation,
   createInvokeCommandClient,
+  deleteConversation,
   deleteMcpServer,
   deleteMemoryItem,
+  deleteSkill,
   exportMemoryItems,
   exportSupportBundle,
   getAppInfo,
@@ -12,17 +22,26 @@ import {
   getConversation,
   getHarnessHealthcheck,
   getMemoryItem,
+  getProviderConfigApiKey,
   getReplayTimeline,
+  getSkill,
+  importSkill,
   listActivity,
   listArtifacts,
   listConversations,
   listEvalCases,
   listMcpServers,
   listMemoryItems,
+  listModelProviderCatalog,
+  listProviderSettings,
+  listReferenceCandidates,
+  listSkills,
+  requestProviderConfigApiKeyReveal,
   resolvePermission,
   runEvalCase,
   saveMcpServer,
   saveProviderSettings,
+  setSkillEnabled,
   startRun,
   TauriCommandPayloadError,
   updateMemoryItem,
@@ -30,6 +49,35 @@ import {
 } from './commands'
 import { getCommandErrorMessage } from './errors'
 import { createMockCommandClient } from './mock-client'
+
+const validAttachmentId =
+  'attachment-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+const validBlobRef = {
+  contentHash: Array.from({ length: 32 }, () => 1),
+  contentType: 'text/plain',
+  id: '01J00000000000000000000000',
+  size: 128,
+}
+const openAiModelDescriptor = {
+  protocol: 'responses',
+  conversationCapability: {
+    inputModalities: ['text'],
+    outputModalities: ['text'],
+    contextWindow: 128000,
+    maxOutputTokens: 16384,
+    streaming: true,
+    toolCalling: true,
+    reasoning: false,
+    promptCache: false,
+    structuredOutput: true,
+  },
+  contextWindow: 128000,
+  displayName: 'GPT-5.4 mini',
+  lifecycle: { kind: 'stable' },
+  maxOutputTokens: 16384,
+  modelId: 'gpt-5.4-mini',
+  runtimeStatus: { kind: 'runnable' },
+} as const
 
 describe('CommandClient', () => {
   it('normalizes get_app_info through Zod validation', async () => {
@@ -116,6 +164,49 @@ describe('CommandClient', () => {
     })
   })
 
+  it('keeps mock timeline subscription replay separate from activity defaults', async () => {
+    const defaultClient = createMockCommandClient()
+
+    await expect(
+      defaultClient.subscribeConversationEvents({ conversationId: 'conversation-001' }),
+    ).resolves.toMatchObject({
+      conversationId: 'conversation-001',
+      replayEvents: [],
+      cursor: null,
+      gap: false,
+    })
+
+    const streamingClient = createMockCommandClient({
+      subscribeConversationEvents: {
+        subscriptionId: 'subscription-stream',
+        conversationId: 'conversation-001',
+        replayEvents: [
+          {
+            id: 'evt-delta',
+            conversationSequence: 1,
+            payload: { text: 'streamed' },
+            runId: 'run-001',
+            sequence: 1,
+            source: 'assistant',
+            timestamp: '2026-06-17T00:00:00.000Z',
+            type: 'assistant.delta',
+            visibility: 'public',
+          },
+        ],
+        cursor: 'evt-delta',
+        gap: false,
+      },
+    })
+
+    await expect(
+      streamingClient.subscribeConversationEvents({ conversationId: 'conversation-001' }),
+    ).resolves.toMatchObject({
+      subscriptionId: 'subscription-stream',
+      replayEvents: [{ id: 'evt-delta' }],
+      cursor: 'evt-delta',
+    })
+  })
+
   it('models conversation list and detail commands through Zod validation', async () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === 'list_conversations') {
@@ -123,6 +214,7 @@ describe('CommandClient', () => {
           conversations: [
             {
               id: 'conversation-001',
+              isEmpty: false,
               title: 'Build the desktop foundation',
               updatedAt: '2026-06-17T00:00:00.000Z',
             },
@@ -141,6 +233,7 @@ describe('CommandClient', () => {
               timestamp: '2026-06-17T00:00:00.000Z',
             },
           ],
+          modelConfigId: null,
           title: 'Build the desktop foundation',
           updatedAt: '2026-06-17T00:00:00.000Z',
         },
@@ -152,6 +245,7 @@ describe('CommandClient', () => {
       conversations: [
         {
           id: 'conversation-001',
+          isEmpty: false,
           title: 'Build the desktop foundation',
           updatedAt: '2026-06-17T00:00:00.000Z',
         },
@@ -165,6 +259,54 @@ describe('CommandClient', () => {
     })
     expect(invoke).toHaveBeenCalledWith('list_conversations')
     expect(invoke).toHaveBeenCalledWith('get_conversation', { conversationId: 'conversation-001' })
+  })
+
+  it('rejects unsafe conversation snapshot message bodies', async () => {
+    const snapshot = (body: string) => ({
+      conversation: {
+        id: 'conversation-001',
+        messages: [
+          {
+            author: 'assistant',
+            body,
+            id: 'message-001',
+            timestamp: '2026-06-17T00:00:00.000Z',
+          },
+        ],
+        modelConfigId: null,
+        title: 'Build the desktop foundation',
+        updatedAt: '2026-06-17T00:00:00.000Z',
+      },
+    })
+
+    await expect(
+      getConversation(
+        'conversation-001',
+        createInvokeCommandClient(vi.fn().mockResolvedValue(snapshot('/Users/goya/.ssh/config'))),
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      getConversation(
+        'conversation-001',
+        createInvokeCommandClient(vi.fn().mockResolvedValue(snapshot('AKIAIOSFODNN7EXAMPLE'))),
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('models conversation deletion through Zod validation', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      conversationId: 'conversation-001',
+      status: 'deleted',
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(deleteConversation('conversation-001', client)).resolves.toEqual({
+      conversationId: 'conversation-001',
+      status: 'deleted',
+    })
+    expect(invoke).toHaveBeenCalledWith('delete_conversation', {
+      conversationId: 'conversation-001',
+    })
   })
 
   it('models run and permission intent commands without exposing generic execute', async () => {
@@ -184,7 +326,39 @@ describe('CommandClient', () => {
     await expect(
       startRun(
         {
+          attachments: [
+            {
+              blobRef: validBlobRef,
+              id: validAttachmentId,
+              mimeType: 'text/plain',
+              name: 'notes.txt',
+              sizeBytes: 128,
+            },
+          ],
+          clientMessageId: '00000000-0000-4000-8000-000000000001',
           conversationId: 'conversation-001',
+          contextReferences: [
+            {
+              kind: 'workspace_file',
+              label: 'Commands',
+              path: 'apps/desktop/src/shared/tauri/commands.ts',
+            },
+            {
+              id: 'skill-review',
+              kind: 'skill',
+              label: 'Code review skill',
+            },
+            {
+              id: 'builtin.grep',
+              kind: 'tool',
+              label: 'Search files',
+            },
+            {
+              id: 'mcp-filesystem',
+              kind: 'mcp_server',
+              label: 'Filesystem MCP',
+            },
+          ],
           prompt: 'Continue implementation',
         },
         client,
@@ -195,7 +369,14 @@ describe('CommandClient', () => {
       status: 'cancelled',
     })
     await expect(
-      resolvePermission({ decision: 'approve', requestId: '01HZ0000000000000000000001' }, client),
+      resolvePermission(
+        {
+          conversationId: 'conversation-001',
+          decision: 'approve',
+          requestId: '01HZ0000000000000000000001',
+        },
+        client,
+      ),
     ).resolves.toEqual({
       decision: 'approve',
       requestId: '01HZ0000000000000000000001',
@@ -203,15 +384,276 @@ describe('CommandClient', () => {
     })
 
     expect(invoke).toHaveBeenCalledWith('start_run', {
+      attachments: [
+        {
+          blobRef: validBlobRef,
+          id: validAttachmentId,
+          mimeType: 'text/plain',
+          name: 'notes.txt',
+          sizeBytes: 128,
+        },
+      ],
+      clientMessageId: '00000000-0000-4000-8000-000000000001',
       conversationId: 'conversation-001',
+      contextReferences: [
+        {
+          kind: 'workspace_file',
+          label: 'Commands',
+          path: 'apps/desktop/src/shared/tauri/commands.ts',
+        },
+        {
+          id: 'skill-review',
+          kind: 'skill',
+          label: 'Code review skill',
+        },
+        {
+          id: 'builtin.grep',
+          kind: 'tool',
+          label: 'Search files',
+        },
+        {
+          id: 'mcp-filesystem',
+          kind: 'mcp_server',
+          label: 'Filesystem MCP',
+        },
+      ],
       prompt: 'Continue implementation',
     })
     expect(invoke).toHaveBeenCalledWith('cancel_run', { runId: 'run-001' })
     expect(invoke).toHaveBeenCalledWith('resolve_permission', {
+      conversationId: 'conversation-001',
       decision: 'approve',
       requestId: '01HZ0000000000000000000001',
     })
     expect(invoke).not.toHaveBeenCalledWith('execute', expect.anything())
+  })
+
+  it('models conversation event subscription commands through parsed payloads', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'subscribe_conversation_events') {
+        return {
+          subscriptionId: 'subscription-001',
+          conversationId: 'conversation-001',
+          replayEvents: [
+            {
+              id: 'evt-replay',
+              conversationSequence: 1,
+              payload: { text: 'Hello' },
+              runId: 'run-001',
+              sequence: 1,
+              source: 'assistant',
+              timestamp: '2026-06-17T00:00:00.000Z',
+              type: 'assistant.delta',
+              visibility: 'public',
+            },
+          ],
+          cursor: 'cursor-001',
+          gap: false,
+        }
+      }
+
+      return {
+        subscriptionId: 'subscription-001',
+        status: 'unsubscribed',
+      }
+    })
+    const unlisten = vi.fn()
+    let tauriEventHandler: ((event: { payload: unknown }) => void) | undefined
+    tauriListenMock.mockImplementationOnce(async (_eventName, handler) => {
+      tauriEventHandler = handler
+      return unlisten
+    })
+    const client = createInvokeCommandClient(invoke)
+    const batches: unknown[] = []
+
+    await expect(
+      client.subscribeConversationEvents({
+        conversationId: 'conversation-001',
+        afterCursor: 'cursor-before',
+      }),
+    ).resolves.toMatchObject({
+      subscriptionId: 'subscription-001',
+      replayEvents: [{ id: 'evt-replay' }],
+      cursor: 'cursor-001',
+    })
+    const cleanup = await client.listenConversationEventBatches((batch) => {
+      batches.push(batch)
+    })
+    tauriEventHandler?.({
+      payload: {
+        subscriptionId: 'subscription-001',
+        conversationId: 'conversation-001',
+        events: [
+          {
+            id: 'evt-live',
+            conversationSequence: 2,
+            payload: { messageId: 'message-001', body: 'Final' },
+            runId: 'run-001',
+            sequence: 2,
+            source: 'assistant',
+            timestamp: '2026-06-17T00:00:01.000Z',
+            type: 'assistant.completed',
+            visibility: 'public',
+          },
+        ],
+        cursor: 'cursor-002',
+        gap: false,
+        phase: 'live',
+      },
+    })
+    cleanup()
+
+    await expect(client.unsubscribeConversationEvents('subscription-001')).resolves.toEqual({
+      subscriptionId: 'subscription-001',
+      status: 'unsubscribed',
+    })
+    expect(invoke).toHaveBeenCalledWith('subscribe_conversation_events', {
+      conversationId: 'conversation-001',
+      afterCursor: 'cursor-before',
+    })
+    expect(tauriListenMock).toHaveBeenCalledWith('conversation_event_batch', expect.any(Function))
+    expect(batches).toEqual([
+      expect.objectContaining({
+        subscriptionId: 'subscription-001',
+        events: [expect.objectContaining({ id: 'evt-live' })],
+        phase: 'live',
+      }),
+    ])
+    expect(unlisten).toHaveBeenCalledTimes(1)
+    expect(invoke).toHaveBeenCalledWith('unsubscribe_conversation_events', {
+      subscriptionId: 'subscription-001',
+    })
+  })
+
+  it('emits mock permission requests with production-compatible ids', async () => {
+    const client = createMockCommandClient()
+    const permissionRequest = new Promise<string>((resolve) => {
+      void client.listenConversationEventBatches((batch) => {
+        const permissionEvent = batch.events.find((event) => event.type === 'permission.requested')
+        if (permissionEvent?.type === 'permission.requested' && permissionEvent.payload) {
+          resolve(permissionEvent.payload.requestId)
+        }
+      })
+    })
+
+    await client.subscribeConversationEvents({ conversationId: 'conversation-001' })
+    await client.startRun({
+      attachments: [],
+      clientMessageId: '00000000-0000-4000-8000-000000000001',
+      contextReferences: [],
+      conversationId: 'conversation-001',
+      prompt: 'Run local verification',
+    })
+
+    await expect(permissionRequest).resolves.toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/)
+  })
+
+  it('validates composer context command payloads before invoking Tauri', async () => {
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      startRun(
+        {
+          conversationId: 'conversation-001',
+          contextReferences: [{ kind: 'workspace_file', label: '', path: 'Cargo.toml' }],
+          prompt: 'Continue',
+        },
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      startRun(
+        {
+          conversationId: 'conversation-001',
+          intentMode: 'execute',
+          prompt: 'Continue',
+        } as unknown as Parameters<typeof startRun>[0],
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      startRun(
+        {
+          clientMessageId: '00000000-0000-1000-8000-000000000001',
+          conversationId: 'conversation-001',
+          prompt: 'Continue',
+        },
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      startRun(
+        {
+          attachments: [
+            {
+              blobRef: {
+                contentHash: [1, 2, 3],
+                id: 'blob-001',
+                size: 128,
+              },
+              id: '../escape',
+              mimeType: 'text/plain',
+              name: 'notes.txt',
+              sizeBytes: 128,
+            },
+          ],
+          conversationId: 'conversation-001',
+          prompt: 'Continue',
+        },
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(createAttachmentFromPath('', client)).rejects.toThrow(TauriCommandPayloadError)
+
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('models attachment and reference candidate commands', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'create_attachment_from_path') {
+        return {
+          attachment: {
+            blobRef: validBlobRef,
+            id: validAttachmentId,
+            mimeType: 'text/plain',
+            name: 'notes.txt',
+            sizeBytes: 128,
+          },
+        }
+      }
+
+      return {
+        artifacts: [],
+        conversations: [],
+        files: [{ label: 'Cargo.toml', path: 'Cargo.toml' }],
+        memories: [],
+        mcpServers: [{ id: 'mcp-filesystem', label: 'Filesystem MCP' }],
+        skills: [{ id: 'skill-review', label: 'Code review skill' }],
+        tools: [{ id: 'builtin.grep', label: 'Search files' }],
+      }
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(createAttachmentFromPath('/tmp/notes.txt', client)).resolves.toMatchObject({
+      attachment: { id: validAttachmentId, name: 'notes.txt' },
+    })
+    await expect(
+      listReferenceCandidates({ conversationId: 'conversation-001' }, client),
+    ).resolves.toEqual({
+      artifacts: [],
+      conversations: [],
+      files: [{ label: 'Cargo.toml', path: 'Cargo.toml' }],
+      memories: [],
+      mcpServers: [{ id: 'mcp-filesystem', label: 'Filesystem MCP' }],
+      skills: [{ id: 'skill-review', label: 'Code review skill' }],
+      tools: [{ id: 'builtin.grep', label: 'Search files' }],
+    })
+
+    expect(invoke).toHaveBeenCalledWith('create_attachment_from_path', { path: '/tmp/notes.txt' })
+    expect(invoke).toHaveBeenCalledWith('list_reference_candidates', {
+      conversationId: 'conversation-001',
+    })
   })
 
   it('validates permission decisions before invoking Tauri', async () => {
@@ -220,17 +662,29 @@ describe('CommandClient', () => {
 
     await expect(
       resolvePermission(
-        { decision: 'allow', requestId: '01HZ0000000000000000000001' } as unknown as Parameters<
-          typeof resolvePermission
-        >[0],
+        {
+          conversationId: 'conversation-001',
+          decision: 'allow',
+          requestId: '01HZ0000000000000000000001',
+        } as unknown as Parameters<typeof resolvePermission>[0],
         client,
       ),
     ).rejects.toThrow(TauriCommandPayloadError)
     await expect(
-      resolvePermission({ decision: 'approve', requestId: ' ' }, client),
+      resolvePermission(
+        { conversationId: 'conversation-001', decision: 'approve', requestId: ' ' },
+        client,
+      ),
     ).rejects.toThrow(TauriCommandPayloadError)
     await expect(
-      resolvePermission({ decision: 'approve', requestId: '01hz0000000000000000000001' }, client),
+      resolvePermission(
+        {
+          conversationId: 'conversation-001',
+          decision: 'approve',
+          requestId: '01hz0000000000000000000001',
+        },
+        client,
+      ),
     ).rejects.toThrow(TauriCommandPayloadError)
     expect(invoke).not.toHaveBeenCalled()
   })
@@ -242,6 +696,7 @@ describe('CommandClient', () => {
           events: [
             {
               id: 'evt-001',
+              conversationSequence: 1,
               payload: { sessionId: 'session-001' },
               runId: 'run-001',
               sequence: 1,
@@ -292,7 +747,11 @@ describe('CommandClient', () => {
           events: [
             {
               id: 'evt-redacted',
-              payload: { outputSummary: '[REDACTED]', toolUseId: 'tool-001' },
+              conversationSequence: 1,
+              payload: {
+                outputSummary: 'Output withheld from conversation timeline.',
+                toolUseId: 'tool-001',
+              },
               runId: 'run-001',
               sequence: 1,
               source: 'tool',
@@ -302,6 +761,7 @@ describe('CommandClient', () => {
             },
             {
               id: 'evt-withheld',
+              conversationSequence: 2,
               runId: 'run-001',
               sequence: 2,
               source: 'tool',
@@ -331,7 +791,11 @@ describe('CommandClient', () => {
       events: [
         {
           id: 'evt-redacted',
-          payload: { outputSummary: '[REDACTED]', toolUseId: 'tool-001' },
+          conversationSequence: 1,
+          payload: {
+            outputSummary: 'Output withheld from conversation timeline.',
+            toolUseId: 'tool-001',
+          },
           runId: 'run-001',
           sequence: 1,
           source: 'tool',
@@ -341,6 +805,7 @@ describe('CommandClient', () => {
         },
         {
           id: 'evt-withheld',
+          conversationSequence: 2,
           runId: 'run-001',
           sequence: 2,
           source: 'tool',
@@ -378,8 +843,6 @@ describe('CommandClient', () => {
           id: 'artifact-foundation-plan',
           kind: 'markdown',
           preview: '# Foundation review',
-          sourceMessageId: 'message-002',
-          sourceRunId: 'run-001',
           status: 'ready',
           title: 'Foundation implementation review',
         },
@@ -387,7 +850,7 @@ describe('CommandClient', () => {
     })
     const client = createInvokeCommandClient(invoke)
 
-    await expect(listArtifacts(client)).resolves.toEqual({
+    await expect(listArtifacts({ conversationId: 'conversation-001' }, client)).resolves.toEqual({
       artifacts: [
         {
           actionLabel: 'Open',
@@ -395,17 +858,17 @@ describe('CommandClient', () => {
           id: 'artifact-foundation-plan',
           kind: 'markdown',
           preview: '# Foundation review',
-          sourceMessageId: 'message-002',
-          sourceRunId: 'run-001',
           status: 'ready',
           title: 'Foundation implementation review',
         },
       ],
     })
-    expect(invoke).toHaveBeenCalledWith('list_artifacts')
+    expect(invoke).toHaveBeenCalledWith('list_artifacts', {
+      conversationId: 'conversation-001',
+    })
   })
 
-  it('accepts artifact payloads with missing optional preview and source message fields', async () => {
+  it('accepts artifact payloads with missing optional previews', async () => {
     const client = createInvokeCommandClient(
       vi.fn().mockResolvedValue({
         artifacts: [
@@ -414,7 +877,6 @@ describe('CommandClient', () => {
             description: 'Generated implementation plan',
             id: 'artifact-without-preview',
             kind: 'markdown',
-            sourceRunId: 'run-001',
             status: 'ready',
             title: 'Generated output',
           },
@@ -422,19 +884,26 @@ describe('CommandClient', () => {
       }),
     )
 
-    await expect(listArtifacts(client)).resolves.toEqual({
+    await expect(listArtifacts({ conversationId: 'conversation-001' }, client)).resolves.toEqual({
       artifacts: [
         {
           actionLabel: 'Open',
           description: 'Generated implementation plan',
           id: 'artifact-without-preview',
           kind: 'markdown',
-          sourceRunId: 'run-001',
           status: 'ready',
           title: 'Generated output',
         },
       ],
     })
+  })
+
+  it('requires a conversation id when listing artifacts', async () => {
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listArtifacts({} as never, client)).rejects.toThrow(TauriCommandPayloadError)
+    expect(invoke).not.toHaveBeenCalled()
   })
 
   it('rejects artifact payloads with unknown fields or oversized previews', async () => {
@@ -447,6 +916,21 @@ describe('CommandClient', () => {
             id: 'artifact-foundation-plan',
             kind: 'markdown',
             rawPath: '/tmp/secret-output.md',
+            status: 'ready',
+            title: 'Foundation implementation review',
+          },
+        ],
+      }),
+    )
+    const withSourceIds = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        artifacts: [
+          {
+            actionLabel: 'Open',
+            description: 'Generated implementation plan',
+            id: 'artifact-foundation-plan',
+            kind: 'markdown',
+            sourceMessageId: 'message-001',
             sourceRunId: 'run-001',
             status: 'ready',
             title: 'Foundation implementation review',
@@ -463,7 +947,6 @@ describe('CommandClient', () => {
             id: 'artifact-foundation-plan',
             kind: 'markdown',
             preview: 'x'.repeat(16 * 1024 + 1),
-            sourceRunId: 'run-001',
             status: 'ready',
             title: 'Foundation implementation review',
           },
@@ -479,7 +962,6 @@ describe('CommandClient', () => {
             id: 'artifact-foundation-plan',
             kind: 'markdown',
             preview: '界'.repeat(6000),
-            sourceRunId: 'run-001',
             status: 'ready',
             title: 'Foundation implementation review',
           },
@@ -487,9 +969,18 @@ describe('CommandClient', () => {
       }),
     )
 
-    await expect(listArtifacts(withUnknownField)).rejects.toThrow(TauriCommandPayloadError)
-    await expect(listArtifacts(withLargePreview)).rejects.toThrow(TauriCommandPayloadError)
-    await expect(listArtifacts(withLargeMultibytePreview)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      listArtifacts({ conversationId: 'conversation-001' }, withUnknownField),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      listArtifacts({ conversationId: 'conversation-001' }, withSourceIds),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      listArtifacts({ conversationId: 'conversation-001' }, withLargePreview),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      listArtifacts({ conversationId: 'conversation-001' }, withLargeMultibytePreview),
+    ).rejects.toThrow(TauriCommandPayloadError)
   })
 
   it('models eval lab commands through parsed support-workflow payloads', async () => {
@@ -615,6 +1106,84 @@ describe('CommandClient', () => {
     await expect(listConversations(client)).rejects.toThrow(TauriCommandPayloadError)
   })
 
+  it('rejects conversation summaries with private paths', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        conversations: [
+          {
+            id: 'conversation-001',
+            isEmpty: false,
+            lastMessagePreview: 'read /Users/goya/.ssh/config',
+            title: 'read /Users/goya/.ssh/config',
+            updatedAt: '2026-06-17T00:00:00.000Z',
+          },
+        ],
+      }),
+    )
+
+    await expect(listConversations(client)).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects private paths adjacent to punctuation in conversation IPC payloads', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        conversations: [
+          {
+            id: 'conversation-001',
+            isEmpty: false,
+            lastMessagePreview: 'error(path=/Users/goya/.ssh/config)',
+            title: 'error(path=/Users/goya/.ssh/config)',
+            updatedAt: '2026-06-17T00:00:00.000Z',
+          },
+        ],
+      }),
+    )
+
+    await expect(listConversations(client)).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects conversation detail titles with private paths', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        conversation: {
+          id: 'conversation-001',
+          messages: [],
+          modelConfigId: null,
+          title: 'read /Users/goya/.ssh/config',
+          updatedAt: '2026-06-17T00:00:00.000Z',
+        },
+      }),
+    )
+
+    await expect(getConversation('conversation-001', client)).rejects.toThrow(
+      TauriCommandPayloadError,
+    )
+  })
+
+  it('creates conversations through Tauri and validates the returned summary', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      conversation: {
+        id: 'conversation-created-001',
+        isEmpty: true,
+        lastMessagePreview: 'Start from the composer when ready.',
+        title: 'New conversation',
+        updatedAt: '2026-06-17T00:00:00.000Z',
+      },
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(createConversation(client)).resolves.toEqual({
+      conversation: {
+        id: 'conversation-created-001',
+        isEmpty: true,
+        lastMessagePreview: 'Start from the composer when ready.',
+        title: 'New conversation',
+        updatedAt: '2026-06-17T00:00:00.000Z',
+      },
+    })
+    expect(invoke).toHaveBeenCalledWith('create_conversation')
+  })
+
   it('rejects invalid command args before invoking Tauri', async () => {
     const invoke = vi.fn()
     const client = createInvokeCommandClient(invoke)
@@ -622,6 +1191,7 @@ describe('CommandClient', () => {
     await expect(startRun({ conversationId: '', prompt: '' }, client)).rejects.toThrow(
       TauriCommandPayloadError,
     )
+    await expect(deleteConversation('', client)).rejects.toThrow(TauriCommandPayloadError)
     expect(invoke).not.toHaveBeenCalled()
   })
 
@@ -629,6 +1199,7 @@ describe('CommandClient', () => {
     const client = createMockCommandClient()
 
     await expect(listConversations(client)).resolves.toHaveProperty('conversations')
+    await expect(createConversation(client)).resolves.toHaveProperty('conversation.id')
     await expect(getConversation('conversation-001', client)).resolves.toHaveProperty(
       'conversation.id',
       'conversation-001',
@@ -636,9 +1207,20 @@ describe('CommandClient', () => {
     await expect(
       startRun({ conversationId: 'conversation-001', prompt: 'Run' }, client),
     ).resolves.toHaveProperty('status', 'started')
+    await expect(deleteConversation('conversation-001', client)).resolves.toHaveProperty(
+      'status',
+      'deleted',
+    )
     await expect(cancelRun('run-001', client)).resolves.toHaveProperty('status', 'cancelled')
     await expect(
-      resolvePermission({ decision: 'deny', requestId: '01HZ0000000000000000000001' }, client),
+      resolvePermission(
+        {
+          conversationId: 'conversation-001',
+          decision: 'deny',
+          requestId: '01HZ0000000000000000000001',
+        },
+        client,
+      ),
     ).resolves.toHaveProperty('decision', 'deny')
     await expect(
       listActivity({ conversationId: 'conversation-001' }, client),
@@ -648,21 +1230,190 @@ describe('CommandClient', () => {
     ).resolves.toHaveProperty('project')
   })
 
+  it('lists model provider catalog and saved provider profiles', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'list_model_provider_catalog') {
+        return {
+          providers: [
+            {
+              defaultBaseUrl: 'https://api.openai.com',
+              displayName: 'OpenAI',
+              models: [
+                {
+                  protocol: 'responses',
+                  conversationCapability: {
+                    inputModalities: ['text'],
+                    outputModalities: ['text'],
+                    contextWindow: 128000,
+                    maxOutputTokens: 16384,
+                    streaming: true,
+                    toolCalling: true,
+                    reasoning: false,
+                    promptCache: false,
+                    structuredOutput: true,
+                  },
+                  contextWindow: 128000,
+                  displayName: 'GPT-5.4 mini',
+                  lifecycle: { kind: 'stable' },
+                  maxOutputTokens: 16384,
+                  modelId: 'gpt-5.4-mini',
+                  runtimeStatus: { kind: 'runnable' },
+                },
+              ],
+              providerId: 'openai',
+              runtimeCapability: {
+                authScheme: 'bearer',
+                baseUrlRegions: [
+                  { id: 'default', label: 'Default', baseUrl: 'https://api.openai.com' },
+                ],
+                supportsLiveValidation: true,
+                supportsStreamingValidation: true,
+                secretRevealSupported: true,
+              },
+              serviceCapabilities: [],
+              sourceUrl: 'https://platform.openai.com/docs/models',
+              verifiedDate: '2026-06-21',
+            },
+          ],
+        }
+      }
+
+      return {
+        defaultConfigId: 'openai',
+        configs: [
+          {
+            protocol: 'responses',
+            baseUrl: 'https://gateway.example.com',
+            displayName: 'OpenAI gateway',
+            hasApiKey: true,
+            id: 'openai',
+            isDefault: true,
+            modelId: 'gpt-5.4-mini',
+            modelDescriptor: {
+              protocol: 'responses',
+              conversationCapability: {
+                inputModalities: ['text'],
+                outputModalities: ['text'],
+                contextWindow: 128000,
+                maxOutputTokens: 16384,
+                streaming: true,
+                toolCalling: true,
+                reasoning: false,
+                promptCache: false,
+                structuredOutput: true,
+              },
+              contextWindow: 128000,
+              displayName: 'GPT-5.4 mini',
+              lifecycle: { kind: 'stable' },
+              maxOutputTokens: 16384,
+              modelId: 'gpt-5.4-mini',
+              runtimeStatus: { kind: 'runnable' },
+            },
+            providerId: 'openai',
+          },
+        ],
+      }
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listModelProviderCatalog(client)).resolves.toHaveProperty(
+      'providers.0.defaultBaseUrl',
+      'https://api.openai.com',
+    )
+    await expect(listProviderSettings(client)).resolves.toHaveProperty(
+      'configs.0.baseUrl',
+      'https://gateway.example.com',
+    )
+    expect(invoke).toHaveBeenCalledWith('list_model_provider_catalog')
+    expect(invoke).toHaveBeenCalledWith('list_provider_settings')
+  })
+
+  it('rejects provider service categories outside the Rust contract', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      providers: [
+        {
+          defaultBaseUrl: 'https://api.minimaxi.com',
+          displayName: 'MiniMax',
+          models: [openAiModelDescriptor],
+          providerId: 'minimax',
+          runtimeCapability: {
+            authScheme: 'bearer',
+            baseUrlRegions: [{ id: 'cn', label: 'China', baseUrl: 'https://api.minimaxi.com' }],
+            supportsLiveValidation: true,
+            supportsStreamingValidation: true,
+            secretRevealSupported: true,
+          },
+          serviceCapabilities: [
+            {
+              operationId: 'minimax.text_to_speech.sync',
+              category: 'speech',
+              inputModalities: ['text'],
+              outputArtifact: 'audio',
+              execution: 'sync',
+              requiresPolling: false,
+              permissionSubject: 'network:minimax',
+              costRisk: 'medium',
+            },
+          ],
+          sourceUrl: 'https://platform.minimax.io/docs/api-reference/text-chat-openai',
+          verifiedDate: '2026-06-21',
+        },
+      ],
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listModelProviderCatalog(client)).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects provider configs without model descriptors', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      defaultConfigId: 'openai',
+      configs: [
+        {
+          protocol: 'responses',
+          displayName: 'OpenAI',
+          hasApiKey: true,
+          id: 'openai',
+          isDefault: true,
+          modelId: 'gpt-5.4-mini',
+          providerId: 'openai',
+        },
+      ],
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listProviderSettings(client)).rejects.toThrow(TauriCommandPayloadError)
+  })
+
   it('validates and saves provider settings without returning raw keys', async () => {
     const providerToken = 'provider-test-token'
     const invoke = vi.fn(async (command: string) => {
       if (command === 'validate_provider_settings') {
         return {
-          modelId: 'gpt-4o-mini',
+          modelId: 'gpt-5.4-mini',
           providerId: 'openai',
           status: 'accepted',
         }
       }
+      if (command === 'request_provider_config_api_key_reveal') {
+        throw new Error('provider API key reveal is disabled')
+      }
+      if (command === 'get_provider_config_api_key') {
+        throw new Error('provider API key reveal is disabled')
+      }
 
       return {
-        modelId: 'gpt-4o-mini',
-        providerId: 'openai',
-        secretRef: 'provider/workspace-local/openai/default',
+        config: {
+          protocol: 'responses',
+          baseUrl: 'https://gateway.example.com',
+          displayName: 'OpenAI gateway',
+          hasApiKey: true,
+          id: 'openai',
+          isDefault: true,
+          modelDescriptor: openAiModelDescriptor,
+          modelId: 'gpt-5.4-mini',
+          providerId: 'openai',
+        },
         status: 'saved',
       }
     })
@@ -671,13 +1422,13 @@ describe('CommandClient', () => {
     await expect(
       validateProviderSettings(
         {
-          modelId: 'gpt-4o-mini',
+          modelId: 'gpt-5.4-mini',
           providerId: 'openai',
         },
         client,
       ),
     ).resolves.toEqual({
-      modelId: 'gpt-4o-mini',
+      modelId: 'gpt-5.4-mini',
       providerId: 'openai',
       status: 'accepted',
     })
@@ -685,28 +1436,65 @@ describe('CommandClient', () => {
       saveProviderSettings(
         {
           apiKey: providerToken,
-          modelId: 'gpt-4o-mini',
+          baseUrl: 'https://gateway.example.com',
+          configId: 'openai',
+          displayName: 'OpenAI gateway',
+          modelId: 'gpt-5.4-mini',
           providerId: 'openai',
+          setDefault: true,
         },
         client,
       ),
     ).resolves.toEqual({
-      modelId: 'gpt-4o-mini',
-      providerId: 'openai',
-      secretRef: 'provider/workspace-local/openai/default',
+      config: {
+        protocol: 'responses',
+        baseUrl: 'https://gateway.example.com',
+        displayName: 'OpenAI gateway',
+        hasApiKey: true,
+        id: 'openai',
+        isDefault: true,
+        modelDescriptor: openAiModelDescriptor,
+        modelId: 'gpt-5.4-mini',
+        providerId: 'openai',
+      },
       status: 'saved',
     })
 
-    expect(JSON.stringify(invoke.mock.results)).not.toContain(providerToken)
+    await expect(requestProviderConfigApiKeyReveal('openai', client)).rejects.toThrow('disabled')
+    await expect(getProviderConfigApiKey('openai', 'reveal-token', client)).rejects.toThrow(
+      'disabled',
+    )
+
+    expect(JSON.stringify(invoke.mock.results.slice(0, 2))).not.toContain(providerToken)
     expect(invoke).toHaveBeenCalledWith('validate_provider_settings', {
-      modelId: 'gpt-4o-mini',
+      modelId: 'gpt-5.4-mini',
       providerId: 'openai',
     })
     expect(invoke).toHaveBeenCalledWith('save_provider_settings', {
       apiKey: providerToken,
-      modelId: 'gpt-4o-mini',
+      baseUrl: 'https://gateway.example.com',
+      configId: 'openai',
+      displayName: 'OpenAI gateway',
+      modelId: 'gpt-5.4-mini',
       providerId: 'openai',
+      setDefault: true,
     })
+    expect(invoke).toHaveBeenCalledWith('request_provider_config_api_key_reveal', {
+      configId: 'openai',
+    })
+    expect(invoke).toHaveBeenCalledWith('get_provider_config_api_key', {
+      configId: 'openai',
+      revealToken: 'reveal-token',
+    })
+  })
+
+  it('keeps mock provider API key reveal disabled by default', async () => {
+    const client = createMockCommandClient()
+
+    await expect(client.requestProviderConfigApiKeyReveal('openai')).rejects.toThrow('disabled')
+    await expect(client.getProviderConfigApiKey('openai', 'reveal-token')).rejects.toThrow(
+      'disabled',
+    )
   })
 
   it('rejects invalid provider settings before invoking Tauri', async () => {
@@ -937,5 +1725,182 @@ describe('CommandClient', () => {
       updateMemoryItem({ content: '', id: '01HZ0000000000000000000001' }, client),
     ).rejects.toThrow(TauriCommandPayloadError)
     expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('models skill management commands through parsed payloads', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'list_skills') {
+        return {
+          skills: [
+            {
+              description: 'Creates release notes from recent changes.',
+              enabled: true,
+              id: 'skill-001',
+              importedAt: '2026-06-21T00:00:00.000Z',
+              manageable: true,
+              name: 'release-notes',
+              sourceKind: 'workspace',
+              status: 'ready',
+              tags: ['writing'],
+              updatedAt: '2026-06-21T00:00:00.000Z',
+            },
+          ],
+        }
+      }
+
+      if (command === 'get_skill') {
+        return {
+          skill: {
+            bodyFull: 'Write concise release notes.',
+            bodyPreview: 'Write concise release notes.',
+            configKeys: ['CHANGELOG_TOKEN'],
+            files: [
+              {
+                kind: 'file',
+                name: 'SKILL.md',
+                path: 'SKILL.md',
+                sizeBytes: 120,
+                depth: 0,
+              },
+              {
+                kind: 'directory',
+                name: 'references',
+                path: 'references',
+                depth: 0,
+              },
+              {
+                kind: 'file',
+                name: 'style.md',
+                path: 'references/style.md',
+                sizeBytes: 80,
+                depth: 1,
+              },
+            ],
+            parameters: [
+              {
+                description: 'Target release version.',
+                name: 'version',
+                paramType: 'string',
+                required: true,
+              },
+            ],
+            selectedFile: {
+              content: 'Use terse release note bullets.',
+              path: 'references/style.md',
+            },
+            summary: {
+              description: 'Creates release notes from recent changes.',
+              enabled: true,
+              id: 'skill-001',
+              manageable: true,
+              name: 'release-notes',
+              sourceKind: 'workspace',
+              status: 'ready',
+              tags: ['writing'],
+            },
+          },
+        }
+      }
+
+      if (command === 'import_skill') {
+        return {
+          skill: {
+            description: 'Creates release notes from recent changes.',
+            enabled: true,
+            id: 'skill-001',
+            importedAt: '2026-06-21T00:00:00.000Z',
+            manageable: true,
+            name: 'release-notes',
+            sourceKind: 'workspace',
+            status: 'ready',
+            tags: ['writing'],
+          },
+        }
+      }
+
+      if (command === 'set_skill_enabled') {
+        return {
+          skill: {
+            description: 'Creates release notes from recent changes.',
+            enabled: false,
+            id: 'skill-001',
+            manageable: true,
+            name: 'release-notes',
+            sourceKind: 'workspace',
+            status: 'disabled',
+            tags: ['writing'],
+          },
+        }
+      }
+
+      return {
+        id: 'skill-001',
+        status: 'deleted',
+      }
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listSkills(client)).resolves.toHaveProperty('skills.0.name', 'release-notes')
+    await expect(getSkill('skill-001', true, client, 'references/style.md')).resolves.toMatchObject(
+      {
+        skill: {
+          bodyFull: 'Write concise release notes.',
+          files: [{ path: 'SKILL.md' }, { path: 'references' }, { path: 'references/style.md' }],
+          selectedFile: {
+            content: 'Use terse release note bullets.',
+            path: 'references/style.md',
+          },
+        },
+      },
+    )
+    await expect(importSkill('/tmp/release-notes', client)).resolves.toHaveProperty(
+      'skill.sourceKind',
+      'workspace',
+    )
+    await expect(setSkillEnabled('skill-001', false, client)).resolves.toHaveProperty(
+      'skill.enabled',
+      false,
+    )
+    await expect(deleteSkill('skill-001', client)).resolves.toEqual({
+      id: 'skill-001',
+      status: 'deleted',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('list_skills')
+    expect(invoke).toHaveBeenCalledWith('get_skill', {
+      id: 'skill-001',
+      includeBody: true,
+      selectedFilePath: 'references/style.md',
+    })
+    expect(invoke).toHaveBeenCalledWith('import_skill', { sourcePath: '/tmp/release-notes' })
+    expect(invoke).toHaveBeenCalledWith('set_skill_enabled', {
+      enabled: false,
+      id: 'skill-001',
+    })
+    expect(invoke).toHaveBeenCalledWith('delete_skill', { id: 'skill-001' })
+  })
+
+  it('rejects invalid skill command args and payloads', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      skills: [
+        {
+          description: '',
+          enabled: true,
+          id: 'skill-001',
+          manageable: true,
+          name: 'bad-skill',
+          sourceKind: 'unknown',
+          status: 'ready',
+          tags: [],
+        },
+      ],
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(getSkill('', false, client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(importSkill('', client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(setSkillEnabled('', true, client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(deleteSkill('', client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(listSkills(client)).rejects.toThrow(TauriCommandPayloadError)
   })
 })

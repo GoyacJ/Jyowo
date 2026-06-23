@@ -12,9 +12,10 @@ use harness_contracts::{
 use serde_json::Value;
 
 use crate::{
-    wrap_stream_with_cancel_deadline, ApiMode, ContentDelta, ContentType, ErrorClass, ErrorHints,
-    HealthStatus, InferContext, ModelCapabilities, ModelDescriptor, ModelProvider, ModelRequest,
-    ModelStream, ModelStreamEvent, ThinkingDelta,
+    wrap_stream_with_cancel_deadline, ContentDelta, ContentType, ConversationModelCapability,
+    ErrorClass, ErrorHints, HealthStatus, InferContext, ModelDescriptor, ModelLifecycle,
+    ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
+    ThinkingDelta,
 };
 
 const PROVIDER_ID: &str = "bedrock";
@@ -156,6 +157,9 @@ fn bedrock_content_block(part: &MessagePart) -> Result<br::ContentBlock, ModelEr
         )),
         MessagePart::Image { .. } => Err(ModelError::InvalidRequest(
             "BedrockProvider image blocks require blob materialization outside M2-T04.8".to_owned(),
+        )),
+        MessagePart::Video { .. } | MessagePart::File { .. } => Err(ModelError::InvalidRequest(
+            "BedrockProvider does not inline file or video message parts yet".to_owned(),
         )),
         _ => Err(ModelError::InvalidRequest(
             "unsupported Bedrock message part".to_owned(),
@@ -395,27 +399,18 @@ impl ModelProvider for BedrockProvider {
         Ok(wrap_stream_with_cancel_deadline(stream, &ctx))
     }
 
-    fn supports_tools(&self) -> bool {
-        true
+    fn default_protocol(&self) -> ModelProtocol {
+        ModelProtocol::Messages
     }
-
-    fn supports_vision(&self) -> bool {
-        true
-    }
-
-    fn supports_thinking(&self) -> bool {
-        true
-    }
-
     async fn health(&self) -> HealthStatus {
         HealthStatus::Healthy
     }
 }
 
 fn validate_request(req: &ModelRequest, ctx: &InferContext) -> Result<(), ModelError> {
-    if req.api_mode != ApiMode::Messages {
+    if req.protocol != ModelProtocol::Messages {
         return Err(ModelError::InvalidRequest(
-            "BedrockProvider only supports ApiMode::Messages".to_owned(),
+            "BedrockProvider only supports ModelProtocol::Messages".to_owned(),
         ));
     }
     if ctx.cancel.is_cancelled() {
@@ -434,16 +429,21 @@ fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {
         provider_id: "bedrock".to_owned(),
         model_id: model_id.to_owned(),
         display_name: display_name.to_owned(),
+        protocol: ModelProtocol::Messages,
         context_window: 200_000,
         max_output_tokens: 8192,
-        capabilities: ModelCapabilities {
-            supports_tools: true,
-            supports_vision: true,
-            supports_thinking: true,
-            supports_prompt_cache: false,
-            supports_tool_reference: false,
-            tool_reference_beta_header: None,
+        conversation_capability: ConversationModelCapability {
+            context_window: 200_000,
+            max_output_tokens: 8192,
+            tool_calling: true,
+            reasoning: true,
+            prompt_cache: false,
+            streaming: true,
+            structured_output: false,
+            input_modalities: vec![ModelModality::Text],
+            output_modalities: vec![ModelModality::Text],
         },
+        lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }
 }

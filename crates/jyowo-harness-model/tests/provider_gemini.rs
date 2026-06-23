@@ -25,7 +25,7 @@ fn request(stream: bool) -> ModelRequest {
         max_tokens: Some(64),
         stream,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::GenerateContent,
+        protocol: ModelProtocol::GenerateContent,
         extra: json!({ "cached_content": "cachedContents/abc123" }),
     }
 }
@@ -36,18 +36,22 @@ fn gemini_provider_metadata_is_stable() {
 
     assert_eq!(provider.provider_id(), "gemini");
     assert_eq!(GEMINI_API_KEY_ENV, "GEMINI_API_KEY");
-    assert!(provider.supports_tools());
-    assert!(provider.supports_vision());
     assert_eq!(
         provider.prompt_cache_style(),
         PromptCacheStyle::Gemini {
             mode: GeminiCacheMode::ExternalReferenceOnly,
         }
     );
-    assert!(provider
-        .supported_models()
+    let models = provider.supported_models();
+    let flash = models
         .iter()
-        .any(|model| model.model_id == "gemini-2.5-flash"));
+        .find(|model| model.model_id == "gemini-2.5-flash")
+        .expect("Gemini 2.5 Flash should be listed");
+    assert!(flash.conversation_capability.tool_calling);
+    assert_eq!(
+        flash.conversation_capability.input_modalities,
+        vec![ModelModality::Text]
+    );
 }
 
 #[tokio::test]

@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use crate::openai_compatible::{OpenAiCompatibleClient, OpenAiCompatibleProviderExt};
 use crate::{
-    InferContext, ModelCapabilities, ModelCredentialResolver, ModelDescriptor, ModelProvider,
-    ModelRequest, ModelStream, PromptCacheStyle,
+    ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
+    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
+    PromptCacheStyle,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
@@ -52,26 +53,20 @@ impl ModelProvider for CodexResponsesProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        vec![
-            descriptor("gpt-5.4-codex", "GPT-5.4 Codex"),
-            descriptor("gpt-5.3-codex", "GPT-5.3 Codex"),
-        ]
+        // Verified 2026-06-21: https://developers.openai.com/api/docs/models/all
+        vec![descriptor("gpt-5.3-codex", "GPT-5.3 Codex")]
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
         self.infer_openai_compatible(req, ctx).await
     }
 
+    fn default_protocol(&self) -> ModelProtocol {
+        ModelProtocol::Responses
+    }
+
     fn prompt_cache_style(&self) -> PromptCacheStyle {
         PromptCacheStyle::OpenAi { auto: true }
-    }
-
-    fn supports_tools(&self) -> bool {
-        true
-    }
-
-    fn supports_thinking(&self) -> bool {
-        true
     }
 }
 
@@ -80,16 +75,21 @@ fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {
         provider_id: "codex".to_owned(),
         model_id: model_id.to_owned(),
         display_name: display_name.to_owned(),
+        protocol: ModelProtocol::Responses,
         context_window: 200_000,
         max_output_tokens: 32_000,
-        capabilities: ModelCapabilities {
-            supports_tools: true,
-            supports_vision: false,
-            supports_thinking: true,
-            supports_prompt_cache: true,
-            supports_tool_reference: false,
-            tool_reference_beta_header: None,
+        conversation_capability: ConversationModelCapability {
+            context_window: 200_000,
+            max_output_tokens: 32_000,
+            tool_calling: true,
+            reasoning: true,
+            prompt_cache: true,
+            streaming: true,
+            structured_output: true,
+            input_modalities: vec![ModelModality::Text],
+            output_modalities: vec![ModelModality::Text],
         },
+        lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }
 }

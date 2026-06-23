@@ -15,9 +15,10 @@ use tokio::sync::Mutex;
 
 use crate::{
     apply_response_headers_middlewares, wrap_stream_with_cancel_deadline, AnthropicCacheMode,
-    ApiMode, Backoff, ContentDelta, ContentType, CredentialValue, ErrorClass, InferContext,
-    ModelCapabilities, ModelCredentialPickContext, ModelCredentialResolver, ModelDescriptor,
-    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent, PickedCredential, PromptCacheStyle,
+    Backoff, ContentDelta, ContentType, ConversationModelCapability, CredentialValue, ErrorClass,
+    InferContext, ModelCredentialPickContext, ModelCredentialResolver, ModelDescriptor,
+    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
+    ModelStreamEvent, PickedCredential, PromptCacheStyle,
 };
 
 use super::error::{map_response_error, map_transport_error, AnthropicError};
@@ -250,9 +251,12 @@ impl ModelProvider for AnthropicProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
+        // Verified 2026-06-21: https://platform.claude.com/docs/en/about-claude/models/overview
         vec![
-            descriptor("claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet"),
-            descriptor("claude-3-7-sonnet-20250219", "Claude 3.7 Sonnet"),
+            descriptor("claude-fable-5", "Claude Fable 5", 1_000_000, 128_000),
+            descriptor("claude-opus-4-8", "Claude Opus 4.8", 1_000_000, 128_000),
+            descriptor("claude-sonnet-4-6", "Claude Sonnet 4.6", 1_000_000, 64_000),
+            descriptor("claude-haiku-4-5", "Claude Haiku 4.5", 200_000, 64_000),
         ]
     }
 
@@ -260,48 +264,50 @@ impl ModelProvider for AnthropicProvider {
         self.client.infer(req, ctx).await
     }
 
+    fn default_protocol(&self) -> ModelProtocol {
+        ModelProtocol::Messages
+    }
+
     fn prompt_cache_style(&self) -> PromptCacheStyle {
         PromptCacheStyle::Anthropic {
             mode: AnthropicCacheMode::SystemAnd3,
         }
     }
-
-    fn supports_tools(&self) -> bool {
-        true
-    }
-
-    fn supports_vision(&self) -> bool {
-        true
-    }
-
-    fn supports_thinking(&self) -> bool {
-        true
-    }
 }
 
-fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {
+fn descriptor(
+    model_id: &str,
+    display_name: &str,
+    context_window: u32,
+    max_output_tokens: u32,
+) -> ModelDescriptor {
     ModelDescriptor {
         provider_id: "anthropic".to_owned(),
         model_id: model_id.to_owned(),
         display_name: display_name.to_owned(),
-        context_window: 200_000,
-        max_output_tokens: 8192,
-        capabilities: ModelCapabilities {
-            supports_tools: true,
-            supports_vision: true,
-            supports_thinking: true,
-            supports_prompt_cache: true,
-            supports_tool_reference: false,
-            tool_reference_beta_header: None,
+        protocol: ModelProtocol::Messages,
+        context_window,
+        max_output_tokens,
+        conversation_capability: ConversationModelCapability {
+            context_window,
+            max_output_tokens,
+            tool_calling: true,
+            reasoning: true,
+            prompt_cache: true,
+            streaming: true,
+            structured_output: false,
+            input_modalities: vec![ModelModality::Text],
+            output_modalities: vec![ModelModality::Text],
         },
+        lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }
 }
 
 fn validate_request(req: &ModelRequest) -> Result<(), ModelError> {
-    if req.api_mode != ApiMode::Messages {
+    if req.protocol != ModelProtocol::Messages {
         return Err(ModelError::InvalidRequest(
-            "AnthropicProvider only supports ApiMode::Messages".to_owned(),
+            "AnthropicProvider only supports ModelProtocol::Messages".to_owned(),
         ));
     }
     Ok(())
@@ -392,6 +398,9 @@ fn anthropic_part(part: &MessagePart) -> Result<Value, ModelError> {
         )),
         MessagePart::Image { .. } => Err(ModelError::InvalidRequest(
             "AnthropicProvider does not inline image message parts yet".to_owned(),
+        )),
+        MessagePart::Video { .. } | MessagePart::File { .. } => Err(ModelError::InvalidRequest(
+            "AnthropicProvider does not inline file or video message parts yet".to_owned(),
         )),
         _ => Err(ModelError::InvalidRequest(
             "unsupported Anthropic message part".to_owned(),

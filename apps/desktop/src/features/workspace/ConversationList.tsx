@@ -1,8 +1,9 @@
-import { FileText, MessageSquareText } from 'lucide-react'
+import { FileText, MessageSquarePlus, MessageSquareText, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 type ConversationListItem = {
   id: string
+  isEmpty: boolean
   lastMessagePreview?: string
   title: string
   updatedAt: string
@@ -13,6 +14,8 @@ type ConversationListProps = {
   conversations: ConversationListItem[]
   errorMessage?: string
   isLoading?: boolean
+  onDeleteConversation: (conversationId: string) => void
+  onNewConversation: () => void
   onSelectConversation: (conversationId: string) => void
 }
 
@@ -21,13 +24,26 @@ export function ConversationList({
   conversations,
   errorMessage,
   isLoading = false,
+  onDeleteConversation,
+  onNewConversation,
   onSelectConversation,
 }: ConversationListProps) {
   const { t } = useTranslation('shell')
 
   return (
     <div className="mt-5 px-3">
-      <div className="mb-2 text-muted-foreground text-xs">{t('conversations.recent')}</div>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-muted-foreground text-xs">{t('conversations.recent')}</div>
+        <button
+          aria-label={t('actions.newConversation')}
+          className="grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+          onClick={onNewConversation}
+          title={t('actions.newConversation')}
+          type="button"
+        >
+          <MessageSquarePlus className="size-3.5" />
+        </button>
+      </div>
       {isLoading ? (
         <div className="rounded-md px-2 py-2 text-muted-foreground text-xs">
           {t('conversations.loading')}
@@ -44,35 +60,54 @@ export function ConversationList({
       <ul className="flex flex-col gap-1">
         {conversations.map((conversation) => {
           const isActive = conversation.id === activeConversationId
+          const title = conversation.isEmpty ? t('conversations.defaultTitle') : conversation.title
+          const lastMessagePreview = conversation.isEmpty
+            ? t('conversations.defaultPreview')
+            : conversation.lastMessagePreview
 
           return (
             <li key={conversation.id}>
-              <button
-                aria-current={isActive ? 'page' : undefined}
-                className="relative flex w-full items-start rounded-md px-2 py-1.5 pr-4 text-left text-xs hover:bg-muted data-[active=true]:bg-accent/10 data-[active=true]:text-foreground"
+              <div
+                className="group flex w-full items-start gap-1 rounded-md pr-1 hover:bg-muted data-[active=true]:bg-accent/10 data-[active=true]:text-foreground"
                 data-active={isActive}
-                onClick={() => onSelectConversation(conversation.id)}
-                type="button"
               >
-                <span className="flex w-full min-w-0 gap-1.5">
-                  {isActive ? (
-                    <MessageSquareText className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
-                  ) : (
-                    <FileText className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
-                  )}
-                  <span className="min-w-0">
-                    <span className="block truncate">{conversation.title}</span>
-                    {conversation.lastMessagePreview ? (
-                      <span className="mt-0.5 block truncate text-muted-foreground">
-                        {conversation.lastMessagePreview}
-                      </span>
-                    ) : null}
+                <button
+                  aria-current={isActive ? 'page' : undefined}
+                  className="flex min-w-0 flex-1 items-start rounded-md px-2 py-1.5 text-left text-xs"
+                  onClick={() => onSelectConversation(conversation.id)}
+                  type="button"
+                >
+                  <span className="flex w-full min-w-0 gap-1.5">
+                    <span
+                      aria-hidden="true"
+                      className="mt-1.5 size-1.5 shrink-0 rounded-full bg-transparent data-[active=true]:bg-accent"
+                      data-active={isActive}
+                    />
+                    {isActive ? (
+                      <MessageSquareText className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <FileText className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="min-w-0">
+                      <span className="block truncate">{title}</span>
+                      {lastMessagePreview ? (
+                        <span className="mt-0.5 block truncate text-muted-foreground">
+                          {lastMessagePreview}
+                        </span>
+                      ) : null}
+                    </span>
                   </span>
-                </span>
-                {isActive ? (
-                  <span className="-translate-y-1/2 absolute top-1/2 right-1.5 size-1.5 rounded-full bg-accent" />
-                ) : null}
-              </button>
+                </button>
+                <button
+                  aria-label={t('conversations.delete', { title })}
+                  className="mt-1 grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-background hover:text-destructive"
+                  onClick={() => onDeleteConversation(conversation.id)}
+                  title={t('conversations.delete', { title })}
+                  type="button"
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
+              </div>
             </li>
           )
         })}

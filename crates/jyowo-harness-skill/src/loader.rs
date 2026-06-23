@@ -53,6 +53,10 @@ pub enum SkillSourceConfig {
         path: PathBuf,
         source_kind: DirectorySourceKind,
     },
+    DirectoryPackages {
+        path: PathBuf,
+        source_kind: DirectorySourceKind,
+    },
     McpRecords {
         server_id: McpServerId,
         records: Vec<McpSkillRecord>,
@@ -306,12 +310,45 @@ impl SkillLoader {
                     if !path.exists() {
                         continue;
                     }
-                    for entry in std::fs::read_dir(path)? {
-                        let entry = entry?;
-                        let raw_path = entry.path();
-                        if raw_path.extension().and_then(|ext| ext.to_str()) != Some("md") {
-                            continue;
+                    for raw_path in directory_skill_paths(path, true)? {
+                        let source = source_from_directory(path.clone(), source_kind);
+                        let markdown = std::fs::read_to_string(&raw_path)?;
+                        match parse_skill_markdown_with_options(
+                            &markdown,
+                            source.clone(),
+                            Some(raw_path.clone()),
+                            self.runtime_platform,
+                            self.compat_mode,
+                        ) {
+                            Ok(skill) => {
+                                match self.validate_loaded_skill(skill, Some(&raw_path)).await {
+                                    Ok(skill) => {
+                                        self.emit_loaded(&skill).await;
+                                        loaded.push(skill);
+                                    }
+                                    Err(rejection) => {
+                                        self.emit_rejected(&rejection).await;
+                                        rejected.push(rejection);
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                let rejection = SkillRejection {
+                                    source,
+                                    raw_path: Some(raw_path),
+                                    reason: SkillRejectReason::from_error(&error),
+                                };
+                                self.emit_rejected(&rejection).await;
+                                rejected.push(rejection);
+                            }
                         }
+                    }
+                }
+                SkillSourceConfig::DirectoryPackages { path, source_kind } => {
+                    if !path.exists() {
+                        continue;
+                    }
+                    for raw_path in directory_skill_paths(path, false)? {
                         let source = source_from_directory(path.clone(), source_kind);
                         let markdown = std::fs::read_to_string(&raw_path)?;
                         match parse_skill_markdown_with_options(
@@ -440,14 +477,53 @@ impl SkillLoader {
                     if !path.exists() {
                         continue;
                     }
-                    for entry in std::fs::read_dir(path)? {
+                    for raw_path in directory_skill_paths(path, true)? {
                         if reached_limit(loaded.len(), limit) {
                             break;
                         }
-                        let entry = entry?;
-                        let raw_path = entry.path();
-                        if raw_path.extension().and_then(|ext| ext.to_str()) != Some("md") {
-                            continue;
+                        let source = source_from_directory(path.clone(), source_kind);
+                        let markdown = std::fs::read_to_string(&raw_path)?;
+                        match parse_skill_markdown_with_options(
+                            &markdown,
+                            source.clone(),
+                            Some(raw_path.clone()),
+                            self.runtime_platform,
+                            self.compat_mode,
+                        ) {
+                            Ok(skill) => {
+                                if !matches_hint(&skill.name, hints) {
+                                    continue;
+                                }
+                                match self.validate_loaded_skill(skill, Some(&raw_path)).await {
+                                    Ok(skill) => {
+                                        self.emit_loaded(&skill).await;
+                                        loaded.push(skill);
+                                    }
+                                    Err(rejection) => {
+                                        self.emit_rejected(&rejection).await;
+                                        rejected.push(rejection);
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                let rejection = SkillRejection {
+                                    source,
+                                    raw_path: Some(raw_path),
+                                    reason: SkillRejectReason::from_error(&error),
+                                };
+                                self.emit_rejected(&rejection).await;
+                                rejected.push(rejection);
+                            }
+                        }
+                    }
+                }
+                SkillSourceConfig::DirectoryPackages { path, source_kind } => {
+                    if !path.exists() {
+                        continue;
+                    }
+                    for raw_path in directory_skill_paths(path, false)? {
+                        if reached_limit(loaded.len(), limit) {
+                            break;
                         }
                         let source = source_from_directory(path.clone(), source_kind);
                         let markdown = std::fs::read_to_string(&raw_path)?;
@@ -564,13 +640,23 @@ impl SkillLoader {
                     if !path.exists() {
                         continue;
                     }
-                    for entry in std::fs::read_dir(path)? {
+                    for raw_path in directory_skill_paths(path, true)? {
                         if units.len() >= max_units {
                             break;
                         }
-                        let raw_path = entry?.path();
-                        if raw_path.extension().and_then(|ext| ext.to_str()) != Some("md") {
-                            continue;
+                        units.push(PrefetchLoadUnit::Directory {
+                            raw_path,
+                            source: source_from_directory(path.clone(), source_kind),
+                        });
+                    }
+                }
+                SkillSourceConfig::DirectoryPackages { path, source_kind } => {
+                    if !path.exists() {
+                        continue;
+                    }
+                    for raw_path in directory_skill_paths(path, false)? {
+                        if units.len() >= max_units {
+                            break;
                         }
                         units.push(PrefetchLoadUnit::Directory {
                             raw_path,
@@ -990,6 +1076,29 @@ fn source_from_directory(path: PathBuf, source_kind: &DirectorySourceKind) -> Sk
             trust: *trust,
         },
     }
+}
+
+fn directory_skill_paths(
+    path: &Path,
+    include_markdown_files: bool,
+) -> Result<Vec<PathBuf>, SkillError> {
+    let mut raw_paths = Vec::new();
+    for entry in std::fs::read_dir(path)? {
+        let raw_path = entry?.path();
+        if include_markdown_files && raw_path.extension().and_then(|ext| ext.to_str()) == Some("md")
+        {
+            raw_paths.push(raw_path);
+            continue;
+        }
+        if raw_path.is_dir() {
+            let package_entry = raw_path.join("SKILL.md");
+            if package_entry.is_file() {
+                raw_paths.push(package_entry);
+            }
+        }
+    }
+    raw_paths.sort();
+    Ok(raw_paths)
 }
 
 fn reached_limit(loaded: usize, limit: Option<usize>) -> bool {

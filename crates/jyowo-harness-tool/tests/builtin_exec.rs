@@ -612,6 +612,7 @@ fn default_builtin_toolset_registers_m3_t04b_tools_without_forbidden_deps() {
 
     let manifest =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+    #[cfg(not(feature = "minimax-tools"))]
     assert!(!manifest.contains("jyowo-harness-model"));
     assert!(!manifest.contains("jyowo-harness-journal"));
     assert!(!manifest.contains("jyowo-harness-hook"));

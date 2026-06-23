@@ -17,14 +17,20 @@ impl ModelProvider for TestProvider {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "test".to_owned(),
             model_id: "test-model".to_owned(),
             display_name: "Test model".to_owned(),
             context_window: 128_000,
             max_output_tokens: 8192,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
+    }
+
+    fn default_protocol(&self) -> ModelProtocol {
+        ModelProtocol::Responses
     }
 
     async fn infer(
@@ -53,13 +59,23 @@ fn model_provider_is_dyn_safe_with_prompt_cache_default() {
 
     assert_eq!(provider.provider_id(), "test");
     assert_eq!(provider.prompt_cache_style(), PromptCacheStyle::None);
-    assert!(provider.supports_tools());
-    assert!(!provider.supports_vision());
-    assert!(!provider.supports_thinking());
     assert_eq!(
-        provider.supported_models()[0].capabilities,
-        ModelCapabilities::default()
+        provider.supported_models()[0].conversation_capability,
+        ConversationModelCapability::default()
     );
+}
+
+#[test]
+fn snapshot_for_model_uses_descriptor_protocol_and_default_fallback() {
+    let provider = TestProvider;
+
+    let known = provider.snapshot_for_model("test-model");
+    assert_eq!(known.protocol, ModelProtocol::Messages);
+    assert_eq!(known.lifecycle, ModelLifecycle::Stable);
+
+    let fallback = provider.snapshot_for_model("unknown-model");
+    assert_eq!(fallback.protocol, ModelProtocol::Responses);
+    assert_eq!(fallback.lifecycle, ModelLifecycle::Stable);
 }
 
 #[test]
@@ -146,7 +162,7 @@ fn model_request_accepts_contract_tool_descriptor() {
         max_tokens: Some(1024),
         stream: true,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::Messages,
+        protocol: ModelProtocol::Messages,
         extra: serde_json::Value::Null,
     };
 

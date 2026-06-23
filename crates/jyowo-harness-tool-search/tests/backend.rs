@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use harness_contracts::{CacheImpact, HarnessError, RunId, SessionId};
-use harness_model::ModelCapabilities;
+use harness_model::ConversationModelCapability;
 use harness_tool_search::{
     AnthropicToolReferenceBackend, DefaultBackendSelector, InlineReinjectionBackend,
     MaterializationCoalescer, MaterializeOutcome, ReloadHandle, ToolLoadingBackend,
@@ -89,12 +89,9 @@ async fn default_selector_prefers_anthropic_when_model_supports_references() {
     );
 }
 
-fn ctx(
-    reload_handle: Option<Arc<dyn ReloadHandle>>,
-    supports_tool_reference: bool,
-) -> ToolLoadingContext {
-    let caps = ModelCapabilities {
-        supports_tool_reference,
+fn ctx(reload_handle: Option<Arc<dyn ReloadHandle>>, tool_calling: bool) -> ToolLoadingContext {
+    let caps = ConversationModelCapability {
+        tool_calling,
         ..Default::default()
     };
     ToolLoadingContext {

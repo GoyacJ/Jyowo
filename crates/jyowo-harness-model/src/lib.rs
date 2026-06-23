@@ -43,7 +43,9 @@ pub mod openrouter;
 pub mod provider;
 #[cfg(feature = "qwen")]
 pub mod qwen;
+pub mod registry;
 pub mod stream_aggregator;
+pub mod thinking_tag_normalizer;
 pub mod token_counter;
 #[cfg(feature = "zhipu")]
 pub mod zhipu;
@@ -65,6 +67,11 @@ pub use deepseek::*;
 pub use doubao::*;
 #[cfg(feature = "gemini")]
 pub use gemini::*;
+pub use harness_contracts::{
+    ConversationModelCapability, ModelModality, ModelProtocol, ProviderAuthScheme,
+    ProviderBaseUrlRegion, ProviderRuntimeCapability, ProviderServiceCapability,
+    ProviderServiceCategory, ProviderServiceCostRisk, ProviderServiceExecution,
+};
 #[cfg(feature = "km")]
 pub use km::*;
 #[cfg(feature = "local-llama")]
@@ -82,6 +89,7 @@ pub use openrouter::*;
 pub use provider::*;
 #[cfg(feature = "qwen")]
 pub use qwen::*;
+pub use registry::*;
 pub use stream_aggregator::*;
 pub use token_counter::*;
 #[cfg(feature = "zhipu")]

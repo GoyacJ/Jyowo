@@ -32,7 +32,7 @@ fn request(model_id: &str) -> ModelRequest {
         max_tokens: Some(64),
         stream: true,
         cache_breakpoints: Vec::new(),
-        api_mode: ApiMode::ChatCompletions,
+        protocol: ModelProtocol::ChatCompletions,
         extra: Value::Null,
     }
 }
@@ -63,13 +63,16 @@ async fn assert_streaming_provider<P>(
         .await;
 
     assert_eq!(provider.prompt_cache_style(), PromptCacheStyle::None);
-    assert!(provider.supports_tools());
-    assert!(!provider.supports_vision());
-    assert!(!provider.supports_thinking());
     assert!(provider
         .supported_models()
         .iter()
-        .any(|model| model.model_id == model_id));
+        .any(|model| model.model_id == model_id
+            && model.conversation_capability.tool_calling
+            && !model
+                .conversation_capability
+                .input_modalities
+                .contains(&ModelModality::Image)
+            && !model.conversation_capability.reasoning));
 
     let events = provider
         .infer(request(model_id), InferContext::for_test())
@@ -102,6 +105,12 @@ async fn assert_streaming_provider<P>(
     assert_eq!(body["stream_options"]["include_usage"], true);
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(body["messages"][0]["content"], "hello");
+    if provider.provider_id() == "minimax" {
+        assert_eq!(body["max_completion_tokens"], 64);
+        assert!(body.get("max_tokens").is_none());
+    } else {
+        assert_eq!(body["max_tokens"], 64);
+    }
 }
 
 macro_rules! provider_test {
@@ -127,9 +136,45 @@ provider_test!(
     "deepseek",
     DEEPSEEK_API_KEY_ENV,
     "DEEPSEEK_API_KEY",
-    "deepseek-chat",
+    "deepseek-v4-flash",
     "/v1/chat/completions"
 );
+
+#[cfg(feature = "minimax")]
+#[test]
+fn provider_minimax_catalog_matches_official_capabilities() {
+    let provider = MinimaxProvider::from_api_key("provider-key");
+    let models = provider.supported_models();
+    let m3 = models
+        .iter()
+        .find(|model| model.model_id == "MiniMax-M3")
+        .expect("MiniMax-M3 should be listed");
+    assert_eq!(m3.context_window, 1_000_000);
+    assert_eq!(m3.max_output_tokens, 524_288);
+    assert!(m3.conversation_capability.tool_calling);
+    assert!(m3.conversation_capability.reasoning);
+    assert!(m3.conversation_capability.prompt_cache);
+    assert_eq!(
+        m3.conversation_capability.input_modalities,
+        vec![
+            ModelModality::Text,
+            ModelModality::Image,
+            ModelModality::Video,
+        ]
+    );
+
+    let m27 = models
+        .iter()
+        .find(|model| model.model_id == "MiniMax-M2.7")
+        .expect("MiniMax-M2.7 should be listed");
+    assert_eq!(m27.context_window, 204_800);
+    assert_eq!(m27.max_output_tokens, 204_800);
+    assert_eq!(
+        m27.conversation_capability.input_modalities,
+        vec![ModelModality::Text]
+    );
+    assert!(models.iter().any(|model| model.model_id == "M2-her"));
+}
 provider_test!(
     "minimax",
     provider_minimax_streams_chat_completions,
@@ -140,6 +185,52 @@ provider_test!(
     "MiniMax-M2.7",
     "/v1/chat/completions"
 );
+
+#[cfg(feature = "minimax")]
+#[tokio::test]
+#[ignore = "requires MINIMAX_API_KEY and JYOWO_LIVE_MINIMAX=1; uses real MiniMax streaming API"]
+async fn provider_minimax_live_streams_chat_completions() {
+    if std::env::var("JYOWO_LIVE_MINIMAX").ok().as_deref() != Some("1") {
+        return;
+    }
+    let api_key = std::env::var("MINIMAX_API_KEY").expect("MINIMAX_API_KEY is required");
+    let mut provider = MinimaxProvider::from_api_key(api_key);
+    if let Ok(base_url) = std::env::var("MINIMAX_BASE_URL") {
+        provider = provider.with_base_url(base_url);
+    }
+
+    let mut req = request("MiniMax-M2.7");
+    req.max_tokens = Some(16);
+    req.temperature = Some(0.0);
+    if let Some(message) = req.messages.first_mut() {
+        message.parts = vec![MessagePart::Text("Reply with exactly OK.".to_owned())];
+    }
+
+    let events = provider
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("live stream request should start")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::StreamError { .. })),
+        "live stream should not emit stream errors"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::ContentBlockDelta {
+                delta: ContentDelta::Text(text),
+                ..
+            } if !text.trim().is_empty()
+        )),
+        "live stream should emit text deltas"
+    );
+    assert!(events.contains(&ModelStreamEvent::MessageStop));
+}
 provider_test!(
     "qwen",
     provider_qwen_streams_chat_completions,
@@ -147,7 +238,7 @@ provider_test!(
     "qwen",
     QWEN_API_KEY_ENV,
     "QWEN_API_KEY",
-    "qwen3-max",
+    "qwen3.7-max",
     "/v1/chat/completions"
 );
 provider_test!(

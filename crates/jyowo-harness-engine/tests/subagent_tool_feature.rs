@@ -23,8 +23,8 @@ use harness_contracts::{
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_journal::{EventStore, ReplayCursor};
 use harness_model::{
-    ContentDelta, HealthStatus, InferContext, ModelCapabilities, ModelDescriptor, ModelProvider,
-    ModelRequest, ModelStream, ModelStreamEvent,
+    ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
+    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_sandbox::{
@@ -1613,12 +1613,14 @@ impl ModelProvider for EmptyModel {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "empty".to_owned(),
             model_id: "empty-model".to_owned(),
             display_name: "Empty Model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_024,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
     }
@@ -1774,12 +1776,14 @@ impl ModelProvider for DelegatingModel {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "delegating".to_owned(),
             model_id: "mock-model".to_owned(),
             display_name: "Delegating Model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_024,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
     }

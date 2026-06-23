@@ -163,6 +163,52 @@ async fn run_contract<S: EventStore>(store: &S) {
         Some(saved)
     );
 
+    let deleted = SessionId::new();
+    store
+        .append(TenantId::SINGLE, deleted, &[event("delete me")])
+        .await
+        .expect("deleted session append succeeds");
+    store
+        .save_snapshot(TenantId::SINGLE, snapshot(deleted))
+        .await
+        .expect("deleted session snapshot saves");
+    assert!(store
+        .delete_session(TenantId::SINGLE, deleted)
+        .await
+        .expect("delete succeeds"));
+    let deleted_replay: Vec<_> = store
+        .read(TenantId::SINGLE, deleted, ReplayCursor::FromStart)
+        .await
+        .expect("deleted session read succeeds")
+        .collect()
+        .await;
+    assert!(deleted_replay.is_empty());
+    assert_eq!(
+        store
+            .snapshot(TenantId::SINGLE, deleted)
+            .await
+            .expect("deleted snapshot lookup succeeds"),
+        None
+    );
+    assert!(!store
+        .list_sessions(
+            TenantId::SINGLE,
+            SessionFilter {
+                since: None,
+                end_reason: None,
+                project_compression_tips: false,
+                limit: 10,
+            },
+        )
+        .await
+        .expect("sessions list after delete")
+        .iter()
+        .any(|summary| summary.session_id == deleted));
+    assert!(!store
+        .delete_session(TenantId::SINGLE, deleted)
+        .await
+        .expect("delete is idempotent"));
+
     let sessions = store
         .list_sessions(
             TenantId::SINGLE,

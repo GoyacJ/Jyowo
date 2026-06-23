@@ -6,8 +6,8 @@ use harness_contracts::ModelError;
 
 use crate::openai_compatible::{OpenAiCompatibleClient, OpenAiCompatibleProviderExt};
 use crate::{
-    InferContext, ModelCapabilities, ModelCredentialResolver, ModelDescriptor, ModelProvider,
-    ModelRequest, ModelStream,
+    ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
+    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
 };
 
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8080";
@@ -87,8 +87,8 @@ impl ModelProvider for LocalLlamaProvider {
         self.infer_openai_compatible(req, ctx).await
     }
 
-    fn supports_tools(&self) -> bool {
-        true
+    fn default_protocol(&self) -> ModelProtocol {
+        ModelProtocol::ChatCompletions
     }
 }
 
@@ -97,16 +97,21 @@ fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {
         provider_id: "local-llama".to_owned(),
         model_id: model_id.to_owned(),
         display_name: display_name.to_owned(),
+        protocol: ModelProtocol::ChatCompletions,
         context_window: 128_000,
         max_output_tokens: 8192,
-        capabilities: ModelCapabilities {
-            supports_tools: true,
-            supports_vision: false,
-            supports_thinking: false,
-            supports_prompt_cache: false,
-            supports_tool_reference: false,
-            tool_reference_beta_header: None,
+        conversation_capability: ConversationModelCapability {
+            context_window: 128_000,
+            max_output_tokens: 8192,
+            tool_calling: true,
+            reasoning: false,
+            prompt_cache: false,
+            streaming: true,
+            structured_output: false,
+            input_modalities: vec![ModelModality::Text],
+            output_modalities: vec![ModelModality::Text],
         },
+        lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }
 }

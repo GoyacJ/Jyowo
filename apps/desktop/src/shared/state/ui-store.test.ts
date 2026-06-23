@@ -7,8 +7,7 @@ describe('ui-store', () => {
     const store = createUiStore()
 
     store.getState().setSidebarCollapsed(true)
-    store.getState().setActivityRailCollapsed(true)
-    store.getState().setActivityRailExpanded(true)
+    store.getState().setContextPanelCollapsed(true)
     store.getState().setActiveRun({ conversationId: 'conversation-001', runId: 'run-001' })
     store.getState().setInspectorOpen(false)
     store.getState().setTheme('dark')
@@ -17,8 +16,7 @@ describe('ui-store', () => {
     expect(store.getState().activeRunConversationId).toBe('conversation-001')
     expect(store.getState().activeRunId).toBe('run-001')
     expect(store.getState().sidebarCollapsed).toBe(true)
-    expect(store.getState().activityRailCollapsed).toBe(true)
-    expect(store.getState().activityRailExpanded).toBe(true)
+    expect(store.getState().contextPanelCollapsed).toBe(true)
     expect(store.getState().inspectorOpen).toBe(false)
     expect(store.getState().theme).toBe('dark')
     expect(store.getState().locale).toBe('en-US')
@@ -34,5 +32,32 @@ describe('ui-store', () => {
     expect(store.getState()).not.toHaveProperty('tools')
     expect(store.getState()).not.toHaveProperty('servers')
     expect(store.getState()).not.toHaveProperty('secrets')
+  })
+
+  it('tracks active runs by conversation', () => {
+    const store = createUiStore()
+
+    store.getState().setActiveRun({ conversationId: 'conversation-001', runId: 'run-001' })
+    store.getState().setActiveRun({ conversationId: 'conversation-002', runId: 'run-002' })
+
+    expect(store.getState().activeRunsByConversation).toEqual({
+      'conversation-001': 'run-001',
+      'conversation-002': 'run-002',
+    })
+
+    store.getState().clearActiveRun('conversation-001')
+
+    expect(store.getState().activeRunsByConversation).toEqual({
+      'conversation-002': 'run-002',
+    })
+  })
+
+  it('does not expand conversation context when a run becomes active', () => {
+    const store = createUiStore()
+
+    store.getState().setContextPanelCollapsed(true)
+    store.getState().setActiveRun({ conversationId: 'conversation-001', runId: 'run-001' })
+
+    expect(store.getState().contextPanelCollapsed).toBe(true)
   })
 })

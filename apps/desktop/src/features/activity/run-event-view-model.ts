@@ -75,7 +75,10 @@ function getActivityLabel(event: RunEvent): string {
     case 'run.started':
     case 'run.ended':
       return 'run'
+    case 'user.message.appended':
+      return 'user'
     case 'assistant.delta':
+    case 'assistant.thinking.delta':
     case 'assistant.completed':
       return 'assistant'
     case 'tool.requested':
@@ -88,6 +91,9 @@ function getActivityLabel(event: RunEvent): string {
     case 'permission.requested':
     case 'permission.resolved':
       return event.payload?.requestId ?? 'permission'
+    case 'artifact.created':
+    case 'artifact.updated':
+      return event.payload?.artifactId ?? 'artifact'
     case 'engine.failed':
       return 'engine'
     default:
@@ -100,7 +106,10 @@ function getWithheldActivityLabel(event: RunEvent): string {
     case 'run.started':
     case 'run.ended':
       return 'run'
+    case 'user.message.appended':
+      return 'user'
     case 'assistant.delta':
+    case 'assistant.thinking.delta':
     case 'assistant.completed':
       return 'assistant'
     case 'tool.requested':
@@ -112,6 +121,9 @@ function getWithheldActivityLabel(event: RunEvent): string {
     case 'permission.requested':
     case 'permission.resolved':
       return 'permission'
+    case 'artifact.created':
+    case 'artifact.updated':
+      return 'artifact'
     case 'engine.failed':
       return 'engine'
     default:
@@ -122,7 +134,9 @@ function getWithheldActivityLabel(event: RunEvent): string {
 function getActivityStatus(event: RunEvent): ActivityRailItem['status'] {
   switch (event.type) {
     case 'run.started':
+    case 'user.message.appended':
     case 'assistant.delta':
+    case 'assistant.thinking.delta':
     case 'tool.approved':
       return 'running'
     case 'tool.requested':
@@ -130,9 +144,18 @@ function getActivityStatus(event: RunEvent): ActivityRailItem['status'] {
     case 'permission.requested':
     case 'tool.denied':
       return 'blocked'
-    case 'engine.failed':
     case 'tool.failed':
+    case 'engine.failed':
       return 'failed'
+    case 'artifact.created':
+    case 'artifact.updated':
+      if (event.payload?.status === 'failed') {
+        return 'failed'
+      }
+      if (event.payload?.status === 'running') {
+        return 'running'
+      }
+      return 'success'
     case 'assistant.completed':
     case 'permission.resolved':
     case 'run.ended':
@@ -157,14 +180,6 @@ function getDetails(event: RunEvent): RunEventViewModel['details'] {
       return {
         permissions: [
           {
-            command: event.payload.command
-              ? {
-                  args: getPermissionCommandArgs(event.payload.command),
-                  cwd: event.payload.command.cwd,
-                  executable: event.payload.command.executable,
-                  risk: event.payload.severity,
-                }
-              : undefined,
             decisionScope: event.payload.decisionScope,
             diffSummary: event.payload.diffSummary,
             exposure: event.payload.exposure,
@@ -196,29 +211,22 @@ function getDetails(event: RunEvent): RunEventViewModel['details'] {
       }
     case 'run.started':
     case 'run.ended':
+    case 'user.message.appended':
     case 'assistant.delta':
+    case 'assistant.thinking.delta':
     case 'assistant.completed':
     case 'tool.requested':
     case 'tool.approved':
     case 'tool.denied':
     case 'tool.completed':
     case 'tool.failed':
+    case 'artifact.created':
+    case 'artifact.updated':
     case 'engine.failed':
       return undefined
     default:
       return assertNever(event)
   }
-}
-
-function getPermissionCommandArgs(command: {
-  argv?: string[]
-  executable: string
-}): string[] | undefined {
-  if (!command.argv?.length) {
-    return undefined
-  }
-
-  return command.argv[0] === command.executable ? command.argv.slice(1) : command.argv
 }
 
 function getRawJson(event: RunEvent): RawJsonDetails | undefined {

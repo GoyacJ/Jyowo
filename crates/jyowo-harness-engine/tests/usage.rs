@@ -12,9 +12,9 @@ use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};
 use harness_journal::InMemoryEventStore;
 use harness_model::{
-    ApiMode, BillingMode, ContentDelta, Currency, HealthStatus, InferContext, ModelCapabilities,
-    ModelDescriptor, ModelPricing, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
-    PricingSnapshotResolveContext, PricingSnapshotResolver, PricingSource,
+    BillingMode, ContentDelta, ConversationModelCapability, Currency, HealthStatus, InferContext,
+    ModelDescriptor, ModelPricing, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
+    ModelStreamEvent, PricingSnapshotResolveContext, PricingSnapshotResolver, PricingSource,
 };
 use harness_observability::{Observer, UsageScope};
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
@@ -44,7 +44,7 @@ async fn engine_records_stream_usage_into_observer_and_usage_events() {
         .with_permission_broker(Arc::new(DenyBroker))
         .with_workspace_root(workspace.path())
         .with_model_id("usage-model")
-        .with_api_mode(ApiMode::Messages)
+        .with_protocol(ModelProtocol::Messages)
         .with_cap_registry(Arc::new(CapabilityRegistry::default()))
         .with_observer(observer.clone())
         .build()
@@ -147,7 +147,7 @@ async fn usage_uses_session_pricing_snapshot() {
         .with_permission_broker(Arc::new(DenyBroker))
         .with_workspace_root(workspace.path())
         .with_model_id("usage-model")
-        .with_api_mode(ApiMode::Messages)
+        .with_protocol(ModelProtocol::Messages)
         .with_cap_registry(Arc::new(CapabilityRegistry::default()))
         .build()
         .unwrap();
@@ -205,7 +205,7 @@ async fn usage_uses_pricing_snapshot_resolver() {
         .with_permission_broker(Arc::new(DenyBroker))
         .with_workspace_root(workspace.path())
         .with_model_id("usage-model")
-        .with_api_mode(ApiMode::Messages)
+        .with_protocol(ModelProtocol::Messages)
         .with_cap_registry(Arc::new(CapabilityRegistry::default()))
         .with_pricing_snapshot_resolver(resolver.clone())
         .build()
@@ -255,7 +255,7 @@ async fn pricing_snapshot_resolver_miss_is_reported_without_fallback_snapshot() 
         .with_permission_broker(Arc::new(DenyBroker))
         .with_workspace_root(workspace.path())
         .with_model_id("usage-model")
-        .with_api_mode(ApiMode::Messages)
+        .with_protocol(ModelProtocol::Messages)
         .with_cap_registry(Arc::new(CapabilityRegistry::default()))
         .with_pricing_snapshot_resolver(resolver.clone())
         .build()
@@ -320,12 +320,14 @@ impl ModelProvider for MutablePricingModel {
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         let pricing_version = self.pricing_version.lock();
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "mock".to_owned(),
             model_id: "usage-model".to_owned(),
             display_name: "Usage model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: Some(model_pricing("mutable-pricing", *pricing_version)),
         }]
     }
@@ -353,12 +355,14 @@ impl ModelProvider for UsageModel {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "mock".to_owned(),
             model_id: "usage-model".to_owned(),
             display_name: "Usage model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: Some(model_pricing("mock-pricing", 3)),
         }]
     }

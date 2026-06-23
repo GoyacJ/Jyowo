@@ -3,7 +3,10 @@ use std::collections::BTreeMap;
 use harness_contracts::{ModelError, StopReason, ToolUseId, UsageSnapshot};
 use serde_json::Value;
 
-use crate::{ContentDelta, ErrorClass, ErrorHints, ModelStreamEvent, ThinkingDelta};
+use crate::{
+    thinking_tag_normalizer::ThinkingTagNormalizer, ContentDelta, ErrorClass, ErrorHints,
+    ModelStreamEvent, ThinkingDelta,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamAggregate {
@@ -45,6 +48,7 @@ pub enum StreamAggregate {
 pub struct StreamAggregator {
     pending: BTreeMap<u32, PendingToolUse>,
     terminal: bool,
+    thinking_normalizer: ThinkingTagNormalizer,
 }
 
 impl StreamAggregator {
@@ -83,7 +87,18 @@ impl StreamAggregator {
 
     fn push_delta(&mut self, index: u32, delta: ContentDelta) -> Vec<StreamAggregate> {
         match delta {
-            ContentDelta::Text(text) => vec![StreamAggregate::TextChunk { text }],
+            ContentDelta::Text(text) => self
+                .thinking_normalizer
+                .push(text)
+                .into_iter()
+                .flat_map(|normalized| match normalized {
+                    ContentDelta::Text(chunk) => vec![StreamAggregate::TextChunk { text: chunk }],
+                    ContentDelta::Thinking(thinking) => {
+                        vec![StreamAggregate::ThinkingChunk { thinking }]
+                    }
+                    _ => Vec::new(),
+                })
+                .collect(),
             ContentDelta::Thinking(thinking) => {
                 vec![StreamAggregate::ThinkingChunk { thinking }]
             }

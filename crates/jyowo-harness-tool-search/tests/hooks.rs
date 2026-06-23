@@ -8,7 +8,7 @@ use harness_contracts::{
     ProviderRestriction, RunId, SessionId, TenantId, ToolDescriptor, ToolError, ToolGroup,
     ToolOrigin, ToolProperties, ToolResult, ToolSearchQueryKind, ToolUseId, TrustLevel,
 };
-use harness_model::ModelCapabilities;
+use harness_model::ConversationModelCapability;
 use harness_tool::{
     InterruptToken, PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
     Tool, ToolContext,
@@ -28,7 +28,7 @@ async fn pre_search_rewrite_and_post_materialize_hooks_are_emitted() {
         loaded_tool_names: BTreeSet::new(),
         discovered_tool_names: BTreeSet::new(),
         pending_mcp_servers: Vec::new(),
-        model_caps: Arc::new(ModelCapabilities::default()),
+        model_caps: Arc::new(ConversationModelCapability::default()),
         reload_handle: None,
     }));
     let tool = ToolSearchTool::builder()

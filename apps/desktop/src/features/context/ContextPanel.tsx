@@ -7,6 +7,7 @@ import { NextActionList } from './NextActionList'
 
 type ContextDecision = {
   detail: string
+  requestId?: string
   title: string
 }
 

@@ -55,17 +55,34 @@ function renderAppShell(commandClient: CommandClient = createMockCommandClient()
   )
 }
 
+function mockCompactViewport(matches: boolean) {
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: query === '(max-width: 720px)' ? matches : false,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  })
+}
+
 describe('AppShell', () => {
   beforeEach(() => {
+    mockCompactViewport(false)
     window.history.pushState(null, '', '/')
   })
 
   afterEach(() => {
     act(() => {
-      uiStore.getState().setActivityRailCollapsed(false)
-      uiStore.getState().setActivityRailExpanded(false)
       uiStore.getState().setSidebarCollapsed(false)
+      uiStore.getState().setContextPanelCollapsed(true)
       uiStore.getState().clearActiveRun()
+      uiStore.getState().clearTimelineScrollRequest()
     })
   })
 
@@ -77,8 +94,7 @@ describe('AppShell', () => {
     expect(screen.getByRole('banner')).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Workspace' })).toBeInTheDocument()
     expect(screen.getByRole('main')).toContainElement(screen.getByText('Workbench content'))
-    expect(screen.getByRole('complementary', { name: 'Context' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Activity' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Status' })).toBeInTheDocument()
 
     const workspaceNavigation = screen.getByRole('navigation', { name: 'Workspace' })
     expect(workspaceNavigation).not.toHaveClass('hidden')
@@ -87,26 +103,52 @@ describe('AppShell', () => {
     expect(within(workspaceNavigation).getByText('Conversations')).toBeInTheDocument()
     expect(within(workspaceNavigation).getByText('Projects')).toBeInTheDocument()
     expect(within(workspaceNavigation).getByText('Artifacts')).toBeInTheDocument()
-    expect(within(workspaceNavigation).getByText('Agents')).toBeInTheDocument()
-    expect(within(workspaceNavigation).getByText('Tools')).toBeInTheDocument()
-    expect(within(workspaceNavigation).getByText('Settings')).toBeInTheDocument()
+    expect(within(workspaceNavigation).queryByText('Skills')).not.toBeInTheDocument()
+    expect(within(workspaceNavigation).queryByText('Agents')).not.toBeInTheDocument()
+    expect(within(workspaceNavigation).queryByText('Tools')).not.toBeInTheDocument()
+    expect(within(workspaceNavigation).queryByText('Settings')).not.toBeInTheDocument()
     expect(within(workspaceNavigation).queryByText('Runs')).not.toBeInTheDocument()
     expect(within(workspaceNavigation).queryByText('MCP')).not.toBeInTheDocument()
     expect(within(workspaceNavigation).queryByText('Memory')).not.toBeInTheDocument()
     expect(within(workspaceNavigation).queryByText('Evals')).not.toBeInTheDocument()
     expect(within(workspaceNavigation).queryByText('Models')).not.toBeInTheDocument()
-    expect(screen.getByRole('complementary', { name: 'Context' })).not.toHaveClass('hidden')
-    expect(screen.getByRole('button', { name: 'View all activity' })).toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'View all activity' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'More actions' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: 'Share' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Hide context panel' })).toBeEnabled()
-    const contextPanel = screen.getByRole('complementary', { name: 'Context' })
-    const activityRail = screen.getByRole('region', { name: 'Activity' })
+    expect(screen.queryByRole('button', { name: 'Hide context panel' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show context panel' })).toBeInTheDocument()
+    const statusBar = screen.getByRole('region', { name: 'Status' })
 
-    expect(await within(contextPanel).findByText('Desktop App')).toBeInTheDocument()
-    expect(within(contextPanel).getByText('src/')).toBeInTheDocument()
-    expect(within(activityRail).getByText('Current run')).toBeInTheDocument()
-    expect(within(activityRail).getByText('Run')).toBeInTheDocument()
+    expect(within(statusBar).getByText('Ready')).toBeInTheDocument()
+    expect(within(statusBar).getByText('Local')).toBeInTheDocument()
+    expect(within(statusBar).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+  })
+
+  it('routes settings from the bottom status bar', () => {
+    renderAppShell()
+
+    fireEvent.click(
+      within(screen.getByRole('region', { name: 'Status' })).getByRole('button', {
+        name: 'Settings',
+      }),
+    )
+
+    expect(routerMock.navigate).toHaveBeenCalledWith({ to: '/settings' })
+  })
+
+  it('uses the icon sidebar on narrow viewports', () => {
+    mockCompactViewport(true)
+
+    renderAppShell()
+
+    const workspaceNavigation = screen.getByRole('navigation', { name: 'Workspace' })
+
+    expect(workspaceNavigation).toHaveAttribute('data-collapsed', 'true')
+    expect(within(workspaceNavigation).queryByText('Recent conversations')).not.toBeInTheDocument()
+    expect(
+      within(workspaceNavigation).queryByRole('button', { name: 'Skills' }),
+    ).not.toBeInTheDocument()
   })
 
   it('opens the command palette from the top actions and routes commands', async () => {
@@ -123,9 +165,8 @@ describe('AppShell', () => {
     })
   })
 
-  it('requests context and activity for the selected conversation', async () => {
+  it('does not request hidden context while idle', async () => {
     const commandClient = createMockCommandClient()
-    const activityRequests: Array<Parameters<CommandClient['listActivity']>[0]> = []
     const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
     const trackedClient = {
       ...commandClient,
@@ -133,41 +174,36 @@ describe('AppShell', () => {
         contextRequests.push(request)
         return commandClient.getContextSnapshot(request)
       },
-      listActivity: async (request: Parameters<CommandClient['listActivity']>[0]) => {
-        activityRequests.push(request)
-        return commandClient.listActivity(request)
-      },
     } satisfies CommandClient
 
     renderAppShell(trackedClient)
 
-    await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
-
     await waitFor(() => {
-      expect(contextRequests).toEqual([{}, {}, { conversationId: 'conversation-001' }])
-      expect(activityRequests).toEqual([{ conversationId: 'conversation-001' }])
+      expect(screen.getByRole('main')).toContainElement(screen.getByText('Workbench content'))
+      expect(contextRequests).toEqual([])
     })
   })
 
-  it('requests context and activity for the conversation selected in the URL', async () => {
+  it('keeps active conversation context collapsed until the user opens it', async () => {
     window.history.pushState(null, '', '/?conversationId=conversation-002')
     const commandClient = createMockCommandClient({
       conversations: {
         conversations: [
           {
             id: 'conversation-001',
+            isEmpty: false,
             title: 'First conversation',
             updatedAt: '2026-06-17T00:00:00.000Z',
           },
           {
             id: 'conversation-002',
+            isEmpty: false,
             title: 'Selected conversation',
             updatedAt: '2026-06-17T00:00:01.000Z',
           },
         ],
       },
     })
-    const activityRequests: Array<Parameters<CommandClient['listActivity']>[0]> = []
     const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
     const trackedClient = {
       ...commandClient,
@@ -175,25 +211,32 @@ describe('AppShell', () => {
         contextRequests.push(request)
         return commandClient.getContextSnapshot(request)
       },
-      listActivity: async (request: Parameters<CommandClient['listActivity']>[0]) => {
-        activityRequests.push(request)
-        return commandClient.listActivity(request)
-      },
     } satisfies CommandClient
 
+    act(() => {
+      uiStore.getState().setActiveRun({
+        conversationId: 'conversation-002',
+        runId: 'run-002',
+      })
+    })
+
     renderAppShell(trackedClient)
+
+    expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
+    expect(contextRequests).toEqual([])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show context panel' }))
 
     await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
 
     await waitFor(() => {
-      expect(contextRequests).toEqual([{}, { conversationId: 'conversation-002' }])
-      expect(activityRequests).toEqual([{ conversationId: 'conversation-002' }])
+      expect(contextRequests).toEqual([{ conversationId: 'conversation-002', runId: 'run-002' }])
     })
   })
 
-  it('requests activity for the active run after a run starts', async () => {
+  it('opens selected idle conversation context as a fixed right column', async () => {
+    window.history.pushState(null, '', '/?conversationId=conversation-002')
     const commandClient = createMockCommandClient()
-    const activityRequests: Array<Parameters<CommandClient['listActivity']>[0]> = []
     const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
     const trackedClient = {
       ...commandClient,
@@ -201,9 +244,97 @@ describe('AppShell', () => {
         contextRequests.push(request)
         return commandClient.getContextSnapshot(request)
       },
-      listActivity: async (request: Parameters<CommandClient['listActivity']>[0]) => {
-        activityRequests.push(request)
-        return commandClient.listActivity(request)
+    } satisfies CommandClient
+
+    const { container } = renderAppShell(trackedClient)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show context panel' }))
+
+    await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
+
+    expect(container.firstElementChild?.firstElementChild).toHaveStyle({
+      gridTemplateColumns: '248px minmax(0,1fr) 320px',
+    })
+    expect(contextRequests).toEqual([{ conversationId: 'conversation-002' }])
+  })
+
+  it('uses the selected conversation run when multiple conversations are active', async () => {
+    window.history.pushState(null, '', '/?conversationId=conversation-001')
+    const commandClient = createMockCommandClient()
+    const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
+    const trackedClient = {
+      ...commandClient,
+      getContextSnapshot: async (request: Parameters<CommandClient['getContextSnapshot']>[0]) => {
+        contextRequests.push(request)
+        return commandClient.getContextSnapshot(request)
+      },
+    } satisfies CommandClient
+
+    act(() => {
+      uiStore.getState().setActiveRun({
+        conversationId: 'conversation-001',
+        runId: 'run-001',
+      })
+      uiStore.getState().setActiveRun({
+        conversationId: 'conversation-002',
+        runId: 'run-002',
+      })
+    })
+
+    renderAppShell(trackedClient)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show context panel' }))
+
+    await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
+
+    await waitFor(() => {
+      expect(contextRequests).toEqual([{ conversationId: 'conversation-001', runId: 'run-001' }])
+    })
+  })
+
+  it('does not show another conversation run while the selected conversation is idle', async () => {
+    window.history.pushState(null, '', '/?conversationId=conversation-001')
+    const commandClient = createMockCommandClient()
+    const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
+    const trackedClient = {
+      ...commandClient,
+      getContextSnapshot: async (request: Parameters<CommandClient['getContextSnapshot']>[0]) => {
+        contextRequests.push(request)
+        return commandClient.getContextSnapshot(request)
+      },
+    } satisfies CommandClient
+
+    act(() => {
+      uiStore.getState().setActiveRun({
+        conversationId: 'conversation-002',
+        runId: 'run-002',
+      })
+    })
+
+    renderAppShell(trackedClient)
+
+    await waitFor(() => {
+      expect(screen.getByRole('main')).toContainElement(screen.getByText('Workbench content'))
+      expect(contextRequests).toEqual([])
+    })
+    expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
+    expect(
+      within(screen.getByRole('region', { name: 'Status' })).getByText('Ready'),
+    ).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('region', { name: 'Status' })).queryByText('run-002'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('keeps active run context off standalone pages', async () => {
+    window.history.pushState(null, '', '/settings')
+    const commandClient = createMockCommandClient()
+    const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
+    const trackedClient = {
+      ...commandClient,
+      getContextSnapshot: async (request: Parameters<CommandClient['getContextSnapshot']>[0]) => {
+        contextRequests.push(request)
+        return commandClient.getContextSnapshot(request)
       },
     } satisfies CommandClient
 
@@ -216,334 +347,91 @@ describe('AppShell', () => {
 
     renderAppShell(trackedClient)
 
-    await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
-
     await waitFor(() => {
-      expect(contextRequests).toEqual([{}, {}, { conversationId: 'conversation-001' }])
-      expect(activityRequests).toEqual([{ conversationId: 'conversation-001', runId: 'run-001' }])
+      expect(screen.getByRole('main')).toContainElement(screen.getByText('Workbench content'))
+      expect(contextRequests).toEqual([])
     })
+    expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show context panel' })).not.toBeInTheDocument()
   })
 
-  it('supports local activity rail collapse and view-all state', async () => {
+  it('minimizes and restores active conversation context', async () => {
+    act(() => {
+      uiStore.getState().setActiveRun({
+        conversationId: 'conversation-001',
+        runId: 'run-001',
+      })
+    })
+
     renderAppShell()
 
-    expect(
-      await within(screen.getByRole('region', { name: 'Activity' })).findByText('Run'),
-    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show context panel' }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'View all activity' }))
-    expect(screen.getByRole('region', { name: 'Activity' })).toHaveAttribute(
-      'data-expanded',
-      'true',
-    )
-    expect(screen.getByRole('region', { name: 'Replay' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Usage summary' })).toBeInTheDocument()
-    expect(screen.getByText('Usage analytics unavailable.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Export support bundle' })).toBeInTheDocument()
+    await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse activity' }))
-    expect(screen.getByRole('region', { name: 'Activity' })).toHaveAttribute(
-      'data-collapsed',
-      'true',
-    )
-    expect(screen.queryByText('run')).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Expand activity' }))
-    expect(screen.getByRole('region', { name: 'Activity' })).toHaveAttribute(
-      'data-collapsed',
-      'false',
-    )
-  })
-
-  it('renders usage summary from completed run activity events', async () => {
-    renderAppShell(
-      createMockCommandClient({
-        listActivity: {
-          events: [
-            {
-              id: 'evt-started',
-              payload: { sessionId: 'conversation-001' },
-              runId: 'run-001',
-              sequence: 1,
-              source: 'engine',
-              timestamp: '2026-06-17T00:00:00.000Z',
-              type: 'run.started',
-              visibility: 'public',
-            },
-            {
-              id: 'evt-ended',
-              payload: {
-                reason: 'completed',
-                usage: {
-                  cacheReadTokens: 3,
-                  cacheWriteTokens: 5,
-                  costMicros: 260,
-                  inputTokens: 11,
-                  outputTokens: 7,
-                  toolCalls: 2,
-                },
-              },
-              runId: 'run-001',
-              sequence: 2,
-              source: 'engine',
-              timestamp: '2026-06-17T00:00:01.000Z',
-              type: 'run.ended',
-              visibility: 'public',
-            },
-          ],
-        },
-      }),
-    )
+    fireEvent.click(screen.getByRole('button', { name: 'Close context' }))
 
     await waitFor(() => {
-      expect(
-        within(screen.getByRole('region', { name: 'Activity' })).getAllByText('Run'),
-      ).toHaveLength(2)
+      expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'View all activity' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show context panel' }))
 
-    const usageSummary = screen.getByRole('region', { name: 'Usage summary' })
-    expect(within(usageSummary).getByText('11')).toBeInTheDocument()
-    expect(within(usageSummary).getByText('7')).toBeInTheDocument()
-    expect(within(usageSummary).getByText('2')).toBeInTheDocument()
-    expect(within(usageSummary).getByText('$0.000260')).toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: 'Context' })).toBeInTheDocument()
   })
 
-  it('exports a redacted support bundle from the expanded activity rail', async () => {
-    const commandClient = createMockCommandClient()
-    const exportSupportBundle = vi.fn(commandClient.exportSupportBundle)
-    const trackedClient = {
-      ...commandClient,
-      exportSupportBundle,
-    } satisfies CommandClient
-
-    renderAppShell(trackedClient)
-
-    expect(
-      await within(screen.getByRole('region', { name: 'Activity' })).findByText('Run'),
-    ).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'View all activity' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Export support bundle' }))
-
-    await waitFor(() => {
-      expect(exportSupportBundle).toHaveBeenCalledWith({ conversationId: 'conversation-001' })
-    })
-    expect(await screen.findByText('Redacted')).toBeInTheDocument()
-  })
-
-  it('shows permission details and sends approve or deny intent through the command client', async () => {
-    const commandClient = createMockCommandClient({
-      listActivity: {
-        events: [
-          {
-            id: 'evt-permission',
-            payload: {
-              command: {
-                argv: ['pnpm', 'install'],
-                cwd: 'workspace://local',
-                executable: 'pnpm',
-              },
-              decisionScope: 'current run',
-              exposure: 'Can modify package metadata and lockfile.',
-              operation: 'Install dependencies',
-              reason: 'The run requested package installation.',
-              requestId: '01HZ0000000000000000000001',
-              severity: 'high',
-              target: 'workspace package manager',
-              workspaceBoundary: 'workspace://local',
-            },
-            runId: 'run-001',
-            sequence: 1,
-            source: 'policy',
-            timestamp: '2026-06-17T00:00:00.000Z',
-            type: 'permission.requested',
-            visibility: 'public',
-          },
-        ],
-      },
-    })
-    const resolvePermission = vi.fn(commandClient.resolvePermission)
-    const trackedClient = {
-      ...commandClient,
-      resolvePermission,
-    } satisfies CommandClient
-
-    renderAppShell(trackedClient)
-
-    expect(
-      await within(screen.getByRole('region', { name: 'Activity' })).findByText(
-        '01HZ0000000000000000000001',
-      ),
-    ).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'View all activity' }))
-
-    const details = await screen.findByRole('region', { name: 'Run event details' })
-    expect(within(details).getAllByText('Install dependencies')).toHaveLength(2)
-    expect(within(details).getByText('workspace package manager')).toBeInTheDocument()
-    expect(within(details).getByText('current run')).toBeInTheDocument()
-
-    fireEvent.click(within(details).getByRole('button', { name: 'Approve permission' }))
-
-    await waitFor(() => {
-      expect(resolvePermission).toHaveBeenCalledWith({
-        decision: 'approve',
-        requestId: '01HZ0000000000000000000001',
+  it('reflects active run state in the status bar from ui store', async () => {
+    act(() => {
+      uiStore.getState().setActiveRun({
+        conversationId: 'conversation-001',
+        runId: 'run-001',
       })
     })
 
-    fireEvent.click(within(details).getByRole('button', { name: 'Deny permission' }))
+    renderAppShell()
 
-    await waitFor(() => {
-      expect(resolvePermission).toHaveBeenCalledWith({
-        decision: 'deny',
-        requestId: '01HZ0000000000000000000001',
+    const statusBar = screen.getByRole('region', { name: 'Status' })
+    expect(within(statusBar).getByText('In progress')).toBeInTheDocument()
+    expect(within(statusBar).queryByText('run-001')).not.toBeInTheDocument()
+  })
+
+  it('does not render shell permission controls; context decisions scroll the timeline', async () => {
+    const commandClient = createMockCommandClient({
+      contextSnapshot: {
+        activeArtifact: 'App shell (WIP)',
+        decisions: [
+          {
+            detail: 'Critical permission is waiting for decision 01HZ0000000000000000000001.',
+            requestId: '01HZ0000000000000000000001',
+            title: 'Approve shell',
+          },
+        ],
+        files: [{ label: 'src/' }],
+        nextActions: ['Resolve pending runtime decisions'],
+        path: '~/projects/desktop-app',
+        project: 'Desktop App',
+      },
+    })
+
+    act(() => {
+      uiStore.getState().setContextPanelCollapsed(false)
+      uiStore.getState().setActiveRun({
+        conversationId: 'conversation-001',
+        runId: 'run-001',
       })
-    })
-  })
-
-  it('sends only one permission decision while a request is resolving', async () => {
-    let releaseResolution: (() => void) | undefined
-    const commandClient = createMockCommandClient({
-      listActivity: {
-        events: [
-          {
-            id: 'evt-permission',
-            payload: {
-              decisionScope: 'current run',
-              exposure: 'Can modify package metadata and lockfile.',
-              operation: 'Install dependencies',
-              reason: 'The run requested package installation.',
-              requestId: '01HZ0000000000000000000001',
-              severity: 'high',
-              target: 'workspace package manager',
-              workspaceBoundary: 'workspace://local',
-            },
-            runId: 'run-001',
-            sequence: 1,
-            source: 'policy',
-            timestamp: '2026-06-17T00:00:00.000Z',
-            type: 'permission.requested',
-            visibility: 'public',
-          },
-        ],
-      },
-    })
-    const resolvePermission = vi.fn(
-      () =>
-        new Promise<Awaited<ReturnType<CommandClient['resolvePermission']>>>((resolve) => {
-          releaseResolution = () =>
-            resolve({
-              decision: 'approve',
-              requestId: '01HZ0000000000000000000001',
-              status: 'resolved',
-            })
-        }),
-    )
-    const trackedClient = {
-      ...commandClient,
-      resolvePermission,
-    } satisfies CommandClient
-
-    renderAppShell(trackedClient)
-
-    expect(
-      await within(screen.getByRole('region', { name: 'Activity' })).findByText(
-        '01HZ0000000000000000000001',
-      ),
-    ).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'View all activity' }))
-    const details = await screen.findByRole('region', { name: 'Run event details' })
-
-    fireEvent.click(within(details).getByRole('button', { name: 'Approve permission' }))
-    fireEvent.click(within(details).getByRole('button', { name: 'Deny permission' }))
-
-    await waitFor(() => {
-      expect(resolvePermission).toHaveBeenCalledTimes(1)
-    })
-    expect(resolvePermission).toHaveBeenCalledWith({
-      decision: 'approve',
-      requestId: '01HZ0000000000000000000001',
-    })
-
-    releaseResolution?.()
-  })
-
-  it('prefers pending permission details over already resolved permissions', async () => {
-    const commandClient = createMockCommandClient({
-      listActivity: {
-        events: [
-          {
-            id: 'evt-permission-approved',
-            payload: {
-              decisionScope: 'current run',
-              exposure: 'Read file metadata.',
-              operation: 'Read files',
-              reason: 'The run requested project context.',
-              requestId: '01HZ0000000000000000000001',
-              severity: 'low',
-              target: 'apps/desktop/src',
-              workspaceBoundary: 'workspace://local',
-            },
-            runId: 'run-001',
-            sequence: 1,
-            source: 'policy',
-            timestamp: '2026-06-17T00:00:00.000Z',
-            type: 'permission.requested',
-            visibility: 'public',
-          },
-          {
-            id: 'evt-permission-approved-resolution',
-            payload: {
-              decision: 'approve',
-              requestId: '01HZ0000000000000000000001',
-            },
-            runId: 'run-001',
-            sequence: 2,
-            source: 'policy',
-            timestamp: '2026-06-17T00:00:01.000Z',
-            type: 'permission.resolved',
-            visibility: 'public',
-          },
-          {
-            id: 'evt-permission-pending',
-            payload: {
-              decisionScope: 'current run',
-              exposure: 'Can modify implementation files.',
-              operation: 'Write files',
-              reason: 'The run needs to apply code changes.',
-              requestId: '01HZ0000000000000000000002',
-              severity: 'high',
-              target: 'apps/desktop/src',
-              workspaceBoundary: 'workspace://local',
-            },
-            runId: 'run-001',
-            sequence: 3,
-            source: 'policy',
-            timestamp: '2026-06-17T00:00:02.000Z',
-            type: 'permission.requested',
-            visibility: 'public',
-          },
-        ],
-      },
     })
 
     renderAppShell(commandClient)
 
-    expect(
-      await within(screen.getByRole('region', { name: 'Activity' })).findByText(
-        '01HZ0000000000000000000002',
-      ),
-    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Deny permission' })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'View all activity' }))
-    const details = await screen.findByRole('region', { name: 'Run event details' })
+    fireEvent.click(await screen.findByRole('button', { name: /Approve shell/i }))
 
-    expect(within(details).getAllByText('Write files')).not.toHaveLength(0)
-    expect(within(details).getByText('Pending approval')).toBeInTheDocument()
-    expect(within(details).queryByText('Approved')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(uiStore.getState().timelineScrollRequest).toEqual({
+        blockId: 'permission:01HZ0000000000000000000001',
+        nonce: 1,
+      })
+    })
   })
 })

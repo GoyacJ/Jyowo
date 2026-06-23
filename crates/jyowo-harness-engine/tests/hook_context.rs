@@ -14,8 +14,8 @@ use harness_hook::{
 };
 use harness_journal::InMemoryEventStore;
 use harness_model::{
-    ApiMode, ContentDelta, HealthStatus, InferContext, ModelCapabilities, ModelDescriptor,
-    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
+    ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
+    ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_observability::Observer;
 use harness_permission::{
@@ -55,7 +55,7 @@ async fn hook_context_uses_runtime_permission_interactivity_and_redactor() {
         .with_permission_broker(Arc::new(AllowBroker))
         .with_workspace_root(workspace.path())
         .with_model_id("mock-model")
-        .with_api_mode(ApiMode::Messages)
+        .with_protocol(ModelProtocol::Messages)
         .with_observer(observer)
         .build()
         .unwrap();
@@ -144,12 +144,14 @@ impl ModelProvider for OneShotModel {
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "mock".to_owned(),
             model_id: "mock-model".to_owned(),
             display_name: "Mock model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
-            capabilities: ModelCapabilities::default(),
+            conversation_capability: ConversationModelCapability::default(),
             pricing: None,
         }]
     }

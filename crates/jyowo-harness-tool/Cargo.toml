@@ -18,12 +18,15 @@ default = []
 skill-tools = []
 builtin-toolset = ["jyowo-harness-permission/dangerous"]
 programmatic-tool-calling = ["builtin-toolset", "jyowo-harness-sandbox/code-runtime"]
+minimax-tools = ["builtin-toolset", "dep:base64", "dep:jyowo-harness-model", "jyowo-harness-model/minimax"]
 
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-model = { path = "../jyowo-harness-model", optional = true }
 jyowo-harness-permission = { path = "../jyowo-harness-permission" }
 jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox" }
 async-trait = { workspace = true }
+base64 = { workspace = true, optional = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -31,6 +34,7 @@ futures = { workspace = true }
 globset = { workspace = true }
 parking_lot = "0.12.5"
 regex = { workspace = true }
+reqwest = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

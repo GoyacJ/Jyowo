@@ -8,18 +8,22 @@ describe('conversation production boundaries', () => {
       join(process.cwd(), 'src/features/conversation/ConversationWorkspace.tsx'),
       'utf8',
     )
-    const artifactSummarySource = readFileSync(
-      join(process.cwd(), 'src/features/conversation/ArtifactSummary.tsx'),
-      'utf8',
-    )
     const retiredRuntimeModule = ['mock', 'conversation', 'runtime'].join('-')
     const retiredFixtureModule = ['prototype', 'data'].join('-')
     const artifactsFeatureAlias = ['@/features', 'artifacts'].join('/')
+    const oldRenderSources = [
+      ['Conversation', 'Message'].join(''),
+      ['Progress', 'Block'].join(''),
+      ['Artifact', 'Summary'].join(''),
+    ]
 
     expect(source).not.toContain(retiredRuntimeModule)
     expect(source).not.toContain('mockConversationRuntime')
     expect(source).not.toContain('createMockConversationState')
     expect(source).not.toContain(retiredFixtureModule)
-    expect(artifactSummarySource).not.toContain(artifactsFeatureAlias)
+    expect(source).not.toContain(artifactsFeatureAlias)
+    for (const oldRenderSource of oldRenderSources) {
+      expect(source).not.toContain(oldRenderSource)
+    }
   })
 })

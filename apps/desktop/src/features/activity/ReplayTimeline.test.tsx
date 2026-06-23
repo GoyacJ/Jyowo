@@ -9,7 +9,11 @@ import { ReplayTimeline } from './ReplayTimeline'
 const replayEvents = [
   {
     id: 'evt-redacted',
-    payload: { outputSummary: '[REDACTED]', toolUseId: 'tool-001' },
+    conversationSequence: 2,
+    payload: {
+      outputSummary: 'Output withheld from conversation timeline.',
+      toolUseId: 'tool-001',
+    },
     runId: 'run-001',
     sequence: 2,
     source: 'tool',
@@ -19,6 +23,7 @@ const replayEvents = [
   },
   {
     id: 'evt-withheld',
+    conversationSequence: 3,
     runId: 'run-001',
     sequence: 3,
     source: 'tool',
@@ -56,6 +61,7 @@ describe('ReplayTimeline', () => {
   it('virtualizes long replay timelines instead of rendering every event row', () => {
     const manyEvents = Array.from({ length: 500 }, (_, index) => ({
       id: `evt-${index}`,
+      conversationSequence: index,
       payload: { text: `delta-${index}` },
       runId: 'run-001',
       sequence: index,

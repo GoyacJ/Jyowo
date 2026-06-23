@@ -1083,6 +1083,7 @@ fn estimate_tokens(system: Option<&str>, messages: &[harness_contracts::Message]
             chars += match part {
                 MessagePart::Text(text) => text.len(),
                 MessagePart::Image { .. } => 512,
+                MessagePart::Video { .. } | MessagePart::File { .. } => 0,
                 MessagePart::ToolUse { input, .. } => input.to_string().len(),
                 MessagePart::ToolResult { content, .. } => format!("{content:?}").len(),
                 MessagePart::Thinking(thinking) => {

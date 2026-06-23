@@ -140,6 +140,12 @@ pub trait EventStore: Send + Sync + 'static {
         reason: ForkReason,
     ) -> Result<(), JournalError>;
 
+    async fn delete_session(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+    ) -> Result<bool, JournalError>;
+
     async fn list_sessions(
         &self,
         tenant: TenantId,
@@ -231,6 +237,14 @@ where
         reason: ForkReason,
     ) -> Result<(), JournalError> {
         self.as_ref().compact_link(parent, child, reason).await
+    }
+
+    async fn delete_session(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+    ) -> Result<bool, JournalError> {
+        self.as_ref().delete_session(tenant, session_id).await
     }
 
     async fn list_sessions(

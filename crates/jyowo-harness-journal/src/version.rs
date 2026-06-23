@@ -270,6 +270,14 @@ impl<S: EventStore> EventStore for VersionedEventStore<S> {
         self.inner.compact_link(parent, child, reason).await
     }
 
+    async fn delete_session(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+    ) -> Result<bool, JournalError> {
+        self.inner.delete_session(tenant, session_id).await
+    }
+
     async fn list_sessions(
         &self,
         tenant: TenantId,

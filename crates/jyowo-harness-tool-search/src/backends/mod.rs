@@ -28,7 +28,9 @@ impl DefaultBackendSelector {
 #[async_trait]
 impl ToolLoadingBackendSelector for DefaultBackendSelector {
     async fn select(&self, ctx: &ToolLoadingContext) -> Arc<dyn ToolLoadingBackend> {
-        if ctx.model_caps.supports_tool_reference {
+        if ctx.reload_handle.is_some() {
+            self.inline.clone()
+        } else if ctx.model_caps.tool_calling {
             self.anthropic.clone()
         } else {
             self.inline.clone()
