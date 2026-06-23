@@ -5,7 +5,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppProviders } from '@/app/providers'
 import { uiStore, useUiStore } from '@/shared/state/ui-store'
-import { createMockCommandClient } from '@/shared/tauri/mock-client'
+import { createMockCommandClient, mockJyowoProject } from '@/shared/tauri/mock-client'
 import App from './App'
 
 const uiPreferencesStoreMock = vi.hoisted(() => ({
@@ -101,6 +101,7 @@ describe('App', () => {
   })
 
   it('renders the index route through providers and router', async () => {
+    window.history.pushState(null, '', '/?conversationId=conversation-001')
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: {
@@ -109,7 +110,12 @@ describe('App', () => {
       },
     })
 
-    render(<App commandClient={createMockCommandClient()} queryClient={queryClient} />)
+    render(
+      <App
+        commandClient={createMockCommandClient({ projects: mockJyowoProject })}
+        queryClient={queryClient}
+      />,
+    )
 
     expect(
       await screen.findByRole('heading', { name: 'Build the desktop foundation' }),
@@ -120,6 +126,22 @@ describe('App', () => {
     expect(
       screen.getByPlaceholderText('Ask Jyowo anything about this project...'),
     ).toBeInTheDocument()
+  })
+
+  it('renders the welcome page when no conversation is selected', async () => {
+    window.history.pushState(null, '', '/')
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    })
+
+    render(<App commandClient={createMockCommandClient()} queryClient={queryClient} />)
+
+    expect(await screen.findByRole('heading', { name: 'Welcome to Jyowo' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open project' })).toBeInTheDocument()
   })
 
   it('renders the memory browser support route', async () => {
@@ -139,7 +161,7 @@ describe('App', () => {
     expect(screen.getByRole('navigation', { name: 'Workspace' })).toBeInTheDocument()
   })
 
-  it('renders support routes for artifacts, skills, settings, and evals', async () => {
+  it('renders support routes for skills, settings, and evals', async () => {
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: {
@@ -149,14 +171,8 @@ describe('App', () => {
     })
     const commandClient = createMockCommandClient()
 
-    window.history.pushState(null, '', '/artifacts')
-    const { rerender } = render(<App commandClient={commandClient} queryClient={queryClient} />)
-
-    expect(await screen.findByRole('heading', { name: 'Artifacts' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Artifact history' })).toBeInTheDocument()
-
     window.history.pushState(null, '', '/skills')
-    rerender(<App commandClient={commandClient} queryClient={queryClient} />)
+    const { rerender } = render(<App commandClient={commandClient} queryClient={queryClient} />)
 
     expect(await screen.findByRole('region', { name: 'Skills' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { level: 1, name: 'Skills' })).not.toBeInTheDocument()

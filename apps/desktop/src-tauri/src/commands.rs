@@ -39,7 +39,10 @@ use jyowo_harness_sdk::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::Emitter;
+use tokio::sync::RwLock as AsyncRwLock;
 use tokio::task::JoinHandle;
+
+use crate::project_registry::{ProjectRecord, ProjectRegistry};
 
 const START_RUN_STARTED_TIMEOUT: Duration = Duration::from_secs(5);
 const WORKSPACE_ROOT_ENV: &str = "JYOWO_WORKSPACE_ROOT";
@@ -2174,6 +2177,36 @@ impl DesktopRuntimeState {
     }
 }
 
+pub type ManagedDesktopRuntime = Arc<AsyncRwLock<DesktopRuntimeState>>;
+
+#[must_use]
+pub fn managed_runtime_state() -> ManagedDesktopRuntime {
+    Arc::new(AsyncRwLock::new(initial_managed_runtime_state()))
+}
+
+fn initial_managed_runtime_state() -> DesktopRuntimeState {
+    if let Ok(registry) = ProjectRegistry::load() {
+        if let Some(active_path) = registry.active_path() {
+            if let Ok(state) = tauri::async_runtime::block_on(runtime_state_for_workspace(
+                PathBuf::from(active_path),
+            )) {
+                return state;
+            }
+        }
+    }
+
+    unconfigured_runtime_state()
+}
+
+fn unconfigured_runtime_state() -> DesktopRuntimeState {
+    let workspace_root = crate::project_registry::unconfigured_workspace_root();
+    let _ = std::fs::create_dir_all(&workspace_root);
+    DesktopRuntimeState::with_workspace_for_test(workspace_root).unwrap_or_else(|_| {
+        tauri::async_runtime::block_on(runtime_state_async())
+            .expect("desktop runtime state should initialize")
+    })
+}
+
 #[must_use]
 pub fn runtime_state() -> DesktopRuntimeState {
     tauri::async_runtime::block_on(runtime_state_async())
@@ -2354,6 +2387,7 @@ pub struct CommandErrorPayload {
 pub struct ConversationSummaryPayload {
     pub id: String,
     pub is_empty: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_message_preview: Option<String>,
     pub title: String,
     pub updated_at: String,
@@ -7813,6 +7847,53 @@ pub fn harness_healthcheck() -> HarnessHealthcheckPayload {
     harness_healthcheck_payload()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListProjectsResponse {
+    pub projects: Vec<ProjectRecord>,
+    pub active_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchProjectResponse {
+    pub project: ProjectRecord,
+}
+
+#[tauri::command]
+pub fn list_projects(project_registry: tauri::State<'_, ProjectRegistry>) -> ListProjectsResponse {
+    ListProjectsResponse {
+        projects: project_registry.list_projects(),
+        active_path: project_registry.active_path(),
+    }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn switch_project(
+    path: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+    project_registry: tauri::State<'_, ProjectRegistry>,
+) -> Result<SwitchProjectResponse, CommandErrorPayload> {
+    let workspace_root = canonical_workspace_root(PathBuf::from(path), "project path".to_owned())?;
+    let project = project_registry.set_active(&workspace_root)?;
+    let new_runtime = runtime_state_for_workspace(workspace_root).await?;
+    *runtime_handle.write().await = new_runtime;
+    Ok(SwitchProjectResponse { project })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn add_project(
+    path: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+    project_registry: tauri::State<'_, ProjectRegistry>,
+) -> Result<SwitchProjectResponse, CommandErrorPayload> {
+    let workspace_root = canonical_workspace_root(PathBuf::from(path), "project path".to_owned())?;
+    let project = project_registry.upsert_and_activate(&workspace_root)?;
+    let new_runtime = runtime_state_for_workspace(workspace_root).await?;
+    *runtime_handle.write().await = new_runtime;
+    Ok(SwitchProjectResponse { project })
+}
+
 #[tauri::command]
 pub async fn list_model_provider_catalog() -> ModelProviderCatalogResponse {
     list_model_provider_catalog_payload_with_remote().await
@@ -7820,16 +7901,18 @@ pub async fn list_model_provider_catalog() -> ModelProviderCatalogResponse {
 
 #[tauri::command(rename_all = "camelCase")]
 pub fn get_execution_settings(
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.blocking_read();
     get_execution_settings_with_store(runtime_state.execution_settings_store.as_ref())
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn set_execution_settings(
     permission_mode: PermissionMode,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     let _execution_settings_guard = runtime_state.execution_settings_lock.lock().await;
     set_execution_settings_with_store(
         SetExecutionSettingsRequest { permission_mode },
@@ -7839,19 +7922,21 @@ pub async fn set_execution_settings(
 
 #[tauri::command]
 pub async fn list_provider_settings(
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListProviderSettingsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     list_provider_settings_with_store(runtime_state.provider_settings_store.as_ref()).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn request_provider_config_api_key_reveal(
     config_id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<RequestProviderConfigApiKeyRevealResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     request_provider_config_api_key_reveal_with_runtime_state(
         RequestProviderConfigApiKeyRevealRequest { config_id },
-        &runtime_state,
+        &*runtime_state,
     )
     .await
 }
@@ -7860,14 +7945,15 @@ pub async fn request_provider_config_api_key_reveal(
 pub async fn get_provider_config_api_key(
     config_id: String,
     reveal_token: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetProviderConfigApiKeyResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     get_provider_config_api_key_with_runtime_state(
         GetProviderConfigApiKeyRequest {
             config_id,
             reveal_token,
         },
-        &runtime_state,
+        &*runtime_state,
     )
     .await
 }
@@ -7893,8 +7979,9 @@ pub async fn save_provider_settings(
     model_id: String,
     provider_id: String,
     set_default: Option<bool>,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SaveProviderSettingsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     let _provider_settings_guard = runtime_state.provider_settings_lock.lock().await;
     let request = ProviderSettingsRequest {
         api_key,
@@ -7927,9 +8014,10 @@ pub async fn save_provider_settings(
 
 #[tauri::command]
 pub async fn list_mcp_servers(
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListMcpServersResponse, CommandErrorPayload> {
-    list_mcp_servers_with_runtime_state(runtime_state.inner()).await
+    let runtime_state = runtime_handle.read().await;
+    list_mcp_servers_with_runtime_state(&*runtime_state).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -7938,8 +8026,9 @@ pub async fn save_mcp_server(
     id: String,
     scope: String,
     transport: McpServerTransportConfig,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SaveMcpServerResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     let _mcp_server_guard = runtime_state.mcp_server_lock.lock().await;
     save_mcp_server_with_runtime_state(
         SaveMcpServerRequest {
@@ -7948,7 +8037,7 @@ pub async fn save_mcp_server(
             scope,
             transport,
         },
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }
@@ -7956,180 +8045,186 @@ pub async fn save_mcp_server(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn delete_mcp_server(
     id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<DeleteMcpServerResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     let _mcp_server_guard = runtime_state.mcp_server_lock.lock().await;
-    delete_mcp_server_with_runtime_state(DeleteMcpServerRequest { id }, runtime_state.inner()).await
+    delete_mcp_server_with_runtime_state(DeleteMcpServerRequest { id }, &*runtime_state).await
 }
 
 #[tauri::command]
 pub async fn list_skills(
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListSkillsResponse, CommandErrorPayload> {
-    list_skills_with_runtime_state(runtime_state.inner()).await
+    let runtime_state = runtime_handle.read().await;
+    list_skills_with_runtime_state(&*runtime_state).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_skill_detail(
     id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetSkillDetailResponse, CommandErrorPayload> {
-    get_skill_detail_with_runtime_state(GetSkillDetailRequest { id }, runtime_state.inner()).await
+    let runtime_state = runtime_handle.read().await;
+    get_skill_detail_with_runtime_state(GetSkillDetailRequest { id }, &*runtime_state).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_skill_file(
     id: String,
     path: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetSkillFileResponse, CommandErrorPayload> {
-    get_skill_file_with_runtime_state(GetSkillFileRequest { id, path }, runtime_state.inner()).await
+    let runtime_state = runtime_handle.read().await;
+    get_skill_file_with_runtime_state(GetSkillFileRequest { id, path }, &*runtime_state).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn import_skill(
     source_path: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ImportSkillResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     let _skill_store_guard = runtime_state.skill_store_lock.lock().await;
-    import_skill_with_runtime_state(ImportSkillRequest { source_path }, runtime_state.inner()).await
+    import_skill_with_runtime_state(ImportSkillRequest { source_path }, &*runtime_state).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn set_skill_enabled(
     id: String,
     enabled: bool,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SetSkillEnabledResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     let _skill_store_guard = runtime_state.skill_store_lock.lock().await;
-    set_skill_enabled_with_runtime_state(
-        SetSkillEnabledRequest { id, enabled },
-        runtime_state.inner(),
-    )
-    .await
+    set_skill_enabled_with_runtime_state(SetSkillEnabledRequest { id, enabled }, &*runtime_state)
+        .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn delete_skill(
     id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<DeleteSkillResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     let _skill_store_guard = runtime_state.skill_store_lock.lock().await;
-    delete_skill_with_runtime_state(DeleteSkillRequest { id }, runtime_state.inner()).await
+    delete_skill_with_runtime_state(DeleteSkillRequest { id }, &*runtime_state).await
 }
 
 #[tauri::command]
 pub async fn list_memory_items(
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListMemoryItemsResponse, CommandErrorPayload> {
-    list_memory_items_with_runtime_state(runtime_state.inner()).await
+    let runtime_state = runtime_handle.read().await;
+    list_memory_items_with_runtime_state(&*runtime_state).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_memory_item(
     id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetMemoryItemResponse, CommandErrorPayload> {
-    get_memory_item_with_runtime_state(GetMemoryItemRequest { id }, runtime_state.inner()).await
+    let runtime_state = runtime_handle.read().await;
+    get_memory_item_with_runtime_state(GetMemoryItemRequest { id }, &*runtime_state).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn update_memory_item(
     content: String,
     id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<UpdateMemoryItemResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     let _memory_guard = runtime_state.memory_lock.lock().await;
-    update_memory_item_with_runtime_state(
-        UpdateMemoryItemRequest { content, id },
-        runtime_state.inner(),
-    )
-    .await
+    update_memory_item_with_runtime_state(UpdateMemoryItemRequest { content, id }, &*runtime_state)
+        .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn delete_memory_item(
     id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<DeleteMemoryItemResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     let _memory_guard = runtime_state.memory_lock.lock().await;
-    delete_memory_item_with_runtime_state(DeleteMemoryItemRequest { id }, runtime_state.inner())
-        .await
+    delete_memory_item_with_runtime_state(DeleteMemoryItemRequest { id }, &*runtime_state).await
 }
 
 #[tauri::command]
 pub async fn export_memory_items(
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ExportMemoryItemsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     let _memory_guard = runtime_state.memory_lock.lock().await;
-    export_memory_items_with_runtime_state(runtime_state.inner()).await
+    export_memory_items_with_runtime_state(&*runtime_state).await
 }
 
 #[tauri::command]
 pub async fn list_conversations(
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListConversationsResponse, CommandErrorPayload> {
-    Ok(list_conversations_with_runtime_state(runtime_state.inner()).await)
+    let runtime_state = runtime_handle.read().await;
+    Ok(list_conversations_with_runtime_state(&*runtime_state).await)
 }
 
 #[tauri::command]
 pub async fn create_conversation(
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<CreateConversationResponse, CommandErrorPayload> {
-    create_conversation_with_runtime_state(runtime_state.inner()).await
+    let runtime_state = runtime_handle.read().await;
+    create_conversation_with_runtime_state(&*runtime_state).await
 }
 
 #[tauri::command]
 pub async fn list_eval_cases(
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListEvalCasesResponse, CommandErrorPayload> {
-    list_eval_cases_with_runtime_state(runtime_state.inner())
+    let runtime_state = runtime_handle.read().await;
+    list_eval_cases_with_runtime_state(&*runtime_state)
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn list_artifacts(
     conversation_id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListArtifactsResponse, CommandErrorPayload> {
-    list_artifacts_with_runtime_state(
-        ListArtifactsRequest { conversation_id },
-        runtime_state.inner(),
-    )
-    .await
+    let runtime_state = runtime_handle.read().await;
+    list_artifacts_with_runtime_state(ListArtifactsRequest { conversation_id }, &*runtime_state)
+        .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn run_eval_case(
     case_id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<RunEvalCaseResponse, CommandErrorPayload> {
-    run_eval_case_with_runtime_state(RunEvalCaseRequest { case_id }, runtime_state.inner())
+    let runtime_state = runtime_handle.read().await;
+    run_eval_case_with_runtime_state(RunEvalCaseRequest { case_id }, &*runtime_state)
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_conversation(
     conversation_id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetConversationResponse, CommandErrorPayload> {
-    get_conversation_with_runtime_state(
-        GetConversationRequest { conversation_id },
-        runtime_state.inner(),
-    )
-    .await
+    let runtime_state = runtime_handle.read().await;
+    get_conversation_with_runtime_state(GetConversationRequest { conversation_id }, &*runtime_state)
+        .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn set_conversation_model_config(
     conversation_id: String,
     model_config_id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SetConversationModelConfigResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     set_conversation_model_config_with_runtime_state(
         SetConversationModelConfigRequest {
             conversation_id,
             model_config_id,
         },
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }
@@ -8137,11 +8232,12 @@ pub async fn set_conversation_model_config(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn delete_conversation(
     conversation_id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<DeleteConversationResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     delete_conversation_with_runtime_state(
         DeleteConversationRequest { conversation_id },
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }
@@ -8153,8 +8249,9 @@ pub async fn start_run(
     context_references: Option<Vec<ContextReferencePayload>>,
     conversation_id: String,
     prompt: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<StartRunResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     start_run_with_runtime_state(
         StartRunRequest {
             attachments,
@@ -8163,7 +8260,7 @@ pub async fn start_run(
             conversation_id,
             prompt,
         },
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }
@@ -8171,11 +8268,12 @@ pub async fn start_run(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn create_attachment_from_path(
     path: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<CreateAttachmentFromPathResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest { path },
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }
@@ -8183,11 +8281,12 @@ pub async fn create_attachment_from_path(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn list_reference_candidates(
     conversation_id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListReferenceCandidatesResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     list_reference_candidates_with_runtime_state(
         ListReferenceCandidatesRequest { conversation_id },
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }
@@ -8195,9 +8294,10 @@ pub async fn list_reference_candidates(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn cancel_run(
     run_id: String,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<CancelRunResponse, CommandErrorPayload> {
-    cancel_run_with_runtime_state(CancelRunRequest { run_id }, runtime_state.inner()).await
+    let runtime_state = runtime_handle.read().await;
+    cancel_run_with_runtime_state(CancelRunRequest { run_id }, &*runtime_state).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -8206,8 +8306,9 @@ pub async fn resolve_permission(
     decision: PermissionDecision,
     request_id: String,
     window: tauri::Window,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ResolvePermissionResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     let window_label = window.label().to_owned();
     resolve_permission_for_window_with_runtime_state(
         ResolvePermissionRequest {
@@ -8216,7 +8317,7 @@ pub async fn resolve_permission(
             request_id,
         },
         window_label,
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }
@@ -8225,14 +8326,15 @@ pub async fn resolve_permission(
 pub async fn list_activity(
     conversation_id: Option<String>,
     run_id: Option<String>,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListActivityResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     list_activity_with_runtime_state(
         ListActivityRequest {
             conversation_id,
             run_id,
         },
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }
@@ -8241,14 +8343,15 @@ pub async fn list_activity(
 pub async fn get_replay_timeline(
     conversation_id: Option<String>,
     run_id: Option<String>,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ReplayTimelineResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     get_replay_timeline_with_runtime_state(
         ReplayTimelineRequest {
             conversation_id,
             run_id,
         },
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }
@@ -8258,15 +8361,16 @@ pub async fn page_conversation_timeline(
     conversation_id: String,
     after_cursor: Option<ConversationCursor>,
     limit: Option<usize>,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<PageConversationTimelineResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     page_conversation_timeline_with_runtime_state(
         PageConversationTimelineRequest {
             conversation_id,
             after_cursor,
             limit,
         },
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }
@@ -8276,8 +8380,9 @@ pub async fn subscribe_conversation_events(
     conversation_id: String,
     after_cursor: Option<ConversationCursor>,
     window: tauri::Window,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SubscribeConversationEventsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     let window_label = window.label().to_owned();
     let emitter = Arc::new(move |batch: ConversationEventBatchPayload| {
         window
@@ -8291,7 +8396,7 @@ pub async fn subscribe_conversation_events(
         },
         window_label,
         emitter,
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }
@@ -8300,12 +8405,13 @@ pub async fn subscribe_conversation_events(
 pub async fn unsubscribe_conversation_events(
     subscription_id: String,
     window: tauri::Window,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<UnsubscribeConversationEventsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     unsubscribe_conversation_events_for_window_with_runtime_state(
         UnsubscribeConversationEventsRequest { subscription_id },
         window.label().to_owned(),
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }
@@ -8314,14 +8420,15 @@ pub async fn unsubscribe_conversation_events(
 pub async fn export_support_bundle(
     conversation_id: Option<String>,
     run_id: Option<String>,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ExportSupportBundleResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     export_support_bundle_with_runtime_state(
         ExportSupportBundleRequest {
             conversation_id,
             run_id,
         },
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }
@@ -8330,14 +8437,15 @@ pub async fn export_support_bundle(
 pub async fn get_context_snapshot(
     conversation_id: Option<String>,
     run_id: Option<String>,
-    runtime_state: tauri::State<'_, DesktopRuntimeState>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetContextSnapshotResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
     get_context_snapshot_with_runtime_state(
         GetContextSnapshotRequest {
             conversation_id,
             run_id,
         },
-        runtime_state.inner(),
+        &*runtime_state,
     )
     .await
 }

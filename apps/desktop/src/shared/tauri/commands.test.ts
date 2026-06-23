@@ -265,6 +265,32 @@ describe('CommandClient', () => {
     expect(invoke).toHaveBeenCalledWith('get_conversation', { conversationId: 'conversation-001' })
   })
 
+  it('accepts empty conversation summaries when optional preview is omitted', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        conversations: [
+          {
+            id: 'conversation-empty-001',
+            isEmpty: true,
+            title: 'New conversation',
+            updatedAt: '2026-06-17T00:00:00.000Z',
+          },
+        ],
+      }),
+    )
+
+    await expect(listConversations(client)).resolves.toEqual({
+      conversations: [
+        {
+          id: 'conversation-empty-001',
+          isEmpty: true,
+          title: 'New conversation',
+          updatedAt: '2026-06-17T00:00:00.000Z',
+        },
+      ],
+    })
+  })
+
   it('rejects unsafe conversation snapshot message bodies', async () => {
     const snapshot = (body: string) => ({
       conversation: {

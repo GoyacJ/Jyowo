@@ -1037,9 +1037,38 @@ const runEvalCaseResponseSchema = z
   })
   .strict()
 
+const projectRecordSchema = z
+  .object({
+    path: z.string().min(1),
+    name: z.string().min(1),
+    lastOpenedAt: z.string().min(1),
+  })
+  .strict()
+
+const listProjectsResponseSchema = z
+  .object({
+    projects: z.array(projectRecordSchema),
+    activePath: z.string().min(1).nullable(),
+  })
+  .strict()
+
+const switchProjectRequestSchema = z
+  .object({
+    path: z.string().min(1),
+  })
+  .strict()
+
+const switchProjectResponseSchema = z
+  .object({
+    project: projectRecordSchema,
+  })
+  .strict()
+
 export type AppInfo = z.infer<typeof appInfoSchema>
 export type HarnessHealthcheck = z.infer<typeof harnessHealthcheckSchema>
 export type ListConversationsResponse = z.infer<typeof listConversationsResponseSchema>
+export type ListProjectsResponse = z.infer<typeof listProjectsResponseSchema>
+export type SwitchProjectResponse = z.infer<typeof switchProjectResponseSchema>
 export type CreateConversationResponse = z.infer<typeof createConversationResponseSchema>
 export type GetConversationResponse = z.infer<typeof getConversationResponseSchema>
 export type DeleteConversationResponse = z.infer<typeof deleteConversationResponseSchema>
@@ -1158,6 +1187,9 @@ export interface CommandClient {
   listMcpServers: () => Promise<ListMcpServersResponse>
   listMemoryItems: () => Promise<ListMemoryItemsResponse>
   listProviderSettings: () => Promise<ListProviderSettingsResponse>
+  listProjects: () => Promise<ListProjectsResponse>
+  addProject: (path: string) => Promise<SwitchProjectResponse>
+  switchProject: (path: string) => Promise<SwitchProjectResponse>
   pageConversationTimeline: (
     request: PageConversationTimelineRequest,
   ) => Promise<PageConversationTimelineResponse>
@@ -1392,6 +1424,20 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     async listProviderSettings() {
       const command = 'list_provider_settings'
       return parsePayload(command, listProviderSettingsResponseSchema, await invoke(command))
+    },
+    async listProjects() {
+      const command = 'list_projects'
+      return parsePayload(command, listProjectsResponseSchema, await invoke(command))
+    },
+    async addProject(path) {
+      const command = 'add_project'
+      const args = parseArgs(command, switchProjectRequestSchema, { path })
+      return parsePayload(command, switchProjectResponseSchema, await invoke(command, args))
+    },
+    async switchProject(path) {
+      const command = 'switch_project'
+      const args = parseArgs(command, switchProjectRequestSchema, { path })
+      return parsePayload(command, switchProjectResponseSchema, await invoke(command, args))
     },
     async listSkills() {
       const command = 'list_skills'
@@ -1721,6 +1767,26 @@ export function listProviderSettings(
   client: CommandClient = tauriCommandClient,
 ): Promise<ListProviderSettingsResponse> {
   return client.listProviderSettings()
+}
+
+export function listProjects(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListProjectsResponse> {
+  return client.listProjects()
+}
+
+export function addProject(
+  path: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<SwitchProjectResponse> {
+  return client.addProject(path)
+}
+
+export function switchProject(
+  path: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<SwitchProjectResponse> {
+  return client.switchProject(path)
 }
 
 export function getExecutionSettings(

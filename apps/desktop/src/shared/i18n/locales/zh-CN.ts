@@ -53,9 +53,23 @@ export const zhCN = {
       recent: '最近对话',
       loading: '加载中...',
       empty: '暂无对话',
+      projectRequired: '打开项目后可查看对话。',
       defaultTitle: '新建对话',
       defaultPreview: '从输入框开始。',
       delete: '删除 {{title}}',
+    },
+    projects: {
+      noneSelected: '未选择项目',
+      pickDirectoryHint: '选择项目目录以开始',
+      switch: '切换项目',
+      open: '打开项目',
+      new: '新建项目',
+    },
+    welcome: {
+      eyebrow: '本地 AI 工作区',
+      title: '欢迎使用 Jyowo',
+      description: '打开项目目录，创建对话，在同一界面里与代码协作。',
+      projectRequired: '开始对话前，请先打开或新建项目。',
     },
   },
   conversation: {
@@ -65,6 +79,11 @@ export const zhCN = {
     emptyTitle: '暂无对话',
     emptyDescription: '工作区对话可用后，从输入框开始。',
     intro: '用自然语言描述需求。Jyowo 会规划、在本地执行，并展示每一步，方便你审查和继续。',
+    timeline: {
+      emptyTitle: '开始对话',
+      emptyDescription: '让 Jyowo 在这个项目里帮你工作。',
+      jumpToLatest: '跳到最新',
+    },
     composer: {
       placeholder: '向 Jyowo 询问这个项目...',
       attachFile: '附加文件',
@@ -111,6 +130,11 @@ export const zhCN = {
     reviewGeneratedFoundation: '审查生成的基础实现',
     userAuthor: '你',
     now: '刚刚',
+    messageStatus: {
+      sending: '发送中',
+      sent: '已发送',
+      failed: '发送失败',
+    },
     diff: {
       openInEditor: '在编辑器中打开',
       copy: '复制 diff',

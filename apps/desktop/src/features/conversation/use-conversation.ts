@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 
+import { useActiveProjectPath } from '@/features/workspace/use-active-project-path'
 import { useUiStore } from '@/shared/state/ui-store'
 import {
   type GetConversationResponse,
@@ -10,11 +11,11 @@ import {
 } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 
-const conversationQueryKeys = {
+export const conversationQueryKeys = {
   all: ['conversation'] as const,
-  detail: (conversationId: string) =>
-    [...conversationQueryKeys.all, 'detail', conversationId] as const,
-  list: () => [...conversationQueryKeys.all, 'list'] as const,
+  detail: (workspacePath: string, conversationId: string) =>
+    [...conversationQueryKeys.all, 'detail', workspacePath, conversationId] as const,
+  list: (workspacePath: string) => [...conversationQueryKeys.all, 'list', workspacePath] as const,
 }
 
 type UseConversationOptions = {
@@ -29,10 +30,14 @@ export function useConversation(options: UseConversationOptions = {}) {
   const commandClient = useCommandClient()
   const setActiveRun = useUiStore((state) => state.setActiveRun)
   const includeDetail = options.includeDetail ?? true
+  const activeProjectPathQuery = useActiveProjectPath()
+  const workspacePath = activeProjectPathQuery.data ?? null
+  const workspaceKey = workspacePath ?? 'none'
 
   const conversationsQuery = useQuery({
-    queryKey: conversationQueryKeys.list(),
+    enabled: Boolean(workspacePath),
     queryFn: () => listConversations(commandClient),
+    queryKey: conversationQueryKeys.list(workspaceKey),
   })
 
   const selectedConversationId =
@@ -47,13 +52,14 @@ export function useConversation(options: UseConversationOptions = {}) {
   )
   const shouldLoadDetail =
     includeDetail &&
+    Boolean(workspacePath) &&
     Boolean(selectedConversationId) &&
     (!options.conversationId || selectedConversationListed)
 
   const conversationQuery = useQuery({
-    queryKey: conversationQueryKeys.detail(selectedConversationId ?? 'none'),
-    queryFn: () => getConversation(selectedConversationId ?? '', commandClient),
     enabled: shouldLoadDetail,
+    queryFn: () => getConversation(selectedConversationId ?? '', commandClient),
+    queryKey: conversationQueryKeys.detail(workspaceKey, selectedConversationId ?? 'none'),
   })
 
   const startRunMutation = useMutation({
@@ -88,13 +94,17 @@ export function useConversation(options: UseConversationOptions = {}) {
   return {
     conversation: conversationQuery.data?.conversation ?? null,
     conversations: conversationsQuery.data?.conversations ?? [],
-    error: conversationsQuery.error ?? conversationQuery.error,
+    error: activeProjectPathQuery.error ?? conversationsQuery.error ?? conversationQuery.error,
     isDraft,
     isEmpty,
-    isLoading: conversationsQuery.isLoading || (shouldLoadDetail && conversationQuery.isLoading),
+    isLoading:
+      activeProjectPathQuery.isLoading ||
+      conversationsQuery.isLoading ||
+      (shouldLoadDetail && conversationQuery.isLoading),
     isSubmitting: startRunMutation.isPending,
     selectedConversationId,
     submitError: startRunMutation.error,
     submitPrompt: startRunMutation.mutateAsync,
+    workspacePath,
   }
 }

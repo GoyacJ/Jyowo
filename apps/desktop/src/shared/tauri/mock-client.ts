@@ -24,6 +24,7 @@ import type {
   ListEvalCasesResponse,
   ListMcpServersResponse,
   ListMemoryItemsResponse,
+  ListProjectsResponse,
   ListProviderSettingsResponse,
   ListReferenceCandidatesResponse,
   ListSkillsResponse,
@@ -40,6 +41,7 @@ import type {
   SkillSummary,
   StartRunResponse,
   SubscribeConversationEventsResponse,
+  SwitchProjectResponse,
   UnsubscribeConversationEventsResponse,
   UpdateMemoryItemResponse,
   ValidateProviderSettingsResponse,
@@ -481,6 +483,22 @@ const mockMemoryItem: GetMemoryItemResponse = {
   },
 }
 
+export const mockEmptyProjects: ListProjectsResponse = {
+  activePath: null,
+  projects: [],
+}
+
+export const mockJyowoProject: ListProjectsResponse = {
+  activePath: '/Users/goya/Repo/Git/Jyowo',
+  projects: [
+    {
+      lastOpenedAt: timestamp,
+      name: 'Jyowo',
+      path: '/Users/goya/Repo/Git/Jyowo',
+    },
+  ],
+}
+
 const mockMemoryExport: ExportMemoryItemsResponse = {
   exportedAt: timestamp,
   format: 'json',
@@ -537,6 +555,7 @@ export interface MockCommandClientOptions {
   providerConfigApiKey?: GetProviderConfigApiKeyResponse
   providerConfigApiKeyReveal?: RequestProviderConfigApiKeyRevealResponse
   providerSettingsList?: ListProviderSettingsResponse
+  projects?: ListProjectsResponse
   providerSettings?: SaveProviderSettingsResponse
   providerValidation?: ValidateProviderSettingsResponse
   setExecutionSettings?: SetExecutionSettingsResponse
@@ -566,6 +585,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
   let activeSubscription: SubscribeConversationEventsResponse | null = null
   let subscriptionCounter = 0
   let completionBatchFlushed: Promise<void> = Promise.resolve()
+  let projects = options.projects ?? mockJyowoProject
   const pendingBatchTimeouts = new Map<number, () => void>()
   const mockEventState: MockConversationEventState = {
     getListener: () => batchListener,
@@ -662,15 +682,22 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       return options.replayTimeline ?? mockReplayTimeline
     },
-    async pageConversationTimeline() {
+    async pageConversationTimeline(request) {
       await wait(options.delayMs)
-      return (
-        options.conversationTimelinePage ?? {
-          events: (options.replayTimeline ?? mockReplayTimeline).events,
-          cursor: undefined,
-          gap: false,
-        }
-      )
+      const page = options.conversationTimelinePage ?? {
+        events: [],
+        cursor: undefined,
+        gap: false,
+      }
+      if (!request.afterCursor) {
+        return page
+      }
+
+      const afterSequence = request.afterCursor.conversationSequence
+      return {
+        ...page,
+        events: page.events.filter((event) => event.conversationSequence > afterSequence),
+      }
     },
     async getSkillDetail(id) {
       await wait(options.delayMs)
@@ -739,6 +766,36 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     async listProviderSettings() {
       await wait(options.delayMs)
       return options.providerSettingsList ?? mockProviderSettingsList
+    },
+    async listProjects() {
+      await wait(options.delayMs)
+      return projects
+    },
+    async addProject(path) {
+      await wait(options.delayMs)
+      const name = path.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Project'
+      const project = {
+        lastOpenedAt: new Date().toISOString(),
+        name,
+        path,
+      } satisfies SwitchProjectResponse['project']
+      projects = {
+        activePath: path,
+        projects: [project, ...projects.projects.filter((entry) => entry.path !== path)],
+      }
+      return { project }
+    },
+    async switchProject(path) {
+      await wait(options.delayMs)
+      const project = projects.projects.find((entry) => entry.path === path)
+      if (!project) {
+        throw new Error(`Project not found: ${path}`)
+      }
+      projects = {
+        ...projects,
+        activePath: path,
+      }
+      return { project }
     },
     async listReferenceCandidates(_request) {
       await wait(options.delayMs)
@@ -1113,6 +1170,9 @@ export function createRejectedCommandClient(error: unknown): CommandClient {
     listMcpServers: () => Promise.reject(error),
     listMemoryItems: () => Promise.reject(error),
     listProviderSettings: () => Promise.reject(error),
+    listProjects: () => Promise.reject(error),
+    addProject: () => Promise.reject(error),
+    switchProject: () => Promise.reject(error),
     listReferenceCandidates: () => Promise.reject(error),
     listSkills: () => Promise.reject(error),
     resolvePermission: () => Promise.reject(error),

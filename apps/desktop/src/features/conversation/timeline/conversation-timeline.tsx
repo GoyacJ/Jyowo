@@ -1,5 +1,6 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { useUiStore } from '@/shared/state/ui-store'
 import { ConversationBlockRow } from './conversation-block-row'
@@ -24,6 +25,7 @@ export function ConversationTimeline({
   }) => void
   onReviewContinue?: (prompt: string) => void
 }) {
+  const { t } = useTranslation('conversation')
   const latestBlock = blocks.at(-1)
   const latestAnchorKey = latestBlock ? blockScrollAnchorKey(latestBlock) : null
   const streamingScrollTick =
@@ -112,10 +114,8 @@ export function ConversationTimeline({
         ) : (
           <div className="flex min-h-full items-center justify-center py-16 text-center">
             <div>
-              <h2 className="font-semibold text-xl">Start a conversation</h2>
-              <p className="mt-2 text-muted-foreground text-sm">
-                Ask Jyowo to work in this project.
-              </p>
+              <h2 className="font-semibold text-xl">{t('timeline.emptyTitle')}</h2>
+              <p className="mt-2 text-muted-foreground text-sm">{t('timeline.emptyDescription')}</p>
             </div>
           </div>
         )}
@@ -126,7 +126,7 @@ export function ConversationTimeline({
           onClick={jumpToLatest}
           type="button"
         >
-          Jump to latest
+          {t('timeline.jumpToLatest')}
         </button>
       ) : null}
     </section>

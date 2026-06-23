@@ -13,7 +13,6 @@ import { Route as SkillsRouteImport } from './routes/skills'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as MemoryRouteImport } from './routes/memory'
 import { Route as EvalsRouteImport } from './routes/evals'
-import { Route as ArtifactsRouteImport } from './routes/artifacts'
 import { Route as IndexRouteImport } from './routes/index'
 
 const SkillsRoute = SkillsRouteImport.update({
@@ -36,11 +35,6 @@ const EvalsRoute = EvalsRouteImport.update({
   path: '/evals',
   getParentRoute: () => rootRouteImport,
 } as any).lazy(() => import('./routes/evals.lazy').then((d) => d.Route))
-const ArtifactsRoute = ArtifactsRouteImport.update({
-  id: '/artifacts',
-  path: '/artifacts',
-  getParentRoute: () => rootRouteImport,
-} as any).lazy(() => import('./routes/artifacts.lazy').then((d) => d.Route))
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -49,7 +43,6 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/artifacts': typeof ArtifactsRoute
   '/evals': typeof EvalsRoute
   '/memory': typeof MemoryRoute
   '/settings': typeof SettingsRoute
@@ -57,7 +50,6 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/artifacts': typeof ArtifactsRoute
   '/evals': typeof EvalsRoute
   '/memory': typeof MemoryRoute
   '/settings': typeof SettingsRoute
@@ -66,7 +58,6 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/artifacts': typeof ArtifactsRoute
   '/evals': typeof EvalsRoute
   '/memory': typeof MemoryRoute
   '/settings': typeof SettingsRoute
@@ -74,22 +65,14 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/artifacts' | '/evals' | '/memory' | '/settings' | '/skills'
+  fullPaths: '/' | '/evals' | '/memory' | '/settings' | '/skills'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/artifacts' | '/evals' | '/memory' | '/settings' | '/skills'
-  id:
-    | '__root__'
-    | '/'
-    | '/artifacts'
-    | '/evals'
-    | '/memory'
-    | '/settings'
-    | '/skills'
+  to: '/' | '/evals' | '/memory' | '/settings' | '/skills'
+  id: '__root__' | '/' | '/evals' | '/memory' | '/settings' | '/skills'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  ArtifactsRoute: typeof ArtifactsRoute
   EvalsRoute: typeof EvalsRoute
   MemoryRoute: typeof MemoryRoute
   SettingsRoute: typeof SettingsRoute
@@ -126,13 +109,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EvalsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/artifacts': {
-      id: '/artifacts'
-      path: '/artifacts'
-      fullPath: '/artifacts'
-      preLoaderRoute: typeof ArtifactsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/': {
       id: '/'
       path: '/'
@@ -145,7 +121,6 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  ArtifactsRoute: ArtifactsRoute,
   EvalsRoute: EvalsRoute,
   MemoryRoute: MemoryRoute,
   SettingsRoute: SettingsRoute,

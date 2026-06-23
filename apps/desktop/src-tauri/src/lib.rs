@@ -1,12 +1,17 @@
 pub mod commands;
+pub mod project_registry;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
-        .manage(commands::runtime_state())
+        .manage(
+            project_registry::ProjectRegistry::load().expect("project registry should initialize"),
+        )
+        .manage(commands::managed_runtime_state())
         .invoke_handler(tauri::generate_handler![
+            commands::add_project,
             commands::cancel_run,
             commands::create_attachment_from_path,
             commands::create_conversation,
@@ -36,6 +41,8 @@ pub fn run() {
             commands::list_mcp_servers,
             commands::list_memory_items,
             commands::list_provider_settings,
+            commands::list_projects,
+            commands::switch_project,
             commands::list_skills,
             commands::page_conversation_timeline,
             commands::resolve_permission,

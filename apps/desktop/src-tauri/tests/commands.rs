@@ -2047,6 +2047,12 @@ async fn list_conversations_with_runtime_state_opens_listed_empty_conversation()
     assert!(detail.conversation.messages.is_empty());
     assert_eq!(detail.conversation.title, "New conversation");
     assert!(payload.conversations[0].is_empty);
+    let serialized = serde_json::to_value(&payload).expect("payload should serialize");
+    assert_eq!(
+        serialized["conversations"][0].get("lastMessagePreview"),
+        None,
+        "empty conversation preview should be omitted instead of serialized as null",
+    );
 }
 
 #[tokio::test]

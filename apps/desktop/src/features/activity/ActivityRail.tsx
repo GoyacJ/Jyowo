@@ -33,7 +33,6 @@ export function ActivityRail({ activeRunId, errorMessage, onOpenSettings }: Acti
           />
           {running ? t('common:status.running') : t('common:status.ready')}
         </span>
-        <span>{t('common:local')}</span>
       </div>
 
       <div className="min-w-0 truncate font-mono">

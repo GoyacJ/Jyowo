@@ -130,6 +130,15 @@ function createDeferredMockCommandClient(): CommandClient {
     async listProviderSettings() {
       return (await getClient()).listProviderSettings()
     },
+    async listProjects() {
+      return (await getClient()).listProjects()
+    },
+    async addProject(path) {
+      return (await getClient()).addProject(path)
+    },
+    async switchProject(path) {
+      return (await getClient()).switchProject(path)
+    },
     async listReferenceCandidates(request) {
       return (await getClient()).listReferenceCandidates(request)
     },

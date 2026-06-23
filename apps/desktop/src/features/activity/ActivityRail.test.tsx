@@ -12,7 +12,7 @@ describe('ActivityRail', () => {
     const statusBar = screen.getByRole('region', { name: 'Status' })
 
     expect(within(statusBar).getByText('Ready')).toBeInTheDocument()
-    expect(within(statusBar).getByText('Local')).toBeInTheDocument()
+    expect(within(statusBar).queryByText('Local')).not.toBeInTheDocument()
     expect(within(statusBar).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'View all activity' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Expand activity' })).not.toBeInTheDocument()

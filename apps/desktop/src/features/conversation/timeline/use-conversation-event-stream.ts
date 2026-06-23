@@ -96,8 +96,10 @@ function useAnimationFrameTimelineDispatch(dispatch: (action: ConversationTimeli
       cancelAnimationFrameSafe(frameRef.current)
       frameRef.current = null
     }
-    queuedActionsRef.current = []
-  }, [])
+    if (queuedActionsRef.current.length > 0) {
+      flush()
+    }
+  }, [flush])
 
   const batchedDispatch = useCallback(
     (action: ConversationTimelineAction) => {

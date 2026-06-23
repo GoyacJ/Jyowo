@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { appI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
-import { createMockCommandClient } from '@/shared/tauri/mock-client'
+import { createMockCommandClient, mockJyowoProject } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
 import { SidebarNav } from './SidebarNav'
 
@@ -64,6 +64,7 @@ function runtimeConversationClient() {
   ]
   return {
     ...createMockCommandClient({
+      projects: mockJyowoProject,
       contextSnapshot: {
         activeArtifact: null,
         decisions: [],
@@ -122,15 +123,13 @@ describe('SidebarNav', () => {
   })
 
   it('renders workspace navigation without search or workspace summary capsules', async () => {
+    window.history.pushState(null, '', '/?conversationId=conversation-runtime-001')
     renderSidebarNav(runtimeConversationClient())
 
     const navigation = screen.getByRole('navigation', { name: 'Workspace' })
 
     expect(within(navigation).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
-    expect(within(navigation).getByRole('img', { name: 'Local workspace' })).toHaveAttribute(
-      'src',
-      expect.stringContaining('32x32.png'),
-    )
+    expect(within(navigation).getByRole('button', { name: 'Switch project' })).toBeInTheDocument()
     expect(within(navigation).queryByRole('searchbox', { name: 'Search' })).not.toBeInTheDocument()
     expect(within(navigation).getByText('Recent conversations')).toBeInTheDocument()
     expect(within(navigation).getByRole('button', { name: 'New conversation' })).toBeInTheDocument()
@@ -141,17 +140,10 @@ describe('SidebarNav', () => {
       within(navigation).getByRole('button', { name: 'Delete Runtime session' }),
     ).toBeInTheDocument()
     expect(within(navigation).queryByText('Build the desktop foundation')).not.toBeInTheDocument()
-    const bottomNavigation = within(navigation).getByTestId('sidebar-bottom-navigation')
-    expect(within(bottomNavigation).getByText('Home')).toBeInTheDocument()
-    expect(within(bottomNavigation).getByText('Conversations')).toBeInTheDocument()
-    expect(within(bottomNavigation).getByText('Projects')).toBeInTheDocument()
-    expect(within(bottomNavigation).getByText('Artifacts')).toBeInTheDocument()
-    expect(within(bottomNavigation).queryByText('Agents')).not.toBeInTheDocument()
-    expect(within(bottomNavigation).queryByText('Tools')).not.toBeInTheDocument()
-    expect(within(bottomNavigation).queryByText('Skills')).not.toBeInTheDocument()
+    expect(within(navigation).queryByTestId('sidebar-bottom-navigation')).not.toBeInTheDocument()
+    expect(within(navigation).queryByText('Home')).not.toBeInTheDocument()
+    expect(within(navigation).queryByText('Artifacts')).not.toBeInTheDocument()
     expect(within(navigation).queryByText('Settings')).not.toBeInTheDocument()
-    expect(within(navigation).queryByText('Jyowo')).not.toBeInTheDocument()
-    expect(within(navigation).queryByText('/Users/goya/Repo/Git/Jyowo')).not.toBeInTheDocument()
     expect(within(navigation).queryByText(['Jane', 'Doe'].join(' '))).not.toBeInTheDocument()
     expect(within(navigation).queryByText(['Design', 'sandbox'].join(' '))).not.toBeInTheDocument()
     expect(within(navigation).queryByText('Runs')).not.toBeInTheDocument()
@@ -178,6 +170,7 @@ describe('SidebarNav', () => {
     await appI18n.changeLanguage('zh-CN')
     renderSidebarNav(
       createMockCommandClient({
+        projects: mockJyowoProject,
         conversations: {
           conversations: [
             {
@@ -206,6 +199,7 @@ describe('SidebarNav', () => {
     await appI18n.changeLanguage('zh-CN')
     renderSidebarNav(
       createMockCommandClient({
+        projects: mockJyowoProject,
         conversations: {
           conversations: [
             {
@@ -235,18 +229,8 @@ describe('SidebarNav', () => {
     expect(screen.queryByRole('option', { name: 'View activity' })).not.toBeInTheDocument()
   })
 
-  it('marks artifact and settings destinations from command palette actions', () => {
-    renderSidebarNav()
-
-    fireEvent.keyDown(window, { key: 'k', metaKey: true })
-    fireEvent.click(screen.getByRole('option', { name: 'Open artifact' }))
-
-    expect(screen.getByRole('button', { name: 'Artifacts' })).toHaveAttribute('data-active', 'true')
-    expect(screen.getByRole('button', { name: 'Artifacts' })).toHaveAttribute(
-      'aria-current',
-      'page',
-    )
-    expect(routerMock.navigate).toHaveBeenCalledWith({ to: '/artifacts' })
+  it('routes settings from the command palette', () => {
+    renderSidebarNav(runtimeConversationClient())
 
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
     fireEvent.click(screen.getByRole('option', { name: 'Settings' }))
@@ -279,10 +263,11 @@ describe('SidebarNav', () => {
     }))
 
     renderSidebarNav({
-      ...createMockCommandClient(),
+      ...createMockCommandClient({ projects: mockJyowoProject }),
       createConversation,
     })
 
+    await screen.findByText('Jyowo')
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
     fireEvent.click(screen.getByRole('option', { name: 'New conversation' }))
 
@@ -318,6 +303,7 @@ describe('SidebarNav', () => {
       createConversation,
     })
 
+    await screen.findByText('Jyowo')
     fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }))
 
     await waitFor(() => {
@@ -339,11 +325,12 @@ describe('SidebarNav', () => {
     })
 
     renderSidebarNav({
-      ...createMockCommandClient(),
+      ...createMockCommandClient({ projects: mockJyowoProject }),
       createConversation,
       listConversations: vi.fn(async () => ({ conversations: [] })),
     })
 
+    await screen.findByText('Jyowo')
     fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }))
 
     expect(
@@ -375,11 +362,12 @@ describe('SidebarNav', () => {
     })
 
     renderSidebarNav({
-      ...createMockCommandClient(),
+      ...createMockCommandClient({ projects: mockJyowoProject }),
       createConversation,
       listConversations,
     })
 
+    await screen.findByText('Jyowo')
     fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }))
 
     await waitFor(() => {
@@ -449,7 +437,7 @@ describe('SidebarNav', () => {
         ],
       })
     const commandClient = {
-      ...createMockCommandClient(),
+      ...createMockCommandClient({ projects: mockJyowoProject }),
       deleteConversation,
       listConversations,
     }
@@ -480,17 +468,10 @@ describe('SidebarNav', () => {
   it('does not render a sidebar skills entry on the legacy skills route', () => {
     window.history.pushState(null, '', '/skills')
 
-    renderSidebarNav()
+    renderSidebarNav(runtimeConversationClient())
 
     expect(screen.queryByRole('button', { name: 'Skills' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Conversations' })).toHaveAttribute(
-      'data-active',
-      'false',
-    )
-    expect(screen.getByRole('button', { name: 'Conversations' })).not.toHaveAttribute(
-      'aria-current',
-      'page',
-    )
+    expect(screen.queryByRole('button', { name: 'Conversations' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Tools' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
@@ -509,23 +490,18 @@ describe('SidebarNav', () => {
       uiStore.getState().setSidebarCollapsed(true)
     })
 
-    renderSidebarNav()
+    renderSidebarNav(runtimeConversationClient())
 
     expect(screen.getByRole('navigation', { name: 'Workspace' })).toHaveAttribute(
       'data-collapsed',
       'true',
     )
     expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Home' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Artifacts' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Switch project' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Skills' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
     expect(screen.queryByText('Recent conversations')).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Artifacts' }))
-
-    expect(routerMock.navigate).toHaveBeenCalledWith({ to: '/artifacts' })
   })
 
   it('collapses the expanded sidebar from the navigation control', () => {

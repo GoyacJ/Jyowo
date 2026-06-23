@@ -63,6 +63,15 @@ function acceptedAttachmentFilters(modalities: AttachmentInputModality[]) {
   return uniqueModalities.map((modality) => attachmentFilters[modality])
 }
 
+export async function pickProjectDirectory(): Promise<string | null> {
+  const selected = await open({
+    directory: true,
+    multiple: false,
+  })
+
+  return typeof selected === 'string' ? selected : null
+}
+
 export async function pickSkillPackagePath(): Promise<string | null> {
   const selected = await open({
     directory: true,

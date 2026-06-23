@@ -51,9 +51,24 @@ export const enUS = {
       recent: 'Recent conversations',
       loading: 'Loading...',
       empty: 'No conversations',
+      projectRequired: 'Open a project to view conversations.',
       defaultTitle: 'New conversation',
       defaultPreview: 'Start from the composer when ready.',
       delete: 'Delete {{title}}',
+    },
+    projects: {
+      noneSelected: 'No project selected',
+      pickDirectoryHint: 'Choose a project folder to begin',
+      switch: 'Switch project',
+      open: 'Open project',
+      new: 'New project',
+    },
+    welcome: {
+      eyebrow: 'Local AI workspace',
+      title: 'Welcome to Jyowo',
+      description:
+        'Open a project folder, start a conversation, and work with your code in one place.',
+      projectRequired: 'Open or create a project before starting a conversation.',
     },
   },
   conversation: {
@@ -64,6 +79,11 @@ export const enUS = {
     emptyDescription: 'Start from the composer when a workspace conversation is available.',
     intro:
       'Ask in plain language. Jyowo plans the work, runs it locally, and shows every step so you can review and continue.',
+    timeline: {
+      emptyTitle: 'Start a conversation',
+      emptyDescription: 'Ask Jyowo to work in this project.',
+      jumpToLatest: 'Jump to latest',
+    },
     composer: {
       placeholder: 'Ask Jyowo anything about this project...',
       attachFile: 'Attach file',
@@ -110,6 +130,11 @@ export const enUS = {
     reviewGeneratedFoundation: 'Review generated foundation',
     userAuthor: 'You',
     now: 'Now',
+    messageStatus: {
+      sending: 'Sending',
+      sent: 'Sent',
+      failed: 'Failed',
+    },
     diff: {
       openInEditor: 'Open in editor',
       copy: 'Copy diff',

@@ -115,6 +115,122 @@ describe('conversationTimelineReducer', () => {
     expect(state.clientMessageByRunId).toMatchObject({ 'run-001': 'client-001' })
   })
 
+  it('confirms optimistic user messages when assistant output starts for the same run', () => {
+    const state = reduce([
+      {
+        type: 'localSubmit',
+        clientMessageId: 'client-001',
+        draft: { prompt: '你好' },
+        at: timestamp,
+      },
+      { type: 'commandAccepted', clientMessageId: 'client-001', runId: 'run-001' },
+      {
+        type: 'applyEvents',
+        events: [
+          event(
+            'assistant.thinking.delta',
+            { text: 'plan' },
+            { id: 'evt-thinking', source: 'assistant', sequence: 1 },
+          ),
+        ],
+      },
+    ])
+
+    expect(blocks(state)).toContainEqual(
+      expect.objectContaining({
+        clientMessageId: 'client-001',
+        status: 'sent',
+      }),
+    )
+  })
+
+  it('does not duplicate user messages after early confirmation and user.message.appended', () => {
+    const state = reduce([
+      {
+        type: 'localSubmit',
+        clientMessageId: 'client-001',
+        draft: { prompt: 'hello' },
+        at: timestamp,
+      },
+      { type: 'commandAccepted', clientMessageId: 'client-001', runId: 'run-001' },
+      {
+        type: 'applyEvents',
+        events: [
+          event(
+            'assistant.delta',
+            { text: 'Hello!' },
+            { id: 'evt-delta', source: 'assistant', sequence: 1 },
+          ),
+          event(
+            'user.message.appended',
+            { messageId: 'message-001', clientMessageId: 'client-001', body: 'hello' },
+            { id: 'evt-user', source: 'user', sequence: 2 },
+          ),
+        ],
+      },
+    ])
+
+    const userBlocks = blocks(state).filter((block) => block.kind === 'userMessage')
+    expect(userBlocks).toHaveLength(1)
+    expect(userBlocks[0]).toMatchObject({
+      id: 'message:message-001',
+      body: 'hello',
+      status: 'sent',
+    })
+  })
+
+  it('applies late run.ended events even after later timeline events were already applied', () => {
+    const state = reduce([
+      { type: 'commandAccepted', clientMessageId: 'client-001', runId: 'run-001' },
+      {
+        type: 'applyEvents',
+        events: [
+          event(
+            'assistant.completed',
+            { messageId: 'message-002', body: 'Done' },
+            { id: 'evt-complete', source: 'assistant', conversationSequence: 8, sequence: 8 },
+          ),
+        ],
+      },
+      {
+        type: 'applyEvents',
+        events: [
+          event(
+            'run.ended',
+            { reason: 'completed' },
+            { id: 'evt-ended', conversationSequence: 5, sequence: 5 },
+          ),
+        ],
+      },
+    ])
+
+    expect(state.activeRunIds).toEqual([])
+  })
+
+  it('clears active run state after assistant completion when no interactive work remains', () => {
+    const state = reduce([
+      { type: 'commandAccepted', clientMessageId: 'client-001', runId: 'run-001' },
+      {
+        type: 'applyEvents',
+        events: [
+          event(
+            'assistant.thinking.delta',
+            { text: 'plan' },
+            { id: 'evt-thinking', source: 'assistant', sequence: 1 },
+          ),
+          event(
+            'assistant.completed',
+            { messageId: 'message-002', body: 'Hello!' },
+            { id: 'evt-complete', source: 'assistant', sequence: 2 },
+          ),
+        ],
+      },
+    ])
+
+    expect(state.activeRunIds).toEqual([])
+    expect(blocks(state).some((block) => block.kind === 'thinking')).toBe(false)
+  })
+
   it('keeps a stream gap after hydrating a snapshot because snapshots cannot recover all event blocks', () => {
     const state = reduce([
       {

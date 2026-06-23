@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { pickAttachmentPath } from '@/shared/tauri/file-dialog'
@@ -6,12 +7,16 @@ import { useCommandClient } from '@/shared/tauri/react'
 import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ConversationTimeline } from './timeline/conversation-timeline'
 import { useConversationTimeline } from './timeline/use-conversation-timeline'
+import { conversationQueryKeys } from './use-conversation'
+
+const defaultConversationTitle = 'New conversation'
 
 type ConversationWorkspaceProps = {
   conversationId?: string
 }
 
 export function ConversationWorkspace({ conversationId }: ConversationWorkspaceProps) {
+  const { t } = useTranslation(['conversation', 'shell'])
   const commandClient = useCommandClient()
   const queryClient = useQueryClient()
   const timeline = useConversationTimeline({ conversationId })
@@ -30,7 +35,10 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
     onSuccess: async () => {
       if (timeline.conversation) {
         await queryClient.invalidateQueries({
-          queryKey: ['conversation', 'detail', timeline.conversation.id],
+          queryKey: conversationQueryKeys.detail(
+            timeline.workspacePath ?? 'none',
+            timeline.conversation.id,
+          ),
         })
       }
       await queryClient.invalidateQueries({ queryKey: ['conversation-model-configs'] })
@@ -57,15 +65,19 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
   if (timeline.isEmpty || !timeline.conversation) {
     return (
       <section className="mx-auto flex min-h-full max-w-5xl flex-col">
-        <h1 className="pt-4 font-semibold text-2xl tracking-normal">No conversations yet</h1>
+        <h1 className="pt-4 font-semibold text-2xl tracking-normal">Conversation unavailable</h1>
         <p className="mt-3 text-muted-foreground text-sm">
-          Create a conversation from the sidebar to start.
+          This conversation is no longer available in the current project.
         </p>
       </section>
     )
   }
 
   const activeConversation = timeline.conversation
+  const conversationTitle =
+    activeConversation.title === defaultConversationTitle
+      ? t('shell:conversations.defaultTitle')
+      : activeConversation.title
   const configuredModelProfiles =
     providerSettingsQuery.data?.configs.filter((profile) => profile.hasApiKey) ?? []
   const currentModelConfigId =
@@ -93,7 +105,7 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
     <section className="mx-auto grid h-full min-h-0 w-full max-w-[900px] grid-rows-[minmax(0,1fr)_auto]">
       <ConversationTimeline
         blocks={timeline.blocks}
-        title={activeConversation.title}
+        title={conversationTitle}
         onPermissionResolve={(request) => {
           void timeline.resolvePermission(request)
         }}

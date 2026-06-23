@@ -1,4 +1,4 @@
-import { FileText, FlaskConical, MessageSquarePlus, Settings } from 'lucide-react'
+import { FlaskConical, MessageSquarePlus, Settings } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -12,7 +12,7 @@ import {
 } from '@/shared/ui/command-menu'
 import { Dialog, DialogContent, DialogTitle } from '@/shared/ui/dialog'
 
-export type CommandPaletteAction = 'new-conversation' | 'open-evals' | 'open-artifact' | 'settings'
+export type CommandPaletteAction = 'new-conversation' | 'open-evals' | 'settings'
 
 type CommandPaletteCommand = {
   action: CommandPaletteAction
@@ -26,7 +26,6 @@ const commands: CommandPaletteCommand[] = [
     icon: MessageSquarePlus,
     labelKey: 'commandPalette.newConversation',
   },
-  { action: 'open-artifact', icon: FileText, labelKey: 'commandPalette.openArtifact' },
   { action: 'open-evals', icon: FlaskConical, labelKey: 'commandPalette.openEvals' },
   { action: 'settings', icon: Settings, labelKey: 'commandPalette.settings' },
 ]

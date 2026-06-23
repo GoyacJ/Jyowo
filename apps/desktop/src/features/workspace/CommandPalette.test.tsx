@@ -16,7 +16,6 @@ describe('CommandPalette', () => {
     expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Search commands' })).toHaveFocus()
     expect(screen.getByRole('option', { name: 'New conversation' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'Open artifact' })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: 'Open evals' })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: 'Search files' })).not.toBeInTheDocument()
     expect(screen.queryByRole('option', { name: 'View activity' })).not.toBeInTheDocument()

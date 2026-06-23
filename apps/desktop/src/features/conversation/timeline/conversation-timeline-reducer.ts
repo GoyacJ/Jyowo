@@ -147,6 +147,10 @@ function hydrateSnapshot(
   return next
 }
 
+function isRunLifecycleEvent(type: TimelineRunEvent['type']) {
+  return type === 'run.ended' || type === 'engine.failed'
+}
+
 function applyEvents(
   state: ConversationTimelineState,
   events: TimelineRunEvent[],
@@ -176,7 +180,9 @@ function applyEvents(
     if (next.eventIds[event.id]) {
       continue
     }
+    const bypassSequenceGap = isRunLifecycleEvent(event.type)
     if (
+      !bypassSequenceGap &&
       next.lastConversationEventSequence !== null &&
       event.conversationSequence <= next.lastConversationEventSequence
     ) {
@@ -185,6 +191,7 @@ function applyEvents(
       continue
     }
     if (
+      !bypassSequenceGap &&
       next.lastConversationEventSequence !== null &&
       event.conversationSequence > next.lastConversationEventSequence + 1
     ) {
@@ -197,7 +204,10 @@ function applyEvents(
       continue
     }
     next.eventIds[event.id] = true
-    next.lastConversationEventSequence = event.conversationSequence
+    next.lastConversationEventSequence = Math.max(
+      next.lastConversationEventSequence ?? 0,
+      event.conversationSequence,
+    )
     next = applyEvent(next, event)
     appliedEvent = true
   }
@@ -234,7 +244,7 @@ function applyEvent(
   switch (event.type) {
     case 'run.started':
       state.activeRunIds = addUnique(state.activeRunIds, event.runId)
-      return state
+      return confirmOptimisticUserForRun(state, event.runId)
     case 'run.ended':
       state.activeRunIds = state.activeRunIds.filter((runId) => runId !== event.runId)
       removeThinkingBlocksForRun(state, event.runId)
@@ -364,11 +374,32 @@ function applyUserMessageAppended(
   }
 
   const clientMessageId = payload.clientMessageId
-  const blockId = clientMessageId
+  let blockId = clientMessageId
     ? state.optimisticBlocksByClientMessageId[clientMessageId]
     : undefined
 
-  if (blockId && clientMessageId) {
+  if (!blockId && clientMessageId) {
+    blockId = findUnconfirmedUserBlock(state, clientMessageId)?.id
+  }
+
+  if (!blockId && event.runId) {
+    const mappedClientMessageId = state.clientMessageByRunId[event.runId]
+    if (mappedClientMessageId) {
+      blockId =
+        state.optimisticBlocksByClientMessageId[mappedClientMessageId] ??
+        findUnconfirmedUserBlock(state, mappedClientMessageId)?.id
+    }
+  }
+
+  if (blockId) {
+    const resolvedClientMessageId =
+      clientMessageId ??
+      (event.runId ? state.clientMessageByRunId[event.runId] : undefined) ??
+      (() => {
+        const block = state.blocksById[blockId]
+        return block?.kind === 'userMessage' ? block.clientMessageId : undefined
+      })()
+
     patchBlock(state, blockId, {
       id: `message:${payload.messageId}`,
       messageId: payload.messageId,
@@ -377,8 +408,10 @@ function applyUserMessageAppended(
       status: 'sent',
       updatedAt: event.timestamp,
     })
-    delete state.optimisticBlocksByClientMessageId[clientMessageId]
-    state.clientMessageByRunId[event.runId] = clientMessageId
+    if (resolvedClientMessageId) {
+      delete state.optimisticBlocksByClientMessageId[resolvedClientMessageId]
+      state.clientMessageByRunId[event.runId] = resolvedClientMessageId
+    }
     return state
   }
 
@@ -410,6 +443,7 @@ function applyAssistantDelta(
     return state
   }
 
+  confirmOptimisticUserForRun(state, event.runId)
   return appendAssistantAnswerDelta(state, {
     runId: event.runId,
     text: payload.text,
@@ -429,6 +463,7 @@ function applyThinkingDelta(
     return state
   }
 
+  confirmOptimisticUserForRun(state, event.runId)
   return appendThinkingDelta(state, {
     runId: event.runId,
     text: payload.text,
@@ -448,7 +483,7 @@ function applyAssistantCompleted(
     return state
   }
 
-  return finalizeAssistantMessage(state, {
+  const next = finalizeAssistantMessage(state, {
     runId: event.runId,
     messageId: payload.messageId,
     body: payload.body,
@@ -457,6 +492,18 @@ function applyAssistantCompleted(
     runSequence: event.sequence,
     conversationId: state.conversationId,
   })
+
+  if (!payload.body || !next.activeRunIds.includes(event.runId)) {
+    return next
+  }
+
+  if (runHasPendingInteractiveWork(next, event.runId)) {
+    return next
+  }
+
+  next.activeRunIds = next.activeRunIds.filter((runId) => runId !== event.runId)
+  removeThinkingBlocksForRun(next, event.runId)
+  return next
 }
 
 function upsertToolItem(
@@ -661,6 +708,56 @@ function patchUserBlock(
   }
   patchBlock(state, blockId, patch)
   return state
+}
+
+function confirmOptimisticUserForRun(
+  state: ConversationTimelineState,
+  runId: string,
+): ConversationTimelineState {
+  const clientMessageId = state.clientMessageByRunId[runId]
+  if (!clientMessageId) {
+    return state
+  }
+
+  const blockId = state.optimisticBlocksByClientMessageId[clientMessageId]
+  if (!blockId) {
+    return state
+  }
+
+  const block = state.blocksById[blockId]
+  if (block?.kind !== 'userMessage' || block.status !== 'sending') {
+    return state
+  }
+
+  return patchUserBlock(state, clientMessageId, { status: 'sent' })
+}
+
+function findUnconfirmedUserBlock(
+  state: ConversationTimelineState,
+  clientMessageId: string,
+): UserMessageBlock | undefined {
+  return selectBlocksFromState(state).find(
+    (block): block is UserMessageBlock =>
+      block.kind === 'userMessage' && block.clientMessageId === clientMessageId && !block.messageId,
+  )
+}
+
+function runHasPendingInteractiveWork(state: ConversationTimelineState, runId: string) {
+  const toolGroupId = state.toolGroupBlockByRunId[runId]
+  const toolGroup = findBlockById(state, toolGroupId)
+  if (
+    toolGroup?.kind === 'toolGroup' &&
+    toolGroup.items.some((item) => item.status === 'queued' || item.status === 'running')
+  ) {
+    return true
+  }
+
+  return selectBlocksFromState(state).some(
+    (block) =>
+      block.kind === 'permissionRequest' &&
+      block.runId === runId &&
+      (block.status === 'pending' || block.status === 'submitting'),
+  )
 }
 
 function patchPermissionBlock(

@@ -99,10 +99,11 @@ describe('AppShell', () => {
     const workspaceNavigation = screen.getByRole('navigation', { name: 'Workspace' })
     expect(workspaceNavigation).not.toHaveClass('hidden')
     expect(within(workspaceNavigation).getByText('Recent conversations')).toBeInTheDocument()
-    expect(within(workspaceNavigation).getByText('Home')).toBeInTheDocument()
-    expect(within(workspaceNavigation).getByText('Conversations')).toBeInTheDocument()
-    expect(within(workspaceNavigation).getByText('Projects')).toBeInTheDocument()
-    expect(within(workspaceNavigation).getByText('Artifacts')).toBeInTheDocument()
+    expect(
+      within(workspaceNavigation).getByRole('button', { name: 'Switch project' }),
+    ).toBeInTheDocument()
+    expect(within(workspaceNavigation).queryByText('Home')).not.toBeInTheDocument()
+    expect(within(workspaceNavigation).queryByText('Artifacts')).not.toBeInTheDocument()
     expect(within(workspaceNavigation).queryByText('Skills')).not.toBeInTheDocument()
     expect(within(workspaceNavigation).queryByText('Agents')).not.toBeInTheDocument()
     expect(within(workspaceNavigation).queryByText('Tools')).not.toBeInTheDocument()
@@ -121,7 +122,7 @@ describe('AppShell', () => {
     const statusBar = screen.getByRole('region', { name: 'Status' })
 
     expect(within(statusBar).getByText('Ready')).toBeInTheDocument()
-    expect(within(statusBar).getByText('Local')).toBeInTheDocument()
+    expect(within(statusBar).queryByText('Local')).not.toBeInTheDocument()
     expect(within(statusBar).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
   })
 

@@ -164,8 +164,11 @@ describe('ConversationWorkspace', () => {
 
     unmount()
 
-    renderConversationWorkspace(createMockCommandClient({ conversations: { conversations: [] } }))
-    expect(await screen.findByText('No conversations yet')).toBeInTheDocument()
+    renderConversationWorkspace(
+      createMockCommandClient({ conversations: { conversations: [] } }),
+      'missing-conversation',
+    )
+    expect(await screen.findByRole('heading', { name: 'New conversation' })).toBeInTheDocument()
 
     unmount()
 

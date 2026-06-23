@@ -104,7 +104,7 @@ function indexBlocks(state: ConversationTimelineState) {
 }
 
 function indexBlock(state: ConversationTimelineState, block: ConversationBlock) {
-  if (block.kind === 'userMessage' && block.clientMessageId && block.status !== 'sent') {
+  if (block.kind === 'userMessage' && block.clientMessageId && !block.messageId) {
     state.optimisticBlocksByClientMessageId[block.clientMessageId] = block.id
   }
   if (block.kind === 'artifact') {
@@ -386,10 +386,16 @@ function findOptimisticUserBlockForSnapshot(
   if (!clientMessageId) {
     return undefined
   }
-  const blockId = state.optimisticBlocksByClientMessageId[clientMessageId]
+  const indexedId = state.optimisticBlocksByClientMessageId[clientMessageId]
+  if (indexedId) {
+    const indexed = state.blocksById[indexedId]
+    if (indexed?.kind === 'userMessage' && !indexed.messageId) {
+      return indexed
+    }
+  }
   return selectBlocksFromState(state).find(
     (block): block is UserMessageBlock =>
-      block.id === blockId && block.kind === 'userMessage' && !block.messageId,
+      block.kind === 'userMessage' && block.clientMessageId === clientMessageId && !block.messageId,
   )
 }
 

@@ -5,7 +5,11 @@ import { useTranslation } from 'react-i18next'
 import { useUiStore } from '@/shared/state/ui-store'
 import { useCommandClient } from '@/shared/tauri/react'
 import type { ComposerSubmitPayload } from '../Composer'
-import { type ConversationRecord, useConversation } from '../use-conversation'
+import {
+  type ConversationRecord,
+  conversationQueryKeys,
+  useConversation,
+} from '../use-conversation'
 import type { ConversationTimelineAction } from './conversation-timeline-actions'
 import type { ConversationTimelineState } from './conversation-timeline-reducer'
 import {
@@ -22,6 +26,7 @@ import {
 import { useConversationEventStream } from './use-conversation-event-stream'
 
 const artifactRefreshIntervalMs = 2000
+const activeRunCatchUpIntervalMs = 2000
 const gapRecoveryPageLimit = 200
 
 export function useConversationTimeline({ conversationId }: { conversationId?: string }) {
@@ -31,6 +36,7 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
   const setActiveRun = useUiStore((state) => state.setActiveRun)
   const clearActiveRun = useUiStore((state) => state.clearActiveRun)
   const conversation = useConversation({ conversationId })
+  const workspaceKey = conversation.workspacePath ?? 'none'
   const renderedConversation = useMemo(
     () =>
       conversation.conversation ??
@@ -48,6 +54,7 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
   const activeConversationId =
     renderedConversationId ?? conversation.selectedConversationId ?? 'conversation-pending'
   const displayState = getConversationTimelineState(root, activeConversationId)
+  const timelineCursorRef = useRef(displayState.cursor)
 
   const dispatch = useCallback(
     (action: ConversationTimelineAction) => {
@@ -75,6 +82,53 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     cursor: displayState.cursor,
     dispatch,
   })
+
+  useEffect(() => {
+    timelineCursorRef.current = displayState.cursor
+  }, [displayState.cursor])
+
+  useEffect(() => {
+    if (!renderedConversationId || displayState.activeRunIds.length === 0) {
+      return
+    }
+
+    let cancelled = false
+
+    const catchUpActiveRun = () => {
+      const afterCursor = timelineCursorRef.current
+      void commandClient
+        .pageConversationTimeline({
+          conversationId: renderedConversationId,
+          limit: gapRecoveryPageLimit,
+          ...(afterCursor ? { afterCursor } : {}),
+        })
+        .then((page) => {
+          if (cancelled || page.events.length === 0) {
+            return
+          }
+          dispatch({
+            type: 'applyEvents',
+            events: page.events,
+            cursor: page.cursor ?? null,
+          })
+          if (page.gap) {
+            dispatch({
+              type: 'markGap',
+              afterCursor: page.cursor ?? afterCursor ?? undefined,
+            })
+          }
+        })
+        .catch(() => undefined)
+    }
+
+    catchUpActiveRun()
+    const intervalId = window.setInterval(catchUpActiveRun, activeRunCatchUpIntervalMs)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [commandClient, dispatch, displayState.activeRunIds.length, renderedConversationId])
 
   useEffect(() => {
     if (!renderedConversationId || !displayState.hasGap) {
@@ -116,9 +170,9 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
             afterCursor: page.cursor ?? displayState.cursor ?? undefined,
           })
           void queryClient.invalidateQueries({
-            queryKey: ['conversation', 'detail', renderedConversationId],
+            queryKey: conversationQueryKeys.detail(workspaceKey, renderedConversationId),
           })
-          void queryClient.invalidateQueries({ queryKey: ['conversation', 'list'] })
+          void queryClient.invalidateQueries({ queryKey: conversationQueryKeys.list(workspaceKey) })
         }
       })
       .catch(() => {
@@ -126,9 +180,9 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
           return
         }
         void queryClient.invalidateQueries({
-          queryKey: ['conversation', 'detail', renderedConversationId],
+          queryKey: conversationQueryKeys.detail(workspaceKey, renderedConversationId),
         })
-        void queryClient.invalidateQueries({ queryKey: ['conversation', 'list'] })
+        void queryClient.invalidateQueries({ queryKey: conversationQueryKeys.list(workspaceKey) })
       })
 
     return () => {
@@ -142,6 +196,7 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     displayState.hasGap,
     queryClient,
     renderedConversationId,
+    workspaceKey,
   ])
 
   useEffect(() => {
@@ -162,10 +217,16 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     hadActiveRunRef.current = false
     clearActiveRun(renderedConversationId)
     void queryClient.invalidateQueries({
-      queryKey: ['conversation', 'detail', renderedConversationId],
+      queryKey: conversationQueryKeys.detail(workspaceKey, renderedConversationId),
     })
-    void queryClient.invalidateQueries({ queryKey: ['conversation', 'list'] })
-  }, [clearActiveRun, displayState.activeRunIds.length, queryClient, renderedConversationId])
+    void queryClient.invalidateQueries({ queryKey: conversationQueryKeys.list(workspaceKey) })
+  }, [
+    clearActiveRun,
+    displayState.activeRunIds.length,
+    queryClient,
+    renderedConversationId,
+    workspaceKey,
+  ])
 
   const shouldPollFallback = selectShouldPollFallback(displayState)
   const artifactsQuery = useQuery({
@@ -264,6 +325,7 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     submitPrompt: submitMutation.mutateAsync,
     resolvePermission: permissionMutation.mutateAsync,
     state: displayState,
+    workspacePath: conversation.workspacePath,
   }
 }
 
