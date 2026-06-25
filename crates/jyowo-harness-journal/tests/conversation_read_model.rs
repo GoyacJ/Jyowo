@@ -152,6 +152,92 @@ async fn sqlite_conversation_read_model_projects_summary_snapshot_and_timeline_i
 }
 
 #[tokio::test]
+async fn sqlite_conversation_read_model_projects_worktree_by_complete_turns() {
+    let root = temp_root("worktree-page");
+    let store = SqliteConversationReadModelStore::open(root.join("read-model.sqlite"))
+        .await
+        .expect("store opens");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let run_1 = RunId::new();
+    let run_2 = RunId::new();
+    let events = vec![
+        envelope(
+            tenant_id,
+            session_id,
+            0,
+            user_message(run_1, MessageId::new(), "first"),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            1,
+            assistant_message(run_1, MessageId::new(), "first answer"),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            2,
+            assistant_message(run_1, MessageId::new(), "first final"),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            3,
+            user_message(run_2, MessageId::new(), "second"),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            4,
+            assistant_message(run_2, MessageId::new(), "second answer"),
+        ),
+    ];
+
+    store
+        .apply_envelopes(tenant_id, session_id, &events, None)
+        .await
+        .expect("projection applies");
+
+    let first = store
+        .page_worktree(
+            tenant_id,
+            session_id,
+            None,
+            ConversationTurnPageDirection::After,
+            1,
+        )
+        .await
+        .expect("first worktree page loads");
+
+    assert_eq!(first.turns.len(), 1);
+    assert_eq!(first.turns[0].user.body.as_str(), "first");
+    assert_eq!(
+        first.turns[0].assistant.as_ref().unwrap().segments.len(),
+        2,
+        "limit counts complete turns, not raw timeline events"
+    );
+    assert_eq!(first.event_cursor.unwrap().conversation_sequence, 5);
+    assert!(first.has_more_after);
+
+    let second = store
+        .page_worktree(
+            tenant_id,
+            session_id,
+            first.page_cursor.clone(),
+            ConversationTurnPageDirection::After,
+            1,
+        )
+        .await
+        .expect("second worktree page loads");
+
+    assert_eq!(second.turns.len(), 1);
+    assert_eq!(second.turns[0].user.body.as_str(), "second");
+    assert!(second.has_more_before);
+    assert!(!second.has_more_after);
+}
+
+#[tokio::test]
 async fn sqlite_conversation_read_model_projects_tool_permission_and_artifact_events() {
     let root = temp_root("timeline-events");
     let store = SqliteConversationReadModelStore::open(root.join("read-model.sqlite"))

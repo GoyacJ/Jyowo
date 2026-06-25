@@ -45,6 +45,7 @@ pub fn run() {
             commands::switch_project,
             commands::list_skills,
             commands::page_conversation_timeline,
+            commands::page_conversation_worktree,
             commands::resolve_permission,
             commands::request_provider_config_api_key_reveal,
             commands::run_eval_case,

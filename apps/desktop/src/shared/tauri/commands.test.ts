@@ -4,6 +4,87 @@ function cursor(_label: string, conversationSequence = 1) {
   return { eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV', conversationSequence }
 }
 
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+function validWorktreePage() {
+  return {
+    turns: [
+      {
+        id: 'turn:user-message-001',
+        conversationId: 'conversation-001',
+        position: 0,
+        user: {
+          id: 'user:user-message-001',
+          messageId: 'user-message-001',
+          body: 'Restore the product shell',
+          clientMessageId: '00000000-0000-4000-8000-000000000001',
+          timestamp: '2026-06-17T00:00:00.000Z',
+          eventRefs: [{ eventId: 'event-001', cursor: cursor('', 1) }],
+        },
+        assistant: {
+          id: 'assistant:run-001',
+          runId: 'run-001',
+          status: 'running',
+          segments: [
+            {
+              kind: 'thinking',
+              id: 'segment:thinking:run-001',
+              order: 0,
+              status: 'withheld',
+              summary: { text: '思考内容已折叠' },
+              eventRefs: [{ eventId: 'event-002', cursor: cursor('', 2) }],
+            },
+            {
+              kind: 'text',
+              id: 'segment:text:assistant-message-001',
+              order: 1,
+              messageId: 'assistant-message-001',
+              body: 'I can help with that.',
+              eventRefs: [{ eventId: 'event-003', cursor: cursor('', 3) }],
+            },
+            {
+              kind: 'toolGroup',
+              id: 'segment:tools:tool-use-001',
+              order: 2,
+              attempts: [
+                {
+                  id: 'tool:tool-use-001',
+                  order: 0,
+                  toolUseId: 'tool-use-001',
+                  toolName: 'read_file',
+                  status: 'failed',
+                  permission: {
+                    id: 'permission:request-001',
+                    requestId: 'request-001',
+                    toolUseId: 'tool-use-001',
+                    status: 'approved',
+                    summary: 'Approved once',
+                    eventRefs: [{ eventId: 'event-004', cursor: cursor('', 4) }],
+                  },
+                  failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+                  eventRefs: [{ eventId: 'event-005', cursor: cursor('', 5) }],
+                },
+              ],
+              eventRefs: [{ eventId: 'event-006', cursor: cursor('', 6) }],
+            },
+          ],
+          eventRefs: [{ eventId: 'event-007', cursor: cursor('', 7) }],
+        },
+      },
+    ],
+    pageCursor: {
+      turnId: 'turn:user-message-001',
+      position: 0,
+    },
+    eventCursor: cursor('', 7),
+    hasMoreBefore: false,
+    hasMoreAfter: true,
+    gap: false,
+  }
+}
+
 const tauriListenMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -41,6 +122,7 @@ import {
   listProviderSettings,
   listReferenceCandidates,
   listSkills,
+  pageConversationWorktree,
   requestProviderConfigApiKeyReveal,
   resolvePermission,
   runEvalCase,
@@ -337,6 +419,148 @@ describe('CommandClient', () => {
     expect(invoke).toHaveBeenCalledWith('delete_conversation', {
       conversationId: 'conversation-001',
     })
+  })
+
+  it('models conversation worktree pages through Zod validation', async () => {
+    const invoke = vi.fn().mockResolvedValue(validWorktreePage())
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      pageConversationWorktree(
+        {
+          conversationId: 'conversation-001',
+          pageCursor: { turnId: 'turn:user-message-000', position: 0 },
+          direction: 'after',
+          limit: 20,
+        },
+        client,
+      ),
+    ).resolves.toMatchObject({
+      turns: [
+        {
+          id: 'turn:user-message-001',
+          position: 0,
+          user: { messageId: 'user-message-001' },
+          assistant: {
+            id: 'assistant:run-001',
+            segments: [
+              { kind: 'thinking', id: 'segment:thinking:run-001' },
+              { kind: 'text', id: 'segment:text:assistant-message-001' },
+              {
+                kind: 'toolGroup',
+                attempts: [
+                  {
+                    toolUseId: 'tool-use-001',
+                    permission: {
+                      requestId: 'request-001',
+                      toolUseId: 'tool-use-001',
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+      pageCursor: { turnId: 'turn:user-message-001', position: 0 },
+      eventCursor: cursor('', 7),
+      hasMoreBefore: false,
+      hasMoreAfter: true,
+      gap: false,
+    })
+    expect(invoke).toHaveBeenCalledWith('page_conversation_worktree', {
+      conversationId: 'conversation-001',
+      pageCursor: { turnId: 'turn:user-message-000', position: 0 },
+      direction: 'after',
+      limit: 20,
+    })
+  })
+
+  it('rejects malformed conversation worktree payloads at the IPC boundary', async () => {
+    const invalidCases = [
+      (page: ReturnType<typeof validWorktreePage>) => {
+        delete (page.turns[0] as Partial<(typeof page.turns)[number]>).position
+      },
+      (page: ReturnType<typeof validWorktreePage>) => {
+        const assistant = page.turns[0].assistant
+        if (!assistant) {
+          throw new Error('assistant fixture missing')
+        }
+        delete (assistant.segments[0] as { id?: string }).id
+      },
+      (page: ReturnType<typeof validWorktreePage>) => {
+        delete (page.turns[0] as Partial<(typeof page.turns)[number]>).user
+      },
+      (page: ReturnType<typeof validWorktreePage>) => {
+        const assistant = page.turns[0].assistant
+        if (!assistant) {
+          throw new Error('assistant fixture missing')
+        }
+        const segment = assistant.segments[2]
+        if (segment.kind === 'toolGroup') {
+          const [attempt] = segment.attempts ?? []
+          if (!attempt) {
+            throw new Error('tool attempt fixture missing')
+          }
+          delete (attempt as { toolUseId?: string }).toolUseId
+        }
+      },
+      (page: ReturnType<typeof validWorktreePage>) => {
+        const assistant = page.turns[0].assistant
+        if (!assistant) {
+          throw new Error('assistant fixture missing')
+        }
+        const segment = assistant.segments[2]
+        if (segment.kind === 'toolGroup') {
+          const [attempt] = segment.attempts ?? []
+          if (!attempt) {
+            throw new Error('tool attempt fixture missing')
+          }
+          delete (attempt.permission as { requestId?: string }).requestId
+        }
+      },
+      (page: ReturnType<typeof validWorktreePage>) => {
+        page.turns[0].user.body = '/Users/goya/.ssh/config'
+      },
+    ]
+
+    for (const mutate of invalidCases) {
+      const payload = clone(validWorktreePage())
+      mutate(payload)
+
+      await expect(
+        pageConversationWorktree(
+          { conversationId: 'conversation-001' },
+          createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+        ),
+      ).rejects.toThrow(TauriCommandPayloadError)
+    }
+  })
+
+  it('rejects raw RunEvent-shaped payloads as conversation worktree pages', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        events: [
+          {
+            id: 'evt-live',
+            conversationSequence: 2,
+            payload: { text: 'Hello' },
+            runId: 'run-001',
+            sequence: 2,
+            source: 'assistant',
+            timestamp: '2026-06-17T00:00:01.000Z',
+            type: 'assistant.delta',
+            visibility: 'public',
+          },
+        ],
+        cursor: cursor(''),
+        gap: false,
+      }),
+    )
+
+    await expect(
+      pageConversationWorktree({ conversationId: 'conversation-001' }, client),
+    ).rejects.toThrow(TauriCommandPayloadError)
   })
 
   it('models run and permission intent commands without exposing generic execute', async () => {

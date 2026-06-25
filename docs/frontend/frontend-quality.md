@@ -12,23 +12,24 @@ Test layers:
 | Component | Testing Library | UI behavior and states |
 | Story | Storybook | complex UI state matrices |
 | E2E | Playwright | user flows in web mock runtime |
-| Contract | Zod/schema tests | IPC payloads, RunEvent schema |
+| Contract | Zod/schema tests | IPC payloads, ConversationWorktreePage, RunEvent schema |
 
 Must test:
 
 - conversation list, conversation page, and natural composer behavior
-- `ConversationTimeline` loading, empty, streaming, completed, permission,
-  artifact, review, withheld, and error states
-- timeline reducer idempotence, `clientMessageId` optimistic confirmation,
-  `conversationSequence` ordering, gap recovery, and snapshot reconciliation
+- `ConversationTimeline` loading, empty, running, completed, permission, artifact,
+  review, clarification, withheld, and error states
+- worktree projection store behavior, `clientMessageId` optimistic confirmation,
+  turn ordering, throttled live invalidation, gap recovery, and refetch
+  reconciliation
 - `Composer` typing, submit, disabled, pending, retry, and continue states
 - `ContextPanel` file references, selected context, and empty context states
 - `ActivityRail` compact activity, failed activity, and drill-down behavior
 - `PlanBlock`, `ProgressBlock`, `ArtifactPreview`, `ReviewRequest`, and
   `DecisionCard` state transitions
 - `shared/events` valid and invalid RunEvent payloads
-- `shared/tauri` conversation event subscription parsing, replay-before-live
-  dispatch, stale subscription filtering, and listener cleanup
+- `shared/tauri` worktree page parsing, conversation event subscription parsing,
+  replay-before-live dispatch, stale subscription filtering, and listener cleanup
 - event renderer exhaustiveness
 - `shared/tauri` schema validation and error normalization
 - mock `CommandClient`
@@ -45,15 +46,17 @@ Storybook is required for complex business UI:
 
 ```text
 ConversationTimeline
-conversation-block-renderer
 Composer
 ContextPanel
 ActivityRail
 PlanTimelineBlock
-ToolGroupBlock
-ArtifactBlock
-ReviewRequestBlock
-PermissionRequestBlock
+ConversationTurnView
+AssistantWorkView
+ToolGroupSegmentView
+ArtifactSegmentView
+ReviewRequestSegmentView
+ClarificationRequestSegmentView
+PermissionInlinePanel
 DiffViewer
 MCPServerCard
 MemoryItemCard
@@ -214,6 +217,7 @@ PR checklist:
 
 ```text
 [ ] Do docs/frontend/* need updates?
+[ ] Did ConversationWorktreePage or ConversationTurn shape change?
 [ ] Did RunEvent schema change?
 [ ] Was a Tauri command added?
 [ ] Was a permission type added?
@@ -258,6 +262,7 @@ UI:
 [ ] Context panel stays secondary
 [ ] Activity and execution details stay tertiary
 [ ] product components follow the documented component hierarchy
+[ ] ConversationCanvas renders ConversationTurn[] from page_conversation_worktree
 [ ] primitive UI comes from shared/ui
 [ ] Markdown rendering rejects unsafe raw HTML
 [ ] code highlighting is cached or lazy loaded
@@ -278,7 +283,12 @@ Conversation and execution:
 
 ```text
 [ ] RunEvent schema changes are documented
+[ ] worktree contract and Zod schema changes are documented
 [ ] every event type has a renderer
+[ ] raw RunEvent data is not used as the conversation canvas product model
+[ ] get_conversation.messages does not drive ConversationCanvas
+[ ] permissions render nested under tool attempts
+[ ] thinking text is status-derived, explicitly safe, or withheld
 [ ] Raw JSON display follows visibility rules
 [ ] secrets are masked
 [ ] Replay/export behavior is preserved when relevant

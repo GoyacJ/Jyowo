@@ -18,8 +18,11 @@ export function isNearBottom(viewport: HTMLElement, thresholdPx: number) {
   return distanceFromBottom(viewport) < thresholdPx
 }
 
-export function blockScrollAnchorKey(block: { id: string; status?: string; kind: string }) {
-  return `${block.id}:${block.status ?? ''}:${block.kind}`
+export function turnScrollAnchorKey(turn: {
+  id: string
+  assistant?: { status?: string; segments?: unknown[] }
+}) {
+  return `${turn.id}:${turn.assistant?.status ?? ''}:${turn.assistant?.segments?.length ?? 0}`
 }
 
 export function shouldAutoFollowOnAnchorChange(input: {

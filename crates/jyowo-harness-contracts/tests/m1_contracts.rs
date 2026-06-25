@@ -194,6 +194,199 @@ fn conversation_read_model_contracts_use_stable_wire_shape() {
 }
 
 #[test]
+fn conversation_worktree_contracts_use_stable_wire_shape() {
+    let event_cursor = ConversationCursor {
+        event_id: EventId::new(),
+        conversation_sequence: 42,
+    };
+    let event_ref = ConversationEventRef {
+        event_id: "event-1".to_owned(),
+        cursor: event_cursor,
+    };
+    let permission = ToolPermissionState {
+        id: "permission:request-1".to_owned(),
+        request_id: "request-1".to_owned(),
+        tool_use_id: "tool-use-1".to_owned(),
+        status: ToolPermissionStatus::Approved,
+        summary: Some(UiSafeText::from_trusted_redacted("Approved once")),
+        event_refs: vec![event_ref.clone()],
+    };
+    let page = ConversationWorktreePage {
+        turns: vec![ConversationTurn {
+            id: "turn:user-message-1".to_owned(),
+            conversation_id: "conversation-1".to_owned(),
+            position: 7,
+            user: ConversationTurnUserMessage {
+                id: "user:user-message-1".to_owned(),
+                message_id: "user-message-1".to_owned(),
+                body: UiSafeText::from_trusted_redacted("Generate an image"),
+                client_message_id: Some("client-1".to_owned()),
+                timestamp: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                event_refs: vec![event_ref.clone()],
+            },
+            assistant: Some(AssistantWork {
+                id: "assistant:run-1".to_owned(),
+                run_id: "run-1".to_owned(),
+                status: AssistantWorkStatus::Running,
+                segments: vec![
+                    AssistantSegment::Thinking(ThinkingSegment {
+                        id: "segment:thinking:run-1".to_owned(),
+                        order: 0,
+                        status: ThinkingSegmentStatus::Running,
+                        summary: ThinkingSummary {
+                            text: UiSafeText::from_trusted_redacted("Checking available tools"),
+                        },
+                        event_refs: vec![event_ref.clone()],
+                    }),
+                    AssistantSegment::Text(TextSegment {
+                        id: "segment:text:assistant-message-1".to_owned(),
+                        order: 1,
+                        message_id: "assistant-message-1".to_owned(),
+                        body: UiSafeText::from_trusted_redacted("I can help with that."),
+                        event_refs: vec![event_ref.clone()],
+                    }),
+                    AssistantSegment::ToolGroup(ToolGroupSegment {
+                        id: "segment:tools:tool-use-1".to_owned(),
+                        order: 2,
+                        attempts: vec![ToolAttempt {
+                            id: "tool:tool-use-1".to_owned(),
+                            order: 0,
+                            tool_use_id: "tool-use-1".to_owned(),
+                            tool_name: UiSafeText::from_trusted_redacted("MiniMaxTextToImage"),
+                            status: ToolAttemptStatus::Completed,
+                            permission: Some(permission),
+                            failure_summary: None,
+                            event_refs: vec![event_ref.clone()],
+                        }],
+                        event_refs: vec![event_ref.clone()],
+                    }),
+                    AssistantSegment::Artifact(ArtifactSegment {
+                        id: "segment:artifact:artifact-1".to_owned(),
+                        order: 3,
+                        artifact_id: "artifact-1".to_owned(),
+                        title: UiSafeText::from_trusted_redacted("Generated image"),
+                        summary: Some(UiSafeText::from_trusted_redacted("Image artifact ready")),
+                        event_refs: vec![event_ref.clone()],
+                    }),
+                    AssistantSegment::ReviewRequest(ReviewRequestSegment {
+                        id: "segment:review:review-1".to_owned(),
+                        order: 4,
+                        request_id: "review-1".to_owned(),
+                        title: UiSafeText::from_trusted_redacted("Review changes"),
+                        body: Some(UiSafeText::from_trusted_redacted(
+                            "Confirm before applying.",
+                        )),
+                        event_refs: vec![event_ref.clone()],
+                    }),
+                    AssistantSegment::ClarificationRequest(ClarificationRequestSegment {
+                        id: "segment:clarification:clarification-1".to_owned(),
+                        order: 5,
+                        request_id: "clarification-1".to_owned(),
+                        prompt: UiSafeText::from_trusted_redacted("Which style should I use?"),
+                        event_refs: vec![event_ref.clone()],
+                    }),
+                    AssistantSegment::Notice(NoticeSegment {
+                        id: "segment:notice:event-1".to_owned(),
+                        order: 6,
+                        body: UiSafeText::from_trusted_redacted("Tool output was summarized."),
+                        event_refs: vec![event_ref.clone()],
+                    }),
+                    AssistantSegment::Error(ErrorSegment {
+                        id: "segment:error:event-2".to_owned(),
+                        order: 7,
+                        body: UiSafeText::from_trusted_redacted("Tool execution failed."),
+                        event_refs: vec![event_ref.clone()],
+                    }),
+                ],
+                event_refs: vec![event_ref],
+            }),
+        }],
+        page_cursor: Some(ConversationTurnCursor {
+            turn_id: "turn:user-message-1".to_owned(),
+            position: 7,
+        }),
+        event_cursor: Some(event_cursor),
+        has_more_before: false,
+        has_more_after: true,
+        gap: false,
+    };
+
+    let value = serde_json::to_value(page).unwrap();
+
+    assert_eq!(value["turns"][0]["id"], "turn:user-message-1");
+    assert_eq!(value["turns"][0]["position"], 7);
+    assert_eq!(value["turns"][0]["user"]["id"], "user:user-message-1");
+    assert_eq!(value["turns"][0]["assistant"]["id"], "assistant:run-1");
+    assert_eq!(value["turns"][0]["assistant"]["status"], "running");
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][0]["kind"],
+        "thinking"
+    );
+    assert_eq!(value["turns"][0]["assistant"]["segments"][0]["order"], 0);
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][0]["status"],
+        "running"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][2]["kind"],
+        "toolGroup"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][2]["attempts"][0]["permission"]["requestId"],
+        "request-1"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][2]["attempts"][0]["permission"]["toolUseId"],
+        "tool-use-1"
+    );
+    assert_eq!(value["pageCursor"]["turnId"], "turn:user-message-1");
+    assert_eq!(value["eventCursor"]["conversationSequence"], 42);
+    assert_eq!(value["hasMoreBefore"], false);
+    assert_eq!(value["hasMoreAfter"], true);
+    assert_eq!(value["gap"], false);
+}
+
+#[test]
+fn thinking_worktree_segment_supports_all_public_statuses() {
+    for (status, expected) in [
+        (ThinkingSegmentStatus::Running, "running"),
+        (ThinkingSegmentStatus::Complete, "complete"),
+        (ThinkingSegmentStatus::Withheld, "withheld"),
+    ] {
+        let value = serde_json::to_value(status).unwrap();
+        assert_eq!(value, expected);
+    }
+}
+
+#[test]
+fn conversation_worktree_schema_is_exported() {
+    let schemas = export_all_schemas();
+
+    for key in [
+        "conversation_worktree_page",
+        "conversation_turn_cursor",
+        "conversation_turn",
+        "conversation_turn_user_message",
+        "assistant_work",
+        "assistant_segment",
+        "thinking_segment",
+        "thinking_summary",
+        "text_segment",
+        "tool_group_segment",
+        "tool_attempt",
+        "tool_permission_state",
+        "artifact_segment",
+        "review_request_segment",
+        "clarification_request_segment",
+        "notice_segment",
+        "error_segment",
+        "conversation_event_ref",
+    ] {
+        assert!(schemas.contains_key(key), "missing worktree schema: {key}");
+    }
+}
+
+#[test]
 fn model_capability_contract_rejects_old_flat_payload() {
     let capability = ConversationModelCapability {
         input_modalities: vec![ModelModality::Text, ModelModality::Image],

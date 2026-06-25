@@ -1,55 +1,28 @@
 import { describe, expect, it } from 'vitest'
 
-import type { RunEvent } from '@/shared/events/run-event-schema'
 import { coalesceTimelineActions } from './use-conversation-event-stream'
 
-const timestamp = '2026-06-17T00:00:00.000Z'
-
-function cursor(_label: string, conversationSequence = 1) {
-  return { eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV', conversationSequence }
-}
-
-function deltaEvent(id: string, conversationSequence: number, text: string): RunEvent {
-  return {
-    conversationSequence,
-    id,
-    payload: { text },
-    runId: 'run-001',
-    sequence: conversationSequence,
-    source: 'assistant',
-    timestamp,
-    type: 'assistant.delta',
-    visibility: 'public',
-  }
-}
-
 describe('coalesceTimelineActions', () => {
-  it('merges consecutive event actions into one reducer update', () => {
-    const firstEvent = deltaEvent('evt-001', 1, 'Hel')
-    const secondEvent = deltaEvent('evt-002', 2, 'lo')
-
+  it('merges consecutive worktree refetch signals into one update', () => {
     expect(
       coalesceTimelineActions([
-        { type: 'applyEvents', events: [firstEvent], cursor: cursor('') },
-        { type: 'applyEvents', events: [secondEvent], cursor: cursor('') },
+        { type: 'worktreeRefreshRequested', immediate: false },
+        { type: 'worktreeRefreshRequested', immediate: true },
       ]),
-    ).toEqual([{ type: 'applyEvents', events: [firstEvent, secondEvent], cursor: cursor('') }])
+    ).toEqual([{ type: 'worktreeRefreshRequested', immediate: true }])
   })
 
-  it('keeps gap ordering between event updates', () => {
-    const firstEvent = deltaEvent('evt-001', 1, 'Hel')
-    const secondEvent = deltaEvent('evt-002', 2, 'lo')
-
+  it('keeps gap ordering between refetch updates', () => {
     expect(
       coalesceTimelineActions([
-        { type: 'applyEvents', events: [firstEvent], cursor: cursor('') },
-        { type: 'markGap', afterCursor: cursor('') },
-        { type: 'applyEvents', events: [secondEvent], cursor: cursor('') },
+        { type: 'worktreeRefreshRequested', immediate: false },
+        { type: 'markGap' },
+        { type: 'worktreeRefreshRequested', immediate: true },
       ]),
     ).toEqual([
-      { type: 'applyEvents', events: [firstEvent], cursor: cursor('') },
-      { type: 'markGap', afterCursor: cursor('') },
-      { type: 'applyEvents', events: [secondEvent], cursor: cursor('') },
+      { type: 'worktreeRefreshRequested', immediate: false },
+      { type: 'markGap' },
+      { type: 'worktreeRefreshRequested', immediate: true },
     ])
   })
 })

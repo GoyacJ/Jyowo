@@ -30,6 +30,7 @@ import type {
   ListSkillsResponse,
   ModelProviderCatalogResponse,
   PageConversationTimelineResponse,
+  PageConversationWorktreeResponse,
   ReplayTimelineResponse,
   RequestProviderConfigApiKeyRevealResponse,
   ResolvePermissionResponse,
@@ -526,6 +527,236 @@ const mockReplayTimeline: ReplayTimelineResponse = {
   replayed: true,
 }
 
+const mockConversationWorktreePage: PageConversationWorktreeResponse = {
+  turns: [
+    {
+      id: 'turn:message-001',
+      conversationId: 'conversation-001',
+      position: 0,
+      user: {
+        id: 'user:message-001',
+        messageId: 'message-001',
+        body: 'Restore the product shell',
+        timestamp: '2026-06-17T02:21:00.000Z',
+      },
+      assistant: {
+        id: 'assistant:run-001',
+        runId: 'run-001',
+        status: 'running',
+        segments: [
+          {
+            kind: 'thinking',
+            id: 'segment:thinking:run-001',
+            order: 0,
+            status: 'withheld',
+            summary: { text: '思考内容已折叠' },
+          },
+          {
+            kind: 'text',
+            id: 'segment:text:message-002',
+            order: 1,
+            messageId: 'message-002',
+            body: 'I am checking the workspace state.',
+          },
+          {
+            kind: 'toolGroup',
+            id: 'segment:tools:tool-mock-read',
+            order: 2,
+            attempts: [
+              {
+                id: 'tool:tool-mock-read',
+                order: 0,
+                toolUseId: 'tool-mock-read',
+                toolName: 'read_file',
+                status: 'completed',
+                permission: {
+                  id: 'permission:01HZ0000000000000000000001',
+                  requestId: '01HZ0000000000000000000001',
+                  toolUseId: 'tool-mock-read',
+                  status: 'approved',
+                  summary: 'Approved once',
+                },
+              },
+              {
+                id: 'tool:tool-mock-verify',
+                order: 1,
+                toolUseId: 'tool-mock-verify',
+                toolName: 'local_verification',
+                status: 'waitingPermission',
+                permission: {
+                  id: 'permission:01HZ0000000000000000000002',
+                  requestId: '01HZ0000000000000000000002',
+                  toolUseId: 'tool-mock-verify',
+                  status: 'pending',
+                  summary: 'Awaiting approval',
+                },
+              },
+            ],
+          },
+        ],
+      },
+    },
+    {
+      id: 'turn:message-003',
+      conversationId: 'conversation-001',
+      position: 1,
+      user: {
+        id: 'user:message-003',
+        messageId: 'message-003',
+        body: 'Run the checks',
+        timestamp: '2026-06-17T02:22:00.000Z',
+      },
+      assistant: {
+        id: 'assistant:run-002',
+        runId: 'run-002',
+        status: 'complete',
+        segments: [
+          {
+            kind: 'toolGroup',
+            id: 'segment:tools:tool-mock-test',
+            order: 0,
+            attempts: [
+              {
+                id: 'tool:tool-mock-test',
+                order: 0,
+                toolUseId: 'tool-mock-test',
+                toolName: 'pnpm test',
+                status: 'failed',
+                failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+              },
+            ],
+          },
+          {
+            kind: 'text',
+            id: 'segment:text:message-004',
+            order: 1,
+            messageId: 'message-004',
+            body: 'The checks need follow-up.',
+          },
+        ],
+      },
+    },
+  ],
+  pageCursor: {
+    turnId: 'turn:message-003',
+    position: 1,
+  },
+  eventCursor: {
+    eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    conversationSequence: 9,
+  },
+  hasMoreBefore: false,
+  hasMoreAfter: false,
+  gap: false,
+}
+
+function cloneResponse<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+function emptyWorktreePage(): PageConversationWorktreeResponse {
+  return {
+    turns: [],
+    pageCursor: undefined,
+    eventCursor: undefined,
+    hasMoreBefore: false,
+    hasMoreAfter: false,
+    gap: false,
+  }
+}
+
+function worktreePageForMockRun(
+  conversationId: string,
+  prompt: string,
+  clientMessageId: string | undefined,
+  status: 'running' | 'complete',
+): PageConversationWorktreeResponse {
+  const turn: PageConversationWorktreeResponse['turns'][number] = {
+    id: 'turn:message-mock-user',
+    conversationId,
+    position: 0,
+    user: {
+      id: 'user:message-mock-user',
+      messageId: 'message-mock-user',
+      clientMessageId,
+      body: prompt,
+      timestamp,
+    },
+    assistant: {
+      id: 'assistant:run-001',
+      runId: 'run-001',
+      status,
+      segments: [
+        {
+          kind: 'text',
+          id: 'segment:text:message-mock-delta',
+          order: 0,
+          messageId: 'message-mock-delta',
+          body: 'Drafting the implementation plan.',
+        },
+        {
+          kind: 'toolGroup',
+          id: 'segment:tools:tool-mock-read',
+          order: 1,
+          attempts: [
+            {
+              id: 'tool:tool-mock-read',
+              order: 0,
+              toolUseId: 'tool-mock-read',
+              toolName: 'Reading files',
+              status: 'completed',
+            },
+            {
+              id: 'tool:tool-mock-verify',
+              order: 1,
+              toolUseId: 'tool-mock-verify',
+              toolName: 'Run local verification',
+              status: status === 'running' ? 'waitingPermission' : 'completed',
+              permission: {
+                id: 'permission:01HZ0000000000000000000001',
+                requestId: '01HZ0000000000000000000001',
+                toolUseId: 'tool-mock-verify',
+                status: status === 'running' ? 'pending' : 'approved',
+                summary:
+                  status === 'running' ? 'Awaiting approval' : 'Approved for this verification run',
+              },
+            },
+          ],
+        },
+        {
+          kind: 'artifact',
+          id: 'segment:artifact:artifact-desktop-foundation',
+          order: 2,
+          artifactId: 'artifact-desktop-foundation',
+          title: 'Desktop foundation created',
+        },
+        {
+          kind: 'text',
+          id: 'segment:text:message-mock-assistant',
+          order: 3,
+          messageId: 'message-mock-assistant',
+          body: 'The setup is ready for review.',
+        },
+      ],
+    },
+  }
+
+  return {
+    turns: [turn],
+    pageCursor: {
+      turnId: turn.id,
+      position: turn.position,
+    },
+    eventCursor: {
+      eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      conversationSequence: status === 'running' ? 7 : 9,
+    },
+    hasMoreBefore: false,
+    hasMoreAfter: false,
+    gap: false,
+  }
+}
+
 const mockSupportBundleExport: ExportSupportBundleResponse = {
   bundlePath: '.jyowo/runtime/exports/support-bundle-20260617T000000.000Z.json',
   eventCount: 1,
@@ -562,6 +793,7 @@ export interface MockCommandClientOptions {
   referenceCandidates?: ListReferenceCandidatesResponse
   replayTimeline?: ReplayTimelineResponse
   conversationTimelinePage?: PageConversationTimelineResponse
+  conversationWorktreePage?: PageConversationWorktreeResponse
   subscribeConversationEvents?: SubscribeConversationEventsResponse
   skillDetail?: GetSkillDetailResponse
   skillFile?: GetSkillFileResponse
@@ -586,6 +818,18 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
   let subscriptionCounter = 0
   let completionBatchFlushed: Promise<void> = Promise.resolve()
   let projects = options.projects ?? mockJyowoProject
+  let createdConversationCounter = 0
+  let conversations = cloneResponse(options.conversations ?? mockListConversations)
+  const conversationDetailsById = new Map<string, GetConversationResponse>()
+  conversationDetailsById.set(
+    'conversation-001',
+    cloneResponse(options.conversation ?? mockConversation),
+  )
+  const worktreePagesByConversation = new Map<string, PageConversationWorktreeResponse>()
+  worktreePagesByConversation.set(
+    'conversation-001',
+    cloneResponse(options.conversationWorktreePage ?? mockConversationWorktreePage),
+  )
   const pendingBatchTimeouts = new Map<number, () => void>()
   const mockEventState: MockConversationEventState = {
     getListener: () => batchListener,
@@ -616,8 +860,34 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async createConversation() {
       await wait(options.delayMs)
+      createdConversationCounter += 1
+      const conversationId = `conversation-created-${String(createdConversationCounter).padStart(3, '0')}`
+      const conversation = {
+        id: conversationId,
+        isEmpty: true,
+        lastMessagePreview: 'Start from the composer when ready.',
+        title: 'New conversation',
+        updatedAt: new Date().toISOString(),
+      } satisfies CreateConversationResponse['conversation']
+      conversations = {
+        conversations: [
+          conversation,
+          ...conversations.conversations.filter((current) => current.id !== conversationId),
+        ],
+      }
+      conversationDetailsById.set(conversationId, {
+        conversation: {
+          id: conversationId,
+          messages: [],
+          modelConfigId: null,
+          title: conversation.title,
+          updatedAt: conversation.updatedAt,
+        },
+      })
+      worktreePagesByConversation.set(conversationId, emptyWorktreePage())
+
       return {
-        conversation: (options.conversations ?? mockListConversations).conversations[0],
+        conversation,
       } satisfies CreateConversationResponse
     },
     async deleteConversation(conversationId) {
@@ -655,9 +925,9 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       return options.executionSettings ?? mockExecutionSettings
     },
-    async getConversation() {
+    async getConversation(conversationId) {
       await wait(options.delayMs)
-      return options.conversation ?? mockConversation
+      return options.conversation ?? conversationDetailsById.get(conversationId) ?? mockConversation
     },
     async getAppInfo() {
       await wait(options.delayMs)
@@ -697,6 +967,26 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       return {
         ...page,
         events: page.events.filter((event) => event.conversationSequence > afterSequence),
+      }
+    },
+    async pageConversationWorktree(request) {
+      await wait(options.delayMs)
+      const page =
+        options.conversationWorktreePage ??
+        worktreePagesByConversation.get(request.conversationId) ??
+        emptyWorktreePage()
+      if (!request.pageCursor) {
+        return page
+      }
+
+      const pageCursor = request.pageCursor
+      return {
+        ...page,
+        turns: page.turns.filter((turn) =>
+          request.direction === 'before'
+            ? turn.position < pageCursor.position
+            : turn.position > pageCursor.position,
+        ),
       }
     },
     async getSkillDetail(id) {
@@ -745,7 +1035,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async listConversations() {
       await wait(options.delayMs)
-      return options.conversations ?? mockListConversations
+      return conversations
     },
     async listEvalCases() {
       await wait(options.delayMs)
@@ -901,6 +1191,15 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async startRun(request) {
       await wait(options.delayMs)
+      worktreePagesByConversation.set(
+        request.conversationId,
+        worktreePageForMockRun(
+          request.conversationId,
+          request.prompt,
+          request.clientMessageId,
+          'running',
+        ),
+      )
       emitMockConversationBatch(mockEventState, activeSubscription, [
         mockTimelineEvent(
           'run.started',
@@ -989,6 +1288,15 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
           },
         ),
       ])
+      worktreePagesByConversation.set(
+        request.conversationId,
+        worktreePageForMockRun(
+          request.conversationId,
+          request.prompt,
+          request.clientMessageId,
+          'complete',
+        ),
+      )
       completionBatchFlushed = emitMockConversationBatch(
         mockEventState,
         activeSubscription,
@@ -1159,6 +1467,7 @@ export function createRejectedCommandClient(error: unknown): CommandClient {
     getProviderConfigApiKey: () => Promise.reject(error),
     getReplayTimeline: () => Promise.reject(error),
     pageConversationTimeline: () => Promise.reject(error),
+    pageConversationWorktree: () => Promise.reject(error),
     getSkillDetail: () => Promise.reject(error),
     getSkillFile: () => Promise.reject(error),
     importSkill: () => Promise.reject(error),

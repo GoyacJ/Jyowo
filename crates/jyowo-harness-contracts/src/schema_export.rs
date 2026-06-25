@@ -78,6 +78,40 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         "conversation_timeline_page",
         ConversationTimelinePage
     );
+    insert_schema!(
+        schemas,
+        "conversation_worktree_page",
+        ConversationWorktreePage
+    );
+    insert_schema!(schemas, "conversation_turn_cursor", ConversationTurnCursor);
+    insert_schema!(schemas, "conversation_turn", ConversationTurn);
+    insert_schema!(
+        schemas,
+        "conversation_turn_user_message",
+        ConversationTurnUserMessage
+    );
+    insert_schema!(schemas, "assistant_work", AssistantWork);
+    insert_schema!(schemas, "assistant_work_status", AssistantWorkStatus);
+    insert_schema!(schemas, "assistant_segment", AssistantSegment);
+    insert_schema!(schemas, "thinking_segment", ThinkingSegment);
+    insert_schema!(schemas, "thinking_segment_status", ThinkingSegmentStatus);
+    insert_schema!(schemas, "thinking_summary", ThinkingSummary);
+    insert_schema!(schemas, "text_segment", TextSegment);
+    insert_schema!(schemas, "tool_group_segment", ToolGroupSegment);
+    insert_schema!(schemas, "tool_attempt", ToolAttempt);
+    insert_schema!(schemas, "tool_attempt_status", ToolAttemptStatus);
+    insert_schema!(schemas, "tool_permission_state", ToolPermissionState);
+    insert_schema!(schemas, "tool_permission_status", ToolPermissionStatus);
+    insert_schema!(schemas, "artifact_segment", ArtifactSegment);
+    insert_schema!(schemas, "review_request_segment", ReviewRequestSegment);
+    insert_schema!(
+        schemas,
+        "clarification_request_segment",
+        ClarificationRequestSegment
+    );
+    insert_schema!(schemas, "notice_segment", NoticeSegment);
+    insert_schema!(schemas, "error_segment", ErrorSegment);
+    insert_schema!(schemas, "conversation_event_ref", ConversationEventRef);
     insert_schema!(schemas, "blob_ref", BlobRef);
     insert_schema!(schemas, "blob_meta", BlobMeta);
     insert_schema!(schemas, "redact_rules", RedactRules);

@@ -45,9 +45,10 @@ Required test groups:
 | Contracts | serde shape, JsonSchema exports, IDs, Event tags, errors, permission payloads, snapshot stability |
 | Permission | PermissionBroker decisions, deduplication, persistence, tamper handling, fail-closed defaults |
 | Tool | registry behavior, orchestration, builtin filesystem/shell IO, result budgets, permission checks |
-| Journal | append/read order, snapshots, migrations, version handling, audit query behavior |
+| Journal | append/read order, snapshots, migrations, version handling, audit query behavior, conversation worktree projection |
 | Redaction | Redactor before every durable store path |
 | Replay | cursor behavior, redacted output, snapshot reads, conversation event ordering |
+| Conversation worktree | complete turn paging, event cursor reporting, stable node ids, nested tool permissions, safe thinking and tool failure summaries |
 | Tauri command | command payload identity, shell metadata, SDK availability, replay-before-live conversation subscription, window-scoped event batches, unsubscribe cleanup |
 | SDK | builder requirements, runtime assembly, mock/testing adapters |
 | Budget | quota serialization and token budget defaults |
@@ -69,7 +70,10 @@ Critical backend tests:
 apps/desktop/src-tauri/tests/commands.rs
 crates/jyowo-harness-budget/tests/budget_contract.rs
 crates/jyowo-harness-contracts/tests/m1_contracts.rs
+crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs
+crates/jyowo-harness-journal/tests/conversation_read_model.rs
 crates/jyowo-harness-journal/tests/version.rs
+crates/jyowo-harness-sdk/tests/conversation_read_model.rs
 crates/jyowo-harness-observability/tests/journal_redactor_pipeline.rs
 crates/jyowo-harness-sdk/tests/runtime_assembly.rs
 crates/jyowo-harness-tool/tests/builtin_exec.rs

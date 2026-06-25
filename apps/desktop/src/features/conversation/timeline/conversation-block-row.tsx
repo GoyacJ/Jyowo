@@ -1,14 +1,16 @@
 import { memo } from 'react'
 
-import { ConversationBlockRenderer } from './conversation-block-renderer'
-import type { ConversationBlock } from './conversation-blocks'
+import type { ConversationEventRef, ConversationTurn } from '@/shared/tauri/commands'
+import { ConversationTurnView } from './conversation-turn-view'
 
 export const ConversationBlockRow = memo(function ConversationBlockRow({
-  block,
+  turn,
+  onOpenDetails,
   onPermissionResolve,
   onReviewContinue,
 }: {
-  block: ConversationBlock
+  turn: ConversationTurn
+  onOpenDetails?: (eventRef: ConversationEventRef) => void
   onPermissionResolve?: (request: {
     conversationId: string
     requestId: string
@@ -17,11 +19,12 @@ export const ConversationBlockRow = memo(function ConversationBlockRow({
   onReviewContinue?: (prompt: string) => void
 }) {
   return (
-    <div data-conversation-block-id={block.id} id={`conversation-block-${block.id}`}>
-      <ConversationBlockRenderer
-        block={block}
+    <div data-conversation-turn-id={turn.id} id={`conversation-block-${turn.id}`}>
+      <ConversationTurnView
+        onOpenDetails={onOpenDetails}
         onPermissionResolve={onPermissionResolve}
         onReviewContinue={onReviewContinue}
+        turn={turn}
       />
     </div>
   )

@@ -34,15 +34,15 @@ export function createConversationTimelineSource(
           ...(afterCursor ? { afterCursor } : {}),
         })
         dispatch({
-          type: 'applyEvents',
-          events: subscription.replayEvents,
-          cursor: subscription.cursor ?? null,
+          type: 'worktreeRefreshRequested',
+          immediate: subscription.replayEvents.length > 0 || subscription.gap,
         })
         if (subscription.gap) {
-          dispatch({ type: 'markGap', afterCursor: subscription.cursor ?? undefined })
+          dispatch({ type: 'markGap' })
         }
       } catch {
-        dispatch({ type: 'markGap', afterCursor: afterCursor ?? undefined })
+        dispatch({ type: 'markGap' })
+        dispatch({ type: 'worktreeRefreshRequested', immediate: true })
       }
 
       return async () => {
@@ -72,8 +72,22 @@ function dispatchBatch(
   batch: ConversationEventBatchPayload,
   dispatch: (action: ConversationTimelineAction) => void,
 ) {
-  dispatch({ type: 'applyEvents', events: batch.events, cursor: batch.cursor ?? null })
+  dispatch({
+    type: 'worktreeRefreshRequested',
+    immediate: batch.gap || batch.events.some(isTerminalProjectionSignal),
+  })
   if (batch.gap) {
-    dispatch({ type: 'markGap', afterCursor: batch.cursor ?? undefined })
+    dispatch({ type: 'markGap' })
   }
+}
+
+function isTerminalProjectionSignal(event: ConversationEventBatchPayload['events'][number]) {
+  return (
+    event.type === 'run.ended' ||
+    event.type === 'engine.failed' ||
+    event.type === 'tool.completed' ||
+    event.type === 'tool.failed' ||
+    event.type === 'tool.denied' ||
+    event.type === 'permission.resolved'
+  )
 }

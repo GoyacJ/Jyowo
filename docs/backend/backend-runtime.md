@@ -20,6 +20,7 @@ Session
 Run
 TurnInput
 Event
+ConversationWorktreePage
 Tool
 Permission
 MCP server
@@ -40,6 +41,8 @@ Ownership rules:
 - `Memory` recall and writes run through backend-owned tenant and visibility rules.
 - `Model` providers are backend capabilities and must not expose raw provider credentials to React.
 - `Journal` stores structured `Event` values after redaction.
+- Conversation worktree projection belongs to Rust. It converts redacted journal
+  events into `ConversationTurn` trees for the UI.
 - `Replay` reads from backend-owned journal cursors and snapshots.
 - `Audit` data is derived from backend-controlled events and permission decisions.
 - `Redactor` runs before event persistence, logs, traces, export, and Replay output.
@@ -47,7 +50,8 @@ Ownership rules:
 
 ## Event Semantics
 
-`harness-contracts` is the canonical source for public event contracts.
+`harness-contracts` is the canonical source for public event contracts and the
+UI-facing conversation projection contract.
 
 Backend events MUST be structured `Event` variants. Plain text logs are diagnostic data, not product trace data.
 
@@ -71,6 +75,18 @@ Ordering rules:
 - Tool completion or failure events MUST be emitted after the execution attempt finishes.
 - Redaction MUST run before the event reaches a durable `Journal`.
 - Replay MUST return redacted or withheld payloads according to event visibility.
+
+Conversation worktree paging rules:
+
+- `page_conversation_worktree` returns complete turns, not raw event pages.
+- `pageCursor` is a turn cursor.
+- `eventCursor` is the latest consumed journal cursor.
+- the projection may read materialized worktree rows, or replay from session
+  start into a complete in-memory projection before slicing by turn.
+- it must never project a partial raw-event page and then slice that result.
+- thinking summaries must be status-derived, explicitly safe, or withheld.
+- tool failure summaries must be user-safe and must not expose raw payloads,
+  private paths, or withheld placeholders.
 
 ## Failure Defaults
 

@@ -1,6 +1,6 @@
-import type { ConversationBlock, PermissionRequestBlock } from './conversation-blocks'
-import { selectBlocksFromState } from './conversation-timeline-index'
-import type { ConversationTimelineState } from './conversation-timeline-reducer'
+import type { AssistantSegment, ConversationTurn, ToolAttempt } from '@/shared/tauri/commands'
+import type { PendingToolPermission } from './conversation-blocks'
+import type { ConversationTimelineState } from './conversation-timeline-store'
 
 export type ComposerMode =
   | { kind: 'ready' }
@@ -11,71 +11,87 @@ export type ComposerMode =
   | { kind: 'retry'; turnId: string }
   | { kind: 'continue' }
 
-export function selectBlocks(state: ConversationTimelineState): ConversationBlock[] {
-  return selectBlocksFromState(state)
+export function selectTurns(state: ConversationTimelineState): ConversationTurn[] {
+  return state.turns
 }
 
 export function selectComposerMode(state: ConversationTimelineState): ComposerMode {
-  if (state.activeRunIds.length > 0) {
+  if (state.turns.some((turn) => turn.assistant?.status === 'running')) {
     return { kind: 'running-disabled', canCancel: true }
   }
 
-  const blocks = selectBlocks(state)
-  const clarification = blocks.find(
-    (block) => block.kind === 'clarificationRequest' && block.status === 'pending',
+  const pendingClarification = findLastSegment(
+    state.turns,
+    (segment) => segment.kind === 'clarificationRequest',
   )
-  if (clarification) {
-    return { kind: 'clarification-reply', blockId: clarification.id }
+  if (pendingClarification?.kind === 'clarificationRequest') {
+    return { kind: 'clarification-reply', blockId: pendingClarification.id }
   }
 
-  const review = blocks.find(
-    (block) => block.kind === 'reviewRequest' && block.status === 'pending',
-  )
-  if (review) {
-    return { kind: 'review-comment', blockId: review.id }
+  const pendingReview = findLastSegment(state.turns, (segment) => segment.kind === 'reviewRequest')
+  if (pendingReview?.kind === 'reviewRequest') {
+    return { kind: 'review-comment', blockId: pendingReview.id }
   }
 
-  const failedTurn = [...blocks].reverse().find((block) => block.status === 'failed')
-  if (failedTurn?.turnId) {
-    return { kind: 'retry', turnId: failedTurn.turnId }
+  const failedTurn = [...state.turns].reverse().find((turn) => turn.assistant?.status === 'failed')
+  if (failedTurn) {
+    return { kind: 'retry', turnId: failedTurn.id }
   }
 
   return { kind: 'ready' }
 }
 
-export function selectPendingPermissionBlocks(
+export function selectPendingPermissions(
   state: ConversationTimelineState,
-): PermissionRequestBlock[] {
-  return selectBlocks(state).filter(
-    (block): block is PermissionRequestBlock =>
-      block.kind === 'permissionRequest' &&
-      (block.status === 'pending' || block.status === 'submitting'),
-  )
+): PendingToolPermission[] {
+  const pending: PendingToolPermission[] = []
+
+  for (const turn of state.turns) {
+    for (const attempt of toolAttempts(turn)) {
+      const permission = attempt.permission
+      if (!permission || (permission.status !== 'pending' && permission.status !== 'submitting')) {
+        continue
+      }
+      pending.push({
+        ...permission,
+        conversationId: turn.conversationId,
+        toolAttempt: attempt,
+        turnId: turn.id,
+      })
+    }
+  }
+
+  return pending
 }
 
 export function selectShouldPollFallback(state: ConversationTimelineState): boolean {
-  return state.hasGap
+  return state.gap
 }
 
 export type TurnGroup = {
   turnId: string
-  blocks: ConversationBlock[]
+  turns: ConversationTurn[]
 }
 
-export function selectTurnGroups(blocks: ConversationBlock[]): TurnGroup[] {
-  const groups: TurnGroup[] = []
-  let current: TurnGroup | null = null
+export function selectTurnGroups(turns: ConversationTurn[]): TurnGroup[] {
+  return turns.map((turn) => ({ turnId: turn.id, turns: [turn] }))
+}
 
-  for (const block of blocks) {
-    const turnId = block.turnId ?? `orphan:${block.id}`
-    if (!current || current.turnId !== turnId) {
-      current = { turnId, blocks: [block] }
-      groups.push(current)
-      continue
+function findLastSegment(
+  turns: ConversationTurn[],
+  predicate: (segment: AssistantSegment) => boolean,
+) {
+  for (const turn of [...turns].reverse()) {
+    const segment = [...(turn.assistant?.segments ?? [])].reverse().find(predicate)
+    if (segment) {
+      return segment
     }
-
-    current.blocks.push(block)
   }
+  return undefined
+}
 
-  return groups
+function toolAttempts(turn: ConversationTurn): ToolAttempt[] {
+  return (turn.assistant?.segments ?? []).flatMap((segment) =>
+    segment.kind === 'toolGroup' ? segment.attempts : [],
+  )
 }

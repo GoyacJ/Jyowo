@@ -1,23 +1,27 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-
 import { useUiStore } from '@/shared/state/ui-store'
+import type { ConversationEventRef, ConversationTurn } from '@/shared/tauri/commands'
 import { ConversationBlockRow } from './conversation-block-row'
-import type { ConversationBlock } from './conversation-blocks'
-import { blockScrollAnchorKey, useConversationScrollAnchor } from './use-conversation-scroll-anchor'
+import { turnScrollAnchorKey } from './conversation-scroll-controller'
+import { useConversationScrollAnchor } from './use-conversation-scroll-anchor'
 
-const estimatedBlockHeightPx = 120
+const estimatedTurnHeightPx = 180
 const virtualListThreshold = 24
 
 export function ConversationTimeline({
   blocks,
-  title,
+  onOpenDetails,
   onPermissionResolve,
   onReviewContinue,
+  title,
+  turns,
 }: {
-  blocks: ConversationBlock[]
+  blocks?: ConversationTurn[]
+  turns?: ConversationTurn[]
   title: string
+  onOpenDetails?: (eventRef: ConversationEventRef) => void
   onPermissionResolve?: (request: {
     conversationId: string
     requestId: string
@@ -26,19 +30,25 @@ export function ConversationTimeline({
   onReviewContinue?: (prompt: string) => void
 }) {
   const { t } = useTranslation('conversation')
-  const latestBlock = blocks.at(-1)
-  const latestAnchorKey = latestBlock ? blockScrollAnchorKey(latestBlock) : null
+  const timelineTurns = turns ?? blocks ?? []
+  const latestTurn = timelineTurns.at(-1)
+  const latestAnchorKey = latestTurn ? turnScrollAnchorKey(latestTurn) : null
   const streamingScrollTick =
-    latestBlock?.kind === 'assistantStreaming' ? latestBlock.body.length : undefined
+    latestTurn?.assistant?.status === 'running'
+      ? latestTurn.assistant.segments.reduce(
+          (size, segment) => size + JSON.stringify(segment).length,
+          0,
+        )
+      : undefined
   const { endRef, jumpToLatest, onScroll, showJumpToLatest, viewportRef } =
     useConversationScrollAnchor(latestAnchorKey, { streamingScrollTick })
   const timelineScrollRequest = useUiStore((state) => state.timelineScrollRequest)
   const clearTimelineScrollRequest = useUiStore((state) => state.clearTimelineScrollRequest)
   const listRef = useRef<HTMLDivElement | null>(null)
-  const useVirtualList = blocks.length >= virtualListThreshold
+  const useVirtualList = timelineTurns.length >= virtualListThreshold
   const rowVirtualizer = useVirtualizer({
-    count: useVirtualList ? blocks.length : 0,
-    estimateSize: () => estimatedBlockHeightPx,
+    count: useVirtualList ? timelineTurns.length : 0,
+    estimateSize: () => estimatedTurnHeightPx,
     getScrollElement: () => viewportRef.current,
     overscan: 6,
   })
@@ -67,7 +77,7 @@ export function ConversationTimeline({
         <h1 className="font-semibold text-2xl tracking-normal">{title}</h1>
       </header>
       <div className="min-h-0 overflow-auto pr-1" onScroll={onScroll} ref={viewportRef}>
-        {blocks.length > 0 ? (
+        {timelineTurns.length > 0 ? (
           useVirtualList ? (
             <div
               className="relative pb-4"
@@ -75,8 +85,8 @@ export function ConversationTimeline({
               style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
             >
               {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                const block = blocks[virtualRow.index]
-                if (!block) {
+                const turn = timelineTurns[virtualRow.index]
+                if (!turn) {
                   return null
                 }
 
@@ -84,14 +94,15 @@ export function ConversationTimeline({
                   <div
                     className="absolute top-0 left-0 w-full pb-5"
                     data-index={virtualRow.index}
-                    key={block.id}
+                    key={turn.id}
                     ref={rowVirtualizer.measureElement}
                     style={{ transform: `translateY(${virtualRow.start}px)` }}
                   >
                     <ConversationBlockRow
-                      block={block}
+                      onOpenDetails={onOpenDetails}
                       onPermissionResolve={onPermissionResolve}
                       onReviewContinue={onReviewContinue}
+                      turn={turn}
                     />
                   </div>
                 )
@@ -100,12 +111,13 @@ export function ConversationTimeline({
             </div>
           ) : (
             <div className="grid gap-5 pb-4">
-              {blocks.map((block) => (
+              {timelineTurns.map((turn) => (
                 <ConversationBlockRow
-                  block={block}
-                  key={block.id}
+                  key={turn.id}
+                  onOpenDetails={onOpenDetails}
                   onPermissionResolve={onPermissionResolve}
                   onReviewContinue={onReviewContinue}
+                  turn={turn}
                 />
               ))}
               <div aria-hidden="true" ref={endRef} />

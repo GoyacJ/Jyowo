@@ -34,14 +34,14 @@ use harness_contracts::{
 use harness_contracts::{
     BlobReaderCapAdapter, BlobStore, CapabilityRegistry, ContextPatchRequest, ContextPatchSinkCap,
     ConversationAttachmentReference, ConversationContextReference, ConversationCursor,
-    ConversationSnapshot, ConversationSummary, ConversationTimelinePage, ConversationTurnInput,
-    Decision, Event, EventId, HarnessError, HookEventKind, InteractivityLevel, JournalOffset,
-    ManifestOriginRef, ManifestValidationFailedEvent, McpServerId, Message, MessageContent,
-    MessageId, MessagePart, MessageRole, ModelModality, PermissionError, PermissionMode,
-    PluginCapabilitiesSummary, PluginLifecycleStateDiscriminant, PluginLoadedEvent,
-    PluginRejectedEvent, RedactPatternSet, RedactRules, RedactScope, Redactor, RejectionReason,
-    RunId, SessionError, SessionId, TenantId, ToolCapability, ToolSearchMode, TrustLevel,
-    TurnInput,
+    ConversationSnapshot, ConversationSummary, ConversationTimelinePage, ConversationTurnCursor,
+    ConversationTurnInput, ConversationWorktreePage, Decision, Event, EventId, HarnessError,
+    HookEventKind, InteractivityLevel, JournalOffset, ManifestOriginRef,
+    ManifestValidationFailedEvent, McpServerId, Message, MessageContent, MessageId, MessagePart,
+    MessageRole, ModelModality, PermissionError, PermissionMode, PluginCapabilitiesSummary,
+    PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginRejectedEvent, RedactPatternSet,
+    RedactRules, RedactScope, Redactor, RejectionReason, RunId, SessionError, SessionId, TenantId,
+    ToolCapability, ToolSearchMode, TrustLevel, TurnInput,
 };
 #[cfg(feature = "memory-builtin")]
 use harness_contracts::{MemdirOverflowEvent, OverflowStrategy};
@@ -61,9 +61,9 @@ use harness_hook::{
 #[cfg(feature = "sqlite-store")]
 use harness_journal::SqliteConversationReadModelStore;
 use harness_journal::{
-    AppendMetadata, AuditPage, AuditQuery, AuditStore, EventEnvelope, EventStore, EventStoreAudit,
-    EventStoreOffloadedBlobAuthorizer, PrunePolicy, PruneReport, ReplayCursor, SessionFilter,
-    SessionSnapshot, SessionSummary,
+    AppendMetadata, AuditPage, AuditQuery, AuditStore, ConversationTurnPageDirection,
+    EventEnvelope, EventStore, EventStoreAudit, EventStoreOffloadedBlobAuthorizer, PrunePolicy,
+    PruneReport, ReplayCursor, SessionFilter, SessionSnapshot, SessionSummary,
 };
 use harness_mcp::{
     ElicitationHandler, McpEventSink, McpMetric, McpMetricConnectionState, McpMetricsSink,
@@ -1278,6 +1278,25 @@ impl Harness {
         self.conversation_read_model()
             .await?
             .page_timeline(tenant_id, session_id, after_cursor, limit)
+            .await
+            .map_err(HarnessError::Journal)
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    pub async fn page_conversation_worktree(
+        &self,
+        conversation_id: &str,
+        page_cursor: Option<ConversationTurnCursor>,
+        direction: ConversationTurnPageDirection,
+        limit_turns: usize,
+    ) -> Result<ConversationWorktreePage, HarnessError> {
+        let tenant_id = self.inner.options.tenant_policy.id;
+        let session_id = parse_conversation_session_id(conversation_id)?;
+        self.catch_up_conversation_projection(tenant_id, session_id)
+            .await?;
+        self.conversation_read_model()
+            .await?
+            .page_worktree(tenant_id, session_id, page_cursor, direction, limit_turns)
             .await
             .map_err(HarnessError::Journal)
     }

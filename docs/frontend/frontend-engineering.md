@@ -674,6 +674,13 @@ page_conversation_timeline(request: {
   gap: boolean
 }
 
+page_conversation_worktree(request: {
+  conversationId: string
+  pageCursor?: ConversationTurnCursor
+  direction?: 'before' | 'after'
+  limit?: number
+}): ConversationWorktreePage
+
 unsubscribe_conversation_events(subscriptionId: string): {
   subscriptionId: string
   status: 'unsubscribed' | 'alreadyClosed'
@@ -683,7 +690,26 @@ type ConversationCursor = {
   eventId: string
   conversationSequence: number
 }
+
+type ConversationTurnCursor = {
+  turnId: string
+  position: number
+}
+
+type ConversationWorktreePage = {
+  turns: ConversationTurn[]
+  pageCursor?: ConversationTurnCursor
+  eventCursor?: ConversationCursor
+  hasMoreBefore: boolean
+  hasMoreAfter: boolean
+  gap: boolean
+}
 ```
+
+`page_conversation_worktree` is the `ConversationCanvas` data source.
+`page_conversation_timeline` remains for Activity, Replay, and details views.
+`get_conversation.messages` may support metadata and compatibility surfaces,
+but it must not drive the conversation canvas.
 
 Command naming:
 

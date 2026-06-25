@@ -6,14 +6,18 @@ use chrono::{DateTime, Utc};
 use harness_contracts::{
     ArtifactStatus, ConversationCursor, ConversationMessage, ConversationMessageAuthor,
     ConversationSnapshot, ConversationSummary, ConversationTimelineEvent, ConversationTimelinePage,
-    Decision, DecisionScope, DeltaChunk, Event, EventId, JournalError, MessageContent, MessagePart,
-    PermissionSubject, RequestId, RunId, SessionId, Severity, TenantId, ToolUseId, UiSafeText,
+    ConversationTurnCursor, ConversationWorktreePage, Decision, DecisionScope, DeltaChunk, Event,
+    EventId, JournalError, MessageContent, MessagePart, PermissionSubject, RequestId, RunId,
+    SessionId, Severity, TenantId, ToolUseId, UiSafeText,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use crate::{journal_error, EventEnvelope, SessionSummary};
+use crate::{
+    journal_error, project_conversation_worktree_snapshot, ConversationTurnPageDirection,
+    EventEnvelope, SessionSummary,
+};
 
 pub struct SqliteConversationReadModelStore {
     connection: Mutex<Connection>,
@@ -423,6 +427,93 @@ impl SqliteConversationReadModelStore {
             cursor,
             gap: false,
         })
+    }
+
+    pub async fn page_worktree(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+        page_cursor: Option<ConversationTurnCursor>,
+        direction: ConversationTurnPageDirection,
+        limit_turns: usize,
+    ) -> Result<ConversationWorktreePage, JournalError> {
+        let events = self.load_complete_timeline(tenant_id, session_id).await?;
+        let projection = project_conversation_worktree_snapshot(&session_id.to_string(), events);
+        let all_turns = projection.turns;
+        let limit = limit_turns.clamp(1, 100);
+        let boundary = page_cursor.as_ref().map(|cursor| cursor.position);
+        let selected = match direction {
+            ConversationTurnPageDirection::After => all_turns
+                .iter()
+                .enumerate()
+                .filter(|(_, turn)| boundary.is_none_or(|position| turn.position > position))
+                .take(limit)
+                .map(|(index, turn)| (index, turn.clone()))
+                .collect::<Vec<_>>(),
+            ConversationTurnPageDirection::Before => {
+                let mut before = all_turns
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, turn)| boundary.is_none_or(|position| turn.position < position))
+                    .collect::<Vec<_>>();
+                if before.len() > limit {
+                    before = before.split_off(before.len() - limit);
+                }
+                before
+                    .into_iter()
+                    .map(|(index, turn)| (index, turn.clone()))
+                    .collect::<Vec<_>>()
+            }
+        };
+        let first_index = selected.first().map(|(index, _)| *index);
+        let last_index = selected.last().map(|(index, _)| *index);
+        let turns = selected
+            .into_iter()
+            .map(|(_, turn)| turn)
+            .collect::<Vec<_>>();
+        let page_cursor = turns.last().map(|turn| ConversationTurnCursor {
+            turn_id: turn.id.clone(),
+            position: turn.position,
+        });
+        let has_more_before = first_index.is_some_and(|index| index > 0);
+        let has_more_after = last_index.is_some_and(|index| index + 1 < all_turns.len());
+
+        Ok(ConversationWorktreePage {
+            turns,
+            page_cursor,
+            event_cursor: projection.event_cursor,
+            has_more_before,
+            has_more_after,
+            gap: false,
+        })
+    }
+
+    async fn load_complete_timeline(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+    ) -> Result<Vec<ConversationTimelineEvent>, JournalError> {
+        let connection = self.connection.lock().await;
+        let mut statement = connection
+            .prepare(
+                "SELECT event_id, conversation_sequence, run_id, run_sequence, event_type,
+                        source, visibility, timestamp, payload
+                 FROM conversation_timeline_event
+                 WHERE tenant_id = ?1 AND session_id = ?2
+                 ORDER BY conversation_sequence ASC",
+            )
+            .map_err(journal_error)?;
+        let rows = statement
+            .query_map(
+                params![tenant_id.to_string(), session_id.to_string()],
+                timeline_event_from_row,
+            )
+            .map_err(journal_error)?;
+        let mut events = Vec::new();
+        for row in rows {
+            events.push(row.map_err(journal_error)?);
+        }
+        Ok(events)
     }
 }
 

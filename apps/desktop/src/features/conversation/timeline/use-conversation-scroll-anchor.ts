@@ -1,7 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 
 import {
-  blockScrollAnchorKey,
   createScrollFollowMode,
   isNearBottom,
   shouldAutoFollowOnAnchorChange,
@@ -82,5 +81,3 @@ export function useConversationScrollAnchor(
     viewportRef,
   }
 }
-
-export { blockScrollAnchorKey }

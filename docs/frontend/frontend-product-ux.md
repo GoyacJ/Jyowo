@@ -24,6 +24,8 @@ Conversation
 Work Intent
 Plan
 Run
+ConversationTurn
+AssistantWork
 RunEvent
 Tool Call
 Permission Request
@@ -59,6 +61,14 @@ Replay
 
 The UI must make the first path dominant and keep the second path available as
 details.
+
+`ConversationCanvas` renders `ConversationTurn[]`. Each turn contains the user
+message and one optional `AssistantWork` tree. `AssistantWork` owns thinking
+summaries, assistant text, tool attempts, permissions, artifacts, review
+requests, clarification requests, notices, errors, and final answers.
+
+Raw `RunEvent` data belongs to Activity, Details, Replay, and Raw JSON. It must
+not become the product model for the main conversation canvas.
 
 ## Core Principles
 
@@ -387,12 +397,19 @@ AppShell
     ProjectSwitcher
     ConversationList
   ConversationCanvas
-    ConversationMessage
-    PlanBlock
-    ProgressBlock
-    ArtifactPreview
-    ReviewRequest
-    DecisionCard
+    ConversationTurn
+      UserMessage
+      AssistantWork
+        ThinkingSummary
+        AssistantText
+        ToolGroup
+          ToolAttempt
+            PermissionState
+        ArtifactPreview
+        ReviewRequest
+        ClarificationRequest
+        Notice
+        Error
     Composer
   ContextPanel
     ContextSection
@@ -407,12 +424,16 @@ Hierarchy rules:
 
 - `Composer` is the primary action surface.
 - `ConversationCanvas` is the primary reading and work surface.
+- `ConversationCanvas` reads the Rust-owned worktree projection, not
+  `get_conversation.messages`.
 - `ContextPanel` is secondary and supports the current conversation.
 - `ActivityRail` is tertiary and shows execution status without taking over the
   product.
 - `RunTimeline`, `ToolCallCard`, `PermissionDialog`, `DiffViewer`, and
   `CommandPreview` appear inside conversation or activity surfaces.
 - Raw JSON is available only as a drill-down support view.
+- Thinking visible in the conversation must be status-derived, explicitly safe,
+  or withheld. Raw thought text must not appear in the canvas.
 - MCP, Memory, provider, permission, trace, and audit concepts must not become the
   main navigation model.
 

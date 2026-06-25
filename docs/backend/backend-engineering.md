@@ -192,6 +192,7 @@ Rules:
 Current Tauri commands:
 
 ```text
+add_project
 cancel_run
 create_attachment_from_path
 create_conversation
@@ -220,8 +221,10 @@ list_model_provider_catalog
 list_mcp_servers
 list_memory_items
 list_provider_settings
+list_projects
 list_skills
 page_conversation_timeline
+page_conversation_worktree
 resolve_permission
 request_provider_config_api_key_reveal
 run_eval_case
@@ -233,6 +236,7 @@ set_conversation_model_config
 set_skill_enabled
 start_run
 subscribe_conversation_events
+switch_project
 unsubscribe_conversation_events
 update_memory_item
 validate_provider_settings
@@ -241,6 +245,7 @@ validate_provider_settings
 Command payloads:
 
 ```rust
+add_project(path: String) -> Result<SwitchProjectResponse, CommandErrorPayload>
 cancel_run(run_id: String) -> Result<CancelRunResponse, CommandErrorPayload>
 create_attachment_from_path(
   path: String
@@ -293,12 +298,19 @@ list_model_provider_catalog() -> ModelProviderCatalogResponse
 list_mcp_servers() -> Result<ListMcpServersResponse, CommandErrorPayload>
 list_memory_items() -> Result<ListMemoryItemsResponse, CommandErrorPayload>
 list_provider_settings() -> Result<ListProviderSettingsResponse, CommandErrorPayload>
+list_projects() -> ListProjectsResponse
 list_skills() -> Result<ListSkillsResponse, CommandErrorPayload>
 page_conversation_timeline(
   conversation_id: String,
   after_cursor: Option<ConversationCursor>,
   limit: Option<u32>
 ) -> Result<ConversationTimelinePage, CommandErrorPayload>
+page_conversation_worktree(
+  conversation_id: String,
+  page_cursor: Option<ConversationTurnCursor>,
+  direction: Option<PageConversationWorktreeDirection>,
+  limit: Option<u32>
+) -> Result<ConversationWorktreePage, CommandErrorPayload>
 resolve_permission(
   decision: PermissionDecision,
   request_id: String
@@ -334,6 +346,7 @@ set_skill_enabled(
   id: String,
   enabled: bool
 ) -> Result<SetSkillEnabledResponse, CommandErrorPayload>
+switch_project(path: String) -> Result<SwitchProjectResponse, CommandErrorPayload>
 start_run(
   client_message_id: Option<String>,
   attachments: Option<Vec<AttachmentReferencePayload>>,
@@ -408,6 +421,13 @@ return `RUNTIME_UNAVAILABLE` when those runtime paths are not available.
 The conversation event projection must echo that value on
 `user.message.appended` when it is present. Optimistic user message
 confirmation depends on that id, not message body text.
+
+`page_conversation_worktree` is the conversation canvas data source. It returns
+`ConversationWorktreePage`, whose top-level items are complete conversation
+turns. The projection is owned by Rust and exposed through the SDK facade.
+`page_conversation_timeline` remains a raw execution surface for Activity,
+Replay, and details views. `get_conversation.messages` must not drive
+`ConversationCanvas`.
 
 `subscribe_conversation_events` and `unsubscribe_conversation_events` expose the
 conversation timeline event stream to the desktop shell. Subscription handlers

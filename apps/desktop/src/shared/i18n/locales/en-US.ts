@@ -80,9 +80,33 @@ export const enUS = {
     intro:
       'Ask in plain language. Jyowo plans the work, runs it locally, and shows every step so you can review and continue.',
     timeline: {
+      approve: 'Approve',
+      assistantAuthor: 'Jyowo',
+      clarificationNeeded: 'Clarification needed',
+      deny: 'Deny',
+      details: 'Details',
       emptyTitle: 'Start a conversation',
       emptyDescription: 'Ask Jyowo to work in this project.',
+      executionStatus: 'Execution: {{status}}',
       jumpToLatest: 'Jump to latest',
+      permissionStatus: 'Permission: {{status}}',
+      permissionStatusLabel: {
+        approved: 'approved',
+        denied: 'denied',
+        failed: 'failed',
+        pending: 'pending',
+        submitting: 'submitting',
+      },
+      thinkingSummary: 'Thinking summary',
+      toolStatus: {
+        completed: 'completed',
+        denied: 'denied',
+        failed: 'failed',
+        queued: 'queued',
+        running: 'running',
+        waitingPermission: 'waiting for permission',
+      },
+      tools: 'Tools',
     },
     composer: {
       placeholder: 'Ask Jyowo anything about this project...',

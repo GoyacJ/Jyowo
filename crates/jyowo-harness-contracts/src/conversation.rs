@@ -126,6 +126,243 @@ pub struct ConversationTimelinePage {
     pub gap: bool,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationWorktreePage {
+    pub turns: Vec<ConversationTurn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_cursor: Option<ConversationTurnCursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_cursor: Option<ConversationCursor>,
+    pub has_more_before: bool,
+    pub has_more_after: bool,
+    pub gap: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTurnCursor {
+    pub turn_id: String,
+    pub position: u64,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTurn {
+    pub id: String,
+    pub conversation_id: String,
+    pub position: u64,
+    pub user: ConversationTurnUserMessage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant: Option<AssistantWork>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTurnUserMessage {
+    pub id: String,
+    pub message_id: String,
+    pub body: UiSafeText,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_message_id: Option<String>,
+    pub timestamp: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistantWork {
+    pub id: String,
+    pub run_id: String,
+    pub status: AssistantWorkStatus,
+    pub segments: Vec<AssistantSegment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AssistantWorkStatus {
+    Running,
+    Complete,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AssistantSegment {
+    Thinking(ThinkingSegment),
+    Text(TextSegment),
+    ToolGroup(ToolGroupSegment),
+    Artifact(ArtifactSegment),
+    ReviewRequest(ReviewRequestSegment),
+    ClarificationRequest(ClarificationRequestSegment),
+    Notice(NoticeSegment),
+    Error(ErrorSegment),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThinkingSegment {
+    pub id: String,
+    pub order: u32,
+    pub status: ThinkingSegmentStatus,
+    pub summary: ThinkingSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ThinkingSegmentStatus {
+    Running,
+    Complete,
+    Withheld,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThinkingSummary {
+    pub text: UiSafeText,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TextSegment {
+    pub id: String,
+    pub order: u32,
+    pub message_id: String,
+    pub body: UiSafeText,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolGroupSegment {
+    pub id: String,
+    pub order: u32,
+    pub attempts: Vec<ToolAttempt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAttempt {
+    pub id: String,
+    pub order: u32,
+    pub tool_use_id: String,
+    pub tool_name: UiSafeText,
+    pub status: ToolAttemptStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<ToolPermissionState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_summary: Option<UiSafeText>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolAttemptStatus {
+    Queued,
+    WaitingPermission,
+    Running,
+    Completed,
+    Failed,
+    Denied,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolPermissionState {
+    pub id: String,
+    pub request_id: String,
+    pub tool_use_id: String,
+    pub status: ToolPermissionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<UiSafeText>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolPermissionStatus {
+    Pending,
+    Submitting,
+    Approved,
+    Denied,
+    Failed,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactSegment {
+    pub id: String,
+    pub order: u32,
+    pub artifact_id: String,
+    pub title: UiSafeText,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<UiSafeText>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewRequestSegment {
+    pub id: String,
+    pub order: u32,
+    pub request_id: String,
+    pub title: UiSafeText,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<UiSafeText>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClarificationRequestSegment {
+    pub id: String,
+    pub order: u32,
+    pub request_id: String,
+    pub prompt: UiSafeText,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoticeSegment {
+    pub id: String,
+    pub order: u32,
+    pub body: UiSafeText,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorSegment {
+    pub id: String,
+    pub order: u32,
+    pub body: UiSafeText,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationEventRef {
+    pub event_id: String,
+    pub cursor: ConversationCursor,
+}
+
 fn contains_private_absolute_path(value: &str) -> bool {
     value.contains("/Users/")
         || value.contains("/home/")

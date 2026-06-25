@@ -91,6 +91,9 @@ function createDeferredMockCommandClient(): CommandClient {
     async pageConversationTimeline(request) {
       return (await getClient()).pageConversationTimeline(request)
     },
+    async pageConversationWorktree(request) {
+      return (await getClient()).pageConversationWorktree(request)
+    },
     async getSkillDetail(id) {
       return (await getClient()).getSkillDetail(id)
     },

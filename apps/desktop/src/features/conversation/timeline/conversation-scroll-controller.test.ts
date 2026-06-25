@@ -1,20 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  blockScrollAnchorKey,
   isNearBottom,
   shouldAutoFollowOnAnchorChange,
+  turnScrollAnchorKey,
 } from './conversation-scroll-controller'
 
 describe('conversationScrollController', () => {
-  it('builds stable anchor keys without body length', () => {
+  it('builds stable anchor keys from turn id and assistant work state', () => {
     expect(
-      blockScrollAnchorKey({
-        id: 'message:1',
-        kind: 'assistantStreaming',
-        status: 'streaming',
+      turnScrollAnchorKey({
+        id: 'turn:user-1',
+        assistant: { status: 'running', segments: [{}, {}] },
       }),
-    ).toBe('message:1:streaming:assistantStreaming')
+    ).toBe('turn:user-1:running:2')
   })
 
   it('does not auto follow streaming anchor changes when follow mode is disabled', () => {

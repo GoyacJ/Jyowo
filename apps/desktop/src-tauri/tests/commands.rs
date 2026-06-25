@@ -1,9 +1,11 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    AssistantDeltaProducedEvent, ConfigHash, CorrelationId, EngineError, EngineFailedEvent,
-    EventId, MessageId, PermissionRequestedEvent, RunStartedEvent, SnapshotId, ToolErrorPayload,
-    ToolUseFailedEvent, ToolUseRequestedEvent, TurnInput,
+    AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, ConfigHash, CorrelationId,
+    DecidedBy, EngineError, EngineFailedEvent, EventId, MessageContent, MessageId, MessageMetadata,
+    PermissionRequestedEvent, PermissionResolvedEvent, RunStartedEvent, SnapshotId, StopReason,
+    ToolErrorPayload, ToolUseFailedEvent, ToolUseRequestedEvent, TurnInput,
+    UserMessageAppendedEvent,
 };
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
 use jyowo_desktop_shell::commands::{
@@ -24,6 +26,7 @@ use jyowo_desktop_shell::commands::{
     list_mcp_servers_with_runtime_state, list_memory_items_with_runtime_state,
     list_model_provider_catalog_payload, list_provider_settings_with_store,
     list_reference_candidates_with_runtime_state, list_skills_with_runtime_state,
+    page_conversation_worktree_with_runtime_state,
     request_provider_config_api_key_reveal_with_runtime_state,
     request_provider_config_api_key_reveal_with_store,
     resolve_permission_for_window_with_runtime_state, resolve_permission_payload,
@@ -44,9 +47,10 @@ use jyowo_desktop_shell::commands::{
     GetMemoryItemRequest, GetProviderConfigApiKeyRequest, GetSkillDetailRequest,
     GetSkillFileRequest, ImportSkillRequest, ListActivityRequest, ListArtifactsRequest,
     ListReferenceCandidatesRequest, McpServerConfigRecord, McpServerStore,
-    McpServerTransportConfig, PermissionDecision, ProviderConfigRecord,
-    ProviderModelDescriptorRecord, ProviderModelLifecycleRecord, ProviderModelModalityRecord,
-    ProviderSettingsRecord, ProviderSettingsRequest, ProviderSettingsStore, ReplayTimelineRequest,
+    McpServerTransportConfig, PageConversationWorktreeDirection, PageConversationWorktreeRequest,
+    PermissionDecision, ProviderConfigRecord, ProviderModelDescriptorRecord,
+    ProviderModelLifecycleRecord, ProviderModelModalityRecord, ProviderSettingsRecord,
+    ProviderSettingsRequest, ProviderSettingsStore, ReplayTimelineRequest,
     RequestProviderConfigApiKeyRevealRequest, ResolvePermissionRequest, RunEvalCaseRequest,
     SaveMcpServerRequest, SetConversationModelConfigRequest, SetExecutionSettingsRequest,
     SetSkillEnabledRequest, SkillStore, SkillStoreRecord, StartRunRequest,
@@ -4726,6 +4730,141 @@ async fn list_activity_with_runtime_state_withholds_tool_failure_messages() {
     assert_eq!(
         failed.payload["message"],
         json!("Tool error withheld from conversation timeline.")
+    );
+}
+
+#[tokio::test]
+async fn page_conversation_worktree_with_runtime_state_returns_safe_turn_tree() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let user_message_id = MessageId::new();
+    let assistant_message_id = MessageId::new();
+    let empty_assistant_message_id = MessageId::new();
+    let tool_use_id = ToolUseId::new();
+    let request_id = RequestId::new();
+    let raw_error = "failed at /Users/alice/private with token=secret-token";
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::UserMessageAppended(UserMessageAppendedEvent {
+                    run_id,
+                    message_id: user_message_id,
+                    content: MessageContent::Text("请生成图片".to_owned()),
+                    metadata: MessageMetadata::default(),
+                    at: now(),
+                }),
+                Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
+                    run_id,
+                    message_id: empty_assistant_message_id,
+                    content: MessageContent::Text("".to_owned()),
+                    tool_uses: Vec::new(),
+                    usage: UsageSnapshot::default(),
+                    pricing_snapshot_id: None,
+                    stop_reason: StopReason::ToolUse,
+                    at: now(),
+                }),
+                Event::ToolUseRequested(test_tool_use_requested_event(
+                    run_id,
+                    tool_use_id,
+                    "MiniMaxTextToImage",
+                )),
+                Event::PermissionRequested(PermissionRequestedEvent {
+                    request_id,
+                    run_id,
+                    session_id,
+                    tenant_id: TenantId::SINGLE,
+                    tool_use_id,
+                    tool_name: "MiniMaxTextToImage".to_owned(),
+                    subject: PermissionSubject::ToolInvocation {
+                        tool: "MiniMaxTextToImage".to_owned(),
+                        input: json!({ "prompt": "image generation" }),
+                    },
+                    severity: Severity::Medium,
+                    scope_hint: DecisionScope::Any,
+                    fingerprint: None,
+                    presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+                    interactivity: InteractivityLevel::FullyInteractive,
+                    causation_id: EventId::new(),
+                    at: now(),
+                }),
+                Event::PermissionResolved(PermissionResolvedEvent {
+                    request_id,
+                    decision: Decision::AllowOnce,
+                    decided_by: DecidedBy::User,
+                    scope: DecisionScope::Any,
+                    fingerprint: None,
+                    rationale: None,
+                    at: now(),
+                }),
+                Event::ToolUseFailed(ToolUseFailedEvent {
+                    at: now(),
+                    error: ToolErrorPayload {
+                        code: "execution".to_owned(),
+                        message: raw_error.to_owned(),
+                        retriable: false,
+                    },
+                    tool_use_id,
+                }),
+                Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
+                    run_id,
+                    message_id: assistant_message_id,
+                    content: MessageContent::Text("图片工具当前不可用。".to_owned()),
+                    tool_uses: Vec::new(),
+                    usage: UsageSnapshot::default(),
+                    pricing_snapshot_id: None,
+                    stop_reason: StopReason::EndTurn,
+                    at: now(),
+                }),
+            ],
+        )
+        .await
+        .expect("events should append");
+
+    let page = page_conversation_worktree_with_runtime_state(
+        PageConversationWorktreeRequest {
+            conversation_id: session_id.to_string(),
+            page_cursor: None,
+            direction: PageConversationWorktreeDirection::After,
+            limit: Some(1),
+        },
+        &state,
+    )
+    .await
+    .expect("worktree should load");
+    let serialized = serde_json::to_string(&page).unwrap();
+
+    assert_eq!(page.turns.len(), 1);
+    assert_eq!(page.turns[0].user.body.as_str(), "请生成图片");
+    let assistant = page.turns[0].assistant.as_ref().unwrap();
+    assert_eq!(assistant.id, format!("assistant:{run_id}"));
+    assert!(!serialized.contains(raw_error));
+    assert!(!serialized.contains("/Users/alice/private"));
+    assert!(!serialized.contains("Tool error withheld from conversation timeline."));
+    assert!(!serialized.contains(&empty_assistant_message_id.to_string()));
+
+    let tool = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            harness_contracts::AssistantSegment::ToolGroup(group) => group.attempts.first(),
+            _ => None,
+        })
+        .expect("tool attempt should be nested");
+    assert_eq!(tool.tool_use_id, tool_use_id.to_string());
+    assert_eq!(
+        tool.permission.as_ref().unwrap().request_id,
+        request_id.to_string()
+    );
+    assert_eq!(
+        tool.failure_summary.as_ref().unwrap().as_str(),
+        "工具执行失败。详情可在 Activity 中查看。"
     );
 }
 

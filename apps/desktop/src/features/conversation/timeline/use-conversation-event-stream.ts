@@ -57,11 +57,13 @@ export function coalesceTimelineActions(
 
   for (const action of actions) {
     const previous = coalesced.at(-1)
-    if (previous?.type === 'applyEvents' && action.type === 'applyEvents') {
+    if (
+      previous?.type === 'worktreeRefreshRequested' &&
+      action.type === 'worktreeRefreshRequested'
+    ) {
       coalesced[coalesced.length - 1] = {
-        type: 'applyEvents',
-        events: [...previous.events, ...action.events],
-        cursor: action.cursor ?? previous.cursor,
+        type: 'worktreeRefreshRequested',
+        immediate: previous.immediate || action.immediate,
       }
       continue
     }

@@ -39,6 +39,7 @@ pub use harness::{
 };
 pub use harness_journal::{
     AuditFilter, AuditOrder, AuditPage, AuditQuery, AuditRecord, AuditScope,
+    ConversationTurnPageDirection,
 };
 pub use harness_session::{BootstrapFileSpec, Workspace, WorkspaceBootstrap, WorkspaceSpec};
 pub use harness_skill::{parse_skill_markdown, SkillSource};

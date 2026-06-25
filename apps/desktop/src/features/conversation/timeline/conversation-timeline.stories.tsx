@@ -1,7 +1,7 @@
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite'
 import type { ReactNode } from 'react'
 
-import type { ConversationBlock } from './conversation-blocks'
+import type { ConversationTurn } from '@/shared/tauri/commands'
 import { ConversationTimeline } from './conversation-timeline'
 
 const meta = {
@@ -12,7 +12,7 @@ const meta = {
   },
   args: {
     title: 'Build the desktop foundation',
-    blocks: [],
+    turns: [],
   },
   decorators: [
     ((StoryComponent) => (
@@ -27,129 +27,171 @@ export default meta
 
 type Story = StoryObj<typeof meta>
 
-const base = {
+const baseTurn: ConversationTurn = {
+  id: 'turn:user-message-001',
   conversationId: 'conversation-001',
-  createdAt: '2026-06-17T00:00:00.000Z',
-}
-
-const longConversationBlocks: ConversationBlock[] = [
-  {
-    ...base,
-    id: 'message-001',
-    kind: 'userMessage',
+  position: 0,
+  user: {
+    id: 'user:user-message-001',
+    messageId: 'user-message-001',
     body: 'Build the app shell and show the verification result.',
-    status: 'sent',
-    conversationSequence: 1,
+    timestamp: '2026-06-17T00:00:00.000Z',
   },
-  {
-    ...base,
-    id: 'assistant-stream',
-    kind: 'assistantStreaming',
-    body: 'Reading the workspace and preparing changes...',
-    status: 'streaming',
-    conversationSequence: 2,
-  },
-  {
-    ...base,
-    id: 'tools',
-    kind: 'toolGroup',
-    expanded: true,
-    conversationSequence: 3,
-    items: [
-      { id: 'tool-001', name: 'read_file', status: 'completed', argumentsSummary: 'apps/desktop' },
-      { id: 'tool-002', name: 'exec_command', status: 'failed', errorMessage: 'exit 1' },
+  assistant: {
+    id: 'assistant:run-001',
+    runId: 'run-001',
+    status: 'running',
+    segments: [
+      {
+        kind: 'thinking',
+        id: 'segment:thinking:run-001',
+        order: 0,
+        status: 'withheld',
+        summary: { text: '思考内容已折叠' },
+      },
+      {
+        kind: 'text',
+        id: 'segment:text:assistant-message-001',
+        order: 1,
+        messageId: 'assistant-message-001',
+        body: 'Reading the workspace and preparing changes...',
+      },
+      {
+        kind: 'toolGroup',
+        id: 'segment:tools:tool-001',
+        order: 2,
+        attempts: [
+          {
+            id: 'tool:tool-001',
+            order: 0,
+            toolUseId: 'tool-001',
+            toolName: 'read_file',
+            status: 'completed',
+          },
+          {
+            id: 'tool:tool-002',
+            order: 1,
+            toolUseId: 'tool-002',
+            toolName: 'exec_command',
+            status: 'failed',
+            failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+          },
+          {
+            id: 'tool:tool-003',
+            order: 2,
+            toolUseId: 'tool-003',
+            toolName: 'install_dependencies',
+            status: 'waitingPermission',
+            permission: {
+              id: 'permission:01HZ0000000000000000000001',
+              requestId: '01HZ0000000000000000000001',
+              toolUseId: 'tool-003',
+              status: 'pending',
+              summary: 'Install dependencies',
+            },
+          },
+        ],
+      },
+      {
+        kind: 'artifact',
+        id: 'segment:artifact:artifact-001',
+        order: 3,
+        artifactId: 'artifact-001',
+        title: 'Verification notes',
+        summary: 'Generated implementation notes.',
+      },
+      {
+        kind: 'reviewRequest',
+        id: 'segment:review:review-001',
+        order: 4,
+        requestId: 'review-001',
+        title: 'Review generated foundation',
+        body: 'Confirm before applying.',
+      },
     ],
   },
-  {
-    ...base,
-    id: 'permission',
-    kind: 'permissionRequest',
-    requestId: '01HZ0000000000000000000001',
-    operation: 'Install dependencies',
-    reason: 'The run requested package installation.',
-    target: 'workspace package manager',
-    severity: 'high',
-    decisionScope: 'current run',
-    exposure: 'Can modify package metadata and lockfile.',
-    workspaceBoundary: 'workspace://local',
-    status: 'pending',
-    conversationSequence: 4,
-  },
-  {
-    ...base,
-    id: 'artifact',
-    kind: 'artifact',
-    artifactId: 'artifact-001',
-    artifactKind: 'markdown',
-    title: 'Verification notes',
-    description: 'Generated implementation notes.',
-    actionLabel: 'Open',
-    status: 'ready',
-    preview: '# Verification\npnpm check:desktop passed.',
-    conversationSequence: 5,
-  },
-  {
-    ...base,
-    id: 'diff',
-    kind: 'diffReview',
-    title: 'src/main.ts',
-    status: 'pending',
-    preview: '+ add timeline source',
-    conversationSequence: 6,
-  },
-  {
-    ...base,
-    id: 'review',
-    kind: 'reviewRequest',
-    title: 'Review generated foundation',
-    continuePrompt: 'Continue',
-    status: 'pending',
-    conversationSequence: 7,
-  },
-]
+}
 
 export const Empty: Story = {}
 
 export const Streaming: Story = {
   args: {
-    blocks: longConversationBlocks.slice(0, 2),
+    turns: [
+      {
+        ...baseTurn,
+        assistant: baseTurn.assistant
+          ? {
+              ...baseTurn.assistant,
+              segments: baseTurn.assistant.segments.slice(0, 2),
+            }
+          : undefined,
+      },
+    ],
   },
 }
 
 export const PermissionPending: Story = {
   args: {
-    blocks: [longConversationBlocks[0], longConversationBlocks[3]],
+    turns: [baseTurn],
   },
 }
 
 export const ToolFailed: Story = {
   args: {
-    blocks: [longConversationBlocks[0], longConversationBlocks[2]],
+    turns: [baseTurn],
   },
 }
 
 export const ArtifactReady: Story = {
   args: {
-    blocks: [longConversationBlocks[0], longConversationBlocks[4]],
+    turns: [baseTurn],
   },
 }
 
-export const DiffReview: Story = {
+export const ReviewAndClarification: Story = {
   args: {
-    blocks: [longConversationBlocks[0], longConversationBlocks[5], longConversationBlocks[6]],
+    turns: [
+      {
+        ...baseTurn,
+        assistant: baseTurn.assistant
+          ? {
+              ...baseTurn.assistant,
+              status: 'complete',
+              segments: [
+                ...baseTurn.assistant.segments,
+                {
+                  kind: 'clarificationRequest',
+                  id: 'segment:clarification:request-002',
+                  order: 5,
+                  requestId: 'request-002',
+                  prompt: 'Which release target should I use?',
+                },
+              ],
+            }
+          : undefined,
+      },
+    ],
   },
 }
 
 export const RunFailed: Story = {
   args: {
-    blocks: [
-      longConversationBlocks[0],
+    turns: [
       {
-        ...base,
-        id: 'error',
-        kind: 'error',
-        message: 'Runtime unavailable',
-        conversationSequence: 2,
+        ...baseTurn,
+        assistant: {
+          id: 'assistant:run-001',
+          runId: 'run-001',
+          status: 'failed',
+          segments: [
+            {
+              kind: 'error',
+              id: 'segment:error:event-001',
+              order: 0,
+              body: 'Runtime unavailable',
+            },
+          ],
+        },
       },
     ],
   },
@@ -157,15 +199,32 @@ export const RunFailed: Story = {
 
 export const LongConversation: Story = {
   args: {
-    blocks: [
-      ...longConversationBlocks,
+    turns: [
+      baseTurn,
       ...Array.from({ length: 8 }, (_, index) => ({
-        ...base,
-        id: `message-extra-${index}`,
-        kind: 'assistantMessage' as const,
-        body: `Completed follow-up step ${index + 1}.`,
-        status: 'complete' as const,
-        conversationSequence: 8 + index,
+        ...baseTurn,
+        id: `turn:user-message-extra-${index}`,
+        position: index + 1,
+        user: {
+          ...baseTurn.user,
+          id: `user:user-message-extra-${index}`,
+          messageId: `user-message-extra-${index}`,
+          body: `Continue with follow-up step ${index + 1}.`,
+        },
+        assistant: {
+          id: `assistant:run-extra-${index}`,
+          runId: `run-extra-${index}`,
+          status: 'complete' as const,
+          segments: [
+            {
+              kind: 'text' as const,
+              id: `segment:text:assistant-extra-${index}`,
+              order: 0,
+              messageId: `assistant-extra-${index}`,
+              body: `Completed follow-up step ${index + 1}.`,
+            },
+          ],
+        },
       })),
     ],
   },

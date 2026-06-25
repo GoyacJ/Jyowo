@@ -290,3 +290,53 @@ async fn conversation_read_model_facade_returns_safe_snapshot_and_timeline() {
     assert_eq!(second_page.events.len(), 1);
     assert_eq!(second_page.events[0].cursor.conversation_sequence, 2);
 }
+
+#[tokio::test]
+async fn conversation_read_model_facade_returns_worktree_page() {
+    let store = Arc::new(CountingEventStore::new());
+    let workspace = temp_workspace("conversation-worktree-facade");
+    let harness = Harness::builder()
+        .with_options(harness_options(workspace.clone()))
+        .with_model(testing::MockProvider::default())
+        .with_store_arc(store.clone())
+        .with_sandbox(testing::NoopSandbox::new())
+        .build()
+        .await
+        .expect("harness should build");
+    let session_id = SessionId::new();
+    let options = SessionOptions::new(workspace).with_session_id(session_id);
+    harness
+        .open_or_create_conversation_session(options)
+        .await
+        .expect("session should open");
+    let run_id = RunId::new();
+    store
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                user_message(run_id, MessageId::new(), "hello"),
+                assistant_message(run_id, MessageId::new(), "hi"),
+            ],
+        )
+        .await
+        .expect("messages should append");
+
+    let page = harness
+        .page_conversation_worktree(
+            &session_id.to_string(),
+            None,
+            harness_journal::ConversationTurnPageDirection::After,
+            1,
+        )
+        .await
+        .expect("worktree page should load");
+
+    assert_eq!(page.turns.len(), 1);
+    assert_eq!(page.turns[0].user.body.as_str(), "hello");
+    assert_eq!(
+        page.turns[0].assistant.as_ref().unwrap().run_id,
+        run_id.to_string()
+    );
+    assert!(page.event_cursor.is_some());
+}

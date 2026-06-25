@@ -336,6 +336,197 @@ const pageConversationTimelineResponseSchema = z
   })
   .strict()
 
+const conversationEventRefSchema = z
+  .object({
+    eventId: z.string().min(1),
+    cursor: conversationCursorSchema,
+  })
+  .strict()
+
+const conversationTurnCursorSchema = z
+  .object({
+    turnId: z.string().min(1),
+    position: z.number().int().nonnegative(),
+  })
+  .strict()
+
+const thinkingSegmentSchema = z
+  .object({
+    kind: z.literal('thinking'),
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    status: z.enum(['running', 'complete', 'withheld']),
+    summary: z
+      .object({
+        text: conversationDisplayTextSchema,
+      })
+      .strict(),
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const textSegmentSchema = z
+  .object({
+    kind: z.literal('text'),
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    messageId: z.string().min(1),
+    body: conversationDisplayTextSchema,
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const toolPermissionStateSchema = z
+  .object({
+    id: z.string().min(1),
+    requestId: z.string().min(1),
+    toolUseId: z.string().min(1),
+    status: z.enum(['pending', 'submitting', 'approved', 'denied', 'failed']),
+    summary: conversationDisplayTextSchema.optional(),
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const toolAttemptSchema = z
+  .object({
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    toolUseId: z.string().min(1),
+    toolName: conversationDisplayTextSchema,
+    status: z.enum(['queued', 'waitingPermission', 'running', 'completed', 'failed', 'denied']),
+    permission: toolPermissionStateSchema.optional(),
+    failureSummary: conversationDisplayTextSchema.optional(),
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const toolGroupSegmentSchema = z
+  .object({
+    kind: z.literal('toolGroup'),
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    attempts: z.array(toolAttemptSchema),
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const artifactSegmentSchema = z
+  .object({
+    kind: z.literal('artifact'),
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    artifactId: z.string().min(1),
+    title: conversationDisplayTextSchema,
+    summary: conversationDisplayTextSchema.optional(),
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const reviewRequestSegmentSchema = z
+  .object({
+    kind: z.literal('reviewRequest'),
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    requestId: z.string().min(1),
+    title: conversationDisplayTextSchema,
+    body: conversationDisplayTextSchema.optional(),
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const clarificationRequestSegmentSchema = z
+  .object({
+    kind: z.literal('clarificationRequest'),
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    requestId: z.string().min(1),
+    prompt: conversationDisplayTextSchema,
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const noticeSegmentSchema = z
+  .object({
+    kind: z.literal('notice'),
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    body: conversationDisplayTextSchema,
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const errorSegmentSchema = z
+  .object({
+    kind: z.literal('error'),
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    body: conversationDisplayTextSchema,
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const assistantSegmentSchema = z.discriminatedUnion('kind', [
+  thinkingSegmentSchema,
+  textSegmentSchema,
+  toolGroupSegmentSchema,
+  artifactSegmentSchema,
+  reviewRequestSegmentSchema,
+  clarificationRequestSegmentSchema,
+  noticeSegmentSchema,
+  errorSegmentSchema,
+])
+
+const assistantWorkSchema = z
+  .object({
+    id: z.string().min(1),
+    runId: z.string().min(1),
+    status: z.enum(['running', 'complete', 'failed', 'cancelled']),
+    segments: z.array(assistantSegmentSchema),
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const conversationTurnUserMessageSchema = z
+  .object({
+    id: z.string().min(1),
+    messageId: z.string().min(1),
+    body: conversationDisplayTextSchema,
+    clientMessageId: z.string().min(1).optional(),
+    timestamp: z.string().datetime({ offset: true }),
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const conversationTurnSchema = z
+  .object({
+    id: z.string().min(1),
+    conversationId: z.string().min(1),
+    position: z.number().int().nonnegative(),
+    user: conversationTurnUserMessageSchema,
+    assistant: assistantWorkSchema.optional(),
+  })
+  .strict()
+
+const pageConversationWorktreeRequestSchema = z
+  .object({
+    conversationId: z.string().min(1),
+    pageCursor: conversationTurnCursorSchema.optional(),
+    direction: z.enum(['before', 'after']).optional(),
+    limit: z.number().int().positive().max(200).optional(),
+  })
+  .strict()
+
+const pageConversationWorktreeResponseSchema = z
+  .object({
+    turns: z.array(conversationTurnSchema),
+    pageCursor: conversationTurnCursorSchema.optional(),
+    eventCursor: conversationCursorSchema.optional(),
+    hasMoreBefore: z.boolean(),
+    hasMoreAfter: z.boolean(),
+    gap: z.boolean(),
+  })
+  .strict()
+
 const subscribeConversationEventsRequestSchema = z
   .object({
     afterCursor: conversationCursorSchema.optional(),
@@ -1097,6 +1288,25 @@ type PageConversationTimelineRequest = z.infer<typeof pageConversationTimelineRe
 export type PageConversationTimelineResponse = z.infer<
   typeof pageConversationTimelineResponseSchema
 >
+export type ConversationEventRef = z.infer<typeof conversationEventRefSchema>
+export type ConversationTurnCursor = z.infer<typeof conversationTurnCursorSchema>
+export type ThinkingSegment = z.infer<typeof thinkingSegmentSchema>
+export type TextSegment = z.infer<typeof textSegmentSchema>
+export type ToolPermissionState = z.infer<typeof toolPermissionStateSchema>
+export type ToolAttempt = z.infer<typeof toolAttemptSchema>
+export type ToolGroupSegment = z.infer<typeof toolGroupSegmentSchema>
+export type ArtifactSegment = z.infer<typeof artifactSegmentSchema>
+export type ReviewRequestSegment = z.infer<typeof reviewRequestSegmentSchema>
+export type ClarificationRequestSegment = z.infer<typeof clarificationRequestSegmentSchema>
+export type NoticeSegment = z.infer<typeof noticeSegmentSchema>
+export type ErrorSegment = z.infer<typeof errorSegmentSchema>
+export type AssistantSegment = z.infer<typeof assistantSegmentSchema>
+export type AssistantWork = z.infer<typeof assistantWorkSchema>
+export type ConversationTurn = z.infer<typeof conversationTurnSchema>
+type PageConversationWorktreeRequest = z.infer<typeof pageConversationWorktreeRequestSchema>
+export type PageConversationWorktreeResponse = z.infer<
+  typeof pageConversationWorktreeResponseSchema
+>
 type SubscribeConversationEventsRequest = z.infer<typeof subscribeConversationEventsRequestSchema>
 export type SubscribeConversationEventsResponse = z.infer<
   typeof subscribeConversationEventsResponseSchema
@@ -1193,6 +1403,9 @@ export interface CommandClient {
   pageConversationTimeline: (
     request: PageConversationTimelineRequest,
   ) => Promise<PageConversationTimelineResponse>
+  pageConversationWorktree: (
+    request: PageConversationWorktreeRequest,
+  ) => Promise<PageConversationWorktreeResponse>
   listReferenceCandidates: (
     request: ListReferenceCandidatesRequest,
   ) => Promise<ListReferenceCandidatesResponse>
@@ -1348,6 +1561,15 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       return parsePayload(
         command,
         pageConversationTimelineResponseSchema,
+        await invoke(command, args),
+      )
+    },
+    async pageConversationWorktree(request) {
+      const command = 'page_conversation_worktree'
+      const args = parseArgs(command, pageConversationWorktreeRequestSchema, request)
+      return parsePayload(
+        command,
+        pageConversationWorktreeResponseSchema,
         await invoke(command, args),
       )
     },
@@ -1836,6 +2058,13 @@ export function getReplayTimeline(
   client: CommandClient = tauriCommandClient,
 ): Promise<ReplayTimelineResponse> {
   return client.getReplayTimeline(request)
+}
+
+export function pageConversationWorktree(
+  request: PageConversationWorktreeRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<PageConversationWorktreeResponse> {
+  return client.pageConversationWorktree(request)
 }
 
 export function getContextSnapshot(

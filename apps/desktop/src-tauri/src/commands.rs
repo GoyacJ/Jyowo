@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use chrono::{NaiveDate, Utc};
-use harness_contracts::{ConversationCursor, ConversationMessageAuthor};
+use harness_contracts::{
+    ConversationCursor, ConversationMessageAuthor, ConversationTurnCursor, ConversationWorktreePage,
+};
 use jyowo_harness_sdk::builtin::{
     DefaultRedactor, FileBlobStore, InMemoryMemoryProvider, JsonlEventStore, LocalLlamaProvider,
     LocalSandbox,
@@ -33,8 +35,8 @@ use jyowo_harness_sdk::ext::{
 };
 use jyowo_harness_sdk::{
     ConversationAttachmentReference, ConversationContextReference, ConversationEventsPageRequest,
-    ConversationTurnInput, ConversationTurnRequest, Harness, McpConfig, RuntimeSkillSummary,
-    RuntimeSkillView, SessionOptions, StreamPermissionRuntime,
+    ConversationTurnInput, ConversationTurnPageDirection, ConversationTurnRequest, Harness,
+    McpConfig, RuntimeSkillSummary, RuntimeSkillView, SessionOptions, StreamPermissionRuntime,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -2707,6 +2709,38 @@ pub struct PageConversationTimelineRequest {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PageConversationWorktreeDirection {
+    Before,
+    After,
+}
+
+impl From<PageConversationWorktreeDirection> for ConversationTurnPageDirection {
+    fn from(value: PageConversationWorktreeDirection) -> Self {
+        match value {
+            PageConversationWorktreeDirection::Before => ConversationTurnPageDirection::Before,
+            PageConversationWorktreeDirection::After => ConversationTurnPageDirection::After,
+        }
+    }
+}
+
+fn default_worktree_direction() -> PageConversationWorktreeDirection {
+    PageConversationWorktreeDirection::After
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageConversationWorktreeRequest {
+    pub conversation_id: String,
+    #[serde(default)]
+    pub page_cursor: Option<ConversationTurnCursor>,
+    #[serde(default = "default_worktree_direction")]
+    pub direction: PageConversationWorktreeDirection,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageConversationTimelineResponse {
@@ -5192,6 +5226,39 @@ pub async fn page_conversation_timeline_with_runtime_state(
         cursor: page.cursor,
         gap: page.gap,
     })
+}
+
+pub async fn page_conversation_worktree_with_runtime_state(
+    request: PageConversationWorktreeRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ConversationWorktreePage, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
+    let session_id = parse_session_id(&request.conversation_id)?;
+    if state
+        .deleted_conversation_ids
+        .lock()
+        .await
+        .contains(&session_id)
+    {
+        return Err(not_found(format!(
+            "conversation not found: {}",
+            request.conversation_id
+        )));
+    }
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Reading conversation worktree requires the runtime conversation facade.",
+        ));
+    };
+    harness
+        .page_conversation_worktree(
+            &request.conversation_id,
+            request.page_cursor,
+            request.direction.into(),
+            request.limit.unwrap_or(50),
+        )
+        .await
+        .map_err(conversation_read_error)
 }
 
 pub async fn subscribe_conversation_events_with_runtime_state(
@@ -8368,6 +8435,27 @@ pub async fn page_conversation_timeline(
         PageConversationTimelineRequest {
             conversation_id,
             after_cursor,
+            limit,
+        },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn page_conversation_worktree(
+    conversation_id: String,
+    page_cursor: Option<ConversationTurnCursor>,
+    direction: Option<PageConversationWorktreeDirection>,
+    limit: Option<usize>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ConversationWorktreePage, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    page_conversation_worktree_with_runtime_state(
+        PageConversationWorktreeRequest {
+            conversation_id,
+            page_cursor,
+            direction: direction.unwrap_or_else(default_worktree_direction),
             limit,
         },
         &*runtime_state,
