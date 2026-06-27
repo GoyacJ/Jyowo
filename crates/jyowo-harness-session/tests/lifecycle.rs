@@ -170,6 +170,7 @@ async fn session_fallback_run_started_uses_config_hash() {
         permission_broker: Arc::new(AllowBroker),
         sandbox: None,
         cap_registry: Arc::new(CapabilityRegistry::default()),
+        redactor: Arc::new(harness_contracts::NoopRedactor),
         blob_store: None,
         model_id: "test-model".to_owned(),
         model_extra: serde_json::Value::Null,

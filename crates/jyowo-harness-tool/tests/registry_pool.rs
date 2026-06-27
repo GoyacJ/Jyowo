@@ -238,6 +238,155 @@ async fn pool_assembles_stable_partitions_filters_and_runtime_append_order() {
 }
 
 #[tokio::test]
+#[cfg(feature = "builtin-toolset")]
+async fn append_runtime_tool_preserves_existing_journal_authority_for_same_name() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Shell)
+        .build()
+        .unwrap();
+    let mut pool = ToolPool::assemble(
+        &registry.snapshot(),
+        &ToolPoolFilter::default(),
+        &ToolSearchMode::Disabled,
+        &ToolPoolModelProfile {
+            provider: ModelProvider("anthropic".to_owned()),
+            max_context_tokens: Some(200_000),
+        },
+        &schema_ctx(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        pool.journal_authority("Bash"),
+        harness_tool::ToolJournalAuthority::Sandbox
+    );
+
+    pool.append_runtime_tool(Arc::new(tool(
+        "Bash",
+        plugin_origin("shadow", TrustLevel::UserControlled),
+        TrustLevel::UserControlled,
+    )));
+
+    assert_eq!(
+        pool.journal_authority("Bash"),
+        harness_tool::ToolJournalAuthority::Sandbox
+    );
+    assert_eq!(
+        pool.descriptor("Bash").expect("Bash descriptor").origin,
+        ToolOrigin::Builtin
+    );
+
+    let prompt_visible = pool.prompt_visible_descriptors();
+    let bash_descriptors = prompt_visible
+        .iter()
+        .filter(|descriptor| descriptor.name == "Bash")
+        .collect::<Vec<_>>();
+    assert_eq!(bash_descriptors.len(), 1);
+    assert_eq!(bash_descriptors[0].origin, ToolOrigin::Builtin);
+
+    let filtered = pool.filtered(&ToolPoolFilter::default());
+    assert_eq!(
+        filtered.descriptor("Bash").expect("Bash descriptor").origin,
+        ToolOrigin::Builtin
+    );
+    assert_eq!(
+        filtered.journal_authority("Bash"),
+        harness_tool::ToolJournalAuthority::Sandbox
+    );
+}
+
+#[tokio::test]
+async fn prompt_visible_descriptors_preserve_deferred_descriptor_for_runtime_same_name() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .with_tool(Box::new(tool_with_origin(
+            "deferred",
+            DeferPolicy::ForceDefer,
+            ToolGroup::Search,
+            ProviderRestriction::All,
+            false,
+            ToolOrigin::Builtin,
+        )))
+        .build()
+        .unwrap();
+    let mut pool = ToolPool::assemble(
+        &registry.snapshot(),
+        &ToolPoolFilter::default(),
+        &ToolSearchMode::Always,
+        &ToolPoolModelProfile {
+            provider: ModelProvider("anthropic".to_owned()),
+            max_context_tokens: Some(200_000),
+        },
+        &schema_ctx(),
+    )
+    .await
+    .unwrap();
+
+    pool.append_runtime_tool(Arc::new(tool(
+        "deferred",
+        plugin_origin("shadow", TrustLevel::UserControlled),
+        TrustLevel::UserControlled,
+    )));
+
+    assert_eq!(
+        pool.get("deferred")
+            .expect("deferred tool")
+            .descriptor()
+            .origin,
+        ToolOrigin::Builtin
+    );
+    assert_eq!(
+        pool.descriptor("deferred")
+            .expect("deferred descriptor")
+            .origin,
+        ToolOrigin::Builtin
+    );
+    let prompt_visible = pool.prompt_visible_descriptors();
+    assert!(
+        prompt_visible
+            .iter()
+            .all(|descriptor| descriptor.name != "deferred"),
+        "unmaterialized deferred tools must not be prompt-visible, and same-name runtime tools must not impersonate them"
+    );
+
+    let filtered_without_deferred = pool.filtered(&ToolPoolFilter {
+        group_denylist: HashSet::from([ToolGroup::Search]),
+        ..Default::default()
+    });
+    assert!(
+        filtered_without_deferred
+            .prompt_visible_descriptors()
+            .iter()
+            .all(|descriptor| descriptor.name != "deferred"),
+        "filtering out the deferred canonical tool must not promote a same-name runtime tool"
+    );
+    assert!(filtered_without_deferred.descriptor("deferred").is_none());
+    assert!(filtered_without_deferred.get("deferred").is_none());
+
+    assert_eq!(
+        pool.materialize_deferred_tools(&["deferred".to_owned()]),
+        ["deferred"]
+    );
+    let materialized = pool.prompt_visible_descriptors();
+    let deferred = materialized
+        .iter()
+        .filter(|descriptor| descriptor.name == "deferred")
+        .collect::<Vec<_>>();
+    assert_eq!(deferred.len(), 1);
+    assert_eq!(deferred[0].origin, ToolOrigin::Builtin);
+
+    let filtered = pool.filtered(&ToolPoolFilter::default());
+    let filtered_visible = filtered.prompt_visible_descriptors();
+    let filtered_deferred = filtered_visible
+        .iter()
+        .filter(|descriptor| descriptor.name == "deferred")
+        .collect::<Vec<_>>();
+    assert_eq!(filtered_deferred.len(), 1);
+    assert_eq!(filtered_deferred[0].origin, ToolOrigin::Builtin);
+}
+
+#[tokio::test]
 async fn pool_applies_allowlists_origin_filters_and_provider_denylists() {
     let registry = ToolRegistry::builder()
         .with_builtin_toolset(BuiltinToolset::Empty)
@@ -478,7 +627,12 @@ fn tool_crate_does_not_depend_on_harness_model() {
     {
         let manifest =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
-        assert!(!manifest.contains("jyowo-harness-model"));
+        assert!(manifest.contains(
+            "jyowo-harness-model = { path = \"../jyowo-harness-model\", optional = true }"
+        ));
+        assert!(manifest.contains(
+            "minimax-tools = [\"builtin-toolset\", \"dep:base64\", \"dep:jyowo-harness-model\", \"jyowo-harness-model/minimax\"]"
+        ));
     }
 }
 

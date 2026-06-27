@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ChevronLeft,
   ChevronRight,
+  Download,
   FileText,
   Folder,
   Search,
@@ -14,10 +15,16 @@ import { useTranslation } from 'react-i18next'
 
 import {
   deleteSkill,
+  getSkillCatalogEntry,
   getSkillDetail,
   getSkillFile,
   importSkill,
+  installSkillFromCatalog,
+  listSkillCatalogEntries,
+  listSkillCatalogSources,
   listSkills,
+  type SkillCatalogEntry,
+  type SkillCatalogSource,
   type SkillFile,
   type SkillSummary,
   setSkillEnabled,
@@ -68,6 +75,11 @@ const BUILTIN_TOOLS: BuiltinTool[] = [
 
 const skillQueryKeys = {
   all: ['skills'] as const,
+  catalogDetail: (sourceId: string, entryId: string | null, version: string | null) =>
+    [...skillQueryKeys.all, 'catalog', 'detail', sourceId, entryId, version] as const,
+  catalogEntries: (sourceId: string, query: string) =>
+    [...skillQueryKeys.all, 'catalog', 'entries', sourceId, query] as const,
+  catalogSources: () => [...skillQueryKeys.all, 'catalog', 'sources'] as const,
   detail: (id: string | null) => [...skillQueryKeys.all, 'detail', id] as const,
   file: (id: string | null, path: string | null) =>
     [...skillQueryKeys.all, 'file', id, path] as const,
@@ -78,6 +90,7 @@ const SKILLS_PAGE_SIZE = 8
 
 type SkillStatusFilter = 'all' | SkillSummary['status']
 type SkillSourceFilter = 'all' | SkillSummary['sourceKind']
+type SkillCatalogSourceId = SkillCatalogSource['id']
 
 function useSkills() {
   const commandClient = useCommandClient()
@@ -148,6 +161,73 @@ function useDeleteSkill() {
   })
 }
 
+function useSkillCatalogSources() {
+  const commandClient = useCommandClient()
+
+  return useQuery({
+    queryKey: skillQueryKeys.catalogSources(),
+    queryFn: () => listSkillCatalogSources(commandClient),
+  })
+}
+
+function useSkillCatalogEntries(sourceId: SkillCatalogSourceId, query: string) {
+  const commandClient = useCommandClient()
+
+  return useQuery({
+    queryKey: skillQueryKeys.catalogEntries(sourceId, query),
+    queryFn: () =>
+      listSkillCatalogEntries(
+        {
+          query: query.trim() || undefined,
+          sourceId,
+        },
+        commandClient,
+      ),
+  })
+}
+
+function useSkillCatalogEntry(sourceId: SkillCatalogSourceId, entry: SkillCatalogEntry | null) {
+  const commandClient = useCommandClient()
+
+  return useQuery({
+    enabled: entry !== null,
+    queryKey: skillQueryKeys.catalogDetail(
+      sourceId,
+      entry?.entryId ?? null,
+      entry?.version ?? null,
+    ),
+    queryFn: () =>
+      getSkillCatalogEntry(
+        {
+          entryId: entry?.entryId ?? '',
+          sourceId,
+          version: entry?.version,
+        },
+        commandClient,
+      ),
+  })
+}
+
+function useInstallSkillFromCatalog() {
+  const commandClient = useCommandClient()
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (entry: SkillCatalogEntry) =>
+      installSkillFromCatalog(
+        {
+          entryId: entry.entryId,
+          sourceId: entry.sourceId,
+          version: entry.version,
+        },
+        commandClient,
+      ),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: skillQueryKeys.all })
+    },
+  })
+}
+
 export function SkillSettingsPage() {
   const { t } = useTranslation('skills')
 
@@ -177,6 +257,25 @@ export function SkillSettingsPage() {
 }
 
 export function SkillsManager() {
+  const { t } = useTranslation('skills')
+
+  return (
+    <Tabs className="min-h-0" defaultValue="installed">
+      <TabsList aria-label={t('managerTabs.label')}>
+        <TabsTrigger value="installed">{t('managerTabs.installed')}</TabsTrigger>
+        <TabsTrigger value="catalog">{t('managerTabs.catalog')}</TabsTrigger>
+      </TabsList>
+      <TabsContent className="space-y-5 pt-3" value="installed">
+        <InstalledSkillsManager />
+      </TabsContent>
+      <TabsContent className="space-y-5 pt-3" value="catalog">
+        <SkillCatalogManager />
+      </TabsContent>
+    </Tabs>
+  )
+}
+
+function InstalledSkillsManager() {
   const { t } = useTranslation('skills')
   const skillsQuery = useSkills()
   const importMutation = useImportSkill()
@@ -467,6 +566,226 @@ export function SkillsManager() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </section>
+  )
+}
+
+function SkillCatalogManager() {
+  const { t } = useTranslation('skills')
+  const sourcesQuery = useSkillCatalogSources()
+  const installMutation = useInstallSkillFromCatalog()
+  const [sourceId, setSourceId] = useState<SkillCatalogSourceId>('anthropic')
+  const [search, setSearch] = useState('')
+  const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null)
+  const entriesQuery = useSkillCatalogEntries(sourceId, search)
+  const entries = entriesQuery.data?.entries ?? []
+  const selectedEntry = entries.find((entry) => entry.entryId === selectedEntryId) ?? null
+  const detailQuery = useSkillCatalogEntry(sourceId, selectedEntry)
+  const selectedSource = sourcesQuery.data?.sources.find((source) => source.id === sourceId)
+
+  useEffect(() => {
+    setSelectedEntryId(null)
+  }, [sourceId])
+
+  useEffect(() => {
+    if (selectedEntryId === null && entries.length > 0) {
+      setSelectedEntryId(entries[0]?.entryId ?? null)
+    }
+  }, [entries, selectedEntryId])
+
+  function selectSource(nextSourceId: SkillCatalogSourceId) {
+    setSourceId(nextSourceId)
+    setSearch('')
+  }
+
+  async function installSelectedEntry() {
+    if (selectedEntry === null || !selectedEntry.installable || selectedEntry.installed) {
+      return
+    }
+
+    await installMutation.mutateAsync(selectedEntry)
+  }
+
+  return (
+    <section className="grid min-h-[560px] gap-4 lg:grid-cols-[220px_minmax(240px,320px)_minmax(0,1fr)]">
+      <section
+        aria-label={t('catalog.sourcesLabel')}
+        className="rounded-md border border-border bg-background"
+      >
+        <div className="border-border border-b px-3 py-2 font-medium text-sm">
+          {t('catalog.sources')}
+        </div>
+        <div className="space-y-2 p-2">
+          {sourcesQuery.isLoading ? (
+            <div className="px-2 py-3 text-muted-foreground text-sm">{t('catalog.loading')}</div>
+          ) : null}
+          {sourcesQuery.isError ? (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
+              {t('catalog.sourceError')}
+            </div>
+          ) : null}
+          {sourcesQuery.data?.sources.map((source) => (
+            <button
+              className="block w-full rounded-md border border-border bg-surface px-3 py-2 text-left text-sm transition-colors data-[selected=true]:border-primary data-[selected=true]:bg-muted/35"
+              data-selected={source.id === sourceId}
+              key={source.id}
+              onClick={() => selectSource(source.id)}
+              type="button"
+            >
+              <span className="flex items-center justify-between gap-2">
+                <span className="font-medium">{source.label}</span>
+                <Badge variant="outline">{t(`catalog.trust.${source.trustLevel}`)}</Badge>
+              </span>
+              <span className="mt-1 block text-muted-foreground text-xs">{source.description}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section
+        aria-label={t('catalog.entriesLabel')}
+        className="flex min-h-0 flex-col rounded-md border border-border bg-background"
+      >
+        <div className="border-border border-b p-2">
+          <label className="relative block text-sm">
+            <span className="sr-only">{t('catalog.search')}</span>
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              className="h-10 w-full rounded-md border border-border bg-background pl-9 pr-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder={t('catalog.search')}
+              value={search}
+            />
+          </label>
+        </div>
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+          {entriesQuery.isLoading ? (
+            <div className="px-2 py-3 text-muted-foreground text-sm">{t('catalog.loading')}</div>
+          ) : null}
+          {entriesQuery.isError ? (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
+              {t('catalog.entriesError')}
+            </div>
+          ) : null}
+          {!entriesQuery.isLoading && !entriesQuery.isError && entries.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border px-4 py-6 text-center text-muted-foreground text-sm">
+              {t('catalog.empty')}
+            </div>
+          ) : null}
+          {entries.map((entry) => (
+            <button
+              aria-pressed={entry.entryId === selectedEntryId}
+              className="block w-full rounded-md border border-border bg-surface px-3 py-2 text-left text-sm transition-colors data-[selected=true]:border-primary data-[selected=true]:bg-muted/35"
+              data-selected={entry.entryId === selectedEntryId}
+              key={entry.entryId}
+              onClick={() => setSelectedEntryId(entry.entryId)}
+              type="button"
+            >
+              <span className="flex items-center justify-between gap-2">
+                <span className="min-w-0 truncate font-medium">{entry.name}</span>
+                {entry.installed ? <Badge variant="success">{t('catalog.installed')}</Badge> : null}
+              </span>
+              <span className="mt-1 line-clamp-2 text-muted-foreground text-xs">
+                {entry.description}
+              </span>
+              <span className="mt-2 flex flex-wrap gap-1">
+                <Badge variant="outline">{entry.sourceLabel}</Badge>
+                {entry.version ? <Badge variant="outline">{entry.version}</Badge> : null}
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section
+        aria-label={t('catalog.detailLabel')}
+        className="min-h-0 rounded-md border border-border bg-background"
+      >
+        {selectedEntry === null ? (
+          <div className="px-4 py-8 text-center text-muted-foreground text-sm">
+            {selectedSource?.installable === false
+              ? t('catalog.specOnly')
+              : t('catalog.selectEntry')}
+          </div>
+        ) : (
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="border-border border-b px-4 py-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="truncate font-semibold text-base">{selectedEntry.name}</h3>
+                  <p className="mt-1 max-w-2xl text-muted-foreground text-sm">
+                    {selectedEntry.description}
+                  </p>
+                </div>
+                <Button
+                  disabled={
+                    installMutation.isPending ||
+                    selectedEntry.installed ||
+                    !selectedEntry.installable ||
+                    detailQuery.data?.validation.status === 'blocked'
+                  }
+                  onClick={installSelectedEntry}
+                  type="button"
+                >
+                  <Download data-icon className="size-4" />
+                  {selectedEntry.installed ? t('catalog.installed') : t('catalog.install')}
+                </Button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-1">
+                <Badge variant="outline">{selectedEntry.sourceLabel}</Badge>
+                <Badge variant="outline">{t(`catalog.trust.${selectedEntry.trustLevel}`)}</Badge>
+                {detailQuery.data?.validation.status ? (
+                  <Badge variant="outline">
+                    {t(`catalog.validation.${detailQuery.data.validation.status}`)}
+                  </Badge>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+              {detailQuery.isLoading ? (
+                <div className="text-muted-foreground text-sm">{t('catalog.loadingDetail')}</div>
+              ) : null}
+              {detailQuery.isError || installMutation.isError ? (
+                <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
+                  {installMutation.isError ? t('catalog.installError') : t('catalog.detailError')}
+                </div>
+              ) : null}
+              {detailQuery.data?.validation.issues.length ? (
+                <div className="rounded-md border border-border bg-muted/25 px-3 py-2 text-sm">
+                  <div className="font-medium">{t('catalog.validationIssues')}</div>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
+                    {detailQuery.data.validation.issues.map((issue) => (
+                      <li key={issue}>{issue}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {detailQuery.data?.readmePreview ? (
+                <pre className="max-h-72 overflow-auto rounded-md border border-border bg-muted/20 p-3 text-xs leading-relaxed">
+                  {detailQuery.data.readmePreview}
+                </pre>
+              ) : null}
+              {detailQuery.data?.files?.length ? (
+                <div>
+                  <div className="mb-2 font-medium text-sm">{t('catalog.files')}</div>
+                  <div className="space-y-1">
+                    {detailQuery.data.files.slice(0, 12).map((file) => (
+                      <div
+                        className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5 text-sm"
+                        key={file.path}
+                      >
+                        <FileText className="size-4 text-muted-foreground" />
+                        <span className="truncate">{file.path}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        )}
+      </section>
     </section>
   )
 }

@@ -5,7 +5,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    ContentDelta, ContentType, ErrorClass, ErrorHints, ModelStream, ModelStreamEvent, ThinkingDelta,
+    ContentDelta, ContentType, ErrorClass, ErrorHints, ModelStream, ModelStreamEvent,
+    ReasoningSummaryDelta, ThinkingDelta,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,10 +153,9 @@ pub(super) fn json_response_to_stream(value: Value) -> Result<ModelStream, Model
             });
             events.push(ModelStreamEvent::ContentBlockDelta {
                 index,
-                delta: ContentDelta::Thinking(ThinkingDelta {
-                    text: item.summary,
+                delta: ContentDelta::ReasoningSummary(ReasoningSummaryDelta {
+                    text: item.summary.unwrap_or_default(),
                     provider_native: Some(item.raw),
-                    signature: None,
                 }),
             });
             events.push(ModelStreamEvent::ContentBlockStop { index });
@@ -250,7 +250,7 @@ impl ResponsesStreamState {
                     });
                 }
             }
-            "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
+            "response.reasoning_text.delta" => {
                 let delta = data
                     .get("delta")
                     .and_then(Value::as_str)
@@ -263,6 +263,22 @@ impl ResponsesStreamState {
                             text: Some(delta.to_owned()),
                             provider_native: Some(data),
                             signature: None,
+                        }),
+                    });
+                }
+            }
+            "response.reasoning_summary_text.delta" => {
+                let delta = data
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !delta.is_empty() {
+                    let index = self.ensure_thinking_block(&mut events);
+                    events.push(ModelStreamEvent::ContentBlockDelta {
+                        index,
+                        delta: ContentDelta::ReasoningSummary(ReasoningSummaryDelta {
+                            text: delta.to_owned(),
+                            provider_native: Some(data),
                         }),
                     });
                 }

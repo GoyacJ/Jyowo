@@ -5,6 +5,7 @@ import { AssistantTextSegmentView } from './assistant-text-segment-view'
 import { ClarificationRequestSegmentView } from './clarification-request-segment-view'
 import { ErrorSegmentView } from './error-segment-view'
 import { NoticeSegmentView } from './notice-segment-view'
+import { ProcessPanel } from './process-panel'
 import { ReviewRequestSegmentView } from './review-request-segment-view'
 import { ThinkingPanel } from './thinking-panel'
 import { ToolGroupSegmentView } from './tool-group-segment-view'
@@ -29,6 +30,7 @@ export function AssistantWorkView({
   turnId: string
 }) {
   const { t } = useTranslation('conversation')
+  const processImageArtifactIds = getProcessImageArtifactIds(assistant)
 
   return (
     <section className="max-w-[86%]">
@@ -36,6 +38,10 @@ export function AssistantWorkView({
       <div className="grid gap-3">
         {assistant.segments.map((segment) => {
           switch (segment.kind) {
+            case 'process':
+              return (
+                <ProcessPanel conversationId={conversationId} key={segment.id} segment={segment} />
+              )
             case 'thinking':
               return <ThinkingPanel key={segment.id} segment={segment} />
             case 'text':
@@ -52,7 +58,20 @@ export function AssistantWorkView({
                 />
               )
             case 'artifact':
-              return <ArtifactSegmentView key={segment.id} segment={segment} />
+              if (
+                segment.status === 'ready' &&
+                segment.media?.kind === 'image' &&
+                processImageArtifactIds.has(segment.artifactId)
+              ) {
+                return null
+              }
+              return (
+                <ArtifactSegmentView
+                  conversationId={conversationId}
+                  key={segment.id}
+                  segment={segment}
+                />
+              )
             case 'reviewRequest':
               return (
                 <ReviewRequestSegmentView
@@ -73,4 +92,26 @@ export function AssistantWorkView({
       </div>
     </section>
   )
+}
+
+function getProcessImageArtifactIds(assistant: AssistantWork) {
+  const artifactIds = new Set<string>()
+
+  for (const segment of assistant.segments) {
+    if (segment.kind !== 'process') {
+      continue
+    }
+
+    for (const step of segment.steps ?? []) {
+      if (
+        step.detail?.type === 'artifact' &&
+        step.detail.media.kind === 'image' &&
+        step.detail.artifactId
+      ) {
+        artifactIds.add(step.detail.artifactId)
+      }
+    }
+  }
+
+  return artifactIds
 }

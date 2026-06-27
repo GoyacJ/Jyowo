@@ -3,23 +3,21 @@ import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useUiStore } from '@/shared/state/ui-store'
 import type { ConversationEventRef, ConversationTurn } from '@/shared/tauri/commands'
-import { ConversationBlockRow } from './conversation-block-row'
 import { turnScrollAnchorKey } from './conversation-scroll-controller'
+import { ConversationTurnRow } from './conversation-turn-row'
 import { useConversationScrollAnchor } from './use-conversation-scroll-anchor'
 
 const estimatedTurnHeightPx = 180
 const virtualListThreshold = 24
 
 export function ConversationTimeline({
-  blocks,
   onOpenDetails,
   onPermissionResolve,
   onReviewContinue,
   title,
   turns,
 }: {
-  blocks?: ConversationTurn[]
-  turns?: ConversationTurn[]
+  turns: ConversationTurn[]
   title: string
   onOpenDetails?: (eventRef: ConversationEventRef) => void
   onPermissionResolve?: (request: {
@@ -30,7 +28,7 @@ export function ConversationTimeline({
   onReviewContinue?: (prompt: string) => void
 }) {
   const { t } = useTranslation('conversation')
-  const timelineTurns = turns ?? blocks ?? []
+  const timelineTurns = turns
   const latestTurn = timelineTurns.at(-1)
   const latestAnchorKey = latestTurn ? turnScrollAnchorKey(latestTurn) : null
   const streamingScrollTick =
@@ -58,18 +56,64 @@ export function ConversationTimeline({
       return
     }
 
-    const target = document.getElementById(`conversation-block-${timelineScrollRequest.blockId}`)
-    target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    target?.classList.add('ring-2', 'ring-ring', 'ring-offset-2', 'ring-offset-background')
-    const timeoutId = window.setTimeout(() => {
-      target?.classList.remove('ring-2', 'ring-ring', 'ring-offset-2', 'ring-offset-background')
-      clearTimelineScrollRequest()
-    }, 1600)
+    let frameId: number | undefined
+    let timeoutId: number | undefined
+    const scheduleHighlightRetry = (remainingFrames: number) => {
+      frameId = window.requestAnimationFrame(() => {
+        if (highlightTarget()) {
+          return
+        }
+        if (remainingFrames > 0) {
+          scheduleHighlightRetry(remainingFrames - 1)
+          return
+        }
+        clearTimelineScrollRequest()
+      })
+    }
+    const highlightTarget = () => {
+      const root = viewportRef.current
+      if (!root) {
+        return false
+      }
+
+      const target = findTimelineScrollTarget(timelineScrollRequest.anchorId, root)
+      if (!target) {
+        return false
+      }
+
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      target.classList.add('ring-2', 'ring-ring', 'ring-offset-2', 'ring-offset-background')
+      timeoutId = window.setTimeout(() => {
+        target.classList.remove('ring-2', 'ring-ring', 'ring-offset-2', 'ring-offset-background')
+        clearTimelineScrollRequest()
+      }, 1600)
+      return true
+    }
+
+    if (!highlightTarget()) {
+      const turnIndex = findTimelineScrollTurnIndex(timelineScrollRequest.anchorId, timelineTurns)
+      if (useVirtualList && turnIndex !== null) {
+        rowVirtualizer.scrollToIndex(turnIndex, { align: 'center' })
+      }
+      scheduleHighlightRetry(5)
+    }
 
     return () => {
-      window.clearTimeout(timeoutId)
+      if (frameId !== undefined) {
+        window.cancelAnimationFrame(frameId)
+      }
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId)
+      }
     }
-  }, [clearTimelineScrollRequest, timelineScrollRequest])
+  }, [
+    clearTimelineScrollRequest,
+    rowVirtualizer,
+    timelineScrollRequest,
+    timelineTurns,
+    useVirtualList,
+    viewportRef,
+  ])
 
   return (
     <section className="relative mx-auto grid h-full min-h-0 w-full max-w-[900px] grid-rows-[auto_minmax(0,1fr)]">
@@ -98,7 +142,7 @@ export function ConversationTimeline({
                     ref={rowVirtualizer.measureElement}
                     style={{ transform: `translateY(${virtualRow.start}px)` }}
                   >
-                    <ConversationBlockRow
+                    <ConversationTurnRow
                       onOpenDetails={onOpenDetails}
                       onPermissionResolve={onPermissionResolve}
                       onReviewContinue={onReviewContinue}
@@ -112,7 +156,7 @@ export function ConversationTimeline({
           ) : (
             <div className="grid gap-5 pb-4">
               {timelineTurns.map((turn) => (
-                <ConversationBlockRow
+                <ConversationTurnRow
                   key={turn.id}
                   onOpenDetails={onOpenDetails}
                   onPermissionResolve={onPermissionResolve}
@@ -142,5 +186,43 @@ export function ConversationTimeline({
         </button>
       ) : null}
     </section>
+  )
+}
+
+function findTimelineScrollTurnIndex(anchorId: string, turns: ConversationTurn[]) {
+  if (anchorId.startsWith('permission:')) {
+    const requestId = anchorId.slice('permission:'.length)
+    const index = turns.findIndex((turn) => turnHasPermissionRequest(turn, requestId))
+    return index >= 0 ? index : null
+  }
+
+  const index = turns.findIndex((turn) => turn.id === anchorId)
+  return index >= 0 ? index : null
+}
+
+function turnHasPermissionRequest(turn: ConversationTurn, requestId: string) {
+  return (
+    turn.assistant?.segments.some(
+      (segment) =>
+        segment.kind === 'toolGroup' &&
+        segment.attempts.some((attempt) => attempt.permission?.requestId === requestId),
+    ) ?? false
+  )
+}
+
+function findTimelineScrollTarget(anchorId: string, root: ParentNode) {
+  if (anchorId.startsWith('permission:')) {
+    const requestId = anchorId.slice('permission:'.length)
+    return (
+      Array.from(root.querySelectorAll<HTMLElement>('[data-permission-request-id]')).find(
+        (element) => element.dataset.permissionRequestId === requestId,
+      ) ?? null
+    )
+  }
+
+  return (
+    Array.from(root.querySelectorAll<HTMLElement>('[id]')).find(
+      (element) => element.id === `conversation-turn-${anchorId}`,
+    ) ?? null
   )
 }

@@ -510,6 +510,7 @@ fn tool_ctx_at(workspace_root: impl AsRef<Path>, cap_registry: CapabilityRegistr
         sandbox: None,
         permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
+        redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
         parent_run: None,
     }

@@ -1553,7 +1553,7 @@ fn tool_search_inline_reinjection_makes_deferred_schema_visible_to_next_turn_req
 }
 
 #[test]
-fn deferred_pool_change_is_injected_into_next_sdk_turn_once() {
+fn tool_stream_deferred_pool_change_is_not_injected_into_next_sdk_turn() {
     block_on(async {
         let workspace = unique_workspace("sdk-deferred-delta-next-turn");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -1636,8 +1636,8 @@ fn deferred_pool_change_is_injected_into_next_sdk_turn_once() {
 
         let requests = model.requests().await;
         let second_turn_text = request_text(&requests[2]);
-        assert!(second_turn_text.contains("<deferred-tools initial=\"true\""));
-        assert!(second_turn_text.contains("deferred_tool"));
+        assert!(!second_turn_text.contains("<deferred-tools"));
+        assert!(!second_turn_text.contains("deferred_tool"));
         assert!(second_turn_text.contains("use deferred hint"));
         assert!(!request_text(&requests[3]).contains("<deferred-tools"));
     });

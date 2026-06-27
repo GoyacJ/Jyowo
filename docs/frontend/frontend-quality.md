@@ -19,6 +19,8 @@ Must test:
 - conversation list, conversation page, and natural composer behavior
 - `ConversationTimeline` loading, empty, running, completed, permission, artifact,
   review, clarification, withheld, and error states
+- `ProcessPanel` reasoning, activity, command, diff, tool, artifact, withheld,
+  and failed steps
 - worktree projection store behavior, `clientMessageId` optimistic confirmation,
   turn ordering, throttled live invalidation, gap recovery, and refetch
   reconciliation
@@ -29,7 +31,8 @@ Must test:
   `DecisionCard` state transitions
 - `shared/events` valid and invalid RunEvent payloads
 - `shared/tauri` worktree page parsing, conversation event subscription parsing,
-  replay-before-live dispatch, stale subscription filtering, and listener cleanup
+  artifact media preview parsing, replay-before-live dispatch, stale
+  subscription filtering, and listener cleanup
 - event renderer exhaustiveness
 - `shared/tauri` schema validation and error normalization
 - mock `CommandClient`
@@ -54,6 +57,7 @@ ConversationTurnView
 AssistantWorkView
 ToolGroupSegmentView
 ArtifactSegmentView
+ProcessPanel
 ReviewRequestSegmentView
 ClarificationRequestSegmentView
 PermissionInlinePanel
@@ -154,6 +158,21 @@ rg -n "octo[p]us|Octo[p]us|OCTO[P]US" . \
   -g '!test-results/**' \
   -g '!.git/**'
 ```
+
+Conversation canvas drift gate:
+
+```bash
+rg -n "ConversationBlockRow|blocks\\?: ConversationTurn\\[\\]|pendingPermissionBlocks|get_conversation\\.messages|PermissionRequestBlock|kind: 'permissionRequest'|Tool error withheld from conversation timeline" \
+  apps/desktop/src/features/conversation/timeline \
+  apps/desktop/src/features/conversation/ConversationWorkspace.tsx \
+  -g '!**/*.test.ts' \
+  -g '!**/*.test.tsx' \
+  -g '!**/*.stories.tsx'
+```
+
+This guard is intentionally scoped to production conversation canvas files. It
+must not scan raw event schemas, tests, Storybook fixtures, or the legal
+`toolGroup` assistant segment kind.
 
 Biome rules:
 
@@ -289,6 +308,7 @@ Conversation and execution:
 [ ] get_conversation.messages does not drive ConversationCanvas
 [ ] permissions render nested under tool attempts
 [ ] thinking text is status-derived, explicitly safe, or withheld
+[ ] process steps and artifact previews are Rust projection derived only
 [ ] Raw JSON display follows visibility rules
 [ ] secrets are masked
 [ ] Replay/export behavior is preserved when relevant

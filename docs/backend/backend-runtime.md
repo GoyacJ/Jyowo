@@ -84,6 +84,13 @@ Conversation worktree paging rules:
 - the projection may read materialized worktree rows, or replay from session
   start into a complete in-memory projection before slicing by turn.
 - it must never project a partial raw-event page and then slice that result.
+- the current SQLite read-model implementation uses complete replay from the
+  start of the session, then slices the projected `ConversationTurn[]`.
+- for `direction = After`, `pageCursor` points at the last returned turn.
+- for `direction = Before`, `pageCursor` points at the first returned turn.
+- repeated page requests must not repeat the cursor boundary turn.
+- `eventCursor` reports the latest replayed journal event, not the latest event
+  referenced by the selected turn page.
 - thinking summaries must be status-derived, explicitly safe, or withheld.
 - tool failure summaries must be user-safe and must not expose raw payloads,
   private paths, or withheld placeholders.

@@ -5,6 +5,8 @@ storybook-static/
 test-results/
 playwright-report/
 target/
+.jyowo/
+.jyowo-shell-state
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/.jyowo/
 output/

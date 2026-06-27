@@ -1370,6 +1370,743 @@ The refactor is complete only when all items are true:
 [ ] Playwright smoke passes
 ```
 
+## Post-Audit Completion Plan 2026-06-26
+
+This section completes the unfinished work found by
+`docs/plans/2026-06-25-conversation-turn-worktree-timeline-refactor-audit.md`.
+
+The accepted current state is:
+
+- The main canvas reads `ConversationTurn[]` from `page_conversation_worktree`.
+- Timeline product rendering no longer imports `RunEvent`.
+- `get_conversation.messages` is not the canvas data source.
+- Tool permissions are nested under tool attempts.
+- Safe tool failure summaries and withheld thinking are covered by focused tests.
+
+The remaining work is not a rewrite. Keep the current worktree projection
+architecture and close only the audited gaps.
+
+Paging decision for this completion batch:
+
+- Do not add materialized worktree tables in this batch.
+- Treat complete timeline replay followed by turn slicing as the accepted
+  fallback.
+- Make that fallback explicit in docs and tests.
+- Add materialized tables later only if a separate performance requirement
+  proves the fallback is not acceptable.
+
+Implementation rules:
+
+- Write the failing test before each code change.
+- Keep Rust as the projection and safety authority.
+- Do not reintroduce the flat event-block reducer.
+- Do not use broad `rg` drift checks as binary gates when they match raw
+  schemas, tests, or valid segment kinds.
+- Preserve existing passing projection boundaries.
+
+### Task 15: Add Missing Segment Source Event Contracts And Type Mapping
+
+**Why:** `ArtifactSegment`, `ReviewRequestSegment`,
+`ClarificationRequestSegment`, and `NoticeSegment` exist in the worktree
+contract, but review, clarification, and notice do not have durable Rust event
+contracts that the read model can turn into timeline events.
+
+Do not use dotted names as durable Rust event tags. Durable event tags come from
+`Event` enum variants and `#[serde(rename_all = "snake_case")]`; the read model
+maps those durable tags into dotted UI timeline event types.
+
+Required mapping:
+
+| Durable `Event` variant | Durable serde tag | Timeline `event_type` | Segment kind |
+|---|---|---|---|
+| `ArtifactCreated` | `artifact_created` | `artifact.created` | `artifact` |
+| `ArtifactUpdated` | `artifact_updated` | `artifact.updated` | `artifact` |
+| `AssistantReviewRequested` | `assistant_review_requested` | `assistant.review.requested` | `reviewRequest` |
+| `AssistantClarificationRequested` | `assistant_clarification_requested` | `assistant.clarification.requested` | `clarificationRequest` |
+| `AssistantNotice` | `assistant_notice` | `assistant.notice` | `notice` |
+
+**Files:**
+
+- Modify: `crates/jyowo-harness-contracts/src/events/messages.rs`
+- Modify: `crates/jyowo-harness-contracts/src/events/mod.rs`
+- Modify: `crates/jyowo-harness-contracts/src/schema_export.rs`
+- Modify: `crates/jyowo-harness-contracts/tests/m1_contracts.rs`
+- Modify: `apps/desktop/src/shared/events/run-event-schema.ts`
+- Modify: `apps/desktop/src/shared/events/run-event-schema.test.ts`
+
+**Steps:**
+
+1. Add failing Rust contract tests for these durable event variants:
+   - `Event::AssistantReviewRequested`
+   - `Event::AssistantClarificationRequested`
+   - `Event::AssistantNotice`
+2. Assert the durable serde tags are snake_case:
+   - `assistant_review_requested`
+   - `assistant_clarification_requested`
+   - `assistant_notice`
+3. Follow the existing message-event contract shape in
+   `crates/jyowo-harness-contracts/src/events/messages.rs`: include `run_id`,
+   stable request or notice id, display text fields, and `at`. Do not add
+   `session_id` to these message-scoped events unless the whole message event
+   family is being migrated, because the current user and assistant message
+   events get session scope from `EventEnvelope`.
+4. Run:
+
+   ```bash
+   cargo test -p jyowo-harness-contracts assistant_review_requested --test m1_contracts
+   ```
+
+   Expected: fail because the event contracts do not exist.
+
+5. Add minimal Rust event structs and `Event` enum variants.
+6. Export their JSON schemas.
+7. Add frontend raw event schema support for the dotted timeline event names:
+   - `assistant.review.requested`
+   - `assistant.clarification.requested`
+   - `assistant.notice`
+8. Add read-model mapping tests proving snake_case durable events become dotted
+   timeline event types before projection.
+9. Run:
+
+   ```bash
+   cargo test -p jyowo-harness-contracts assistant_review_requested --test m1_contracts
+   cargo test -p jyowo-harness-journal --features sqlite --test conversation_read_model assistant_review_requested
+   pnpm -C apps/desktop test src/shared/events/run-event-schema.test.ts
+   ```
+
+   Expected: all commands pass.
+
+**Acceptance:**
+
+- New durable event contracts are schema-exported with snake_case serde tags.
+- Read-model tests prove durable event tags map to dotted timeline event types.
+- Frontend raw event parsing accepts only the dotted timeline event names.
+- The events contain only display-safe fields needed for projection.
+
+### Task 16: Verify Or Add Real Segment Event Producers
+
+**Why:** Contract and projector tests alone can pass with synthetic events while
+the real runtime never emits those events. Each new segment type must have a
+reachable producer, or the task must remain incomplete.
+
+**Files:**
+
+- Inspect: `crates/jyowo-harness-sdk/src/harness.rs`
+- Inspect: `crates/jyowo-harness-tool/src/builtin/clarify.rs`
+- Inspect: `crates/jyowo-harness-tool/src/orchestrator.rs`
+- Inspect: `apps/desktop/src/features/conversation/ReviewRequest.tsx`
+- Modify as needed: the smallest owner module that actually creates the user
+  interaction or artifact event
+- Test: the nearest existing unit or integration test for that producer
+
+**Steps:**
+
+1. Run producer discovery:
+
+   ```bash
+   rg -n "ArtifactCreated|ArtifactUpdated|ClarifyChannelCap|ReviewRequest|review|clarification|notice|AssistantReview|AssistantClarification|AssistantNotice" crates apps/desktop/src
+   ```
+
+2. Build a producer map before writing implementation code:
+
+   ```text
+   artifact.created / artifact.updated -> [producer file or "missing"]
+   assistant_review_requested -> [producer file or "missing"]
+   assistant_clarification_requested -> [producer file or "missing"]
+   assistant_notice -> [producer file or "missing"]
+   ```
+
+3. For every producer marked `missing`, choose one of these outcomes before
+   continuing:
+   - add a narrowly scoped producer in the layer that owns that user-visible
+     interaction
+   - mark that segment type as contract/projector-only for this batch and keep
+     its end-to-end done criterion unchecked
+4. Add failing tests at the producer boundary for every producer that exists or
+   is added. The tests must assert the durable `Event` variant is appended, not
+   only that a frontend component can render a fixture.
+5. Run the relevant producer tests. Use the nearest package test command; if the
+   producer is in the tool layer, include:
+
+   ```bash
+   cargo test -p jyowo-harness-tool clarify
+   ```
+
+6. Only after producer reachability is documented or implemented, continue to
+   projector work.
+
+**Acceptance:**
+
+- Every segment type has a documented producer decision.
+- End-to-end completion is claimed only for segment types with reachable
+  producers.
+- No synthetic projector fixture is used as proof that the real runtime emits a
+  segment.
+
+**Post-audit producer decision 2026-06-26:**
+
+```text
+artifact.created / artifact.updated -> contract/projector-only in this batch.
+assistant.review.requested -> contract/projector-only in this batch.
+assistant.clarification.requested -> crates/jyowo-harness-tool/src/builtin/clarify.rs.
+assistant.notice -> contract/projector-only in this batch.
+```
+
+Only `assistant.clarification.requested` has a reachable non-test producer in
+this batch. The artifact, review, and notice segment types remain supported by
+contracts, read-model projection, worktree projection, Tauri payload mapping,
+frontend schema, and render fixtures, but their end-to-end producer criterion is
+not checked.
+
+### Task 17: Project Artifact, Review, Clarification, and Notice Segments
+
+**Why:** The Rust projector currently handles text, thinking, tools,
+permissions, run endings, and engine failures. It does not produce all segment
+kinds that the UI and contract already support.
+
+**Files:**
+
+- Modify if structured artifact status is required:
+  `crates/jyowo-harness-contracts/src/conversation.rs`
+- Modify if structured artifact status is required:
+  `apps/desktop/src/shared/tauri/commands.ts`
+- Test if structured artifact status is required:
+  `crates/jyowo-harness-contracts/tests/m1_contracts.rs`
+- Test if structured artifact status is required:
+  `apps/desktop/src/shared/tauri/commands.test.ts`
+- Modify: `crates/jyowo-harness-journal/src/conversation_read_model.rs`
+- Modify: `crates/jyowo-harness-journal/src/conversation_worktree_projector.rs`
+- Modify: `crates/jyowo-harness-journal/tests/conversation_read_model.rs`
+- Modify: `crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs`
+
+**Steps:**
+
+1. Decide artifact status representation before writing projector code:
+   - default: keep the current `ArtifactSegment` contract and use status only
+     to derive safe summary text when needed
+   - if product UI needs structured artifact status, first add a `status` field
+     to `ArtifactSegment`, update schema export and frontend Zod, and add
+     contract parity tests
+2. Add failing projector tests for:
+   - `artifact.created` creates or updates one `ArtifactSegment`.
+   - `artifact.updated` updates title and summary without duplicating the
+     segment.
+   - `artifact.updated` updates structured status only if step 1 explicitly
+     extends the contract.
+   - `assistant.review.requested` creates one `ReviewRequestSegment`.
+   - `assistant.clarification.requested` creates one
+     `ClarificationRequestSegment`.
+   - `assistant.notice` creates one `NoticeSegment`.
+   - segment ids, order, and `eventRefs` are stable after renumbering.
+3. Run:
+
+   ```bash
+   cargo test -p jyowo-harness-journal --test conversation_worktree_projector artifact
+   cargo test -p jyowo-harness-journal --test conversation_worktree_projector review
+   ```
+
+   Expected: fail because the segments are not projected.
+
+4. Add safe artifact fields to the read model payload. Allow `artifactId`,
+   `title`, and a redacted preview/summary. Allow `status` only as a lifecycle
+   enum or derived summary; do not expose it as `ArtifactSegment.status` unless
+   the contract was extended in step 1. Do not include `blobRef`,
+   `contentHash`, private paths, or raw file contents.
+5. Map artifact lifecycle events into `ArtifactSegment`.
+6. Map review, clarification, and notice events into their segment kinds.
+7. Ensure these events attach to the current assistant work for the run. If no
+   user turn exists yet, use the existing orphan/run fallback policy instead of
+   inventing a frontend repair path.
+8. Run:
+
+   ```bash
+   cargo test -p jyowo-harness-journal --test conversation_worktree_projector
+   cargo test -p jyowo-harness-journal --features sqlite --test conversation_read_model
+   ```
+
+   Expected: pass.
+
+**Acceptance:**
+
+- Real journal events can produce every public `AssistantSegment` kind.
+- Artifact projection never exposes blob refs, hashes, raw content, or private
+  paths.
+- Artifact status handling is explicit: either summary-derived under the
+  existing contract, or structured with contract and Zod parity tests.
+- Repeated artifact updates do not create duplicate artifact segments.
+
+### Task 18: Lock Down Worktree Paging Fallback Semantics
+
+**Why:** The current SQLite implementation does not have materialized worktree
+tables. That is acceptable only if complete replay before turn slicing is
+tested and documented.
+
+**Files:**
+
+- Modify: `crates/jyowo-harness-journal/src/conversation_read_model.rs`
+- Modify: `crates/jyowo-harness-journal/tests/conversation_read_model.rs`
+- Modify: `docs/backend/backend-runtime.md`
+- Modify: `docs/backend/backend-engineering.md`
+
+**Steps:**
+
+1. Add a failing SQLite test with a session containing more turns than the page
+   limit and events that affect an older turn after later turns exist.
+2. Assert `page_worktree` reads from session start before slicing, so older
+   turn state is complete even when the page starts near the end.
+3. Assert `pageCursor` moves by turn position, not event sequence.
+4. Lock the single-cursor semantics by direction:
+   - for `direction = After`, returned `pageCursor` is the last turn in the
+     selected page and the next `After` request must not repeat it
+   - for `direction = Before`, returned `pageCursor` is the first turn in the
+     selected page and the next `Before` request must not repeat it
+   - returned turns stay in ascending conversation order for both directions
+5. Assert `eventCursor` points at the latest consumed journal event from the
+   complete replay, not just the last event referenced by the selected turn
+   page.
+6. Assert `gap` stays `false` for the complete replay fallback.
+7. Run:
+
+   ```bash
+   cargo test -p jyowo-harness-journal --features sqlite --test conversation_read_model worktree
+   ```
+
+   Expected: fail until the semantics are covered.
+
+8. Add the minimal implementation or test fixture corrections needed.
+9. Document the fallback and cursor semantics in backend runtime and
+   engineering docs.
+10. Run the same command again.
+
+   Expected: pass.
+
+**Acceptance:**
+
+- The repository documents that current paging is complete replay plus turn
+  slicing.
+- Tests prove turn pages are not built from partial raw timeline windows.
+- Tests prove repeated `After` and repeated `Before` requests do not overlap at
+  the cursor boundary.
+- No plan or doc claims materialized worktree tables exist.
+
+### Task 19: Add Tauri Boundary Regression Tests
+
+**Why:** The command exists, but audit found missing malformed id and wire shape
+parity coverage.
+
+**Files:**
+
+- Create: `crates/jyowo-harness-contracts/tests/fixtures/conversation_worktree_page.json`
+- Modify: `crates/jyowo-harness-contracts/tests/m1_contracts.rs`
+- Modify: `apps/desktop/src-tauri/src/commands.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src/shared/tauri/commands.test.ts`
+
+**Steps:**
+
+1. Add a failing Tauri test for malformed `conversationId`.
+2. Assert the command fails closed and does not call the SDK facade.
+3. Add a shared wire-shape parity fixture at
+   `crates/jyowo-harness-contracts/tests/fixtures/conversation_worktree_page.json`.
+   The fixture must include all segment kinds, optional cursors, and
+   `hasMoreBefore` / `hasMoreAfter`.
+4. Add a Rust contract test that deserializes the shared fixture as
+   `ConversationWorktreePage`, serializes it back to JSON, and asserts the
+   stable camelCase wire keys.
+5. Add a frontend command-client test that loads the same fixture from disk and
+   validates it through `pageConversationWorktree` / the Zod response schema.
+   Do not create a separate hand-written TypeScript-only fixture for parity.
+6. Run:
+
+   ```bash
+   cargo test -p jyowo-harness-contracts conversation_worktree_fixture --test m1_contracts
+   cargo test -p jyowo-desktop-shell --test commands page_conversation_worktree
+   pnpm -C apps/desktop test src/shared/tauri/commands.test.ts
+   ```
+
+   Expected: fail until the tests and boundary are complete.
+
+7. Add the minimal command/helper changes needed.
+8. Run the same commands again.
+
+   Expected: pass.
+
+**Acceptance:**
+
+- Empty and malformed conversation ids fail closed.
+- Rust serde and frontend Zod validate the same fixture.
+- The frontend schema still rejects raw event timeline shapes.
+
+### Task 20: Remove Frontend Block Compatibility APIs
+
+**Why:** The UI is already turn-based, but old names keep block semantics alive
+and weaken drift checks.
+
+**Files:**
+
+- Rename: `apps/desktop/src/features/conversation/timeline/conversation-block-row.tsx`
+  to `apps/desktop/src/features/conversation/timeline/conversation-turn-row.tsx`
+- Rename: `apps/desktop/src/features/conversation/timeline/conversation-blocks.ts`
+  to `apps/desktop/src/features/conversation/timeline/pending-tool-permission.ts`
+- Modify: `apps/desktop/src/features/conversation/timeline/conversation-timeline.tsx`
+- Modify: `apps/desktop/src/features/conversation/timeline/use-conversation-timeline.ts`
+- Modify: `apps/desktop/src/features/conversation/ConversationWorkspace.tsx`
+- Modify: `apps/desktop/src/features/conversation/conversation-production-boundaries.test.ts`
+- Modify tests and imports under
+  `apps/desktop/src/features/conversation/timeline/`
+
+**Steps:**
+
+1. Add failing production boundary assertions for these exact names in
+   production timeline code:
+   - `ConversationBlockRow`
+   - `blocks?: ConversationTurn[]`
+   - `pendingPermissionBlocks`
+2. Run:
+
+   ```bash
+   pnpm -C apps/desktop test src/features/conversation/conversation-production-boundaries.test.ts
+   ```
+
+   Expected: fail on current code.
+
+3. Rename `ConversationBlockRow` to `ConversationTurnRow`.
+4. Remove the `blocks` prop alias from `ConversationTimeline`.
+5. Make `useConversationTimeline` return `turns` and
+   `pendingToolPermissions`, not `blocks` or `pendingPermissionBlocks`.
+6. Pass `turns={timeline.turns}` from `ConversationWorkspace`.
+7. Rename the pending permission helper file and exported type if needed.
+8. Keep test fixtures and raw event schema files out of this production naming
+   guard.
+9. Run:
+
+   ```bash
+   pnpm -C apps/desktop test src/features/conversation/conversation-production-boundaries.test.ts
+   pnpm -C apps/desktop test src/features/conversation/ConversationWorkspace.test.tsx src/features/conversation/timeline/conversation-timeline.test.tsx
+   ```
+
+   Expected: pass.
+
+**Acceptance:**
+
+- Product conversation timeline APIs say `turn`, not `block`.
+- No compatibility prop lets callers pass `blocks` to the timeline.
+- Tests still prove the UI renders nested turns, assistant work, segments, and
+  tool attempts.
+
+### Task 21: Add Live Invalidation Pressure Test
+
+**Why:** Raw event batches should request worktree refreshes, not rebuild UI
+state. The audit found coalescing/throttle code but no IPC pressure test.
+
+**Files:**
+
+- Modify: `apps/desktop/src/features/conversation/timeline/use-conversation-timeline.test.ts`
+- Modify: `apps/desktop/src/features/conversation/timeline/use-conversation-event-stream.test.ts`
+
+**Steps:**
+
+1. Add a failing test that emits 100 non-terminal raw event batches in one
+   throttle window.
+2. Assert `pageConversationWorktree` is not called 100 times.
+3. Assert a terminal event still triggers an immediate refresh.
+4. Use fake timers so the test is deterministic.
+5. Run:
+
+   ```bash
+   pnpm -C apps/desktop test src/features/conversation/timeline/use-conversation-timeline.test.ts src/features/conversation/timeline/use-conversation-event-stream.test.ts
+   ```
+
+   Expected: fail until the IPC call count is covered.
+
+6. Adjust the existing coalescing or throttle code only if the test exposes a
+   real behavior gap.
+7. Run the same command again.
+
+   Expected: pass.
+
+**Acceptance:**
+
+- 100 streaming batches in one throttle window do not produce 100 worktree IPC
+  calls.
+- Terminal events still refetch immediately.
+- Raw event payloads are never turned into render segments in frontend code.
+
+### Task 22: Close Localization Coverage
+
+**Why:** Localization exists, but the audit found incomplete negative coverage
+for English leakage.
+
+**Files:**
+
+- Modify: `apps/desktop/src/shared/i18n/locales/en-US.ts`
+- Modify: `apps/desktop/src/shared/i18n/locales/zh-CN.ts`
+- Modify: `apps/desktop/src/features/conversation/timeline/conversation-timeline.test.tsx`
+- Modify: `apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx`
+
+**Steps:**
+
+1. Decide whether to keep the current `timeline.*` keys or rename them to the
+   original plan keys. Prefer keeping current keys unless a rename removes real
+   duplication.
+2. Add failing Chinese locale tests that assert these English strings do not
+   appear in rendered timeline UI:
+   - `Tools`
+   - `Approved`
+   - `Complete`
+   - `failed`
+   - `View raw events`
+3. Run:
+
+   ```bash
+   pnpm -C apps/desktop test src/features/conversation/timeline/conversation-timeline.test.tsx src/features/conversation/ConversationWorkspace.test.tsx
+   ```
+
+   Expected: fail if English leaks remain.
+
+4. Add or correct only the missing locale entries and render call sites.
+5. Run the same command again.
+
+   Expected: pass.
+
+**Acceptance:**
+
+- Chinese conversation timeline states do not leak English fallback labels.
+- Locale key naming is consistent and documented by tests.
+
+### Task 23: Complete Storybook State Matrix
+
+**Why:** Existing stories use worktree fixtures, but the audited matrix still
+has missing states and no build evidence.
+
+**Files:**
+
+- Modify: `apps/desktop/src/features/conversation/timeline/conversation-timeline.stories.tsx`
+
+**Steps:**
+
+1. Add independent stories for:
+   - `SimpleCompletedTurn`
+   - `ToolApprovedCompleted`
+   - `MultipleToolAttempts`
+   - `ToolCallOnlyNoEmptyText`
+   - `WithheldThinking`
+   - `FinalAnswerAfterFailedTool`
+2. Keep each story fixture small. Do not reuse a giant base turn when it hides
+   the state under test.
+3. Run:
+
+   ```bash
+   pnpm -C apps/desktop build-storybook
+   ```
+
+   Expected: pass.
+
+4. If the build fails from unrelated existing Storybook issues, document the
+   exact failure and add a targeted fix only if it is inside this feature area.
+
+**Acceptance:**
+
+- Storybook can inspect each required worktree state independently.
+- Storybook build exits 0.
+
+### Task 24: Repair Documentation and Scoped Drift Guards
+
+**Why:** `docs/frontend/frontend-engineering.md` still describes the old
+`ConversationBlock[]` reducer model. Existing drift commands also match legal
+raw schemas, tests, and the valid `toolGroup` segment kind.
+
+**Files:**
+
+- Modify: `docs/frontend/frontend-engineering.md`
+- Modify: `docs/frontend/frontend-quality.md`
+- Modify: `docs/backend/backend-runtime.md`
+- Modify: `docs/backend/backend-engineering.md`
+- Modify: `apps/desktop/src/features/conversation/conversation-production-boundaries.test.ts`
+
+**Steps:**
+
+1. Replace `ConversationBlock[]` canvas language with
+   `ConversationTurn[]`.
+2. State that `page_conversation_worktree` is the product conversation canvas
+   source.
+3. State that raw `RunEvent` and `page_conversation_timeline` are execution
+   surfaces, not product render models.
+4. Remove claims that live events, command results, artifacts, or local submits
+   feed a frontend timeline reducer.
+5. Document that the current backend paging implementation uses complete
+   replay plus turn slicing, not materialized worktree tables.
+6. Replace broad drift commands with scoped checks. Good scopes are production
+   render/model files under:
+   - `apps/desktop/src/features/conversation/timeline/`
+   - `apps/desktop/src/features/conversation/ConversationWorkspace.tsx`
+7. Do not fail on:
+   - raw event schemas
+   - tests
+   - valid `AssistantSegment` kind `toolGroup`
+   - legacy `get_conversation` schema used outside the canvas data source
+8. Run:
+
+   ```bash
+   pnpm check:docs
+   pnpm -C apps/desktop test src/features/conversation/conversation-production-boundaries.test.ts
+   ```
+
+   Expected: pass.
+
+**Acceptance:**
+
+- Frontend docs no longer contradict the implemented data source.
+- Drift guards catch old product render models without flagging legal raw event
+  contracts or tests.
+
+### Task 25: Add Full MiniMax-Style Regression Fixture
+
+**Why:** Focused tests cover many pieces, but audit found no full fixture for
+the screenshot-style failure that motivated the refactor.
+
+**Files:**
+
+- Modify: `crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx`
+- Modify: `apps/desktop/src/features/conversation/timeline/conversation-timeline.test.tsx`
+
+**Fixture flow:**
+
+1. User asks for an image or video generation task.
+2. Assistant starts and produces safe thinking status.
+3. Assistant requests a tool.
+4. Permission is requested and approved.
+5. Tool attempt completes or fails with a safe summary.
+6. Assistant retries or continues with final text.
+7. Artifact is created or updated.
+8. Run ends.
+
+**Steps:**
+
+1. Add the fixture at the Rust projector layer first.
+2. Assert it produces one user turn with one assistant work.
+3. Assert tool permission is nested inside the tool attempt.
+4. Assert failed tool output does not expose raw withheld text.
+5. Assert artifact appears as an artifact segment.
+6. Assert final assistant text remains in the same assistant work.
+7. Reuse the same logical fixture through the Tauri command test.
+8. Reuse the same logical fixture through frontend render tests.
+9. Run:
+
+   ```bash
+   cargo test -p jyowo-harness-journal --test conversation_worktree_projector minimax
+   cargo test -p jyowo-desktop-shell --test commands page_conversation_worktree
+   pnpm -C apps/desktop test src/features/conversation/ConversationWorkspace.test.tsx src/features/conversation/timeline/conversation-timeline.test.tsx
+   ```
+
+   Expected: pass.
+
+**Acceptance:**
+
+- The original failure shape is covered end to end.
+- The fixture proves the UI shows a coherent turn tree, not disconnected event
+  blocks.
+
+### Task 26: Review, Security Review, and Full Gates
+
+**Why:** This completion batch touches contracts, IPC, redaction-sensitive
+projection, frontend render state, docs, and tests.
+
+**Steps:**
+
+1. Run focused Rust gates:
+
+   ```bash
+   cargo fmt --all --check
+   cargo test -p jyowo-harness-contracts assistant_review_requested --test m1_contracts
+   cargo test -p jyowo-harness-contracts conversation_worktree_fixture --test m1_contracts
+   cargo test -p jyowo-harness-contracts conversation_worktree --test m1_contracts
+   cargo test -p jyowo-harness-contracts schema_export --test m1_contracts
+   cargo test -p jyowo-harness-journal --test conversation_worktree_projector
+   cargo test -p jyowo-harness-journal --features sqlite --test conversation_read_model worktree
+   cargo test -p jyowo-harness-sdk --features testing conversation_read_model_facade_returns_worktree_page --test conversation_read_model
+   cargo test -p jyowo-desktop-shell --test commands page_conversation_worktree
+   ```
+
+   Also run the concrete producer test command selected in Task 16. If a
+   segment type is intentionally contract/projector-only in this batch, record
+   that gap and keep the related end-to-end done criterion unchecked.
+
+2. Run focused frontend gates:
+
+   ```bash
+   pnpm -C apps/desktop test src/shared/events/run-event-schema.test.ts
+   pnpm -C apps/desktop test src/shared/tauri/commands.test.ts
+   pnpm -C apps/desktop test src/features/conversation/conversation-production-boundaries.test.ts
+   pnpm -C apps/desktop test src/features/conversation/ConversationWorkspace.test.tsx src/features/conversation/timeline/conversation-timeline.test.tsx
+   pnpm -C apps/desktop test src/features/conversation/timeline/use-conversation-timeline.test.ts src/features/conversation/timeline/use-conversation-event-stream.test.ts
+   pnpm -C apps/desktop build-storybook
+   ```
+
+3. Run repository gates:
+
+   ```bash
+   pnpm check:docs
+   pnpm check:desktop
+   pnpm check:rust
+   pnpm check
+   ```
+
+4. Run code review after implementation:
+
+   ```text
+   /code-review-expert
+   ```
+
+5. Run security review before commit because the batch changes IPC, projection,
+   redaction boundaries, and event contracts:
+
+   ```text
+   /security-review
+   ```
+
+**Acceptance:**
+
+- All focused gates pass.
+- All repository gates pass.
+- Review findings are fixed or explicitly documented.
+- No new secret, private path, raw thought text, blob ref, or content hash can
+  enter the product conversation canvas.
+
+### Post-Audit Done Criteria
+
+The audit is closed only when all items are true:
+
+```text
+[x] Rust event contracts exist for review request, clarification request, and notice
+[x] Durable snake_case event tags are mapped to dotted timeline event types in the read model
+[x] Producer reachability is documented for artifact, review, clarification, and notice segments
+[x] Rust projector emits artifact, reviewRequest, clarificationRequest, and notice segments
+[x] Artifact projection includes only display-safe metadata
+[x] Artifact status handling is explicitly contract-backed or summary-derived
+[x] Worktree paging fallback is documented as complete replay plus turn slicing
+[x] Worktree paging tests prove turn pages are not built from partial raw event pages
+[x] Repeated `After` and repeated `Before` worktree page requests do not overlap at cursor boundaries
+[x] Tauri malformed conversation id test fails closed
+[x] Rust serde and frontend Zod validate the same shared worktree page fixture
+[x] Frontend timeline production APIs no longer expose `blocks`
+[x] `ConversationBlockRow` is renamed or removed from production timeline code
+[x] `pendingPermissionBlocks` is renamed or removed from production timeline code
+[x] 100 streaming raw-event batches do not create 100 worktree IPC calls
+[x] Terminal events still trigger immediate worktree refetch
+[x] Chinese timeline UI tests prevent English fallback leakage
+[x] Storybook covers the audited missing matrix states
+[x] `docs/frontend/frontend-engineering.md` no longer describes the old block reducer
+[x] Drift guards are scoped and do not fail on legal raw schemas or tests
+[x] MiniMax-style full fixture passes at projector, Tauri, and frontend layers
+[x] `pnpm check:docs` passes
+[x] `pnpm check:desktop` passes
+[x] `pnpm check:rust` passes
+[x] `pnpm check` passes
+```
+
 ## Rollback Guidance
 
 Do not rollback by re-enabling the flat event-block reducer.

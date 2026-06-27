@@ -1232,6 +1232,7 @@ fn tool_context() -> ToolContext {
         sandbox: None,
         permission_broker: std::sync::Arc::new(AllowBroker),
         cap_registry: std::sync::Arc::new(CapabilityRegistry::default()),
+        redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::new(),
         parent_run: None,
     }

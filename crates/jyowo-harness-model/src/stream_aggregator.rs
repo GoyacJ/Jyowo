@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::{
     thinking_tag_normalizer::ThinkingTagNormalizer, ContentDelta, ErrorClass, ErrorHints,
-    ModelStreamEvent, ThinkingDelta,
+    ModelStreamEvent, ReasoningSummaryDelta, ThinkingDelta,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +18,9 @@ pub enum StreamAggregate {
     },
     ThinkingChunk {
         thinking: ThinkingDelta,
+    },
+    ReasoningSummaryChunk {
+        summary: ReasoningSummaryDelta,
     },
     ToolUseStart {
         tool_use_id: ToolUseId,
@@ -96,11 +99,17 @@ impl StreamAggregator {
                     ContentDelta::Thinking(thinking) => {
                         vec![StreamAggregate::ThinkingChunk { thinking }]
                     }
+                    ContentDelta::ReasoningSummary(summary) => {
+                        vec![StreamAggregate::ReasoningSummaryChunk { summary }]
+                    }
                     _ => Vec::new(),
                 })
                 .collect(),
             ContentDelta::Thinking(thinking) => {
                 vec![StreamAggregate::ThinkingChunk { thinking }]
+            }
+            ContentDelta::ReasoningSummary(summary) => {
+                vec![StreamAggregate::ReasoningSummaryChunk { summary }]
             }
             ContentDelta::ToolUseComplete { id, name, input } => {
                 self.pending.remove(&index);

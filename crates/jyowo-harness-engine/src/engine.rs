@@ -27,7 +27,7 @@ use harness_contracts::{
 use harness_contracts::{
     CodeLanguage, CodeRunRequest, CodeRunResult, CodeRunStats, EmbeddedRefusedReason,
     EmbeddedToolDispatchRequest, EmbeddedToolDispatchResponse, ExecuteCodeStepInvokedEvent,
-    FallbackPolicy, InteractivityLevel, PermissionMode, ToolError, ToolResult, ToolUseId,
+    FallbackPolicy, InteractivityLevel, PermissionMode, Redactor, ToolError, ToolResult, ToolUseId,
 };
 #[cfg(feature = "subagent-tool")]
 use harness_contracts::{NetworkAccess, SandboxPolicy, SandboxScope};
@@ -38,6 +38,8 @@ use harness_mcp::{McpRegistry, McpServerPattern, McpServerRef, RequiredEvaluatio
 use harness_model::{
     InferMiddleware, ModelProtocol, ModelProvider, ModelRuntimeSnapshot, PricingSnapshotResolver,
 };
+#[cfg(feature = "programmatic-tool-calling")]
+use harness_observability::DefaultRedactor;
 use harness_observability::{Observer, Tracer};
 use harness_permission::PermissionBroker;
 #[cfg(feature = "programmatic-tool-calling")]
@@ -474,6 +476,11 @@ impl EngineBuilder {
                         sandbox: self.sandbox.clone(),
                         permission_broker: Arc::clone(&permission_broker),
                         cap_registry: Arc::new(cap_registry_value.clone()),
+                        redactor: self
+                            .observer
+                            .as_ref()
+                            .map(|observer| Arc::clone(&observer.redactor))
+                            .unwrap_or_else(|| Arc::new(DefaultRedactor::default())),
                         blob_store: self.blob_store.clone(),
                     }),
                 );
@@ -809,6 +816,7 @@ struct EngineEmbeddedToolDispatcher {
     sandbox: Option<Arc<dyn SandboxBackend>>,
     permission_broker: Arc<dyn PermissionBroker>,
     cap_registry: Arc<CapabilityRegistry>,
+    redactor: Arc<dyn Redactor>,
     blob_store: Option<Arc<dyn BlobStore>>,
 }
 
@@ -832,6 +840,7 @@ impl EngineEmbeddedToolDispatcher {
             sandbox: self.sandbox.clone(),
             permission_broker: Arc::clone(&self.permission_broker),
             cap_registry: Arc::clone(&self.cap_registry),
+            redactor: Arc::clone(&self.redactor),
             blob_store: self.blob_store.clone(),
         }
     }
@@ -862,6 +871,7 @@ impl EngineEmbeddedToolDispatcher {
                         sandbox: self.sandbox,
                         permission_broker: self.permission_broker,
                         cap_registry: self.cap_registry,
+                        redactor: self.redactor,
                         interrupt: harness_tool::InterruptToken::default(),
                         parent_run: None,
                     },

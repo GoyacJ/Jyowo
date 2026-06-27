@@ -60,9 +60,12 @@ pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
     Box::pin(stream! {
         let mut parser = IncrementalSseParser::default();
         let mut state = OpenAiStreamState::default();
+        let mut terminal_pending_deadline = None;
         loop {
             let chunk = if state.terminal_pending {
-                match tokio::time::timeout(POST_FINISH_USAGE_GRACE, bytes.next()).await {
+                let deadline = *terminal_pending_deadline
+                    .get_or_insert_with(|| tokio::time::Instant::now() + POST_FINISH_USAGE_GRACE);
+                match tokio::time::timeout_at(deadline, bytes.next()).await {
                     Ok(chunk) => chunk,
                     Err(_) => {
                         if let Some(stop) = state.finish_message() {
@@ -72,6 +75,7 @@ pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
                     }
                 }
             } else {
+                terminal_pending_deadline = None;
                 bytes.next().await
             };
 
@@ -534,6 +538,25 @@ mod tests {
         assert!(usage_index < stop_index);
     }
 
+    #[tokio::test]
+    async fn finish_reason_terminates_even_when_provider_keeps_sending_comments() {
+        let response = pending_sse_response_with_comments(
+            "data: {\"id\":\"chatcmpl_1\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+        )
+        .await;
+        let mut stream = response_to_stream(response);
+
+        let mut events = Vec::new();
+        while let Some(event) = tokio::time::timeout(Duration::from_millis(700), stream.next())
+            .await
+            .expect("stream should terminate after finish_reason grace despite comment frames")
+        {
+            events.push(event);
+        }
+
+        assert!(events.contains(&ModelStreamEvent::MessageStop));
+    }
+
     async fn pending_sse_response(frame: &'static str) -> reqwest::Response {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -549,6 +572,37 @@ mod tests {
             socket.write_all(chunk.as_bytes()).await.unwrap();
             socket.flush().await.unwrap();
             future::pending::<()>().await;
+        });
+
+        reqwest::get(url).await.unwrap()
+    }
+
+    async fn pending_sse_response_with_comments(frame: &'static str) -> reqwest::Response {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            let header =
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n";
+            socket.write_all(header.as_bytes()).await.unwrap();
+            let chunk = format!("{:x}\r\n{}\r\n", frame.len(), frame);
+            socket.write_all(chunk.as_bytes()).await.unwrap();
+            socket.flush().await.unwrap();
+
+            loop {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let comment = ": keepalive\n\n";
+                let chunk = format!("{:x}\r\n{}\r\n", comment.len(), comment);
+                if socket.write_all(chunk.as_bytes()).await.is_err() {
+                    break;
+                }
+                if socket.flush().await.is_err() {
+                    break;
+                }
+            }
         });
 
         reqwest::get(url).await.unwrap()

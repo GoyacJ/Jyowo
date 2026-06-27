@@ -1,0 +1,301 @@
+{
+  "turns": [
+    {
+      "id": "turn:user-message-1",
+      "conversationId": "conversation-1",
+      "position": 7,
+      "user": {
+        "id": "user:user-message-1",
+        "messageId": "user-message-1",
+        "body": "Generate an image",
+        "clientMessageId": "00000000-0000-4000-8000-000000000001",
+        "timestamp": "1970-01-01T00:00:00Z",
+        "eventRefs": [
+          {
+            "eventId": "event-user-1",
+            "cursor": {
+              "eventId": "01HZ0000000000000000000001",
+              "conversationSequence": 42
+            }
+          }
+        ]
+      },
+      "assistant": {
+        "id": "assistant:run-1",
+        "runId": "run-1",
+        "status": "running",
+        "segments": [
+          {
+            "kind": "process",
+            "id": "segment:process:run-1",
+            "order": 0,
+            "status": "running",
+            "summary": "正在处理请求",
+            "steps": [
+              {
+                "id": "process-step:run-1:reasoning",
+                "order": 0,
+                "kind": "reasoning",
+                "status": "running",
+                "title": "分析请求",
+                "body": "确认需要生成图片并展示结果。",
+                "eventRefs": [
+                  {
+                    "eventId": "event-thinking-1",
+                    "cursor": {
+                      "eventId": "01HZ0000000000000000000002",
+                      "conversationSequence": 43
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "process-step:run-1:artifact",
+                "order": 1,
+                "kind": "artifact",
+                "status": "complete",
+                "title": "生成的图片",
+                "detail": {
+                  "type": "artifact",
+                  "artifactId": "artifact-1",
+                  "media": {
+                    "kind": "image",
+                    "mimeType": "image/png",
+                    "sizeBytes": 128
+                  }
+                },
+                "eventRefs": [
+                  {
+                    "eventId": "event-artifact-1",
+                    "cursor": {
+                      "eventId": "01HZ0000000000000000000007",
+                      "conversationSequence": 48
+                    }
+                  }
+                ]
+              }
+            ],
+            "eventRefs": [
+              {
+                "eventId": "event-thinking-1",
+                "cursor": {
+                  "eventId": "01HZ0000000000000000000002",
+                  "conversationSequence": 43
+                }
+              }
+            ]
+          },
+          {
+            "kind": "thinking",
+            "id": "segment:thinking:run-1",
+            "order": 1,
+            "status": "running",
+            "summary": {
+              "text": "Checking available tools"
+            },
+            "steps": [
+              {
+                "id": "thinking-step:run-1:summary",
+                "order": 0,
+                "kind": "reasoningSummary",
+                "status": "running",
+                "title": "推理过程",
+                "body": "Checking available tools",
+                "eventRefs": [
+                  {
+                    "eventId": "event-thinking-1",
+                    "cursor": {
+                      "eventId": "01HZ0000000000000000000002",
+                      "conversationSequence": 43
+                    }
+                  }
+                ]
+              }
+            ],
+            "eventRefs": [
+              {
+                "eventId": "event-thinking-1",
+                "cursor": {
+                  "eventId": "01HZ0000000000000000000002",
+                  "conversationSequence": 43
+                }
+              }
+            ]
+          },
+          {
+            "kind": "text",
+            "id": "segment:text:assistant-message-1",
+            "order": 2,
+            "messageId": "assistant-message-1",
+            "body": "I can help with that.",
+            "eventRefs": [
+              {
+                "eventId": "event-assistant-1",
+                "cursor": {
+                  "eventId": "01HZ0000000000000000000003",
+                  "conversationSequence": 44
+                }
+              }
+            ]
+          },
+          {
+            "kind": "toolGroup",
+            "id": "segment:tools:tool-use-1",
+            "order": 3,
+            "attempts": [
+              {
+                "id": "tool:tool-use-1",
+                "order": 0,
+                "toolUseId": "tool-use-1",
+                "toolName": "MiniMaxTextToImage",
+                "status": "completed",
+                "permission": {
+                  "id": "permission:request-1",
+                  "requestId": "request-1",
+                  "toolUseId": "tool-use-1",
+                  "status": "approved",
+                  "summary": "Approved once",
+                  "eventRefs": [
+                    {
+                      "eventId": "event-permission-1",
+                      "cursor": {
+                        "eventId": "01HZ0000000000000000000004",
+                        "conversationSequence": 45
+                      }
+                    }
+                  ]
+                },
+                "eventRefs": [
+                  {
+                    "eventId": "event-tool-1",
+                    "cursor": {
+                      "eventId": "01HZ0000000000000000000005",
+                      "conversationSequence": 46
+                    }
+                  }
+                ]
+              }
+            ],
+            "eventRefs": [
+              {
+                "eventId": "event-tool-group-1",
+                "cursor": {
+                  "eventId": "01HZ0000000000000000000006",
+                  "conversationSequence": 47
+                }
+              }
+            ]
+          },
+          {
+            "kind": "artifact",
+            "id": "segment:artifact:artifact-1",
+            "order": 4,
+            "artifactId": "artifact-1",
+            "artifactKind": "image",
+            "status": "ready",
+            "source": "tool",
+            "title": "Generated image",
+            "summary": "Image artifact ready",
+            "media": {
+              "kind": "image",
+              "mimeType": "image/png",
+              "sizeBytes": 128
+            },
+            "eventRefs": [
+              {
+                "eventId": "event-artifact-1",
+                "cursor": {
+                  "eventId": "01HZ0000000000000000000007",
+                  "conversationSequence": 48
+                }
+              }
+            ]
+          },
+          {
+            "kind": "reviewRequest",
+            "id": "segment:review:review-1",
+            "order": 5,
+            "requestId": "review-1",
+            "title": "Review changes",
+            "body": "Confirm before applying.",
+            "eventRefs": [
+              {
+                "eventId": "event-review-1",
+                "cursor": {
+                  "eventId": "01HZ0000000000000000000008",
+                  "conversationSequence": 49
+                }
+              }
+            ]
+          },
+          {
+            "kind": "clarificationRequest",
+            "id": "segment:clarification:clarification-1",
+            "order": 6,
+            "requestId": "clarification-1",
+            "prompt": "Which style should I use?",
+            "eventRefs": [
+              {
+                "eventId": "event-clarification-1",
+                "cursor": {
+                  "eventId": "01HZ0000000000000000000009",
+                  "conversationSequence": 50
+                }
+              }
+            ]
+          },
+          {
+            "kind": "notice",
+            "id": "segment:notice:notice-1",
+            "order": 7,
+            "body": "Tool output was summarized.",
+            "eventRefs": [
+              {
+                "eventId": "event-notice-1",
+                "cursor": {
+                  "eventId": "01HZ000000000000000000000A",
+                  "conversationSequence": 51
+                }
+              }
+            ]
+          },
+          {
+            "kind": "error",
+            "id": "segment:error:event-1",
+            "order": 8,
+            "body": "Tool execution failed.",
+            "eventRefs": [
+              {
+                "eventId": "event-error-1",
+                "cursor": {
+                  "eventId": "01HZ000000000000000000000B",
+                  "conversationSequence": 52
+                }
+              }
+            ]
+          }
+        ],
+        "eventRefs": [
+          {
+            "eventId": "event-assistant-work-1",
+            "cursor": {
+              "eventId": "01HZ000000000000000000000C",
+              "conversationSequence": 53
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "pageCursor": {
+    "turnId": "turn:user-message-1",
+    "position": 7
+  },
+  "eventCursor": {
+    "eventId": "01HZ000000000000000000000D",
+    "conversationSequence": 54
+  },
+  "hasMoreBefore": true,
+  "hasMoreAfter": true,
+  "gap": false
+}

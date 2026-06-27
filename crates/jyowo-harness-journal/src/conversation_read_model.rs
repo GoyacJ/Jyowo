@@ -4,11 +4,12 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    ArtifactStatus, ConversationCursor, ConversationMessage, ConversationMessageAuthor,
-    ConversationSnapshot, ConversationSummary, ConversationTimelineEvent, ConversationTimelinePage,
-    ConversationTurnCursor, ConversationWorktreePage, Decision, DecisionScope, DeltaChunk, Event,
-    EventId, JournalError, MessageContent, MessagePart, PermissionSubject, RequestId, RunId,
-    SessionId, Severity, TenantId, ToolUseId, UiSafeText,
+    ArtifactSource, ArtifactStatus, BlobRef, ConversationCursor, ConversationMessage,
+    ConversationMessageAuthor, ConversationSnapshot, ConversationSummary,
+    ConversationTimelineEvent, ConversationTimelinePage, ConversationTurnCursor,
+    ConversationWorktreePage, Decision, DecisionScope, DeltaChunk, Event, EventId, JournalError,
+    MessageContent, MessagePart, PermissionSubject, RequestId, RunId, SessionId, Severity,
+    TenantId, ToolResult, ToolResultPart, ToolUseId, UiSafeText,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
@@ -18,6 +19,18 @@ use crate::{
     journal_error, project_conversation_worktree_snapshot, ConversationTurnPageDirection,
     EventEnvelope, SessionSummary,
 };
+
+const CONVERSATION_READ_MODEL_PROJECTION_VERSION_KEY: &str =
+    "conversation_read_model_projection_version";
+const CONVERSATION_READ_MODEL_PROJECTION_VERSION: &str = "5";
+const CONVERSATION_READ_MODEL_CACHE_TABLES: [&str; 6] = [
+    "conversation_projection_permission_context",
+    "conversation_projection_tool_context",
+    "conversation_timeline_event",
+    "conversation_message",
+    "conversation_summary",
+    "conversation_projection_state",
+];
 
 pub struct SqliteConversationReadModelStore {
     connection: Mutex<Connection>,
@@ -29,7 +42,7 @@ impl SqliteConversationReadModelStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(journal_error)?;
         }
-        let connection = Connection::open(path).map_err(journal_error)?;
+        let mut connection = Connection::open(path).map_err(journal_error)?;
         connection
             .execute_batch(
                 "PRAGMA journal_mode = WAL;
@@ -92,6 +105,7 @@ impl SqliteConversationReadModelStore {
                     session_id TEXT NOT NULL,
                     tool_use_id TEXT NOT NULL,
                     run_id TEXT NOT NULL,
+                    tool_name TEXT,
                     PRIMARY KEY (tenant_id, session_id, tool_use_id)
                  ) STRICT;
                  CREATE TABLE IF NOT EXISTS conversation_projection_permission_context (
@@ -100,9 +114,15 @@ impl SqliteConversationReadModelStore {
                     request_id TEXT NOT NULL,
                     run_id TEXT NOT NULL,
                     PRIMARY KEY (tenant_id, session_id, request_id)
+                 ) STRICT;
+                 CREATE TABLE IF NOT EXISTS conversation_read_model_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                  ) STRICT;",
             )
             .map_err(journal_error)?;
+        ensure_tool_context_schema(&connection)?;
+        ensure_projection_version(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -257,14 +277,7 @@ impl SqliteConversationReadModelStore {
         let tx = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(journal_error)?;
-        for table in [
-            "conversation_projection_permission_context",
-            "conversation_projection_tool_context",
-            "conversation_timeline_event",
-            "conversation_message",
-            "conversation_summary",
-            "conversation_projection_state",
-        ] {
+        for table in CONVERSATION_READ_MODEL_CACHE_TABLES {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE tenant_id = ?1 AND session_id = ?2"),
                 params![tenant_id.to_string(), session_id.to_string()],
@@ -441,7 +454,18 @@ impl SqliteConversationReadModelStore {
         let projection = project_conversation_worktree_snapshot(&session_id.to_string(), events);
         let all_turns = projection.turns;
         let limit = limit_turns.clamp(1, 100);
-        let boundary = page_cursor.as_ref().map(|cursor| cursor.position);
+        let boundary = match page_cursor.as_ref() {
+            Some(cursor) => {
+                let matches_cursor = all_turns
+                    .iter()
+                    .any(|turn| turn.id == cursor.turn_id && turn.position == cursor.position);
+                if !matches_cursor {
+                    return Err(journal_error("conversation cursor is unknown"));
+                }
+                Some(cursor.position)
+            }
+            None => None,
+        };
         let selected = match direction {
             ConversationTurnPageDirection::After => all_turns
                 .iter()
@@ -471,7 +495,11 @@ impl SqliteConversationReadModelStore {
             .into_iter()
             .map(|(_, turn)| turn)
             .collect::<Vec<_>>();
-        let page_cursor = turns.last().map(|turn| ConversationTurnCursor {
+        let cursor_turn = match direction {
+            ConversationTurnPageDirection::After => turns.last(),
+            ConversationTurnPageDirection::Before => turns.first(),
+        };
+        let page_cursor = cursor_turn.map(|turn| ConversationTurnCursor {
             turn_id: turn.id.clone(),
             position: turn.position,
         });
@@ -517,10 +545,69 @@ impl SqliteConversationReadModelStore {
     }
 }
 
+fn ensure_projection_version(connection: &mut Connection) -> Result<(), JournalError> {
+    let current_version = connection
+        .query_row(
+            "SELECT value FROM conversation_read_model_meta WHERE key = ?1",
+            params![CONVERSATION_READ_MODEL_PROJECTION_VERSION_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(journal_error)?;
+    if current_version.as_deref() == Some(CONVERSATION_READ_MODEL_PROJECTION_VERSION) {
+        return Ok(());
+    }
+
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(journal_error)?;
+    for table in CONVERSATION_READ_MODEL_CACHE_TABLES {
+        tx.execute(&format!("DELETE FROM {table}"), [])
+            .map_err(journal_error)?;
+    }
+    tx.execute(
+        "INSERT INTO conversation_read_model_meta (key, value)
+         VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![
+            CONVERSATION_READ_MODEL_PROJECTION_VERSION_KEY,
+            CONVERSATION_READ_MODEL_PROJECTION_VERSION
+        ],
+    )
+    .map_err(journal_error)?;
+    tx.commit().map_err(journal_error)
+}
+
+fn ensure_tool_context_schema(connection: &Connection) -> Result<(), JournalError> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(conversation_projection_tool_context)")
+        .map_err(journal_error)?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(journal_error)?;
+    let mut has_tool_name = false;
+    for row in rows {
+        if row.map_err(journal_error)? == "tool_name" {
+            has_tool_name = true;
+            break;
+        }
+    }
+    if has_tool_name {
+        return Ok(());
+    }
+    connection
+        .execute(
+            "ALTER TABLE conversation_projection_tool_context ADD COLUMN tool_name TEXT",
+            [],
+        )
+        .map_err(journal_error)?;
+    Ok(())
+}
+
 struct ProjectedEnvelope {
     timeline_event: ConversationTimelineEvent,
     message: Option<ConversationMessage>,
-    tool_context: Option<(ToolUseId, RunId)>,
+    tool_context: Option<(ToolUseId, RunId, String)>,
     permission_context: Option<(RequestId, RunId)>,
 }
 
@@ -586,15 +673,31 @@ fn project_envelope(
                 "assistant.delta",
                 "assistant",
                 "public",
-                json!({ "text": safe_text(text).as_str() }),
+                json!({
+                    "messageId": event.message_id.to_string(),
+                    "text": safe_text(text).as_str(),
+                }),
                 None,
                 event.at,
             ),
-            DeltaChunk::Thought(thought) => (
+            DeltaChunk::Thought(_) => (
                 "assistant.thinking.delta",
                 "assistant",
                 "public",
-                json!({ "text": safe_text(thought.text.clone().unwrap_or_default()).as_str() }),
+                json!({
+                    "status": "running",
+                }),
+                None,
+                event.at,
+            ),
+            DeltaChunk::ReasoningSummary(summary) => (
+                "assistant.thinking.delta",
+                "assistant",
+                "public",
+                json!({
+                    "status": "running",
+                    "safeSummaryDelta": safe_text(&summary.text).as_str(),
+                }),
                 None,
                 event.at,
             ),
@@ -620,26 +723,64 @@ fn project_envelope(
                 json!({
                     "messageId": event.message_id.to_string(),
                     "body": body.as_str(),
+                    "toolUses": event.tool_uses.iter().map(|tool_use| {
+                        json!({
+                            "toolUseId": tool_use.tool_use_id.to_string(),
+                            "toolName": safe_text(&tool_use.tool_name).as_str(),
+                        })
+                    }).collect::<Vec<_>>(),
                 }),
                 Some(message),
                 event.at,
             )
         }
-        Event::ArtifactCreated(event) => (
-            "artifact.created",
-            "engine",
-            "public",
-            json!({
+        Event::ArtifactCreated(event) => {
+            let public_kind = safe_text(&event.kind).into_string();
+            let mut payload = json!({
                 "artifactId": event.artifact_id,
+                "kind": public_kind,
                 "status": artifact_status_label(event.status),
-            }),
-            None,
-            event.at,
-        ),
+                "source": artifact_source_label(event.source),
+                "title": safe_text(&event.title).into_string(),
+            });
+            if let Some(preview) = event.preview.as_ref() {
+                payload["summary"] = json!(safe_text(preview).into_string());
+            }
+            if let Some(media) =
+                artifact_media_payload(event.blob_ref.as_ref(), Some(event.kind.as_str()))
+            {
+                payload["media"] = media;
+            }
+            (
+                "artifact.created",
+                "engine",
+                "public",
+                payload,
+                None,
+                event.at,
+            )
+        }
         Event::ArtifactUpdated(event) => {
-            let mut payload = json!({ "artifactId": event.artifact_id });
+            let mut payload = json!({
+                "artifactId": event.artifact_id,
+                "source": artifact_source_label(event.source),
+            });
+            if let Some(title) = event.title.as_ref() {
+                payload["title"] = json!(safe_text(title).into_string());
+            }
+            if let Some(kind) = event.kind.as_ref() {
+                payload["kind"] = json!(safe_text(kind).into_string());
+            }
             if let Some(status) = event.status {
                 payload["status"] = json!(artifact_status_label(status));
+            }
+            if let Some(preview) = event.preview.as_ref() {
+                payload["summary"] = json!(safe_text(preview).into_string());
+            }
+            if let Some(media) =
+                artifact_media_payload(event.blob_ref.as_ref(), event.kind.as_deref())
+            {
+                payload["media"] = media;
             }
             (
                 "artifact.updated",
@@ -650,17 +791,72 @@ fn project_envelope(
                 event.at,
             )
         }
+        Event::AssistantReviewRequested(event) => {
+            let mut payload = json!({
+                "requestId": event.request_id.to_string(),
+                "title": safe_text(event.title.as_str()).into_string(),
+            });
+            if let Some(body) = event.body.as_ref() {
+                payload["body"] = json!(safe_text(body.as_str()).into_string());
+            }
+            (
+                "assistant.review.requested",
+                "assistant",
+                "public",
+                payload,
+                None,
+                event.at,
+            )
+        }
+        Event::AssistantClarificationRequested(event) => (
+            "assistant.clarification.requested",
+            "assistant",
+            "public",
+            json!({
+                "requestId": event.request_id.to_string(),
+                "prompt": safe_text(event.prompt.as_str()).into_string(),
+            }),
+            None,
+            event.at,
+        ),
+        Event::AssistantNotice(event) => (
+            "assistant.notice",
+            "assistant",
+            "public",
+            json!({
+                "noticeId": event.notice_id.to_string(),
+                "body": safe_text(event.body.as_str()).into_string(),
+            }),
+            None,
+            event.at,
+        ),
         Event::ToolUseRequested(event) => {
-            tool_context = Some((event.tool_use_id, event.run_id));
+            let tool_name = safe_text(&event.tool_name).as_str().to_owned();
+            tool_context = Some((event.tool_use_id, event.run_id, tool_name.clone()));
+            let mut payload = json!({
+                "argumentsSummary": "Input withheld from conversation timeline.",
+                "toolName": tool_name,
+                "toolUseId": event.tool_use_id.to_string(),
+            });
+            if let Some(command) = safe_tool_command_preview(&event.tool_name, &event.input) {
+                payload["command"] = json!(command);
+            }
+            if is_file_read_tool_name(&event.tool_name) || is_file_edit_tool_name(&event.tool_name)
+            {
+                if let Some(target_path) = safe_tool_target_path_preview(&event.input) {
+                    payload["targetPath"] = json!(target_path);
+                }
+            }
+            if is_file_search_tool_name(&event.tool_name) {
+                if let Some(query) = safe_tool_query_preview(&event.input) {
+                    payload["query"] = json!(query);
+                }
+            }
             (
                 "tool.requested",
                 "tool",
                 "redacted",
-                json!({
-                    "argumentsSummary": "Input withheld from conversation timeline.",
-                    "toolName": safe_text(&event.tool_name).as_str(),
-                    "toolUseId": event.tool_use_id.to_string(),
-                }),
+                payload,
                 None,
                 event.at,
             )
@@ -681,18 +877,26 @@ fn project_envelope(
             None,
             event.at,
         ),
-        Event::ToolUseCompleted(event) => (
-            "tool.completed",
-            "tool",
-            "redacted",
-            json!({
+        Event::ToolUseCompleted(event) => {
+            let tool_name = tool_context_tool_name(tx, tenant_id, session_id, event.tool_use_id)?;
+            let mut payload = json!({
                 "durationMs": event.duration_ms,
                 "outputSummary": "Output withheld from conversation timeline.",
                 "toolUseId": event.tool_use_id.to_string(),
-            }),
-            None,
-            event.at,
-        ),
+            });
+            if let Some(tool_name) = tool_name.as_ref() {
+                payload["toolName"] = json!(safe_text(tool_name).as_str());
+            }
+            project_safe_tool_result_fields(tool_name.as_deref(), &event.result, &mut payload);
+            (
+                "tool.completed",
+                "tool",
+                "redacted",
+                payload,
+                None,
+                event.at,
+            )
+        }
         Event::ToolUseFailed(event) => (
             "tool.failed",
             "tool",
@@ -720,6 +924,7 @@ fn project_envelope(
                     "requestId": event.request_id.to_string(),
                     "severity": severity_label(event.severity),
                     "target": subject.target,
+                    "toolUseId": event.tool_use_id.to_string(),
                     "workspaceBoundary": "current workspace",
                 }),
                 None,
@@ -782,6 +987,9 @@ fn event_run_id(
         Event::AssistantMessageCompleted(event) => Some(event.run_id),
         Event::ArtifactCreated(event) => Some(event.run_id),
         Event::ArtifactUpdated(event) => Some(event.run_id),
+        Event::AssistantReviewRequested(event) => Some(event.run_id),
+        Event::AssistantClarificationRequested(event) => Some(event.run_id),
+        Event::AssistantNotice(event) => Some(event.run_id),
         Event::ToolUseRequested(event) => Some(event.run_id),
         Event::ToolUseApproved(event) => {
             tool_context_run_id(tx, tenant_id, session_id, event.tool_use_id)?
@@ -821,7 +1029,66 @@ fn message_content_display(content: &MessageContent) -> UiSafeText {
 }
 
 fn safe_text(value: impl AsRef<str>) -> UiSafeText {
-    UiSafeText::from_redacted_display(value, &harness_contracts::NoopRedactor)
+    UiSafeText::from_redacted_display(
+        redact_obvious_secret_tokens(&redact_unsafe_process_text(value.as_ref())),
+        &harness_contracts::NoopRedactor,
+    )
+}
+
+fn redact_obvious_secret_tokens(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut pending_secret_value = false;
+
+    for token in value.split_inclusive(char::is_whitespace) {
+        let (body, trailing_ws) = token.split_at(token.trim_end_matches(char::is_whitespace).len());
+        if body.is_empty() {
+            output.push_str(trailing_ws);
+            continue;
+        }
+
+        let lower = body.to_ascii_lowercase();
+        let redact_current = pending_secret_value || is_obvious_secret_token(&lower);
+        pending_secret_value = matches!(lower.as_str(), "bearer" | "basic")
+            || lower.ends_with("authorization:")
+            || lower.ends_with("authorization");
+
+        if redact_current {
+            output.push_str("[REDACTED]");
+        } else {
+            output.push_str(body);
+        }
+        output.push_str(trailing_ws);
+    }
+
+    output
+}
+
+fn is_obvious_secret_token(lower: &str) -> bool {
+    lower.contains("authorization:")
+        || lower == "bearer"
+        || lower == "basic"
+        || lower.contains("api_key")
+        || lower.contains("api-key")
+        || lower.contains("apikey")
+        || lower.contains("token=")
+        || lower.contains("secret=")
+        || lower.contains("password=")
+        || lower.contains("sk-")
+        || lower.contains("ghp_")
+        || lower.contains("gho_")
+        || lower.contains("ghu_")
+        || lower.contains("ghs_")
+        || lower.contains("ghr_")
+        || lower.contains("akia")
+        || lower.contains("aiza")
+        || lower.contains("xoxb-")
+        || lower.contains("xoxp-")
+        || lower.contains("xoxa-")
+        || lower.contains("xoxr-")
+        || lower.contains("npm_")
+        || lower.contains("lin_api_")
+        || lower.contains("secret_")
+        || lower.starts_with("eyj")
 }
 
 fn artifact_status_label(status: ArtifactStatus) -> &'static str {
@@ -832,6 +1099,640 @@ fn artifact_status_label(status: ArtifactStatus) -> &'static str {
         ArtifactStatus::Failed => "failed",
         _ => "pending",
     }
+}
+
+fn artifact_source_label(source: ArtifactSource) -> &'static str {
+    match source {
+        ArtifactSource::Assistant => "assistant",
+        ArtifactSource::Tool => "tool",
+        ArtifactSource::File => "file",
+        ArtifactSource::ModelService => "model_service",
+        _ => "assistant",
+    }
+}
+
+fn artifact_media_payload(
+    blob_ref: Option<&BlobRef>,
+    artifact_kind: Option<&str>,
+) -> Option<Value> {
+    let blob_ref = blob_ref?;
+    let safe_mime_type = blob_ref
+        .content_type
+        .as_deref()
+        .and_then(safe_artifact_mime_type);
+    let kind = artifact_kind
+        .and_then(artifact_media_kind_from_label)
+        .or_else(|| {
+            safe_mime_type
+                .as_deref()
+                .and_then(artifact_media_kind_from_mime)
+        })?;
+    let mime_type = safe_mime_type
+        .filter(|mime_type| {
+            kind == "file"
+                || artifact_media_kind_from_mime(mime_type)
+                    .is_some_and(|mime_kind| mime_kind == kind)
+        })
+        .unwrap_or_else(|| default_artifact_mime_type(kind).to_owned());
+    Some(json!({
+        "kind": kind,
+        "mimeType": mime_type,
+        "sizeBytes": blob_ref.size,
+    }))
+}
+
+fn artifact_media_kind_from_label(value: &str) -> Option<&'static str> {
+    match value {
+        "image" => Some("image"),
+        "video" => Some("video"),
+        "audio" => Some("audio"),
+        "file" => Some("file"),
+        _ => safe_artifact_mime_type(value)
+            .as_deref()
+            .and_then(artifact_media_kind_from_mime),
+    }
+}
+
+fn artifact_media_kind_from_mime(value: &str) -> Option<&'static str> {
+    if safe_artifact_image_mime_type(value).is_some() {
+        Some("image")
+    } else if value.starts_with("video/") {
+        Some("video")
+    } else if value.starts_with("audio/") {
+        Some("audio")
+    } else if safe_artifact_mime_type(value).is_some() {
+        Some("file")
+    } else {
+        None
+    }
+}
+
+fn default_artifact_mime_type(kind: &str) -> &'static str {
+    match kind {
+        "image" => "image/png",
+        "video" => "video/mp4",
+        "audio" => "audio/mpeg",
+        _ => "application/octet-stream",
+    }
+}
+
+fn safe_artifact_mime_type(value: &str) -> Option<String> {
+    let mime_type = value
+        .split(';')
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .to_ascii_lowercase();
+    match mime_type.as_str() {
+        "image/png"
+        | "image/jpeg"
+        | "image/gif"
+        | "image/webp"
+        | "image/avif"
+        | "video/mp4"
+        | "video/webm"
+        | "video/quicktime"
+        | "audio/mpeg"
+        | "audio/mp4"
+        | "audio/ogg"
+        | "audio/wav"
+        | "audio/webm"
+        | "text/plain"
+        | "text/markdown"
+        | "text/csv"
+        | "application/json"
+        | "application/pdf"
+        | "application/zip"
+        | "application/octet-stream" => Some(mime_type),
+        _ => None,
+    }
+}
+
+fn safe_artifact_image_mime_type(value: &str) -> Option<&'static str> {
+    match value {
+        "image/png" => Some("image/png"),
+        "image/jpeg" => Some("image/jpeg"),
+        "image/gif" => Some("image/gif"),
+        "image/webp" => Some("image/webp"),
+        "image/avif" => Some("image/avif"),
+        _ => None,
+    }
+}
+
+fn safe_tool_command_preview(tool_name: &str, input: &Value) -> Option<String> {
+    if !is_command_tool_name(tool_name) {
+        return None;
+    }
+    let command = ["command", "code", "script"]
+        .into_iter()
+        .find_map(|field| input.get(field).and_then(Value::as_str))?
+        .trim();
+    safe_process_preview_text(command)
+}
+
+fn safe_tool_target_path_preview(input: &Value) -> Option<String> {
+    ["path", "filePath", "file_path", "targetPath", "target_path"]
+        .into_iter()
+        .find_map(|field| input.get(field).and_then(Value::as_str))
+        .and_then(safe_relative_path)
+}
+
+fn safe_tool_query_preview(input: &Value) -> Option<String> {
+    ["pattern", "query", "glob", "search"]
+        .into_iter()
+        .find_map(|field| input.get(field).and_then(Value::as_str))
+        .and_then(safe_process_preview_text)
+}
+
+fn project_safe_tool_result_fields(
+    tool_name: Option<&str>,
+    result: &ToolResult,
+    payload: &mut Value,
+) {
+    let Some(tool_name) = tool_name else {
+        return;
+    };
+    if is_command_tool_name(tool_name) {
+        if let Some(exit_code) = safe_tool_result_exit_code(result) {
+            payload["exitCode"] = json!(exit_code);
+        }
+        if let Some(output_summary) = safe_tool_result_output_summary(result) {
+            payload["outputSummary"] = json!(output_summary);
+        }
+        return;
+    }
+    if is_file_activity_tool_name(tool_name) {
+        if let Some(item_count) = safe_tool_result_item_count(tool_name, result) {
+            payload["itemCount"] = json!(item_count);
+        }
+        if is_file_edit_tool_name(tool_name) {
+            if let Some(diff) = safe_tool_result_diff(result) {
+                payload["diff"] = diff;
+            }
+        }
+    }
+}
+
+fn safe_tool_result_item_count(tool_name: &str, result: &ToolResult) -> Option<u32> {
+    match result {
+        ToolResult::Structured(Value::Array(items)) => {
+            safe_tool_result_items_count(tool_name, items)
+        }
+        ToolResult::Mixed(parts) => parts.iter().find_map(|part| match part {
+            ToolResultPart::Structured {
+                value: Value::Array(items),
+                ..
+            } => safe_tool_result_items_count(tool_name, items),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+fn safe_tool_result_items_count(tool_name: &str, items: &[Value]) -> Option<u32> {
+    let count = items
+        .iter()
+        .filter(|item| safe_tool_result_item_is_countable(tool_name, item))
+        .count();
+    u32::try_from(count).ok()
+}
+
+fn safe_tool_result_item_is_countable(tool_name: &str, item: &Value) -> bool {
+    let path_fields = [
+        "path",
+        "file",
+        "filePath",
+        "file_path",
+        "fileName",
+        "file_name",
+        "targetPath",
+        "target_path",
+    ];
+    if let Some(path) = path_fields
+        .into_iter()
+        .find_map(|field| item.get(field).and_then(Value::as_str))
+    {
+        return safe_relative_path(path).is_some();
+    }
+    if is_file_read_tool_name(tool_name) {
+        if let Some(path) = item.as_str() {
+            return safe_relative_path(path).is_some();
+        }
+    }
+    true
+}
+
+fn safe_tool_result_exit_code(result: &ToolResult) -> Option<i32> {
+    let value = structured_tool_result_value(result)?;
+    value
+        .get("exitCode")
+        .or_else(|| value.get("exit_code"))
+        .and_then(Value::as_i64)
+        .and_then(|value| i32::try_from(value).ok())
+}
+
+fn safe_tool_result_output_summary(result: &ToolResult) -> Option<String> {
+    match result {
+        ToolResult::Text(text) => safe_process_preview_text(text),
+        ToolResult::Structured(value) => safe_structured_output_summary(value),
+        ToolResult::Mixed(parts) => parts.iter().find_map(|part| match part {
+            ToolResultPart::Text { text } => safe_process_preview_text(text),
+            ToolResultPart::Structured { value, .. } => safe_structured_output_summary(value),
+            ToolResultPart::Reference { summary, .. } => {
+                summary.as_deref().and_then(safe_process_preview_text)
+            }
+            ToolResultPart::Table { rows, caption, .. } => caption
+                .as_deref()
+                .and_then(safe_process_preview_text)
+                .or_else(|| Some(format!("{} rows", rows.len()))),
+            ToolResultPart::Error { code, .. } => safe_process_preview_text(code),
+            ToolResultPart::Blob { .. }
+            | ToolResultPart::Code { .. }
+            | ToolResultPart::Progress { .. } => None,
+            _ => None,
+        }),
+        ToolResult::Blob { .. } => None,
+        _ => None,
+    }
+}
+
+fn safe_structured_output_summary(value: &Value) -> Option<String> {
+    if let Some(text) = ["outputSummary", "summary", "stdout", "output", "text"]
+        .into_iter()
+        .find_map(|field| value.get(field).and_then(Value::as_str))
+        .and_then(safe_process_preview_text)
+    {
+        return Some(text);
+    }
+    if let Some(stderr) = value
+        .get("stderr")
+        .and_then(Value::as_str)
+        .and_then(safe_process_preview_text)
+    {
+        return Some(stderr);
+    }
+    value
+        .as_array()
+        .and_then(|items| Some(format!("{} results", items.len())))
+}
+
+fn safe_tool_result_diff(result: &ToolResult) -> Option<Value> {
+    let value = structured_tool_result_value(result)?;
+    let diff = value.get("diff").unwrap_or(value);
+    let files = diff.get("files")?.as_array()?;
+    let safe_files = files
+        .iter()
+        .filter_map(safe_diff_file_payload)
+        .collect::<Vec<_>>();
+    (!safe_files.is_empty()).then(|| json!({ "files": safe_files }))
+}
+
+fn safe_diff_file_payload(value: &Value) -> Option<Value> {
+    let path = value
+        .get("path")
+        .and_then(Value::as_str)
+        .and_then(safe_relative_path)?;
+    let added_lines = value
+        .get("addedLines")
+        .or_else(|| value.get("added_lines"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+    let removed_lines = value
+        .get("removedLines")
+        .or_else(|| value.get("removed_lines"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+    let mut file = json!({
+        "path": path,
+        "addedLines": added_lines,
+        "removedLines": removed_lines,
+    });
+    if let Some(preview) = value
+        .get("preview")
+        .and_then(Value::as_str)
+        .and_then(safe_process_preview_text)
+    {
+        file["preview"] = json!(preview);
+    }
+    Some(file)
+}
+
+fn structured_tool_result_value(result: &ToolResult) -> Option<&Value> {
+    match result {
+        ToolResult::Structured(value) => Some(value),
+        ToolResult::Mixed(parts) => parts.iter().find_map(|part| match part {
+            ToolResultPart::Structured { value, .. } => Some(value),
+            _ => None,
+        }),
+        ToolResult::Text(_) | ToolResult::Blob { .. } => None,
+        _ => None,
+    }
+}
+
+fn is_command_tool_name(tool_name: &str) -> bool {
+    let normalized = tool_name.to_ascii_lowercase();
+    normalized == "bash" || normalized.contains("shell") || normalized.contains("execute_code")
+}
+
+fn is_file_activity_tool_name(tool_name: &str) -> bool {
+    is_file_read_tool_name(tool_name)
+        || is_file_search_tool_name(tool_name)
+        || is_file_edit_tool_name(tool_name)
+}
+
+fn is_file_read_tool_name(tool_name: &str) -> bool {
+    let normalized = tool_name.to_ascii_lowercase();
+    normalized.contains("fileread")
+        || normalized.contains("read_file")
+        || normalized.contains("readfile")
+        || normalized == "read"
+        || normalized.contains("list_dir")
+        || normalized.contains("listdir")
+}
+
+fn is_file_search_tool_name(tool_name: &str) -> bool {
+    let normalized = tool_name.to_ascii_lowercase();
+    normalized.contains("grep") || normalized.contains("glob") || normalized.contains("search")
+}
+
+fn is_file_edit_tool_name(tool_name: &str) -> bool {
+    let normalized = tool_name.to_ascii_lowercase();
+    normalized.contains("filewrite")
+        || normalized.contains("fileedit")
+        || normalized.contains("apply_patch")
+        || normalized == "write"
+        || normalized == "edit"
+}
+
+fn safe_process_preview_text(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || contains_obvious_secret(trimmed) {
+        return None;
+    }
+    let redacted = redact_unsafe_process_text(trimmed);
+    Some(truncate_utf8(redacted, 1_200))
+}
+
+fn safe_relative_path(value: &str) -> Option<String> {
+    let trimmed = value.trim().replace('\\', "/");
+    if trimmed.is_empty()
+        || trimmed.starts_with('~')
+        || trimmed.starts_with('/')
+        || trimmed.contains("://")
+        || unsafe_url_starts_at(&trimmed, 0)
+        || contains_obvious_secret(&trimmed)
+        || is_windows_absolute_path(&trimmed)
+    {
+        return None;
+    }
+    let mut clean = Vec::new();
+    for part in trimmed.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            return None;
+        }
+        if unsafe_url_starts_at(part, 0) {
+            return None;
+        }
+        clean.push(part);
+    }
+    if clean
+        .first()
+        .is_some_and(|part| part.eq_ignore_ascii_case(".jyowo"))
+    {
+        return None;
+    }
+    (!clean.is_empty()).then(|| truncate_utf8(clean.join("/"), 1_200))
+}
+
+fn contains_obvious_secret(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("authorization:")
+        || lower.contains("bearer ")
+        || lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("token=")
+        || lower.contains("secret=")
+        || lower.contains("password=")
+        || lower.contains("sk-")
+        || lower.contains("ghp_")
+        || lower.contains("xoxb-")
+}
+
+fn redact_unsafe_process_text(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut index = 0;
+    while index < value.len() {
+        if unsafe_url_starts_at(value, index) {
+            output.push_str("[REDACTED]");
+            index = unsafe_url_token_end(value, index);
+            continue;
+        }
+        if local_unsafe_path_starts_at(value, index) {
+            output.push_str("[REDACTED]");
+            index = unsafe_token_end(value, index);
+            continue;
+        }
+        let ch = value[index..]
+            .chars()
+            .next()
+            .expect("index is within string bounds");
+        output.push(ch);
+        index += ch.len_utf8();
+    }
+    output
+}
+
+fn token_starts_at(value: &str, index: usize) -> bool {
+    if index == 0 {
+        return true;
+    }
+    value[..index]
+        .chars()
+        .next_back()
+        .is_some_and(|ch| ch.is_whitespace() || (!ch.is_alphanumeric() && ch != '_'))
+}
+
+fn unsafe_url_starts_at(value: &str, index: usize) -> bool {
+    if unsafe_opaque_url_starts_at(value, index) {
+        return true;
+    }
+
+    let tail = &value[index..];
+    let Some(separator) = tail.find("://") else {
+        return false;
+    };
+    if separator == 0 {
+        return false;
+    }
+    tail[..separator]
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+}
+
+fn unsafe_opaque_url_starts_at(value: &str, index: usize) -> bool {
+    const SCHEMES: &[&str] = &["blob:", "data:", "file:", "javascript:", "mailto:"];
+    let tail = &value[index..];
+    ascii_token_starts_at(value, index)
+        && SCHEMES.iter().any(|scheme| {
+            tail.get(..scheme.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
+        })
+}
+
+fn ascii_token_starts_at(value: &str, index: usize) -> bool {
+    if index == 0 {
+        return true;
+    }
+    value[..index]
+        .chars()
+        .next_back()
+        .is_some_and(|ch| ch.is_whitespace() || (!ch.is_ascii_alphanumeric() && ch != '_'))
+}
+
+fn local_unsafe_path_starts_at(value: &str, index: usize) -> bool {
+    let tail = &value[index..];
+    if tail.starts_with("~/")
+        || tail.starts_with("~\\")
+        || starts_with_jyowo_path(tail)
+        || starts_with_known_unix_absolute_root(tail)
+    {
+        return true;
+    }
+    token_starts_at(value, index) && (tail.starts_with('/') || is_windows_absolute_path(tail))
+}
+
+fn starts_with_jyowo_path(value: &str) -> bool {
+    value
+        .get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(".jyowo"))
+        && value
+            .as_bytes()
+            .get(6)
+            .is_some_and(|byte| matches!(byte, b'/' | b'\\'))
+}
+
+fn is_windows_absolute_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+}
+
+fn starts_with_known_unix_absolute_root(value: &str) -> bool {
+    const ROOTS: &[&str] = &[
+        "/Applications",
+        "/Library",
+        "/System",
+        "/Users",
+        "/Volumes",
+        "/dev",
+        "/etc",
+        "/home",
+        "/media",
+        "/mnt",
+        "/opt",
+        "/private",
+        "/root",
+        "/run",
+        "/tmp",
+        "/usr",
+        "/var",
+    ];
+
+    ROOTS.iter().any(|root| {
+        value
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\'))
+    })
+}
+
+fn unsafe_url_token_end(value: &str, start: usize) -> usize {
+    if starts_with_unsafe_opaque_scheme(value, start, "data:")
+        || starts_with_unsafe_opaque_scheme(value, start, "javascript:")
+    {
+        return unsafe_data_url_token_end(value, start);
+    }
+
+    unsafe_token_end(value, start)
+}
+
+fn starts_with_unsafe_opaque_scheme(value: &str, start: usize, scheme: &str) -> bool {
+    ascii_token_starts_at(value, start)
+        && value[start..]
+            .get(..scheme.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
+}
+
+fn unsafe_data_url_token_end(value: &str, start: usize) -> usize {
+    value[start..]
+        .char_indices()
+        .find_map(|(offset, ch)| {
+            (matches!(
+                ch,
+                '"' | '\''
+                    | '`'
+                    | '，'
+                    | '。'
+                    | '；'
+                    | '、'
+                    | '）'
+                    | '】'
+                    | '」'
+                    | '》'
+                    | '！'
+                    | '？'
+            ))
+            .then_some(start + offset)
+        })
+        .unwrap_or(value.len())
+}
+
+fn unsafe_token_end(value: &str, start: usize) -> usize {
+    value[start..]
+        .char_indices()
+        .find_map(|(offset, ch)| {
+            (ch.is_whitespace()
+                || matches!(
+                    ch,
+                    '"' | '\''
+                        | ')'
+                        | ']'
+                        | '}'
+                        | ','
+                        | ';'
+                        | '<'
+                        | '>'
+                        | '，'
+                        | '。'
+                        | '；'
+                        | '、'
+                        | '）'
+                        | '】'
+                        | '」'
+                        | '》'
+                        | '！'
+                        | '？'
+                ))
+            .then_some(start + offset)
+        })
+        .unwrap_or(value.len())
+}
+
+fn truncate_utf8(value: String, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &value[..end])
 }
 
 fn permission_decision_label(decision: &Decision) -> &'static str {
@@ -1034,17 +1935,18 @@ fn record_projection_contexts(
     session_id: SessionId,
     event: &ProjectedEnvelope,
 ) -> Result<(), JournalError> {
-    if let Some((tool_use_id, run_id)) = event.tool_context {
+    if let Some((tool_use_id, run_id, tool_name)) = event.tool_context.as_ref() {
         tx.execute(
             "INSERT OR IGNORE INTO conversation_projection_tool_context (
-                tenant_id, session_id, tool_use_id, run_id
+                tenant_id, session_id, tool_use_id, run_id, tool_name
              )
-             VALUES (?1, ?2, ?3, ?4)",
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 tenant_id.to_string(),
                 session_id.to_string(),
                 tool_use_id.to_string(),
                 run_id.to_string(),
+                tool_name,
             ],
         )
         .map_err(journal_error)?;
@@ -1091,6 +1993,27 @@ fn tool_context_run_id(
     run_id
         .map(|run_id| RunId::parse(&run_id).map_err(journal_error))
         .transpose()
+}
+
+fn tool_context_tool_name(
+    tx: &Transaction<'_>,
+    tenant_id: TenantId,
+    session_id: SessionId,
+    tool_use_id: ToolUseId,
+) -> Result<Option<String>, JournalError> {
+    tx.query_row(
+        "SELECT tool_name FROM conversation_projection_tool_context
+         WHERE tenant_id = ?1 AND session_id = ?2 AND tool_use_id = ?3",
+        params![
+            tenant_id.to_string(),
+            session_id.to_string(),
+            tool_use_id.to_string()
+        ],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(|value| value.flatten())
+    .map_err(journal_error)
 }
 
 fn permission_context_run_id(

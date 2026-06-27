@@ -16,6 +16,7 @@ use harness_contracts::{
     SandboxExitStatus, SandboxPolicySummary, Severity, TenantId, ToolCapability, ToolError,
     ToolResult, ToolUseId, UserMessageDelivery, WorkspaceAccess,
 };
+use harness_contracts::{RedactRules, Redactor};
 use harness_permission::{
     PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest, RuleSnapshot,
 };
@@ -143,6 +144,33 @@ async fn bash_executes_through_sandbox_and_returns_output() {
 }
 
 #[tokio::test]
+async fn bash_exec_context_uses_tool_context_redactor() {
+    let sandbox = Arc::new(FakeSandbox::new(
+        Bytes::from_static(b"hello\n"),
+        Bytes::new(),
+        SandboxExitStatus::Code(0),
+    ));
+    let tool = BashTool::default();
+    let mut ctx = tool_ctx_with_root(
+        CapabilityRegistry::default(),
+        Some(sandbox.clone()),
+        std::path::PathBuf::from("/workspace-root"),
+    );
+    ctx.redactor = Arc::new(MarkerRedactor);
+
+    let _ = execute_events(&tool, json!({ "command": "echo hello" }), ctx).await;
+
+    let contexts = sandbox.recorded_contexts();
+    assert_eq!(contexts.len(), 1);
+    assert_eq!(
+        contexts[0]
+            .redactor
+            .redact("secret value", &RedactRules::default()),
+        "redacted:secret value"
+    );
+}
+
+#[tokio::test]
 async fn bash_preserves_successful_outcome_when_after_execute_fails() {
     let sandbox = Arc::new(
         FakeSandbox::new(
@@ -212,8 +240,7 @@ async fn bash_large_stdout_is_offloaded_by_orchestrator_budget() {
         SandboxExitStatus::Code(0),
     ));
     let registry = ToolRegistry::builder()
-        .with_builtin_toolset(BuiltinToolset::Empty)
-        .with_tool(Box::new(BashTool::default()))
+        .with_builtin_toolset(BuiltinToolset::Shell)
         .build()
         .unwrap();
     let pool = ToolPool::assemble(
@@ -261,8 +288,7 @@ async fn bash_budget_overflow_stops_before_later_stdout_chunks_are_consumed() {
             ),
     );
     let registry = ToolRegistry::builder()
-        .with_builtin_toolset(BuiltinToolset::Empty)
-        .with_tool(Box::new(BashTool::default()))
+        .with_builtin_toolset(BuiltinToolset::Shell)
         .build()
         .unwrap();
     let pool = ToolPool::assemble(
@@ -613,7 +639,9 @@ fn default_builtin_toolset_registers_m3_t04b_tools_without_forbidden_deps() {
     let manifest =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
     #[cfg(not(feature = "minimax-tools"))]
-    assert!(!manifest.contains("jyowo-harness-model"));
+    assert!(!manifest.lines().any(|line| {
+        line.trim_start().starts_with("jyowo-harness-model =") && !line.contains("optional = true")
+    }));
     assert!(!manifest.contains("jyowo-harness-journal"));
     assert!(!manifest.contains("jyowo-harness-hook"));
 }
@@ -682,6 +710,7 @@ fn tool_ctx_with_root(
         sandbox,
         permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
+        redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
         parent_run: None,
     }
@@ -708,6 +737,7 @@ fn orchestrator_ctx(
             sandbox,
             permission_broker: Arc::new(AllowBroker),
             cap_registry: Arc::new(CapabilityRegistry::default()),
+            redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
             interrupt: InterruptToken::default(),
             parent_run: None,
         },
@@ -746,6 +776,14 @@ impl PermissionBroker for AllowBroker {
         _decision: harness_permission::PersistedDecision,
     ) -> Result<(), PermissionError> {
         Ok(())
+    }
+}
+
+struct MarkerRedactor;
+
+impl Redactor for MarkerRedactor {
+    fn redact(&self, input: &str, _rules: &RedactRules) -> String {
+        format!("redacted:{input}")
     }
 }
 

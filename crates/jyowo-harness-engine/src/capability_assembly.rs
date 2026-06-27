@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use harness_contracts::{BlobReaderCapAdapter, BlobStore, CapabilityRegistry, ToolCapability};
+use harness_contracts::{
+    BlobReaderCapAdapter, BlobStore, BlobWriterCapAdapter, CapabilityRegistry, ToolCapability,
+};
 use harness_journal::{EventStore, EventStoreOffloadedBlobAuthorizer};
 
 pub(crate) fn assemble_capability_registry(
@@ -15,6 +17,10 @@ pub(crate) fn assemble_capability_registry(
         registry.install::<dyn harness_contracts::BlobReaderCap>(
             ToolCapability::BlobReader,
             Arc::new(BlobReaderCapAdapter::new(Arc::clone(blob_store))),
+        );
+        registry.install::<dyn harness_contracts::BlobWriterCap>(
+            ToolCapability::BlobWriter,
+            Arc::new(BlobWriterCapAdapter::new(Arc::clone(blob_store))),
         );
         registry.install::<dyn harness_contracts::OffloadedBlobAuthorizerCap>(
             ToolCapability::OffloadedBlobAuthorizer,

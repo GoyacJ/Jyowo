@@ -1,10 +1,11 @@
 import '@testing-library/jest-dom/vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { appI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
 import type {
   CommandClient,
@@ -107,6 +108,43 @@ describe('ConversationWorkspace', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('renders a MiniMax-style worktree page without raw tool or artifact internals', async () => {
+    renderConversationWorkspace(
+      createMockCommandClient({
+        conversationWorktreePage: {
+          turns: [minimaxTurn()],
+          pageCursor: { turnId: 'turn:user-minimax', position: 0 },
+          eventCursor: cursor(9),
+          hasMoreBefore: false,
+          hasMoreAfter: false,
+          gap: false,
+        },
+      }),
+      'conversation-minimax',
+    )
+
+    expect(await screen.findByText('帮我生成一张海报图')).toBeInTheDocument()
+    expect(screen.getByText('正在检查可用的图像工具')).toBeInTheDocument()
+    expect(screen.getByText('MiniMaxTextToImage')).toBeInTheDocument()
+    expect(screen.getByText('工具执行失败。详情可在 Activity 中查看。')).toBeInTheDocument()
+    expect(screen.getByText('海报生成提示词')).toBeInTheDocument()
+    expect(screen.getByText('可复用的图像生成提示词已准备好。')).toBeInTheDocument()
+    expect(
+      screen.getByText('图像工具失败后，我保留了可复用的提示词和下一步建议。'),
+    ).toBeInTheDocument()
+
+    const renderedText = document.body.textContent ?? ''
+    for (const hiddenText of [
+      'raw provider failure',
+      '/Users/alice/private',
+      'secret-token',
+      'blob-secret',
+      'hash-secret',
+    ]) {
+      expect(renderedText).not.toContain(hiddenText)
+    }
+  })
+
   it('loads reference candidates for the selected conversation', async () => {
     const commandClient = createMockCommandClient({
       conversationWorktreePage: pageWithTurn('complete'),
@@ -204,6 +242,24 @@ describe('ConversationWorkspace', () => {
     )
   })
 
+  it('does not leak English timeline fallback labels in Chinese', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    try {
+      renderConversationWorkspace(createMockCommandClient(), 'conversation-001')
+
+      expect(
+        await screen.findByRole('heading', { name: 'Build the desktop foundation' }),
+      ).toBeInTheDocument()
+      const renderedText = document.body.textContent ?? ''
+
+      for (const leakedLabel of ['Tools', 'Approved', 'Complete', 'failed', 'View raw events']) {
+        expect(renderedText).not.toContain(leakedLabel)
+      }
+    } finally {
+      await appI18n.changeLanguage('en-US')
+    }
+  })
+
   it('submits an optimistic user turn and passes clientMessageId into startRun', async () => {
     const commandClient = createMockCommandClient({
       conversationWorktreePage: pageWithTurn('complete'),
@@ -244,6 +300,50 @@ describe('ConversationWorkspace', () => {
     })
 
     resolveStartRun?.({ runId: 'run-001', status: 'started' })
+  })
+
+  it('redacts unsafe optimistic user text while sending the raw prompt to Rust', async () => {
+    const commandClient = createMockCommandClient({
+      conversationWorktreePage: pageWithTurn('complete'),
+    })
+    const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
+    const trackedClient = {
+      ...commandClient,
+      startRun: (request: Parameters<CommandClient['startRun']>[0]) => {
+        startRunCalls.push(request)
+        return new Promise<StartRunResponse>(() => undefined)
+      },
+    } satisfies CommandClient
+
+    renderConversationWorkspace(trackedClient)
+
+    const prompt = 'Use token: abcdefghijklmnop from /Users/goya/.ssh/config'
+    fireEvent.change(
+      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
+      {
+        target: { value: prompt },
+      },
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await screen.findByText('[REDACTED]')
+    const optimisticTurn = screen
+      .getAllByRole('article', { name: 'Conversation turn' })
+      .find((turn) => within(turn).queryByText('[REDACTED]'))
+    expect(optimisticTurn).toBeDefined()
+    if (!optimisticTurn) {
+      throw new Error('missing optimistic redacted turn')
+    }
+    expect(within(optimisticTurn).getByText('[REDACTED]')).toBeInTheDocument()
+    expect(within(optimisticTurn).queryByText(prompt)).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(startRunCalls).toEqual([
+        expect.objectContaining({
+          prompt,
+          clientMessageId: expect.any(String),
+        }),
+      ])
+    })
   })
 
   it('clears active run state when a terminal event triggers a completed worktree refetch', async () => {
@@ -312,6 +412,7 @@ describe('ConversationWorkspace', () => {
       expect(pageConversationWorktree.mock.calls.length).toBeGreaterThan(1)
       expect(uiStore.getState().activeRunId).toBeUndefined()
     })
+    expect(screen.getByPlaceholderText('Ask Jyowo anything about this project...')).toBeEnabled()
   })
 
   it('cancels the current active run from the composer', async () => {
@@ -398,6 +499,70 @@ function turn(status: 'running' | 'complete'): ConversationTurn {
                 body: 'Finished.',
               },
             ],
+    },
+  }
+}
+
+function minimaxTurn(): ConversationTurn {
+  return {
+    id: 'turn:user-minimax',
+    conversationId: 'conversation-minimax',
+    position: 0,
+    user: {
+      id: 'user:user-minimax',
+      messageId: 'user-minimax',
+      body: '帮我生成一张海报图',
+      timestamp,
+    },
+    assistant: {
+      id: 'assistant:run-minimax',
+      runId: 'run-minimax',
+      status: 'complete',
+      segments: [
+        {
+          kind: 'thinking',
+          id: 'segment:thinking:run-minimax',
+          order: 0,
+          status: 'running',
+          summary: { text: '正在检查可用的图像工具' },
+        },
+        {
+          kind: 'toolGroup',
+          id: 'segment:tools:tool-minimax',
+          order: 1,
+          attempts: [
+            {
+              id: 'tool:tool-minimax',
+              order: 0,
+              toolUseId: 'tool-minimax',
+              toolName: 'MiniMaxTextToImage',
+              status: 'failed',
+              permission: {
+                id: 'permission:permission-minimax',
+                requestId: 'permission-minimax',
+                toolUseId: 'tool-minimax',
+                status: 'approved',
+              },
+              failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+            },
+          ],
+        },
+        {
+          kind: 'artifact',
+          id: 'segment:artifact:artifact-minimax',
+          order: 2,
+          artifactId: 'artifact-minimax',
+          title: '海报生成提示词',
+          summary: '可复用的图像生成提示词已准备好。',
+        },
+        {
+          kind: 'text',
+          id: 'segment:text:assistant-final',
+          order: 3,
+          messageId: 'assistant-final',
+          body: '图像工具失败后，我保留了可复用的提示词和下一步建议。',
+        },
+      ],
     },
   }
 }

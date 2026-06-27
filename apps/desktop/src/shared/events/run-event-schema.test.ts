@@ -49,6 +49,9 @@ describe('RunEvent schema', () => {
       ['permission_resolved', 'permission.resolved'],
       ['artifact_created', 'artifact.created'],
       ['artifact_updated', 'artifact.updated'],
+      ['assistant_review_requested', 'assistant.review.requested'],
+      ['assistant_clarification_requested', 'assistant.clarification.requested'],
+      ['assistant_notice', 'assistant.notice'],
       ['engine_failed', 'engine.failed'],
     ]
 
@@ -78,8 +81,151 @@ describe('RunEvent schema', () => {
       'permission.resolved',
       'artifact.created',
       'artifact.updated',
+      'assistant.review.requested',
+      'assistant.clarification.requested',
+      'assistant.notice',
       'engine.failed',
     ])
+  })
+
+  it('accepts safe assistant completed tool use metadata', () => {
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[3],
+        payload: {
+          body: 'Inspecting workspace files.',
+          messageId: 'msg-001',
+          toolUses: [
+            {
+              toolName: 'read_file',
+              toolUseId: 'tool-001',
+            },
+          ],
+        },
+      }),
+    ).not.toThrow()
+
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[3],
+        payload: {
+          messageId: 'msg-001',
+          toolUses: [],
+        },
+      }),
+    ).not.toThrow()
+
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[3],
+        payload: {
+          messageId: 'msg-001',
+          toolUses: [
+            {
+              toolName: 'sk-secretkey1234567890',
+              toolUseId: 'tool-001',
+            },
+          ],
+        },
+      }),
+    ).toThrow()
+  })
+
+  it('accepts assistant review, clarification, and notice timeline events', () => {
+    expect(
+      runEventsSchema
+        .parse([
+          {
+            id: 'evt-review',
+            conversationSequence: 12,
+            runId: 'run-001',
+            sequence: 12,
+            timestamp: '2026-06-17T00:00:00.000Z',
+            type: 'assistant.review.requested',
+            source: 'assistant',
+            visibility: 'public',
+            payload: {
+              requestId: '01HZ0000000000000000000001',
+              title: 'Review changes',
+              body: 'Confirm before applying.',
+            },
+          },
+          {
+            id: 'evt-clarification',
+            conversationSequence: 13,
+            runId: 'run-001',
+            sequence: 13,
+            timestamp: '2026-06-17T00:00:00.000Z',
+            type: 'assistant.clarification.requested',
+            source: 'assistant',
+            visibility: 'public',
+            payload: {
+              requestId: '01HZ0000000000000000000002',
+              prompt: 'Which style should I use?',
+            },
+          },
+          {
+            id: 'evt-notice',
+            conversationSequence: 14,
+            runId: 'run-001',
+            sequence: 14,
+            timestamp: '2026-06-17T00:00:00.000Z',
+            type: 'assistant.notice',
+            source: 'assistant',
+            visibility: 'public',
+            payload: {
+              noticeId: '01HZ0000000000000000000003',
+              body: 'Tool output was summarized.',
+            },
+          },
+        ])
+        .map((event) => event.type),
+    ).toEqual([
+      'assistant.review.requested',
+      'assistant.clarification.requested',
+      'assistant.notice',
+    ])
+  })
+
+  it('accepts assistant review requests without optional body text', () => {
+    const event = runEventSchema.parse({
+      id: 'evt-review',
+      conversationSequence: 12,
+      runId: 'run-001',
+      sequence: 12,
+      timestamp: '2026-06-17T00:00:00.000Z',
+      type: 'assistant.review.requested',
+      source: 'assistant',
+      visibility: 'public',
+      payload: {
+        requestId: '01HZ0000000000000000000001',
+        title: 'Review changes',
+      },
+    })
+
+    expect(event.payload).toEqual({
+      requestId: '01HZ0000000000000000000001',
+      title: 'Review changes',
+    })
+  })
+
+  it('rejects durable snake_case assistant segment event names at the raw event boundary', () => {
+    expect(() =>
+      runEventSchema.parse({
+        id: 'evt-review',
+        conversationSequence: 12,
+        runId: 'run-001',
+        sequence: 12,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'assistant_review_requested',
+        source: 'assistant',
+        visibility: 'public',
+        payload: {
+          requestId: '01HZ0000000000000000000001',
+          title: 'Review changes',
+        },
+      }),
+    ).toThrow()
   })
 
   it('accepts artifact lifecycle events without artifact content', () => {
@@ -102,6 +248,159 @@ describe('RunEvent schema', () => {
       artifactId: 'artifact-001',
       status: 'ready',
     })
+  })
+
+  it('accepts artifact lifecycle display metadata but not artifact content references', () => {
+    const event = runEventSchema.parse({
+      id: 'evt-artifact-updated',
+      conversationSequence: 13,
+      runId: 'run-001',
+      sequence: 13,
+      timestamp: '2026-06-17T00:00:00.000Z',
+      type: 'artifact.updated',
+      source: 'engine',
+      visibility: 'public',
+      payload: {
+        artifactId: 'artifact-001',
+        status: 'ready',
+        title: 'Generated image',
+        summary: 'Image artifact ready',
+        kind: 'image',
+        source: 'tool',
+        media: {
+          kind: 'image',
+          mimeType: 'image/png',
+          sizeBytes: 128,
+        },
+      },
+    })
+
+    expect(event.payload).toEqual({
+      artifactId: 'artifact-001',
+      status: 'ready',
+      title: 'Generated image',
+      summary: 'Image artifact ready',
+      kind: 'image',
+      source: 'tool',
+      media: {
+        kind: 'image',
+        mimeType: 'image/png',
+        sizeBytes: 128,
+      },
+    })
+
+    for (const unsafePayload of [
+      {
+        artifactId: 'artifact-001',
+        blobRef: 'blob-001',
+      },
+      {
+        artifactId: 'artifact-001',
+        media: {
+          kind: 'image',
+          mimeType: 'image/png',
+          sizeBytes: 128,
+          url: 'https://asset.example/image.png',
+        },
+      },
+      {
+        artifactId: 'artifact-001',
+        media: {
+          kind: 'image',
+          mimeType: 'image/png',
+          sizeBytes: 128,
+          path: '/Users/goya/.jyowo/runtime/blobs/private.png',
+        },
+      },
+    ]) {
+      expect(() =>
+        runEventSchema.parse({
+          id: 'evt-artifact-content',
+          conversationSequence: 14,
+          runId: 'run-001',
+          sequence: 14,
+          timestamp: '2026-06-17T00:00:00.000Z',
+          type: 'artifact.updated',
+          source: 'engine',
+          visibility: 'public',
+          payload: unsafePayload,
+        }),
+      ).toThrow()
+    }
+  })
+
+  it('rejects artifact lifecycle metadata containing private paths', () => {
+    expect(() =>
+      runEventSchema.parse({
+        id: 'evt-artifact-content',
+        conversationSequence: 14,
+        runId: 'run-001',
+        sequence: 14,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'artifact.updated',
+        source: 'engine',
+        visibility: 'public',
+        payload: {
+          artifactId: 'artifact-001',
+          title: '/Users/goya/private/image.png',
+        },
+      }),
+    ).toThrow()
+  })
+
+  it.each([
+    'image/svg+xml',
+    'IMAGE/PNG;name=/tmp/private.png',
+    'image/png/foo',
+    'video/sk-abcdefghijklmnopqrstuvwxyz0123456789',
+  ])('rejects unsafe artifact media MIME type %s', (mimeType) => {
+    expect(() =>
+      runEventSchema.parse({
+        id: 'evt-artifact-unsafe-mime',
+        conversationSequence: 14,
+        runId: 'run-001',
+        sequence: 14,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'artifact.updated',
+        source: 'engine',
+        visibility: 'public',
+        payload: {
+          artifactId: 'artifact-001',
+          media: {
+            kind: mimeType.startsWith('video/') ? 'video' : 'image',
+            mimeType,
+            sizeBytes: 128,
+          },
+        },
+      }),
+    ).toThrow()
+  })
+
+  it.each([
+    ['video', 'audio/mpeg'],
+    ['audio', 'video/mp4'],
+    ['file', 'image/png'],
+  ] as const)('rejects %s artifact media with %s MIME type', (kind, mimeType) => {
+    expect(() =>
+      runEventSchema.parse({
+        id: 'evt-artifact-mime-mismatch',
+        conversationSequence: 14,
+        runId: 'run-001',
+        sequence: 14,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'artifact.updated',
+        source: 'engine',
+        visibility: 'public',
+        payload: {
+          artifactId: 'artifact-001',
+          media: {
+            kind,
+            mimeType,
+            sizeBytes: 128,
+          },
+        },
+      }),
+    ).toThrow()
   })
 
   it('rejects non-v4 client message ids on user message events', () => {
@@ -148,6 +447,7 @@ describe('RunEvent schema', () => {
           requestId: '01HZ0000000000000000000001',
           severity: 'high',
           target: 'workspace command',
+          toolUseId: 'tool-001',
           workspaceBoundary: 'workspace://local',
         },
       }),
@@ -209,10 +509,43 @@ describe('RunEvent schema', () => {
         source: 'assistant',
         visibility: 'public',
         payload: {
+          messageId: 'msg-001',
           text: 'error(path=/Users/alice/.ssh/config)',
         },
       }),
     ).toThrow()
+  })
+
+  it('rejects unsafe display references in visible event payload text', () => {
+    for (const body of [
+      '下载：https://provider.example/signed',
+      'Inline data:image/svg+xml,<svg onload=alert(1)>',
+      'Action javascript:alert(1)',
+      'Contact mailto:admin@example.test',
+      '路径：.jyowo/runtime/blobs/blob-001',
+      '路径：.JYOWO/runtime/blobs/blob-001',
+      'log/tmp/provider-output',
+      'home~/secret',
+      'path=C:/Users/goya/private.txt',
+      'cache /var/tmp/provider-output',
+    ]) {
+      expect(() =>
+        runEventSchema.parse({
+          id: 'evt-unsafe-display-reference',
+          conversationSequence: 12,
+          runId: 'run-001',
+          sequence: 12,
+          timestamp: '2026-06-17T00:00:00.000Z',
+          type: 'assistant.notice',
+          source: 'assistant',
+          visibility: 'public',
+          payload: {
+            noticeId: '01HZ0000000000000000000001',
+            body,
+          },
+        }),
+      ).toThrow()
+    }
   })
 
   it('accepts redacted-safe usage summaries on run ended events', () => {
@@ -316,7 +649,25 @@ describe('RunEvent schema', () => {
     expect(() =>
       runEventSchema.parse({
         ...runEventFixtures[2],
-        payload: { text: 42 },
+        payload: { messageId: 'msg-001', text: 42 },
+      }),
+    ).toThrow()
+
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[2],
+        payload: { text: 'missing message id' },
+      }),
+    ).toThrow()
+
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[2],
+        type: 'assistant.thinking.delta',
+        payload: {
+          status: 'running',
+          text: 'raw private chain',
+        },
       }),
     ).toThrow()
 
@@ -335,7 +686,56 @@ describe('RunEvent schema', () => {
     ).toThrow()
   })
 
-  it('rejects free-form tool summaries and errors at the renderer boundary', () => {
+  it('accepts safe tool projection fields and rejects unsafe tool details', () => {
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[4],
+        payload: {
+          argumentsSummary: 'Input withheld from conversation timeline.',
+          command: 'pnpm check:desktop',
+          toolName: 'Bash',
+          toolUseId: 'tool-001',
+        },
+      }),
+    ).not.toThrow()
+
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[4],
+        payload: {
+          argumentsSummary: 'Input withheld from conversation timeline.',
+          query: 'ProcessPanel',
+          targetPath: 'apps/desktop/src/features/conversation/timeline/process-panel.tsx',
+          toolName: 'read_file',
+          toolUseId: 'tool-001',
+        },
+      }),
+    ).not.toThrow()
+
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[7],
+        payload: {
+          diff: {
+            files: [
+              {
+                path: 'apps/desktop/src/features/conversation/timeline/process-panel.tsx',
+                addedLines: 2,
+                removedLines: 1,
+                preview: '@@\n- old\n+ new',
+              },
+            ],
+          },
+          durationMs: 12,
+          exitCode: 0,
+          itemCount: 1,
+          outputSummary: 'desktop checks passed',
+          toolName: 'apply_patch',
+          toolUseId: 'tool-001',
+        },
+      }),
+    ).not.toThrow()
+
     expect(() =>
       runEventSchema.parse({
         ...runEventFixtures[4],
@@ -349,9 +749,21 @@ describe('RunEvent schema', () => {
 
     expect(() =>
       runEventSchema.parse({
+        ...runEventFixtures[4],
+        payload: {
+          argumentsSummary: 'Input withheld from conversation timeline.',
+          command: 'cat /Users/goya/.ssh/config',
+          toolName: 'Bash',
+          toolUseId: 'tool-001',
+        },
+      }),
+    ).toThrow()
+
+    expect(() =>
+      runEventSchema.parse({
         ...runEventFixtures[7],
         payload: {
-          outputSummary: 'read 4 files',
+          outputSummary: 'read /Users/goya/.ssh/config',
           toolUseId: 'tool-001',
         },
       }),
@@ -380,6 +792,7 @@ describe('RunEvent schema', () => {
         requestId: '01HZ0000000000000000000001',
         severity: 'high',
         target: 'workspace package manager',
+        toolUseId: 'tool-001',
         workspaceBoundary: 'workspace://local',
       },
     })
@@ -387,6 +800,7 @@ describe('RunEvent schema', () => {
     expect(event.payload).toMatchObject({
       operation: 'Install dependencies',
       target: 'workspace package manager',
+      toolUseId: 'tool-001',
     })
   })
 
@@ -562,7 +976,7 @@ describe('RunEvent schema', () => {
     expect(() =>
       runEventSchema.parse({
         ...runEventFixtures[2],
-        payload: { text: 'Do not render sk-secretkey1234567890' },
+        payload: { messageId: 'msg-001', text: 'Do not render sk-secretkey1234567890' },
       }),
     ).toThrow()
 

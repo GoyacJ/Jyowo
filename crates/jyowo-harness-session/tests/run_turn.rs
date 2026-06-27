@@ -1,6 +1,6 @@
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc,
+    Arc, Mutex as StdMutex,
 };
 use std::{future, time::Duration};
 
@@ -8,11 +8,12 @@ use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
-    BudgetMetric, CapabilityRegistry, DecidedBy, Decision, DecisionScope, DeferPolicy, Event,
-    HookEventKind, Message, MessagePart, MessageRole, ModelError, NoopRedactor, OverflowAction,
-    PermissionError, PermissionSubject, ProviderRestriction, ResultBudget, RunId, SessionId,
-    StopReason, TenantId, ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolUseId, TrustLevel, UsageSnapshot,
+    BudgetMetric, CapabilityRegistry, ClarifyAnswer, ClarifyChannelCap, ClarifyPrompt, DecidedBy,
+    Decision, DecisionScope, DeferPolicy, Event, HookEventKind, Message, MessagePart, MessageRole,
+    ModelError, NoopRedactor, OverflowAction, PermissionError, PermissionSubject,
+    ProviderRestriction, RedactRules, Redactor, ResultBudget, RunId, SessionId, StopReason,
+    TenantId, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
+    ToolResult, ToolUseId, TrustLevel, UsageSnapshot,
 };
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookHandler, HookOutcome, HookRegistry,
@@ -30,7 +31,9 @@ use harness_tool::{
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
+use tokio::sync::oneshot;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 
 #[tokio::test]
 async fn run_turn_executes_list_dir_with_formal_runtime() {
@@ -101,6 +104,94 @@ async fn run_turn_records_run_tool_permission_assistant_events() {
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::RunEnded(_))));
+}
+
+#[tokio::test]
+async fn run_turn_hook_payload_and_recent_messages_are_redacted() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let harness = TestHarness::new_with_hooks_and_redactor(
+        text_events("assistant secret-token"),
+        vec![Box::new(CaptureUserPromptHook {
+            captured: Arc::clone(&captured),
+        })],
+        Arc::new(SecretRedactor),
+    )
+    .await;
+
+    harness.session.run_turn("user secret-token").await.unwrap();
+    harness.model.replace_events(text_events("done")).await;
+    harness.session.run_turn("next secret-token").await.unwrap();
+
+    let captured = captured.lock().await.clone();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].prompt, "user [redacted]");
+    assert!(captured[0].recent_messages.is_empty());
+    assert_eq!(captured[1].prompt, "next [redacted]");
+    assert!(captured[1]
+        .recent_messages
+        .iter()
+        .any(|message| message.contains("user [redacted]")));
+    assert!(captured[1]
+        .recent_messages
+        .iter()
+        .any(|message| message.contains("assistant [redacted]")));
+    assert!(!captured[1]
+        .recent_messages
+        .iter()
+        .any(|message| message.contains("secret-token")));
+}
+
+#[tokio::test]
+async fn run_turn_persists_blocking_tool_journal_event_before_answer() {
+    let channel = BlockingClarifyChannel::new();
+    let mut caps = CapabilityRegistry::default();
+    let clarify: Arc<dyn ClarifyChannelCap> = Arc::new(channel.clone());
+    caps.install(ToolCapability::ClarifyChannel, clarify);
+    let harness = TestHarness::with_toolset_and_cap_registry(
+        tool_call_events("Clarify", json!({ "prompt": "Pick one" })),
+        BuiltinToolset::Clarification,
+        caps,
+    )
+    .await;
+
+    let run = tokio::spawn({
+        let session = harness.session.clone();
+        async move { session.run_turn("need clarification").await }
+    });
+    channel.wait_until_waiting().await;
+
+    let events = harness.events().await;
+    let permission_requested_index = events
+        .iter()
+        .position(|event| matches!(event, Event::PermissionRequested(_)))
+        .expect("permission request should be persisted");
+    let tool_approved_index = events
+        .iter()
+        .position(|event| matches!(event, Event::ToolUseApproved(_)))
+        .expect("tool approval should be persisted");
+    let clarification_index = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                Event::AssistantClarificationRequested(requested)
+                    if requested.prompt.as_str() == "Pick one"
+            )
+        })
+        .expect("clarification request should be persisted");
+
+    assert!(permission_requested_index < clarification_index);
+    assert!(tool_approved_index < clarification_index);
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            Event::AssistantClarificationRequested(requested)
+                if requested.prompt.as_str() == "Pick one"
+        )
+    }));
+
+    channel.answer("A");
+    run.await.unwrap().unwrap();
 }
 
 #[tokio::test]
@@ -280,25 +371,41 @@ struct TestHarness {
     tenant_id: TenantId,
     session_id: SessionId,
     store: Arc<InMemoryEventStore>,
-    session: Session,
+    session: Arc<Session>,
     model: Arc<RecordingModelProvider>,
     user_prompt_hooks: Arc<AtomicUsize>,
 }
 
 impl TestHarness {
     async fn new(events: Vec<ModelStreamEvent>) -> Self {
+        let user_prompt_hooks = Arc::new(AtomicUsize::new(0));
+        Self::new_with_hooks_and_redactor(
+            events,
+            vec![Box::new(CountingHook {
+                calls: user_prompt_hooks.clone(),
+            })],
+            Arc::new(harness_contracts::NoopRedactor),
+        )
+        .await
+        .with_user_prompt_hooks(user_prompt_hooks)
+    }
+
+    async fn new_with_hooks_and_redactor(
+        events: Vec<ModelStreamEvent>,
+        hooks: Vec<Box<dyn HookHandler>>,
+        redactor: Arc<dyn Redactor>,
+    ) -> Self {
         let workspace = tempfile::tempdir().unwrap();
         let tenant_id = TenantId::SINGLE;
         let session_id = SessionId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let model = Arc::new(RecordingModelProvider::new(events));
         let user_prompt_hooks = Arc::new(AtomicUsize::new(0));
-        let hooks = HookRegistry::builder()
-            .with_hook(Box::new(CountingHook {
-                calls: user_prompt_hooks.clone(),
-            }))
-            .build()
-            .unwrap();
+        let mut hook_builder = HookRegistry::builder();
+        for hook in hooks {
+            hook_builder = hook_builder.with_hook(hook);
+        }
+        let hooks = hook_builder.build().unwrap();
         let registry = ToolRegistry::builder()
             .with_builtin_toolset(BuiltinToolset::Custom(vec![Box::new(
                 TestListDirTool::new(),
@@ -329,23 +436,108 @@ impl TestHarness {
             permission_broker: Arc::new(AllowBroker),
             sandbox: None,
             cap_registry: Arc::new(CapabilityRegistry::default()),
+            redactor,
             blob_store: None,
             model_id: "mock-model".to_owned(),
             model_extra: serde_json::Value::Null,
             protocol: ModelProtocol::Messages,
             system_prompt: Some("system".to_owned()),
         };
-        let session = Session::builder()
-            .with_options(
-                SessionOptions::new(workspace.path())
-                    .with_tenant_id(tenant_id)
-                    .with_session_id(session_id),
-            )
-            .with_event_store(store.clone())
-            .with_turn_runtime(runtime)
+        let session = Arc::new(
+            Session::builder()
+                .with_options(
+                    SessionOptions::new(workspace.path())
+                        .with_tenant_id(tenant_id)
+                        .with_session_id(session_id),
+                )
+                .with_event_store(store.clone())
+                .with_turn_runtime(runtime)
+                .build()
+                .await
+                .unwrap(),
+        );
+
+        Self {
+            workspace,
+            tenant_id,
+            session_id,
+            store,
+            session,
+            model,
+            user_prompt_hooks,
+        }
+    }
+
+    fn with_user_prompt_hooks(mut self, user_prompt_hooks: Arc<AtomicUsize>) -> Self {
+        self.user_prompt_hooks = user_prompt_hooks;
+        self
+    }
+
+    async fn with_toolset_and_cap_registry(
+        events: Vec<ModelStreamEvent>,
+        builtin_toolset: BuiltinToolset,
+        cap_registry: CapabilityRegistry,
+    ) -> Self {
+        let workspace = tempfile::tempdir().unwrap();
+        let tenant_id = TenantId::SINGLE;
+        let session_id = SessionId::new();
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        let model = Arc::new(RecordingModelProvider::new(events));
+        let user_prompt_hooks = Arc::new(AtomicUsize::new(0));
+        let hooks = HookRegistry::builder()
+            .with_hook(Box::new(CountingHook {
+                calls: user_prompt_hooks.clone(),
+            }))
             .build()
-            .await
             .unwrap();
+        let registry = ToolRegistry::builder()
+            .with_builtin_toolset(builtin_toolset)
+            .build()
+            .unwrap();
+        let tools = ToolPool::assemble(
+            &registry.snapshot(),
+            &ToolPoolFilter::default(),
+            &ToolSearchMode::Disabled,
+            &ToolPoolModelProfile {
+                provider: harness_contracts::ModelProvider("mock".to_owned()),
+                max_context_tokens: Some(8_000),
+            },
+            &SchemaResolverContext {
+                run_id: RunId::new(),
+                session_id,
+                tenant_id,
+            },
+        )
+        .await
+        .unwrap();
+        let runtime = SessionTurnRuntime {
+            context: ContextEngine::builder().build().unwrap(),
+            hooks: HookDispatcher::new(hooks.snapshot()),
+            model: model.clone(),
+            tools,
+            permission_broker: Arc::new(AllowBroker),
+            sandbox: None,
+            cap_registry: Arc::new(cap_registry),
+            redactor: Arc::new(harness_contracts::NoopRedactor),
+            blob_store: None,
+            model_id: "mock-model".to_owned(),
+            model_extra: serde_json::Value::Null,
+            protocol: ModelProtocol::Messages,
+            system_prompt: Some("system".to_owned()),
+        };
+        let session = Arc::new(
+            Session::builder()
+                .with_options(
+                    SessionOptions::new(workspace.path())
+                        .with_tenant_id(tenant_id)
+                        .with_session_id(session_id),
+                )
+                .with_event_store(store.clone())
+                .with_turn_runtime(runtime)
+                .build()
+                .await
+                .unwrap(),
+        );
 
         Self {
             workspace,
@@ -366,6 +558,67 @@ impl TestHarness {
             .map(|envelope| envelope.payload)
             .collect()
             .await
+    }
+}
+
+#[derive(Clone)]
+struct BlockingClarifyChannel {
+    state: Arc<BlockingClarifyState>,
+}
+
+struct BlockingClarifyState {
+    waiting: Notify,
+    answer_sender: StdMutex<Option<oneshot::Sender<String>>>,
+}
+
+impl BlockingClarifyChannel {
+    fn new() -> Self {
+        Self {
+            state: Arc::new(BlockingClarifyState {
+                waiting: Notify::new(),
+                answer_sender: StdMutex::new(None),
+            }),
+        }
+    }
+
+    async fn wait_until_waiting(&self) {
+        self.state.waiting.notified().await;
+    }
+
+    fn answer(&self, answer: &str) {
+        let sender = self
+            .state
+            .answer_sender
+            .lock()
+            .unwrap()
+            .take()
+            .expect("blocking journal tool should be waiting");
+        sender
+            .send(answer.to_owned())
+            .expect("blocking journal tool receiver should be open");
+    }
+}
+
+impl ClarifyChannelCap for BlockingClarifyChannel {
+    fn ask(
+        &self,
+        _prompt: ClarifyPrompt,
+    ) -> futures::future::BoxFuture<'static, Result<ClarifyAnswer, ToolError>> {
+        let state = Arc::clone(&self.state);
+        let (sender, receiver) = oneshot::channel();
+        *state.answer_sender.lock().unwrap() = Some(sender);
+        Box::pin(async move {
+            state.waiting.notify_waiters();
+            match receiver.await {
+                Ok(answer) => Ok(ClarifyAnswer {
+                    answer,
+                    chosen_ids: Vec::new(),
+                }),
+                Err(_) => Err(ToolError::Message(
+                    "blocking journal answer sender dropped".to_owned(),
+                )),
+            }
+        })
     }
 }
 
@@ -488,6 +741,57 @@ impl HookHandler for CountingHook {
     ) -> Result<HookOutcome, harness_contracts::HookError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(HookOutcome::Continue)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CapturedUserPromptHook {
+    prompt: String,
+    recent_messages: Vec<String>,
+}
+
+struct CaptureUserPromptHook {
+    captured: Arc<Mutex<Vec<CapturedUserPromptHook>>>,
+}
+
+#[async_trait]
+impl HookHandler for CaptureUserPromptHook {
+    fn handler_id(&self) -> &'static str {
+        "capture-user-prompt"
+    }
+
+    fn interested_events(&self) -> &[HookEventKind] {
+        &[HookEventKind::UserPromptSubmit]
+    }
+
+    async fn handle(
+        &self,
+        event: HookEvent,
+        ctx: HookContext,
+    ) -> Result<HookOutcome, harness_contracts::HookError> {
+        let HookEvent::UserPromptSubmit { input, .. } = event else {
+            unreachable!("unexpected event");
+        };
+        let prompt = input["prompt"].as_str().unwrap_or_default().to_owned();
+        let recent_messages = ctx
+            .view
+            .recent_messages(8)
+            .into_iter()
+            .map(|message| message.text_snippet)
+            .collect();
+        self.captured.lock().await.push(CapturedUserPromptHook {
+            prompt,
+            recent_messages,
+        });
+        Ok(HookOutcome::Continue)
+    }
+}
+
+struct SecretRedactor;
+
+impl Redactor for SecretRedactor {
+    fn redact(&self, input: &str, _rules: &RedactRules) -> String {
+        input.replace("secret-token", "[redacted]")
     }
 }
 

@@ -234,6 +234,7 @@ fn tool_context(tenant_id: TenantId) -> ToolContext {
         sandbox: None,
         permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(CapabilityRegistry::default()),
+        redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::new(),
         parent_run: None,
     }

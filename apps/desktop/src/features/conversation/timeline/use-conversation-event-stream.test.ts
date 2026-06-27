@@ -25,4 +25,16 @@ describe('coalesceTimelineActions', () => {
       { type: 'worktreeRefreshRequested', immediate: true },
     ])
   })
+
+  it('collapses one frame of streaming updates but keeps terminal urgency', () => {
+    expect(
+      coalesceTimelineActions([
+        ...Array.from({ length: 100 }, () => ({
+          type: 'worktreeRefreshRequested' as const,
+          immediate: false,
+        })),
+        { type: 'worktreeRefreshRequested', immediate: true },
+      ]),
+    ).toEqual([{ type: 'worktreeRefreshRequested', immediate: true }])
+  })
 })

@@ -303,6 +303,7 @@ fn tool_ctx(agent_id: AgentId, cap_registry: CapabilityRegistry) -> ToolContext 
         sandbox: None,
         permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
+        redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
         parent_run: None,
     }

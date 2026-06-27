@@ -176,6 +176,10 @@ enum RecordedContentDelta {
         provider_native: Option<Value>,
         signature: Option<String>,
     },
+    ReasoningSummary {
+        text: String,
+        provider_native: Option<Value>,
+    },
     ToolUseStart {
         id: String,
         name: String,
@@ -317,6 +321,10 @@ impl From<ContentDelta> for RecordedContentDelta {
                 provider_native: thinking.provider_native,
                 signature: thinking.signature,
             },
+            ContentDelta::ReasoningSummary(summary) => Self::ReasoningSummary {
+                text: summary.text,
+                provider_native: summary.provider_native,
+            },
             ContentDelta::ToolUseStart { id, name } => Self::ToolUseStart { id, name },
             ContentDelta::ToolUseInputJson(json) => Self::ToolUseInputJson { json },
             ContentDelta::ToolUseComplete { id, name, input } => {
@@ -338,6 +346,13 @@ impl From<RecordedContentDelta> for ContentDelta {
                 text,
                 provider_native,
                 signature,
+            }),
+            RecordedContentDelta::ReasoningSummary {
+                text,
+                provider_native,
+            } => Self::ReasoningSummary(crate::ReasoningSummaryDelta {
+                text,
+                provider_native,
             }),
             RecordedContentDelta::ToolUseStart { id, name } => Self::ToolUseStart { id, name },
             RecordedContentDelta::ToolUseInputJson { json } => Self::ToolUseInputJson(json),

@@ -104,7 +104,7 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
   return (
     <section className="mx-auto grid h-full min-h-0 w-full max-w-[900px] grid-rows-[minmax(0,1fr)_auto]">
       <ConversationTimeline
-        blocks={timeline.blocks}
+        turns={timeline.turns}
         title={conversationTitle}
         onPermissionResolve={(request) => {
           void timeline.resolvePermission(request)

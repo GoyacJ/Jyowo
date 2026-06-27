@@ -30,7 +30,31 @@ function hasObviousUnredactedSecret(value: string): boolean {
 }
 
 function hasPrivateAbsolutePath(value: string): boolean {
-  return /(?:\/Users\/|\/home\/|\/private\/var\/|[A-Za-z]:\\)/.test(value)
+  return /(?:\/Users\/|\/home\/|\/private\/var\/|[A-Za-z]:[\\/])/.test(value)
+}
+
+function hasUnsafeUrl(value: string): boolean {
+  const schemeUrlPattern = /([A-Za-z][A-Za-z0-9+.-]*):\/\//g
+  let match = schemeUrlPattern.exec(value)
+  while (match !== null) {
+    if (match[1]?.toLowerCase() !== 'workspace') {
+      return true
+    }
+    match = schemeUrlPattern.exec(value)
+  }
+
+  return /(?:^|[^A-Za-z0-9_])(?:blob|data|file|javascript|mailto):/i.test(value)
+}
+
+function hasUnsafeDisplayReference(value: string): boolean {
+  return (
+    hasUnsafeUrl(value) ||
+    /(?:~[\\/]|\.jyowo[\\/])/i.test(value) ||
+    /(?:^|[^A-Za-z0-9_])(?:[A-Za-z]:[\\/])/.test(value) ||
+    /(?:\/Applications|\/Library|\/System|\/Users|\/Volumes|\/dev|\/etc|\/home|\/media|\/mnt|\/opt|\/private|\/root|\/run|\/tmp|\/usr|\/var)(?:[\\/]|$)/.test(
+      value,
+    )
+  )
 }
 
 const conversationDisplayTextSchema = z
@@ -40,6 +64,9 @@ const conversationDisplayTextSchema = z
   })
   .refine((value) => !hasPrivateAbsolutePath(value), {
     message: 'conversation message body must not contain private absolute paths',
+  })
+  .refine((value) => !hasUnsafeDisplayReference(value), {
+    message: 'conversation display text must not contain unsafe display references',
   })
 
 const appInfoSchema = z
@@ -350,6 +377,25 @@ const conversationTurnCursorSchema = z
   })
   .strict()
 
+const thinkingStepSchema = z
+  .object({
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    kind: z.enum([
+      'status',
+      'reasoningSummary',
+      'toolPlanning',
+      'toolResult',
+      'synthesis',
+      'withheld',
+    ]),
+    status: z.enum(['running', 'complete', 'failed', 'withheld']),
+    title: conversationDisplayTextSchema,
+    body: conversationDisplayTextSchema.optional(),
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
 const thinkingSegmentSchema = z
   .object({
     kind: z.literal('thinking'),
@@ -361,6 +407,7 @@ const thinkingSegmentSchema = z
         text: conversationDisplayTextSchema,
       })
       .strict(),
+    steps: z.array(thinkingStepSchema).optional(),
     eventRefs: z.array(conversationEventRefSchema).optional(),
   })
   .strict()
@@ -410,14 +457,176 @@ const toolGroupSegmentSchema = z
   })
   .strict()
 
+const artifactSegmentStatusSchema = z.enum(['failed', 'pending', 'ready', 'running'])
+const artifactSourceSchema = z.enum(['assistant', 'tool', 'file', 'model_service'])
+const artifactMediaKindSchema = z.enum(['image', 'video', 'audio', 'file'])
+const safeArtifactMimeTypeSchema = z.enum([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/ogg',
+  'audio/wav',
+  'audio/webm',
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'application/json',
+  'application/pdf',
+  'application/zip',
+  'application/octet-stream',
+])
+const safeArtifactImageMimeTypeSchema = z.enum([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+])
+const safeArtifactVideoMimeTypeSchema = z.enum(['video/mp4', 'video/webm', 'video/quicktime'])
+const safeArtifactAudioMimeTypeSchema = z.enum([
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/ogg',
+  'audio/wav',
+  'audio/webm',
+])
+const safeArtifactFileMimeTypeSchema = z.enum([
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'application/json',
+  'application/pdf',
+  'application/zip',
+  'application/octet-stream',
+])
+const artifactMediaPreviewSchema = z
+  .object({
+    kind: artifactMediaKindSchema,
+    mimeType: safeArtifactMimeTypeSchema,
+    sizeBytes: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((media, context) => {
+    const schemaByKind = {
+      audio: safeArtifactAudioMimeTypeSchema,
+      file: safeArtifactFileMimeTypeSchema,
+      image: safeArtifactImageMimeTypeSchema,
+      video: safeArtifactVideoMimeTypeSchema,
+    }
+    if (!schemaByKind[media.kind].safeParse(media.mimeType).success) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'artifact media metadata MIME type must match media kind',
+        path: ['mimeType'],
+      })
+    }
+  })
+
+const processDiffFileSchema = z
+  .object({
+    path: conversationDisplayTextSchema,
+    addedLines: z.number().int().nonnegative(),
+    removedLines: z.number().int().nonnegative(),
+    preview: conversationDisplayTextSchema.optional(),
+  })
+  .strict()
+
+const processStepDetailSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('activity'),
+      summary: conversationDisplayTextSchema,
+      itemCount: z.number().int().nonnegative().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('command'),
+      command: conversationDisplayTextSchema,
+      output: conversationDisplayTextSchema.optional(),
+      exitCode: z.number().int().optional(),
+      durationMs: z.number().int().nonnegative().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('diff'),
+      files: z.array(processDiffFileSchema),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('tool'),
+      toolName: conversationDisplayTextSchema,
+      outputSummary: conversationDisplayTextSchema.optional(),
+      durationMs: z.number().int().nonnegative().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('artifact'),
+      artifactId: z.string().min(1),
+      media: artifactMediaPreviewSchema,
+    })
+    .strict(),
+])
+
+const processStepSchema = z
+  .object({
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    kind: z.enum([
+      'reasoning',
+      'activity',
+      'command',
+      'fileRead',
+      'fileSearch',
+      'fileEdit',
+      'diff',
+      'tool',
+      'artifact',
+      'synthesis',
+      'withheld',
+    ]),
+    status: z.enum(['running', 'complete', 'failed', 'withheld']),
+    title: conversationDisplayTextSchema,
+    body: conversationDisplayTextSchema.optional(),
+    detail: processStepDetailSchema.optional(),
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const processSegmentSchema = z
+  .object({
+    kind: z.literal('process'),
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    status: z.enum(['running', 'complete', 'failed', 'cancelled', 'withheld']),
+    summary: conversationDisplayTextSchema,
+    steps: z.array(processStepSchema).optional(),
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
 const artifactSegmentSchema = z
   .object({
     kind: z.literal('artifact'),
     id: z.string().min(1),
     order: z.number().int().nonnegative(),
     artifactId: z.string().min(1),
+    artifactKind: z.string().min(1).optional(),
+    status: artifactSegmentStatusSchema.optional(),
+    source: artifactSourceSchema.optional(),
     title: conversationDisplayTextSchema,
     summary: conversationDisplayTextSchema.optional(),
+    media: artifactMediaPreviewSchema.optional(),
     eventRefs: z.array(conversationEventRefSchema).optional(),
   })
   .strict()
@@ -466,6 +675,7 @@ const errorSegmentSchema = z
   .strict()
 
 const assistantSegmentSchema = z.discriminatedUnion('kind', [
+  processSegmentSchema,
   thinkingSegmentSchema,
   textSegmentSchema,
   toolGroupSegmentSchema,
@@ -585,23 +795,30 @@ const exportSupportBundleResponseSchema = z
   })
   .strict()
 
-const artifactStatusSchema = z.enum(['failed', 'pending', 'ready', 'running'])
+const artifactStatusSchema = artifactSegmentStatusSchema
 const maxArtifactPreviewBytes = 16 * 1024
 const artifactPreviewSchema = z
   .string()
+  .refine((value) => !hasObviousUnredactedSecret(value), {
+    message: 'Artifact preview must not contain obvious unredacted secrets',
+  })
+  .refine((value) => !hasUnsafeDisplayReference(value), {
+    message: 'Artifact preview must not contain unsafe display references',
+  })
   .refine((value) => new TextEncoder().encode(value).byteLength <= maxArtifactPreviewBytes, {
     message: `Artifact preview must be at most ${maxArtifactPreviewBytes} UTF-8 bytes`,
   })
+const artifactDisplayTextSchema = conversationDisplayTextSchema
 
 const artifactSummarySchema = z
   .object({
-    actionLabel: z.string().min(1),
-    description: z.string(),
+    actionLabel: artifactDisplayTextSchema.min(1),
+    description: artifactDisplayTextSchema,
     id: z.string().min(1),
-    kind: z.string().min(1),
+    kind: artifactDisplayTextSchema.min(1),
     preview: artifactPreviewSchema.optional(),
     status: artifactStatusSchema,
-    title: z.string().min(1),
+    title: artifactDisplayTextSchema.min(1),
   })
   .strict()
 
@@ -614,6 +831,36 @@ const listArtifactsRequestSchema = z
 const listArtifactsResponseSchema = z
   .object({
     artifacts: z.array(artifactSummarySchema),
+  })
+  .strict()
+
+const getArtifactMediaPreviewRequestSchema = z
+  .object({
+    conversationId: z.string().min(1),
+    artifactId: z.string().min(1),
+  })
+  .strict()
+
+const maxArtifactMediaPreviewBytes = 10 * 1024 * 1024
+const maxArtifactMediaPreviewDataUrlBytes = Math.ceil(maxArtifactMediaPreviewBytes * 1.4) + 128
+const artifactMediaPreviewDataUrlSchema = z
+  .string()
+  .max(maxArtifactMediaPreviewDataUrlBytes)
+  .regex(/^data:image\/(?:png|jpeg|gif|webp|avif);base64,[A-Za-z0-9+/]+={0,2}$/, {
+    message: 'artifact image preview must be an image data URL',
+  })
+  .refine((value) => !hasObviousUnredactedSecret(value), {
+    message: 'artifact image preview must not contain obvious unredacted secrets',
+  })
+  .refine((value) => !hasPrivateAbsolutePath(value), {
+    message: 'artifact image preview must not contain private absolute paths',
+  })
+
+const getArtifactMediaPreviewResponseSchema = z
+  .object({
+    dataUrl: artifactMediaPreviewDataUrlSchema,
+    mimeType: safeArtifactImageMimeTypeSchema,
+    sizeBytes: z.number().int().nonnegative().max(maxArtifactMediaPreviewBytes),
   })
   .strict()
 
@@ -889,6 +1136,7 @@ const mcpServerStatusSchema = z.enum([
   'closed',
   'configured',
   'connecting',
+  'disabled',
   'failed',
   'ready',
   'reconnecting',
@@ -896,12 +1144,40 @@ const mcpServerStatusSchema = z.enum([
 
 const mcpServerOriginSchema = z.enum(['managed', 'plugin', 'policy', 'user', 'workspace'])
 
+const mcpDiagnosticSeveritySchema = z.enum(['info', 'warning', 'error'])
+
+const mcpDiagnosticSummarySchema = z
+  .string()
+  .min(1)
+  .refine((value) => !hasObviousUnredactedSecret(value), {
+    message: 'MCP diagnostic summary must not contain obvious unredacted secrets',
+  })
+  .refine((value) => !hasPrivateAbsolutePath(value), {
+    message: 'MCP diagnostic summary must not contain private absolute paths',
+  })
+
+const mcpDiagnosticRecordSchema = z
+  .object({
+    eventType: z.string().min(1),
+    id: z.string().min(1),
+    serverId: mcpServerIdSchema,
+    severity: mcpDiagnosticSeveritySchema,
+    summary: mcpDiagnosticSummarySchema,
+    timestamp: z.string().min(1),
+  })
+  .strict()
+
 const mcpServerSummarySchema = z
   .object({
     displayName: z.string().min(1),
+    enabled: z.boolean(),
     exposedToolCount: z.number().int().min(0),
     id: mcpServerIdSchema,
+    lastDiagnostic: mcpDiagnosticSummarySchema.optional(),
+    lastDiagnosticAt: z.string().min(1).optional(),
+    lastDiagnosticSeverity: mcpDiagnosticSeveritySchema.optional(),
     lastError: z.string().min(1).optional(),
+    manageable: z.boolean(),
     origin: mcpServerOriginSchema,
     scope: mcpServerScopeSchema,
     status: mcpServerStatusSchema,
@@ -915,17 +1191,91 @@ const listMcpServersResponseSchema = z
   })
   .strict()
 
-const mcpServerTransportRequestSchema = z
+const mcpEnvVarNameSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
+
+function isSensitiveEnvName(value: string): boolean {
+  return /(?:auth|api_?key|authorization|bearer|password|secret|token)/i.test(value)
+}
+
+function isSensitiveHeaderName(value: string): boolean {
+  return /^(?:authorization|cookie|set-cookie|proxy-authorization)$/i.test(value.trim())
+}
+
+const mcpNameValueRecordSchema = z
   .object({
-    args: z.array(z.string()).max(64),
-    command: z.string().trim().min(1),
-    kind: z.literal('stdio'),
+    key: z.string().trim().min(1),
+    value: z.string(),
   })
   .strict()
+
+const mcpStdioEnvRecordSchema = mcpNameValueRecordSchema
+  .refine((record) => mcpEnvVarNameSchema.safeParse(record.key).success, {
+    message: 'MCP stdio env key must be an environment variable name',
+  })
+  .refine((record) => !isSensitiveEnvName(record.key), {
+    message: 'MCP stdio inline env must not contain secret-bearing keys',
+  })
+  .refine((record) => !hasObviousUnredactedSecret(record.value), {
+    message: 'MCP stdio inline env must not contain obvious unredacted secrets',
+  })
+
+const mcpHttpHeaderRecordSchema = mcpNameValueRecordSchema
+  .refine((record) => !isSensitiveHeaderName(record.key), {
+    message: 'MCP static headers must not contain sensitive header names',
+  })
+  .refine((record) => !hasObviousUnredactedSecret(record.value), {
+    message: 'MCP static headers must not contain obvious unredacted secrets',
+  })
+
+const mcpHeaderEnvRecordSchema = z
+  .object({
+    envVar: mcpEnvVarNameSchema,
+    key: z.string().trim().min(1),
+  })
+  .strict()
+  .refine((record) => !isSensitiveHeaderName(record.key), {
+    message: 'MCP headers from env must not contain sensitive header names',
+  })
+
+const mcpStdioTransportRequestSchema = z
+  .object({
+    args: z.array(z.string()).max(64).default([]),
+    command: z.string().trim().min(1),
+    env: z.array(mcpStdioEnvRecordSchema).max(64).default([]),
+    inheritEnv: z.array(mcpEnvVarNameSchema).max(128).default([]),
+    kind: z.literal('stdio'),
+    workingDir: z.string().trim().min(1).optional(),
+  })
+  .strict()
+
+const mcpHttpTransportRequestSchema = z
+  .object({
+    bearerTokenEnvVar: mcpEnvVarNameSchema.optional(),
+    headers: z.array(mcpHttpHeaderRecordSchema).max(64).default([]),
+    headersFromEnv: z.array(mcpHeaderEnvRecordSchema).max(64).default([]),
+    kind: z.literal('http'),
+    url: z
+      .string()
+      .trim()
+      .url()
+      .refine((value) => /^https?:\/\//i.test(value), {
+        message: 'MCP HTTP URL must use http or https',
+      }),
+  })
+  .strict()
+
+const mcpServerTransportRequestSchema = z.discriminatedUnion('kind', [
+  mcpStdioTransportRequestSchema,
+  mcpHttpTransportRequestSchema,
+])
 
 const saveMcpServerRequestSchema = z
   .object({
     displayName: z.string().trim().min(1),
+    enabled: z.boolean().default(true),
     id: mcpServerIdSchema,
     scope: mcpServerScopeSchema,
     transport: mcpServerTransportRequestSchema,
@@ -935,6 +1285,28 @@ const saveMcpServerRequestSchema = z
 const saveMcpServerResponseSchema = z
   .object({
     server: mcpServerSummarySchema,
+  })
+  .strict()
+
+const mcpServerConfigSchema = z
+  .object({
+    displayName: z.string().trim().min(1),
+    enabled: z.boolean(),
+    id: mcpServerIdSchema,
+    scope: mcpServerScopeSchema,
+    transport: mcpServerTransportRequestSchema,
+  })
+  .strict()
+
+const getMcpServerConfigRequestSchema = z
+  .object({
+    id: mcpServerIdSchema,
+  })
+  .strict()
+
+const getMcpServerConfigResponseSchema = z
+  .object({
+    server: mcpServerConfigSchema,
   })
   .strict()
 
@@ -951,11 +1323,107 @@ const deleteMcpServerResponseSchema = z
   })
   .strict()
 
+const setMcpServerEnabledRequestSchema = z
+  .object({
+    enabled: z.boolean(),
+    id: mcpServerIdSchema,
+  })
+  .strict()
+
+const setMcpServerEnabledResponseSchema = z
+  .object({
+    server: mcpServerSummarySchema,
+  })
+  .strict()
+
+const restartMcpServerRequestSchema = z
+  .object({
+    id: mcpServerIdSchema,
+  })
+  .strict()
+
+const restartMcpServerResponseSchema = z
+  .object({
+    server: mcpServerSummarySchema,
+  })
+  .strict()
+
+const listMcpDiagnosticsRequestSchema = z
+  .object({
+    serverId: mcpServerIdSchema.optional(),
+  })
+  .strict()
+
+const listMcpDiagnosticsResponseSchema = z
+  .object({
+    events: z.array(mcpDiagnosticRecordSchema),
+  })
+  .strict()
+
+const clearMcpDiagnosticsRequestSchema = listMcpDiagnosticsRequestSchema
+
+const clearMcpDiagnosticsResponseSchema = z
+  .object({
+    status: z.literal('cleared'),
+  })
+  .strict()
+
+const subscribeMcpDiagnosticsRequestSchema = listMcpDiagnosticsRequestSchema
+
+const subscribeMcpDiagnosticsResponseSchema = z
+  .object({
+    replayEvents: z.array(mcpDiagnosticRecordSchema),
+    serverId: mcpServerIdSchema.optional(),
+    subscriptionId: z.string().min(1),
+  })
+  .strict()
+
+const unsubscribeMcpDiagnosticsRequestSchema = z
+  .object({
+    subscriptionId: z.string().min(1),
+  })
+  .strict()
+
+const unsubscribeMcpDiagnosticsResponseSchema = z
+  .object({
+    status: z.enum(['alreadyClosed', 'unsubscribed']),
+    subscriptionId: z.string().min(1),
+  })
+  .strict()
+
+const mcpDiagnosticBatchPayloadSchema = z
+  .object({
+    events: z.array(mcpDiagnosticRecordSchema),
+    phase: z.literal('live'),
+    serverId: mcpServerIdSchema.optional(),
+    subscriptionId: z.string().min(1),
+  })
+  .strict()
+
 const skillIdSchema = z.string().trim().min(1)
 const skillSourceKindSchema = z.enum(['workspace', 'user', 'bundled', 'plugin', 'mcp'])
 const skillStatusSchema = z.enum(['ready', 'prerequisite_missing', 'disabled', 'rejected'])
 const skillParamTypeSchema = z.enum(['string', 'number', 'boolean', 'path', 'url'])
 const skillFileKindSchema = z.enum(['directory', 'file'])
+const skillCatalogSourceIdSchema = z.enum([
+  'anthropic',
+  'agent-skills-spec',
+  'awesome-agent-skills',
+  'clawhub',
+])
+const skillCatalogTrustLevelSchema = z.enum(['official', 'standard', 'curated', 'community'])
+
+const skillInstallOriginSchema = z
+  .object({
+    commitSha: z.string().min(1).optional(),
+    entryId: z.string().trim().min(1),
+    homepageUrl: z.url().optional(),
+    installedFromCatalog: z.literal(true),
+    sourceId: skillCatalogSourceIdSchema,
+    sourceLabel: z.string().min(1),
+    version: z.string().min(1).optional(),
+  })
+  .strict()
 
 const skillSummarySchema = z
   .object({
@@ -966,6 +1434,7 @@ const skillSummarySchema = z
     importedAt: z.string().datetime({ offset: true }).optional(),
     manageable: z.boolean(),
     name: z.string().min(1),
+    origin: skillInstallOriginSchema.optional(),
     sourceKind: skillSourceKindSchema,
     status: skillStatusSchema,
     tags: z.array(z.string()),
@@ -1077,6 +1546,94 @@ const deleteSkillResponseSchema = z
   .object({
     id: skillIdSchema,
     status: z.literal('deleted'),
+  })
+  .strict()
+
+const skillCatalogSourceSchema = z
+  .object({
+    description: z.string(),
+    id: skillCatalogSourceIdSchema,
+    installable: z.boolean(),
+    label: z.string().min(1),
+    trustLevel: skillCatalogTrustLevelSchema,
+  })
+  .strict()
+
+const skillCatalogEntrySchema = z
+  .object({
+    description: z.string(),
+    entryId: z.string().trim().min(1),
+    homepageUrl: z.url().optional(),
+    installable: z.boolean(),
+    installed: z.boolean(),
+    name: z.string().min(1),
+    sourceId: skillCatalogSourceIdSchema,
+    sourceLabel: z.string().min(1),
+    tags: z.array(z.string()),
+    trustLevel: skillCatalogTrustLevelSchema,
+    version: z.string().min(1).optional(),
+  })
+  .strict()
+
+const skillCatalogValidationSchema = z
+  .object({
+    issues: z.array(z.string()),
+    status: z.enum(['ready', 'warning', 'blocked']),
+  })
+  .strict()
+
+const listSkillCatalogSourcesResponseSchema = z
+  .object({
+    sources: z.array(skillCatalogSourceSchema),
+  })
+  .strict()
+
+const listSkillCatalogEntriesRequestSchema = z
+  .object({
+    cursor: z.string().trim().min(1).optional(),
+    query: z.string().trim().optional(),
+    sort: z.enum(['recommended', 'updated', 'downloads', 'trending']).optional(),
+    sourceId: skillCatalogSourceIdSchema,
+  })
+  .strict()
+
+const listSkillCatalogEntriesResponseSchema = z
+  .object({
+    entries: z.array(skillCatalogEntrySchema),
+    nextCursor: z.string().min(1).optional(),
+  })
+  .strict()
+
+const getSkillCatalogEntryRequestSchema = z
+  .object({
+    entryId: z.string().trim().min(1),
+    sourceId: skillCatalogSourceIdSchema,
+    version: z.string().trim().min(1).optional(),
+  })
+  .strict()
+
+const skillCatalogFileSchema = z
+  .object({
+    kind: skillFileKindSchema,
+    path: z.string().min(1),
+    sizeBytes: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+
+const getSkillCatalogEntryResponseSchema = z
+  .object({
+    entry: skillCatalogEntrySchema,
+    files: z.array(skillCatalogFileSchema).optional(),
+    readmePreview: z.string().optional(),
+    validation: skillCatalogValidationSchema,
+  })
+  .strict()
+
+const installSkillFromCatalogRequestSchema = getSkillCatalogEntryRequestSchema
+
+const installSkillFromCatalogResponseSchema = z
+  .object({
+    skill: skillSummarySchema,
   })
   .strict()
 
@@ -1255,11 +1812,26 @@ const switchProjectResponseSchema = z
   })
   .strict()
 
+const deleteProjectRequestSchema = z
+  .object({
+    path: z.string().min(1),
+  })
+  .strict()
+
+const deleteProjectResponseSchema = z
+  .object({
+    activePath: z.string().min(1).nullable(),
+    path: z.string().min(1),
+    status: z.literal('deleted'),
+  })
+  .strict()
+
 export type AppInfo = z.infer<typeof appInfoSchema>
 export type HarnessHealthcheck = z.infer<typeof harnessHealthcheckSchema>
 export type ListConversationsResponse = z.infer<typeof listConversationsResponseSchema>
 export type ListProjectsResponse = z.infer<typeof listProjectsResponseSchema>
 export type SwitchProjectResponse = z.infer<typeof switchProjectResponseSchema>
+export type DeleteProjectResponse = z.infer<typeof deleteProjectResponseSchema>
 export type CreateConversationResponse = z.infer<typeof createConversationResponseSchema>
 export type GetConversationResponse = z.infer<typeof getConversationResponseSchema>
 export type DeleteConversationResponse = z.infer<typeof deleteConversationResponseSchema>
@@ -1295,6 +1867,8 @@ export type TextSegment = z.infer<typeof textSegmentSchema>
 export type ToolPermissionState = z.infer<typeof toolPermissionStateSchema>
 export type ToolAttempt = z.infer<typeof toolAttemptSchema>
 export type ToolGroupSegment = z.infer<typeof toolGroupSegmentSchema>
+export type ProcessSegment = z.infer<typeof processSegmentSchema>
+export type ProcessStep = z.infer<typeof processStepSchema>
 export type ArtifactSegment = z.infer<typeof artifactSegmentSchema>
 export type ReviewRequestSegment = z.infer<typeof reviewRequestSegmentSchema>
 export type ClarificationRequestSegment = z.infer<typeof clarificationRequestSegmentSchema>
@@ -1318,6 +1892,8 @@ export type ConversationEventBatchPayload = z.infer<typeof conversationEventBatc
 export type ExportSupportBundleRequest = z.infer<typeof exportSupportBundleRequestSchema>
 export type ExportSupportBundleResponse = z.infer<typeof exportSupportBundleResponseSchema>
 export type ListArtifactsResponse = z.infer<typeof listArtifactsResponseSchema>
+export type GetArtifactMediaPreviewRequest = z.infer<typeof getArtifactMediaPreviewRequestSchema>
+export type GetArtifactMediaPreviewResponse = z.infer<typeof getArtifactMediaPreviewResponseSchema>
 export type GetContextSnapshotRequest = z.infer<typeof getContextSnapshotRequestSchema>
 export type GetContextSnapshotResponse = z.infer<typeof getContextSnapshotResponseSchema>
 export type ProviderSettingsRequest = z.infer<typeof providerSettingsRequestSchema>
@@ -1341,18 +1917,40 @@ export type SetConversationModelConfigResponse = z.infer<
   typeof setConversationModelConfigResponseSchema
 >
 export type McpServerSummary = z.infer<typeof mcpServerSummarySchema>
+export type McpServerConfig = z.infer<typeof mcpServerConfigSchema>
 export type ListMcpServersResponse = z.infer<typeof listMcpServersResponseSchema>
-export type SaveMcpServerRequest = z.infer<typeof saveMcpServerRequestSchema>
+export type GetMcpServerConfigResponse = z.infer<typeof getMcpServerConfigResponseSchema>
+export type SaveMcpServerRequest = z.input<typeof saveMcpServerRequestSchema>
 export type SaveMcpServerResponse = z.infer<typeof saveMcpServerResponseSchema>
 export type DeleteMcpServerResponse = z.infer<typeof deleteMcpServerResponseSchema>
+export type SetMcpServerEnabledResponse = z.infer<typeof setMcpServerEnabledResponseSchema>
+export type RestartMcpServerResponse = z.infer<typeof restartMcpServerResponseSchema>
+export type McpDiagnosticRecord = z.infer<typeof mcpDiagnosticRecordSchema>
+export type ListMcpDiagnosticsResponse = z.infer<typeof listMcpDiagnosticsResponseSchema>
+export type ClearMcpDiagnosticsResponse = z.infer<typeof clearMcpDiagnosticsResponseSchema>
+export type SubscribeMcpDiagnosticsRequest = z.infer<typeof subscribeMcpDiagnosticsRequestSchema>
+export type SubscribeMcpDiagnosticsResponse = z.infer<typeof subscribeMcpDiagnosticsResponseSchema>
+export type UnsubscribeMcpDiagnosticsResponse = z.infer<
+  typeof unsubscribeMcpDiagnosticsResponseSchema
+>
+export type McpDiagnosticBatchPayload = z.infer<typeof mcpDiagnosticBatchPayloadSchema>
 export type SkillSummary = z.infer<typeof skillSummarySchema>
 export type SkillFile = z.infer<typeof skillFileSchema>
+export type SkillCatalogSource = z.infer<typeof skillCatalogSourceSchema>
+export type SkillCatalogEntry = z.infer<typeof skillCatalogEntrySchema>
+export type ListSkillCatalogEntriesRequest = z.infer<typeof listSkillCatalogEntriesRequestSchema>
+export type GetSkillCatalogEntryRequest = z.infer<typeof getSkillCatalogEntryRequestSchema>
+export type InstallSkillFromCatalogRequest = z.infer<typeof installSkillFromCatalogRequestSchema>
 export type ListSkillsResponse = z.infer<typeof listSkillsResponseSchema>
 export type GetSkillDetailResponse = z.infer<typeof getSkillDetailResponseSchema>
 export type GetSkillFileResponse = z.infer<typeof getSkillFileResponseSchema>
 export type ImportSkillResponse = z.infer<typeof importSkillResponseSchema>
 export type SetSkillEnabledResponse = z.infer<typeof setSkillEnabledResponseSchema>
 export type DeleteSkillResponse = z.infer<typeof deleteSkillResponseSchema>
+export type ListSkillCatalogSourcesResponse = z.infer<typeof listSkillCatalogSourcesResponseSchema>
+export type ListSkillCatalogEntriesResponse = z.infer<typeof listSkillCatalogEntriesResponseSchema>
+export type GetSkillCatalogEntryResponse = z.infer<typeof getSkillCatalogEntryResponseSchema>
+export type InstallSkillFromCatalogResponse = z.infer<typeof installSkillFromCatalogResponseSchema>
 export type MemoryItemSummary = z.infer<typeof memoryItemSummarySchema>
 export type ListMemoryItemsResponse = z.infer<typeof listMemoryItemsResponseSchema>
 export type GetMemoryItemResponse = z.infer<typeof getMemoryItemResponseSchema>
@@ -1378,28 +1976,40 @@ export interface CommandClient {
   getAppInfo: () => Promise<AppInfo>
   getHarnessHealthcheck: () => Promise<HarnessHealthcheck>
   getMemoryItem: (id: string) => Promise<GetMemoryItemResponse>
+  getMcpServerConfig: (id: string) => Promise<GetMcpServerConfigResponse>
   getProviderConfigApiKey: (
     configId: string,
     revealToken: string,
   ) => Promise<GetProviderConfigApiKeyResponse>
   getReplayTimeline: (request: ReplayTimelineRequest) => Promise<ReplayTimelineResponse>
+  getSkillCatalogEntry: (
+    request: GetSkillCatalogEntryRequest,
+  ) => Promise<GetSkillCatalogEntryResponse>
   getSkillDetail: (id: string) => Promise<GetSkillDetailResponse>
   getSkillFile: (id: string, path: string) => Promise<GetSkillFileResponse>
   importSkill: (sourcePath: string) => Promise<ImportSkillResponse>
+  installSkillFromCatalog: (
+    request: InstallSkillFromCatalogRequest,
+  ) => Promise<InstallSkillFromCatalogResponse>
   exportMemoryItems: () => Promise<ExportMemoryItemsResponse>
   exportSupportBundle: (request: ExportSupportBundleRequest) => Promise<ExportSupportBundleResponse>
   getExecutionSettings: () => Promise<GetExecutionSettingsResponse>
   listActivity: (request: ListActivityRequest) => Promise<ListActivityResponse>
   listArtifacts: (request: ListArtifactsRequest) => Promise<ListArtifactsResponse>
+  getArtifactMediaPreview: (
+    request: GetArtifactMediaPreviewRequest,
+  ) => Promise<GetArtifactMediaPreviewResponse>
   listConversations: () => Promise<ListConversationsResponse>
   listEvalCases: () => Promise<ListEvalCasesResponse>
   listModelProviderCatalog: () => Promise<ModelProviderCatalogResponse>
+  listMcpDiagnostics: (serverId?: string) => Promise<ListMcpDiagnosticsResponse>
   listMcpServers: () => Promise<ListMcpServersResponse>
   listMemoryItems: () => Promise<ListMemoryItemsResponse>
   listProviderSettings: () => Promise<ListProviderSettingsResponse>
   listProjects: () => Promise<ListProjectsResponse>
   addProject: (path: string) => Promise<SwitchProjectResponse>
   switchProject: (path: string) => Promise<SwitchProjectResponse>
+  deleteProject: (path: string) => Promise<DeleteProjectResponse>
   pageConversationTimeline: (
     request: PageConversationTimelineRequest,
   ) => Promise<PageConversationTimelineResponse>
@@ -1409,6 +2019,10 @@ export interface CommandClient {
   listReferenceCandidates: (
     request: ListReferenceCandidatesRequest,
   ) => Promise<ListReferenceCandidatesResponse>
+  listSkillCatalogEntries: (
+    request: ListSkillCatalogEntriesRequest,
+  ) => Promise<ListSkillCatalogEntriesResponse>
+  listSkillCatalogSources: () => Promise<ListSkillCatalogSourcesResponse>
   listSkills: () => Promise<ListSkillsResponse>
   resolvePermission: (request: ResolvePermissionRequest) => Promise<ResolvePermissionResponse>
   requestProviderConfigApiKeyReveal: (
@@ -1416,6 +2030,9 @@ export interface CommandClient {
   ) => Promise<RequestProviderConfigApiKeyRevealResponse>
   runEvalCase: (caseId: string) => Promise<RunEvalCaseResponse>
   saveMcpServer: (request: SaveMcpServerRequest) => Promise<SaveMcpServerResponse>
+  setMcpServerEnabled: (id: string, enabled: boolean) => Promise<SetMcpServerEnabledResponse>
+  restartMcpServer: (id: string) => Promise<RestartMcpServerResponse>
+  clearMcpDiagnostics: (serverId?: string) => Promise<ClearMcpDiagnosticsResponse>
   saveProviderSettings: (request: ProviderSettingsRequest) => Promise<SaveProviderSettingsResponse>
   setExecutionSettings: (
     request: SetExecutionSettingsRequest,
@@ -1432,6 +2049,13 @@ export interface CommandClient {
   listenConversationEventBatches: (
     onBatch: (batch: ConversationEventBatchPayload) => void,
   ) => Promise<() => void>
+  subscribeMcpDiagnostics: (
+    request: SubscribeMcpDiagnosticsRequest,
+  ) => Promise<SubscribeMcpDiagnosticsResponse>
+  listenMcpDiagnosticBatches: (
+    onBatch: (batch: McpDiagnosticBatchPayload) => void,
+  ) => Promise<() => void>
+  unsubscribeMcpDiagnostics: (subscriptionId: string) => Promise<UnsubscribeMcpDiagnosticsResponse>
   unsubscribeConversationEvents: (
     subscriptionId: string,
   ) => Promise<UnsubscribeConversationEventsResponse>
@@ -1555,6 +2179,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, replayTimelineRequestSchema, request)
       return parsePayload(command, replayTimelineResponseSchema, await invoke(command, args))
     },
+    async getSkillCatalogEntry(request) {
+      const command = 'get_skill_catalog_entry'
+      const args = parseArgs(command, getSkillCatalogEntryRequestSchema, request)
+      return parsePayload(command, getSkillCatalogEntryResponseSchema, await invoke(command, args))
+    },
     async pageConversationTimeline(request) {
       const command = 'page_conversation_timeline'
       const args = parseArgs(command, pageConversationTimelineRequestSchema, request)
@@ -1593,6 +2222,15 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, importSkillRequestSchema, { sourcePath })
       return parsePayload(command, importSkillResponseSchema, await invoke(command, args))
     },
+    async installSkillFromCatalog(request) {
+      const command = 'install_skill_from_catalog'
+      const args = parseArgs(command, installSkillFromCatalogRequestSchema, request)
+      return parsePayload(
+        command,
+        installSkillFromCatalogResponseSchema,
+        await invoke(command, args),
+      )
+    },
     async listActivity(request) {
       const command = 'list_activity'
       const args = parseArgs(command, listActivityRequestSchema, request)
@@ -1602,6 +2240,15 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'list_artifacts'
       const args = parseArgs(command, listArtifactsRequestSchema, request)
       return parsePayload(command, listArtifactsResponseSchema, await invoke(command, args))
+    },
+    async getArtifactMediaPreview(request) {
+      const command = 'get_artifact_media_preview'
+      const args = parseArgs(command, getArtifactMediaPreviewRequestSchema, request)
+      return parsePayload(
+        command,
+        getArtifactMediaPreviewResponseSchema,
+        await invoke(command, args),
+      )
     },
     async listConversations() {
       const command = 'list_conversations'
@@ -1626,9 +2273,19 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'list_model_provider_catalog'
       return parsePayload(command, modelProviderCatalogResponseSchema, await invoke(command))
     },
+    async listMcpDiagnostics(serverId) {
+      const command = 'list_mcp_diagnostics'
+      const args = parseArgs(command, listMcpDiagnosticsRequestSchema, { serverId })
+      return parsePayload(command, listMcpDiagnosticsResponseSchema, await invoke(command, args))
+    },
     async listMcpServers() {
       const command = 'list_mcp_servers'
       return parsePayload(command, listMcpServersResponseSchema, await invoke(command))
+    },
+    async getMcpServerConfig(id) {
+      const command = 'get_mcp_server_config'
+      const args = parseArgs(command, getMcpServerConfigRequestSchema, { id })
+      return parsePayload(command, getMcpServerConfigResponseSchema, await invoke(command, args))
     },
     async listMemoryItems() {
       const command = 'list_memory_items'
@@ -1642,6 +2299,19 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         listReferenceCandidatesResponseSchema,
         await invoke(command, args),
       )
+    },
+    async listSkillCatalogEntries(request) {
+      const command = 'list_skill_catalog_entries'
+      const args = parseArgs(command, listSkillCatalogEntriesRequestSchema, request)
+      return parsePayload(
+        command,
+        listSkillCatalogEntriesResponseSchema,
+        await invoke(command, args),
+      )
+    },
+    async listSkillCatalogSources() {
+      const command = 'list_skill_catalog_sources'
+      return parsePayload(command, listSkillCatalogSourcesResponseSchema, await invoke(command))
     },
     async listProviderSettings() {
       const command = 'list_provider_settings'
@@ -1660,6 +2330,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'switch_project'
       const args = parseArgs(command, switchProjectRequestSchema, { path })
       return parsePayload(command, switchProjectResponseSchema, await invoke(command, args))
+    },
+    async deleteProject(path) {
+      const command = 'delete_project'
+      const args = parseArgs(command, deleteProjectRequestSchema, { path })
+      return parsePayload(command, deleteProjectResponseSchema, await invoke(command, args))
     },
     async listSkills() {
       const command = 'list_skills'
@@ -1700,6 +2375,21 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'save_mcp_server'
       const args = parseArgs(command, saveMcpServerRequestSchema, request)
       return parsePayload(command, saveMcpServerResponseSchema, await invoke(command, args))
+    },
+    async setMcpServerEnabled(id, enabled) {
+      const command = 'set_mcp_server_enabled'
+      const args = parseArgs(command, setMcpServerEnabledRequestSchema, { enabled, id })
+      return parsePayload(command, setMcpServerEnabledResponseSchema, await invoke(command, args))
+    },
+    async restartMcpServer(id) {
+      const command = 'restart_mcp_server'
+      const args = parseArgs(command, restartMcpServerRequestSchema, { id })
+      return parsePayload(command, restartMcpServerResponseSchema, await invoke(command, args))
+    },
+    async clearMcpDiagnostics(serverId) {
+      const command = 'clear_mcp_diagnostics'
+      const args = parseArgs(command, clearMcpDiagnosticsRequestSchema, { serverId })
+      return parsePayload(command, clearMcpDiagnosticsResponseSchema, await invoke(command, args))
     },
     async setConversationModelConfig(conversationId, modelConfigId) {
       const command = 'set_conversation_model_config'
@@ -1747,6 +2437,35 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       })
 
       return unlisten
+    },
+    async subscribeMcpDiagnostics(request) {
+      const command = 'subscribe_mcp_diagnostics'
+      const args = parseArgs(command, subscribeMcpDiagnosticsRequestSchema, request)
+      return parsePayload(
+        command,
+        subscribeMcpDiagnosticsResponseSchema,
+        await invoke(command, args),
+      )
+    },
+    async listenMcpDiagnosticBatches(onBatch) {
+      const unlisten = await tauriListen<unknown>('mcp_diagnostic_batch', (event) => {
+        onBatch(
+          parsePayload('mcp_diagnostic_batch', mcpDiagnosticBatchPayloadSchema, event.payload),
+        )
+      })
+
+      return unlisten
+    },
+    async unsubscribeMcpDiagnostics(subscriptionId) {
+      const command = 'unsubscribe_mcp_diagnostics'
+      const args = parseArgs(command, unsubscribeMcpDiagnosticsRequestSchema, {
+        subscriptionId,
+      })
+      return parsePayload(
+        command,
+        unsubscribeMcpDiagnosticsResponseSchema,
+        await invoke(command, args),
+      )
     },
     async unsubscribeConversationEvents(subscriptionId) {
       const command = 'unsubscribe_conversation_events'
@@ -1819,6 +2538,13 @@ export function listArtifacts(
   return client.listArtifacts(request)
 }
 
+export function getArtifactMediaPreview(
+  request: GetArtifactMediaPreviewRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<GetArtifactMediaPreviewResponse> {
+  return client.getArtifactMediaPreview(request)
+}
+
 export function getConversation(
   conversationId: string,
   client: CommandClient = tauriCommandClient,
@@ -1881,11 +2607,68 @@ export function listMcpServers(
   return client.listMcpServers()
 }
 
+export function getMcpServerConfig(
+  id: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<GetMcpServerConfigResponse> {
+  return client.getMcpServerConfig(id)
+}
+
+export function listMcpDiagnostics(
+  serverId?: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<ListMcpDiagnosticsResponse> {
+  return client.listMcpDiagnostics(serverId)
+}
+
 export function saveMcpServer(
   request: SaveMcpServerRequest,
   client: CommandClient = tauriCommandClient,
 ): Promise<SaveMcpServerResponse> {
   return client.saveMcpServer(request)
+}
+
+export function setMcpServerEnabled(
+  id: string,
+  enabled: boolean,
+  client: CommandClient = tauriCommandClient,
+): Promise<SetMcpServerEnabledResponse> {
+  return client.setMcpServerEnabled(id, enabled)
+}
+
+export function restartMcpServer(
+  id: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<RestartMcpServerResponse> {
+  return client.restartMcpServer(id)
+}
+
+export function clearMcpDiagnostics(
+  serverId?: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<ClearMcpDiagnosticsResponse> {
+  return client.clearMcpDiagnostics(serverId)
+}
+
+export function subscribeMcpDiagnostics(
+  request: SubscribeMcpDiagnosticsRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<SubscribeMcpDiagnosticsResponse> {
+  return client.subscribeMcpDiagnostics(request)
+}
+
+export function listenMcpDiagnosticBatches(
+  onBatch: (batch: McpDiagnosticBatchPayload) => void,
+  client: CommandClient = tauriCommandClient,
+): Promise<() => void> {
+  return client.listenMcpDiagnosticBatches(onBatch)
+}
+
+export function unsubscribeMcpDiagnostics(
+  subscriptionId: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<UnsubscribeMcpDiagnosticsResponse> {
+  return client.unsubscribeMcpDiagnostics(subscriptionId)
 }
 
 export function deleteMcpServer(
@@ -1914,6 +2697,33 @@ export function getSkillFile(
   client: CommandClient = tauriCommandClient,
 ): Promise<GetSkillFileResponse> {
   return client.getSkillFile(id, path)
+}
+
+export function listSkillCatalogSources(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListSkillCatalogSourcesResponse> {
+  return client.listSkillCatalogSources()
+}
+
+export function listSkillCatalogEntries(
+  request: ListSkillCatalogEntriesRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<ListSkillCatalogEntriesResponse> {
+  return client.listSkillCatalogEntries(request)
+}
+
+export function getSkillCatalogEntry(
+  request: GetSkillCatalogEntryRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<GetSkillCatalogEntryResponse> {
+  return client.getSkillCatalogEntry(request)
+}
+
+export function installSkillFromCatalog(
+  request: InstallSkillFromCatalogRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<InstallSkillFromCatalogResponse> {
+  return client.installSkillFromCatalog(request)
 }
 
 export function importSkill(
@@ -2009,6 +2819,13 @@ export function switchProject(
   client: CommandClient = tauriCommandClient,
 ): Promise<SwitchProjectResponse> {
   return client.switchProject(path)
+}
+
+export function deleteProject(
+  path: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<DeleteProjectResponse> {
+  return client.deleteProject(path)
 }
 
 export function getExecutionSettings(

@@ -168,6 +168,7 @@ fn ctx_with_cap_registry(cap_registry: CapabilityRegistry) -> ToolContext {
         sandbox: None,
         permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
+        redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::new(),
         parent_run: None,
     }

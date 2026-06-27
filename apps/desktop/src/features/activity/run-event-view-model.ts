@@ -80,7 +80,11 @@ function getActivityLabel(event: RunEvent): string {
     case 'assistant.delta':
     case 'assistant.thinking.delta':
     case 'assistant.completed':
+    case 'assistant.review.requested':
+    case 'assistant.clarification.requested':
       return 'assistant'
+    case 'assistant.notice':
+      return 'notice'
     case 'tool.requested':
       return event.payload?.toolName ?? 'tool'
     case 'tool.approved':
@@ -111,7 +115,11 @@ function getWithheldActivityLabel(event: RunEvent): string {
     case 'assistant.delta':
     case 'assistant.thinking.delta':
     case 'assistant.completed':
+    case 'assistant.review.requested':
+    case 'assistant.clarification.requested':
       return 'assistant'
+    case 'assistant.notice':
+      return 'notice'
     case 'tool.requested':
     case 'tool.approved':
     case 'tool.denied':
@@ -143,6 +151,8 @@ function getActivityStatus(event: RunEvent): ActivityRailItem['status'] {
       return 'queued'
     case 'permission.requested':
     case 'tool.denied':
+    case 'assistant.review.requested':
+    case 'assistant.clarification.requested':
       return 'blocked'
     case 'tool.failed':
     case 'engine.failed':
@@ -157,6 +167,7 @@ function getActivityStatus(event: RunEvent): ActivityRailItem['status'] {
       }
       return 'success'
     case 'assistant.completed':
+    case 'assistant.notice':
     case 'permission.resolved':
     case 'run.ended':
     case 'tool.completed':
@@ -190,6 +201,7 @@ function getDetails(event: RunEvent): RunEventViewModel['details'] {
             risk: event.payload.severity,
             state: 'pending',
             target: event.payload.target,
+            toolUseId: event.payload.toolUseId,
             workspaceBoundary: event.payload.workspaceBoundary,
           },
         ],
@@ -215,6 +227,9 @@ function getDetails(event: RunEvent): RunEventViewModel['details'] {
     case 'assistant.delta':
     case 'assistant.thinking.delta':
     case 'assistant.completed':
+    case 'assistant.review.requested':
+    case 'assistant.clarification.requested':
+    case 'assistant.notice':
     case 'tool.requested':
     case 'tool.approved':
     case 'tool.denied':

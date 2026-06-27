@@ -15,7 +15,7 @@ use harness_sandbox::{ExecSpec, StdioSpec};
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
-use crate::{ToolContext, ToolEvent, ToolPool};
+use crate::{ToolContext, ToolEvent, ToolJournalAuthority, ToolPool};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolCall {
@@ -169,6 +169,7 @@ impl ToolOrchestrator {
             }
 
             let long_running_policy = tool.descriptor().properties.long_running.clone();
+            let journal_authority = ctx.pool.journal_authority(&call.tool_name);
             let execute_and_collect = async {
                 let stream = tool.execute(call.input, tool_ctx.clone()).await?;
                 let result = if let Some(policy) = long_running_policy.as_ref() {
@@ -178,6 +179,7 @@ impl ToolOrchestrator {
                         policy.stall_threshold,
                         &ctx,
                         call.tool_use_id,
+                        journal_authority,
                         &tool.descriptor().budget,
                         &mut overflow,
                     )
@@ -188,6 +190,7 @@ impl ToolOrchestrator {
                         &mut progress_emitted,
                         &ctx,
                         call.tool_use_id,
+                        journal_authority,
                         &tool.descriptor().budget,
                         &mut overflow,
                     )
@@ -337,6 +340,7 @@ async fn collect_stream(
     progress_emitted: &mut u32,
     ctx: &OrchestratorContext,
     tool_use_id: ToolUseId,
+    journal_authority: ToolJournalAuthority,
     budget: &harness_contracts::ResultBudget,
     overflow: &mut Option<OverflowMetadata>,
 ) -> Result<ToolResult, ToolError> {
@@ -367,7 +371,14 @@ async fn collect_stream(
                     return Ok(result);
                 }
             }
-            ToolEvent::Journal(event) => ctx.event_emitter.emit(event),
+            ToolEvent::Journal(event) => {
+                ctx.event_emitter.emit(authorize_tool_journal_event(
+                    event,
+                    ctx,
+                    tool_use_id,
+                    journal_authority,
+                )?);
+            }
             ToolEvent::Final(result) => {
                 final_result = Some(result);
                 break;
@@ -410,6 +421,7 @@ async fn collect_stream_with_heartbeat(
     stall_threshold: Duration,
     ctx: &OrchestratorContext,
     tool_use_id: ToolUseId,
+    journal_authority: ToolJournalAuthority,
     budget: &harness_contracts::ResultBudget,
     overflow: &mut Option<OverflowMetadata>,
 ) -> Result<ToolResult, ToolError> {
@@ -440,7 +452,14 @@ async fn collect_stream_with_heartbeat(
                     return Ok(result);
                 }
             }
-            Ok(Some(ToolEvent::Journal(event))) => ctx.event_emitter.emit(event),
+            Ok(Some(ToolEvent::Journal(event))) => {
+                ctx.event_emitter.emit(authorize_tool_journal_event(
+                    event,
+                    ctx,
+                    tool_use_id,
+                    journal_authority,
+                )?);
+            }
             Ok(Some(ToolEvent::Final(result))) => {
                 final_result = Some(result);
                 break;
@@ -488,6 +507,105 @@ async fn collect_stream_with_heartbeat(
         }
     };
     apply_result_budget(result, budget, ctx, tool_use_id, overflow).await
+}
+
+fn authorize_tool_journal_event(
+    mut event: Event,
+    ctx: &OrchestratorContext,
+    tool_use_id: ToolUseId,
+    journal_authority: ToolJournalAuthority,
+) -> Result<Event, ToolError> {
+    match &mut event {
+        Event::AssistantClarificationRequested(requested) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::Clarification)?;
+            requested.run_id = ctx.tool_context.run_id;
+        }
+        Event::SandboxExecutionStarted(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::Sandbox)?;
+            event.session_id = ctx.tool_context.session_id;
+            event.run_id = ctx.tool_context.run_id;
+            event.tool_use_id = Some(tool_use_id);
+        }
+        Event::SandboxExecutionCompleted(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::Sandbox)?;
+            event.session_id = ctx.tool_context.session_id;
+            event.run_id = ctx.tool_context.run_id;
+            event.tool_use_id = Some(tool_use_id);
+        }
+        Event::SandboxActivityHeartbeat(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::Sandbox)?;
+            event.session_id = ctx.tool_context.session_id;
+            event.run_id = ctx.tool_context.run_id;
+            event.tool_use_id = Some(tool_use_id);
+        }
+        Event::SandboxActivityTimeoutFired(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::Sandbox)?;
+            event.session_id = ctx.tool_context.session_id;
+            event.run_id = ctx.tool_context.run_id;
+            event.tool_use_id = Some(tool_use_id);
+        }
+        Event::SandboxOutputSpilled(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::Sandbox)?;
+            event.session_id = ctx.tool_context.session_id;
+            event.run_id = ctx.tool_context.run_id;
+            event.tool_use_id = Some(tool_use_id);
+        }
+        Event::SandboxBackpressureApplied(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::Sandbox)?;
+            event.session_id = ctx.tool_context.session_id;
+            event.run_id = ctx.tool_context.run_id;
+            event.tool_use_id = Some(tool_use_id);
+        }
+        Event::SandboxSnapshotCreated(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::Sandbox)?;
+            event.session_id = ctx.tool_context.session_id;
+        }
+        Event::SandboxContainerLifecycleTransition(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::Sandbox)?;
+            event.session_id = ctx.tool_context.session_id;
+        }
+        Event::SandboxBackendFailed(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::Sandbox)?;
+            event.session_id = ctx.tool_context.session_id;
+            event.run_id = ctx.tool_context.run_id;
+            event.tool_use_id = Some(tool_use_id);
+        }
+        Event::SandboxPostExecutionFailed(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::Sandbox)?;
+            event.session_id = ctx.tool_context.session_id;
+            event.run_id = ctx.tool_context.run_id;
+            event.tool_use_id = Some(tool_use_id);
+        }
+        Event::ExecuteCodeStepInvoked(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::ExecuteCode)?;
+            event.session_id = ctx.tool_context.session_id;
+            event.run_id = ctx.tool_context.run_id;
+            event.parent_tool_use_id = tool_use_id;
+        }
+        Event::ExecuteCodeWhitelistExtended(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::ExecuteCode)?;
+            event.session_id = ctx.tool_context.session_id;
+        }
+        _ => {
+            return Err(ToolError::PermissionDenied(
+                "tool journal event type is not allowed".to_owned(),
+            ));
+        }
+    }
+    Ok(event)
+}
+
+fn require_tool_journal_authority(
+    actual: ToolJournalAuthority,
+    expected: ToolJournalAuthority,
+) -> Result<(), ToolError> {
+    if actual == expected {
+        return Ok(());
+    }
+
+    Err(ToolError::PermissionDenied(
+        "tool journal event producer is not allowed".to_owned(),
+    ))
 }
 
 async fn apply_partial_budget(

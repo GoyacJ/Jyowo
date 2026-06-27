@@ -238,6 +238,7 @@ async fn orchestrator_ctx(
             sandbox: None,
             permission_broker: broker,
             cap_registry: Arc::new(CapabilityRegistry::default()),
+            redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
             interrupt: InterruptToken::default(),
             parent_run: None,
         },

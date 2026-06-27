@@ -25,7 +25,7 @@ const replayEvent: ConversationEventBatchPayload['events'][number] = {
 const liveEvent: ConversationEventBatchPayload['events'][number] = {
   id: 'evt-live',
   conversationSequence: 2,
-  payload: { text: 'Hello' },
+  payload: { messageId: 'message-live', text: 'Hello' },
   runId: 'run-001',
   sequence: 2,
   source: 'assistant',

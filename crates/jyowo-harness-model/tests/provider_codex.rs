@@ -59,6 +59,8 @@ async fn codex_streams_responses_text_reasoning_tool_and_usage() {
                         "data: {\"delta\":\"done\"}\n\n",
                         "event: response.reasoning_text.delta\n",
                         "data: {\"delta\":\"plan\"}\n\n",
+                        "event: response.reasoning_summary_text.delta\n",
+                        "data: {\"delta\":\"Checked project context.\"}\n\n",
                         "event: response.output_item.added\n",
                         "data: {\"item\":{\"type\":\"function_call\",\"id\":\"item_1\",\"call_id\":\"call_1\",\"name\":\"search\"}}\n\n",
                         "event: response.function_call_arguments.delta\n",
@@ -90,6 +92,13 @@ async fn codex_streams_responses_text_reasoning_tool_and_usage() {
             delta: ContentDelta::Thinking(ThinkingDelta { text: Some(text), .. }),
             ..
         } if text == "plan"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ModelStreamEvent::ContentBlockDelta {
+            delta: ContentDelta::ReasoningSummary(summary),
+            ..
+        } if summary.text == "Checked project context."
     )));
     assert!(events.iter().any(|event| matches!(
         event,

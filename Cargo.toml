@@ -94,6 +94,7 @@ url = "2.5.8"
 uuid = { version = "1.23.3", features = ["serde", "v4"] }
 yaml-rust2 = "0.11.0"
 zeroize = "1.9.0"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [profile.release]
 strip = false

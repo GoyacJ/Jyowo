@@ -60,4 +60,15 @@ describe('ui-store', () => {
 
     expect(store.getState().contextPanelCollapsed).toBe(true)
   })
+
+  it('tracks timeline scroll requests by turn anchor id', () => {
+    const store = createUiStore()
+
+    store.getState().requestTimelineScroll('segment:permission:001')
+
+    expect(store.getState().timelineScrollRequest).toEqual({
+      anchorId: 'segment:permission:001',
+      nonce: 1,
+    })
+  })
 })

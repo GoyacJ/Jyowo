@@ -2,31 +2,40 @@ import type { RunEvent } from '@/shared/events/run-event-schema'
 import type {
   AppInfo,
   CancelRunResponse,
+  ClearMcpDiagnosticsResponse,
   CommandClient,
   ConversationEventBatchPayload,
   ConversationModelCapability,
   CreateAttachmentFromPathResponse,
   CreateConversationResponse,
   DeleteConversationResponse,
+  DeleteProjectResponse,
   ExportMemoryItemsResponse,
   ExportSupportBundleResponse,
+  GetArtifactMediaPreviewResponse,
   GetContextSnapshotResponse,
   GetConversationResponse,
   GetExecutionSettingsResponse,
+  GetMcpServerConfigResponse,
   GetMemoryItemResponse,
   GetProviderConfigApiKeyResponse,
+  GetSkillCatalogEntryResponse,
   GetSkillDetailResponse,
   GetSkillFileResponse,
   HarnessHealthcheck,
+  InstallSkillFromCatalogResponse,
   ListActivityResponse,
   ListArtifactsResponse,
   ListConversationsResponse,
   ListEvalCasesResponse,
+  ListMcpDiagnosticsResponse,
   ListMcpServersResponse,
   ListMemoryItemsResponse,
   ListProjectsResponse,
   ListProviderSettingsResponse,
   ListReferenceCandidatesResponse,
+  ListSkillCatalogEntriesResponse,
+  ListSkillCatalogSourcesResponse,
   ListSkillsResponse,
   ModelProviderCatalogResponse,
   PageConversationTimelineResponse,
@@ -39,11 +48,14 @@ import type {
   SaveProviderSettingsResponse,
   SetConversationModelConfigResponse,
   SetExecutionSettingsResponse,
+  SetMcpServerEnabledResponse,
   SkillSummary,
   StartRunResponse,
   SubscribeConversationEventsResponse,
+  SubscribeMcpDiagnosticsResponse,
   SwitchProjectResponse,
   UnsubscribeConversationEventsResponse,
+  UnsubscribeMcpDiagnosticsResponse,
   UpdateMemoryItemResponse,
   ValidateProviderSettingsResponse,
 } from './commands'
@@ -195,6 +207,13 @@ const mockAttachment: CreateAttachmentFromPathResponse = {
     name: 'notes.txt',
     sizeBytes: 128,
   },
+}
+
+const mockArtifactMediaPreview: GetArtifactMediaPreviewResponse = {
+  dataUrl:
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+  mimeType: 'image/png',
+  sizeBytes: 68,
 }
 
 const mockReferenceCandidates: ListReferenceCandidatesResponse = {
@@ -360,14 +379,32 @@ const mockListMcpServers: ListMcpServersResponse = {
   servers: [
     {
       displayName: 'Workspace GitHub',
+      enabled: true,
       exposedToolCount: 2,
       id: 'github',
+      manageable: true,
       origin: 'workspace',
       scope: 'global',
       status: 'ready',
       transport: 'stdio',
     },
   ],
+}
+
+const mockMcpServerConfig: GetMcpServerConfigResponse = {
+  server: {
+    displayName: 'Workspace GitHub',
+    enabled: true,
+    id: 'github',
+    scope: 'global',
+    transport: {
+      args: ['mcp-server'],
+      command: 'node',
+      env: [{ key: 'LOG_LEVEL', value: 'info' }],
+      inheritEnv: ['GITHUB_TOKEN'],
+      kind: 'stdio',
+    },
+  },
 }
 
 const mockWorkspaceSkill: SkillSummary = {
@@ -396,6 +433,67 @@ const mockBundledSkill: SkillSummary = {
 
 const mockListSkills: ListSkillsResponse = {
   skills: [mockWorkspaceSkill, mockBundledSkill],
+}
+
+const mockSkillCatalogSources: ListSkillCatalogSourcesResponse = {
+  sources: [
+    {
+      description: 'Official Anthropic skills repository.',
+      id: 'anthropic',
+      installable: true,
+      label: 'Anthropic Skills',
+      trustLevel: 'official',
+    },
+    {
+      description: 'Validation standard for portable agent skills.',
+      id: 'agent-skills-spec',
+      installable: false,
+      label: 'Agent Skills spec',
+      trustLevel: 'standard',
+    },
+    {
+      description: 'Curated community index of agent skill repositories.',
+      id: 'awesome-agent-skills',
+      installable: true,
+      label: 'Awesome Agent Skills',
+      trustLevel: 'curated',
+    },
+    {
+      description: 'Public ClawHub registry with security scan metadata.',
+      id: 'clawhub',
+      installable: true,
+      label: 'ClawHub',
+      trustLevel: 'community',
+    },
+  ],
+}
+
+const mockSkillCatalogEntries: ListSkillCatalogEntriesResponse = {
+  entries: [
+    {
+      description: 'Create distinctive frontend interfaces.',
+      entryId: 'anthropic:frontend-design',
+      homepageUrl: 'https://github.com/anthropics/skills/tree/main/frontend-design',
+      installable: true,
+      installed: false,
+      name: 'frontend-design',
+      sourceId: 'anthropic',
+      sourceLabel: 'Anthropic Skills',
+      tags: ['frontend'],
+      trustLevel: 'official',
+      version: 'main',
+    },
+  ],
+}
+
+const mockSkillCatalogEntry: GetSkillCatalogEntryResponse = {
+  entry: mockSkillCatalogEntries.entries[0],
+  files: [{ kind: 'file', path: 'SKILL.md', sizeBytes: 512 }],
+  readmePreview: 'Create distinctive frontend interfaces.',
+  validation: {
+    issues: [],
+    status: 'ready',
+  },
 }
 
 const mockSkillDetail: GetSkillDetailResponse = {
@@ -446,13 +544,28 @@ const mockSkillEntryFile: GetSkillFileResponse = {
 const mockSaveMcpServer: SaveMcpServerResponse = {
   server: {
     displayName: 'Workspace GitHub',
+    enabled: true,
     exposedToolCount: 0,
     id: 'github',
+    manageable: true,
     origin: 'workspace',
     scope: 'global',
     status: 'configured',
     transport: 'stdio',
   },
+}
+
+const mockListMcpDiagnostics: ListMcpDiagnosticsResponse = {
+  events: [
+    {
+      eventType: 'connection_recovered',
+      id: 'mcp-diagnostic-001',
+      serverId: 'github',
+      severity: 'info',
+      summary: 'MCP server connection recovered.',
+      timestamp,
+    },
+  ],
 }
 
 const mockMemoryItems: ListMemoryItemsResponse = {
@@ -545,11 +658,33 @@ const mockConversationWorktreePage: PageConversationWorktreeResponse = {
         status: 'running',
         segments: [
           {
-            kind: 'thinking',
-            id: 'segment:thinking:run-001',
+            kind: 'process',
+            id: 'segment:process:run-001',
             order: 0,
-            status: 'withheld',
-            summary: { text: '思考内容已折叠' },
+            status: 'running',
+            summary: '正在处理请求',
+            steps: [
+              {
+                id: 'process-step:run-001:reasoning',
+                order: 0,
+                kind: 'reasoning',
+                status: 'running',
+                title: '分析工作区状态',
+                body: '正在检查本地项目上下文。',
+              },
+              {
+                id: 'process-step:run-001:file-read',
+                order: 1,
+                kind: 'fileRead',
+                status: 'complete',
+                title: '读取项目文件',
+                detail: {
+                  type: 'activity',
+                  summary: '已读取 1 个文件',
+                  itemCount: 1,
+                },
+              },
+            ],
           },
           {
             kind: 'text',
@@ -688,11 +823,33 @@ function worktreePageForMockRun(
       status,
       segments: [
         {
-          kind: 'text',
-          id: 'segment:text:message-mock-delta',
+          kind: 'process',
+          id: 'segment:process:run-001',
           order: 0,
-          messageId: 'message-mock-delta',
-          body: 'Drafting the implementation plan.',
+          status,
+          summary: status === 'running' ? '正在处理请求' : '已完成工作过程',
+          steps: [
+            {
+              id: 'process-step:mock-reasoning',
+              order: 0,
+              kind: 'reasoning',
+              status,
+              title: '整理实施计划',
+              body: 'Drafting the implementation plan.',
+            },
+            {
+              id: 'process-step:mock-read',
+              order: 1,
+              kind: 'fileRead',
+              status: 'complete',
+              title: 'Reading files',
+              detail: {
+                type: 'activity',
+                summary: 'Read project files',
+                itemCount: 1,
+              },
+            },
+          ],
         },
         {
           kind: 'toolGroup',
@@ -775,11 +932,14 @@ export interface MockCommandClientOptions {
   executionSettings?: GetExecutionSettingsResponse
   healthcheck?: HarnessHealthcheck
   artifacts?: ListArtifactsResponse
+  artifactMediaPreview?: GetArtifactMediaPreviewResponse
   listActivity?: ListActivityResponse
   memoryExport?: ExportMemoryItemsResponse
   evalCases?: ListEvalCasesResponse
   memoryItem?: GetMemoryItemResponse
   memoryItems?: ListMemoryItemsResponse
+  mcpDiagnostics?: ListMcpDiagnosticsResponse
+  mcpServerConfig?: GetMcpServerConfigResponse
   mcpServer?: SaveMcpServerResponse
   mcpServers?: ListMcpServersResponse
   modelProviderCatalog?: ModelProviderCatalogResponse
@@ -795,8 +955,13 @@ export interface MockCommandClientOptions {
   conversationTimelinePage?: PageConversationTimelineResponse
   conversationWorktreePage?: PageConversationWorktreeResponse
   subscribeConversationEvents?: SubscribeConversationEventsResponse
+  subscribeMcpDiagnostics?: SubscribeMcpDiagnosticsResponse
   skillDetail?: GetSkillDetailResponse
   skillFile?: GetSkillFileResponse
+  skillCatalogEntry?: GetSkillCatalogEntryResponse
+  skillCatalogEntries?: ListSkillCatalogEntriesResponse
+  skillCatalogSources?: ListSkillCatalogSourcesResponse
+  skillCatalogInstall?: InstallSkillFromCatalogResponse
   skills?: ListSkillsResponse
   supportBundleExport?: ExportSupportBundleResponse
   delayMs?: number
@@ -929,6 +1094,10 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       return options.conversation ?? conversationDetailsById.get(conversationId) ?? mockConversation
     },
+    async getArtifactMediaPreview() {
+      await wait(options.delayMs)
+      return options.artifactMediaPreview ?? mockArtifactMediaPreview
+    },
     async getAppInfo() {
       await wait(options.delayMs)
       return options.appInfo ?? mockAppInfo
@@ -951,6 +1120,10 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     async getReplayTimeline() {
       await wait(options.delayMs)
       return options.replayTimeline ?? mockReplayTimeline
+    },
+    async getSkillCatalogEntry() {
+      await wait(options.delayMs)
+      return options.skillCatalogEntry ?? mockSkillCatalogEntry
     },
     async pageConversationTimeline(request) {
       await wait(options.delayMs)
@@ -1025,6 +1198,28 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       return { skill: mockWorkspaceSkill }
     },
+    async installSkillFromCatalog() {
+      await wait(options.delayMs)
+      return (
+        options.skillCatalogInstall ?? {
+          skill: {
+            ...mockSkillCatalogEntry.entry,
+            enabled: true,
+            id: 'skill-catalog-001',
+            manageable: true,
+            origin: {
+              entryId: mockSkillCatalogEntry.entry.entryId,
+              installedFromCatalog: true,
+              sourceId: mockSkillCatalogEntry.entry.sourceId,
+              sourceLabel: mockSkillCatalogEntry.entry.sourceLabel,
+              version: mockSkillCatalogEntry.entry.version,
+            },
+            sourceKind: 'workspace',
+            status: 'ready',
+          },
+        }
+      )
+    },
     async listActivity() {
       await wait(options.delayMs)
       return options.listActivity ?? mockListActivity
@@ -1045,9 +1240,23 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       return options.modelProviderCatalog ?? mockModelProviderCatalog
     },
+    async listMcpDiagnostics() {
+      await wait(options.delayMs)
+      return options.mcpDiagnostics ?? mockListMcpDiagnostics
+    },
     async listMcpServers() {
       await wait(options.delayMs)
       return options.mcpServers ?? mockListMcpServers
+    },
+    async getMcpServerConfig(id) {
+      await wait(options.delayMs)
+      if (options.mcpServerConfig?.server.id === id) {
+        return options.mcpServerConfig
+      }
+      if (mockMcpServerConfig.server.id === id) {
+        return mockMcpServerConfig
+      }
+      throw new Error(`MCP server not found: ${id}`)
     },
     async listMemoryItems() {
       await wait(options.delayMs)
@@ -1087,9 +1296,34 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       }
       return { project }
     },
+    async deleteProject(path) {
+      await wait(options.delayMs)
+      const removed = projects.projects.find((entry) => entry.path === path)
+      if (!removed) {
+        throw new Error(`Project not found: ${path}`)
+      }
+      const activePath = projects.activePath === path ? null : projects.activePath
+      projects = {
+        activePath,
+        projects: projects.projects.filter((entry) => entry.path !== path),
+      }
+      return {
+        activePath,
+        path,
+        status: 'deleted',
+      } satisfies DeleteProjectResponse
+    },
     async listReferenceCandidates(_request) {
       await wait(options.delayMs)
       return options.referenceCandidates ?? mockReferenceCandidates
+    },
+    async listSkillCatalogEntries() {
+      await wait(options.delayMs)
+      return options.skillCatalogEntries ?? mockSkillCatalogEntries
+    },
+    async listSkillCatalogSources() {
+      await wait(options.delayMs)
+      return options.skillCatalogSources ?? mockSkillCatalogSources
     },
     async listSkills() {
       await wait(options.delayMs)
@@ -1167,6 +1401,32 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       return options.mcpServer ?? mockSaveMcpServer
     },
+    async setMcpServerEnabled(id, enabled) {
+      await wait(options.delayMs)
+      const server =
+        (options.mcpServers ?? mockListMcpServers).servers.find((server) => server.id === id) ??
+        mockSaveMcpServer.server
+      return {
+        server: {
+          ...server,
+          enabled,
+          status: enabled ? server.status : 'disabled',
+        },
+      } satisfies SetMcpServerEnabledResponse
+    },
+    async restartMcpServer(id) {
+      await wait(options.delayMs)
+      const server =
+        (options.mcpServers ?? mockListMcpServers).servers.find((server) => server.id === id) ??
+        mockSaveMcpServer.server
+      return {
+        server,
+      }
+    },
+    async clearMcpDiagnostics() {
+      await wait(options.delayMs)
+      return { status: 'cleared' } satisfies ClearMcpDiagnosticsResponse
+    },
     async setConversationModelConfig(conversationId, modelConfigId) {
       await wait(options.delayMs)
       return {
@@ -1222,7 +1482,10 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
         ),
         mockTimelineEvent(
           'assistant.delta',
-          { text: 'Drafting the implementation plan.' },
+          {
+            messageId: 'message-mock-delta',
+            text: 'Drafting the implementation plan.',
+          },
           {
             conversationSequence: 3,
             id: 'evt-mock-assistant-delta',
@@ -1268,6 +1531,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
             requestId: '01HZ0000000000000000000001',
             severity: 'medium',
             target: 'local verification task',
+            toolUseId: 'tool-mock-read',
             workspaceBoundary: 'workspace',
           },
           {
@@ -1348,6 +1612,24 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
           clearPendingBatches()
         }
       }
+    },
+    async subscribeMcpDiagnostics() {
+      await wait(options.delayMs)
+      return (options.subscribeMcpDiagnostics ?? {
+        replayEvents: (options.mcpDiagnostics ?? mockListMcpDiagnostics).events,
+        subscriptionId: 'mcp-diagnostic-subscription-001',
+      }) satisfies SubscribeMcpDiagnosticsResponse
+    },
+    async listenMcpDiagnosticBatches() {
+      await wait(options.delayMs)
+      return () => undefined
+    },
+    async unsubscribeMcpDiagnostics(subscriptionId) {
+      await wait(options.delayMs)
+      return {
+        status: 'unsubscribed',
+        subscriptionId,
+      } satisfies UnsubscribeMcpDiagnosticsResponse
     },
     async unsubscribeConversationEvents(subscriptionId) {
       await wait(options.delayMs)
@@ -1461,33 +1743,44 @@ export function createRejectedCommandClient(error: unknown): CommandClient {
     getContextSnapshot: () => Promise.reject(error),
     getExecutionSettings: () => Promise.reject(error),
     getConversation: () => Promise.reject(error),
+    getArtifactMediaPreview: () => Promise.reject(error),
     getAppInfo: () => Promise.reject(error),
     getHarnessHealthcheck: () => Promise.reject(error),
     getMemoryItem: () => Promise.reject(error),
+    getMcpServerConfig: () => Promise.reject(error),
     getProviderConfigApiKey: () => Promise.reject(error),
     getReplayTimeline: () => Promise.reject(error),
+    getSkillCatalogEntry: () => Promise.reject(error),
     pageConversationTimeline: () => Promise.reject(error),
     pageConversationWorktree: () => Promise.reject(error),
     getSkillDetail: () => Promise.reject(error),
     getSkillFile: () => Promise.reject(error),
     importSkill: () => Promise.reject(error),
+    installSkillFromCatalog: () => Promise.reject(error),
     listActivity: () => Promise.reject(error),
     listArtifacts: () => Promise.reject(error),
     listConversations: () => Promise.reject(error),
     listEvalCases: () => Promise.reject(error),
     listModelProviderCatalog: () => Promise.reject(error),
+    listMcpDiagnostics: () => Promise.reject(error),
     listMcpServers: () => Promise.reject(error),
     listMemoryItems: () => Promise.reject(error),
     listProviderSettings: () => Promise.reject(error),
     listProjects: () => Promise.reject(error),
     addProject: () => Promise.reject(error),
     switchProject: () => Promise.reject(error),
+    deleteProject: () => Promise.reject(error),
     listReferenceCandidates: () => Promise.reject(error),
+    listSkillCatalogEntries: () => Promise.reject(error),
+    listSkillCatalogSources: () => Promise.reject(error),
     listSkills: () => Promise.reject(error),
     resolvePermission: () => Promise.reject(error),
     requestProviderConfigApiKeyReveal: () => Promise.reject(error),
     runEvalCase: () => Promise.reject(error),
     saveMcpServer: () => Promise.reject(error),
+    setMcpServerEnabled: () => Promise.reject(error),
+    restartMcpServer: () => Promise.reject(error),
+    clearMcpDiagnostics: () => Promise.reject(error),
     saveProviderSettings: () => Promise.reject(error),
     setExecutionSettings: () => Promise.reject(error),
     setConversationModelConfig: () => Promise.reject(error),
@@ -1495,6 +1788,9 @@ export function createRejectedCommandClient(error: unknown): CommandClient {
     startRun: () => Promise.reject(error),
     subscribeConversationEvents: () => Promise.reject(error),
     listenConversationEventBatches: () => Promise.reject(error),
+    subscribeMcpDiagnostics: () => Promise.reject(error),
+    listenMcpDiagnosticBatches: () => Promise.reject(error),
+    unsubscribeMcpDiagnostics: () => Promise.reject(error),
     unsubscribeConversationEvents: () => Promise.reject(error),
     updateMemoryItem: () => Promise.reject(error),
     validateProviderSettings: () => Promise.reject(error),

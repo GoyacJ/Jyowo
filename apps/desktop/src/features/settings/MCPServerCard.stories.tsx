@@ -10,7 +10,10 @@ const meta = {
     layout: 'centered',
   },
   args: {
+    onConfigure: () => {},
     onDelete: () => {},
+    onRestart: () => {},
+    onToggle: () => {},
   },
   decorators: [
     ((StoryComponent) => (
@@ -29,8 +32,10 @@ export const Ready: Story = {
   args: {
     server: {
       displayName: 'Workspace GitHub',
+      enabled: true,
       exposedToolCount: 8,
       id: 'workspace-github',
+      manageable: true,
       origin: 'workspace',
       scope: 'global',
       status: 'ready',
@@ -43,8 +48,10 @@ export const Connecting: Story = {
   args: {
     server: {
       displayName: 'Local filesystem tools',
+      enabled: true,
       exposedToolCount: 0,
       id: 'local-filesystem',
+      manageable: false,
       origin: 'managed',
       scope: 'session',
       status: 'connecting',
@@ -57,9 +64,11 @@ export const Failed: Story = {
   args: {
     server: {
       displayName: 'Design source',
+      enabled: true,
       exposedToolCount: 0,
       id: 'design-source',
       lastError: 'Server failed policy validation before exposing tools.',
+      manageable: true,
       origin: 'user',
       scope: 'agent',
       status: 'failed',

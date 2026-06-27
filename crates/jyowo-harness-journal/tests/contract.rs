@@ -342,6 +342,55 @@ async fn jsonl_store_satisfies_event_store_contract() {
     run_contract(&store).await;
 }
 
+#[cfg(feature = "jsonl")]
+#[tokio::test]
+async fn jsonl_store_pages_segment_files_by_numeric_offset_after_cursor() {
+    let store = JsonlEventStore::open(temp_root("jsonl-pagination"), Arc::new(NoopRedactor))
+        .await
+        .expect("store opens");
+    let session = SessionId::new();
+
+    for offset in 0..14 {
+        store
+            .append(
+                TenantId::SINGLE,
+                session,
+                &[event(&format!("event {offset}"))],
+            )
+            .await
+            .expect("append succeeds");
+    }
+
+    let envelopes: Vec<_> = store
+        .read_envelopes(TenantId::SINGLE, session, ReplayCursor::FromStart)
+        .await
+        .expect("read envelopes succeeds")
+        .collect()
+        .await;
+    assert_eq!(envelopes.len(), 14);
+    assert_eq!(envelopes[9].offset, JournalOffset(9));
+
+    let page = store
+        .page_session_envelopes(TenantId::SINGLE, session, Some(envelopes[9].event_id), 10)
+        .await
+        .expect("page after offset 9 succeeds");
+
+    let offsets: Vec<_> = page
+        .envelopes
+        .iter()
+        .map(|envelope| envelope.offset)
+        .collect();
+    assert_eq!(
+        offsets,
+        vec![
+            JournalOffset(10),
+            JournalOffset(11),
+            JournalOffset(12),
+            JournalOffset(13),
+        ]
+    );
+}
+
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_store_satisfies_event_store_contract() {

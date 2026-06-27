@@ -112,6 +112,7 @@ async fn tool_context_retrieves_capabilities_and_reports_missing_handles() {
         sandbox: None,
         permission_broker: Arc::new(TestBroker),
         cap_registry: Arc::new(registry),
+        redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
         parent_run: None,
     };

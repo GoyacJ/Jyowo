@@ -16,6 +16,7 @@ use harness_contracts::{
 use harness_journal::{
     AppendMetadata, EventEnvelope, EventEnvelopePage, EventStore, InMemoryEventStore, PrunePolicy,
     PruneReport, ReplayCursor, SessionFilter, SessionSnapshot, SessionSummary,
+    SqliteConversationReadModelStore,
 };
 use jyowo_harness_sdk::{
     testing, ConversationEventsPageRequest, Harness, HarnessOptions, SessionOptions,
@@ -33,6 +34,10 @@ fn harness_options(workspace: PathBuf) -> HarnessOptions {
     options.workspace_root = workspace;
     options.model_id = "mock-model".to_owned();
     options
+}
+
+fn read_model_path(workspace: &std::path::Path) -> PathBuf {
+    workspace.join(".jyowo/runtime/conversation-read-model.sqlite")
 }
 
 fn user_message(run_id: RunId, message_id: MessageId, body: &str) -> Event {
@@ -263,7 +268,7 @@ async fn conversation_read_model_facade_returns_safe_snapshot_and_timeline() {
         .await
         .expect("summaries should load");
     assert_eq!(summaries.len(), 1);
-    assert_eq!(summaries[0].title.as_str(), "[REDACTED]");
+    assert_eq!(summaries[0].title.as_str(), "read [REDACTED]");
     assert_eq!(
         summaries[0].last_message_preview.as_ref().unwrap().as_str(),
         "Done"
@@ -275,7 +280,7 @@ async fn conversation_read_model_facade_returns_safe_snapshot_and_timeline() {
         .expect("snapshot should load")
         .expect("snapshot should exist");
     assert_eq!(snapshot.messages.len(), 2);
-    assert_eq!(snapshot.messages[0].body.as_str(), "[REDACTED]");
+    assert_eq!(snapshot.messages[0].body.as_str(), "read [REDACTED]");
     assert_eq!(snapshot.messages[1].body.as_str(), "Done");
 
     let first_page = harness
@@ -289,6 +294,166 @@ async fn conversation_read_model_facade_returns_safe_snapshot_and_timeline() {
         .expect("timeline second page should load");
     assert_eq!(second_page.events.len(), 1);
     assert_eq!(second_page.events[0].cursor.conversation_sequence, 2);
+}
+
+#[tokio::test]
+async fn delete_conversation_session_removes_projected_summary_from_facade_list() {
+    let store = Arc::new(CountingEventStore::new());
+    let workspace = temp_workspace("conversation-read-model-delete-summary");
+    let harness = Harness::builder()
+        .with_options(harness_options(workspace.clone()))
+        .with_model(testing::MockProvider::default())
+        .with_store_arc(store.clone())
+        .with_sandbox(testing::NoopSandbox::new())
+        .build()
+        .await
+        .expect("harness should build");
+    let session_id = SessionId::new();
+    let options = SessionOptions::new(workspace).with_session_id(session_id);
+    harness
+        .open_or_create_conversation_session(options.clone())
+        .await
+        .expect("session should open");
+    store
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[user_message(RunId::new(), MessageId::new(), "delete me")],
+        )
+        .await
+        .expect("message should append");
+
+    let summaries = harness
+        .list_conversation_summaries(TenantId::SINGLE, 10)
+        .await
+        .expect("summary should project before delete");
+    assert!(summaries
+        .iter()
+        .any(|summary| summary.id == session_id.to_string()));
+
+    let deleted = harness
+        .delete_conversation_session(options)
+        .await
+        .expect("conversation delete should succeed");
+    assert!(deleted);
+
+    let summaries = harness
+        .list_conversation_summaries(TenantId::SINGLE, 10)
+        .await
+        .expect("summary list should load after delete");
+    assert!(summaries
+        .iter()
+        .all(|summary| summary.id != session_id.to_string()));
+}
+
+#[tokio::test]
+async fn delete_conversation_session_treats_orphan_projection_as_deleted() {
+    let store = Arc::new(CountingEventStore::new());
+    let workspace = temp_workspace("conversation-read-model-delete-orphan");
+    let harness = Harness::builder()
+        .with_options(harness_options(workspace.clone()))
+        .with_model(testing::MockProvider::default())
+        .with_store_arc(store.clone())
+        .with_sandbox(testing::NoopSandbox::new())
+        .build()
+        .await
+        .expect("harness should build");
+    let session_id = SessionId::new();
+    let options = SessionOptions::new(workspace).with_session_id(session_id);
+    harness
+        .open_or_create_conversation_session(options.clone())
+        .await
+        .expect("session should open");
+    store
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[user_message(RunId::new(), MessageId::new(), "stale delete")],
+        )
+        .await
+        .expect("message should append");
+    harness
+        .list_conversation_summaries(TenantId::SINGLE, 10)
+        .await
+        .expect("summary should project before orphaning");
+    store
+        .delete_session(TenantId::SINGLE, session_id)
+        .await
+        .expect("old delete path should remove only the journal session");
+
+    let deleted = harness
+        .delete_conversation_session(options)
+        .await
+        .expect("orphan projection delete should succeed");
+    assert!(deleted);
+
+    let summaries = harness
+        .list_conversation_summaries(TenantId::SINGLE, 10)
+        .await
+        .expect("summary list should load after orphan delete");
+    assert!(summaries
+        .iter()
+        .all(|summary| summary.id != session_id.to_string()));
+}
+
+#[tokio::test]
+async fn list_conversation_summaries_removes_stale_rows_before_returning_live_rows() {
+    let store = Arc::new(CountingEventStore::new());
+    let workspace = temp_workspace("conversation-read-model-list-stale-first");
+    let harness = Harness::builder()
+        .with_options(harness_options(workspace.clone()))
+        .with_model(testing::MockProvider::default())
+        .with_store_arc(store.clone())
+        .with_sandbox(testing::NoopSandbox::new())
+        .build()
+        .await
+        .expect("harness should build");
+    let live_session_id = SessionId::new();
+    harness
+        .open_or_create_conversation_session(
+            SessionOptions::new(&workspace).with_session_id(live_session_id),
+        )
+        .await
+        .expect("live session should open");
+    store
+        .append(
+            TenantId::SINGLE,
+            live_session_id,
+            &[user_message(RunId::new(), MessageId::new(), "live row")],
+        )
+        .await
+        .expect("live message should append");
+    harness
+        .list_conversation_summaries(TenantId::SINGLE, 10)
+        .await
+        .expect("live summary should project");
+
+    let stale_session_id = SessionId::new();
+    let read_model = SqliteConversationReadModelStore::open(read_model_path(&workspace))
+        .await
+        .expect("read model should open");
+    read_model
+        .seed_empty_conversation(
+            TenantId::SINGLE,
+            stale_session_id,
+            harness_contracts::now() + chrono::Duration::days(1),
+            None,
+        )
+        .await
+        .expect("stale summary should seed");
+
+    let summaries = harness
+        .list_conversation_summaries(TenantId::SINGLE, 1)
+        .await
+        .expect("summary list should skip stale top row");
+
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].id, live_session_id.to_string());
+    assert!(read_model
+        .summary(TenantId::SINGLE, stale_session_id)
+        .await
+        .expect("stale summary lookup should succeed")
+        .is_none());
 }
 
 #[tokio::test]

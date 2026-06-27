@@ -1,7 +1,10 @@
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 
 import type { ConversationTurn } from '@/shared/tauri/commands'
+import { createMockCommandClient } from '@/shared/tauri/mock-client'
+import { CommandClientProvider } from '@/shared/tauri/react'
 import { ConversationTimeline } from './conversation-timeline'
 
 const meta = {
@@ -15,17 +18,48 @@ const meta = {
     turns: [],
   },
   decorators: [
-    ((StoryComponent) => (
-      <StoryFrame>
-        <StoryComponent />
-      </StoryFrame>
-    )) satisfies Decorator,
+    ((StoryComponent) => {
+      const queryClient = new QueryClient({
+        defaultOptions: {
+          queries: { retry: false },
+        },
+      })
+
+      return (
+        <CommandClientProvider client={createMockCommandClient()}>
+          <QueryClientProvider client={queryClient}>
+            <StoryFrame>
+              <StoryComponent />
+            </StoryFrame>
+          </QueryClientProvider>
+        </CommandClientProvider>
+      )
+    }) satisfies Decorator,
   ],
 } satisfies Meta<typeof ConversationTimeline>
 
 export default meta
 
 type Story = StoryObj<typeof meta>
+
+function storyTurn(
+  id: string,
+  body: string,
+  assistant: NonNullable<ConversationTurn['assistant']>,
+): ConversationTurn {
+  return {
+    id: `turn:${id}`,
+    conversationId: 'conversation-001',
+    position: 0,
+    user: {
+      id: `user:${id}`,
+      messageId: id,
+      body,
+      timestamp: '2026-06-17T00:00:00.000Z',
+    },
+    assistant,
+  }
+}
 
 const baseTurn: ConversationTurn = {
   id: 'turn:user-message-001',
@@ -43,11 +77,35 @@ const baseTurn: ConversationTurn = {
     status: 'running',
     segments: [
       {
-        kind: 'thinking',
-        id: 'segment:thinking:run-001',
+        kind: 'process',
+        id: 'segment:process:run-001',
         order: 0,
-        status: 'withheld',
-        summary: { text: '思考内容已折叠' },
+        status: 'running',
+        summary: '正在处理请求',
+        steps: [
+          {
+            id: 'process-step:story-reasoning',
+            order: 0,
+            kind: 'reasoning',
+            status: 'running',
+            title: '分析请求',
+            body: '整理应用壳和验证结果的展示方式。',
+          },
+          {
+            id: 'process-step:story-command',
+            order: 1,
+            kind: 'command',
+            status: 'failed',
+            title: '运行验证',
+            detail: {
+              type: 'command',
+              command: 'pnpm check:desktop',
+              output: 'lint failed',
+              exitCode: 1,
+              durationMs: 1300,
+            },
+          },
+        ],
       },
       {
         kind: 'text',
@@ -113,6 +171,256 @@ const baseTurn: ConversationTurn = {
 }
 
 export const Empty: Story = {}
+
+export const SimpleCompletedTurn: Story = {
+  args: {
+    turns: [
+      storyTurn('simple-completed', 'Summarize the current project.', {
+        id: 'assistant:run-simple',
+        runId: 'run-simple',
+        status: 'complete',
+        segments: [
+          {
+            kind: 'text',
+            id: 'segment:text:simple-completed',
+            order: 0,
+            messageId: 'assistant-message-simple',
+            body: 'The project is a local AI workspace with a Rust runtime and React shell.',
+          },
+        ],
+      }),
+    ],
+  },
+}
+
+export const ToolApprovedCompleted: Story = {
+  args: {
+    turns: [
+      storyTurn('tool-approved', 'Read the package metadata.', {
+        id: 'assistant:run-tool-approved',
+        runId: 'run-tool-approved',
+        status: 'complete',
+        segments: [
+          {
+            kind: 'toolGroup',
+            id: 'segment:tools:approved',
+            order: 0,
+            attempts: [
+              {
+                id: 'tool:approved',
+                order: 0,
+                toolUseId: 'tool-approved',
+                toolName: 'read_file',
+                status: 'completed',
+                permission: {
+                  id: 'permission:approved',
+                  requestId: 'permission-approved',
+                  toolUseId: 'tool-approved',
+                  status: 'approved',
+                },
+              },
+            ],
+          },
+          {
+            kind: 'text',
+            id: 'segment:text:tool-approved',
+            order: 1,
+            messageId: 'assistant-message-tool-approved',
+            body: 'The metadata was read and no package changes are needed.',
+          },
+        ],
+      }),
+    ],
+  },
+}
+
+export const MultipleToolAttempts: Story = {
+  args: {
+    turns: [
+      storyTurn('multiple-tools', 'Run verification and recover from one failure.', {
+        id: 'assistant:run-multiple-tools',
+        runId: 'run-multiple-tools',
+        status: 'running',
+        segments: [
+          {
+            kind: 'toolGroup',
+            id: 'segment:tools:multiple',
+            order: 0,
+            attempts: [
+              {
+                id: 'tool:multiple-1',
+                order: 0,
+                toolUseId: 'tool-multiple-1',
+                toolName: 'pnpm test',
+                status: 'failed',
+                failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+              },
+              {
+                id: 'tool:multiple-2',
+                order: 1,
+                toolUseId: 'tool-multiple-2',
+                toolName: 'pnpm test --runInBand',
+                status: 'completed',
+              },
+              {
+                id: 'tool:multiple-3',
+                order: 2,
+                toolUseId: 'tool-multiple-3',
+                toolName: 'cargo test',
+                status: 'waitingPermission',
+                permission: {
+                  id: 'permission:multiple-3',
+                  requestId: 'permission-multiple-3',
+                  toolUseId: 'tool-multiple-3',
+                  status: 'pending',
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    ],
+  },
+}
+
+export const ToolCallOnlyNoEmptyText: Story = {
+  args: {
+    turns: [
+      storyTurn('tool-only', 'Inspect the workspace files.', {
+        id: 'assistant:run-tool-only',
+        runId: 'run-tool-only',
+        status: 'running',
+        segments: [
+          {
+            kind: 'toolGroup',
+            id: 'segment:tools:tool-only',
+            order: 0,
+            attempts: [
+              {
+                id: 'tool:tool-only',
+                order: 0,
+                toolUseId: 'tool-only',
+                toolName: 'list_files',
+                status: 'running',
+              },
+            ],
+          },
+        ],
+      }),
+    ],
+  },
+}
+
+export const WithheldThinking: Story = {
+  args: {
+    turns: [
+      storyTurn('withheld-thinking', 'Plan the migration steps.', {
+        id: 'assistant:run-withheld-thinking',
+        runId: 'run-withheld-thinking',
+        status: 'running',
+        segments: [
+          {
+            kind: 'thinking',
+            id: 'segment:thinking:withheld',
+            order: 0,
+            status: 'withheld',
+            summary: { text: '思考内容已折叠' },
+          },
+        ],
+      }),
+    ],
+  },
+}
+
+export const ImageArtifact: Story = {
+  args: {
+    turns: [
+      storyTurn('image-artifact', '生成一张草鱼图片。', {
+        id: 'assistant:run-image-artifact',
+        runId: 'run-image-artifact',
+        status: 'complete',
+        segments: [
+          {
+            kind: 'process',
+            id: 'segment:process:image-artifact',
+            order: 0,
+            status: 'complete',
+            summary: '已完成工作过程',
+            steps: [
+              {
+                id: 'process-step:image-reasoning',
+                order: 0,
+                kind: 'reasoning',
+                status: 'complete',
+                title: '分析图片需求',
+                body: '确认需要生成图片并在对话中展示预览。',
+              },
+              {
+                id: 'process-step:image-artifact',
+                order: 1,
+                kind: 'artifact',
+                status: 'complete',
+                title: 'Generated image',
+                detail: {
+                  type: 'artifact',
+                  artifactId: 'artifact-image-001',
+                  media: {
+                    kind: 'image',
+                    mimeType: 'image/png',
+                    sizeBytes: 68,
+                  },
+                },
+              },
+            ],
+          },
+          {
+            kind: 'text',
+            id: 'segment:text:image-artifact',
+            order: 1,
+            messageId: 'assistant-message-image-artifact',
+            body: '图片已生成。',
+          },
+        ],
+      }),
+    ],
+  },
+}
+
+export const FinalAnswerAfterFailedTool: Story = {
+  args: {
+    turns: [
+      storyTurn('failed-tool-final', 'Run the checks and summarize the result.', {
+        id: 'assistant:run-failed-tool-final',
+        runId: 'run-failed-tool-final',
+        status: 'complete',
+        segments: [
+          {
+            kind: 'toolGroup',
+            id: 'segment:tools:failed-final',
+            order: 0,
+            attempts: [
+              {
+                id: 'tool:failed-final',
+                order: 0,
+                toolUseId: 'tool-failed-final',
+                toolName: 'pnpm check',
+                status: 'failed',
+                failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+              },
+            ],
+          },
+          {
+            kind: 'text',
+            id: 'segment:text:failed-tool-final',
+            order: 1,
+            messageId: 'assistant-message-failed-tool-final',
+            body: 'The check failed before completion. The next step is to inspect the failing gate.',
+          },
+        ],
+      }),
+    ],
+  },
+}
 
 export const Streaming: Story = {
   args: {

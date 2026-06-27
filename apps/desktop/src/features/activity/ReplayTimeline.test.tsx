@@ -62,7 +62,7 @@ describe('ReplayTimeline', () => {
     const manyEvents = Array.from({ length: 500 }, (_, index) => ({
       id: `evt-${index}`,
       conversationSequence: index,
-      payload: { text: `delta-${index}` },
+      payload: { messageId: `message-${index}`, text: `delta-${index}` },
       runId: 'run-001',
       sequence: index,
       source: 'assistant',

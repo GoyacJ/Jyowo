@@ -194,30 +194,38 @@ Current Tauri commands:
 ```text
 add_project
 cancel_run
+clear_mcp_diagnostics
 create_attachment_from_path
 create_conversation
 delete_conversation
 delete_mcp_server
 delete_memory_item
+delete_project
 delete_skill
 export_memory_items
 export_support_bundle
 list_artifacts
 list_eval_cases
 get_context_snapshot
+get_artifact_media_preview
 get_app_info
 get_conversation
 get_execution_settings
 get_memory_item
+get_mcp_server_config
 get_provider_config_api_key
 get_replay_timeline
+get_skill_catalog_entry
 get_skill_detail
 get_skill_file
 harness_healthcheck
 list_activity
 list_conversations
+list_skill_catalog_entries
+list_skill_catalog_sources
 list_reference_candidates
 list_model_provider_catalog
+list_mcp_diagnostics
 list_mcp_servers
 list_memory_items
 list_provider_settings
@@ -227,17 +235,22 @@ page_conversation_timeline
 page_conversation_worktree
 resolve_permission
 request_provider_config_api_key_reveal
+restart_mcp_server
 run_eval_case
 save_mcp_server
 save_provider_settings
 import_skill
+install_skill_from_catalog
 set_execution_settings
 set_conversation_model_config
+set_mcp_server_enabled
 set_skill_enabled
 start_run
 subscribe_conversation_events
+subscribe_mcp_diagnostics
 switch_project
 unsubscribe_conversation_events
+unsubscribe_mcp_diagnostics
 update_memory_item
 validate_provider_settings
 ```
@@ -247,6 +260,9 @@ Command payloads:
 ```rust
 add_project(path: String) -> Result<SwitchProjectResponse, CommandErrorPayload>
 cancel_run(run_id: String) -> Result<CancelRunResponse, CommandErrorPayload>
+clear_mcp_diagnostics(
+  server_id: Option<String>
+) -> Result<ClearMcpDiagnosticsResponse, CommandErrorPayload>
 create_attachment_from_path(
   path: String
 ) -> Result<CreateAttachmentFromPathResponse, CommandErrorPayload>
@@ -254,6 +270,7 @@ create_conversation() -> Result<CreateConversationResponse, CommandErrorPayload>
 delete_conversation(conversation_id: String) -> Result<DeleteConversationResponse, CommandErrorPayload>
 delete_mcp_server(id: String) -> Result<DeleteMcpServerResponse, CommandErrorPayload>
 delete_memory_item(id: String) -> Result<DeleteMemoryItemResponse, CommandErrorPayload>
+delete_project(path: String) -> Result<DeleteProjectResponse, CommandErrorPayload>
 delete_skill(id: String) -> Result<DeleteSkillResponse, CommandErrorPayload>
 export_memory_items() -> Result<ExportMemoryItemsResponse, CommandErrorPayload>
 export_support_bundle(
@@ -263,6 +280,10 @@ export_support_bundle(
 list_artifacts(
   conversation_id: String
 ) -> Result<ListArtifactsResponse, CommandErrorPayload>
+get_artifact_media_preview(
+  conversation_id: String,
+  artifact_id: String
+) -> Result<GetArtifactMediaPreviewResponse, CommandErrorPayload>
 list_eval_cases() -> Result<ListEvalCasesResponse, CommandErrorPayload>
 get_context_snapshot(
   conversation_id: Option<String>,
@@ -272,6 +293,7 @@ get_app_info() -> AppInfoPayload
 get_conversation(conversation_id: String) -> Result<GetConversationResponse, CommandErrorPayload>
 get_execution_settings() -> Result<GetExecutionSettingsResponse, CommandErrorPayload>
 get_memory_item(id: String) -> Result<GetMemoryItemResponse, CommandErrorPayload>
+get_mcp_server_config(id: String) -> Result<GetMcpServerConfigResponse, CommandErrorPayload>
 get_provider_config_api_key(
   config_id: String,
   reveal_token: String
@@ -285,16 +307,31 @@ get_skill_file(
   id: String,
   path: String
 ) -> Result<GetSkillFileResponse, CommandErrorPayload>
+get_skill_catalog_entry(
+  source_id: String,
+  entry_id: String,
+  version: Option<String>
+) -> Result<GetSkillCatalogEntryResponse, CommandErrorPayload>
 harness_healthcheck() -> HarnessHealthcheckPayload
 list_activity(
   conversation_id: Option<String>,
   run_id: Option<String>
 ) -> Result<ListActivityResponse, CommandErrorPayload>
 list_conversations() -> Result<ListConversationsResponse, CommandErrorPayload>
+list_skill_catalog_entries(
+  source_id: String,
+  query: Option<String>,
+  cursor: Option<String>,
+  sort: Option<String>
+) -> Result<ListSkillCatalogEntriesResponse, CommandErrorPayload>
+list_skill_catalog_sources() -> Result<ListSkillCatalogSourcesResponse, CommandErrorPayload>
 list_reference_candidates(
   conversation_id: String
 ) -> Result<ListReferenceCandidatesResponse, CommandErrorPayload>
 list_model_provider_catalog() -> ModelProviderCatalogResponse
+list_mcp_diagnostics(
+  server_id: Option<String>
+) -> Result<ListMcpDiagnosticsResponse, CommandErrorPayload>
 list_mcp_servers() -> Result<ListMcpServersResponse, CommandErrorPayload>
 list_memory_items() -> Result<ListMemoryItemsResponse, CommandErrorPayload>
 list_provider_settings() -> Result<ListProviderSettingsResponse, CommandErrorPayload>
@@ -318,8 +355,10 @@ resolve_permission(
 request_provider_config_api_key_reveal(
   config_id: String
 ) -> Result<RequestProviderConfigApiKeyRevealResponse, CommandErrorPayload>
+restart_mcp_server(id: String) -> Result<RestartMcpServerResponse, CommandErrorPayload>
 run_eval_case(case_id: String) -> Result<RunEvalCaseResponse, CommandErrorPayload>
 save_mcp_server(
+  enabled: Option<bool>,
   display_name: String,
   id: String,
   scope: String,
@@ -335,6 +374,11 @@ save_provider_settings(
   set_default: Option<bool>
 ) -> Result<SaveProviderSettingsResponse, CommandErrorPayload>
 import_skill(source_path: String) -> Result<ImportSkillResponse, CommandErrorPayload>
+install_skill_from_catalog(
+  source_id: String,
+  entry_id: String,
+  version: Option<String>
+) -> Result<ImportSkillResponse, CommandErrorPayload>
 set_execution_settings(
   permission_mode: PermissionMode
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload>
@@ -342,6 +386,10 @@ set_conversation_model_config(
   conversation_id: String,
   model_config_id: String
 ) -> Result<SetConversationModelConfigResponse, CommandErrorPayload>
+set_mcp_server_enabled(
+  id: String,
+  enabled: bool
+) -> Result<SetMcpServerEnabledResponse, CommandErrorPayload>
 set_skill_enabled(
   id: String,
   enabled: bool
@@ -358,9 +406,15 @@ subscribe_conversation_events(
   conversation_id: String,
   after_cursor: Option<ConversationCursor>
 ) -> Result<SubscribeConversationEventsResponse, CommandErrorPayload>
+subscribe_mcp_diagnostics(
+  server_id: Option<String>
+) -> Result<SubscribeMcpDiagnosticsResponse, CommandErrorPayload>
 unsubscribe_conversation_events(
   subscription_id: String
 ) -> Result<UnsubscribeConversationEventsResponse, CommandErrorPayload>
+unsubscribe_mcp_diagnostics(
+  subscription_id: String
+) -> Result<UnsubscribeMcpDiagnosticsResponse, CommandErrorPayload>
 update_memory_item(
   content: String,
   id: String
@@ -382,11 +436,27 @@ and list payloads must not return the raw key. `request_provider_config_api_key_
 issues a short-lived one-use reveal token; `get_provider_config_api_key` requires
 that token and is the explicit reveal path.
 
-`list_mcp_servers`, `save_mcp_server`, and `delete_mcp_server` expose only
-sanitized MCP server management payloads. They must not serialize raw env
-values, authorization headers, bearer tokens, OAuth secrets, or tool-call
-arguments. Runtime tool exposure remains owned by the MCP registry and
-`PermissionBroker`; Tauri only lists summaries and persists structured config.
+`list_mcp_servers`, `get_mcp_server_config`, `save_mcp_server`,
+`set_mcp_server_enabled`, `restart_mcp_server`, and `delete_mcp_server` expose
+only sanitized MCP server management payloads. Workspace-managed config
+supports `stdio` and `http`. `get_mcp_server_config` only returns
+workspace-managed persisted records and must not expose plugin, policy, managed,
+or runtime-only server internals.
+`stdio` may persist non-sensitive inline env values and inherited env var
+names. `http` may persist static non-sensitive headers and env var names for
+bearer tokens or header values. It must not serialize raw env values,
+authorization headers, bearer tokens, OAuth secrets, private absolute paths, or
+tool-call arguments. Runtime tool exposure remains owned by the MCP registry
+and `PermissionBroker`; Tauri only lists summaries and persists structured
+config.
+
+`list_mcp_diagnostics`, `clear_mcp_diagnostics`,
+`subscribe_mcp_diagnostics`, and `unsubscribe_mcp_diagnostics` expose only
+sanitized diagnostic records. Persisted diagnostics live under
+`.jyowo/runtime/mcp-diagnostics.jsonl` and are bounded by a ring buffer. They
+must contain severity, time, server id, event type, and summary only. They must
+not contain raw MCP event payloads, raw OAuth data, raw `Authorization` or
+`Cookie` headers, secret-like values, or private absolute paths.
 
 `list_memory_items`, `get_memory_item`, `update_memory_item`,
 `delete_memory_item`, and `export_memory_items` must go through the SDK Memory
@@ -398,7 +468,9 @@ returns only the relative path, item count, format, and timestamp over IPC; raw
 export content must not cross into frontend state.
 
 `list_skills`, `get_skill_detail`, `get_skill_file`, `import_skill`,
-`set_skill_enabled`, and `delete_skill` must go through the SDK skill facade.
+`list_skill_catalog_sources`, `list_skill_catalog_entries`,
+`get_skill_catalog_entry`, `install_skill_from_catalog`, `set_skill_enabled`,
+and `delete_skill` must go through the SDK skill facade.
 Tauri commands may manage the workspace skill store under
 `.jyowo/runtime/skills`, but runtime registry reload, validation, and hook
 replacement stay behind the SDK boundary. `list_skills` must return only
@@ -412,6 +484,13 @@ are persisted as
 `.jyowo/runtime/skills/disabled/<id>/SKILL.md`, with package resources copied
 under the same `<id>` directory. Disabled workspace skills remain in the store
 index but must not be loaded into the runtime registry.
+Skill catalog commands expose only the fixed official source set. Remote catalog
+content must be fetched, scanned, materialized into a temporary package, and
+then installed through the same managed skill store pipeline as local imports.
+Remote source paths, package temp paths, and rejected scan payloads must not be
+returned over IPC. Catalog install records may store source identity and
+homepage metadata as `origin`, but that metadata does not upgrade the skill's
+runtime trust.
 
 `start_run` and `cancel_run` must go through the runtime conversation facade.
 `resolve_permission` must go through `PermissionBroker`. These shell commands
@@ -425,6 +504,17 @@ confirmation depends on that id, not message body text.
 `page_conversation_worktree` is the conversation canvas data source. It returns
 `ConversationWorktreePage`, whose top-level items are complete conversation
 turns. The projection is owned by Rust and exposed through the SDK facade.
+The current SQLite read-model path replays the complete session timeline into
+`ConversationTurn[]` before slicing by turn cursor. It does not read from
+materialized worktree tables. `After` cursors point at the last returned turn;
+`Before` cursors point at the first returned turn. Both directions return turns
+in ascending conversation order.
+Assistant work process is projected as `ProcessSegment` with UI-safe
+`ProcessStep` entries for reasoning summaries, activity, command, file, diff,
+tool, artifact, and synthesis states. Raw chain-of-thought remains private and
+must not enter `ProcessSegment`, `TextSegment`, artifact metadata, or command
+payloads. Legacy `ThinkingSegment` may be deserialized for compatibility, but
+new conversation projection should use `ProcessSegment`.
 `page_conversation_timeline` remains a raw execution surface for Activity,
 Replay, and details views. `get_conversation.messages` must not drive
 `ConversationCanvas`.
@@ -453,6 +543,10 @@ payload
 `conversationSequence` is the monotonic conversation order key derived from the
 durable conversation event page order. `sequence` remains run-local validation
 data and must not be used as the global timeline order.
+`assistant.delta` payloads must include `messageId` and UI-safe `text`.
+`assistant.thinking.delta` payloads may include `status`, `safeSummary`, or
+`safeSummaryDelta`; they must not include raw thought `text`, provider-native
+thinking payloads, signatures, tool arguments, or tool output.
 
 Live subscription delivery is a single-process guarantee. The durable replay
 and snapshot paths are the restart-stable guarantee. The desktop shell may poll
@@ -466,6 +560,14 @@ Artifact events whose `session_id` does not match the requested conversation are
 Assistant replies, assistant deltas, and reasoning summaries are conversation
 content, not artifacts.
 Optional fields must be omitted instead of serialized as `null`.
+
+`get_artifact_media_preview` must require an explicit conversation id and
+artifact id. It may read the owned blob through runtime state only after
+verifying the artifact belongs to that conversation. It returns only image
+preview data as a data URL plus MIME type and byte count. Non-image artifacts,
+missing artifacts, oversized previews, private paths, blob paths, remote URLs,
+signed URLs, and provider-native payloads must fail closed and must not cross
+IPC.
 
 `get_context_snapshot` must read through the runtime conversation projection and
 workspace root. It may project current files, latest explicit artifact event,

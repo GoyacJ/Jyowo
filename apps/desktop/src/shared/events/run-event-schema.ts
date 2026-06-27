@@ -19,6 +19,9 @@ export const runEventContractTypeSchema = z.enum([
   'permission_resolved',
   'artifact_created',
   'artifact_updated',
+  'assistant_review_requested',
+  'assistant_clarification_requested',
+  'assistant_notice',
   'engine_failed',
 ])
 
@@ -47,8 +50,28 @@ function hasObviousUnredactedSecret(value: string): boolean {
   return unredactedSecretPatterns.some((pattern) => pattern.test(value))
 }
 
-function hasPrivateAbsolutePath(value: string): boolean {
-  return /(?:\/Users\/|\/home\/|\/private\/var\/|[A-Za-z]:\\)/.test(value)
+function hasUnsafeUrl(value: string): boolean {
+  const schemeUrlPattern = /([A-Za-z][A-Za-z0-9+.-]*):\/\//g
+  let match = schemeUrlPattern.exec(value)
+  while (match !== null) {
+    if (match[1]?.toLowerCase() !== 'workspace') {
+      return true
+    }
+    match = schemeUrlPattern.exec(value)
+  }
+
+  return /(?:^|[^A-Za-z0-9_])(?:blob|data|file|javascript|mailto):/i.test(value)
+}
+
+function hasUnsafeDisplayReference(value: string): boolean {
+  return (
+    hasUnsafeUrl(value) ||
+    /(?:~[\\/]|\.jyowo[\\/])/i.test(value) ||
+    /(?:^|[^A-Za-z0-9_])(?:[A-Za-z]:[\\/])/.test(value) ||
+    /(?:\/Applications|\/Library|\/System|\/Users|\/Volumes|\/dev|\/etc|\/home|\/media|\/mnt|\/opt|\/private|\/root|\/run|\/tmp|\/usr|\/var)(?:[\\/]|$)/.test(
+      value,
+    )
+  )
 }
 
 function containsObviousUnredactedSecret(value: unknown): boolean {
@@ -67,17 +90,17 @@ function containsObviousUnredactedSecret(value: unknown): boolean {
   return false
 }
 
-function containsPrivateAbsolutePath(value: unknown): boolean {
+function containsUnsafeDisplayReference(value: unknown): boolean {
   if (typeof value === 'string') {
-    return hasPrivateAbsolutePath(value)
+    return hasUnsafeDisplayReference(value)
   }
 
   if (Array.isArray(value)) {
-    return value.some((item) => containsPrivateAbsolutePath(item))
+    return value.some((item) => containsUnsafeDisplayReference(item))
   }
 
   if (value !== null && typeof value === 'object') {
-    return Object.values(value).some((item) => containsPrivateAbsolutePath(item))
+    return Object.values(value).some((item) => containsUnsafeDisplayReference(item))
   }
 
   return false
@@ -90,8 +113,8 @@ const permissionDisplayTextSchema = z
   .refine((value) => !hasObviousUnredactedSecret(value), {
     message: 'permission review payload must not contain obvious unredacted secrets',
   })
-  .refine((value) => !hasPrivateAbsolutePath(value), {
-    message: 'permission review payload must not contain private absolute paths',
+  .refine((value) => !hasUnsafeDisplayReference(value), {
+    message: 'permission review payload must not contain unsafe display references',
   })
 const requestIdSchema = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/, {
   message: 'requestId must be a canonical ULID',
@@ -100,8 +123,21 @@ const uuidV4Schema = z
   .uuid()
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
 const toolInputWithheldMessage = 'Input withheld from conversation timeline.'
-const toolOutputWithheldMessage = 'Output withheld from conversation timeline.'
 const toolErrorWithheldMessage = 'Tool error withheld from conversation timeline.'
+const toolDisplayTextSchema = permissionDisplayTextSchema
+const toolDiffFileSchema = z
+  .object({
+    path: toolDisplayTextSchema,
+    addedLines: z.number().int().nonnegative(),
+    removedLines: z.number().int().nonnegative(),
+    preview: toolDisplayTextSchema.optional(),
+  })
+  .strict()
+const toolDiffSchema = z
+  .object({
+    files: z.array(toolDiffFileSchema),
+  })
+  .strict()
 const runStartedPayloadSchema = z
   .object({
     sessionId: z.string().min(1),
@@ -125,6 +161,7 @@ const runEndedPayloadSchema = z
   .strict()
 const assistantDeltaPayloadSchema = z
   .object({
+    messageId: z.string().min(1),
     text: z.string(),
   })
   .strict()
@@ -135,15 +172,25 @@ const userMessageAppendedPayloadSchema = z
     messageId: z.string().min(1),
   })
   .strict()
+const assistantCompletedToolUseSchema = z
+  .object({
+    toolName: toolDisplayTextSchema,
+    toolUseId: z.string().min(1),
+  })
+  .strict()
 const assistantCompletedPayloadSchema = z
   .object({
     body: z.string().optional(),
     messageId: z.string().min(1),
+    toolUses: z.array(assistantCompletedToolUseSchema).optional(),
   })
   .strict()
 const toolRequestedPayloadSchema = z
   .object({
     argumentsSummary: z.literal(toolInputWithheldMessage).optional(),
+    command: permissionDisplayTextSchema.optional(),
+    query: toolDisplayTextSchema.optional(),
+    targetPath: toolDisplayTextSchema.optional(),
     toolName: z.string().min(1),
     toolUseId: z.string().min(1),
   })
@@ -155,8 +202,12 @@ const toolResolvedPayloadSchema = z
   .strict()
 const toolCompletedPayloadSchema = z
   .object({
+    diff: toolDiffSchema.optional(),
     durationMs: z.number().int().nonnegative().optional(),
-    outputSummary: z.literal(toolOutputWithheldMessage).optional(),
+    exitCode: z.number().int().optional(),
+    itemCount: z.number().int().nonnegative().optional(),
+    outputSummary: toolDisplayTextSchema.optional(),
+    toolName: toolDisplayTextSchema.optional(),
     toolUseId: z.string().min(1),
   })
   .strict()
@@ -177,6 +228,7 @@ const permissionRequestedPayloadSchema = z
     requestId: requestIdSchema,
     severity: z.enum(['low', 'medium', 'high', 'critical']),
     target: permissionDisplayTextSchema,
+    toolUseId: z.string().min(1),
     workspaceBoundary: permissionDisplayTextSchema,
   })
   .strict()
@@ -186,10 +238,102 @@ const permissionResolvedPayloadSchema = z
     requestId: requestIdSchema,
   })
   .strict()
+const safeArtifactMimeTypeSchema = z.enum([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/ogg',
+  'audio/wav',
+  'audio/webm',
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'application/json',
+  'application/pdf',
+  'application/zip',
+  'application/octet-stream',
+])
+const safeArtifactImageMimeTypeSchema = z.enum([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+])
+const safeArtifactVideoMimeTypeSchema = z.enum(['video/mp4', 'video/webm', 'video/quicktime'])
+const safeArtifactAudioMimeTypeSchema = z.enum([
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/ogg',
+  'audio/wav',
+  'audio/webm',
+])
+const safeArtifactFileMimeTypeSchema = z.enum([
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'application/json',
+  'application/pdf',
+  'application/zip',
+  'application/octet-stream',
+])
+const artifactMediaPreviewSchema = z
+  .object({
+    kind: z.enum(['image', 'video', 'audio', 'file']),
+    mimeType: safeArtifactMimeTypeSchema,
+    sizeBytes: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((media, context) => {
+    const schemaByKind = {
+      audio: safeArtifactAudioMimeTypeSchema,
+      file: safeArtifactFileMimeTypeSchema,
+      image: safeArtifactImageMimeTypeSchema,
+      video: safeArtifactVideoMimeTypeSchema,
+    }
+    if (!schemaByKind[media.kind].safeParse(media.mimeType).success) {
+      context.addIssue({
+        code: 'custom',
+        message: 'artifact media metadata MIME type must match media kind',
+        path: ['mimeType'],
+      })
+    }
+  })
 const artifactLifecyclePayloadSchema = z
   .object({
     artifactId: z.string().min(1),
+    kind: z.string().min(1).optional(),
+    source: z.enum(['assistant', 'tool', 'file', 'model_service']).optional(),
     status: z.enum(['failed', 'pending', 'ready', 'running']).optional(),
+    title: z.string().min(1).optional(),
+    summary: z.string().min(1).optional(),
+    media: artifactMediaPreviewSchema.optional(),
+  })
+  .strict()
+const assistantReviewRequestedPayloadSchema = z
+  .object({
+    requestId: requestIdSchema,
+    title: z.string().min(1),
+    body: z.string().min(1).optional(),
+  })
+  .strict()
+const assistantClarificationRequestedPayloadSchema = z
+  .object({
+    requestId: requestIdSchema,
+    prompt: z.string().min(1),
+  })
+  .strict()
+const assistantNoticePayloadSchema = z
+  .object({
+    noticeId: requestIdSchema,
+    body: z.string().min(1),
   })
   .strict()
 const engineFailedPayloadSchema = z
@@ -223,7 +367,9 @@ function eventSchema<TType extends string, TPayloadSchema extends z.ZodType>(
 
 const assistantThinkingDeltaPayloadSchema = z
   .object({
-    text: z.string(),
+    status: z.enum(['running', 'complete', 'completed', 'withheld']).optional(),
+    safeSummary: z.string().min(1).optional(),
+    safeSummaryDelta: z.string().min(1).optional(),
   })
   .strict()
 
@@ -244,6 +390,9 @@ export const runEventSchema = z
     eventSchema('permission.resolved', permissionResolvedPayloadSchema),
     eventSchema('artifact.created', artifactLifecyclePayloadSchema),
     eventSchema('artifact.updated', artifactLifecyclePayloadSchema),
+    eventSchema('assistant.review.requested', assistantReviewRequestedPayloadSchema),
+    eventSchema('assistant.clarification.requested', assistantClarificationRequestedPayloadSchema),
+    eventSchema('assistant.notice', assistantNoticePayloadSchema),
     eventSchema('engine.failed', engineFailedPayloadSchema),
   ])
   .superRefine((event, context) => {
@@ -279,10 +428,10 @@ export const runEventSchema = z
         })
       }
 
-      if (containsPrivateAbsolutePath(event.payload)) {
+      if (containsUnsafeDisplayReference(event.payload)) {
         context.addIssue({
           code: 'custom',
-          message: 'visible event payload must not contain private absolute paths',
+          message: 'visible event payload must not contain unsafe display references',
           path: ['payload'],
         })
       }
@@ -364,6 +513,12 @@ export function mapRunEventContractType(contractType: RunEventContractType): Run
       return 'artifact.created'
     case 'artifact_updated':
       return 'artifact.updated'
+    case 'assistant_review_requested':
+      return 'assistant.review.requested'
+    case 'assistant_clarification_requested':
+      return 'assistant.clarification.requested'
+    case 'assistant_notice':
+      return 'assistant.notice'
     case 'engine_failed':
       return 'engine.failed'
     default:
@@ -402,7 +557,7 @@ export const runEventFixtures: Array<Record<string, unknown>> = [
     type: 'assistant.delta',
     source: 'assistant',
     visibility: 'public',
-    payload: { text: 'Hello' },
+    payload: { messageId: 'msg-001', text: 'Hello' },
   },
   {
     id: 'evt-004',
@@ -484,6 +639,7 @@ export const runEventFixtures: Array<Record<string, unknown>> = [
       requestId: '01HZ0000000000000000000001',
       severity: 'medium',
       target: 'local workspace',
+      toolUseId: 'tool-001',
       workspaceBoundary: 'workspace://local',
     },
   },
@@ -521,6 +677,46 @@ export const runEventFixtures: Array<Record<string, unknown>> = [
     id: 'evt-014',
     runId: 'run-001',
     sequence: 14,
+    timestamp,
+    type: 'assistant.review.requested',
+    source: 'assistant',
+    visibility: 'public',
+    payload: {
+      requestId: '01HZ0000000000000000000001',
+      title: 'Review changes',
+      body: 'Confirm before applying.',
+    },
+  },
+  {
+    id: 'evt-015',
+    runId: 'run-001',
+    sequence: 15,
+    timestamp,
+    type: 'assistant.clarification.requested',
+    source: 'assistant',
+    visibility: 'public',
+    payload: {
+      requestId: '01HZ0000000000000000000002',
+      prompt: 'Which style should I use?',
+    },
+  },
+  {
+    id: 'evt-016',
+    runId: 'run-001',
+    sequence: 16,
+    timestamp,
+    type: 'assistant.notice',
+    source: 'assistant',
+    visibility: 'public',
+    payload: {
+      noticeId: '01HZ0000000000000000000003',
+      body: 'Tool output was summarized.',
+    },
+  },
+  {
+    id: 'evt-017',
+    runId: 'run-001',
+    sequence: 17,
     timestamp,
     type: 'engine.failed',
     source: 'engine',
@@ -561,6 +757,12 @@ export function getRunEventLabel(event: RunEvent): string {
       return 'Artifact created'
     case 'artifact.updated':
       return 'Artifact updated'
+    case 'assistant.review.requested':
+      return 'Assistant review requested'
+    case 'assistant.clarification.requested':
+      return 'Assistant clarification requested'
+    case 'assistant.notice':
+      return 'Assistant notice'
     case 'engine.failed':
       return 'Engine failed'
     default:

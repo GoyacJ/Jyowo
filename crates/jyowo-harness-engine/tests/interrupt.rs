@@ -10,10 +10,11 @@ use harness_context::ContextEngine;
 use harness_contracts::{
     BudgetMetric, CancelInitiator, CapabilityRegistry, Decision, DecisionScope, DeferPolicy,
     DeltaChunk, EndReason, Event, HookEventKind, Message, MessageId, MessagePart, MessageRole,
-    ModelError, NoopRedactor, OverflowAction, PermissionError, PermissionSubject,
-    ProviderRestriction, ResultBudget, RunId, SessionId, StopReason, TenantId, ToolDescriptor,
-    ToolGroup, ToolOrigin, ToolProperties, ToolSearchMode, ToolUseId, TrustLevel, TurnInput,
-    UsageSnapshot,
+    ModelError, NetworkAccess, NoopRedactor, OverflowAction, PermissionError, PermissionSubject,
+    ProviderRestriction, ResourceLimits, ResultBudget, RunId, SandboxExecutionCompletedEvent,
+    SandboxExecutionStartedEvent, SandboxMode, SandboxPolicySummary, SandboxScope, SessionId,
+    StopReason, TenantId, ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties, ToolSearchMode,
+    ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
 };
 use harness_engine::{
     CancellationToken, Engine, EngineId, EngineRunner, InterruptCause, RunContext, SessionHandle,
@@ -21,12 +22,16 @@ use harness_engine::{
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookHandler, HookOutcome, HookRegistry,
 };
-use harness_journal::InMemoryEventStore;
+use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
     ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
     ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
+use harness_sandbox::{
+    ActivityHandle, EventSink, ExecContext, ExecOutcome, ExecSpec, ProcessHandle, SandboxBackend,
+    SandboxBaseConfig, SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
+};
 use harness_tool::{
     SchemaResolverContext, Tool, ToolContext, ToolPool, ToolPoolFilter, ToolPoolModelProfile,
     ToolRegistry, ToolStream, ValidationError,
@@ -172,6 +177,68 @@ async fn tool_dispatch_mid_cancel_interrupts_tool_token() {
 }
 
 #[tokio::test]
+async fn tool_dispatch_mid_cancel_drains_queued_journal_events() {
+    let token = CancellationToken::new();
+    let harness = InterruptHarness::new_with_tool(
+        ModelResponse::Events(tool_call_events("Bash")),
+        HookMode::Count,
+        "Bash",
+        true,
+    )
+    .await;
+    let run = tokio::spawn({
+        let engine = harness.engine.clone();
+        let session = harness.session_handle();
+        let ctx = harness.run_context(token.clone());
+        async move {
+            engine
+                .run(session, turn_input("call tool"), ctx)
+                .await
+                .unwrap()
+                .collect::<Vec<_>>()
+                .await
+        }
+    });
+
+    harness.tool_started.notified().await;
+    token.cancel(InterruptCause::User);
+    let events = run.await.unwrap();
+    let stored_events = harness.stored_events().await;
+
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            Event::SandboxExecutionStarted(started) if started.backend_id == "queued-journal"
+        )
+    }));
+    assert!(stored_events.iter().any(|event| {
+        matches!(
+            event,
+            Event::SandboxExecutionStarted(started) if started.backend_id == "queued-journal"
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            Event::SandboxExecutionCompleted(completed) if completed.backend_id == "queued-journal"
+        )
+    }));
+    assert!(stored_events.iter().any(|event| {
+        matches!(
+            event,
+            Event::SandboxExecutionCompleted(completed) if completed.backend_id == "queued-journal"
+        )
+    }));
+    assert_end_reason(
+        &events,
+        EndReason::Cancelled {
+            initiator: CancelInitiator::User,
+        },
+    );
+    assert_single_run_end(&events);
+}
+
+#[tokio::test]
 async fn interrupt_causes_map_to_end_reason() {
     let cases = [
         (
@@ -215,7 +282,7 @@ struct InterruptHarness {
     tenant_id: TenantId,
     session_id: SessionId,
     engine: Engine,
-    _store: Arc<InMemoryEventStore>,
+    store: Arc<InMemoryEventStore>,
     model: Arc<RecordingModelProvider>,
     hook_calls: Arc<AtomicUsize>,
     tool_executed: Arc<AtomicUsize>,
@@ -225,6 +292,15 @@ struct InterruptHarness {
 
 impl InterruptHarness {
     async fn new(response: ModelResponse, hook_mode: HookMode) -> Self {
+        Self::new_with_tool(response, hook_mode, "InterruptibleTool", false).await
+    }
+
+    async fn new_with_tool(
+        response: ModelResponse,
+        hook_mode: HookMode,
+        tool_name: &str,
+        emit_journal_before_wait: bool,
+    ) -> Self {
         let workspace = tempfile::tempdir().unwrap();
         let tenant_id = TenantId::SINGLE;
         let session_id = SessionId::new();
@@ -241,16 +317,27 @@ impl InterruptHarness {
         let tool_executed = Arc::new(AtomicUsize::new(0));
         let tool_started = Arc::new(Notify::new());
         let tool_interrupted = Arc::new(AtomicBool::new(false));
-        let registry = ToolRegistry::builder()
-            .with_builtin_toolset(harness_tool::BuiltinToolset::Custom(vec![Box::new(
-                InterruptibleTool::new(
-                    tool_executed.clone(),
-                    tool_started.clone(),
-                    tool_interrupted.clone(),
-                ),
-            )]))
-            .build()
-            .unwrap();
+        let mut registry_builder = ToolRegistry::builder();
+        let sandbox = if emit_journal_before_wait {
+            registry_builder =
+                registry_builder.with_builtin_toolset(harness_tool::BuiltinToolset::Shell);
+            Some(Arc::new(QueuedJournalSandbox {
+                started: tool_started.clone(),
+                interrupted: tool_interrupted.clone(),
+            }) as Arc<dyn SandboxBackend>)
+        } else {
+            registry_builder =
+                registry_builder.with_builtin_toolset(harness_tool::BuiltinToolset::Custom(vec![
+                    Box::new(InterruptibleTool::new(
+                        tool_name,
+                        tool_executed.clone(),
+                        tool_started.clone(),
+                        tool_interrupted.clone(),
+                    )),
+                ]));
+            None
+        };
+        let registry = registry_builder.build().unwrap();
         let tools = ToolPool::assemble(
             &registry.snapshot(),
             &ToolPoolFilter::default(),
@@ -267,7 +354,7 @@ impl InterruptHarness {
         )
         .await
         .unwrap();
-        let engine = Engine::builder()
+        let mut engine_builder = Engine::builder()
             .with_engine_id(EngineId::new("interrupt-test"))
             .with_event_store(store.clone())
             .with_context(ContextEngine::builder().build().unwrap())
@@ -278,16 +365,18 @@ impl InterruptHarness {
             .with_workspace_root(workspace.path())
             .with_model_id("mock-model")
             .with_protocol(ModelProtocol::Messages)
-            .with_cap_registry(Arc::new(CapabilityRegistry::default()))
-            .build()
-            .unwrap();
+            .with_cap_registry(Arc::new(CapabilityRegistry::default()));
+        if let Some(sandbox) = sandbox {
+            engine_builder = engine_builder.with_sandbox(sandbox);
+        }
+        let engine = engine_builder.build().unwrap();
 
         Self {
             _workspace: workspace,
             tenant_id,
             session_id,
             engine,
-            _store: store,
+            store,
             model,
             hook_calls,
             tool_executed,
@@ -322,6 +411,15 @@ impl InterruptHarness {
             .await?
             .collect::<Vec<_>>()
             .await)
+    }
+
+    async fn stored_events(&self) -> Vec<Event> {
+        self.store
+            .read(self.tenant_id, self.session_id, ReplayCursor::FromStart)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
     }
 }
 
@@ -500,14 +598,23 @@ struct InterruptibleTool {
 }
 
 impl InterruptibleTool {
-    fn new(executed: Arc<AtomicUsize>, started: Arc<Notify>, interrupted: Arc<AtomicBool>) -> Self {
+    fn new(
+        name: &str,
+        executed: Arc<AtomicUsize>,
+        started: Arc<Notify>,
+        interrupted: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             descriptor: ToolDescriptor {
-                name: "InterruptibleTool".to_owned(),
+                name: name.to_owned(),
                 display_name: "Interruptible tool".to_owned(),
                 description: "Waits until interrupted.".to_owned(),
                 category: "test".to_owned(),
-                group: ToolGroup::FileSystem,
+                group: if name == "Bash" {
+                    ToolGroup::Shell
+                } else {
+                    ToolGroup::FileSystem
+                },
                 version: "0.1.0".to_owned(),
                 input_schema: json!({ "type": "object" }),
                 output_schema: None,
@@ -580,6 +687,156 @@ impl Tool for InterruptibleTool {
     }
 }
 
+struct QueuedJournalSandbox {
+    started: Arc<Notify>,
+    interrupted: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl SandboxBackend for QueuedJournalSandbox {
+    fn backend_id(&self) -> &str {
+        "queued-journal"
+    }
+
+    fn capabilities(&self) -> SandboxCapabilities {
+        SandboxCapabilities {
+            supports_streaming: true,
+            ..SandboxCapabilities::default()
+        }
+    }
+
+    async fn execute(
+        &self,
+        spec: ExecSpec,
+        ctx: ExecContext,
+    ) -> Result<ProcessHandle, harness_contracts::SandboxError> {
+        let fingerprint = spec.canonical_fingerprint(&SandboxBaseConfig::default());
+        ctx.event_sink.emit(Event::SandboxExecutionStarted(
+            SandboxExecutionStartedEvent {
+                session_id: ctx.session_id,
+                run_id: ctx.run_id,
+                tool_use_id: ctx.tool_use_id,
+                backend_id: "queued-journal".to_owned(),
+                fingerprint,
+                policy: SandboxPolicySummary {
+                    mode: SandboxMode::None,
+                    scope: SandboxScope::WorkspaceOnly,
+                    network: NetworkAccess::None,
+                    resource_limits: ResourceLimits {
+                        max_memory_bytes: None,
+                        max_cpu_cores: None,
+                        max_pids: None,
+                        max_wall_clock_ms: None,
+                        max_open_files: None,
+                    },
+                },
+                at: harness_contracts::now(),
+            },
+        ))?;
+        self.started.notify_waiters();
+        Ok(ProcessHandle {
+            pid: Some(7),
+            stdout: Some(Box::pin(stream::pending())),
+            stderr: None,
+            stdin: None,
+            cwd_marker: None,
+            activity: Arc::new(QueuedJournalActivity {
+                interrupted: self.interrupted.clone(),
+                completed_emitted: AtomicBool::new(false),
+                session_id: ctx.session_id,
+                run_id: ctx.run_id,
+                tool_use_id: ctx.tool_use_id,
+                event_sink: ctx.event_sink.clone(),
+                fingerprint,
+            }),
+        })
+    }
+
+    async fn snapshot_session(
+        &self,
+        _spec: &SnapshotSpec,
+    ) -> Result<SessionSnapshotFile, harness_contracts::SandboxError> {
+        Ok(SessionSnapshotFile::default())
+    }
+
+    async fn restore_session(
+        &self,
+        _snapshot: &SessionSnapshotFile,
+    ) -> Result<(), harness_contracts::SandboxError> {
+        Ok(())
+    }
+
+    async fn shutdown(&self) -> Result<(), harness_contracts::SandboxError> {
+        Ok(())
+    }
+}
+
+struct QueuedJournalActivity {
+    interrupted: Arc<AtomicBool>,
+    completed_emitted: AtomicBool,
+    session_id: SessionId,
+    run_id: RunId,
+    tool_use_id: Option<ToolUseId>,
+    event_sink: Arc<dyn EventSink>,
+    fingerprint: harness_contracts::ExecFingerprint,
+}
+
+#[async_trait]
+impl ActivityHandle for QueuedJournalActivity {
+    async fn wait(&self) -> Result<ExecOutcome, harness_contracts::SandboxError> {
+        loop {
+            if self.interrupted.load(Ordering::SeqCst) {
+                let now = harness_contracts::now();
+                if self
+                    .completed_emitted
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    self.event_sink.emit(Event::SandboxExecutionCompleted(
+                        SandboxExecutionCompletedEvent {
+                            session_id: self.session_id,
+                            run_id: self.run_id,
+                            tool_use_id: self.tool_use_id,
+                            backend_id: "queued-journal".to_owned(),
+                            fingerprint: self.fingerprint,
+                            exit_status: harness_contracts::SandboxExitStatus::Cancelled,
+                            stdout_bytes_observed: 0,
+                            stderr_bytes_observed: 0,
+                            duration_ms: 0,
+                            overflow: None,
+                            at: now,
+                        },
+                    ))?;
+                }
+                return Ok(ExecOutcome {
+                    exit_status: harness_contracts::SandboxExitStatus::Cancelled,
+                    started_at: now,
+                    finished_at: now,
+                    stdout_bytes_observed: 0,
+                    stderr_bytes_observed: 0,
+                    overflow: None,
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    async fn kill(
+        &self,
+        _signal: i32,
+        _scope: harness_contracts::KillScope,
+    ) -> Result<(), harness_contracts::SandboxError> {
+        self.interrupted.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn touch(&self) {}
+
+    fn last_activity(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+}
+
 fn turn_input(text: &str) -> TurnInput {
     TurnInput {
         message: Message {
@@ -611,6 +868,11 @@ fn text_events(text: &str) -> Vec<ModelStreamEvent> {
 }
 
 fn tool_call_events(name: &str) -> Vec<ModelStreamEvent> {
+    let input = if name == "Bash" {
+        json!({ "command": "printf queued-journal" })
+    } else {
+        json!({})
+    };
     vec![
         ModelStreamEvent::MessageStart {
             message_id: "assistant-1".to_owned(),
@@ -621,7 +883,7 @@ fn tool_call_events(name: &str) -> Vec<ModelStreamEvent> {
             delta: ContentDelta::ToolUseComplete {
                 id: ToolUseId::new(),
                 name: name.to_owned(),
-                input: json!({}),
+                input,
             },
         },
         ModelStreamEvent::MessageDelta {

@@ -7,7 +7,7 @@ use harness_contracts::{
 };
 use parking_lot::{Mutex, MutexGuard};
 
-use crate::{SchemaResolverContext, Tool, ToolRegistrySnapshot};
+use crate::{SchemaResolverContext, Tool, ToolJournalAuthority, ToolRegistrySnapshot};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolPoolModelProfile {
@@ -54,6 +54,7 @@ pub struct ToolPool {
     runtime_appended: Vec<Arc<dyn Tool>>,
     materialized_runtime_appended: Arc<Mutex<Vec<Arc<dyn Tool>>>>,
     descriptors: BTreeMap<String, Arc<ToolDescriptor>>,
+    journal_authorities: BTreeMap<String, ToolJournalAuthority>,
 }
 
 impl ToolPool {
@@ -84,6 +85,7 @@ impl ToolPool {
             prepared.push(PreparedTool {
                 tool: Arc::clone(tool),
                 descriptor,
+                journal_authority: snapshot.journal_authority(name),
             });
         }
 
@@ -93,10 +95,17 @@ impl ToolPool {
             prepared.iter().map(|entry| &entry.descriptor),
         );
 
-        for PreparedTool { tool, descriptor } in prepared {
+        for PreparedTool {
+            tool,
+            descriptor,
+            journal_authority,
+        } in prepared
+        {
             let partition = partition_for(&descriptor, search_mode, auto_defer_enabled)?;
             pool.descriptors
                 .insert(descriptor.name.clone(), Arc::new(descriptor));
+            pool.journal_authorities
+                .insert(tool.descriptor().name.clone(), journal_authority);
 
             match partition {
                 ToolPoolPartition::AlwaysLoaded => pool.always_loaded.push(tool),
@@ -125,13 +134,31 @@ impl ToolPool {
 
     #[must_use]
     pub fn prompt_visible_descriptors(&self) -> Vec<ToolDescriptor> {
-        self.always_loaded
+        let mut seen = std::collections::HashSet::new();
+        let deferred_names = self
+            .deferred
             .iter()
-            .chain(self.runtime_appended.iter())
-            .cloned()
-            .chain(self.materialized_runtime_appended())
-            .map(|tool| tool.descriptor().clone())
-            .collect()
+            .map(|tool| tool.descriptor().name.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut descriptors = Vec::new();
+        for tool in &self.always_loaded {
+            if seen.insert(tool.descriptor().name.clone()) {
+                descriptors.push(tool.descriptor().clone());
+            }
+        }
+        for tool in self.materialized_runtime_appended() {
+            if seen.insert(tool.descriptor().name.clone()) {
+                descriptors.push(tool.descriptor().clone());
+            }
+        }
+        for tool in &self.runtime_appended {
+            if !deferred_names.contains(&tool.descriptor().name)
+                && seen.insert(tool.descriptor().name.clone())
+            {
+                descriptors.push(tool.descriptor().clone());
+            }
+        }
+        descriptors
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
@@ -149,7 +176,11 @@ impl ToolPool {
     pub fn append_runtime_tool(&mut self, tool: Arc<dyn Tool>) {
         let descriptor = tool.descriptor().clone();
         self.descriptors
-            .insert(descriptor.name.clone(), Arc::new(descriptor));
+            .entry(descriptor.name.clone())
+            .or_insert_with(|| Arc::new(descriptor));
+        self.journal_authorities
+            .entry(tool.descriptor().name.clone())
+            .or_insert(ToolJournalAuthority::None);
         self.runtime_appended.push(tool);
     }
 
@@ -161,10 +192,6 @@ impl ToolPool {
                 .always_loaded
                 .iter()
                 .any(|tool| tool.descriptor().name == *name)
-                || self
-                    .runtime_appended
-                    .iter()
-                    .any(|tool| tool.descriptor().name == *name)
                 || materialized
                     .iter()
                     .any(|tool| tool.descriptor().name == *name)
@@ -177,6 +204,13 @@ impl ToolPool {
                 .iter()
                 .find(|tool| tool.descriptor().name == *name)
             else {
+                if self
+                    .runtime_appended
+                    .iter()
+                    .any(|tool| tool.descriptor().name == *name)
+                {
+                    added.push(name.clone());
+                }
                 continue;
             };
             materialized.push(Arc::clone(tool));
@@ -194,6 +228,10 @@ impl ToolPool {
                     tool.descriptor().name.clone(),
                     Arc::new(tool.descriptor().clone()),
                 );
+                pool.journal_authorities.insert(
+                    tool.descriptor().name.clone(),
+                    self.journal_authority(&tool.descriptor().name),
+                );
                 pool.always_loaded.push(Arc::clone(tool));
             }
         }
@@ -203,24 +241,34 @@ impl ToolPool {
                     tool.descriptor().name.clone(),
                     Arc::new(tool.descriptor().clone()),
                 );
+                pool.journal_authorities.insert(
+                    tool.descriptor().name.clone(),
+                    self.journal_authority(&tool.descriptor().name),
+                );
                 pool.deferred.push(Arc::clone(tool));
             }
         }
         for tool in &self.runtime_appended {
-            if existing_filter_allows(filter, tool.descriptor()) {
-                pool.descriptors.insert(
-                    tool.descriptor().name.clone(),
-                    Arc::new(tool.descriptor().clone()),
-                );
+            if !self.has_partitioned_tool(&tool.descriptor().name)
+                && existing_filter_allows(filter, tool.descriptor())
+            {
+                pool.descriptors
+                    .entry(tool.descriptor().name.clone())
+                    .or_insert_with(|| Arc::new(tool.descriptor().clone()));
+                pool.journal_authorities
+                    .entry(tool.descriptor().name.clone())
+                    .or_insert_with(|| self.journal_authority(&tool.descriptor().name));
                 pool.runtime_appended.push(Arc::clone(tool));
             }
         }
         for tool in self.materialized_runtime_appended() {
             if existing_filter_allows(filter, tool.descriptor()) {
-                pool.descriptors.insert(
-                    tool.descriptor().name.clone(),
-                    Arc::new(tool.descriptor().clone()),
-                );
+                pool.descriptors
+                    .entry(tool.descriptor().name.clone())
+                    .or_insert_with(|| Arc::new(tool.descriptor().clone()));
+                pool.journal_authorities
+                    .entry(tool.descriptor().name.clone())
+                    .or_insert_with(|| self.journal_authority(&tool.descriptor().name));
                 pool.lock_materialized_runtime_appended().push(tool);
             }
         }
@@ -238,8 +286,26 @@ impl ToolPool {
         self.descriptors.get(name).map(std::convert::AsRef::as_ref)
     }
 
+    pub fn journal_authority(&self, name: &str) -> ToolJournalAuthority {
+        self.journal_authorities
+            .get(name)
+            .copied()
+            .unwrap_or_default()
+    }
+
     fn lock_materialized_runtime_appended(&self) -> MutexGuard<'_, Vec<Arc<dyn Tool>>> {
         self.materialized_runtime_appended.lock()
+    }
+
+    fn has_partitioned_tool(&self, name: &str) -> bool {
+        self.always_loaded
+            .iter()
+            .chain(self.deferred.iter())
+            .any(|tool| tool.descriptor().name == name)
+            || self
+                .lock_materialized_runtime_appended()
+                .iter()
+                .any(|tool| tool.descriptor().name == name)
     }
 }
 
@@ -281,6 +347,7 @@ enum ToolPoolPartition {
 struct PreparedTool {
     tool: Arc<dyn Tool>,
     descriptor: ToolDescriptor,
+    journal_authority: ToolJournalAuthority,
 }
 
 fn filter_allows(

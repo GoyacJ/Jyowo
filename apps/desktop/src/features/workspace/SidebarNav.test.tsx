@@ -136,9 +136,10 @@ describe('SidebarNav', () => {
     expect(
       (await within(navigation).findByText('Runtime session')).closest('button'),
     ).toHaveAttribute('aria-current', 'page')
-    expect(
-      within(navigation).getByRole('button', { name: 'Delete Runtime session' }),
-    ).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: 'Delete Runtime session' })).toHaveClass(
+      'opacity-0',
+      'group-hover:opacity-100',
+    )
     expect(within(navigation).queryByText('Build the desktop foundation')).not.toBeInTheDocument()
     expect(within(navigation).queryByTestId('sidebar-bottom-navigation')).not.toBeInTheDocument()
     expect(within(navigation).queryByText('Home')).not.toBeInTheDocument()
@@ -454,6 +455,60 @@ describe('SidebarNav', () => {
       expect(listConversations).toHaveBeenCalledTimes(2)
     })
     expect(screen.queryByText('Auth runtime')).not.toBeInTheDocument()
+  })
+
+  it('shows delete command errors in the conversation list', async () => {
+    const deleteConversation = vi.fn(async () => {
+      throw new Error('conversation not found: conversation-runtime-002')
+    })
+    const commandClient = {
+      ...runtimeConversationClient(),
+      deleteConversation,
+    }
+
+    renderSidebarNav(commandClient)
+
+    expect(await screen.findByText('Auth runtime')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Auth runtime' }))
+
+    expect(
+      await screen.findByText('conversation not found: conversation-runtime-002'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Auth runtime')).toBeInTheDocument()
+  })
+
+  it('removes the active project from the project menu after confirmation', async () => {
+    const deleteProject = vi.fn(async () => ({
+      activePath: null,
+      path: '/Users/goya/Repo/Git/Jyowo',
+      status: 'deleted' as const,
+    }))
+    const listProjects = vi.fn().mockResolvedValueOnce(mockJyowoProject).mockResolvedValue({
+      activePath: null,
+      projects: [],
+    })
+    const commandClient = {
+      ...createMockCommandClient({ projects: mockJyowoProject }),
+      deleteProject,
+      listProjects,
+    }
+
+    renderSidebarNav(commandClient)
+
+    expect(await screen.findByText('Jyowo')).toBeInTheDocument()
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Switch project' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete Jyowo' }))
+    expect(deleteProject).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm remove project' }))
+
+    await waitFor(() => {
+      expect(deleteProject).toHaveBeenCalledWith('/Users/goya/Repo/Git/Jyowo')
+    })
+    await waitFor(() => {
+      expect(screen.getByText('No project selected')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Open a project to view conversations.')).toBeInTheDocument()
   })
 
   it('routes evals from the command palette', () => {

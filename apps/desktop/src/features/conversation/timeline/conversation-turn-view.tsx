@@ -20,7 +20,7 @@ export function ConversationTurnView({
   const { t } = useTranslation('conversation')
 
   return (
-    <article className="grid gap-4">
+    <article aria-label={t('turnLabel')} className="grid gap-4">
       <section className="flex justify-end">
         <div className="max-w-[78%] rounded-md bg-primary px-4 py-3 text-primary-foreground">
           <div className="mb-1 font-medium text-xs opacity-80">{t('userAuthor')}</div>

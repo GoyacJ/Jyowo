@@ -10,8 +10,8 @@ use parking_lot::RwLock;
 use serde_json::Value;
 
 use crate::{
-    PermissionCheck, SchemaResolverContext, Tool, ToolContext, ToolRegistryBuilder, ToolStream,
-    ValidationError,
+    PermissionCheck, SchemaResolverContext, Tool, ToolContext, ToolJournalAuthority,
+    ToolRegistryBuilder, ToolStream, ValidationError,
 };
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -52,6 +52,7 @@ struct RegisteredTool {
     descriptor: Arc<ToolDescriptor>,
     origin: ToolOrigin,
     trust_level: TrustLevel,
+    journal_authority: ToolJournalAuthority,
 }
 
 impl ToolRegistry {
@@ -66,6 +67,14 @@ impl ToolRegistry {
     }
 
     pub fn register(&self, tool: Box<dyn Tool>) -> Result<(), RegistrationError> {
+        self.register_with_journal_authority(tool, ToolJournalAuthority::None)
+    }
+
+    pub(crate) fn register_with_journal_authority(
+        &self,
+        tool: Box<dyn Tool>,
+        journal_authority: ToolJournalAuthority,
+    ) -> Result<(), RegistrationError> {
         let descriptor = tool.descriptor().clone();
         validate_descriptor(&descriptor)?;
         validate_capabilities(&descriptor)?;
@@ -78,6 +87,7 @@ impl ToolRegistry {
             descriptor: Arc::new(descriptor),
             origin,
             trust_level,
+            journal_authority,
         };
 
         let mut inner = self.inner.write();
@@ -163,6 +173,13 @@ impl ToolRegistry {
                     .map(|(name, tool)| (name.clone(), Arc::clone(&tool.descriptor)))
                     .collect(),
             ),
+            journal_authorities: Arc::new(
+                inner
+                    .tools
+                    .iter()
+                    .map(|(name, tool)| (name.clone(), tool.journal_authority))
+                    .collect(),
+            ),
             generation: inner.generation,
         }
     }
@@ -232,6 +249,7 @@ pub struct ShadowedRegistration {
 pub struct ToolRegistrySnapshot {
     tools: Arc<BTreeMap<String, Arc<dyn Tool>>>,
     descriptors: Arc<BTreeMap<String, Arc<ToolDescriptor>>>,
+    journal_authorities: Arc<BTreeMap<String, ToolJournalAuthority>>,
     generation: u64,
 }
 
@@ -242,6 +260,13 @@ impl ToolRegistrySnapshot {
 
     pub fn descriptor(&self, name: &str) -> Option<&Arc<ToolDescriptor>> {
         self.descriptors.get(name)
+    }
+
+    pub fn journal_authority(&self, name: &str) -> ToolJournalAuthority {
+        self.journal_authorities
+            .get(name)
+            .copied()
+            .unwrap_or_default()
     }
 
     pub fn iter_sorted(&self) -> impl Iterator<Item = (&String, &Arc<dyn Tool>)> {

@@ -430,7 +430,7 @@ describe('AppShell', () => {
 
     await waitFor(() => {
       expect(uiStore.getState().timelineScrollRequest).toEqual({
-        blockId: 'permission:01HZ0000000000000000000001',
+        anchorId: 'permission:01HZ0000000000000000000001',
         nonce: 1,
       })
     })

@@ -1,4 +1,4 @@
-import { Plus, Text, X } from 'lucide-react'
+import { Plus, Text, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/shared/lib/utils'
@@ -82,12 +82,12 @@ export function ConversationList({
             return (
               <li key={conversation.id}>
                 <div
-                  className="group flex w-full items-start gap-1 rounded-md pr-1 hover:bg-muted data-[active=true]:bg-accent/10 data-[active=true]:text-foreground"
+                  className="group grid w-full min-w-0 grid-cols-[minmax(0,1fr)_1.5rem] items-start gap-1 rounded-md pr-1 hover:bg-muted data-[active=true]:bg-accent/10 data-[active=true]:text-foreground"
                   data-active={isActive}
                 >
                   <button
                     aria-current={isActive ? 'page' : undefined}
-                    className="flex min-w-0 flex-1 items-start rounded-md px-2 py-1.5 text-left text-xs"
+                    className="flex min-w-0 items-start overflow-hidden rounded-md px-2 py-1.5 text-left text-xs"
                     onClick={() => onSelectConversation(conversation.id)}
                     type="button"
                   >
@@ -100,7 +100,7 @@ export function ConversationList({
                         )}
                         strokeWidth={isActive ? 2 : 1.5}
                       />
-                      <span className="min-w-0">
+                      <span className="min-w-0 flex-1 overflow-hidden">
                         <span className="block truncate">{title}</span>
                         {lastMessagePreview ? (
                           <span className="mt-0.5 block truncate text-muted-foreground">
@@ -112,12 +112,12 @@ export function ConversationList({
                   </button>
                   <button
                     aria-label={t('conversations.delete', { title })}
-                    className="mt-1 grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
+                    className="mt-1 grid size-6 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
                     onClick={() => onDeleteConversation(conversation.id)}
                     title={t('conversations.delete', { title })}
                     type="button"
                   >
-                    <X className="size-3.5" strokeWidth={1.75} />
+                    <Trash2 className="size-3.5" strokeWidth={1.75} />
                   </button>
                 </div>
               </li>

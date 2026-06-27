@@ -50,6 +50,7 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
   )
   const hadActiveRunRef = useRef(false)
   const refreshTimeoutRef = useRef<number | null>(null)
+  const refreshTimeoutConversationRef = useRef<string | null>(null)
   const renderedConversationId = renderedConversation?.id ?? null
   const activeConversationId =
     renderedConversationId ?? conversation.selectedConversationId ?? 'conversation-pending'
@@ -112,22 +113,35 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     if (!renderedConversationId || displayState.refreshRequests === 0) {
       return
     }
+    if (
+      refreshTimeoutRef.current !== null &&
+      refreshTimeoutConversationRef.current !== renderedConversationId
+    ) {
+      window.clearTimeout(refreshTimeoutRef.current)
+      refreshTimeoutRef.current = null
+      refreshTimeoutConversationRef.current = null
+    }
     if (refreshTimeoutRef.current !== null) {
       return
     }
 
+    refreshTimeoutConversationRef.current = renderedConversationId
     refreshTimeoutRef.current = window.setTimeout(() => {
       refreshTimeoutRef.current = null
+      refreshTimeoutConversationRef.current = null
       void queryClient.invalidateQueries({ queryKey: worktreeQueryKey })
     }, worktreeRefetchThrottleMs)
+  }, [displayState.refreshRequests, queryClient, renderedConversationId, worktreeQueryKey])
 
+  useEffect(() => {
     return () => {
       if (refreshTimeoutRef.current !== null) {
         window.clearTimeout(refreshTimeoutRef.current)
         refreshTimeoutRef.current = null
+        refreshTimeoutConversationRef.current = null
       }
     }
-  }, [displayState.refreshRequests, queryClient, renderedConversationId, worktreeQueryKey])
+  }, [])
 
   useEffect(() => {
     if (!renderedConversationId) {
@@ -241,7 +255,6 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
   })
 
   return {
-    blocks: selectTurns(displayState),
     turns: selectTurns(displayState),
     composerMode: submitMutation.isPending
       ? { kind: 'submitting' as const }
@@ -254,8 +267,7 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     isLoading: conversation.isLoading || worktreeQuery.isLoading,
     isCancelling: cancelMutation.isPending,
     isSubmitting: submitMutation.isPending,
-    pendingPermissionBlocks: selectPendingPermissions(displayState),
-    pendingPermissions: selectPendingPermissions(displayState),
+    pendingToolPermissions: selectPendingPermissions(displayState),
     shouldPollFallback: selectShouldPollFallback(displayState),
     cancelActiveRun: cancelMutation.mutateAsync,
     cancelError: cancelMutation.error,

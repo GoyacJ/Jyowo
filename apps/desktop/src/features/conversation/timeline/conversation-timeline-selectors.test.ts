@@ -35,7 +35,7 @@ describe('conversation timeline selectors', () => {
         ...createConversationTimelineState('conversation-001'),
         turns: [turn({ segmentKind: 'clarificationRequest' })],
       }),
-    ).toEqual({ kind: 'clarification-reply', blockId: 'segment:clarification:request-001' })
+    ).toEqual({ kind: 'clarification-reply', segmentId: 'segment:clarification:request-001' })
 
     expect(
       selectComposerMode({

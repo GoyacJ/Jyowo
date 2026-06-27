@@ -342,6 +342,9 @@ Rules:
 - Tests, Storybook, and Playwright web mock E2E use mock clients.
 - Mock clients must not be selectable in production builds.
 - Tauri capabilities remain minimal and explicit.
+- RunEvent schemas must reject raw thinking text. `assistant.delta` carries
+  `messageId` and UI-safe `text`; `assistant.thinking.delta` carries only
+  status or explicit UI-safe reasoning summaries.
 
 Current commands:
 
@@ -386,6 +389,12 @@ get_conversation(conversationId: string): {
 
 delete_conversation(conversationId: string): {
   conversationId: string
+  status: 'deleted'
+}
+
+delete_project(path: string): {
+  activePath: string | null
+  path: string
   status: 'deleted'
 }
 
@@ -452,6 +461,15 @@ list_artifacts({
     status: 'failed' | 'pending' | 'ready' | 'running'
     title: string
   }>
+}
+
+get_artifact_media_preview(request: {
+  conversationId: string
+  artifactId: string
+}): {
+  dataUrl: string
+  mimeType: string
+  sizeBytes: number
 }
 
 list_eval_cases(): {
@@ -560,32 +578,124 @@ type ProviderConfig = {
 list_mcp_servers(): {
   servers: Array<{
     displayName: string
+    enabled: boolean
     exposedToolCount: number
     id: string
+    lastDiagnostic?: string
+    lastDiagnosticAt?: string
+    lastDiagnosticSeverity?: 'error' | 'info' | 'warning'
     lastError?: string
+    manageable: boolean
     origin: 'managed' | 'plugin' | 'policy' | 'user' | 'workspace'
     scope: 'agent' | 'global' | 'session'
-    status: 'closed' | 'configured' | 'connecting' | 'failed' | 'ready' | 'reconnecting'
+    status:
+      | 'closed'
+      | 'configured'
+      | 'connecting'
+      | 'disabled'
+      | 'failed'
+      | 'ready'
+      | 'reconnecting'
     transport: 'http' | 'inProcess' | 'sse' | 'stdio' | 'websocket'
   }>
 }
 
+get_mcp_server_config(id: string): {
+  server: {
+    displayName: string
+    enabled: boolean
+    id: string
+    scope: 'agent' | 'global' | 'session'
+    transport:
+      | {
+          args: string[]
+          command: string
+          env: Array<{ key: string; value: string }>
+          inheritEnv: string[]
+          kind: 'stdio'
+          workingDir?: string
+        }
+      | {
+          bearerTokenEnvVar?: string
+          headers: Array<{ key: string; value: string }>
+          headersFromEnv: Array<{ envVar: string; key: string }>
+          kind: 'http'
+          url: string
+        }
+  }
+}
+
 save_mcp_server(request: {
   displayName: string
+  enabled?: boolean
   id: string
   scope: 'agent' | 'global' | 'session'
-  transport: {
-    args: string[]
-    command: string
-    kind: 'stdio'
-  }
+  transport:
+    | {
+        args?: string[]
+        command: string
+        env?: Array<{ key: string; value: string }>
+        inheritEnv?: string[]
+        kind: 'stdio'
+        workingDir?: string
+      }
+    | {
+        bearerTokenEnvVar?: string
+        headers?: Array<{ key: string; value: string }>
+        headersFromEnv?: Array<{ envVar: string; key: string }>
+        kind: 'http'
+        url: string
+      }
 }): {
+  server: McpServerSummary
+}
+
+set_mcp_server_enabled(request: {
+  enabled: boolean
+  id: string
+}): {
+  server: McpServerSummary
+}
+
+restart_mcp_server(id: string): {
   server: McpServerSummary
 }
 
 delete_mcp_server(id: string): {
   id: string
   status: 'deleted'
+}
+
+list_mcp_diagnostics(request?: {
+  serverId?: string
+}): {
+  events: Array<{
+    eventType: string
+    id: string
+    serverId: string
+    severity: 'error' | 'info' | 'warning'
+    summary: string
+    timestamp: string
+  }>
+}
+
+clear_mcp_diagnostics(request?: {
+  serverId?: string
+}): {
+  status: 'cleared'
+}
+
+subscribe_mcp_diagnostics(request?: {
+  serverId?: string
+}): {
+  replayEvents: McpDiagnosticRecord[]
+  serverId?: string
+  subscriptionId: string
+}
+
+unsubscribe_mcp_diagnostics(subscriptionId: string): {
+  status: 'alreadyClosed' | 'unsubscribed'
+  subscriptionId: string
 }
 
 list_memory_items(): {
@@ -743,26 +853,42 @@ Streaming:
 
 Conversation timeline:
 
-- `ConversationBlock[]` is the only render source for the conversation canvas.
-- `get_conversation`, replay events, live `conversation_event_batch` events,
-  artifact snapshots, local submits, and command results feed the timeline
-  reducer.
+- `ConversationTurn[]` from `page_conversation_worktree` is the only render
+  source for the conversation canvas.
+- Raw `RunEvent` data and `page_conversation_timeline` are execution surfaces
+  for Activity, Replay, details, and Raw JSON. They must not become product
+  render models.
+- Live `conversation_event_batch` events are invalidation signals for worktree
+  refresh. They must not be reduced directly into render segments.
+- `get_conversation.messages`, artifact snapshots, command results, and local
+  submits must not feed a frontend timeline reducer. Local submits may create
+  temporary optimistic turns and are reconciled by `clientMessageId` when the
+  worktree projection arrives.
 - `ConversationWorkspace` composes `useConversationTimeline`,
   `ConversationTimeline`, and `Composer`; it must not merge messages, activity
   events, artifacts, and local optimistic arrays itself.
 - `clientMessageId` is generated before `start_run` and is the only key that
   confirms an optimistic user message. Body text must not be used for matching.
 - `conversationSequence` is the backend-provided conversation order key.
-  Frontend code must not sort conversation blocks by `(runId, sequence)`.
+  Frontend code must not sort conversation turns by `(runId, sequence)`.
 - Feature code must not call Tauri `listen` directly. `shared/tauri` owns the
   typed listener for `conversation_event_batch` and exposes parsed payloads.
 - Replay returned by `subscribe_conversation_events` must be applied before
   live batches for the same `subscriptionId`.
 - Gaps or cursor mismatches mark the reducer gap state and request replay or
   snapshot recovery. The UI must not guess missing event order locally.
-- Streaming assistant text stays in the reducer buffer until
-  `assistant.completed` provides a redacted final body or snapshot
-  reconciliation finds the final message by `messageId`.
+- Streaming assistant deltas request projected worktree refreshes. The product
+  canvas renders the latest Rust-owned `AssistantWork` tree, including
+  process, text, tool attempts, permissions, artifacts, review requests,
+  clarification requests, notices, and errors.
+- New assistant work should use `ProcessSegment` for UI-safe work process
+  steps. `ThinkingSegment` is a compatibility shape only; the canvas must not
+  read raw thought events or raw thought text.
+- Image artifacts render from `ArtifactSegment.media` metadata and lazy-load
+  preview bytes through `get_artifact_media_preview`. The preview command
+  accepts only `conversationId` and `artifactId` and returns only an image data
+  URL, MIME type, and byte count. It must not expose blob paths, filesystem
+  paths, remote URLs, signed URLs, or provider-native payloads to React.
 
 IPC error shape:
 

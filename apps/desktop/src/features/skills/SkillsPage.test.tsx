@@ -182,6 +182,48 @@ describe('SkillsPage', () => {
     await waitFor(() => expect(importSkill).toHaveBeenCalledWith('/tmp/release-notes'))
   })
 
+  it('installs a skill from the catalog', async () => {
+    const installSkillFromCatalog = vi.fn().mockResolvedValue({
+      skill: {
+        description: 'Create distinctive frontend interfaces.',
+        enabled: true,
+        id: 'skill-catalog-001',
+        manageable: true,
+        name: 'frontend-design',
+        origin: {
+          entryId: 'anthropic:frontend-design',
+          installedFromCatalog: true,
+          sourceId: 'anthropic',
+          sourceLabel: 'Anthropic Skills',
+          version: 'main',
+        },
+        sourceKind: 'workspace',
+        status: 'ready',
+        tags: ['frontend'],
+      },
+    })
+    const client = {
+      ...createMockCommandClient(),
+      installSkillFromCatalog,
+    }
+
+    renderSkillsPage(client)
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Catalog' }))
+
+    expect(await screen.findByRole('button', { name: /frontend-design/ })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /frontend-design/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '安装' }))
+
+    await waitFor(() =>
+      expect(installSkillFromCatalog).toHaveBeenCalledWith({
+        entryId: 'anthropic:frontend-design',
+        sourceId: 'anthropic',
+        version: 'main',
+      }),
+    )
+  })
+
   it('allows workspace skills to be disabled, enabled, and deleted', async () => {
     const skills: ListSkillsResponse = {
       skills: [

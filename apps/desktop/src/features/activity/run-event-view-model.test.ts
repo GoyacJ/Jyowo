@@ -95,6 +95,7 @@ describe('run-event-view-model', () => {
         requestId: '01HZ0000000000000000000001',
         severity: 'critical',
         target: 'workspace package manager',
+        toolUseId: 'tool-001',
         workspaceBoundary: 'workspace://local',
       },
     })
@@ -110,6 +111,7 @@ describe('run-event-view-model', () => {
         risk: 'critical',
         state: 'pending',
         target: 'workspace package manager',
+        toolUseId: 'tool-001',
         workspaceBoundary: 'workspace://local',
       },
     ])
@@ -147,6 +149,7 @@ describe('run-event-view-model', () => {
           requestId: '01HZ0000000000000000000001',
           severity: 'high',
           target: 'workspace package manager',
+          toolUseId: 'tool-001',
           workspaceBoundary: 'workspace://local',
         },
       },

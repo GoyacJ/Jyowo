@@ -18,7 +18,13 @@ default = []
 skill-tools = []
 builtin-toolset = ["jyowo-harness-permission/dangerous"]
 programmatic-tool-calling = ["builtin-toolset", "jyowo-harness-sandbox/code-runtime"]
-minimax-tools = ["builtin-toolset", "dep:base64", "dep:jyowo-harness-model", "jyowo-harness-model/minimax"]
+minimax-tools = [
+  "builtin-toolset",
+  "dep:base64",
+  "dep:jyowo-harness-model",
+  "dep:reqwest",
+  "jyowo-harness-model/minimax",
+]
 
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }

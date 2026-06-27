@@ -1,11 +1,13 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, ConfigHash, CorrelationId,
-    DecidedBy, EngineError, EngineFailedEvent, EventId, MessageContent, MessageId, MessageMetadata,
-    PermissionRequestedEvent, PermissionResolvedEvent, RunStartedEvent, SnapshotId, StopReason,
-    ToolErrorPayload, ToolUseFailedEvent, ToolUseRequestedEvent, TurnInput,
-    UserMessageAppendedEvent,
+    AssistantClarificationRequestedEvent, AssistantDeltaProducedEvent,
+    AssistantMessageCompletedEvent, AssistantNoticeEvent, AssistantReviewRequestedEvent,
+    ConfigHash, CorrelationId, DecidedBy, EngineError, EngineFailedEvent, EventId,
+    McpConnectionLostEvent, McpConnectionLostReason, MessageContent, MessageId, MessageMetadata,
+    PermissionRequestedEvent, PermissionResolvedEvent, ReasoningSummaryChunk, RunStartedEvent,
+    SnapshotId, StopReason, ToolErrorPayload, ToolUseFailedEvent, ToolUseRequestedEvent,
+    ToolUseSummary, TurnInput, UiSafeText, UserMessageAppendedEvent,
 };
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
 use jyowo_desktop_shell::commands::{
@@ -15,25 +17,29 @@ use jyowo_desktop_shell::commands::{
     delete_mcp_server_with_store, delete_memory_item_with_runtime_state,
     delete_skill_with_runtime_state, export_memory_items_with_runtime_state,
     export_support_bundle_with_runtime_state, get_app_info_payload,
-    get_context_snapshot_with_runtime_state, get_conversation_with_runtime_state,
-    get_execution_settings_with_store, get_memory_item_with_runtime_state,
-    get_provider_config_api_key_with_runtime_state, get_provider_config_api_key_with_store,
-    get_replay_timeline_with_runtime_state, get_skill_detail_with_runtime_state,
-    get_skill_file_with_runtime_state, harness_healthcheck_payload,
-    import_skill_with_runtime_state, list_activity_payload, list_activity_with_runtime_state,
-    list_artifacts_with_runtime_state, list_conversations_with_runtime_state,
-    list_eval_cases_payload, list_eval_cases_with_runtime_state,
+    get_artifact_media_preview_with_runtime_state, get_context_snapshot_with_runtime_state,
+    get_conversation_with_runtime_state, get_execution_settings_with_store,
+    get_mcp_server_config_with_runtime_state, get_mcp_server_config_with_store,
+    get_memory_item_with_runtime_state, get_provider_config_api_key_with_runtime_state,
+    get_provider_config_api_key_with_store, get_replay_timeline_with_runtime_state,
+    get_skill_detail_with_runtime_state, get_skill_file_with_runtime_state,
+    harness_healthcheck_payload, import_skill_with_runtime_state, list_activity_payload,
+    list_activity_with_runtime_state, list_artifacts_with_runtime_state,
+    list_conversations_with_runtime_state, list_eval_cases_payload,
+    list_eval_cases_with_runtime_state, list_mcp_diagnostics_with_store,
     list_mcp_servers_with_runtime_state, list_memory_items_with_runtime_state,
     list_model_provider_catalog_payload, list_provider_settings_with_store,
     list_reference_candidates_with_runtime_state, list_skills_with_runtime_state,
+    mcp_diagnostic_record_from_event, page_conversation_timeline_with_runtime_state,
     page_conversation_worktree_with_runtime_state,
     request_provider_config_api_key_reveal_with_runtime_state,
     request_provider_config_api_key_reveal_with_store,
     resolve_permission_for_window_with_runtime_state, resolve_permission_payload,
-    resolve_permission_with_runtime_state, run_eval_case_payload, run_eval_case_with_runtime_state,
-    runtime_state_async, runtime_state_for_workspace, save_mcp_server_with_runtime_state,
-    save_mcp_server_with_store, save_provider_settings_with_store,
-    set_conversation_model_config_with_runtime_state, set_execution_settings_with_store,
+    resolve_permission_with_runtime_state, restart_mcp_server_with_runtime_state,
+    run_eval_case_payload, run_eval_case_with_runtime_state, runtime_state_async,
+    runtime_state_for_workspace, save_mcp_server_with_runtime_state, save_mcp_server_with_store,
+    save_provider_settings_with_store, set_conversation_model_config_with_runtime_state,
+    set_execution_settings_with_store, set_mcp_server_enabled_with_runtime_state,
     set_skill_enabled_with_runtime_state, start_run_payload, start_run_with_runtime_state,
     subscribe_conversation_events_for_window_with_runtime_state,
     unsubscribe_conversation_events_for_window_with_runtime_state,
@@ -42,34 +48,37 @@ use jyowo_desktop_shell::commands::{
     ContextReferencePayload, ConversationEventBatchPayload, ConversationModelCapabilityRecord,
     CreateAttachmentFromPathRequest, DeleteConversationRequest, DeleteMcpServerRequest,
     DeleteMemoryItemRequest, DeleteSkillRequest, DesktopExecutionSettingsStore,
-    DesktopProviderSettingsStore, DesktopRuntimeState, DesktopSkillStore,
-    ExportSupportBundleRequest, GetContextSnapshotRequest, GetConversationRequest,
+    DesktopMcpDiagnosticStore, DesktopProviderSettingsStore, DesktopRuntimeState,
+    DesktopSkillStore, ExportSupportBundleRequest, GetArtifactMediaPreviewRequest,
+    GetContextSnapshotRequest, GetConversationRequest, GetMcpServerConfigRequest,
     GetMemoryItemRequest, GetProviderConfigApiKeyRequest, GetSkillDetailRequest,
     GetSkillFileRequest, ImportSkillRequest, ListActivityRequest, ListArtifactsRequest,
-    ListReferenceCandidatesRequest, McpServerConfigRecord, McpServerStore,
-    McpServerTransportConfig, PageConversationWorktreeDirection, PageConversationWorktreeRequest,
-    PermissionDecision, ProviderConfigRecord, ProviderModelDescriptorRecord,
-    ProviderModelLifecycleRecord, ProviderModelModalityRecord, ProviderSettingsRecord,
-    ProviderSettingsRequest, ProviderSettingsStore, ReplayTimelineRequest,
-    RequestProviderConfigApiKeyRevealRequest, ResolvePermissionRequest, RunEvalCaseRequest,
-    SaveMcpServerRequest, SetConversationModelConfigRequest, SetExecutionSettingsRequest,
-    SetSkillEnabledRequest, SkillStore, SkillStoreRecord, StartRunRequest,
-    SubscribeConversationEventsRequest, UnsubscribeConversationEventsRequest,
-    UpdateMemoryItemRequest, ValidateProviderSettingsRequest,
+    ListReferenceCandidatesRequest, McpDiagnosticRecord, McpDiagnosticSeverity, McpDiagnosticStore,
+    McpHeaderEnvRecord, McpNameValueRecord, McpServerConfigRecord, McpServerStore,
+    McpServerTransportConfig, PageConversationTimelineRequest, PageConversationWorktreeDirection,
+    PageConversationWorktreeRequest, PermissionDecision, ProviderConfigRecord,
+    ProviderModelDescriptorRecord, ProviderModelLifecycleRecord, ProviderModelModalityRecord,
+    ProviderSettingsRecord, ProviderSettingsRequest, ProviderSettingsStore, ReplayTimelineRequest,
+    RequestProviderConfigApiKeyRevealRequest, ResolvePermissionRequest, RestartMcpServerRequest,
+    RunEvalCaseRequest, SaveMcpServerRequest, SetConversationModelConfigRequest,
+    SetExecutionSettingsRequest, SetMcpServerEnabledRequest, SetSkillEnabledRequest, SkillStore,
+    SkillStoreRecord, StartRunRequest, SubscribeConversationEventsRequest,
+    UnsubscribeConversationEventsRequest, UpdateMemoryItemRequest, ValidateProviderSettingsRequest,
 };
-use jyowo_harness_sdk::builtin::DefaultRedactor;
+use jyowo_harness_sdk::builtin::{DefaultRedactor, FileBlobStore};
 use jyowo_harness_sdk::ext::{
-    now, ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, ArtifactUpdatedEvent, BudgetMetric,
-    Decision, DecisionScope, DeferPolicy, DeltaChunk, Event, EventStore, FallbackPolicy,
-    InteractivityLevel, McpConnection, McpError, McpRegistry, McpServerId, McpServerScope,
-    McpServerSource, McpServerSpec, McpToolDescriptor, McpToolResult, MemoryId, MemoryKind,
-    MemoryMetadata, MemoryRecord, MemorySource, MemoryStore, MemoryVisibility, Message,
-    MessagePart, MessageRole, ModelError, ModelProtocol, OverflowAction, PermissionCheck,
-    PermissionContext, PermissionMode, PermissionRequest, PermissionSubject, ProviderRestriction,
-    RedactPatternSet, RedactRules, RedactScope, Redactor, RequestId, ResultBudget, RuleSnapshot,
-    RunId, SessionId, Severity, StreamBrokerConfig, TenantId, ThinkingDelta, Tool, ToolContext,
-    ToolDescriptor, ToolError, ToolEvent, ToolGroup, ToolProperties, ToolRegistry, ToolResult,
-    ToolStream, ToolUseId, TransportChoice, TrustLevel, UsageSnapshot, ValidationError,
+    now, ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, ArtifactUpdatedEvent, BlobMeta,
+    BlobRetention, BlobStore, BudgetMetric, Decision, DecisionScope, DeferPolicy, DeltaChunk,
+    Event, EventStore, FallbackPolicy, InteractivityLevel, McpConnection, McpError, McpRegistry,
+    McpServerId, McpServerScope, McpServerSource, McpServerSpec, McpToolDescriptor, McpToolResult,
+    MemoryId, MemoryKind, MemoryMetadata, MemoryRecord, MemorySource, MemoryStore,
+    MemoryVisibility, Message, MessagePart, MessageRole, ModelError, ModelProtocol, OverflowAction,
+    PermissionCheck, PermissionContext, PermissionMode, PermissionRequest, PermissionSubject,
+    ProviderRestriction, RedactPatternSet, RedactRules, RedactScope, Redactor, RequestId,
+    ResultBudget, RuleSnapshot, RunId, SessionId, Severity, StreamBrokerConfig, TenantId,
+    ThinkingDelta, Tool, ToolContext, ToolDescriptor, ToolError, ToolEvent, ToolGroup,
+    ToolProperties, ToolRegistry, ToolResult, ToolStream, ToolUseId, TransportChoice, TrustLevel,
+    UsageSnapshot, ValidationError,
 };
 use jyowo_harness_sdk::ext::{ContentDelta, ModelStreamEvent};
 use jyowo_harness_sdk::testing::{
@@ -360,6 +369,7 @@ async fn enabling_skill_rejects_runtime_duplicate_name() {
         tags: Vec::new(),
         category: None,
         last_validation_error: None,
+        origin: None,
     };
     let index_path = workspace.join(".jyowo/runtime/skills/index.json");
     std::fs::write(
@@ -1522,12 +1532,16 @@ async fn save_mcp_server_payload_rejects_invalid_config_fail_closed() {
     let store = RecordingMcpServerStore::default();
     let error = save_mcp_server_with_store(
         SaveMcpServerRequest {
+            enabled: true,
             display_name: String::new(),
             id: "bad id".to_owned(),
             scope: "global".to_owned(),
             transport: McpServerTransportConfig::Stdio {
                 command: String::new(),
                 args: Vec::new(),
+                env: Vec::new(),
+                inherit_env: Vec::new(),
+                working_dir: None,
             },
         },
         &store,
@@ -1539,17 +1553,39 @@ async fn save_mcp_server_payload_rejects_invalid_config_fail_closed() {
     assert!(store.record.lock().unwrap().is_none());
 }
 
+#[test]
+fn mcp_server_config_record_defaults_legacy_stdio_records_to_enabled() {
+    let record = serde_json::from_value::<McpServerConfigRecord>(json!({
+        "displayName": "Workspace GitHub",
+        "id": "github",
+        "scope": "global",
+        "transport": {
+            "kind": "stdio",
+            "command": "node",
+            "args": ["server.js"]
+        }
+    }))
+    .unwrap();
+
+    assert!(record.enabled);
+    assert_eq!(record.display_name, "Workspace GitHub");
+}
+
 #[tokio::test]
 async fn save_mcp_server_payload_rejects_secret_bearing_stdio_args() {
     let store = RecordingMcpServerStore::default();
     let error = save_mcp_server_with_store(
         SaveMcpServerRequest {
+            enabled: true,
             display_name: "Workspace GitHub".to_owned(),
             id: "github".to_owned(),
             scope: "global".to_owned(),
             transport: McpServerTransportConfig::Stdio {
                 command: "node".to_owned(),
                 args: vec!["--token=mcp-secret-token".to_owned()],
+                env: Vec::new(),
+                inherit_env: Vec::new(),
+                working_dir: None,
             },
         },
         &store,
@@ -1566,12 +1602,16 @@ async fn save_mcp_server_payload_rejects_raw_secret_like_stdio_args() {
     let store = RecordingMcpServerStore::default();
     let error = save_mcp_server_with_store(
         SaveMcpServerRequest {
+            enabled: true,
             display_name: "Workspace GitHub".to_owned(),
             id: "github".to_owned(),
             scope: "global".to_owned(),
             transport: McpServerTransportConfig::Stdio {
                 command: "node".to_owned(),
                 args: vec!["ghp_abcdefghijklmnopqrstuvwxyz0123456789".to_owned()],
+                env: Vec::new(),
+                inherit_env: Vec::new(),
+                working_dir: None,
             },
         },
         &store,
@@ -1588,6 +1628,7 @@ async fn save_mcp_server_payload_rejects_in_process_workspace_config() {
     let store = RecordingMcpServerStore::default();
     let error = save_mcp_server_with_store(
         SaveMcpServerRequest {
+            enabled: true,
             display_name: "Internal".to_owned(),
             id: "internal".to_owned(),
             scope: "global".to_owned(),
@@ -1602,9 +1643,154 @@ async fn save_mcp_server_payload_rejects_in_process_workspace_config() {
     assert!(store.record.lock().unwrap().is_none());
 }
 
+#[tokio::test]
+async fn save_mcp_server_payload_persists_http_config_without_secret_values() {
+    let store = RecordingMcpServerStore::default();
+    let payload = save_mcp_server_with_store(
+        SaveMcpServerRequest {
+            enabled: true,
+            display_name: "Remote Context".to_owned(),
+            id: "context7".to_owned(),
+            scope: "global".to_owned(),
+            transport: McpServerTransportConfig::Http {
+                url: "https://mcp.example.com/mcp".to_owned(),
+                bearer_token_env_var: Some("MCP_BEARER_TOKEN".to_owned()),
+                headers: vec![McpNameValueRecord {
+                    key: "X-Workspace".to_owned(),
+                    value: "jyowo".to_owned(),
+                }],
+                headers_from_env: vec![McpHeaderEnvRecord {
+                    key: "X-Api-Key".to_owned(),
+                    env_var: "MCP_CONTEXT7_TOKEN".to_owned(),
+                }],
+            },
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+    let stored = store.record.lock().unwrap().clone().unwrap();
+
+    assert!(payload.server.enabled);
+    assert!(payload.server.manageable);
+    assert_eq!(payload.server.transport, "http");
+    assert_eq!(stored.enabled, true);
+    assert_eq!(
+        serde_json::to_string(&stored).unwrap().contains("secret"),
+        false
+    );
+}
+
+#[tokio::test]
+async fn get_mcp_server_config_with_store_returns_workspace_managed_record() {
+    let store = RecordingMcpServerStore::default();
+    save_mcp_server_with_store(
+        SaveMcpServerRequest {
+            enabled: true,
+            display_name: "Remote Context".to_owned(),
+            id: "context7".to_owned(),
+            scope: "global".to_owned(),
+            transport: McpServerTransportConfig::Http {
+                url: "https://mcp.example.com/mcp".to_owned(),
+                bearer_token_env_var: Some("MCP_BEARER_TOKEN".to_owned()),
+                headers: vec![McpNameValueRecord {
+                    key: "X-Workspace".to_owned(),
+                    value: "jyowo".to_owned(),
+                }],
+                headers_from_env: vec![McpHeaderEnvRecord {
+                    key: "X-Api-Key".to_owned(),
+                    env_var: "MCP_CONTEXT7_TOKEN".to_owned(),
+                }],
+            },
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+
+    let payload = get_mcp_server_config_with_store(
+        GetMcpServerConfigRequest {
+            id: "context7".to_owned(),
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+    let serialized = serde_json::to_string(&payload).unwrap();
+
+    assert_eq!(payload.server.display_name, "Remote Context");
+    assert_eq!(payload.server.id, "context7");
+    assert!(matches!(
+        payload.server.transport,
+        McpServerTransportConfig::Http { .. }
+    ));
+    assert!(serialized.contains("MCP_BEARER_TOKEN"));
+    assert!(!serialized.contains("mcp-secret-token"));
+}
+
+#[tokio::test]
+async fn get_mcp_server_config_with_runtime_state_rejects_unmanaged_runtime_server() {
+    let server_id = McpServerId("plugin-context".to_owned());
+    let mcp_registry = McpRegistry::new();
+    mcp_registry
+        .add_ready_server(
+            McpServerSpec::new(
+                server_id.clone(),
+                "Plugin Context",
+                TransportChoice::InProcess,
+                McpServerSource::Plugin(harness_contracts::PluginId("context".to_owned())),
+            ),
+            McpServerScope::Global,
+            Arc::new(StaticMcpConnection { tools: Vec::new() }),
+        )
+        .await
+        .unwrap();
+    let state = runtime_state_with_mcp_registry(mcp_registry, vec![server_id]).await;
+
+    let error = get_mcp_server_config_with_runtime_state(
+        GetMcpServerConfigRequest {
+            id: "plugin-context".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "NOT_FOUND");
+}
+
+#[tokio::test]
+async fn save_mcp_server_payload_rejects_secret_bearing_http_headers() {
+    let store = RecordingMcpServerStore::default();
+    let error = save_mcp_server_with_store(
+        SaveMcpServerRequest {
+            enabled: true,
+            display_name: "Remote Context".to_owned(),
+            id: "context7".to_owned(),
+            scope: "global".to_owned(),
+            transport: McpServerTransportConfig::Http {
+                url: "https://mcp.example.com/mcp".to_owned(),
+                bearer_token_env_var: None,
+                headers: vec![McpNameValueRecord {
+                    key: "Authorization".to_owned(),
+                    value: "Bearer mcp-secret-token".to_owned(),
+                }],
+                headers_from_env: Vec::new(),
+            },
+        },
+        &store,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(store.record.lock().unwrap().is_none());
+}
+
 #[test]
 fn save_mcp_server_payload_rejects_unknown_transport_fields() {
     let error = serde_json::from_value::<SaveMcpServerRequest>(json!({
+        "enabled": true,
         "displayName": "Workspace GitHub",
         "id": "github",
         "scope": "global",
@@ -1612,7 +1798,7 @@ fn save_mcp_server_payload_rejects_unknown_transport_fields() {
             "kind": "stdio",
             "command": "node",
             "args": [],
-            "env": { "GITHUB_TOKEN": "secret" }
+            "envMap": { "GITHUB_TOKEN": "secret" }
         }
     }))
     .unwrap_err();
@@ -1631,12 +1817,16 @@ async fn save_mcp_server_with_runtime_state_registers_and_injects_stdio_tools() 
 
     let payload = save_mcp_server_with_runtime_state(
         SaveMcpServerRequest {
+            enabled: true,
             display_name: "Workspace Stdio".to_owned(),
             id: "stdio".to_owned(),
             scope: "global".to_owned(),
             transport: McpServerTransportConfig::Stdio {
                 command: "/bin/sh".to_owned(),
                 args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
+                env: Vec::new(),
+                inherit_env: Vec::new(),
+                working_dir: None,
             },
         },
         &state,
@@ -1648,6 +1838,186 @@ async fn save_mcp_server_with_runtime_state_registers_and_injects_stdio_tools() 
     assert_eq!(payload.server.status, "ready");
     assert_eq!(payload.server.exposed_tool_count, 1);
     assert!(harness.tool_registry().get("mcp__stdio__echo").is_some());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn disabled_mcp_server_with_runtime_state_does_not_register_or_inject_tools() {
+    let _guard = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let workspace = unique_workspace("mcp-disabled");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state =
+        runtime_state_with_mcp_registry_for_workspace(workspace, McpRegistry::new(), Vec::new())
+            .await;
+
+    let payload = save_mcp_server_with_runtime_state(
+        SaveMcpServerRequest {
+            enabled: false,
+            display_name: "Workspace Stdio".to_owned(),
+            id: "stdio".to_owned(),
+            scope: "global".to_owned(),
+            transport: McpServerTransportConfig::Stdio {
+                command: "/bin/sh".to_owned(),
+                args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
+                env: Vec::new(),
+                inherit_env: Vec::new(),
+                working_dir: None,
+            },
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let harness = state.harness().unwrap();
+
+    assert_eq!(payload.server.status, "disabled");
+    assert!(!payload.server.enabled);
+    assert!(harness
+        .mcp_config()
+        .unwrap()
+        .registry
+        .server_spec(&McpServerId("stdio".to_owned()))
+        .await
+        .is_none());
+    assert!(harness.tool_registry().get("mcp__stdio__echo").is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn set_mcp_server_enabled_registers_and_injects_tools() {
+    let _guard = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let workspace = unique_workspace("mcp-enable");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state =
+        runtime_state_with_mcp_registry_for_workspace(workspace, McpRegistry::new(), Vec::new())
+            .await;
+    save_mcp_server_with_runtime_state(
+        SaveMcpServerRequest {
+            enabled: false,
+            display_name: "Workspace Stdio".to_owned(),
+            id: "stdio".to_owned(),
+            scope: "global".to_owned(),
+            transport: McpServerTransportConfig::Stdio {
+                command: "/bin/sh".to_owned(),
+                args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
+                env: Vec::new(),
+                inherit_env: Vec::new(),
+                working_dir: None,
+            },
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let payload = set_mcp_server_enabled_with_runtime_state(
+        SetMcpServerEnabledRequest {
+            id: "stdio".to_owned(),
+            enabled: true,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(payload.server.status, "ready");
+    assert!(payload.server.enabled);
+    assert!(state
+        .harness()
+        .unwrap()
+        .tool_registry()
+        .get("mcp__stdio__echo")
+        .is_some());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn restart_mcp_server_removes_registers_and_injects_tools() {
+    let _guard = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let workspace = unique_workspace("mcp-restart");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state =
+        runtime_state_with_mcp_registry_for_workspace(workspace, McpRegistry::new(), Vec::new())
+            .await;
+    save_mcp_server_with_runtime_state(
+        SaveMcpServerRequest {
+            enabled: true,
+            display_name: "Workspace Stdio".to_owned(),
+            id: "stdio".to_owned(),
+            scope: "global".to_owned(),
+            transport: McpServerTransportConfig::Stdio {
+                command: "/bin/sh".to_owned(),
+                args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
+                env: Vec::new(),
+                inherit_env: Vec::new(),
+                working_dir: None,
+            },
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let payload = restart_mcp_server_with_runtime_state(
+        RestartMcpServerRequest {
+            id: "stdio".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(payload.server.status, "ready");
+    assert!(state
+        .harness()
+        .unwrap()
+        .tool_registry()
+        .get("mcp__stdio__echo")
+        .is_some());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn http_mcp_server_with_runtime_state_registers_as_http_transport() {
+    let _guard = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let _env = EnvVarGuard::set(
+        "MCP_TEST_BEARER",
+        std::ffi::OsStr::new("not-secret-test-token"),
+    );
+    let workspace = unique_workspace("mcp-http-register");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state =
+        runtime_state_with_mcp_registry_for_workspace(workspace, McpRegistry::new(), Vec::new())
+            .await;
+
+    let payload = save_mcp_server_with_runtime_state(
+        SaveMcpServerRequest {
+            enabled: true,
+            display_name: "Remote Context".to_owned(),
+            id: "context7".to_owned(),
+            scope: "global".to_owned(),
+            transport: McpServerTransportConfig::Http {
+                url: "http://127.0.0.1:9/mcp".to_owned(),
+                bearer_token_env_var: Some("MCP_TEST_BEARER".to_owned()),
+                headers: vec![McpNameValueRecord {
+                    key: "X-Workspace".to_owned(),
+                    value: "jyowo".to_owned(),
+                }],
+                headers_from_env: Vec::new(),
+            },
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let spec = state
+        .harness()
+        .unwrap()
+        .mcp_config()
+        .unwrap()
+        .registry
+        .server_spec(&McpServerId("context7".to_owned()))
+        .await
+        .unwrap();
+
+    assert_eq!(payload.server.transport, "http");
+    assert!(matches!(spec.transport, TransportChoice::Http { .. }));
 }
 
 #[tokio::test]
@@ -1777,8 +2147,10 @@ async fn list_mcp_servers_with_runtime_state_includes_origin_scope_and_tool_coun
             "servers": [
                 {
                     "displayName": "Workspace GitHub",
+                    "enabled": true,
                     "exposedToolCount": 2,
                     "id": "github",
+                    "manageable": false,
                     "origin": "workspace",
                     "scope": "global",
                     "status": "ready",
@@ -1786,6 +2158,74 @@ async fn list_mcp_servers_with_runtime_state_includes_origin_scope_and_tool_coun
                 }
             ]
         })
+    );
+}
+
+#[test]
+fn mcp_diagnostic_event_summary_does_not_expose_raw_connection_error() {
+    let diagnostic =
+        mcp_diagnostic_record_from_event(Event::McpConnectionLost(McpConnectionLostEvent {
+            session_id: None,
+            server_id: McpServerId("github".to_owned()),
+            server_source: McpServerSource::Workspace,
+            reason: McpConnectionLostReason::Network(
+                "Authorization: Bearer mcp-secret-token".to_owned(),
+            ),
+            attempts_so_far: 1,
+            terminal: false,
+            at: now(),
+        }))
+        .unwrap();
+
+    assert_eq!(diagnostic.server_id, "github");
+    assert_eq!(diagnostic.severity, McpDiagnosticSeverity::Warning);
+    assert_eq!(
+        diagnostic.summary,
+        "MCP server connection lost; reconnecting."
+    );
+    assert!(!serde_json::to_string(&diagnostic)
+        .unwrap()
+        .contains("mcp-secret-token"));
+}
+
+#[tokio::test]
+async fn mcp_diagnostic_store_retains_recent_records_and_filters_by_server() {
+    let workspace = unique_workspace("mcp-diagnostics");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let store = DesktopMcpDiagnosticStore::new_with_limit(workspace, 3);
+
+    for index in 0..5 {
+        store
+            .append_record(&McpDiagnosticRecord {
+                event_type: "connection_lost".to_owned(),
+                id: format!("event-{index}"),
+                server_id: if index == 4 { "fetch" } else { "github" }.to_owned(),
+                severity: McpDiagnosticSeverity::Warning,
+                summary: format!("diagnostic {index}"),
+                timestamp: format!("2026-06-17T00:00:0{index}.000Z"),
+            })
+            .unwrap();
+    }
+
+    let all = list_mcp_diagnostics_with_store(None, &store).await.unwrap();
+    let github = list_mcp_diagnostics_with_store(Some("github".to_owned()), &store)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        all.events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["event-2", "event-3", "event-4"]
+    );
+    assert_eq!(
+        github
+            .events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["event-2", "event-3"]
     );
 }
 
@@ -2364,8 +2804,8 @@ async fn conversation_payloads_with_runtime_state_redact_private_paths() {
         .unwrap();
 
         if detail.conversation.messages.len() >= 2 {
-            assert_eq!(detail.conversation.messages[0].body, "[REDACTED]");
-            assert_eq!(detail.conversation.messages[1].body, "[REDACTED]");
+            assert_eq!(detail.conversation.messages[0].body, "Read [REDACTED]");
+            assert_eq!(detail.conversation.messages[1].body, "Read [REDACTED]");
 
             let list = list_conversations_with_runtime_state(&state).await;
             let Some(summary) = list
@@ -2379,8 +2819,11 @@ async fn conversation_payloads_with_runtime_state_redact_private_paths() {
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 continue;
             };
-            assert_eq!(summary.title, "[REDACTED]");
-            assert_eq!(summary.last_message_preview.as_deref(), Some("[REDACTED]"));
+            assert_eq!(summary.title, "Read [REDACTED]");
+            assert_eq!(
+                summary.last_message_preview.as_deref(),
+                Some("Read [REDACTED]")
+            );
             break;
         }
 
@@ -2573,6 +3016,496 @@ async fn list_artifacts_with_runtime_state_projects_artifact_events() {
         .contains("Runtime artifact"));
     assert_eq!(artifact.source_message_id, None);
     assert_eq!(artifact.source_run_id, run_id.to_string());
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_returns_owned_image_data_url() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    let run_id = RunId::new();
+    let image_bytes = b"\x89PNG\r\n\x1A\npreview".to_vec();
+    let content_hash = *blake3::hash(&image_bytes).as_bytes();
+    let blob_store = FileBlobStore::open(
+        state
+            .workspace_root()
+            .join(".jyowo")
+            .join("runtime")
+            .join("blobs"),
+    )
+    .expect("blob store opens");
+    let blob_ref = blob_store
+        .put(
+            TenantId::SINGLE,
+            bytes::Bytes::from(image_bytes.clone()),
+            BlobMeta {
+                content_type: Some("image/png".to_owned()),
+                size: image_bytes.len() as u64,
+                content_hash,
+                created_at: now(),
+                retention: BlobRetention::SessionScoped(session_id),
+            },
+        )
+        .await
+        .expect("image blob writes");
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                artifact_id: "artifact-image".to_owned(),
+                at: now(),
+                blob_ref: Some(blob_ref),
+                content_hash: Some(content_hash.to_vec()),
+                kind: "image".to_owned(),
+                preview: Some("生成的图片".to_owned()),
+                run_id,
+                session_id,
+                source: ArtifactSource::Tool,
+                source_message_id: None,
+                source_tool_use_id: Some(ToolUseId::new()),
+                status: ArtifactStatus::Ready,
+                title: "生成的图片".to_owned(),
+            })],
+        )
+        .await
+        .expect("artifact event should append");
+
+    let payload = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-image".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("image preview should load");
+
+    assert_eq!(payload.mime_type, "image/png");
+    assert_eq!(payload.size_bytes, image_bytes.len() as u64);
+    assert!(payload.data_url.starts_with("data:image/png;base64,"));
+    assert!(!payload.data_url.contains(".jyowo"));
+    assert!(!payload.data_url.contains("artifact-image"));
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_accepts_image_mime_artifact_kind() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_artifact_event_for_preview(
+        &state,
+        session_id,
+        "artifact-image-mime-kind",
+        "image/png",
+        ArtifactStatus::Ready,
+        Some((
+            "image/png",
+            b"\x89PNG\r\n\x1A\npreview".to_vec(),
+            session_id,
+        )),
+    )
+    .await;
+
+    let payload = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-image-mime-kind".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("image MIME kind artifact should preview");
+
+    assert_eq!(payload.mime_type, "image/png");
+    assert!(payload.data_url.starts_with("data:image/png;base64,"));
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_falls_back_to_detected_image_mime() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_artifact_event_for_preview(
+        &state,
+        session_id,
+        "artifact-image-unsafe-mime",
+        "image",
+        ArtifactStatus::Ready,
+        Some((
+            "image/png /tmp/provider-output https://provider.example/blob",
+            b"\x89PNG\r\n\x1A\npreview".to_vec(),
+            session_id,
+        )),
+    )
+    .await;
+
+    let payload = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-image-unsafe-mime".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("valid image bytes should preview without trusting unsafe MIME");
+
+    assert_eq!(payload.mime_type, "image/png");
+    assert!(payload.data_url.starts_with("data:image/png;base64,"));
+    assert!(!payload.data_url.contains("/tmp/provider-output"));
+    assert!(!payload.data_url.contains("provider.example"));
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_rejects_safe_non_image_mime() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_artifact_event_for_preview(
+        &state,
+        session_id,
+        "artifact-image-text-mime",
+        "image",
+        ArtifactStatus::Ready,
+        Some((
+            "text/plain",
+            b"\x89PNG\r\n\x1A\npreview".to_vec(),
+            session_id,
+        )),
+    )
+    .await;
+
+    let error = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-image-text-mime".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("safe non-image declared MIME should be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("only available for images"));
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_rejects_cross_session_blob() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    let other_session_id = SessionId::new();
+    open_conversation_session(&state, session_id).await;
+    open_conversation_session(&state, other_session_id).await;
+    let run_id = RunId::new();
+    let image_bytes = b"\x89PNG\r\n\x1A\npreview".to_vec();
+    let image_size = image_bytes.len() as u64;
+    let content_hash = *blake3::hash(&image_bytes).as_bytes();
+    let blob_store = FileBlobStore::open(
+        state
+            .workspace_root()
+            .join(".jyowo")
+            .join("runtime")
+            .join("blobs"),
+    )
+    .expect("blob store opens");
+    let blob_ref = blob_store
+        .put(
+            TenantId::SINGLE,
+            bytes::Bytes::from(image_bytes),
+            BlobMeta {
+                content_type: Some("image/png".to_owned()),
+                size: image_size,
+                content_hash,
+                created_at: now(),
+                retention: BlobRetention::SessionScoped(other_session_id),
+            },
+        )
+        .await
+        .expect("image blob writes");
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                artifact_id: "artifact-image".to_owned(),
+                at: now(),
+                blob_ref: Some(blob_ref),
+                content_hash: Some(content_hash.to_vec()),
+                kind: "image".to_owned(),
+                preview: Some("生成的图片".to_owned()),
+                run_id,
+                session_id,
+                source: ArtifactSource::Tool,
+                source_message_id: None,
+                source_tool_use_id: Some(ToolUseId::new()),
+                status: ArtifactStatus::Ready,
+                title: "生成的图片".to_owned(),
+            })],
+        )
+        .await
+        .expect("artifact event should append");
+
+    let error = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-image".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("cross-session blob should be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_rejects_missing_artifact() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+
+    let error = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "missing-artifact".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("missing artifact should be rejected");
+
+    assert_eq!(error.code, "NOT_FOUND");
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_rejects_not_ready_artifact() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_artifact_event_for_preview(
+        &state,
+        session_id,
+        "artifact-running",
+        "image",
+        ArtifactStatus::Running,
+        None,
+    )
+    .await;
+
+    let error = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-running".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("not-ready artifact should be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("not ready"));
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_rejects_non_image_artifact() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_artifact_event_for_preview(
+        &state,
+        session_id,
+        "artifact-file",
+        "file",
+        ArtifactStatus::Ready,
+        Some(("text/plain", b"hello".to_vec(), session_id)),
+    )
+    .await;
+
+    let error = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-file".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("non-image artifact should be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("only available for images"));
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_rejects_svg_image_blob() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_artifact_event_for_preview(
+        &state,
+        session_id,
+        "artifact-svg",
+        "image",
+        ArtifactStatus::Ready,
+        Some((
+            "image/svg+xml",
+            br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#.to_vec(),
+            session_id,
+        )),
+    )
+    .await;
+
+    let error = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-svg".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("svg image artifact should be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("only available for images"));
+    assert!(!error.message.contains(".jyowo"));
+    assert!(!error.message.contains("artifact-svg"));
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_rejects_mislabeled_image_blob() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_artifact_event_for_preview(
+        &state,
+        session_id,
+        "artifact-mislabeled",
+        "image",
+        ArtifactStatus::Ready,
+        Some((
+            "image/png",
+            br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#.to_vec(),
+            session_id,
+        )),
+    )
+    .await;
+
+    let error = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-mislabeled".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("mislabeled image artifact should be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("only available for images"));
+    assert!(!error.message.contains(".jyowo"));
+    assert!(!error.message.contains("artifact-mislabeled"));
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_rejects_too_large_image_blob() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_artifact_event_for_preview(
+        &state,
+        session_id,
+        "artifact-large",
+        "image",
+        ArtifactStatus::Ready,
+        Some(("image/png", vec![0; 10 * 1024 * 1024 + 1], session_id)),
+    )
+    .await;
+
+    let error = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-large".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("too-large image artifact should be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("too large"));
+}
+
+async fn append_artifact_event_for_preview(
+    state: &DesktopRuntimeState,
+    session_id: SessionId,
+    artifact_id: &str,
+    kind: &str,
+    status: ArtifactStatus,
+    blob: Option<(&str, Vec<u8>, SessionId)>,
+) {
+    let run_id = RunId::new();
+    let (blob_ref, content_hash) = if let Some((content_type, bytes, retention_session_id)) = blob {
+        let size = bytes.len() as u64;
+        let content_hash = *blake3::hash(&bytes).as_bytes();
+        let blob_store = FileBlobStore::open(
+            state
+                .workspace_root()
+                .join(".jyowo")
+                .join("runtime")
+                .join("blobs"),
+        )
+        .expect("blob store opens");
+        let blob_ref = blob_store
+            .put(
+                TenantId::SINGLE,
+                bytes::Bytes::from(bytes),
+                BlobMeta {
+                    content_type: Some(content_type.to_owned()),
+                    size,
+                    content_hash,
+                    created_at: now(),
+                    retention: BlobRetention::SessionScoped(retention_session_id),
+                },
+            )
+            .await
+            .expect("blob writes");
+        (Some(blob_ref), Some(content_hash.to_vec()))
+    } else {
+        (None, None)
+    };
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                artifact_id: artifact_id.to_owned(),
+                at: now(),
+                blob_ref,
+                content_hash,
+                kind: kind.to_owned(),
+                preview: Some("Generated artifact".to_owned()),
+                run_id,
+                session_id,
+                source: ArtifactSource::Tool,
+                source_message_id: None,
+                source_tool_use_id: Some(ToolUseId::new()),
+                status,
+                title: "Generated artifact".to_owned(),
+            })],
+        )
+        .await
+        .expect("artifact event should append");
 }
 
 #[tokio::test]
@@ -2828,21 +3761,43 @@ async fn list_artifacts_with_runtime_state_redacts_artifact_metadata() {
         .append(
             TenantId::SINGLE,
             session_id,
-            &[Event::ArtifactCreated(ArtifactCreatedEvent {
-                artifact_id: "artifact-sensitive".to_owned(),
-                at: now(),
-                blob_ref: None,
-                content_hash: None,
-                kind: format!("markdown {token}"),
-                preview: None,
-                run_id: RunId::new(),
-                session_id,
-                source: ArtifactSource::Assistant,
-                source_message_id: None,
-                source_tool_use_id: None,
-                status: ArtifactStatus::Ready,
-                title: format!("Review {token}"),
-            })],
+            &[
+                Event::ArtifactCreated(ArtifactCreatedEvent {
+                    artifact_id: "artifact-sensitive".to_owned(),
+                    at: now(),
+                    blob_ref: None,
+                    content_hash: None,
+                    kind: format!("markdown {token} data:image/svg+xml,<svg onload=alert(1)>。"),
+                    preview: Some(
+                        "Blob:.jyowo/runtime/blobs/blob-001 log/tmp/provider-output".to_owned(),
+                    ),
+                    run_id: RunId::new(),
+                    session_id,
+                    source: ArtifactSource::Assistant,
+                    source_message_id: None,
+                    source_tool_use_id: None,
+                    status: ArtifactStatus::Running,
+                    title: format!("Review {token} https://provider.example/artifact"),
+                }),
+                Event::ArtifactUpdated(ArtifactUpdatedEvent {
+                    artifact_id: "artifact-sensitive".to_owned(),
+                    at: now(),
+                    blob_ref: None,
+                    content_hash: None,
+                    kind: Some("markdown file:/tmp/provider-output".to_owned()),
+                    preview: Some(
+                        "Updated 路径：.jyowo/runtime/blobs/blob-002 home~/secret blob:null/provider"
+                            .to_owned(),
+                    ),
+                    run_id: RunId::new(),
+                    session_id,
+                    source: ArtifactSource::Assistant,
+                    source_message_id: None,
+                    source_tool_use_id: None,
+                    status: Some(ArtifactStatus::Ready),
+                    title: Some("Updated链接https://provider.example/updated".to_owned()),
+                }),
+            ],
         )
         .await
         .expect("artifact event should append");
@@ -2858,6 +3813,13 @@ async fn list_artifacts_with_runtime_state_redacts_artifact_metadata() {
     let serialized = serde_json::to_string(&payload).unwrap();
 
     assert!(!serialized.contains(token));
+    assert!(!serialized.contains("https://provider.example"));
+    assert!(!serialized.contains(".jyowo/runtime/blobs"));
+    assert!(!serialized.contains("/tmp/provider-output"));
+    assert!(!serialized.contains("~/secret"));
+    assert!(!serialized.contains("data:image"));
+    assert!(!serialized.contains("blob:null"));
+    assert!(!serialized.contains("file:"));
     assert!(serialized.contains("[REDACTED]"));
 }
 
@@ -3076,12 +4038,16 @@ async fn list_reference_candidates_includes_workspace_files() {
     register_test_tool(&state, "list_dir", "List directory");
     save_mcp_server_with_runtime_state(
         SaveMcpServerRequest {
+            enabled: true,
             display_name: "Workspace Stdio".to_owned(),
             id: "stdio".to_owned(),
             scope: "global".to_owned(),
             transport: McpServerTransportConfig::Stdio {
                 command: "/bin/sh".to_owned(),
                 args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
+                env: Vec::new(),
+                inherit_env: Vec::new(),
+                working_dir: None,
             },
         },
         &state,
@@ -3571,6 +4537,10 @@ async fn start_run_with_runtime_state_exposes_runtime_permission_request_to_acti
         serde_json::Value::String(request_id.to_string())
     );
     assert_eq!(
+        permission_event["payload"]["toolUseId"],
+        serde_json::Value::String(pending.request.tool_use_id.to_string())
+    );
+    assert_eq!(
         permission_event["payload"]["operation"],
         serde_json::Value::String("Execute command".to_owned())
     );
@@ -3599,6 +4569,10 @@ async fn start_run_with_runtime_state_exposes_runtime_permission_request_to_acti
     assert_eq!(
         permission_event["payload"]["requestId"],
         serde_json::Value::String(request_id.to_string())
+    );
+    assert_eq!(
+        permission_event["payload"]["toolUseId"],
+        serde_json::Value::String(pending.request.tool_use_id.to_string())
     );
 
     resolve_permission_with_runtime_state(
@@ -4248,6 +5222,7 @@ async fn list_activity_with_runtime_state_does_not_expose_thinking_deltas() {
             assert!(payload.events.iter().any(|event| {
                 event.event_type == "assistant.delta"
                     && event.payload["text"] == json!("Visible answer")
+                    && event.payload["messageId"].as_str().is_some()
             }));
             assert!(!serialized.contains("private chain of thought"));
             assert!(!serialized.contains("provider native secret"));
@@ -4264,11 +5239,85 @@ async fn list_activity_with_runtime_state_does_not_expose_thinking_deltas() {
 }
 
 #[tokio::test]
+async fn get_replay_timeline_with_runtime_state_does_not_expose_raw_thinking_delta_text() {
+    let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Thinking(ThinkingDelta {
+                text: Some("private chain of thought".to_owned()),
+                provider_native: Some(json!({ "thinking": "provider native secret" })),
+                signature: Some("signature-secret".to_owned()),
+            }),
+        },
+        ModelStreamEvent::ContentBlockDelta {
+            index: 1,
+            delta: ContentDelta::Text("Visible answer".to_owned()),
+        },
+        ModelStreamEvent::MessageStop,
+    ])])
+    .await;
+    let session_id = SessionId::new();
+    let started = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            prompt: "Think privately".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("start_run should start a conversation run");
+    let request = ReplayTimelineRequest {
+        conversation_id: Some(session_id.to_string()),
+        run_id: Some(started.run_id),
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+
+    loop {
+        let payload = get_replay_timeline_with_runtime_state(request.clone(), &state)
+            .await
+            .unwrap();
+
+        if payload
+            .events
+            .iter()
+            .any(|event| event.event_type == "assistant.completed")
+        {
+            let serialized = serde_json::to_string(&payload).unwrap();
+            let thinking = payload
+                .events
+                .iter()
+                .find(|event| event.event_type == "assistant.thinking.delta")
+                .expect("thinking status event should be projected");
+            assert_eq!(thinking.payload["status"], json!("running"));
+            assert!(thinking.payload.get("text").is_none());
+            assert!(thinking.payload.get("providerNative").is_none());
+            assert!(thinking.payload.get("signature").is_none());
+            assert!(!serialized.contains("private chain of thought"));
+            assert!(!serialized.contains("provider native secret"));
+            assert!(!serialized.contains("signature-secret"));
+            break;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!("replay should include completed assistant event");
+        }
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+#[tokio::test]
 async fn list_activity_with_runtime_state_redacts_private_paths_from_assistant_deltas() {
     let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
         ModelStreamEvent::ContentBlockDelta {
             index: 0,
-            delta: ContentDelta::Text("Read /Users/alice/.ssh/config".to_owned()),
+            delta: ContentDelta::Text(
+                "Read /Users/alice/.ssh/config 链接https://provider.example/signed log/tmp/provider-output blob:.jyowo/runtime/blobs/blob-001"
+                    .to_owned(),
+            ),
         },
         ModelStreamEvent::MessageStop,
     ])])
@@ -4306,7 +5355,13 @@ async fn list_activity_with_runtime_state_redacts_private_paths_from_assistant_d
         {
             let serialized = serde_json::to_string(&payload).unwrap();
             assert!(!serialized.contains("/Users/alice/.ssh/config"));
-            assert_eq!(delta.payload["text"], json!("Read [REDACTED]"));
+            assert!(!serialized.contains("provider.example"));
+            assert!(!serialized.contains("/tmp/provider-output"));
+            assert!(!serialized.contains(".jyowo/runtime/blobs"));
+            assert_eq!(
+                delta.payload["text"],
+                json!("Read [REDACTED] 链接[REDACTED] log[REDACTED] [REDACTED]")
+            );
             break;
         }
 
@@ -4338,30 +5393,34 @@ async fn list_activity_with_runtime_state_maps_artifact_lifecycle_events() {
                     at: now(),
                     blob_ref: None,
                     content_hash: None,
-                    kind: "markdown".to_owned(),
-                    preview: Some("Runtime notes".to_owned()),
+                    kind: "markdown javascript:alert(1)".to_owned(),
+                    preview: Some(
+                        "Blob:.jyowo/runtime/blobs/blob-001 log/tmp/provider-output".to_owned(),
+                    ),
                     run_id,
                     session_id,
                     source: ArtifactSource::Assistant,
                     source_message_id: None,
                     source_tool_use_id: None,
                     status: ArtifactStatus::Running,
-                    title: "Runtime notes".to_owned(),
+                    title: "Runtime notes https://provider.example/artifact".to_owned(),
                 }),
                 Event::ArtifactUpdated(ArtifactUpdatedEvent {
                     artifact_id: "artifact-runtime-notes".to_owned(),
                     at: now(),
                     blob_ref: None,
                     content_hash: None,
-                    kind: None,
-                    preview: Some("Updated runtime notes".to_owned()),
+                    kind: Some("markdown /tmp/provider-output".to_owned()),
+                    preview: Some(
+                        "Updated 路径：.jyowo/runtime/blobs/blob-002 blob:null/provider".to_owned(),
+                    ),
                     run_id,
                     session_id,
                     source: ArtifactSource::Assistant,
                     source_message_id: None,
                     source_tool_use_id: None,
                     status: Some(ArtifactStatus::Ready),
-                    title: Some("Runtime notes".to_owned()),
+                    title: Some("Updated链接https://provider.example/updated".to_owned()),
                 }),
                 Event::ArtifactCreated(ArtifactCreatedEvent {
                     artifact_id: "artifact-wrong-session".to_owned(),
@@ -4409,6 +5468,18 @@ async fn list_activity_with_runtime_state_maps_artifact_lifecycle_events() {
         json!("artifact-runtime-notes")
     );
     assert_eq!(artifact_created.payload["status"], json!("running"));
+    assert_eq!(
+        artifact_created.payload["kind"],
+        json!("markdown [REDACTED]")
+    );
+    assert_eq!(
+        artifact_created.payload["title"],
+        json!("Runtime notes [REDACTED]")
+    );
+    assert_eq!(
+        artifact_created.payload["summary"],
+        json!("[REDACTED] log[REDACTED]")
+    );
 
     let artifact_updated = payload
         .events
@@ -4420,6 +5491,386 @@ async fn list_activity_with_runtime_state_maps_artifact_lifecycle_events() {
         json!("artifact-runtime-notes")
     );
     assert_eq!(artifact_updated.payload["status"], json!("ready"));
+    assert_eq!(
+        artifact_updated.payload["kind"],
+        json!("markdown [REDACTED]")
+    );
+    assert_eq!(
+        artifact_updated.payload["title"],
+        json!("Updated链接[REDACTED]")
+    );
+    assert_eq!(
+        artifact_updated.payload["summary"],
+        json!("Updated 路径：[REDACTED] [REDACTED]")
+    );
+    let serialized = serde_json::to_string(&payload).unwrap();
+    assert!(!serialized.contains("provider.example"));
+    assert!(!serialized.contains(".jyowo/runtime/blobs"));
+    assert!(!serialized.contains("/tmp/provider-output"));
+    assert!(!serialized.contains("blob:null"));
+    assert!(!serialized.contains("javascript:"));
+}
+
+#[tokio::test]
+async fn list_activity_with_runtime_state_redacts_unsafe_artifact_media_mime_type() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+                Event::ArtifactCreated(ArtifactCreatedEvent {
+                    artifact_id: "artifact-image".to_owned(),
+                    at: now(),
+                    blob_ref: Some(harness_contracts::BlobRef {
+                        id: harness_contracts::BlobId::new(),
+                        size: 42,
+                        content_hash: [7; 32],
+                        content_type: Some(
+                            "image/png /tmp/provider-output https://provider.example/blob"
+                                .to_owned(),
+                        ),
+                    }),
+                    content_hash: Some(vec![9; 32]),
+                    kind: "image".to_owned(),
+                    preview: Some("Generated image".to_owned()),
+                    run_id,
+                    session_id,
+                    source: ArtifactSource::Tool,
+                    source_message_id: None,
+                    source_tool_use_id: None,
+                    status: ArtifactStatus::Ready,
+                    title: "Generated image".to_owned(),
+                }),
+            ],
+        )
+        .await
+        .expect("artifact event should append");
+
+    let payload = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: Some(run_id.to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("activity should load");
+    let artifact_created = payload
+        .events
+        .iter()
+        .find(|event| event.event_type == "artifact.created")
+        .expect("activity should include artifact lifecycle event");
+    let serialized = serde_json::to_string(&payload).unwrap();
+
+    assert_eq!(artifact_created.payload["media"]["kind"], json!("image"));
+    assert_eq!(
+        artifact_created.payload["media"]["mimeType"],
+        json!("image/png")
+    );
+    assert_eq!(artifact_created.payload["media"]["sizeBytes"], json!(42));
+    assert!(!serialized.contains("/tmp/provider-output"));
+    assert!(!serialized.contains("provider.example"));
+}
+
+#[tokio::test]
+async fn list_activity_with_runtime_state_does_not_project_secret_like_artifact_media_mime_token() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+                Event::ArtifactCreated(ArtifactCreatedEvent {
+                    artifact_id: "artifact-video".to_owned(),
+                    at: now(),
+                    blob_ref: Some(harness_contracts::BlobRef {
+                        id: harness_contracts::BlobId::new(),
+                        size: 42,
+                        content_hash: [7; 32],
+                        content_type: Some(
+                            "video/sk-abcdefghijklmnopqrstuvwxyz0123456789".to_owned(),
+                        ),
+                    }),
+                    content_hash: Some(vec![9; 32]),
+                    kind: "video".to_owned(),
+                    preview: Some("Generated video".to_owned()),
+                    run_id,
+                    session_id,
+                    source: ArtifactSource::Tool,
+                    source_message_id: None,
+                    source_tool_use_id: None,
+                    status: ArtifactStatus::Ready,
+                    title: "Generated video".to_owned(),
+                }),
+            ],
+        )
+        .await
+        .expect("artifact event should append");
+
+    let payload = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: Some(run_id.to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("activity should load");
+    let artifact_created = payload
+        .events
+        .iter()
+        .find(|event| event.event_type == "artifact.created")
+        .expect("activity should include artifact lifecycle event");
+    let serialized = serde_json::to_string(&payload).unwrap();
+
+    assert_eq!(artifact_created.payload["media"]["kind"], json!("video"));
+    assert_eq!(
+        artifact_created.payload["media"]["mimeType"],
+        json!("video/mp4")
+    );
+    assert!(!serialized.contains("sk-abcdefghijklmnopqrstuvwxyz0123456789"));
+}
+
+#[tokio::test]
+async fn list_activity_with_runtime_state_maps_assistant_interaction_events() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let review_request_id = RequestId::new();
+    let clarification_request_id = RequestId::new();
+    let notice_id = RequestId::new();
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+                Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                    at: now(),
+                    delta: DeltaChunk::ReasoningSummary(ReasoningSummaryChunk {
+                        provider_id: "test".to_owned(),
+                        provider_native: None,
+                        text: "Checked https://provider.example/image，路径：.jyowo/runtime/blobs/blob-001 log/tmp/provider-output"
+                            .to_owned(),
+                    }),
+                    message_id: MessageId::new(),
+                    run_id,
+                }),
+                Event::AssistantReviewRequested(AssistantReviewRequestedEvent {
+                    run_id,
+                    request_id: review_request_id,
+                    title: UiSafeText::from_trusted_redacted(
+                        "Review https://provider.example/review",
+                    ),
+                    body: Some(UiSafeText::from_trusted_redacted(
+                        "Approve blob:.jyowo/runtime/blobs/blob-001?",
+                    )),
+                    at: now(),
+                }),
+                Event::AssistantClarificationRequested(AssistantClarificationRequestedEvent {
+                    run_id,
+                    request_id: clarification_request_id,
+                    prompt: UiSafeText::from_trusted_redacted(
+                        "Which size链接https://provider.example/prompt?",
+                    ),
+                    at: now(),
+                }),
+                Event::AssistantNotice(AssistantNoticeEvent {
+                    run_id,
+                    notice_id,
+                    body: UiSafeText::from_trusted_redacted(
+                        "Generation queued at 路径：.jyowo/runtime/blobs/blob-002.",
+                    ),
+                    at: now(),
+                }),
+            ],
+        )
+        .await
+        .expect("assistant interaction events should append");
+
+    let payload = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: Some(run_id.to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("activity should load");
+
+    let event_types = payload
+        .events
+        .iter()
+        .map(|event| event.event_type)
+        .collect::<Vec<_>>();
+    assert!(event_types.contains(&"assistant.review.requested"));
+    assert!(event_types.contains(&"assistant.clarification.requested"));
+    assert!(event_types.contains(&"assistant.notice"));
+    let review = payload
+        .events
+        .iter()
+        .find(|event| event.event_type == "assistant.review.requested")
+        .expect("activity should include review");
+    assert_eq!(review.payload["title"], json!("[REDACTED]"));
+    assert!(review.payload["body"]
+        .as_str()
+        .is_some_and(|body| body.contains("[REDACTED]")));
+    let clarification = payload
+        .events
+        .iter()
+        .find(|event| event.event_type == "assistant.clarification.requested")
+        .expect("activity should include clarification");
+    assert!(clarification.payload["prompt"]
+        .as_str()
+        .is_some_and(|prompt| prompt.contains("[REDACTED]")));
+    let notice = payload
+        .events
+        .iter()
+        .find(|event| event.event_type == "assistant.notice")
+        .expect("activity should include notice");
+    assert!(notice.payload["body"]
+        .as_str()
+        .is_some_and(|body| body.contains("[REDACTED]")));
+    let serialized = serde_json::to_string(&payload).unwrap();
+    assert!(!serialized.contains("provider.example"));
+    assert!(!serialized.contains(".jyowo/runtime/blobs"));
+    assert!(!serialized.contains("/tmp/provider-output"));
+
+    let replay = get_replay_timeline_with_runtime_state(
+        ReplayTimelineRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: Some(run_id.to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("replay should load");
+    let thinking = replay
+        .events
+        .iter()
+        .find(|event| event.event_type == "assistant.thinking.delta")
+        .expect("replay should include safe reasoning summary");
+    assert_eq!(
+        thinking.payload["safeSummaryDelta"],
+        json!("Checked [REDACTED]，路径：[REDACTED] log[REDACTED]")
+    );
+    let replay_serialized = serde_json::to_string(&replay).unwrap();
+    assert!(!replay_serialized.contains("provider.example"));
+    assert!(!replay_serialized.contains(".jyowo/runtime/blobs"));
+    assert!(!replay_serialized.contains("/tmp/provider-output"));
+}
+
+#[tokio::test]
+async fn page_conversation_timeline_with_runtime_state_accepts_assistant_interaction_events() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+                Event::AssistantReviewRequested(AssistantReviewRequestedEvent {
+                    run_id,
+                    request_id: RequestId::new(),
+                    title: UiSafeText::from_trusted_redacted(
+                        "Review Authorization: Bearer synthetic-token",
+                    ),
+                    body: Some(UiSafeText::from_trusted_redacted(
+                        "Approve /Users/example/private?",
+                    )),
+                    at: now(),
+                }),
+                Event::AssistantClarificationRequested(AssistantClarificationRequestedEvent {
+                    run_id,
+                    request_id: RequestId::new(),
+                    prompt: UiSafeText::from_trusted_redacted("Which size uses sk-synthetic?"),
+                    at: now(),
+                }),
+                Event::AssistantNotice(AssistantNoticeEvent {
+                    run_id,
+                    notice_id: RequestId::new(),
+                    body: UiSafeText::from_trusted_redacted(
+                        "Generation queued from /home/example/private.",
+                    ),
+                    at: now(),
+                }),
+            ],
+        )
+        .await
+        .expect("assistant interaction events should append");
+
+    let page = page_conversation_timeline_with_runtime_state(
+        PageConversationTimelineRequest {
+            conversation_id: session_id.to_string(),
+            after_cursor: None,
+            limit: None,
+        },
+        &state,
+    )
+    .await
+    .expect("timeline page should load");
+
+    let event_types = page
+        .events
+        .iter()
+        .map(|event| event.event_type)
+        .collect::<Vec<_>>();
+    assert!(event_types.contains(&"assistant.review.requested"));
+    assert!(event_types.contains(&"assistant.clarification.requested"));
+    assert!(event_types.contains(&"assistant.notice"));
+    let review = page
+        .events
+        .iter()
+        .find(|event| event.event_type == "assistant.review.requested")
+        .expect("review event should be mapped");
+    assert_eq!(
+        review.payload["title"],
+        json!("Review [REDACTED] [REDACTED] [REDACTED]")
+    );
+    assert_eq!(review.payload["body"], json!("Approve [REDACTED]"));
+    let clarification = page
+        .events
+        .iter()
+        .find(|event| event.event_type == "assistant.clarification.requested")
+        .expect("clarification event should be mapped");
+    assert_eq!(
+        clarification.payload["prompt"],
+        json!("Which size uses [REDACTED]")
+    );
+    let notice = page
+        .events
+        .iter()
+        .find(|event| event.event_type == "assistant.notice")
+        .expect("notice event should be mapped");
+    assert_eq!(
+        notice.payload["body"],
+        json!("Generation queued from [REDACTED]")
+    );
 }
 
 #[tokio::test]
@@ -4617,6 +6068,96 @@ async fn list_activity_with_runtime_state_redacts_permission_decision_scope_valu
 }
 
 #[tokio::test]
+async fn list_activity_with_runtime_state_redacts_file_permission_targets() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    open_conversation_session(&state, session_id).await;
+
+    let file_write_secret = "sk-abcdefghijklmnopqrstuvwxyz";
+    let file_delete_data_url = "data:text,secret";
+    let file_delete_script_url = "javascript:alert(1)";
+    let permission_event =
+        |request_id: RequestId, tool_use_id: ToolUseId, subject: PermissionSubject| {
+            Event::PermissionRequested(PermissionRequestedEvent {
+                at: now(),
+                causation_id: EventId::new(),
+                fingerprint: None,
+                interactivity: InteractivityLevel::FullyInteractive,
+                presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+                request_id,
+                run_id,
+                scope_hint: DecisionScope::PathPrefix(PathBuf::from("workspace")),
+                session_id,
+                severity: Severity::Medium,
+                subject,
+                tenant_id: TenantId::SINGLE,
+                tool_name: "file-tool".to_owned(),
+                tool_use_id,
+            })
+        };
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+                permission_event(
+                    RequestId::new(),
+                    ToolUseId::new(),
+                    PermissionSubject::FileWrite {
+                        path: PathBuf::from(format!("workspace/{file_write_secret}")),
+                        bytes_preview: b"secret".to_vec(),
+                    },
+                ),
+                permission_event(
+                    RequestId::new(),
+                    ToolUseId::new(),
+                    PermissionSubject::FileDelete {
+                        path: PathBuf::from(format!("workspace/{file_delete_data_url}")),
+                    },
+                ),
+                permission_event(
+                    RequestId::new(),
+                    ToolUseId::new(),
+                    PermissionSubject::FileDelete {
+                        path: PathBuf::from(format!("workspace/{file_delete_script_url}")),
+                    },
+                ),
+            ],
+        )
+        .await
+        .expect("activity events should append");
+
+    let payload = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: Some(run_id.to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("activity should load");
+    let serialized = serde_json::to_string(&payload).unwrap();
+    let targets = payload
+        .events
+        .iter()
+        .filter(|event| event.event_type == "permission.requested")
+        .map(|event| event.payload["target"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+
+    assert_eq!(targets.len(), 3);
+    assert!(targets.iter().all(|target| target.contains("[REDACTED]")));
+    assert!(!serialized.contains(file_write_secret));
+    assert!(!serialized.contains(file_delete_data_url));
+    assert!(!serialized.contains(file_delete_script_url));
+}
+
+#[tokio::test]
 async fn get_conversation_with_runtime_state_includes_safe_client_message_id() {
     let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
         ModelStreamEvent::ContentBlockDelta {
@@ -4734,6 +6275,109 @@ async fn list_activity_with_runtime_state_withholds_tool_failure_messages() {
 }
 
 #[tokio::test]
+async fn public_runtime_event_views_redact_unsafe_tool_display_labels() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let message_id = MessageId::new();
+    let tool_use_id = ToolUseId::new();
+    let request_id = RequestId::new();
+    let unsafe_tool_name =
+        "UnsafeTool https://provider.example/.jyowo /Users/alice/private data:text/plain,secret";
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+                Event::ToolUseRequested(test_tool_use_requested_event(
+                    run_id,
+                    tool_use_id,
+                    unsafe_tool_name,
+                )),
+                Event::PermissionRequested(PermissionRequestedEvent {
+                    request_id,
+                    run_id,
+                    session_id,
+                    tenant_id: TenantId::SINGLE,
+                    tool_use_id,
+                    tool_name: unsafe_tool_name.to_owned(),
+                    subject: PermissionSubject::ToolInvocation {
+                        tool: unsafe_tool_name.to_owned(),
+                        input: json!({}),
+                    },
+                    severity: Severity::Medium,
+                    scope_hint: DecisionScope::ToolName(unsafe_tool_name.to_owned()),
+                    fingerprint: None,
+                    presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+                    interactivity: InteractivityLevel::FullyInteractive,
+                    causation_id: EventId::new(),
+                    at: now(),
+                }),
+                Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
+                    run_id,
+                    message_id,
+                    content: MessageContent::Text("Tool requested.".to_owned()),
+                    tool_uses: vec![ToolUseSummary {
+                        tool_use_id,
+                        tool_name: unsafe_tool_name.to_owned(),
+                    }],
+                    usage: UsageSnapshot::default(),
+                    pricing_snapshot_id: None,
+                    stop_reason: StopReason::ToolUse,
+                    at: now(),
+                }),
+            ],
+        )
+        .await
+        .expect("activity events should append");
+
+    let activity = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: Some(run_id.to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("activity should load");
+    let replay = get_replay_timeline_with_runtime_state(
+        ReplayTimelineRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: Some(run_id.to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("replay should load");
+    let timeline = page_conversation_timeline_with_runtime_state(
+        PageConversationTimelineRequest {
+            conversation_id: session_id.to_string(),
+            after_cursor: None,
+            limit: Some(20),
+        },
+        &state,
+    )
+    .await
+    .expect("timeline should load");
+
+    for serialized in [
+        serde_json::to_string(&activity).unwrap(),
+        serde_json::to_string(&replay).unwrap(),
+        serde_json::to_string(&timeline).unwrap(),
+    ] {
+        assert!(!serialized.contains("provider.example"));
+        assert!(!serialized.contains(".jyowo"));
+        assert!(!serialized.contains("/Users/alice/private"));
+        assert!(!serialized.contains("data:text/plain"));
+    }
+}
+
+#[tokio::test]
 async fn page_conversation_worktree_with_runtime_state_returns_safe_turn_tree() {
     let state = runtime_state_with_harness().await;
     let session_id = SessionId::new();
@@ -4743,6 +6387,12 @@ async fn page_conversation_worktree_with_runtime_state_returns_safe_turn_tree() 
     let empty_assistant_message_id = MessageId::new();
     let tool_use_id = ToolUseId::new();
     let request_id = RequestId::new();
+    let artifact_blob_ref = harness_contracts::BlobRef {
+        id: harness_contracts::BlobId::new(),
+        size: 42,
+        content_hash: [7; 32],
+        content_type: Some("image/png".to_owned()),
+    };
     let raw_error = "failed at /Users/alice/private with token=secret-token";
     open_conversation_session(&state, session_id).await;
     state
@@ -4822,6 +6472,21 @@ async fn page_conversation_worktree_with_runtime_state_returns_safe_turn_tree() 
                     stop_reason: StopReason::EndTurn,
                     at: now(),
                 }),
+                Event::ArtifactCreated(ArtifactCreatedEvent {
+                    artifact_id: "artifact-minimax-prompt".to_owned(),
+                    at: now(),
+                    blob_ref: Some(artifact_blob_ref.clone()),
+                    content_hash: Some(vec![9; 32]),
+                    kind: "image_prompt".to_owned(),
+                    preview: Some("可复用的图像生成提示词已准备好。".to_owned()),
+                    run_id,
+                    session_id,
+                    source: ArtifactSource::Assistant,
+                    source_message_id: Some(assistant_message_id),
+                    source_tool_use_id: Some(tool_use_id),
+                    status: ArtifactStatus::Ready,
+                    title: "海报生成提示词".to_owned(),
+                }),
             ],
         )
         .await
@@ -4846,6 +6511,7 @@ async fn page_conversation_worktree_with_runtime_state_returns_safe_turn_tree() 
     assert_eq!(assistant.id, format!("assistant:{run_id}"));
     assert!(!serialized.contains(raw_error));
     assert!(!serialized.contains("/Users/alice/private"));
+    assert!(!serialized.contains(&artifact_blob_ref.id.to_string()));
     assert!(!serialized.contains("Tool error withheld from conversation timeline."));
     assert!(!serialized.contains(&empty_assistant_message_id.to_string()));
 
@@ -4865,6 +6531,63 @@ async fn page_conversation_worktree_with_runtime_state_returns_safe_turn_tree() 
     assert_eq!(
         tool.failure_summary.as_ref().unwrap().as_str(),
         "工具执行失败。详情可在 Activity 中查看。"
+    );
+
+    assert!(
+        assistant
+            .segments
+            .iter()
+            .all(|segment| !matches!(segment, harness_contracts::AssistantSegment::Artifact(_))),
+        "ready image artifacts should be projected inside process steps"
+    );
+    let artifact_step = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            harness_contracts::AssistantSegment::Process(process) => {
+                process.steps.iter().find_map(|step| match &step.detail {
+                    Some(harness_contracts::ProcessStepDetail::Artifact { artifact_id, media }) => {
+                        Some((step, artifact_id, media))
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("process artifact step should be present");
+    assert_eq!(artifact_step.0.title.as_str(), "海报生成提示词");
+    assert_eq!(artifact_step.1, "artifact-minimax-prompt");
+    assert_eq!(
+        artifact_step.2.kind,
+        harness_contracts::ArtifactMediaKind::Image
+    );
+}
+
+#[tokio::test]
+async fn page_conversation_worktree_with_runtime_state_rejects_malformed_conversation_id_before_runtime(
+) {
+    let workspace = unique_workspace("worktree-malformed-conversation-id");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("workspace state should initialize without a harness");
+
+    let error = page_conversation_worktree_with_runtime_state(
+        PageConversationWorktreeRequest {
+            conversation_id: "not-a-session-id".to_owned(),
+            page_cursor: None,
+            direction: PageConversationWorktreeDirection::After,
+            limit: Some(1),
+        },
+        &state,
+    )
+    .await
+    .expect_err("malformed conversation id should fail closed");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(
+        error.message.contains("conversation session id"),
+        "unexpected error message: {}",
+        error.message
     );
 }
 

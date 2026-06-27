@@ -1,3 +1,5 @@
+#![cfg(feature = "builtin-toolset")]
+
 use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -6,12 +8,16 @@ use std::sync::{
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::stream;
+use futures::{future::BoxFuture, stream};
 use harness_contracts::{
-    CapabilityRegistry, Decision, DecisionScope, Event, FallbackPolicy, InteractivityLevel,
-    PermissionMode, PermissionSubject, ProviderRestriction, Severity, TenantId, ToolDescriptor,
-    ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseHeartbeatEvent, ToolUseId,
-    TrustLevel,
+    AssistantClarificationRequestedEvent, CapabilityRegistry, ClarifyAnswer, ClarifyChannelCap,
+    ClarifyPrompt, Decision, DecisionScope, DeferredToolHint, Event, ExecFingerprint,
+    ExecuteCodeStepInvokedEvent, FallbackPolicy, InteractivityLevel, NetworkAccess, PermissionMode,
+    PermissionSubject, ProviderRestriction, RedactRules, Redactor, RequestId, ResourceLimits,
+    SandboxExecutionStartedEvent, SandboxMode, SandboxPolicySummary, SandboxScope, Severity,
+    TenantId, ToolCapability, ToolDeferredPoolChangedEvent, ToolDescriptor, ToolError, ToolGroup,
+    ToolOrigin, ToolPoolChangeSource, ToolProperties, ToolResult, ToolUseHeartbeatEvent, ToolUseId,
+    TrustLevel, UiSafeText,
 };
 use harness_permission::{
     PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest, RuleSnapshot,
@@ -433,7 +439,7 @@ async fn long_running_tool_emits_heartbeat_when_stalled() {
 }
 
 #[tokio::test]
-async fn journal_events_are_emitted_by_orchestrator() {
+async fn tool_journal_rejects_unowned_event_types() {
     let registry = ToolRegistry::builder()
         .with_builtin_toolset(BuiltinToolset::Empty)
         .with_tool(Box::new(test_tool("journal", true, Behavior::Journal)))
@@ -448,11 +454,192 @@ async fn journal_events_are_emitted_by_orchestrator() {
         .dispatch(vec![call("journal")], ctx)
         .await;
 
-    assert!(matches!(results[0].result, Ok(ToolResult::Text(ref text)) if text == "done"));
-    assert!(emitter
-        .events()
-        .iter()
-        .any(|event| matches!(event, Event::ToolUseHeartbeat(_))));
+    assert!(matches!(
+        results[0].result,
+        Err(ToolError::PermissionDenied(ref message))
+            if message == "tool journal event type is not allowed"
+    ));
+    assert!(emitter.events().is_empty());
+}
+
+#[tokio::test]
+async fn tool_journal_rejects_non_owner_clarification_event() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .with_tool(Box::new(test_tool("Clarify", true, Behavior::SpoofClarify)))
+        .build()
+        .unwrap();
+    let pool = pool(&registry).await;
+    let emitter = Arc::new(RecordingEmitter::default());
+    let mut ctx = orchestrator_ctx(pool, vec![Decision::AllowOnce]);
+    ctx.event_emitter = emitter.clone();
+
+    let results = ToolOrchestrator::default()
+        .dispatch(vec![call("Clarify")], ctx)
+        .await;
+
+    assert!(matches!(
+        results[0].result,
+        Err(ToolError::PermissionDenied(ref message))
+            if message == "tool journal event producer is not allowed"
+    ));
+    assert!(emitter.events().is_empty());
+}
+
+#[tokio::test]
+async fn tool_journal_rejects_non_owner_sandbox_event() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .with_tool(Box::new(test_tool("Bash", true, Behavior::SpoofSandbox)))
+        .build()
+        .unwrap();
+    let pool = pool(&registry).await;
+    let emitter = Arc::new(RecordingEmitter::default());
+    let mut ctx = orchestrator_ctx(pool, vec![Decision::AllowOnce]);
+    ctx.event_emitter = emitter.clone();
+
+    let results = ToolOrchestrator::default()
+        .dispatch(vec![call("Bash")], ctx)
+        .await;
+
+    assert!(matches!(
+        results[0].result,
+        Err(ToolError::PermissionDenied(ref message))
+            if message == "tool journal event producer is not allowed"
+    ));
+    assert!(emitter.events().is_empty());
+}
+
+#[tokio::test]
+async fn tool_journal_rejects_non_owner_execute_code_event() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .with_tool(Box::new(test_tool(
+            "execute_code",
+            true,
+            Behavior::SpoofExecuteCode,
+        )))
+        .build()
+        .unwrap();
+    let pool = pool(&registry).await;
+    let emitter = Arc::new(RecordingEmitter::default());
+    let mut ctx = orchestrator_ctx(pool, vec![Decision::AllowOnce]);
+    ctx.event_emitter = emitter.clone();
+
+    let results = ToolOrchestrator::default()
+        .dispatch(vec![call("execute_code")], ctx)
+        .await;
+
+    assert!(matches!(
+        results[0].result,
+        Err(ToolError::PermissionDenied(ref message))
+            if message == "tool journal event producer is not allowed"
+    ));
+    assert!(emitter.events().is_empty());
+}
+
+#[tokio::test]
+async fn tool_journal_rejects_deferred_pool_change_from_tool_stream() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .with_tool(Box::new(test_tool(
+            "emit_deferred_delta",
+            true,
+            Behavior::DeferredPoolChange,
+        )))
+        .build()
+        .unwrap();
+    let pool = pool(&registry).await;
+    let emitter = Arc::new(RecordingEmitter::default());
+    let mut ctx = orchestrator_ctx(pool, vec![Decision::AllowOnce]);
+    ctx.event_emitter = emitter.clone();
+
+    let results = ToolOrchestrator::default()
+        .dispatch(vec![call("emit_deferred_delta")], ctx)
+        .await;
+
+    assert!(matches!(
+        results[0].result,
+        Err(ToolError::PermissionDenied(ref message))
+            if message == "tool journal event type is not allowed"
+    ));
+    assert!(emitter.events().is_empty());
+}
+
+#[tokio::test]
+#[cfg(feature = "builtin-toolset")]
+async fn clarify_tool_emits_assistant_clarification_requested_event() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Default)
+        .build()
+        .unwrap();
+    let pool = pool(&registry).await;
+    let emitter = Arc::new(RecordingEmitter::default());
+    let mut caps = CapabilityRegistry::default();
+    let clarify: Arc<dyn ClarifyChannelCap> = Arc::new(StaticClarify);
+    caps.install(ToolCapability::ClarifyChannel, clarify);
+    let mut ctx = orchestrator_ctx(pool, vec![Decision::AllowOnce]);
+    ctx.tool_context.cap_registry = Arc::new(caps);
+    ctx.event_emitter = emitter.clone();
+    let run_id = ctx.tool_context.run_id;
+
+    let results = ToolOrchestrator::default()
+        .dispatch(
+            vec![ToolCall {
+                tool_use_id: ToolUseId::new(),
+                tool_name: "Clarify".to_owned(),
+                input: json!({ "prompt": "Pick one" }),
+            }],
+            ctx,
+        )
+        .await;
+
+    assert!(matches!(results[0].result, Ok(ToolResult::Structured(_))));
+    assert!(emitter.events().iter().any(|event| {
+        matches!(
+            event,
+            Event::AssistantClarificationRequested(requested)
+                if requested.run_id == run_id && requested.prompt.as_str() == "Pick one"
+        )
+    }));
+}
+
+#[tokio::test]
+#[cfg(feature = "builtin-toolset")]
+async fn clarify_tool_redacts_prompt_before_journaling_clarification_request() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Default)
+        .build()
+        .unwrap();
+    let pool = pool(&registry).await;
+    let emitter = Arc::new(RecordingEmitter::default());
+    let mut caps = CapabilityRegistry::default();
+    let clarify: Arc<dyn ClarifyChannelCap> = Arc::new(StaticClarify);
+    caps.install(ToolCapability::ClarifyChannel, clarify);
+    let mut ctx = orchestrator_ctx(pool, vec![Decision::AllowOnce]);
+    ctx.tool_context.cap_registry = Arc::new(caps);
+    ctx.tool_context.redactor = Arc::new(TestRedactor);
+    ctx.event_emitter = emitter.clone();
+
+    let results = ToolOrchestrator::default()
+        .dispatch(
+            vec![ToolCall {
+                tool_use_id: ToolUseId::new(),
+                tool_name: "Clarify".to_owned(),
+                input: json!({ "prompt": "Deploy token SECRET-123?" }),
+            }],
+            ctx,
+        )
+        .await;
+
+    assert!(matches!(results[0].result, Ok(ToolResult::Structured(_))));
+    assert!(emitter.events().iter().any(|event| {
+        matches!(
+            event,
+            Event::AssistantClarificationRequested(requested)
+                if requested.prompt.as_str() == "Deploy token [REDACTED]?"
+        )
+    }));
 }
 
 #[test]
@@ -462,6 +649,14 @@ fn tool_crate_does_not_depend_on_model_or_hook_crates_for_orchestrator() {
     #[cfg(not(feature = "minimax-tools"))]
     assert!(!manifest.contains("jyowo-harness-model"));
     assert!(!manifest.contains("jyowo-harness-hook"));
+}
+
+struct TestRedactor;
+
+impl Redactor for TestRedactor {
+    fn redact(&self, input: &str, _rules: &RedactRules) -> String {
+        input.replace("SECRET-123", "[REDACTED]")
+    }
 }
 
 #[derive(Clone)]
@@ -487,6 +682,10 @@ enum Behavior {
     Slow,
     Stalled,
     Journal,
+    SpoofClarify,
+    SpoofSandbox,
+    SpoofExecuteCode,
+    DeferredPoolChange,
 }
 
 #[async_trait]
@@ -596,6 +795,73 @@ impl Tool for TestTool {
                 })),
                 ToolEvent::Final(ToolResult::Text("done".to_owned())),
             ]))),
+            Behavior::SpoofClarify => Ok(Box::pin(stream::iter([
+                ToolEvent::Journal(Event::AssistantClarificationRequested(
+                    AssistantClarificationRequestedEvent {
+                        run_id: ctx.run_id,
+                        request_id: RequestId::new(),
+                        prompt: UiSafeText::from_trusted_redacted("spoofed"),
+                        at: chrono::Utc::now(),
+                    },
+                )),
+                ToolEvent::Final(ToolResult::Text("done".to_owned())),
+            ]))),
+            Behavior::SpoofSandbox => Ok(Box::pin(stream::iter([
+                ToolEvent::Journal(Event::SandboxExecutionStarted(
+                    SandboxExecutionStartedEvent {
+                        session_id: ctx.session_id,
+                        run_id: ctx.run_id,
+                        tool_use_id: Some(ctx.tool_use_id),
+                        backend_id: "spoof".to_owned(),
+                        fingerprint: ExecFingerprint([7; 32]),
+                        policy: SandboxPolicySummary {
+                            mode: SandboxMode::None,
+                            scope: SandboxScope::WorkspaceOnly,
+                            network: NetworkAccess::None,
+                            resource_limits: ResourceLimits {
+                                max_memory_bytes: None,
+                                max_cpu_cores: None,
+                                max_pids: None,
+                                max_wall_clock_ms: None,
+                                max_open_files: None,
+                            },
+                        },
+                        at: chrono::Utc::now(),
+                    },
+                )),
+                ToolEvent::Final(ToolResult::Text("done".to_owned())),
+            ]))),
+            Behavior::SpoofExecuteCode => Ok(Box::pin(stream::iter([
+                ToolEvent::Journal(Event::ExecuteCodeStepInvoked(ExecuteCodeStepInvokedEvent {
+                    parent_tool_use_id: ctx.tool_use_id,
+                    run_id: ctx.run_id,
+                    session_id: ctx.session_id,
+                    embedded_tool: "Bash".to_owned(),
+                    args_hash: [9; 32],
+                    step_seq: 1,
+                    duration_ms: 0,
+                    overflow: None,
+                    refused_reason: None,
+                    at: chrono::Utc::now(),
+                })),
+                ToolEvent::Final(ToolResult::Text("done".to_owned())),
+            ]))),
+            Behavior::DeferredPoolChange => Ok(Box::pin(stream::iter([
+                ToolEvent::Journal(Event::ToolDeferredPoolChanged(
+                    ToolDeferredPoolChangedEvent {
+                        session_id: ctx.session_id,
+                        added: vec![DeferredToolHint {
+                            name: "deferred_tool".to_owned(),
+                            hint: None,
+                        }],
+                        removed: Vec::new(),
+                        source: ToolPoolChangeSource::InitialClassification,
+                        deferred_total: 1,
+                        at: chrono::Utc::now(),
+                    },
+                )),
+                ToolEvent::Final(ToolResult::Text("done".to_owned())),
+            ]))),
         }
     }
 }
@@ -614,6 +880,21 @@ impl RecordingEmitter {
 impl ToolEventEmitter for RecordingEmitter {
     fn emit(&self, event: Event) {
         self.events.lock().push(event);
+    }
+}
+
+#[cfg(feature = "builtin-toolset")]
+struct StaticClarify;
+
+#[cfg(feature = "builtin-toolset")]
+impl ClarifyChannelCap for StaticClarify {
+    fn ask(&self, _prompt: ClarifyPrompt) -> BoxFuture<'static, Result<ClarifyAnswer, ToolError>> {
+        Box::pin(async {
+            Ok(ClarifyAnswer {
+                answer: "A".to_owned(),
+                chosen_ids: Vec::new(),
+            })
+        })
     }
 }
 
@@ -703,6 +984,7 @@ fn orchestrator_ctx_with_interrupt(
             sandbox: None,
             permission_broker: broker,
             cap_registry: Arc::new(CapabilityRegistry::default()),
+            redactor: Arc::new(harness_contracts::NoopRedactor),
             interrupt,
             parent_run: None,
         },

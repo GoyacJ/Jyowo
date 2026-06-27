@@ -93,9 +93,19 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "assistant_work", AssistantWork);
     insert_schema!(schemas, "assistant_work_status", AssistantWorkStatus);
     insert_schema!(schemas, "assistant_segment", AssistantSegment);
+    insert_schema!(schemas, "process_segment", ProcessSegment);
+    insert_schema!(schemas, "process_segment_status", ProcessSegmentStatus);
+    insert_schema!(schemas, "process_step", ProcessStep);
+    insert_schema!(schemas, "process_step_kind", ProcessStepKind);
+    insert_schema!(schemas, "process_step_status", ProcessStepStatus);
+    insert_schema!(schemas, "process_step_detail", ProcessStepDetail);
+    insert_schema!(schemas, "process_diff_file", ProcessDiffFile);
     insert_schema!(schemas, "thinking_segment", ThinkingSegment);
     insert_schema!(schemas, "thinking_segment_status", ThinkingSegmentStatus);
     insert_schema!(schemas, "thinking_summary", ThinkingSummary);
+    insert_schema!(schemas, "thinking_step", ThinkingStep);
+    insert_schema!(schemas, "thinking_step_kind", ThinkingStepKind);
+    insert_schema!(schemas, "thinking_step_status", ThinkingStepStatus);
     insert_schema!(schemas, "text_segment", TextSegment);
     insert_schema!(schemas, "tool_group_segment", ToolGroupSegment);
     insert_schema!(schemas, "tool_attempt", ToolAttempt);
@@ -103,6 +113,8 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "tool_permission_state", ToolPermissionState);
     insert_schema!(schemas, "tool_permission_status", ToolPermissionStatus);
     insert_schema!(schemas, "artifact_segment", ArtifactSegment);
+    insert_schema!(schemas, "artifact_media_preview", ArtifactMediaPreview);
+    insert_schema!(schemas, "artifact_media_kind", ArtifactMediaKind);
     insert_schema!(schemas, "review_request_segment", ReviewRequestSegment);
     insert_schema!(
         schemas,
@@ -119,6 +131,7 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "message_content", MessageContent);
     insert_schema!(schemas, "delta_chunk", DeltaChunk);
     insert_schema!(schemas, "thought_chunk", ThoughtChunk);
+    insert_schema!(schemas, "reasoning_summary_chunk", ReasoningSummaryChunk);
     insert_schema!(schemas, "tool_properties", ToolProperties);
     insert_schema!(schemas, "tool_descriptor", ToolDescriptor);
     insert_schema!(schemas, "skill_filter", SkillFilter);
@@ -213,6 +226,17 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         "assistant_message_completed",
         AssistantMessageCompletedEvent
     );
+    insert_schema!(
+        schemas,
+        "assistant_review_requested",
+        AssistantReviewRequestedEvent
+    );
+    insert_schema!(
+        schemas,
+        "assistant_clarification_requested",
+        AssistantClarificationRequestedEvent
+    );
+    insert_schema!(schemas, "assistant_notice", AssistantNoticeEvent);
     insert_schema!(schemas, "artifact_created", ArtifactCreatedEvent);
     insert_schema!(schemas, "artifact_updated", ArtifactUpdatedEvent);
     insert_schema!(schemas, "artifact_status", ArtifactStatus);

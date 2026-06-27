@@ -76,17 +76,26 @@ function createDeferredMockCommandClient(): CommandClient {
     async getConversation(conversationId) {
       return (await getClient()).getConversation(conversationId)
     },
+    async getArtifactMediaPreview(request) {
+      return (await getClient()).getArtifactMediaPreview(request)
+    },
     async getHarnessHealthcheck() {
       return (await getClient()).getHarnessHealthcheck()
     },
     async getMemoryItem(id) {
       return (await getClient()).getMemoryItem(id)
     },
+    async getMcpServerConfig(id) {
+      return (await getClient()).getMcpServerConfig(id)
+    },
     async getProviderConfigApiKey(configId, revealToken) {
       return (await getClient()).getProviderConfigApiKey(configId, revealToken)
     },
     async getReplayTimeline(request) {
       return (await getClient()).getReplayTimeline(request)
+    },
+    async getSkillCatalogEntry(request) {
+      return (await getClient()).getSkillCatalogEntry(request)
     },
     async pageConversationTimeline(request) {
       return (await getClient()).pageConversationTimeline(request)
@@ -102,6 +111,9 @@ function createDeferredMockCommandClient(): CommandClient {
     },
     async importSkill(sourcePath) {
       return (await getClient()).importSkill(sourcePath)
+    },
+    async installSkillFromCatalog(request) {
+      return (await getClient()).installSkillFromCatalog(request)
     },
     async listActivity(request) {
       return (await getClient()).listActivity(request)
@@ -124,6 +136,9 @@ function createDeferredMockCommandClient(): CommandClient {
     async listModelProviderCatalog() {
       return (await getClient()).listModelProviderCatalog()
     },
+    async listMcpDiagnostics(serverId) {
+      return (await getClient()).listMcpDiagnostics(serverId)
+    },
     async listMcpServers() {
       return (await getClient()).listMcpServers()
     },
@@ -142,8 +157,17 @@ function createDeferredMockCommandClient(): CommandClient {
     async switchProject(path) {
       return (await getClient()).switchProject(path)
     },
+    async deleteProject(path) {
+      return (await getClient()).deleteProject(path)
+    },
     async listReferenceCandidates(request) {
       return (await getClient()).listReferenceCandidates(request)
+    },
+    async listSkillCatalogEntries(request) {
+      return (await getClient()).listSkillCatalogEntries(request)
+    },
+    async listSkillCatalogSources() {
+      return (await getClient()).listSkillCatalogSources()
     },
     async listSkills() {
       return (await getClient()).listSkills()
@@ -159,6 +183,15 @@ function createDeferredMockCommandClient(): CommandClient {
     },
     async saveMcpServer(request) {
       return (await getClient()).saveMcpServer(request)
+    },
+    async setMcpServerEnabled(id, enabled) {
+      return (await getClient()).setMcpServerEnabled(id, enabled)
+    },
+    async restartMcpServer(id) {
+      return (await getClient()).restartMcpServer(id)
+    },
+    async clearMcpDiagnostics(serverId) {
+      return (await getClient()).clearMcpDiagnostics(serverId)
     },
     async saveProviderSettings(request) {
       return (await getClient()).saveProviderSettings(request)
@@ -180,6 +213,15 @@ function createDeferredMockCommandClient(): CommandClient {
     },
     async listenConversationEventBatches(onBatch) {
       return (await getClient()).listenConversationEventBatches(onBatch)
+    },
+    async subscribeMcpDiagnostics(request) {
+      return (await getClient()).subscribeMcpDiagnostics(request)
+    },
+    async listenMcpDiagnosticBatches(onBatch) {
+      return (await getClient()).listenMcpDiagnosticBatches(onBatch)
+    },
+    async unsubscribeMcpDiagnostics(subscriptionId) {
+      return (await getClient()).unsubscribeMcpDiagnostics(subscriptionId)
     },
     async unsubscribeConversationEvents(subscriptionId) {
       return (await getClient()).unsubscribeConversationEvents(subscriptionId)

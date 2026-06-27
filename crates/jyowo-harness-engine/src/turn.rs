@@ -8,19 +8,20 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use harness_context::ContextSessionView;
 use harness_contracts::{
-    AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BudgetKind, CausationId,
-    ContextPatchLifecycle, ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource, DecidedBy,
-    Decision, DecisionId, DeltaChunk, DenyReason, EndReason, Event, EventId, ExecFingerprint,
-    FallbackPolicy, HookContextPatchEvent, HookEventKind, HookFailedEvent,
-    HookOutcomeInconsistentEvent, HookOutcomeSummary, HookPermissionConflictEvent,
-    HookReturnedUnsupportedEvent, HookRewroteInputEvent, HookTriggeredEvent, InteractivityLevel,
-    Message, MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, ModelError,
-    ModelRef, NoopRedactor, PermissionMode, PermissionRequestSuppressedEvent,
-    PermissionRequestedEvent, PermissionResolvedEvent, PricingSnapshotId, Redactor, RequestId,
-    RunEndedEvent, RunStartedEvent, SessionId, StopReason, SuppressionReason, TeamId, TenantId,
-    ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseApprovedEvent,
-    ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
-    ToolUseRequestedEvent, TrustLevel, TurnInput, UsageAccumulatedEvent, UsageSnapshot,
+    ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, AssistantDeltaProducedEvent,
+    AssistantMessageCompletedEvent, BlobRef, BudgetKind, CausationId, ContextPatchLifecycle,
+    ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource, DecidedBy, Decision, DecisionId,
+    DeltaChunk, DenyReason, EndReason, Event, EventId, ExecFingerprint, FallbackPolicy,
+    HookContextPatchEvent, HookEventKind, HookFailedEvent, HookOutcomeInconsistentEvent,
+    HookOutcomeSummary, HookPermissionConflictEvent, HookReturnedUnsupportedEvent,
+    HookRewroteInputEvent, HookTriggeredEvent, InteractivityLevel, Message, MessageContent,
+    MessageId, MessageMetadata, MessagePart, MessageRole, ModelError, ModelRef, PermissionMode,
+    PermissionRequestSuppressedEvent, PermissionRequestedEvent, PermissionResolvedEvent,
+    PricingSnapshotId, RedactRules, Redactor, RequestId, RunEndedEvent, RunId, RunStartedEvent,
+    SessionId, StopReason, SuppressionReason, TeamId, TenantId, ToolDescriptor, ToolError,
+    ToolErrorPayload, ToolResult, ToolResultPart, ToolUseApprovedEvent, ToolUseCompletedEvent,
+    ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, TrustLevel,
+    TurnInput, UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_hook::{
     DispatchResult, HookContext, HookEvent, HookFailureCause, HookMessageView, HookOutcome,
@@ -33,7 +34,7 @@ use harness_model::{
     BillingMode, InferContext, ModelModality, ModelRequest, PricingSnapshotResolveContext,
     PricingSource, Ratio, StreamAggregate, StreamAggregator,
 };
-use harness_observability::{Span, SpanAttributes};
+use harness_observability::{DefaultRedactor, Span, SpanAttributes};
 use harness_permission::{
     canonical_permission_fingerprint, PermissionBroker, PermissionContext, PermissionRequest,
     PersistedDecision, RuleSnapshot,
@@ -266,6 +267,17 @@ pub(crate) async fn run_turn(
             return Err(engine_error(error));
         }
 
+        append_user_message_if_needed(
+            engine,
+            &session,
+            &ctx,
+            &mut emitted,
+            &next_input,
+            &mut appended_user_messages,
+            client_message_id.as_deref(),
+        )
+        .await?;
+
         let mut model_call_started = Instant::now();
         let mut stream = match engine.model.infer(request.clone(), infer_ctx.clone()).await {
             Ok(stream) => stream,
@@ -419,8 +431,13 @@ pub(crate) async fn run_turn(
                         .await?;
                     }
                     StreamAggregate::ThinkingChunk { thinking } => {
-                        let text = thinking.text.unwrap_or_default();
-                        if text.is_empty() {
+                        let has_private_thinking_signal = thinking
+                            .text
+                            .as_deref()
+                            .is_some_and(|text| !text.is_empty())
+                            || thinking.provider_native.is_some()
+                            || thinking.signature.is_some();
+                        if !has_private_thinking_signal {
                             continue;
                         }
                         append(
@@ -432,10 +449,10 @@ pub(crate) async fn run_turn(
                                 run_id: ctx.run_id,
                                 message_id: assistant_message_id,
                                 delta: DeltaChunk::Thought(harness_contracts::ThoughtChunk {
-                                    text: Some(text),
+                                    text: None,
                                     provider_id: "harness_model".to_owned(),
-                                    provider_native: thinking.provider_native,
-                                    signature: thinking.signature,
+                                    provider_native: None,
+                                    signature: None,
                                 }),
                                 at: harness_contracts::now(),
                             })],
@@ -461,6 +478,30 @@ pub(crate) async fn run_turn(
                                 run_id: ctx.run_id,
                                 message_id: assistant_message_id,
                                 delta: DeltaChunk::ToolUseEnd { tool_use_id },
+                                at: harness_contracts::now(),
+                            })],
+                        )
+                        .await?;
+                    }
+                    StreamAggregate::ReasoningSummaryChunk { summary } => {
+                        if summary.text.is_empty() {
+                            continue;
+                        }
+                        append(
+                            engine,
+                            session.tenant_id,
+                            session.session_id,
+                            &mut emitted,
+                            vec![Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                                run_id: ctx.run_id,
+                                message_id: assistant_message_id,
+                                delta: DeltaChunk::ReasoningSummary(
+                                    harness_contracts::ReasoningSummaryChunk {
+                                        text: summary.text,
+                                        provider_id: "harness_model".to_owned(),
+                                        provider_native: None,
+                                    },
+                                ),
                                 at: harness_contracts::now(),
                             })],
                         )
@@ -581,26 +622,6 @@ pub(crate) async fn run_turn(
             return Ok(Box::pin(stream::iter(emitted)));
         }
 
-        if next_input.message.role == MessageRole::User
-            && appended_user_messages.insert(next_input.message.id)
-        {
-            append(
-                engine,
-                session.tenant_id,
-                session.session_id,
-                &mut emitted,
-                vec![Event::UserMessageAppended(
-                    harness_contracts::UserMessageAppendedEvent {
-                        run_id: ctx.run_id,
-                        message_id: next_input.message.id,
-                        content: message_content(&next_input.message),
-                        metadata: message_metadata(client_message_id.as_deref()),
-                        at: harness_contracts::now(),
-                    },
-                )],
-            )
-            .await?;
-        }
         working_messages.push(next_input.message.clone());
 
         if tool_calls.is_empty() {
@@ -780,9 +801,11 @@ pub(crate) async fn run_turn(
             ctx.run_id,
             ctx.interactivity,
         ));
-        let tool_event_emitter = Arc::new(RecordingToolEventEmitter::new());
+        let (tool_event_emitter, mut tool_event_receiver) = ChannelToolEventEmitter::channel();
         let tool_interrupt = InterruptToken::new();
         let orchestrator = ToolOrchestrator::default();
+        let mut flushed_permission_requested_events = 0;
+        let mut flushed_permission_records = 0;
         let mut dispatch = Box::pin(
             orchestrator.dispatch(
                 tool_calls.clone(),
@@ -800,6 +823,11 @@ pub(crate) async fn run_turn(
                         sandbox: engine.sandbox.clone(),
                         permission_broker: permission_recorder.clone(),
                         cap_registry: engine.cap_registry.clone(),
+                        redactor: engine
+                            .observer
+                            .as_ref()
+                            .map(|observer| Arc::clone(&observer.redactor))
+                            .unwrap_or_else(|| Arc::new(DefaultRedactor::default())),
                         interrupt: tool_interrupt.clone(),
                         parent_run: ctx
                             .parent_run_id
@@ -810,15 +838,111 @@ pub(crate) async fn run_turn(
                     },
                     permission_context: permission_context(&session, &ctx),
                     blob_store: engine.blob_store.clone(),
-                    event_emitter: tool_event_emitter.clone(),
+                    event_emitter: tool_event_emitter,
                 },
             ),
         );
-        let mut tool_results = tokio::select! {
-            results = &mut dispatch => results,
-            cause = ctx.cancellation.cancelled() => {
+        let mut tool_results = loop {
+            tokio::select! {
+                results = &mut dispatch => break results,
+                cause = ctx.cancellation.cancelled() => {
+                while let Ok(event) = tool_event_receiver.try_recv() {
+                    flush_engine_permission_events(
+                        engine,
+                        &session,
+                        &ctx,
+                        &mut emitted,
+                        permission_recorder.as_ref(),
+                        &mut flushed_permission_requested_events,
+                        &mut flushed_permission_records,
+                        &working_messages,
+                    )
+                    .await?;
+                    append(
+                        engine,
+                        session.tenant_id,
+                        session.session_id,
+                        &mut emitted,
+                        vec![event],
+                    )
+                    .await?;
+                }
+                flush_engine_permission_events(
+                    engine,
+                    &session,
+                    &ctx,
+                    &mut emitted,
+                    permission_recorder.as_ref(),
+                    &mut flushed_permission_requested_events,
+                    &mut flushed_permission_records,
+                    &working_messages,
+                )
+                .await?;
                 tool_interrupt.interrupt();
-                let _ = dispatch.await;
+                let interrupt_grace = tokio::time::sleep(Duration::from_secs(5));
+                tokio::pin!(interrupt_grace);
+                loop {
+                    tokio::select! {
+                        results = &mut dispatch => {
+                            drop(results);
+                            break;
+                        }
+                        Some(event) = tool_event_receiver.recv() => {
+                            flush_engine_permission_events(
+                                engine,
+                                &session,
+                                &ctx,
+                                &mut emitted,
+                                permission_recorder.as_ref(),
+                                &mut flushed_permission_requested_events,
+                                &mut flushed_permission_records,
+                                &working_messages,
+                            )
+                            .await?;
+                            append(
+                                engine,
+                                session.tenant_id,
+                                session.session_id,
+                                &mut emitted,
+                                vec![event],
+                            )
+                            .await?;
+                        }
+                        _ = &mut interrupt_grace => break,
+                    }
+                }
+                while let Ok(event) = tool_event_receiver.try_recv() {
+                    flush_engine_permission_events(
+                        engine,
+                        &session,
+                        &ctx,
+                        &mut emitted,
+                        permission_recorder.as_ref(),
+                        &mut flushed_permission_requested_events,
+                        &mut flushed_permission_records,
+                        &working_messages,
+                    )
+                    .await?;
+                    append(
+                        engine,
+                        session.tenant_id,
+                        session.session_id,
+                        &mut emitted,
+                        vec![event],
+                    )
+                    .await?;
+                }
+                flush_engine_permission_events(
+                    engine,
+                    &session,
+                    &ctx,
+                    &mut emitted,
+                    permission_recorder.as_ref(),
+                    &mut flushed_permission_requested_events,
+                    &mut flushed_permission_records,
+                    &working_messages,
+                )
+                .await?;
                 append_run_end(
                     engine,
                     &session,
@@ -829,29 +953,70 @@ pub(crate) async fn run_turn(
                 )
                 .await?;
                 return Ok(Box::pin(stream::iter(emitted)));
-            }
+                }
+                Some(event) = tool_event_receiver.recv() => {
+                    flush_engine_permission_events(
+                        engine,
+                        &session,
+                        &ctx,
+                        &mut emitted,
+                        permission_recorder.as_ref(),
+                        &mut flushed_permission_requested_events,
+                        &mut flushed_permission_records,
+                        &working_messages,
+                    )
+                    .await?;
+                    append(
+                        engine,
+                        session.tenant_id,
+                        session.session_id,
+                        &mut emitted,
+                        vec![event],
+                    )
+                    .await?;
+                }
+            };
         };
-
-        let permission_records = permission_recorder.records().await;
-        emitted.extend(permission_recorder.requested_events().await);
-        let mut post_tool_events = dispatch_permission_hooks(
+        while let Ok(event) = tool_event_receiver.try_recv() {
+            flush_engine_permission_events(
+                engine,
+                &session,
+                &ctx,
+                &mut emitted,
+                permission_recorder.as_ref(),
+                &mut flushed_permission_requested_events,
+                &mut flushed_permission_records,
+                &working_messages,
+            )
+            .await?;
+            append(
+                engine,
+                session.tenant_id,
+                session.session_id,
+                &mut emitted,
+                vec![event],
+            )
+            .await?;
+        }
+        flush_engine_permission_events(
             engine,
             &session,
             &ctx,
-            &permission_records,
+            &mut emitted,
+            permission_recorder.as_ref(),
+            &mut flushed_permission_requested_events,
+            &mut flushed_permission_records,
             &working_messages,
         )
         .await?;
-        post_tool_events.extend(permission_events(ctx.run_id, permission_records));
-        for event in tool_event_emitter.take().await {
-            post_tool_events.push(event);
-        }
+
+        let mut post_tool_events = Vec::new();
         post_tool_events.extend(
             apply_post_tool_hooks(engine, &session, &ctx, &mut tool_results, &working_messages)
                 .await?,
         );
         for result in &tool_results {
-            post_tool_events.extend(tool_result_events(result));
+            post_tool_events.extend(tool_result_events(result, session.session_id, ctx.run_id));
         }
         append(
             engine,
@@ -942,12 +1107,16 @@ async fn dispatch_user_prompt_hook(
     input: &TurnInput,
     messages: &[Message],
 ) -> Result<(), EngineError> {
+    let redactor = hook_redactor(engine);
     let result = engine
         .hooks
         .dispatch(
             HookEvent::UserPromptSubmit {
                 run_id: ctx.run_id,
-                input: json!({ "prompt": message_text(&input.message) }),
+                input: redact_json_strings(
+                    json!({ "prompt": message_text(&input.message) }),
+                    redactor.as_ref(),
+                ),
             },
             hook_context(engine, session, ctx, messages),
         )
@@ -993,13 +1162,14 @@ async fn apply_pre_tool_use_hooks(
     let mut events = Vec::new();
 
     for call in calls {
+        let redactor = hook_redactor(engine);
         let result = engine
             .hooks
             .dispatch(
                 HookEvent::PreToolUse {
                     tool_use_id: call.tool_use_id,
                     tool_name: call.tool_name.clone(),
-                    input: call.input.clone(),
+                    input: redact_json_strings(call.input.clone(), redactor.as_ref()),
                 },
                 hook_context(engine, session, ctx, messages),
             )
@@ -1082,10 +1252,12 @@ async fn apply_post_tool_hooks(
     messages: &[Message],
 ) -> Result<Vec<Event>, EngineError> {
     let mut events = Vec::new();
+    let redactor = hook_redactor(engine);
     for result in results {
         match &mut result.result {
             Ok(tool_result) => {
-                if let Some(raw) = terminal_bytes(tool_result) {
+                let hook_tool_result = redact_tool_result(tool_result.clone(), redactor.as_ref());
+                if let Some(raw) = terminal_bytes(&hook_tool_result) {
                     let dispatch = engine
                         .hooks
                         .dispatch(
@@ -1112,7 +1284,7 @@ async fn apply_post_tool_hooks(
                     .dispatch(
                         HookEvent::TransformToolResult {
                             tool_use_id: result.tool_use_id,
-                            result: tool_result.clone(),
+                            result: redact_tool_result(tool_result.clone(), redactor.as_ref()),
                         },
                         hook_context(engine, session, ctx, messages),
                     )
@@ -1132,7 +1304,7 @@ async fn apply_post_tool_hooks(
                     .dispatch(
                         HookEvent::PostToolUse {
                             tool_use_id: result.tool_use_id,
-                            result: tool_result.clone(),
+                            result: redact_tool_result(tool_result.clone(), redactor.as_ref()),
                         },
                         hook_context(engine, session, ctx, messages),
                     )
@@ -1157,14 +1329,13 @@ async fn apply_post_tool_hooks(
                 }
             }
             Err(error) => {
+                let message = redactor.redact(&error.to_string(), &RedactRules::default());
                 let dispatch = engine
                     .hooks
                     .dispatch(
                         HookEvent::PostToolUseFailure {
                             tool_use_id: result.tool_use_id,
-                            error: ToolErrorView {
-                                message: error.to_string(),
-                            },
+                            error: ToolErrorView { message },
                         },
                         hook_context(engine, session, ctx, messages),
                     )
@@ -1284,14 +1455,19 @@ async fn dispatch_permission_hooks(
     messages: &[Message],
 ) -> Result<Vec<Event>, EngineError> {
     let mut events = Vec::new();
+    let redactor = hook_redactor(engine);
     for record in records {
+        let detail = redactor.redact(
+            &format!("{:?}", record.request.subject),
+            &RedactRules::default(),
+        );
         let result = engine
             .hooks
             .dispatch(
                 HookEvent::PermissionRequest {
                     request_id: record.request.request_id,
                     subject: record.request.tool_name.clone(),
-                    detail: Some(format!("{:?}", record.request.subject)),
+                    detail: Some(detail),
                 },
                 hook_context(engine, session, ctx, messages),
             )
@@ -1300,6 +1476,46 @@ async fn dispatch_permission_hooks(
         events.extend(hook_events(HookEventKind::PermissionRequest, &result, None));
     }
     Ok(events)
+}
+
+async fn flush_engine_permission_events(
+    engine: &Engine,
+    session: &SessionHandle,
+    ctx: &RunContext,
+    emitted: &mut Vec<Event>,
+    permission_recorder: &RecordingPermissionBroker,
+    flushed_requested_events: &mut usize,
+    flushed_permission_records: &mut usize,
+    messages: &[Message],
+) -> Result<(), EngineError> {
+    let requested_events = permission_recorder.requested_events().await;
+    if requested_events.len() > *flushed_requested_events {
+        emitted.extend(
+            requested_events[*flushed_requested_events..]
+                .iter()
+                .cloned(),
+        );
+        *flushed_requested_events = requested_events.len();
+    }
+
+    let records = permission_recorder.records().await;
+    if records.len() <= *flushed_permission_records {
+        return Ok(());
+    }
+
+    let new_records = records[*flushed_permission_records..].to_vec();
+    *flushed_permission_records = records.len();
+    let mut events =
+        dispatch_permission_hooks(engine, session, ctx, &new_records, messages).await?;
+    events.extend(permission_events(ctx.run_id, new_records));
+    append(
+        engine,
+        session.tenant_id,
+        session.session_id,
+        emitted,
+        events,
+    )
+    .await
 }
 
 fn hook_events(
@@ -1588,6 +1804,39 @@ async fn apply_steering(
     Ok(())
 }
 
+async fn append_user_message_if_needed(
+    engine: &Engine,
+    session: &SessionHandle,
+    ctx: &RunContext,
+    emitted: &mut Vec<Event>,
+    next_input: &TurnInput,
+    appended_user_messages: &mut HashSet<MessageId>,
+    client_message_id: Option<&str>,
+) -> Result<(), EngineError> {
+    if next_input.message.role != MessageRole::User
+        || !appended_user_messages.insert(next_input.message.id)
+    {
+        return Ok(());
+    }
+
+    append(
+        engine,
+        session.tenant_id,
+        session.session_id,
+        emitted,
+        vec![Event::UserMessageAppended(
+            harness_contracts::UserMessageAppendedEvent {
+                run_id: ctx.run_id,
+                message_id: next_input.message.id,
+                content: message_content(&next_input.message),
+                metadata: message_metadata(client_message_id),
+                at: harness_contracts::now(),
+            },
+        )],
+    )
+    .await
+}
+
 fn append_text_to_message(message: &mut Message, text: &str) {
     if let Some(MessagePart::Text(existing)) = message
         .parts
@@ -1791,7 +2040,9 @@ impl HookSessionView for TurnHookView {
             .take(limit)
             .map(|message| HookMessageView {
                 role: message.role,
-                text_snippet: message_text(message),
+                text_snippet: self
+                    .redactor
+                    .redact(&message_text(message), &RedactRules::default()),
                 tool_use_id: None,
             })
             .collect()
@@ -1816,11 +2067,7 @@ fn hook_context(
     ctx: &RunContext,
     messages: &[Message],
 ) -> HookContext {
-    let redactor = engine
-        .observer
-        .as_ref()
-        .map(|observer| Arc::clone(&observer.redactor))
-        .unwrap_or_else(|| Arc::new(NoopRedactor));
+    let redactor = hook_redactor(engine);
     HookContext {
         tenant_id: session.tenant_id,
         session_id: session.session_id,
@@ -1840,6 +2087,128 @@ fn hook_context(
         }),
         upstream_outcome: None,
         replay_mode: ReplayMode::Live,
+    }
+}
+
+fn hook_redactor(engine: &Engine) -> Arc<dyn Redactor> {
+    engine
+        .observer
+        .as_ref()
+        .map(|observer| Arc::clone(&observer.redactor))
+        .unwrap_or_else(|| Arc::new(DefaultRedactor::default()))
+}
+
+fn redact_json_strings(value: Value, redactor: &dyn Redactor) -> Value {
+    match value {
+        Value::String(text) => Value::String(redactor.redact(&text, &RedactRules::default())),
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|value| redact_json_strings(value, redactor))
+                .collect(),
+        ),
+        Value::Object(entries) => Value::Object(
+            entries
+                .into_iter()
+                .map(|(key, value)| (key, redact_json_strings(value, redactor)))
+                .collect(),
+        ),
+        value => value,
+    }
+}
+
+fn redact_tool_result(result: ToolResult, redactor: &dyn Redactor) -> ToolResult {
+    match result {
+        ToolResult::Text(text) => ToolResult::Text(redactor.redact(&text, &RedactRules::default())),
+        ToolResult::Structured(value) => {
+            ToolResult::Structured(redact_json_strings(value, redactor))
+        }
+        ToolResult::Blob {
+            content_type,
+            blob_ref,
+        } => ToolResult::Blob {
+            content_type,
+            blob_ref,
+        },
+        ToolResult::Mixed(parts) => ToolResult::Mixed(
+            parts
+                .into_iter()
+                .map(|part| redact_tool_result_part(part, redactor))
+                .collect(),
+        ),
+        result => result,
+    }
+}
+
+fn redact_tool_result_part(part: ToolResultPart, redactor: &dyn Redactor) -> ToolResultPart {
+    match part {
+        ToolResultPart::Text { text } => ToolResultPart::Text {
+            text: redactor.redact(&text, &RedactRules::default()),
+        },
+        ToolResultPart::Structured { value, schema_ref } => ToolResultPart::Structured {
+            value: redact_json_strings(value, redactor),
+            schema_ref,
+        },
+        ToolResultPart::Blob {
+            content_type,
+            blob_ref,
+            summary,
+        } => ToolResultPart::Blob {
+            content_type,
+            blob_ref,
+            summary: summary.map(|text| redactor.redact(&text, &RedactRules::default())),
+        },
+        ToolResultPart::Code { language, text } => ToolResultPart::Code {
+            language,
+            text: redactor.redact(&text, &RedactRules::default()),
+        },
+        ToolResultPart::Reference {
+            reference_kind,
+            title,
+            summary,
+        } => ToolResultPart::Reference {
+            reference_kind,
+            title: title.map(|text| redactor.redact(&text, &RedactRules::default())),
+            summary: summary.map(|text| redactor.redact(&text, &RedactRules::default())),
+        },
+        ToolResultPart::Table {
+            headers,
+            rows,
+            caption,
+        } => ToolResultPart::Table {
+            headers: headers
+                .into_iter()
+                .map(|text| redactor.redact(&text, &RedactRules::default()))
+                .collect(),
+            rows: rows
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|value| redact_json_strings(value, redactor))
+                        .collect()
+                })
+                .collect(),
+            caption: caption.map(|text| redactor.redact(&text, &RedactRules::default())),
+        },
+        ToolResultPart::Progress {
+            stage,
+            ratio,
+            detail,
+        } => ToolResultPart::Progress {
+            stage: redactor.redact(&stage, &RedactRules::default()),
+            ratio,
+            detail: detail.map(|text| redactor.redact(&text, &RedactRules::default())),
+        },
+        ToolResultPart::Error {
+            code,
+            message,
+            retriable,
+        } => ToolResultPart::Error {
+            code: redactor.redact(&code, &RedactRules::default()),
+            message: redactor.redact(&message, &RedactRules::default()),
+            retriable,
+        },
+        part => part,
     }
 }
 
@@ -2040,31 +2409,18 @@ fn suppression_reason_for_decision(decision: &Decision) -> SuppressionReason {
     }
 }
 
-struct RecordingToolEventEmitter {
+struct ChannelToolEventEmitter {
     sender: mpsc::UnboundedSender<Event>,
-    receiver: Mutex<mpsc::UnboundedReceiver<Event>>,
 }
 
-impl RecordingToolEventEmitter {
-    fn new() -> Self {
+impl ChannelToolEventEmitter {
+    fn channel() -> (Arc<Self>, mpsc::UnboundedReceiver<Event>) {
         let (sender, receiver) = mpsc::unbounded_channel();
-        Self {
-            sender,
-            receiver: Mutex::new(receiver),
-        }
-    }
-
-    async fn take(&self) -> Vec<Event> {
-        let mut receiver = self.receiver.lock().await;
-        let mut events = Vec::new();
-        while let Ok(event) = receiver.try_recv() {
-            events.push(event);
-        }
-        events
+        (Arc::new(Self { sender }), receiver)
     }
 }
 
-impl ToolEventEmitter for RecordingToolEventEmitter {
+impl ToolEventEmitter for ChannelToolEventEmitter {
     fn emit(&self, event: Event) {
         let _ignored = self.sender.send(event);
     }
@@ -2181,21 +2537,94 @@ fn permission_events(
     events
 }
 
-fn tool_result_events(result: &RuntimeToolResultEnvelope) -> Vec<Event> {
+fn tool_result_events(
+    result: &RuntimeToolResultEnvelope,
+    session_id: SessionId,
+    run_id: RunId,
+) -> Vec<Event> {
     match &result.result {
-        Ok(tool_result) => vec![Event::ToolUseCompleted(ToolUseCompletedEvent {
-            tool_use_id: result.tool_use_id,
-            result: tool_result.clone(),
-            usage: None,
-            duration_ms: result.duration.as_millis().min(u128::from(u64::MAX)) as u64,
-            at: harness_contracts::now(),
-        })],
+        Ok(tool_result) => {
+            let at = harness_contracts::now();
+            let mut events = vec![Event::ToolUseCompleted(ToolUseCompletedEvent {
+                tool_use_id: result.tool_use_id,
+                result: tool_result.clone(),
+                usage: None,
+                duration_ms: result.duration.as_millis().min(u128::from(u64::MAX)) as u64,
+                at,
+            })];
+            if let Some(blob_ref) = image_artifact_blob(&result.tool_name, tool_result) {
+                events.push(Event::ArtifactCreated(ArtifactCreatedEvent {
+                    session_id,
+                    run_id,
+                    artifact_id: format!("artifact:{}", result.tool_use_id),
+                    title: "生成的图片".to_owned(),
+                    kind: "image".to_owned(),
+                    status: ArtifactStatus::Ready,
+                    source: ArtifactSource::Tool,
+                    source_message_id: None,
+                    source_tool_use_id: Some(result.tool_use_id),
+                    content_hash: Some(blob_ref.content_hash.to_vec()),
+                    blob_ref: Some(blob_ref),
+                    preview: Some("生成的图片".to_owned()),
+                    at,
+                }));
+            }
+            events
+        }
         Err(error) => vec![Event::ToolUseFailed(ToolUseFailedEvent {
             tool_use_id: result.tool_use_id,
             error: tool_error_payload(error),
             at: harness_contracts::now(),
         })],
     }
+}
+
+fn image_artifact_blob(tool_name: &str, result: &ToolResult) -> Option<BlobRef> {
+    if !is_image_artifact_tool(tool_name) {
+        return None;
+    }
+    match result {
+        ToolResult::Blob {
+            content_type,
+            blob_ref,
+        } if is_image_content_type(content_type, blob_ref.content_type.as_deref()) => {
+            Some(blob_ref.clone())
+        }
+        ToolResult::Mixed(parts) => parts.iter().find_map(|part| match part {
+            ToolResultPart::Blob {
+                content_type,
+                blob_ref,
+                ..
+            } if is_image_content_type(content_type, blob_ref.content_type.as_deref()) => {
+                Some(blob_ref.clone())
+            }
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+fn is_image_artifact_tool(tool_name: &str) -> bool {
+    let normalized = tool_name.to_ascii_lowercase();
+    normalized.contains("image") || normalized.contains("minimax")
+}
+
+fn is_image_content_type(content_type: &str, blob_content_type: Option<&str>) -> bool {
+    is_safe_image_content_type(content_type)
+        || blob_content_type.is_some_and(is_safe_image_content_type)
+}
+
+fn is_safe_image_content_type(content_type: &str) -> bool {
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        mime.as_str(),
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
+    )
 }
 
 fn context_tool_results(

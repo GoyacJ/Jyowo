@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 
 function cursor(_label: string, conversationSequence = 1) {
@@ -8,7 +10,19 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
-function validWorktreePage() {
+function sharedWorktreeFixture() {
+  return JSON.parse(
+    readFileSync(
+      resolve(
+        process.cwd(),
+        '../../crates/jyowo-harness-contracts/tests/fixtures/conversation_worktree_page.json',
+      ),
+      'utf8',
+    ),
+  ) as Record<string, unknown>
+}
+
+function validWorktreePage(): PageConversationWorktreeResponse {
   return {
     turns: [
       {
@@ -34,6 +48,17 @@ function validWorktreePage() {
               order: 0,
               status: 'withheld',
               summary: { text: '思考内容已折叠' },
+              steps: [
+                {
+                  id: 'thinking-step:run-001:summary',
+                  order: 0,
+                  kind: 'reasoningSummary',
+                  status: 'complete',
+                  title: '推理过程',
+                  body: 'Checked project context.',
+                  eventRefs: [{ eventId: 'event-002', cursor: cursor('', 2) }],
+                },
+              ],
               eventRefs: [{ eventId: 'event-002', cursor: cursor('', 2) }],
             },
             {
@@ -93,44 +118,59 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import {
   cancelRun,
+  clearMcpDiagnostics,
   createAttachmentFromPath,
   createConversation,
   createInvokeCommandClient,
   deleteConversation,
   deleteMcpServer,
   deleteMemoryItem,
+  deleteProject,
   deleteSkill,
   exportMemoryItems,
   exportSupportBundle,
   getAppInfo,
+  getArtifactMediaPreview,
   getContextSnapshot,
   getConversation,
   getHarnessHealthcheck,
+  getMcpServerConfig,
   getMemoryItem,
   getProviderConfigApiKey,
   getReplayTimeline,
+  getSkillCatalogEntry,
   getSkillDetail,
   getSkillFile,
   importSkill,
+  installSkillFromCatalog,
   listActivity,
   listArtifacts,
   listConversations,
   listEvalCases,
+  listenMcpDiagnosticBatches,
+  listMcpDiagnostics,
   listMcpServers,
   listMemoryItems,
   listModelProviderCatalog,
   listProviderSettings,
   listReferenceCandidates,
+  listSkillCatalogEntries,
+  listSkillCatalogSources,
   listSkills,
+  type PageConversationWorktreeResponse,
   pageConversationWorktree,
   requestProviderConfigApiKeyReveal,
   resolvePermission,
+  restartMcpServer,
   runEvalCase,
   saveMcpServer,
   saveProviderSettings,
+  setMcpServerEnabled,
   setSkillEnabled,
   startRun,
+  subscribeMcpDiagnostics,
   TauriCommandPayloadError,
+  unsubscribeMcpDiagnostics,
   updateMemoryItem,
   validateProviderSettings,
 } from './commands'
@@ -270,7 +310,7 @@ describe('CommandClient', () => {
           {
             id: 'evt-delta',
             conversationSequence: 1,
-            payload: { text: 'streamed' },
+            payload: { messageId: 'message-streamed', text: 'streamed' },
             runId: 'run-001',
             sequence: 1,
             source: 'assistant',
@@ -421,6 +461,24 @@ describe('CommandClient', () => {
     })
   })
 
+  it('models project deletion through Zod validation', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      activePath: null,
+      path: '/Users/goya/Repo/Git/Jyowo',
+      status: 'deleted',
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(deleteProject('/Users/goya/Repo/Git/Jyowo', client)).resolves.toEqual({
+      activePath: null,
+      path: '/Users/goya/Repo/Git/Jyowo',
+      status: 'deleted',
+    })
+    expect(invoke).toHaveBeenCalledWith('delete_project', {
+      path: '/Users/goya/Repo/Git/Jyowo',
+    })
+  })
+
   it('models conversation worktree pages through Zod validation', async () => {
     const invoke = vi.fn().mockResolvedValue(validWorktreePage())
     const client = createInvokeCommandClient(invoke)
@@ -444,7 +502,16 @@ describe('CommandClient', () => {
           assistant: {
             id: 'assistant:run-001',
             segments: [
-              { kind: 'thinking', id: 'segment:thinking:run-001' },
+              {
+                kind: 'thinking',
+                id: 'segment:thinking:run-001',
+                steps: [
+                  {
+                    kind: 'reasoningSummary',
+                    body: 'Checked project context.',
+                  },
+                ],
+              },
               { kind: 'text', id: 'segment:text:assistant-message-001' },
               {
                 kind: 'toolGroup',
@@ -473,6 +540,168 @@ describe('CommandClient', () => {
       pageCursor: { turnId: 'turn:user-message-000', position: 0 },
       direction: 'after',
       limit: 20,
+    })
+  })
+
+  it('models process segments and artifact media through Zod validation', async () => {
+    const payload = validWorktreePage()
+    const assistant = payload.turns[0].assistant
+    if (!assistant) {
+      throw new Error('assistant fixture missing')
+    }
+    assistant.segments = [
+      {
+        kind: 'process',
+        id: 'segment:process:run-001',
+        order: 0,
+        status: 'complete',
+        summary: '已完成工作过程',
+        steps: [
+          {
+            id: 'process-step:reasoning',
+            order: 0,
+            kind: 'reasoning',
+            status: 'complete',
+            title: '分析请求',
+            body: '确认需要生成图片并展示结果。',
+            eventRefs: [{ eventId: 'event-process-001', cursor: cursor('', 2) }],
+          },
+          {
+            id: 'process-step:command',
+            order: 1,
+            kind: 'command',
+            status: 'complete',
+            title: '运行检查',
+            detail: {
+              type: 'command',
+              command: 'pnpm check:desktop',
+              output: 'passed',
+              exitCode: 0,
+              durationMs: 1234,
+            },
+          },
+          {
+            id: 'process-step:artifact',
+            order: 2,
+            kind: 'artifact',
+            status: 'complete',
+            title: '生成的图片',
+            detail: {
+              type: 'artifact',
+              artifactId: 'artifact-image-001',
+              media: {
+                kind: 'image',
+                mimeType: 'image/png',
+                sizeBytes: 128,
+              },
+            },
+          },
+        ],
+        eventRefs: [{ eventId: 'event-process-001', cursor: cursor('', 2) }],
+      },
+      {
+        kind: 'artifact',
+        id: 'segment:artifact:artifact-image-001',
+        order: 1,
+        artifactId: 'artifact-image-001',
+        artifactKind: 'image',
+        status: 'ready',
+        source: 'tool',
+        title: 'Generated image',
+        summary: 'Image artifact ready',
+        media: {
+          kind: 'image',
+          mimeType: 'image/png',
+          sizeBytes: 128,
+        },
+      },
+      {
+        kind: 'text',
+        id: 'segment:text:assistant-message-001',
+        order: 2,
+        messageId: 'assistant-message-001',
+        body: '图片已生成。',
+      },
+    ]
+
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+      ),
+    ).resolves.toMatchObject({
+      turns: [
+        {
+          assistant: {
+            segments: [
+              {
+                kind: 'process',
+                status: 'complete',
+                steps: [
+                  { kind: 'reasoning', body: '确认需要生成图片并展示结果。' },
+                  {
+                    kind: 'command',
+                    detail: { type: 'command', command: 'pnpm check:desktop', exitCode: 0 },
+                  },
+                  {
+                    kind: 'artifact',
+                    detail: {
+                      type: 'artifact',
+                      artifactId: 'artifact-image-001',
+                      media: { kind: 'image', mimeType: 'image/png', sizeBytes: 128 },
+                    },
+                  },
+                ],
+              },
+              {
+                kind: 'artifact',
+                artifactKind: 'image',
+                status: 'ready',
+                source: 'tool',
+                media: { kind: 'image', mimeType: 'image/png', sizeBytes: 128 },
+              },
+              { kind: 'text', body: '图片已生成。' },
+            ],
+          },
+        },
+      ],
+    })
+  })
+
+  it('validates the shared Rust conversation worktree page fixture', async () => {
+    const fixture = sharedWorktreeFixture()
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(fixture)),
+      ),
+    ).resolves.toMatchObject({
+      turns: [
+        {
+          assistant: {
+            segments: [
+              { kind: 'process' },
+              { kind: 'thinking' },
+              { kind: 'text' },
+              { kind: 'toolGroup' },
+              {
+                kind: 'artifact',
+                artifactKind: 'image',
+                status: 'ready',
+                source: 'tool',
+                media: { kind: 'image', mimeType: 'image/png', sizeBytes: 128 },
+              },
+              { kind: 'reviewRequest' },
+              { kind: 'clarificationRequest' },
+              { kind: 'notice' },
+              { kind: 'error' },
+            ],
+          },
+        },
+      ],
+      hasMoreBefore: true,
+      hasMoreAfter: true,
+      gap: false,
     })
   })
 
@@ -522,6 +751,13 @@ describe('CommandClient', () => {
       (page: ReturnType<typeof validWorktreePage>) => {
         page.turns[0].user.body = '/Users/goya/.ssh/config'
       },
+      (page: ReturnType<typeof validWorktreePage>) => {
+        const assistant = page.turns[0].assistant
+        if (!assistant) {
+          throw new Error('assistant fixture missing')
+        }
+        Object.assign(assistant.segments[0], { text: 'raw private chain' })
+      },
     ]
 
     for (const mutate of invalidCases) {
@@ -537,6 +773,196 @@ describe('CommandClient', () => {
     }
   })
 
+  it('rejects unsafe image media metadata in conversation worktree pages', async () => {
+    const payload = clone(validWorktreePage())
+    const assistant = payload.turns[0].assistant
+    if (!assistant) {
+      throw new Error('assistant fixture missing')
+    }
+    assistant.segments.push({
+      kind: 'artifact',
+      id: 'segment:artifact:svg',
+      order: 3,
+      artifactId: 'artifact-svg',
+      artifactKind: 'image',
+      status: 'ready',
+      source: 'tool',
+      title: 'Generated SVG',
+      media: {
+        kind: 'image',
+        mimeType: 'image/svg+xml',
+        sizeBytes: 12,
+      },
+    } as unknown as (typeof assistant.segments)[number])
+
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects unsafe non-image media metadata in conversation worktree pages', async () => {
+    const payload = clone(validWorktreePage())
+    const assistant = payload.turns[0].assistant
+    if (!assistant) {
+      throw new Error('assistant fixture missing')
+    }
+    assistant.segments.push({
+      kind: 'artifact',
+      id: 'segment:artifact:video',
+      order: 3,
+      artifactId: 'artifact-video',
+      artifactKind: 'video',
+      status: 'ready',
+      source: 'tool',
+      title: 'Generated video',
+      media: {
+        kind: 'video',
+        mimeType: 'video/mp4 https://provider.example/video',
+        sizeBytes: 12,
+      },
+    } as unknown as (typeof assistant.segments)[number])
+
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects secret-like artifact media MIME tokens in conversation worktree pages', async () => {
+    const payload = clone(validWorktreePage())
+    const assistant = payload.turns[0].assistant
+    if (!assistant) {
+      throw new Error('assistant fixture missing')
+    }
+    assistant.segments.push({
+      kind: 'artifact',
+      id: 'segment:artifact:video',
+      order: 3,
+      artifactId: 'artifact-video',
+      artifactKind: 'video',
+      status: 'ready',
+      source: 'tool',
+      title: 'Generated video',
+      media: {
+        kind: 'video',
+        mimeType: 'video/sk-abcdefghijklmnopqrstuvwxyz0123456789',
+        sizeBytes: 12,
+      },
+    } as unknown as (typeof assistant.segments)[number])
+
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it.each([
+    'https://provider.example/artifact?signature=abc',
+    'data:image/svg+xml;base64,PHN2Zy8+',
+    'blob:.jyowo/runtime/blobs/blob-001',
+    'file:///Users/goya/private/image.png',
+    'javascript:alert(1)',
+    'mailto:user@example.com',
+    '.jyowo/runtime/blobs/blob-001',
+    '.JYOWO/runtime/blobs/blob-001',
+    '/tmp/provider-output',
+    'C:\\Users\\goya\\private\\image.png',
+  ])('rejects unsafe conversation display text in worktree pages: %s', async (unsafeText) => {
+    const payload = clone(validWorktreePage())
+    const assistant = payload.turns[0].assistant
+    if (!assistant) {
+      throw new Error('assistant fixture missing')
+    }
+    assistant.segments.push({
+      kind: 'artifact',
+      id: 'segment:artifact:unsafe-title',
+      order: 3,
+      artifactId: 'artifact-unsafe-title',
+      artifactKind: 'file',
+      status: 'ready',
+      source: 'tool',
+      title: `Unsafe ${unsafeText}`,
+    } as (typeof assistant.segments)[number])
+
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('accepts allowlisted file media metadata in conversation worktree pages', async () => {
+    const payload = clone(validWorktreePage())
+    const assistant = payload.turns[0].assistant
+    if (!assistant) {
+      throw new Error('assistant fixture missing')
+    }
+    assistant.segments.push({
+      kind: 'artifact',
+      id: 'segment:artifact:file',
+      order: 3,
+      artifactId: 'artifact-file',
+      artifactKind: 'file',
+      status: 'ready',
+      source: 'tool',
+      title: 'Generated file',
+      media: {
+        kind: 'file',
+        mimeType: 'text/plain',
+        sizeBytes: 12,
+      },
+    } as (typeof assistant.segments)[number])
+
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+      ),
+    ).resolves.toEqual(payload)
+  })
+
+  it.each([
+    ['video', 'audio/mpeg'],
+    ['audio', 'video/mp4'],
+    ['file', 'image/png'],
+  ] as const)('rejects %s artifact media with %s MIME type', async (kind, mimeType) => {
+    const payload = clone(validWorktreePage())
+    const assistant = payload.turns[0].assistant
+    if (!assistant) {
+      throw new Error('assistant fixture missing')
+    }
+    assistant.segments.push({
+      kind: 'artifact',
+      id: `segment:artifact:${kind}-mismatch`,
+      order: 3,
+      artifactId: `artifact-${kind}-mismatch`,
+      artifactKind: kind,
+      status: 'ready',
+      source: 'tool',
+      title: 'Generated artifact',
+      media: {
+        kind,
+        mimeType,
+        sizeBytes: 12,
+      },
+    } as unknown as (typeof assistant.segments)[number])
+
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
   it('rejects raw RunEvent-shaped payloads as conversation worktree pages', async () => {
     const client = createInvokeCommandClient(
       vi.fn().mockResolvedValue({
@@ -544,7 +970,7 @@ describe('CommandClient', () => {
           {
             id: 'evt-live',
             conversationSequence: 2,
-            payload: { text: 'Hello' },
+            payload: { messageId: 'message-live', text: 'Hello' },
             runId: 'run-001',
             sequence: 2,
             source: 'assistant',
@@ -560,6 +986,70 @@ describe('CommandClient', () => {
 
     await expect(
       pageConversationWorktree({ conversationId: 'conversation-001' }, client),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('models artifact media preview command without exposing blob paths', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+      mimeType: 'image/png',
+      sizeBytes: 67,
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      getArtifactMediaPreview(
+        {
+          conversationId: 'conversation-001',
+          artifactId: 'artifact-image-001',
+        },
+        client,
+      ),
+    ).resolves.toEqual({
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+      mimeType: 'image/png',
+      sizeBytes: 67,
+    })
+    expect(invoke).toHaveBeenCalledWith('get_artifact_media_preview', {
+      conversationId: 'conversation-001',
+      artifactId: 'artifact-image-001',
+    })
+
+    const unsafeClient = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        dataUrl: '/Users/goya/.jyowo/runtime/blobs/private.png',
+        mimeType: 'image/png',
+        sizeBytes: 67,
+      }),
+    )
+    await expect(
+      getArtifactMediaPreview(
+        {
+          conversationId: 'conversation-001',
+          artifactId: 'artifact-image-001',
+        },
+        unsafeClient,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects svg artifact media preview payloads', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        dataUrl: 'data:image/svg+xml;base64,PHN2Zy8+',
+        mimeType: 'image/svg+xml',
+        sizeBytes: 12,
+      }),
+    )
+
+    await expect(
+      getArtifactMediaPreview(
+        {
+          conversationId: 'conversation-001',
+          artifactId: 'artifact-image-001',
+        },
+        client,
+      ),
     ).rejects.toThrow(TauriCommandPayloadError)
   })
 
@@ -692,7 +1182,7 @@ describe('CommandClient', () => {
             {
               id: 'evt-replay',
               conversationSequence: 1,
-              payload: { text: 'Hello' },
+              payload: { messageId: 'message-replay', text: 'Hello' },
               runId: 'run-001',
               sequence: 1,
               source: 'assistant',
@@ -1237,6 +1727,42 @@ describe('CommandClient', () => {
     ).rejects.toThrow(TauriCommandPayloadError)
   })
 
+  it('rejects unsafe artifact metadata display references', async () => {
+    for (const unsafeFields of [
+      { actionLabel: 'Open data:text/plain,secret' },
+      { actionLabel: 'Open sk-abcdefghijklmnopqrstuvwxyz' },
+      { description: 'Generated .JYOWO/runtime/blobs/blob-001' },
+      { description: 'Generated token=provider-secret' },
+      { kind: 'markdown data:image/svg+xml,<svg onload=alert(1)>' },
+      { title: 'Generated javascript:alert(1)' },
+      { title: 'Generated sk-abcdefghijklmnopqrstuvwxyz' },
+      { preview: 'Blob:.jyowo/runtime/blobs/blob-001 log/tmp/provider-output' },
+      { preview: 'Blob:.JYOWO/runtime/blobs/blob-001' },
+      { preview: 'Opaque blob:null/provider-output' },
+      { preview: 'token=provider-secret' },
+    ]) {
+      const client = createInvokeCommandClient(
+        vi.fn().mockResolvedValue({
+          artifacts: [
+            {
+              actionLabel: 'Open',
+              description: 'Generated implementation plan',
+              id: 'artifact-foundation-plan',
+              kind: 'markdown',
+              status: 'ready',
+              title: 'Foundation implementation review',
+              ...unsafeFields,
+            },
+          ],
+        }),
+      )
+
+      await expect(listArtifacts({ conversationId: 'conversation-001' }, client)).rejects.toThrow(
+        TauriCommandPayloadError,
+      )
+    }
+  })
+
   it('models eval lab commands through parsed support-workflow payloads', async () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === 'list_eval_cases') {
@@ -1396,6 +1922,24 @@ describe('CommandClient', () => {
     await expect(listConversations(client)).rejects.toThrow(TauriCommandPayloadError)
   })
 
+  it('rejects Windows slash private paths in conversation IPC payloads', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        conversations: [
+          {
+            id: 'conversation-001',
+            isEmpty: false,
+            lastMessagePreview: 'read C:/Users/goya/.ssh/config',
+            title: 'read C:/Users/goya/.ssh/config',
+            updatedAt: '2026-06-17T00:00:00.000Z',
+          },
+        ],
+      }),
+    )
+
+    await expect(listConversations(client)).rejects.toThrow(TauriCommandPayloadError)
+  })
+
   it('rejects conversation detail titles with private paths', async () => {
     const client = createInvokeCommandClient(
       vi.fn().mockResolvedValue({
@@ -1446,6 +1990,7 @@ describe('CommandClient', () => {
       TauriCommandPayloadError,
     )
     await expect(deleteConversation('', client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(deleteProject('', client)).rejects.toThrow(TauriCommandPayloadError)
     expect(invoke).not.toHaveBeenCalled()
   })
 
@@ -1462,6 +2007,10 @@ describe('CommandClient', () => {
       startRun({ conversationId: 'conversation-001', prompt: 'Run' }, client),
     ).resolves.toHaveProperty('status', 'started')
     await expect(deleteConversation('conversation-001', client)).resolves.toHaveProperty(
+      'status',
+      'deleted',
+    )
+    await expect(deleteProject('/Users/goya/Repo/Git/Jyowo', client)).resolves.toHaveProperty(
       'status',
       'deleted',
     )
@@ -1775,14 +2324,34 @@ describe('CommandClient', () => {
           servers: [
             {
               displayName: 'Workspace GitHub',
+              enabled: true,
               exposedToolCount: 2,
               id: 'github',
+              manageable: true,
               origin: 'workspace',
               scope: 'global',
               status: 'ready',
               transport: 'stdio',
             },
           ],
+        }
+      }
+
+      if (command === 'get_mcp_server_config') {
+        return {
+          server: {
+            displayName: 'Workspace GitHub',
+            enabled: true,
+            id: 'github',
+            scope: 'global',
+            transport: {
+              args: ['mcp-server'],
+              command: 'node',
+              env: [{ key: 'LOG_LEVEL', value: 'info' }],
+              inheritEnv: ['GITHUB_TOKEN'],
+              kind: 'stdio',
+            },
+          },
         }
       }
 
@@ -1796,8 +2365,10 @@ describe('CommandClient', () => {
       return {
         server: {
           displayName: 'Workspace GitHub',
+          enabled: true,
           exposedToolCount: 0,
           id: 'github',
+          manageable: true,
           origin: 'workspace',
           scope: 'global',
           status: 'configured',
@@ -1811,14 +2382,31 @@ describe('CommandClient', () => {
       servers: [
         {
           displayName: 'Workspace GitHub',
+          enabled: true,
           exposedToolCount: 2,
           id: 'github',
+          manageable: true,
           origin: 'workspace',
           scope: 'global',
           status: 'ready',
           transport: 'stdio',
         },
       ],
+    })
+    await expect(getMcpServerConfig('github', client)).resolves.toEqual({
+      server: {
+        displayName: 'Workspace GitHub',
+        enabled: true,
+        id: 'github',
+        scope: 'global',
+        transport: {
+          args: ['mcp-server'],
+          command: 'node',
+          env: [{ key: 'LOG_LEVEL', value: 'info' }],
+          inheritEnv: ['GITHUB_TOKEN'],
+          kind: 'stdio',
+        },
+      },
     })
     await expect(
       saveMcpServer(
@@ -1842,17 +2430,246 @@ describe('CommandClient', () => {
 
     expect(JSON.stringify(invoke.mock.results)).not.toContain('Authorization')
     expect(invoke).toHaveBeenCalledWith('list_mcp_servers')
+    expect(invoke).toHaveBeenCalledWith('get_mcp_server_config', { id: 'github' })
     expect(invoke).toHaveBeenCalledWith('save_mcp_server', {
       displayName: 'Workspace GitHub',
+      enabled: true,
       id: 'github',
       scope: 'global',
       transport: {
         args: ['mcp-server'],
         command: 'node',
+        env: [],
+        inheritEnv: [],
         kind: 'stdio',
       },
     })
     expect(invoke).toHaveBeenCalledWith('delete_mcp_server', { id: 'github' })
+  })
+
+  it('accepts MCP stdio and HTTP request shapes without storing raw secret values', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'save_mcp_server') {
+        return {
+          server: {
+            displayName: 'Remote Context',
+            enabled: true,
+            exposedToolCount: 0,
+            id: 'context7',
+            manageable: true,
+            origin: 'workspace',
+            scope: 'global',
+            status: 'configured',
+            transport: 'http',
+          },
+        }
+      }
+
+      return {
+        server: {
+          displayName: 'Workspace GitHub',
+          enabled: true,
+          exposedToolCount: 1,
+          id: 'github',
+          manageable: true,
+          origin: 'workspace',
+          scope: 'global',
+          status: 'ready',
+          transport: 'stdio',
+        },
+      }
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      saveMcpServer(
+        {
+          displayName: 'Remote Context',
+          id: 'context7',
+          scope: 'global',
+          transport: {
+            bearerTokenEnvVar: 'MCP_BEARER_TOKEN',
+            headers: [{ key: 'X-Workspace', value: 'jyowo' }],
+            headersFromEnv: [{ key: 'X-Api-Key', envVar: 'MCP_CONTEXT7_TOKEN' }],
+            kind: 'http',
+            url: 'https://mcp.example.com/mcp',
+          },
+        },
+        client,
+      ),
+    ).resolves.toHaveProperty('server.transport', 'http')
+    await expect(setMcpServerEnabled('github', true, client)).resolves.toHaveProperty(
+      'server.status',
+      'ready',
+    )
+    await expect(restartMcpServer('github', client)).resolves.toHaveProperty(
+      'server.transport',
+      'stdio',
+    )
+
+    expect(JSON.stringify(invoke.mock.calls)).not.toContain('mcp-secret-token')
+    expect(invoke).toHaveBeenCalledWith('save_mcp_server', {
+      displayName: 'Remote Context',
+      enabled: true,
+      id: 'context7',
+      scope: 'global',
+      transport: {
+        bearerTokenEnvVar: 'MCP_BEARER_TOKEN',
+        headers: [{ key: 'X-Workspace', value: 'jyowo' }],
+        headersFromEnv: [{ key: 'X-Api-Key', envVar: 'MCP_CONTEXT7_TOKEN' }],
+        kind: 'http',
+        url: 'https://mcp.example.com/mcp',
+      },
+    })
+    expect(invoke).toHaveBeenCalledWith('set_mcp_server_enabled', {
+      enabled: true,
+      id: 'github',
+    })
+    expect(invoke).toHaveBeenCalledWith('restart_mcp_server', { id: 'github' })
+  })
+
+  it('rejects raw secret MCP headers and stdio env before invoking Tauri', async () => {
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      saveMcpServer(
+        {
+          displayName: 'Remote Context',
+          id: 'context7',
+          scope: 'global',
+          transport: {
+            headers: [{ key: 'Authorization', value: 'Bearer mcp-secret-token' }],
+            kind: 'http',
+            url: 'https://mcp.example.com/mcp',
+          },
+        } as Parameters<typeof saveMcpServer>[0],
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      saveMcpServer(
+        {
+          displayName: 'Workspace GitHub',
+          id: 'github',
+          scope: 'global',
+          transport: {
+            command: 'node',
+            env: [{ key: 'GITHUB_TOKEN', value: 'mcp-secret-token' }],
+            kind: 'stdio',
+          },
+        } as Parameters<typeof saveMcpServer>[0],
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('rejects MCP server config details that contain raw secrets', async () => {
+    const invoke = vi.fn(async () => ({
+      server: {
+        displayName: 'Remote Context',
+        enabled: true,
+        id: 'context7',
+        scope: 'global',
+        transport: {
+          headers: [{ key: 'Authorization', value: 'Bearer mcp-secret-token' }],
+          kind: 'http',
+          url: 'https://mcp.example.com/mcp',
+        },
+      },
+    }))
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(getMcpServerConfig('context7', client)).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('parses MCP diagnostics list and live batches without exposing raw payload details', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'list_mcp_diagnostics') {
+        return {
+          events: [
+            {
+              eventType: 'connection_lost',
+              id: 'mcp-diagnostic-001',
+              serverId: 'github',
+              severity: 'warning',
+              summary: 'MCP server connection lost; reconnecting.',
+              timestamp: '2026-06-17T00:00:00.000Z',
+            },
+          ],
+        }
+      }
+
+      if (command === 'subscribe_mcp_diagnostics') {
+        return {
+          replayEvents: [],
+          serverId: 'github',
+          subscriptionId: 'mcp-diagnostic-subscription-001',
+        }
+      }
+
+      if (command === 'clear_mcp_diagnostics') {
+        return { status: 'cleared' }
+      }
+
+      return {
+        status: 'unsubscribed',
+        subscriptionId: 'mcp-diagnostic-subscription-001',
+      }
+    })
+    const unlisten = vi.fn()
+    let tauriEventHandler: ((event: { payload: unknown }) => void) | undefined
+    tauriListenMock.mockImplementationOnce(async (_eventName, handler) => {
+      tauriEventHandler = handler
+      return unlisten
+    })
+    const client = createInvokeCommandClient(invoke)
+    const batches: unknown[] = []
+
+    await expect(listMcpDiagnostics('github', client)).resolves.toHaveProperty(
+      'events.0.summary',
+      'MCP server connection lost; reconnecting.',
+    )
+    await expect(subscribeMcpDiagnostics({ serverId: 'github' }, client)).resolves.toHaveProperty(
+      'subscriptionId',
+      'mcp-diagnostic-subscription-001',
+    )
+    const cleanup = await listenMcpDiagnosticBatches((batch) => {
+      batches.push(batch)
+    }, client)
+    tauriEventHandler?.({
+      payload: {
+        events: [
+          {
+            eventType: 'connection_recovered',
+            id: 'mcp-diagnostic-002',
+            serverId: 'github',
+            severity: 'info',
+            summary: 'MCP server connection recovered.',
+            timestamp: '2026-06-17T00:00:01.000Z',
+          },
+        ],
+        phase: 'live',
+        serverId: 'github',
+        subscriptionId: 'mcp-diagnostic-subscription-001',
+      },
+    })
+    cleanup()
+    await expect(clearMcpDiagnostics('github', client)).resolves.toEqual({ status: 'cleared' })
+    await expect(
+      unsubscribeMcpDiagnostics('mcp-diagnostic-subscription-001', client),
+    ).resolves.toHaveProperty('status', 'unsubscribed')
+
+    expect(tauriListenMock).toHaveBeenCalledWith('mcp_diagnostic_batch', expect.any(Function))
+    expect(JSON.stringify(batches)).not.toContain('mcp-secret-token')
+    expect(batches).toEqual([
+      expect.objectContaining({
+        events: [expect.objectContaining({ id: 'mcp-diagnostic-002' })],
+        phase: 'live',
+      }),
+    ])
+    expect(unlisten).toHaveBeenCalledTimes(1)
   })
 
   it('rejects invalid MCP server args before invoking Tauri', async () => {
@@ -2163,5 +2980,156 @@ describe('CommandClient', () => {
     await expect(setSkillEnabled('', true, client)).rejects.toThrow(TauriCommandPayloadError)
     await expect(deleteSkill('', client)).rejects.toThrow(TauriCommandPayloadError)
     await expect(listSkills(client)).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('invokes skill catalog commands through validated payloads', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'list_skill_catalog_sources') {
+        return {
+          sources: [
+            {
+              description: 'Official Anthropic skill repository.',
+              id: 'anthropic',
+              installable: true,
+              label: 'Anthropic Skills',
+              trustLevel: 'official',
+            },
+          ],
+        }
+      }
+
+      if (command === 'list_skill_catalog_entries') {
+        return {
+          entries: [
+            {
+              description: 'Create frontend interfaces.',
+              entryId: 'anthropic:frontend-design',
+              installable: true,
+              installed: false,
+              name: 'frontend-design',
+              sourceId: 'anthropic',
+              sourceLabel: 'Anthropic Skills',
+              tags: ['frontend'],
+              trustLevel: 'official',
+              version: 'main',
+            },
+          ],
+          nextCursor: 'cursor-2',
+        }
+      }
+
+      if (command === 'get_skill_catalog_entry') {
+        return {
+          entry: {
+            description: 'Create frontend interfaces.',
+            entryId: 'anthropic:frontend-design',
+            installable: true,
+            installed: false,
+            name: 'frontend-design',
+            sourceId: 'anthropic',
+            sourceLabel: 'Anthropic Skills',
+            tags: ['frontend'],
+            trustLevel: 'official',
+            version: 'main',
+          },
+          files: [{ kind: 'file', path: 'SKILL.md', sizeBytes: 512 }],
+          readmePreview: 'Create distinctive frontend interfaces.',
+          validation: {
+            issues: [],
+            status: 'ready',
+          },
+        }
+      }
+
+      return {
+        skill: {
+          description: 'Create frontend interfaces.',
+          enabled: true,
+          id: 'skill-remote',
+          manageable: true,
+          name: 'frontend-design',
+          origin: {
+            entryId: 'anthropic:frontend-design',
+            installedFromCatalog: true,
+            sourceId: 'anthropic',
+            sourceLabel: 'Anthropic Skills',
+            version: 'main',
+          },
+          sourceKind: 'workspace',
+          status: 'ready',
+          tags: ['frontend'],
+        },
+      }
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listSkillCatalogSources(client)).resolves.toHaveProperty(
+      'sources.0.id',
+      'anthropic',
+    )
+    await expect(
+      listSkillCatalogEntries(
+        { cursor: 'cursor-1', query: 'front', sourceId: 'anthropic' },
+        client,
+      ),
+    ).resolves.toHaveProperty('entries.0.entryId', 'anthropic:frontend-design')
+    await expect(
+      getSkillCatalogEntry(
+        { entryId: 'anthropic:frontend-design', sourceId: 'anthropic', version: 'main' },
+        client,
+      ),
+    ).resolves.toHaveProperty('validation.status', 'ready')
+    await expect(
+      installSkillFromCatalog(
+        { entryId: 'anthropic:frontend-design', sourceId: 'anthropic', version: 'main' },
+        client,
+      ),
+    ).resolves.toHaveProperty('skill.origin.sourceId', 'anthropic')
+
+    expect(invoke).toHaveBeenCalledWith('list_skill_catalog_sources')
+    expect(invoke).toHaveBeenCalledWith('list_skill_catalog_entries', {
+      cursor: 'cursor-1',
+      query: 'front',
+      sourceId: 'anthropic',
+    })
+    expect(invoke).toHaveBeenCalledWith('get_skill_catalog_entry', {
+      entryId: 'anthropic:frontend-design',
+      sourceId: 'anthropic',
+      version: 'main',
+    })
+    expect(invoke).toHaveBeenCalledWith('install_skill_from_catalog', {
+      entryId: 'anthropic:frontend-design',
+      sourceId: 'anthropic',
+      version: 'main',
+    })
+  })
+
+  it('rejects invalid skill catalog command args and payloads', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      sources: [
+        {
+          description: 'Unknown source.',
+          id: 'bad source',
+          installable: true,
+          label: '',
+          trustLevel: 'unknown',
+        },
+      ],
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listSkillCatalogEntries({ sourceId: '' as never }, client)).rejects.toThrow(
+      TauriCommandPayloadError,
+    )
+    await expect(
+      getSkillCatalogEntry({ entryId: '', sourceId: 'anthropic' }, client),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      installSkillFromCatalog(
+        { entryId: 'anthropic:frontend-design', sourceId: '' as never },
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(listSkillCatalogSources(client)).rejects.toThrow(TauriCommandPayloadError)
   })
 })

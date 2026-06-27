@@ -14,8 +14,8 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 
 use crate::{
-    AgentId, BlobRef, BlobStore, CorrelationId, Event, HookEventKind, OverflowMetadata, RunId,
-    SessionId, SkillId, SkillSourceKind, SubagentId, TenantId, ToolCapability, ToolError,
+    AgentId, BlobMeta, BlobRef, BlobStore, CorrelationId, Event, HookEventKind, OverflowMetadata,
+    RunId, SessionId, SkillId, SkillSourceKind, SubagentId, TenantId, ToolCapability, ToolError,
     ToolUseId, TranscriptRef, TurnInput, UsageSnapshot,
 };
 
@@ -127,6 +127,15 @@ pub trait BlobReaderCap: Send + Sync + 'static {
     ) -> BoxFuture<'_, Result<BoxStream<'static, Bytes>, ToolError>>;
 }
 
+pub trait BlobWriterCap: Send + Sync + 'static {
+    fn write_blob(
+        &self,
+        tenant_id: TenantId,
+        bytes: Bytes,
+        meta: BlobMeta,
+    ) -> BoxFuture<'_, Result<BlobRef, ToolError>>;
+}
+
 pub trait OffloadedBlobAuthorizerCap: Send + Sync + 'static {
     fn authorize_offloaded_blob(
         &self,
@@ -154,6 +163,24 @@ where
     }
 }
 
+impl<T> BlobWriterCap for T
+where
+    T: BlobStore + ?Sized,
+{
+    fn write_blob(
+        &self,
+        tenant_id: TenantId,
+        bytes: Bytes,
+        meta: BlobMeta,
+    ) -> BoxFuture<'_, Result<BlobRef, ToolError>> {
+        Box::pin(async move {
+            self.put(tenant_id, bytes, meta)
+                .await
+                .map_err(|error| ToolError::Message(error.to_string()))
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct BlobReaderCapAdapter {
     inner: Arc<dyn BlobStore>,
@@ -175,6 +202,34 @@ impl BlobReaderCap for BlobReaderCapAdapter {
         Box::pin(async move {
             self.inner
                 .get(tenant_id, &blob)
+                .await
+                .map_err(|error| ToolError::Message(error.to_string()))
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct BlobWriterCapAdapter {
+    inner: Arc<dyn BlobStore>,
+}
+
+impl BlobWriterCapAdapter {
+    #[must_use]
+    pub fn new(inner: Arc<dyn BlobStore>) -> Self {
+        Self { inner }
+    }
+}
+
+impl BlobWriterCap for BlobWriterCapAdapter {
+    fn write_blob(
+        &self,
+        tenant_id: TenantId,
+        bytes: Bytes,
+        meta: BlobMeta,
+    ) -> BoxFuture<'_, Result<BlobRef, ToolError>> {
+        Box::pin(async move {
+            self.inner
+                .put(tenant_id, bytes, meta)
                 .await
                 .map_err(|error| ToolError::Message(error.to_string()))
         })

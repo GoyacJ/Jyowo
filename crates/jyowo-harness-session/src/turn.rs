@@ -10,12 +10,12 @@ use harness_contracts::{
     AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobStore, CapabilityRegistry,
     CausationId, CorrelationId, DecidedBy, Decision, DecisionId, DeltaChunk, DenyReason, EndReason,
     Event, EventId, FallbackPolicy, InteractivityLevel, Message, MessageContent, MessageId,
-    MessageMetadata, MessagePart, MessageRole, NoopRedactor, PermissionMode,
-    PermissionRequestedEvent, PermissionResolvedEvent, Redactor, RunEndedEvent, RunId,
-    RunStartedEvent, SessionError, SessionId, StopReason, TeamId, TenantId, ToolDescriptor,
-    ToolError, ToolErrorPayload, ToolResult, ToolUseApprovedEvent, ToolUseCompletedEvent,
-    ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseSummary,
-    TrustLevel, TurnInput, UsageSnapshot,
+    MessageMetadata, MessagePart, MessageRole, PermissionMode, PermissionRequestedEvent,
+    PermissionResolvedEvent, RedactRules, Redactor, RunEndedEvent, RunId, RunStartedEvent,
+    SessionError, SessionId, StopReason, TeamId, TenantId, ToolDescriptor, ToolError,
+    ToolErrorPayload, ToolResult, ToolUseApprovedEvent, ToolUseCompletedEvent, ToolUseDeniedEvent,
+    ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseSummary, TrustLevel, TurnInput,
+    UsageSnapshot,
 };
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookMessageView, HookOutcome, HookSessionView,
@@ -49,6 +49,7 @@ pub struct SessionTurnRuntime {
     pub permission_broker: Arc<dyn PermissionBroker>,
     pub sandbox: Option<Arc<dyn SandboxBackend>>,
     pub cap_registry: Arc<CapabilityRegistry>,
+    pub redactor: Arc<dyn Redactor>,
     pub blob_store: Option<Arc<dyn BlobStore>>,
     pub model_id: String,
     pub model_extra: Value,
@@ -99,9 +100,9 @@ pub(crate) async fn run_turn(
         .dispatch(
             HookEvent::UserPromptSubmit {
                 run_id,
-                input: json!({ "prompt": prompt }),
+                input: redact_json_strings(json!({ "prompt": prompt }), runtime.redactor.as_ref()),
             },
-            hook_context(session, run_id, &projection.messages),
+            hook_context(session, &runtime, run_id, &projection.messages),
         )
         .await
     {
@@ -225,7 +226,7 @@ pub(crate) async fn run_turn(
                         .await?;
                     projection_events.push(delta_event);
                 }
-                ContentDelta::Thinking(_) => {}
+                ContentDelta::Thinking(_) | ContentDelta::ReasoningSummary(_) => {}
                 ContentDelta::ToolUseComplete { id, name, input } => {
                     tool_calls.push(ToolCall {
                         tool_use_id: id,
@@ -284,38 +285,73 @@ pub(crate) async fn run_turn(
     projection_events.extend(pre_tool_events);
 
     let permission_recorder = Arc::new(RecordingPermissionBroker::new(runtime.permission_broker));
-    let tool_event_emitter = Arc::new(RecordingToolEventEmitter::new());
-    let tool_results = ToolOrchestrator::default()
-        .dispatch(
-            tool_calls.clone(),
-            OrchestratorContext {
-                pool: runtime.tools.clone(),
-                tool_context: harness_tool::ToolContext {
-                    tool_use_id: ToolUseId::new(),
-                    run_id,
-                    session_id: session.session_id(),
-                    tenant_id: session.tenant_id(),
-                    correlation_id: CorrelationId::new(),
-                    agent_id: harness_contracts::AgentId::from_u128(1),
-                    subagent_depth: 0,
-                    workspace_root: session.options().workspace_root.clone(),
-                    sandbox: runtime.sandbox.clone(),
-                    permission_broker: permission_recorder.clone(),
-                    cap_registry: runtime.cap_registry.clone(),
-                    interrupt: InterruptToken::new(),
-                    parent_run: None,
-                },
-                permission_context: permission_context(session, run_id),
-                blob_store: runtime.blob_store.clone(),
-                event_emitter: tool_event_emitter.clone(),
+    let (tool_event_emitter, mut tool_event_receiver) = ChannelToolEventEmitter::channel();
+    let orchestrator = ToolOrchestrator::default();
+    let mut flushed_permission_records = 0;
+    let mut dispatch = Box::pin(orchestrator.dispatch(
+        tool_calls.clone(),
+        OrchestratorContext {
+            pool: runtime.tools.clone(),
+            tool_context: harness_tool::ToolContext {
+                tool_use_id: ToolUseId::new(),
+                run_id,
+                session_id: session.session_id(),
+                tenant_id: session.tenant_id(),
+                correlation_id: CorrelationId::new(),
+                agent_id: harness_contracts::AgentId::from_u128(1),
+                subagent_depth: 0,
+                workspace_root: session.options().workspace_root.clone(),
+                sandbox: runtime.sandbox.clone(),
+                permission_broker: permission_recorder.clone(),
+                cap_registry: runtime.cap_registry.clone(),
+                redactor: runtime.redactor.clone(),
+                interrupt: InterruptToken::new(),
+                parent_run: None,
             },
+            permission_context: permission_context(session, run_id),
+            blob_store: runtime.blob_store.clone(),
+            event_emitter: tool_event_emitter,
+        },
+    ));
+    let tool_results = loop {
+        tokio::select! {
+            results = &mut dispatch => break results,
+            Some(event) = tool_event_receiver.recv() => {
+                flush_session_permission_events(
+                    session,
+                    &mut projection_events,
+                    run_id,
+                    permission_recorder.as_ref(),
+                    &mut flushed_permission_records,
+                )
+                .await?;
+                session.append_events(std::slice::from_ref(&event)).await?;
+                projection_events.push(event);
+            }
+        }
+    };
+    while let Ok(event) = tool_event_receiver.try_recv() {
+        flush_session_permission_events(
+            session,
+            &mut projection_events,
+            run_id,
+            permission_recorder.as_ref(),
+            &mut flushed_permission_records,
         )
-        .await;
-
-    let mut post_tool_events = permission_events(run_id, permission_recorder.records().await);
-    for emitted in tool_event_emitter.take().await {
-        post_tool_events.push(emitted);
+        .await?;
+        session.append_events(std::slice::from_ref(&event)).await?;
+        projection_events.push(event);
     }
+    flush_session_permission_events(
+        session,
+        &mut projection_events,
+        run_id,
+        permission_recorder.as_ref(),
+        &mut flushed_permission_records,
+    )
+    .await?;
+
+    let mut post_tool_events = Vec::new();
     for result in &tool_results {
         post_tool_events.extend(tool_result_events(result));
     }
@@ -464,7 +500,7 @@ impl ContextSessionView for TurnContextView {
 struct TurnHookView {
     workspace_root: PathBuf,
     messages: Vec<Message>,
-    redactor: NoopRedactor,
+    redactor: Arc<dyn Redactor>,
 }
 
 impl HookSessionView for TurnHookView {
@@ -479,7 +515,9 @@ impl HookSessionView for TurnHookView {
             .take(limit)
             .map(|message| HookMessageView {
                 role: message.role,
-                text_snippet: message_text(message),
+                text_snippet: self
+                    .redactor
+                    .redact(&message_text(message), &RedactRules::default()),
                 tool_use_id: None,
             })
             .collect()
@@ -490,7 +528,7 @@ impl HookSessionView for TurnHookView {
     }
 
     fn redacted(&self) -> &dyn Redactor {
-        &self.redactor
+        self.redactor.as_ref()
     }
 
     fn current_tool_descriptor(&self) -> Option<ToolDescriptorView> {
@@ -541,37 +579,29 @@ impl PermissionBroker for RecordingPermissionBroker {
     }
 }
 
-struct RecordingToolEventEmitter {
+struct ChannelToolEventEmitter {
     sender: mpsc::UnboundedSender<Event>,
-    receiver: Mutex<mpsc::UnboundedReceiver<Event>>,
 }
 
-impl RecordingToolEventEmitter {
-    fn new() -> Self {
+impl ChannelToolEventEmitter {
+    fn channel() -> (Arc<Self>, mpsc::UnboundedReceiver<Event>) {
         let (sender, receiver) = mpsc::unbounded_channel();
-        Self {
-            sender,
-            receiver: Mutex::new(receiver),
-        }
-    }
-
-    async fn take(&self) -> Vec<Event> {
-        let mut receiver = self.receiver.lock().await;
-        let mut events = Vec::new();
-        while let Ok(event) = receiver.try_recv() {
-            events.push(event);
-        }
-        events
+        (Arc::new(Self { sender }), receiver)
     }
 }
 
-impl ToolEventEmitter for RecordingToolEventEmitter {
+impl ToolEventEmitter for ChannelToolEventEmitter {
     fn emit(&self, event: Event) {
         let _ignored = self.sender.send(event);
     }
 }
 
-fn hook_context(session: &Session, run_id: RunId, messages: &[Message]) -> HookContext {
+fn hook_context(
+    session: &Session,
+    runtime: &SessionTurnRuntime,
+    run_id: RunId,
+    messages: &[Message],
+) -> HookContext {
     HookContext {
         tenant_id: session.tenant_id(),
         session_id: session.session_id(),
@@ -586,10 +616,29 @@ fn hook_context(session: &Session, run_id: RunId, messages: &[Message]) -> HookC
         view: Arc::new(TurnHookView {
             workspace_root: session.options().workspace_root.clone(),
             messages: messages.to_vec(),
-            redactor: NoopRedactor,
+            redactor: runtime.redactor.clone(),
         }),
         upstream_outcome: None,
         replay_mode: ReplayMode::Live,
+    }
+}
+
+fn redact_json_strings(value: Value, redactor: &dyn Redactor) -> Value {
+    match value {
+        Value::String(text) => Value::String(redactor.redact(&text, &RedactRules::default())),
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|value| redact_json_strings(value, redactor))
+                .collect(),
+        ),
+        Value::Object(entries) => Value::Object(
+            entries
+                .into_iter()
+                .map(|(key, value)| (key, redact_json_strings(value, redactor)))
+                .collect(),
+        ),
+        value => value,
     }
 }
 
@@ -610,6 +659,25 @@ fn permission_context(session: &Session, run_id: RunId) -> PermissionContext {
         }),
         hook_overrides: Vec::new(),
     }
+}
+
+async fn flush_session_permission_events(
+    session: &Session,
+    projection_events: &mut Vec<Event>,
+    run_id: RunId,
+    permission_recorder: &RecordingPermissionBroker,
+    flushed_permission_records: &mut usize,
+) -> Result<(), SessionError> {
+    let records = permission_recorder.records().await;
+    if records.len() <= *flushed_permission_records {
+        return Ok(());
+    }
+
+    let events = permission_events(run_id, records[*flushed_permission_records..].to_vec());
+    *flushed_permission_records = records.len();
+    session.append_events(&events).await?;
+    projection_events.extend(events);
+    Ok(())
 }
 
 fn permission_events(run_id: RunId, records: Vec<PermissionDecisionRecord>) -> Vec<Event> {

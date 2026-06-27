@@ -76,6 +76,50 @@ fn key_events_serialize_with_type_tag() {
 }
 
 #[test]
+fn assistant_review_requested_segment_source_events_serialize_with_stable_tags() {
+    let run_id = RunId::new();
+    let at = chrono::Utc::now();
+
+    let review = Event::AssistantReviewRequested(AssistantReviewRequestedEvent {
+        run_id,
+        request_id: RequestId::new(),
+        title: UiSafeText::from_trusted_redacted("Review changes"),
+        body: Some(UiSafeText::from_trusted_redacted(
+            "Confirm before applying.",
+        )),
+        at,
+    });
+    let value = serde_json::to_value(review).unwrap();
+    assert_eq!(value["type"], "assistant_review_requested");
+    assert_eq!(value["title"], "Review changes");
+    assert_eq!(value["body"], "Confirm before applying.");
+    assert!(value.get("session_id").is_none());
+
+    let clarification =
+        Event::AssistantClarificationRequested(AssistantClarificationRequestedEvent {
+            run_id,
+            request_id: RequestId::new(),
+            prompt: UiSafeText::from_trusted_redacted("Which style should I use?"),
+            at,
+        });
+    let value = serde_json::to_value(clarification).unwrap();
+    assert_eq!(value["type"], "assistant_clarification_requested");
+    assert_eq!(value["prompt"], "Which style should I use?");
+    assert!(value.get("session_id").is_none());
+
+    let notice = Event::AssistantNotice(AssistantNoticeEvent {
+        run_id,
+        notice_id: RequestId::new(),
+        body: UiSafeText::from_trusted_redacted("Tool output was summarized."),
+        at,
+    });
+    let value = serde_json::to_value(notice).unwrap();
+    assert_eq!(value["type"], "assistant_notice");
+    assert_eq!(value["body"], "Tool output was summarized.");
+    assert!(value.get("session_id").is_none());
+}
+
+#[test]
 fn redactor_is_dyn_safe_and_noop_preserves_input() {
     let redactor: &dyn Redactor = &NoopRedactor;
     assert_eq!(redactor.redact("secret", &RedactRules::default()), "secret");
@@ -91,6 +135,9 @@ fn schema_export_contains_required_surface() {
     assert!(schemas.contains_key("tool_use_requested"));
     assert!(schemas.contains_key("artifact_created"));
     assert!(schemas.contains_key("artifact_updated"));
+    assert!(schemas.contains_key("assistant_review_requested"));
+    assert!(schemas.contains_key("assistant_clarification_requested"));
+    assert!(schemas.contains_key("assistant_notice"));
     assert!(schemas.contains_key("credential_pool_shared_across_tenants"));
     assert!(schemas.contains_key("manifest_validation_failed"));
     assert!(schemas.contains_key("hook_failed"));
@@ -151,7 +198,35 @@ fn ui_safe_text_redacts_private_paths_and_obvious_secrets() {
         "read /home/alice/.aws/credentials",
         "tail /private/var/folders/token.txt",
         "type C:\\Users\\alice\\.ssh\\config",
+        "type C:/Users/alice/.ssh/config",
         "Authorization: Bearer abcdef123456",
+        "Bearer abcdefghijklmnop",
+        "Basic abcdefghijklmnop",
+        "eyJabcdefgh.eyJijklmnop.eyJqrstuvwx",
+        "\"eyJabcdefgh.eyJijklmnop.eyJqrstuvwx\"",
+        "postgres://user:password@example.com/app",
+        "client_secret: verysecretvalue",
+        "client_secret : verysecretvalue",
+        "client_secret = 'verysecretvalue'",
+        "password: supersecret",
+        "password : supersecret",
+        "password: \"supersecret\"",
+        "password: \"my secret phrase\"",
+        "token: abcdefghijklmnop",
+        "rk_live_abcdefghijklmnop",
+        "ghp_abcdefghijklmnopqrstuvwxyz",
+        "github_pat_abcdefghijklmnopqrstuvwxyz",
+        "xoxb-abcdefghijklmnop",
+        "xoxs-abcdefghijklmnop",
+        "npm_abcdefghijklmnopqrst",
+        "lin_api_abcdefghijklmnopqrst",
+        "secret_abcdefghijklmnopqrst",
+        "sk_live_abcdefghijklmnop",
+        "code=abcdefghijkl",
+        "ASIAABCDEFGHIJKLMNOP",
+        "A3TABCDEFGHIJKLMNOPQ",
+        "\"ASIAABCDEFGHIJKLMNOP\"",
+        "[A3TABCDEFGHIJKLMNOPQ]",
         "api_key = sk-abcdefghijkl",
     ] {
         let text = UiSafeText::from_redacted_display(value, redactor);
@@ -229,25 +304,74 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                 run_id: "run-1".to_owned(),
                 status: AssistantWorkStatus::Running,
                 segments: vec![
+                    AssistantSegment::Process(ProcessSegment {
+                        id: "segment:process:run-1".to_owned(),
+                        order: 0,
+                        status: ProcessSegmentStatus::Running,
+                        summary: UiSafeText::from_trusted_redacted("正在处理请求"),
+                        steps: vec![
+                            ProcessStep {
+                                id: "process-step:run-1:reasoning".to_owned(),
+                                order: 0,
+                                kind: ProcessStepKind::Reasoning,
+                                status: ProcessStepStatus::Running,
+                                title: UiSafeText::from_trusted_redacted("分析请求"),
+                                body: Some(UiSafeText::from_trusted_redacted(
+                                    "确认需要生成图片并展示结果。",
+                                )),
+                                detail: None,
+                                event_refs: vec![event_ref.clone()],
+                            },
+                            ProcessStep {
+                                id: "process-step:run-1:artifact".to_owned(),
+                                order: 1,
+                                kind: ProcessStepKind::Artifact,
+                                status: ProcessStepStatus::Complete,
+                                title: UiSafeText::from_trusted_redacted("生成的图片"),
+                                body: None,
+                                detail: Some(ProcessStepDetail::Artifact {
+                                    artifact_id: "artifact-1".to_owned(),
+                                    media: ArtifactMediaPreview {
+                                        kind: ArtifactMediaKind::Image,
+                                        mime_type: "image/png".to_owned(),
+                                        size_bytes: 128,
+                                    },
+                                }),
+                                event_refs: vec![event_ref.clone()],
+                            },
+                        ],
+                        event_refs: vec![event_ref.clone()],
+                    }),
                     AssistantSegment::Thinking(ThinkingSegment {
                         id: "segment:thinking:run-1".to_owned(),
-                        order: 0,
+                        order: 1,
                         status: ThinkingSegmentStatus::Running,
                         summary: ThinkingSummary {
                             text: UiSafeText::from_trusted_redacted("Checking available tools"),
                         },
+                        steps: vec![ThinkingStep {
+                            id: "thinking-step:run-1:summary".to_owned(),
+                            order: 0,
+                            kind: ThinkingStepKind::ReasoningSummary,
+                            status: ThinkingStepStatus::Running,
+                            title: UiSafeText::from_trusted_redacted("推理过程"),
+                            body: Some(UiSafeText::from_trusted_redacted(
+                                "Checking available tools",
+                            )),
+                            event_refs: vec![event_ref.clone()],
+                        }],
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::Text(TextSegment {
                         id: "segment:text:assistant-message-1".to_owned(),
-                        order: 1,
+                        order: 2,
                         message_id: "assistant-message-1".to_owned(),
                         body: UiSafeText::from_trusted_redacted("I can help with that."),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::ToolGroup(ToolGroupSegment {
                         id: "segment:tools:tool-use-1".to_owned(),
-                        order: 2,
+                        order: 3,
                         attempts: vec![ToolAttempt {
                             id: "tool:tool-use-1".to_owned(),
                             order: 0,
@@ -262,15 +386,23 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                     }),
                     AssistantSegment::Artifact(ArtifactSegment {
                         id: "segment:artifact:artifact-1".to_owned(),
-                        order: 3,
+                        order: 4,
                         artifact_id: "artifact-1".to_owned(),
+                        kind: "image".to_owned(),
+                        status: ArtifactStatus::Ready,
+                        source: ArtifactSource::Tool,
                         title: UiSafeText::from_trusted_redacted("Generated image"),
                         summary: Some(UiSafeText::from_trusted_redacted("Image artifact ready")),
+                        media: Some(ArtifactMediaPreview {
+                            kind: ArtifactMediaKind::Image,
+                            mime_type: "image/png".to_owned(),
+                            size_bytes: 128,
+                        }),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::ReviewRequest(ReviewRequestSegment {
                         id: "segment:review:review-1".to_owned(),
-                        order: 4,
+                        order: 5,
                         request_id: "review-1".to_owned(),
                         title: UiSafeText::from_trusted_redacted("Review changes"),
                         body: Some(UiSafeText::from_trusted_redacted(
@@ -280,20 +412,20 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                     }),
                     AssistantSegment::ClarificationRequest(ClarificationRequestSegment {
                         id: "segment:clarification:clarification-1".to_owned(),
-                        order: 5,
+                        order: 6,
                         request_id: "clarification-1".to_owned(),
                         prompt: UiSafeText::from_trusted_redacted("Which style should I use?"),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::Notice(NoticeSegment {
                         id: "segment:notice:event-1".to_owned(),
-                        order: 6,
+                        order: 7,
                         body: UiSafeText::from_trusted_redacted("Tool output was summarized."),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::Error(ErrorSegment {
                         id: "segment:error:event-2".to_owned(),
-                        order: 7,
+                        order: 8,
                         body: UiSafeText::from_trusted_redacted("Tool execution failed."),
                         event_refs: vec![event_ref.clone()],
                     }),
@@ -320,30 +452,108 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
     assert_eq!(value["turns"][0]["assistant"]["status"], "running");
     assert_eq!(
         value["turns"][0]["assistant"]["segments"][0]["kind"],
+        "process"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][0]["steps"][0]["kind"],
+        "reasoning"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][0]["steps"][1]["detail"]["type"],
+        "artifact"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][0]["steps"][1]["detail"]["media"]["kind"],
+        "image"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][1]["kind"],
         "thinking"
     );
     assert_eq!(value["turns"][0]["assistant"]["segments"][0]["order"], 0);
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][0]["status"],
+        value["turns"][0]["assistant"]["segments"][1]["status"],
         "running"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][2]["kind"],
+        value["turns"][0]["assistant"]["segments"][1]["steps"][0]["kind"],
+        "reasoningSummary"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][1]["steps"][0]["body"],
+        "Checking available tools"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][3]["kind"],
         "toolGroup"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][2]["attempts"][0]["permission"]["requestId"],
+        value["turns"][0]["assistant"]["segments"][3]["attempts"][0]["permission"]["requestId"],
         "request-1"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][2]["attempts"][0]["permission"]["toolUseId"],
+        value["turns"][0]["assistant"]["segments"][3]["attempts"][0]["permission"]["toolUseId"],
         "tool-use-1"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][4]["kind"],
+        "artifact"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][4]["media"]["mimeType"],
+        "image/png"
     );
     assert_eq!(value["pageCursor"]["turnId"], "turn:user-message-1");
     assert_eq!(value["eventCursor"]["conversationSequence"], 42);
     assert_eq!(value["hasMoreBefore"], false);
     assert_eq!(value["hasMoreAfter"], true);
     assert_eq!(value["gap"], false);
+}
+
+#[test]
+fn conversation_worktree_fixture_uses_stable_wire_shape() {
+    let raw = include_str!("fixtures/conversation_worktree_page.json");
+    let page: ConversationWorktreePage = serde_json::from_str(raw).unwrap();
+    let value = serde_json::to_value(page).unwrap();
+
+    assert_eq!(value["turns"][0]["id"], "turn:user-message-1");
+    assert_eq!(value["turns"][0]["conversationId"], "conversation-1");
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][0]["kind"],
+        "process"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][1]["kind"],
+        "thinking"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][3]["kind"],
+        "toolGroup"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][4]["kind"],
+        "artifact"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][5]["kind"],
+        "reviewRequest"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][6]["kind"],
+        "clarificationRequest"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][7]["kind"],
+        "notice"
+    );
+    assert_eq!(
+        value["turns"][0]["assistant"]["segments"][8]["kind"],
+        "error"
+    );
+    assert_eq!(value["pageCursor"]["turnId"], "turn:user-message-1");
+    assert_eq!(value["eventCursor"]["conversationSequence"], 54);
+    assert_eq!(value["hasMoreBefore"], true);
+    assert_eq!(value["hasMoreAfter"], true);
 }
 
 #[test]
@@ -359,6 +569,65 @@ fn thinking_worktree_segment_supports_all_public_statuses() {
 }
 
 #[test]
+fn thinking_step_contracts_use_stable_wire_shape() {
+    let step = ThinkingStep {
+        id: "thinking-step:run-1:summary".to_owned(),
+        order: 0,
+        kind: ThinkingStepKind::ReasoningSummary,
+        status: ThinkingStepStatus::Complete,
+        title: UiSafeText::from_trusted_redacted("推理过程"),
+        body: Some(UiSafeText::from_trusted_redacted("Checked context.")),
+        event_refs: Vec::new(),
+    };
+
+    let value = serde_json::to_value(step).unwrap();
+
+    assert_eq!(value["kind"], "reasoningSummary");
+    assert_eq!(value["status"], "complete");
+    assert_eq!(value["title"], "推理过程");
+    assert_eq!(value["body"], "Checked context.");
+    assert!(value.get("eventRefs").is_none());
+}
+
+#[test]
+fn process_segment_contracts_use_stable_wire_shape() {
+    let step = ProcessStep {
+        id: "process-step:run-1:command".to_owned(),
+        order: 0,
+        kind: ProcessStepKind::Command,
+        status: ProcessStepStatus::Complete,
+        title: UiSafeText::from_trusted_redacted("运行测试"),
+        body: Some(UiSafeText::from_trusted_redacted("cargo test 通过")),
+        detail: Some(ProcessStepDetail::Command {
+            command: UiSafeText::from_trusted_redacted("cargo test"),
+            output: Some(UiSafeText::from_trusted_redacted("test result: ok")),
+            exit_code: Some(0),
+            duration_ms: Some(1200),
+        }),
+        event_refs: Vec::new(),
+    };
+    let segment = ProcessSegment {
+        id: "segment:process:run-1".to_owned(),
+        order: 0,
+        status: ProcessSegmentStatus::Complete,
+        summary: UiSafeText::from_trusted_redacted("已完成工作过程"),
+        steps: vec![step],
+        event_refs: Vec::new(),
+    };
+
+    let value = serde_json::to_value(AssistantSegment::Process(segment)).unwrap();
+
+    assert_eq!(value["kind"], "process");
+    assert_eq!(value["status"], "complete");
+    assert_eq!(value["summary"], "已完成工作过程");
+    assert_eq!(value["steps"][0]["kind"], "command");
+    assert_eq!(value["steps"][0]["detail"]["type"], "command");
+    assert_eq!(value["steps"][0]["detail"]["command"], "cargo test");
+    assert_eq!(value["steps"][0]["detail"]["exitCode"], 0);
+    assert!(value["steps"][0].get("eventRefs").is_none());
+}
+
+#[test]
 fn conversation_worktree_schema_is_exported() {
     let schemas = export_all_schemas();
 
@@ -369,8 +638,19 @@ fn conversation_worktree_schema_is_exported() {
         "conversation_turn_user_message",
         "assistant_work",
         "assistant_segment",
+        "process_segment",
+        "process_segment_status",
+        "process_step",
+        "process_step_kind",
+        "process_step_status",
+        "process_step_detail",
+        "artifact_media_preview",
+        "artifact_media_kind",
         "thinking_segment",
         "thinking_summary",
+        "thinking_step",
+        "thinking_step_kind",
+        "thinking_step_status",
         "text_segment",
         "tool_group_segment",
         "tool_attempt",
@@ -639,6 +919,26 @@ impl BlobReaderCap for TestBlobReaderCap {
     }
 }
 
+struct TestBlobWriterCap;
+
+impl BlobWriterCap for TestBlobWriterCap {
+    fn write_blob(
+        &self,
+        _tenant_id: TenantId,
+        _bytes: bytes::Bytes,
+        _meta: BlobMeta,
+    ) -> BoxFuture<'_, Result<BlobRef, ToolError>> {
+        Box::pin(async {
+            Ok(BlobRef {
+                id: BlobId::new(),
+                size: 0,
+                content_hash: [0; 32],
+                content_type: Some("image/png".to_owned()),
+            })
+        })
+    }
+}
+
 struct TestSkillRegistryCap;
 
 impl SkillRegistryCap for TestSkillRegistryCap {
@@ -663,15 +963,21 @@ impl SkillRegistryCap for TestSkillRegistryCap {
 #[test]
 fn capability_registry_stores_and_recovers_dyn_capabilities() {
     let mut registry = CapabilityRegistry::default();
-    let cap: Arc<dyn BlobReaderCap> = Arc::new(TestBlobReaderCap);
+    let reader: Arc<dyn BlobReaderCap> = Arc::new(TestBlobReaderCap);
+    let writer: Arc<dyn BlobWriterCap> = Arc::new(TestBlobWriterCap);
 
-    registry.install(ToolCapability::BlobReader, Arc::clone(&cap));
+    registry.install(ToolCapability::BlobReader, Arc::clone(&reader));
+    registry.install(ToolCapability::BlobWriter, Arc::clone(&writer));
 
-    let recovered = registry
+    let recovered_reader = registry
         .get::<dyn BlobReaderCap>(&ToolCapability::BlobReader)
         .expect("installed capability is available");
+    let recovered_writer = registry
+        .get::<dyn BlobWriterCap>(&ToolCapability::BlobWriter)
+        .expect("installed writer capability is available");
 
-    assert!(Arc::ptr_eq(&cap, &recovered));
+    assert!(Arc::ptr_eq(&reader, &recovered_reader));
+    assert!(Arc::ptr_eq(&writer, &recovered_writer));
     assert!(registry
         .get::<dyn BlobReaderCap>(&ToolCapability::SubagentRunner)
         .is_none());

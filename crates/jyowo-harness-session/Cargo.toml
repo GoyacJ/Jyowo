@@ -44,3 +44,4 @@ parking_lot = "0.12.5"
 [dev-dependencies]
 tempfile = { workspace = true }
 jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["in-memory"] }
+jyowo-harness-tool = { path = "../jyowo-harness-tool", features = ["builtin-toolset"] }

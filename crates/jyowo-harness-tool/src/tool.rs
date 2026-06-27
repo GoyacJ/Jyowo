@@ -11,6 +11,15 @@ use crate::{SchemaResolverContext, ToolContext, ValidationError};
 
 pub type ToolStream = Pin<Box<dyn Stream<Item = ToolEvent> + Send + 'static>>;
 
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub enum ToolJournalAuthority {
+    #[default]
+    None,
+    Clarification,
+    Sandbox,
+    ExecuteCode,
+}
+
 #[async_trait]
 pub trait Tool: Send + Sync + 'static {
     fn descriptor(&self) -> &ToolDescriptor;

@@ -48,8 +48,8 @@ Required test groups:
 | Journal | append/read order, snapshots, migrations, version handling, audit query behavior, conversation worktree projection |
 | Redaction | Redactor before every durable store path |
 | Replay | cursor behavior, redacted output, snapshot reads, conversation event ordering |
-| Conversation worktree | complete turn paging, event cursor reporting, stable node ids, nested tool permissions, safe thinking and tool failure summaries |
-| Tauri command | command payload identity, shell metadata, SDK availability, replay-before-live conversation subscription, window-scoped event batches, unsubscribe cleanup |
+| Conversation worktree | complete turn paging, event cursor reporting, stable node ids, nested tool permissions, safe process steps, artifact media metadata, and tool failure summaries |
+| Tauri command | command payload identity, shell metadata, SDK availability, replay-before-live conversation subscription, artifact media preview ownership checks, window-scoped event batches, unsubscribe cleanup |
 | SDK | builder requirements, runtime assembly, mock/testing adapters |
 | Budget | quota serialization and token budget defaults |
 | Search | SQLite FTS5 indexing, query behavior, deleted item removal, visibility filtering |
@@ -96,9 +96,27 @@ Allowed upstream-held transitive dependencies:
 |---|---:|---:|---|---|
 | `generic-array` | `0.14.7` | `0.14.9` | `crypto-common 0.1.7` | exact dependency required by the RustCrypto `digest 0.10` chain used by Tauri/Wry SHA-2 code |
 | `matchit` | `0.8.4` | `0.8.6` | `axum 0.8.9` | exact dependency selected by the latest stable Axum release |
+| `anyhow` | `1.0.102` | `1.0.103` | Tauri 2.11.3 build/runtime dependency chain | workspace lock is held by current Tauri crates; updating it is unrelated to the catalog installer |
+| `bstr` | `1.12.1` | `1.12.3` | globset 0.4.18 dev dependency chain in jyowo-harness-tool | selected by the current globset release used by harness-tool tests |
+| `js-sys` | `0.3.102` | `0.3.103` | wasm-bindgen 0.2.125 dependency chain used by chrono, reqwest, rfd, and softbuffer | selected by the current wasm-bindgen family in the workspace lock |
+| `jsonschema` | `0.46.5` | `0.46.6` | jyowo-harness-mcp and jyowo-harness-plugin | workspace direct dependency update is outside the catalog installer change |
+| `quinn` | `0.11.9` | `0.11.11` | reqwest 0.13.4 | selected by the current Reqwest 0.13 dependency graph |
+| `quinn-proto` | `0.11.14` | `0.11.15` | quinn 0.11.9 | selected by the current Reqwest QUIC dependency graph |
+| `quote` | `1.0.45` | `1.0.46` | workspace proc-macro dependency graph | selected by the existing macro ecosystem lock; unrelated to the catalog installer |
+| `referencing` | `0.46.5` | `0.46.6` | jsonschema 0.46.5 | selected by the current jsonschema release used by harness validation crates |
+| `rustls` | `0.23.40` | `0.23.41` | reqwest 0.13.4, jsonschema 0.46.5, and tokio-rustls 0.26.4 | selected by the current network/TLS dependency graph |
+| `time` | `0.3.49` | `0.3.51` | cookie 0.18.1, plist 1.9.0, and tauri-codegen 2.6.3 | selected by the current Tauri dependency graph |
+| `time-macros` | `0.2.29` | `0.2.30` | time 0.3.49 | selected by the current time release used by Tauri dependencies |
+| `uuid` | `1.23.3` | `1.23.4` | Tauri, schemars, and cfb dependency chains | workspace lock is held by existing schema/Tauri dependencies |
 | `toml` | `0.8.2` | `0.8.23` | `system-deps 6.2.2` | Linux GTK/Tauri build dependency chain |
 | `toml_datetime` | `0.6.3` | `0.6.11` | `proc-macro-crate 2.0.2` | exact dependency required by GTK proc-macro chain |
 | `toml_edit` | `0.20.2` | `0.20.7` | `proc-macro-crate 2.0.2` | exact dependency required by GTK proc-macro chain |
+| `wasm-bindgen` | `0.2.125` | `0.2.126` | chrono, reqwest, rfd, softbuffer, sqlite-wasm-rs, wasm-streams, and web-time | selected by the current wasm-bindgen ecosystem lock |
+| `wasm-bindgen-futures` | `0.4.75` | `0.4.76` | reqwest 0.13.4 and wasm-streams | selected by the current wasm-bindgen ecosystem lock |
+| `wasm-bindgen-macro` | `0.2.125` | `0.2.126` | wasm-bindgen 0.2.125 | selected by the current wasm-bindgen ecosystem lock |
+| `wasm-bindgen-macro-support` | `0.2.125` | `0.2.126` | wasm-bindgen-macro 0.2.125 | selected by the current wasm-bindgen ecosystem lock |
+| `wasm-bindgen-shared` | `0.2.125` | `0.2.126` | wasm-bindgen and wasm-bindgen-macro-support | selected by the current wasm-bindgen ecosystem lock |
+| `web-sys` | `0.3.102` | `0.3.103` | reqwest 0.13.4 and wasm-streams | selected by the current wasm-bindgen ecosystem lock |
 
 These entries are not direct project dependencies. Do not add `[patch.crates-io]`
 or force a transitive version to hide the audit output. Remove an entry when its
@@ -170,6 +188,7 @@ Architecture:
 [ ] command handlers stay thin
 [ ] no lower layer imports a higher layer
 [ ] no runtime bypass of PermissionBroker, Redactor, Journal, or tenant scope checks
+[ ] artifact preview reads are scoped to the owning conversation
 ```
 
 Contracts:
@@ -202,6 +221,7 @@ Persistence:
 [ ] Journal append order is preserved
 [ ] redaction runs before durable writes
 [ ] Replay does not reveal withheld data
+[ ] artifact projection does not reveal blob paths, private paths, remote URLs, or provider-native payloads
 [ ] Audit records can be derived from events and permission decisions
 [ ] restart-stable guarantees are backed by persistence
 ```

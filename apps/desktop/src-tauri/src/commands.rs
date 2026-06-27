@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::io::Write;
 use std::net::IpAddr;
@@ -7,10 +7,13 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 use chrono::{NaiveDate, Utc};
+use futures::StreamExt;
 use harness_contracts::{
-    ConversationCursor, ConversationMessageAuthor, ConversationTurnCursor, ConversationWorktreePage,
+    ConversationCursor, ConversationMessageAuthor, ConversationTurnCursor,
+    ConversationWorktreePage, UiSafeText,
 };
 use jyowo_harness_sdk::builtin::{
     DefaultRedactor, FileBlobStore, InMemoryMemoryProvider, JsonlEventStore, LocalLlamaProvider,
@@ -21,8 +24,8 @@ use jyowo_harness_sdk::ext::{
     build_provider, now, provider_catalog_entries, resolve_model_descriptor,
     runnable_inventory_models, AgentId, BlobMeta, BlobRef, BlobRetention, BlobStore,
     ConversationModelCapability, Decision, DecisionScope, DeltaChunk, DirectorySourceKind,
-    EndReason, Event, EventId, InteractivityLevel, McpConnectionState, McpEventSink, McpRegistry,
-    McpServerId, McpServerScope, McpServerSource, McpServerSpec, MemoryId, MemoryKind,
+    EndReason, Event, EventId, HttpTransport, InteractivityLevel, McpConnectionState, McpEventSink,
+    McpRegistry, McpServerId, McpServerScope, McpServerSource, McpServerSpec, MemoryId, MemoryKind,
     MemoryRecord, MemorySource, MemorySummary, MemoryVisibility, MessageContent, MessagePart,
     ModelDescriptor, ModelInventoryEntry, ModelLifecycle, ModelModality, ModelProtocol,
     ModelProvider, ModelRuntimeStatus, PendingPermissionRequest, PermissionMode, PermissionSubject,
@@ -45,11 +48,20 @@ use tokio::sync::RwLock as AsyncRwLock;
 use tokio::task::JoinHandle;
 
 use crate::project_registry::{ProjectRecord, ProjectRegistry};
+use crate::skill_catalog::{
+    get_skill_catalog_entry as get_catalog_entry_payload,
+    list_skill_catalog_entries as list_catalog_entries_payload,
+    list_skill_catalog_sources as list_catalog_sources_payload, materialize_skill_from_catalog,
+    GetSkillCatalogEntryRequest, GetSkillCatalogEntryResponse, InstallSkillFromCatalogRequest,
+    ListSkillCatalogEntriesRequest, ListSkillCatalogEntriesResponse,
+    ListSkillCatalogSourcesResponse, SkillInstallOriginRecord,
+};
 
 const START_RUN_STARTED_TIMEOUT: Duration = Duration::from_secs(5);
 const WORKSPACE_ROOT_ENV: &str = "JYOWO_WORKSPACE_ROOT";
 const MAX_MEMORY_CONTENT_BYTES: usize = 64 * 1024;
 const MAX_ARTIFACT_PREVIEW_BYTES: usize = 16 * 1024;
+const MAX_ARTIFACT_MEDIA_PREVIEW_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_OPENROUTER_MODELS_API_BYTES: usize = 4 * 1024 * 1024;
@@ -60,9 +72,14 @@ const MAX_SKILL_PACKAGE_FILES: usize = 200;
 const SKILL_PACKAGE_ENTRY_FILE: &str = "SKILL.md";
 const CONVERSATION_SUBSCRIPTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CONVERSATION_SUBSCRIPTION_BATCH_LIMIT: usize = 50;
+const MCP_DIAGNOSTIC_RETENTION_LIMIT: usize = 500;
+const MCP_DIAGNOSTIC_SUBSCRIPTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const MCP_DIAGNOSTIC_SUBSCRIPTION_BATCH_LIMIT: usize = 50;
 
 pub type ConversationEventBatchEmitter =
     Arc<dyn Fn(ConversationEventBatchPayload) -> Result<(), String> + Send + Sync>;
+pub type McpDiagnosticBatchEmitter =
+    Arc<dyn Fn(McpDiagnosticBatchPayload) -> Result<(), String> + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -402,6 +419,8 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SaveMcpServerRequest {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub display_name: String,
     pub id: String,
     pub scope: String,
@@ -409,15 +428,50 @@ pub struct SaveMcpServerRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct McpNameValueRecord {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct McpHeaderEnvRecord {
+    pub key: String,
+    pub env_var: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, tag = "kind", rename_all = "camelCase")]
 pub enum McpServerTransportConfig {
-    Stdio { command: String, args: Vec<String> },
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: Vec<McpNameValueRecord>,
+        #[serde(default)]
+        inherit_env: Vec<String>,
+        #[serde(default)]
+        working_dir: Option<String>,
+    },
+    Http {
+        url: String,
+        #[serde(default)]
+        bearer_token_env_var: Option<String>,
+        #[serde(default)]
+        headers: Vec<McpNameValueRecord>,
+        #[serde(default)]
+        headers_from_env: Vec<McpHeaderEnvRecord>,
+    },
     InProcess,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct McpServerConfigRecord {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub display_name: String,
     pub id: String,
     pub scope: String,
@@ -430,14 +484,87 @@ pub struct DeleteMcpServerRequest {
     pub id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SetMcpServerEnabledRequest {
+    pub id: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RestartMcpServerRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GetMcpServerConfigRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ListMcpDiagnosticsRequest {
+    #[serde(default)]
+    pub server_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ClearMcpDiagnosticsRequest {
+    #[serde(default)]
+    pub server_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SubscribeMcpDiagnosticsRequest {
+    #[serde(default)]
+    pub server_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct UnsubscribeMcpDiagnosticsRequest {
+    pub subscription_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpDiagnosticSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpDiagnosticRecord {
+    pub event_type: String,
+    pub id: String,
+    pub server_id: String,
+    pub severity: McpDiagnosticSeverity,
+    pub summary: String,
+    pub timestamp: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerSummaryPayload {
     pub display_name: String,
+    pub enabled: bool,
     pub exposed_tool_count: u32,
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_diagnostic: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_diagnostic_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_diagnostic_severity: Option<McpDiagnosticSeverity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    pub manageable: bool,
     pub origin: &'static str,
     pub scope: String,
     pub status: &'static str,
@@ -458,9 +585,65 @@ pub struct SaveMcpServerResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetMcpServerConfigResponse {
+    pub server: McpServerConfigRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteMcpServerResponse {
     pub id: String,
     pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMcpServerEnabledResponse {
+    pub server: McpServerSummaryPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestartMcpServerResponse {
+    pub server: McpServerSummaryPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListMcpDiagnosticsResponse {
+    pub events: Vec<McpDiagnosticRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearMcpDiagnosticsResponse {
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscribeMcpDiagnosticsResponse {
+    pub subscription_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    pub replay_events: Vec<McpDiagnosticRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsubscribeMcpDiagnosticsResponse {
+    pub subscription_id: String,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpDiagnosticBatchPayload {
+    pub subscription_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    pub events: Vec<McpDiagnosticRecord>,
+    pub phase: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -515,6 +698,8 @@ pub struct SkillStoreRecord {
     pub category: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_validation_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SkillInstallOriginRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -534,6 +719,8 @@ pub struct SkillSummaryPayload {
     pub imported_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SkillInstallOriginRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -717,6 +904,12 @@ pub trait McpServerStore: Send + Sync {
     fn load_records(&self) -> Result<Vec<McpServerConfigRecord>, CommandErrorPayload>;
     fn save_record(&self, record: &McpServerConfigRecord) -> Result<(), CommandErrorPayload>;
     fn delete_record(&self, id: &str) -> Result<(), CommandErrorPayload>;
+}
+
+pub trait McpDiagnosticStore: Send + Sync {
+    fn load_records(&self) -> Result<Vec<McpDiagnosticRecord>, CommandErrorPayload>;
+    fn append_record(&self, record: &McpDiagnosticRecord) -> Result<(), CommandErrorPayload>;
+    fn clear_records(&self, server_id: Option<&str>) -> Result<(), CommandErrorPayload>;
 }
 
 pub trait SkillStore: Send + Sync {
@@ -1233,6 +1426,82 @@ impl McpServerStore for DesktopMcpServerStore {
 }
 
 #[derive(Clone)]
+pub struct DesktopMcpDiagnosticStore {
+    retention_limit: usize,
+    workspace_root: PathBuf,
+}
+
+impl DesktopMcpDiagnosticStore {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self::new_with_limit(workspace_root, MCP_DIAGNOSTIC_RETENTION_LIMIT)
+    }
+
+    pub fn new_with_limit(workspace_root: PathBuf, retention_limit: usize) -> Self {
+        let workspace_root = workspace_root.canonicalize().unwrap_or(workspace_root);
+        Self {
+            retention_limit,
+            workspace_root,
+        }
+    }
+
+    fn diagnostics_path(&self) -> PathBuf {
+        self.workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("mcp-diagnostics.jsonl")
+    }
+}
+
+impl McpDiagnosticStore for DesktopMcpDiagnosticStore {
+    fn load_records(&self) -> Result<Vec<McpDiagnosticRecord>, CommandErrorPayload> {
+        let diagnostics_path = self.diagnostics_path();
+        let content = match std::fs::read_to_string(&diagnostics_path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(runtime_operation_failed(format!(
+                    "mcp diagnostics read failed: {error}"
+                )));
+            }
+        };
+
+        content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str::<McpDiagnosticRecord>(line).map_err(|error| {
+                    runtime_operation_failed(format!("mcp diagnostics parse failed: {error}"))
+                })
+            })
+            .collect()
+    }
+
+    fn append_record(&self, record: &McpDiagnosticRecord) -> Result<(), CommandErrorPayload> {
+        let mut records = self.load_records()?;
+        records.push(record.clone());
+        let keep_from = records.len().saturating_sub(self.retention_limit);
+        if keep_from > 0 {
+            records.drain(0..keep_from);
+        }
+        write_mcp_diagnostic_records(&self.diagnostics_path(), &records)
+    }
+
+    fn clear_records(&self, server_id: Option<&str>) -> Result<(), CommandErrorPayload> {
+        let records = match server_id {
+            Some(server_id) => self
+                .load_records()?
+                .into_iter()
+                .filter(|record| record.server_id != server_id)
+                .collect::<Vec<_>>(),
+            None => Vec::new(),
+        };
+        write_mcp_diagnostic_records(&self.diagnostics_path(), &records)
+    }
+}
+
+#[derive(Clone)]
 pub struct DesktopSkillStore {
     workspace_root: PathBuf,
 }
@@ -1498,6 +1767,61 @@ fn write_mcp_server_records(
     std::fs::rename(&temp_path, settings_path).map_err(|error| {
         let _ = std::fs::remove_file(&temp_path);
         runtime_operation_failed(format!("mcp server settings commit failed: {error}"))
+    })
+}
+
+fn write_mcp_diagnostic_records(
+    diagnostics_path: &Path,
+    records: &[McpDiagnosticRecord],
+) -> Result<(), CommandErrorPayload> {
+    let parent = diagnostics_path
+        .parent()
+        .ok_or_else(|| runtime_operation_failed("mcp diagnostics path has no parent".to_owned()))?;
+    ensure_no_symlink_components(parent, "mcp diagnostics directory")?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        runtime_operation_failed(format!("mcp diagnostics directory unavailable: {error}"))
+    })?;
+    ensure_no_symlink_components(parent, "mcp diagnostics directory")?;
+    let mut bytes = Vec::new();
+    for record in records {
+        serde_json::to_writer(&mut bytes, record).map_err(|error| {
+            runtime_operation_failed(format!("mcp diagnostics serialization failed: {error}"))
+        })?;
+        bytes.push(b'\n');
+    }
+    let temp_path = diagnostics_path.with_file_name(format!(
+        "{}.{}.tmp",
+        diagnostics_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("mcp-diagnostics.jsonl"),
+        RunId::new()
+    ));
+    ensure_no_symlink_components(&temp_path, "mcp diagnostics temp file")?;
+    let mut temp_file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp_path)
+        .map_err(|error| {
+            runtime_operation_failed(format!("mcp diagnostics temp open failed: {error}"))
+        })?;
+    if let Err(error) = temp_file.write_all(&bytes) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(runtime_operation_failed(format!(
+            "mcp diagnostics write failed: {error}"
+        )));
+    }
+    if let Err(error) = temp_file.sync_all() {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(runtime_operation_failed(format!(
+            "mcp diagnostics sync failed: {error}"
+        )));
+    }
+    drop(temp_file);
+    ensure_no_symlink_components(diagnostics_path, "mcp diagnostics file")?;
+    std::fs::rename(&temp_path, diagnostics_path).map_err(|error| {
+        let _ = std::fs::remove_file(&temp_path);
+        runtime_operation_failed(format!("mcp diagnostics commit failed: {error}"))
     })
 }
 
@@ -1917,6 +2241,9 @@ pub struct DesktopRuntimeState {
     default_conversation_id: SessionId,
     deleted_conversation_ids: Arc<tokio::sync::Mutex<HashSet<SessionId>>>,
     memory_lock: Arc<tokio::sync::Mutex<()>>,
+    mcp_diagnostic_store: Arc<dyn McpDiagnosticStore>,
+    mcp_diagnostic_subscriptions:
+        Arc<tokio::sync::Mutex<HashMap<String, McpDiagnosticSubscriptionHandle>>>,
     mcp_server_lock: Arc<tokio::sync::Mutex<()>>,
     mcp_server_store: Arc<dyn McpServerStore>,
     permission_resolver: Option<Arc<dyn PermissionResolver>>,
@@ -1944,6 +2271,11 @@ struct ConversationSubscriptionHandle {
     window_label: String,
 }
 
+struct McpDiagnosticSubscriptionHandle {
+    task: JoinHandle<()>,
+    window_label: String,
+}
+
 impl DesktopRuntimeState {
     pub fn with_workspace_for_test(workspace_root: PathBuf) -> Result<Self, CommandErrorPayload> {
         let workspace_root = canonical_workspace_root(workspace_root, "workspace root".to_owned())?;
@@ -1962,6 +2294,8 @@ impl DesktopRuntimeState {
             default_conversation_id: SessionId::new(),
             deleted_conversation_ids: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             memory_lock: Arc::new(tokio::sync::Mutex::new(())),
+            mcp_diagnostic_store: Arc::new(DesktopMcpDiagnosticStore::new(workspace_root.clone())),
+            mcp_diagnostic_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_server_store: Arc::new(DesktopMcpServerStore::new(workspace_root.clone())),
             permission_resolver: None,
@@ -2063,6 +2397,8 @@ impl DesktopRuntimeState {
             default_conversation_id: SessionId::new(),
             deleted_conversation_ids: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             memory_lock: Arc::new(tokio::sync::Mutex::new(())),
+            mcp_diagnostic_store: Arc::new(DesktopMcpDiagnosticStore::new(workspace_root.clone())),
+            mcp_diagnostic_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_server_store: Arc::new(DesktopMcpServerStore::new(workspace_root.clone())),
             permission_resolver: Some(permission_resolver),
@@ -2259,10 +2595,14 @@ async fn build_desktop_harness(
     .await
     .map_err(|error| runtime_init_failed(format!("event store initialization failed: {error}")))?;
     let mcp_server_store = DesktopMcpServerStore::new(workspace_root.to_path_buf());
+    let mcp_diagnostic_store: Arc<dyn McpDiagnosticStore> =
+        Arc::new(DesktopMcpDiagnosticStore::new(workspace_root.to_path_buf()));
     let mcp_config = mcp_config_from_records(
         mcp_server_store.load_records()?,
         SessionId::new(),
         AgentId::new(),
+        Arc::clone(&mcp_diagnostic_store),
+        workspace_root,
     )
     .await?;
     let provider_settings_store = DesktopProviderSettingsStore::new(workspace_root.to_path_buf());
@@ -2676,6 +3016,7 @@ pub struct PermissionRequestedRunEventPayload {
     pub request_id: String,
     pub severity: &'static str,
     pub target: String,
+    pub tool_use_id: String,
     pub workspace_boundary: String,
 }
 
@@ -2795,6 +3136,21 @@ pub struct ListArtifactsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ListArtifactsResponse {
     pub artifacts: Vec<ArtifactSummaryPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetArtifactMediaPreviewRequest {
+    pub conversation_id: String,
+    pub artifact_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetArtifactMediaPreviewResponse {
+    pub data_url: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -3086,6 +3442,33 @@ pub async fn list_artifacts_with_runtime_state(
     collect_artifacts_from_runtime_state(state, session_id).await
 }
 
+pub async fn get_artifact_media_preview_with_runtime_state(
+    request: GetArtifactMediaPreviewRequest,
+    state: &DesktopRuntimeState,
+) -> Result<GetArtifactMediaPreviewResponse, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
+    ensure_non_empty("artifactId", &request.artifact_id)?;
+    let session_id = parse_session_id(&request.conversation_id)?;
+    let record = find_artifact_media_record(state, session_id, &request.artifact_id).await?;
+    if !matches!(
+        record.status,
+        Some(jyowo_harness_sdk::ext::ArtifactStatus::Ready)
+    ) {
+        return Err(invalid_payload(
+            "artifact image preview is not ready".to_owned(),
+        ));
+    }
+    if !is_preview_image_artifact_kind(record.kind.as_deref()) {
+        return Err(invalid_payload(
+            "artifact media preview is only available for images".to_owned(),
+        ));
+    }
+    let blob_ref = record.blob_ref.ok_or_else(|| {
+        runtime_operation_failed("artifact image preview is unavailable".to_owned())
+    })?;
+    read_artifact_image_blob_preview(state, session_id, &blob_ref).await
+}
+
 async fn collect_artifacts_from_runtime_state(
     state: &DesktopRuntimeState,
     session_id: SessionId,
@@ -3141,6 +3524,234 @@ async fn collect_artifacts_from_runtime_state(
     Ok(ListArtifactsResponse { artifacts })
 }
 
+#[derive(Debug, Clone)]
+struct ArtifactMediaRecord {
+    blob_ref: Option<BlobRef>,
+    kind: Option<String>,
+    status: Option<jyowo_harness_sdk::ext::ArtifactStatus>,
+}
+
+async fn find_artifact_media_record(
+    state: &DesktopRuntimeState,
+    session_id: SessionId,
+    artifact_id: &str,
+) -> Result<ArtifactMediaRecord, CommandErrorPayload> {
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Reading artifact media requires the runtime conversation facade.",
+        ));
+    };
+    if !harness
+        .conversation_session_exists(state.conversation_session_options(session_id))
+        .await
+        .map_err(|error| runtime_operation_failed(error.to_string()))?
+    {
+        return Err(not_found(format!("conversation not found: {session_id}")));
+    }
+
+    let mut after_event_id = None;
+    let mut record: Option<ArtifactMediaRecord> = None;
+    loop {
+        let page = harness
+            .page_conversation_events(ConversationEventsPageRequest {
+                options: state.conversation_session_options(session_id),
+                after_event_id,
+                limit: 200,
+            })
+            .await
+            .map_err(|_| runtime_operation_failed("artifact media read failed".to_owned()))?;
+        if page.events.is_empty() {
+            break;
+        }
+
+        for envelope in page.events {
+            match envelope.payload {
+                Event::ArtifactCreated(event) => {
+                    if event.session_id == session_id && event.artifact_id == artifact_id {
+                        record = Some(ArtifactMediaRecord {
+                            blob_ref: event.blob_ref,
+                            kind: Some(event.kind),
+                            status: Some(event.status),
+                        });
+                    }
+                }
+                Event::ArtifactUpdated(event) => {
+                    if event.session_id != session_id || event.artifact_id != artifact_id {
+                        continue;
+                    }
+                    let entry = record.get_or_insert_with(|| ArtifactMediaRecord {
+                        blob_ref: None,
+                        kind: None,
+                        status: None,
+                    });
+                    if let Some(blob_ref) = event.blob_ref {
+                        entry.blob_ref = Some(blob_ref);
+                    }
+                    if let Some(kind) = event.kind {
+                        entry.kind = Some(kind);
+                    }
+                    if let Some(status) = event.status {
+                        entry.status = Some(status);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        after_event_id = page.next_event_id;
+    }
+
+    record.ok_or_else(|| not_found("artifact not found".to_owned()))
+}
+
+async fn read_artifact_image_blob_preview(
+    state: &DesktopRuntimeState,
+    session_id: SessionId,
+    blob_ref: &BlobRef,
+) -> Result<GetArtifactMediaPreviewResponse, CommandErrorPayload> {
+    let blob_store = FileBlobStore::open(
+        state
+            .workspace_root()
+            .join(".jyowo")
+            .join("runtime")
+            .join("blobs"),
+    )
+    .map_err(|_| runtime_operation_failed("artifact image preview is unavailable".to_owned()))?;
+    let meta = blob_store
+        .head(TenantId::SINGLE, blob_ref)
+        .await
+        .map_err(|_| runtime_operation_failed("artifact image preview is unavailable".to_owned()))?
+        .ok_or_else(|| {
+            runtime_operation_failed("artifact image preview is unavailable".to_owned())
+        })?;
+    if meta.retention != BlobRetention::SessionScoped(session_id) {
+        return Err(invalid_payload(
+            "artifact image preview is unavailable for this conversation".to_owned(),
+        ));
+    }
+    let declared_content_type = meta
+        .content_type
+        .as_deref()
+        .or(blob_ref.content_type.as_deref());
+    let declared_mime_type = match declared_content_type.and_then(declared_mime_token) {
+        Some(mime_type) => match safe_preview_image_mime(mime_type) {
+            Some(image_mime_type) => Some(image_mime_type.to_owned()),
+            None if safe_artifact_mime_type(mime_type).is_some()
+                || mime_type.starts_with("image/") =>
+            {
+                return Err(invalid_payload(
+                    "artifact media preview is only available for images".to_owned(),
+                ));
+            }
+            None => None,
+        },
+        None => None,
+    };
+    let size_bytes = meta.size;
+    if size_bytes > MAX_ARTIFACT_MEDIA_PREVIEW_BYTES {
+        return Err(invalid_payload(
+            "artifact image preview is too large".to_owned(),
+        ));
+    }
+
+    let mut stream = blob_store
+        .get(TenantId::SINGLE, blob_ref)
+        .await
+        .map_err(|_| {
+            runtime_operation_failed("artifact image preview is unavailable".to_owned())
+        })?;
+    let mut bytes = Vec::with_capacity(size_bytes.min(MAX_ARTIFACT_MEDIA_PREVIEW_BYTES) as usize);
+    while let Some(chunk) = stream.next().await {
+        let next_len = bytes.len().saturating_add(chunk.len());
+        if u64::try_from(next_len).unwrap_or(u64::MAX) > MAX_ARTIFACT_MEDIA_PREVIEW_BYTES {
+            return Err(invalid_payload(
+                "artifact image preview is too large".to_owned(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let detected_mime = detect_preview_image_mime(&bytes).ok_or_else(|| {
+        invalid_payload("artifact media preview is only available for images".to_owned())
+    })?;
+    if declared_mime_type
+        .as_deref()
+        .is_some_and(|mime_type| mime_type != detected_mime)
+    {
+        return Err(invalid_payload(
+            "artifact media preview is only available for images".to_owned(),
+        ));
+    }
+    let mime_type = detected_mime.to_owned();
+
+    Ok(GetArtifactMediaPreviewResponse {
+        data_url: format!(
+            "data:{mime_type};base64,{}",
+            general_purpose::STANDARD.encode(bytes)
+        ),
+        mime_type,
+        size_bytes,
+    })
+}
+
+fn detect_preview_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1A\n") {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        let major_brand = &bytes[8..12];
+        if major_brand == b"avif" || major_brand == b"avis" {
+            return Some("image/avif");
+        }
+        if bytes
+            .get(16..)
+            .unwrap_or_default()
+            .chunks_exact(4)
+            .any(|brand| brand == b"avif" || brand == b"avis")
+        {
+            return Some("image/avif");
+        }
+    }
+    None
+}
+
+fn safe_preview_image_mime(value: &str) -> Option<&'static str> {
+    let mime = value
+        .split(';')
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .to_ascii_lowercase();
+    match mime.as_str() {
+        "image/png" => Some("image/png"),
+        "image/jpeg" => Some("image/jpeg"),
+        "image/gif" => Some("image/gif"),
+        "image/webp" => Some("image/webp"),
+        "image/avif" => Some("image/avif"),
+        _ => None,
+    }
+}
+
+fn declared_mime_token(value: &str) -> Option<&str> {
+    value
+        .split(|character: char| character == ';' || character.is_whitespace())
+        .find(|part| part.contains('/'))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+}
+
+fn is_preview_image_artifact_kind(value: Option<&str>) -> bool {
+    value.is_some_and(|kind| kind == "image" || safe_preview_image_mime(kind).is_some())
+}
+
 fn project_artifact_event(
     event: Event,
     session_id: SessionId,
@@ -3163,10 +3774,10 @@ fn project_artifact_event(
                     action_label: "Open".to_owned(),
                     description: artifact_description_from_source(event.source),
                     id: artifact_id,
-                    kind: redacted_display(event.kind, redactor),
+                    kind: public_text_display(event.kind, redactor),
                     preview: event.preview.map(|preview| {
                         truncate_utf8(
-                            redactor.redact(&preview, &RedactRules::default()),
+                            public_text_display(preview, redactor),
                             MAX_ARTIFACT_PREVIEW_BYTES,
                         )
                     }),
@@ -3175,7 +3786,7 @@ fn project_artifact_event(
                         .map(|message_id| message_id.to_string()),
                     source_run_id: event.run_id.to_string(),
                     status: artifact_status_label(event.status),
-                    title: redacted_display(event.title, redactor),
+                    title: public_text_display(event.title, redactor),
                 },
             );
         }
@@ -3187,11 +3798,11 @@ fn project_artifact_event(
                 return;
             };
             if let Some(kind) = event.kind {
-                artifact.kind = redacted_display(kind, redactor);
+                artifact.kind = public_text_display(kind, redactor);
             }
             if let Some(preview) = event.preview {
                 artifact.preview = Some(truncate_utf8(
-                    redactor.redact(&preview, &RedactRules::default()),
+                    public_text_display(preview, redactor),
                     MAX_ARTIFACT_PREVIEW_BYTES,
                 ));
             }
@@ -3203,7 +3814,7 @@ fn project_artifact_event(
                 artifact.status = artifact_status_label(status);
             }
             if let Some(title) = event.title {
-                artifact.title = redacted_display(title, redactor);
+                artifact.title = public_text_display(title, redactor);
             }
         }
         _ => {}
@@ -3217,6 +3828,119 @@ fn artifact_status_label(status: jyowo_harness_sdk::ext::ArtifactStatus) -> &'st
         jyowo_harness_sdk::ext::ArtifactStatus::Ready => "ready",
         jyowo_harness_sdk::ext::ArtifactStatus::Failed => "failed",
         _ => "ready",
+    }
+}
+
+fn artifact_source_label(source: jyowo_harness_sdk::ext::ArtifactSource) -> &'static str {
+    match source {
+        jyowo_harness_sdk::ext::ArtifactSource::Assistant => "assistant",
+        jyowo_harness_sdk::ext::ArtifactSource::Tool => "tool",
+        jyowo_harness_sdk::ext::ArtifactSource::File => "file",
+        jyowo_harness_sdk::ext::ArtifactSource::ModelService => "model_service",
+        _ => "assistant",
+    }
+}
+
+fn artifact_media_payload(blob_ref: Option<&BlobRef>, artifact_kind: &str) -> Option<Value> {
+    let blob_ref = blob_ref?;
+    let safe_mime_type = blob_ref
+        .content_type
+        .as_deref()
+        .and_then(safe_artifact_mime_type);
+    let kind = artifact_media_kind_from_label(artifact_kind).or_else(|| {
+        safe_mime_type
+            .as_deref()
+            .and_then(artifact_media_kind_from_mime)
+    })?;
+    let mime_type = safe_mime_type
+        .filter(|mime_type| {
+            kind == "file"
+                || artifact_media_kind_from_mime(mime_type)
+                    .is_some_and(|mime_kind| mime_kind == kind)
+        })
+        .unwrap_or_else(|| default_artifact_mime_type(kind).to_owned());
+    Some(json!({
+        "kind": kind,
+        "mimeType": mime_type,
+        "sizeBytes": blob_ref.size,
+    }))
+}
+
+fn artifact_media_kind_from_label(value: &str) -> Option<&'static str> {
+    match value {
+        "image" => Some("image"),
+        "video" => Some("video"),
+        "audio" => Some("audio"),
+        "file" => Some("file"),
+        _ => safe_artifact_mime_type(value)
+            .as_deref()
+            .and_then(artifact_media_kind_from_mime),
+    }
+}
+
+fn artifact_media_kind_from_mime(value: &str) -> Option<&'static str> {
+    if safe_artifact_image_mime_type(value).is_some() {
+        Some("image")
+    } else if value.starts_with("video/") {
+        Some("video")
+    } else if value.starts_with("audio/") {
+        Some("audio")
+    } else if safe_artifact_mime_type(value).is_some() {
+        Some("file")
+    } else {
+        None
+    }
+}
+
+fn default_artifact_mime_type(kind: &str) -> &'static str {
+    match kind {
+        "image" => "image/png",
+        "video" => "video/mp4",
+        "audio" => "audio/mpeg",
+        _ => "application/octet-stream",
+    }
+}
+
+fn safe_artifact_mime_type(value: &str) -> Option<String> {
+    let mime_type = value
+        .split(';')
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .to_ascii_lowercase();
+    match mime_type.as_str() {
+        "image/png"
+        | "image/jpeg"
+        | "image/gif"
+        | "image/webp"
+        | "image/avif"
+        | "video/mp4"
+        | "video/webm"
+        | "video/quicktime"
+        | "audio/mpeg"
+        | "audio/mp4"
+        | "audio/ogg"
+        | "audio/wav"
+        | "audio/webm"
+        | "text/plain"
+        | "text/markdown"
+        | "text/csv"
+        | "application/json"
+        | "application/pdf"
+        | "application/zip"
+        | "application/octet-stream" => Some(mime_type),
+        _ => None,
+    }
+}
+
+fn safe_artifact_image_mime_type(value: &str) -> Option<&'static str> {
+    match value {
+        "image/png" => Some("image/png"),
+        "image/jpeg" => Some("image/jpeg"),
+        "image/gif" => Some("image/gif"),
+        "image/webp" => Some("image/webp"),
+        "image/avif" => Some("image/avif"),
+        _ => None,
     }
 }
 
@@ -3463,9 +4187,18 @@ pub async fn list_mcp_servers_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<ListMcpServersResponse, CommandErrorPayload> {
     let mut servers = BTreeMap::new();
+    let records = state.mcp_server_store.load_records()?;
+    let records_by_id = records
+        .iter()
+        .map(|record| (record.id.clone(), record.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let last_diagnostics =
+        mcp_last_diagnostics_by_server(&state.mcp_diagnostic_store.load_records()?);
 
-    for record in state.mcp_server_store.load_records()? {
-        servers.insert(record.id.clone(), mcp_server_summary_from_record(&record));
+    for record in &records {
+        let mut summary = mcp_server_summary_from_record(record);
+        apply_mcp_last_diagnostic(&mut summary, last_diagnostics.get(&record.id));
+        servers.insert(record.id.clone(), summary);
     }
 
     if let Some(harness) = state.harness() {
@@ -3474,6 +4207,16 @@ pub async fn list_mcp_servers_with_runtime_state(
                 if let Some(summary) =
                     mcp_server_summary_from_registry(&config.registry, &server_id).await
                 {
+                    let mut summary = summary;
+                    if let Some(record) = records_by_id.get(&server_id.0) {
+                        summary.enabled = record.enabled;
+                        summary.manageable = true;
+                        if !record.enabled {
+                            summary.status = "disabled";
+                            summary.exposed_tool_count = 0;
+                        }
+                    }
+                    apply_mcp_last_diagnostic(&mut summary, last_diagnostics.get(&server_id.0));
                     servers.insert(server_id.0.clone(), summary);
                 }
             }
@@ -3491,6 +4234,7 @@ pub async fn save_mcp_server_with_store(
 ) -> Result<SaveMcpServerResponse, CommandErrorPayload> {
     ensure_mcp_server_request(&request)?;
     let record = McpServerConfigRecord {
+        enabled: request.enabled,
         display_name: request.display_name.trim().to_owned(),
         id: request.id.trim().to_owned(),
         scope: request.scope,
@@ -3510,6 +4254,7 @@ pub async fn save_mcp_server_with_runtime_state(
 ) -> Result<SaveMcpServerResponse, CommandErrorPayload> {
     ensure_mcp_server_request(&request)?;
     let record = McpServerConfigRecord {
+        enabled: request.enabled,
         display_name: request.display_name.trim().to_owned(),
         id: request.id.trim().to_owned(),
         scope: request.scope,
@@ -3524,10 +4269,39 @@ pub async fn save_mcp_server_with_runtime_state(
         });
     };
     remove_mcp_server_from_harness(&harness, &record.id).await?;
+    if !record.enabled {
+        return Ok(SaveMcpServerResponse {
+            server: mcp_server_summary_from_record(&record),
+        });
+    }
     let server =
-        register_mcp_record_with_harness(&record, &harness, state.default_conversation_id).await?;
+        register_mcp_record_with_harness(&record, &harness, state.default_conversation_id, state)
+            .await?;
 
     Ok(SaveMcpServerResponse { server })
+}
+
+pub async fn get_mcp_server_config_with_store(
+    request: GetMcpServerConfigRequest,
+    store: &dyn McpServerStore,
+) -> Result<GetMcpServerConfigResponse, CommandErrorPayload> {
+    ensure_mcp_server_id(&request.id)?;
+    let id = request.id.trim();
+    let record = store
+        .load_records()?
+        .into_iter()
+        .find(|record| record.id == id)
+        .ok_or_else(|| not_found(format!("mcp server not found: {id}")))?;
+    ensure_mcp_server_record(&record)?;
+
+    Ok(GetMcpServerConfigResponse { server: record })
+}
+
+pub async fn get_mcp_server_config_with_runtime_state(
+    request: GetMcpServerConfigRequest,
+    state: &DesktopRuntimeState,
+) -> Result<GetMcpServerConfigResponse, CommandErrorPayload> {
+    get_mcp_server_config_with_store(request, state.mcp_server_store.as_ref()).await
 }
 
 pub async fn delete_mcp_server_with_store(
@@ -3560,6 +4334,264 @@ pub async fn delete_mcp_server_with_runtime_state(
     })
 }
 
+pub async fn set_mcp_server_enabled_with_runtime_state(
+    request: SetMcpServerEnabledRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SetMcpServerEnabledResponse, CommandErrorPayload> {
+    ensure_mcp_server_id(&request.id)?;
+    let id = request.id.trim();
+    let mut records = state.mcp_server_store.load_records()?;
+    let Some(record) = records.iter_mut().find(|record| record.id == id) else {
+        return Err(not_found(format!("mcp server not found: {id}")));
+    };
+    record.enabled = request.enabled;
+    ensure_mcp_server_record(record)?;
+    let record = record.clone();
+    state.mcp_server_store.save_record(&record)?;
+
+    let Some(harness) = state.harness() else {
+        return Ok(SetMcpServerEnabledResponse {
+            server: mcp_server_summary_from_record(&record),
+        });
+    };
+
+    remove_mcp_server_from_harness(&harness, &record.id).await?;
+    if !record.enabled {
+        return Ok(SetMcpServerEnabledResponse {
+            server: mcp_server_summary_from_record(&record),
+        });
+    }
+
+    let server =
+        register_mcp_record_with_harness(&record, &harness, state.default_conversation_id, state)
+            .await?;
+    Ok(SetMcpServerEnabledResponse { server })
+}
+
+pub async fn restart_mcp_server_with_runtime_state(
+    request: RestartMcpServerRequest,
+    state: &DesktopRuntimeState,
+) -> Result<RestartMcpServerResponse, CommandErrorPayload> {
+    ensure_mcp_server_id(&request.id)?;
+    let id = request.id.trim();
+    let record = state
+        .mcp_server_store
+        .load_records()?
+        .into_iter()
+        .find(|record| record.id == id)
+        .ok_or_else(|| not_found(format!("mcp server not found: {id}")))?;
+    ensure_mcp_server_record(&record)?;
+
+    let Some(harness) = state.harness() else {
+        return Ok(RestartMcpServerResponse {
+            server: mcp_server_summary_from_record(&record),
+        });
+    };
+
+    remove_mcp_server_from_harness(&harness, &record.id).await?;
+    if !record.enabled {
+        return Ok(RestartMcpServerResponse {
+            server: mcp_server_summary_from_record(&record),
+        });
+    }
+
+    let server =
+        register_mcp_record_with_harness(&record, &harness, state.default_conversation_id, state)
+            .await?;
+    Ok(RestartMcpServerResponse { server })
+}
+
+pub async fn list_mcp_diagnostics_with_store(
+    server_id: Option<String>,
+    store: &dyn McpDiagnosticStore,
+) -> Result<ListMcpDiagnosticsResponse, CommandErrorPayload> {
+    if let Some(server_id) = server_id.as_deref() {
+        ensure_mcp_server_id(server_id)?;
+    }
+    let events = store
+        .load_records()?
+        .into_iter()
+        .filter(|record| {
+            server_id
+                .as_deref()
+                .is_none_or(|server_id| record.server_id == server_id)
+        })
+        .collect();
+    Ok(ListMcpDiagnosticsResponse { events })
+}
+
+pub async fn list_mcp_diagnostics_with_runtime_state(
+    request: ListMcpDiagnosticsRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ListMcpDiagnosticsResponse, CommandErrorPayload> {
+    list_mcp_diagnostics_with_store(request.server_id, state.mcp_diagnostic_store.as_ref()).await
+}
+
+pub async fn clear_mcp_diagnostics_with_runtime_state(
+    request: ClearMcpDiagnosticsRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ClearMcpDiagnosticsResponse, CommandErrorPayload> {
+    if let Some(server_id) = request.server_id.as_deref() {
+        ensure_mcp_server_id(server_id)?;
+    }
+    state
+        .mcp_diagnostic_store
+        .clear_records(request.server_id.as_deref())?;
+    Ok(ClearMcpDiagnosticsResponse { status: "cleared" })
+}
+
+pub async fn subscribe_mcp_diagnostics_with_runtime_state(
+    request: SubscribeMcpDiagnosticsRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SubscribeMcpDiagnosticsResponse, CommandErrorPayload> {
+    subscribe_mcp_diagnostics_for_window_with_runtime_state(
+        request,
+        "default".to_owned(),
+        Arc::new(|_batch| Ok(())),
+        state,
+    )
+    .await
+}
+
+pub async fn subscribe_mcp_diagnostics_for_window_with_runtime_state(
+    request: SubscribeMcpDiagnosticsRequest,
+    window_label: String,
+    emitter: McpDiagnosticBatchEmitter,
+    state: &DesktopRuntimeState,
+) -> Result<SubscribeMcpDiagnosticsResponse, CommandErrorPayload> {
+    ensure_non_empty("windowLabel", &window_label)?;
+    if let Some(server_id) = request.server_id.as_deref() {
+        ensure_mcp_server_id(server_id)?;
+    }
+    let replay_events = list_mcp_diagnostics_with_store(
+        request.server_id.clone(),
+        state.mcp_diagnostic_store.as_ref(),
+    )
+    .await?
+    .events;
+    let subscription_id = format!("mcp-diagnostic-subscription-{}", EventId::new());
+    let handle = spawn_mcp_diagnostic_subscription(
+        subscription_id.clone(),
+        request.server_id.clone(),
+        replay_events.iter().map(|event| event.id.clone()).collect(),
+        window_label.clone(),
+        Arc::clone(&emitter),
+        state.clone(),
+    );
+    state.mcp_diagnostic_subscriptions.lock().await.insert(
+        subscription_id.clone(),
+        McpDiagnosticSubscriptionHandle {
+            task: handle,
+            window_label,
+        },
+    );
+
+    Ok(SubscribeMcpDiagnosticsResponse {
+        subscription_id,
+        server_id: request.server_id,
+        replay_events,
+    })
+}
+
+pub async fn unsubscribe_mcp_diagnostics_with_runtime_state(
+    request: UnsubscribeMcpDiagnosticsRequest,
+    state: &DesktopRuntimeState,
+) -> Result<UnsubscribeMcpDiagnosticsResponse, CommandErrorPayload> {
+    unsubscribe_mcp_diagnostics_for_window_with_runtime_state(request, "default".to_owned(), state)
+        .await
+}
+
+pub async fn unsubscribe_mcp_diagnostics_for_window_with_runtime_state(
+    request: UnsubscribeMcpDiagnosticsRequest,
+    window_label: String,
+    state: &DesktopRuntimeState,
+) -> Result<UnsubscribeMcpDiagnosticsResponse, CommandErrorPayload> {
+    ensure_non_empty("subscriptionId", &request.subscription_id)?;
+    ensure_non_empty("windowLabel", &window_label)?;
+    let mut subscriptions = state.mcp_diagnostic_subscriptions.lock().await;
+    let removed = match subscriptions.get(&request.subscription_id) {
+        Some(subscription) if subscription.window_label != window_label => {
+            return Err(invalid_payload(
+                "subscription does not belong to this window".to_owned(),
+            ));
+        }
+        Some(_) => subscriptions.remove(&request.subscription_id),
+        None => None,
+    };
+    drop(subscriptions);
+
+    if let Some(subscription) = removed {
+        subscription.task.abort();
+        return Ok(UnsubscribeMcpDiagnosticsResponse {
+            subscription_id: request.subscription_id,
+            status: "unsubscribed",
+        });
+    }
+
+    Ok(UnsubscribeMcpDiagnosticsResponse {
+        subscription_id: request.subscription_id,
+        status: "alreadyClosed",
+    })
+}
+
+fn spawn_mcp_diagnostic_subscription(
+    subscription_id: String,
+    server_id: Option<String>,
+    mut seen_ids: HashSet<String>,
+    window_label: String,
+    emitter: McpDiagnosticBatchEmitter,
+    state: DesktopRuntimeState,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(MCP_DIAGNOSTIC_SUBSCRIPTION_POLL_INTERVAL).await;
+            let records = match state.mcp_diagnostic_store.load_records() {
+                Ok(records) => records,
+                Err(_) => break,
+            };
+            let events = records
+                .into_iter()
+                .filter(|record| {
+                    server_id
+                        .as_deref()
+                        .is_none_or(|server_id| record.server_id == server_id)
+                        && !seen_ids.contains(&record.id)
+                })
+                .collect::<Vec<_>>();
+            if events.is_empty() {
+                continue;
+            }
+
+            let mut emit_failed = false;
+            for chunk in events.chunks(MCP_DIAGNOSTIC_SUBSCRIPTION_BATCH_LIMIT) {
+                for event in chunk {
+                    seen_ids.insert(event.id.clone());
+                }
+                let batch = McpDiagnosticBatchPayload {
+                    subscription_id: subscription_id.clone(),
+                    server_id: server_id.clone(),
+                    events: chunk.to_vec(),
+                    phase: "live",
+                };
+                if emitter(batch).is_err() {
+                    emit_failed = true;
+                    break;
+                }
+            }
+            if emit_failed {
+                break;
+            }
+        }
+
+        state
+            .mcp_diagnostic_subscriptions
+            .lock()
+            .await
+            .remove(&subscription_id);
+        let _ = window_label;
+    })
+}
+
 pub async fn list_skills_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<ListSkillsResponse, CommandErrorPayload> {
@@ -3573,14 +4605,69 @@ pub async fn list_skills_with_runtime_state(
     })
 }
 
+pub async fn list_skill_catalog_sources_with_runtime_state(
+) -> Result<ListSkillCatalogSourcesResponse, CommandErrorPayload> {
+    Ok(list_catalog_sources_payload())
+}
+
+pub async fn list_skill_catalog_entries_with_runtime_state(
+    request: ListSkillCatalogEntriesRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ListSkillCatalogEntriesResponse, CommandErrorPayload> {
+    let installed_entry_ids = installed_catalog_entry_ids(state)?;
+    list_catalog_entries_payload(request, &installed_entry_ids).await
+}
+
+pub async fn get_skill_catalog_entry_with_runtime_state(
+    request: GetSkillCatalogEntryRequest,
+    state: &DesktopRuntimeState,
+) -> Result<GetSkillCatalogEntryResponse, CommandErrorPayload> {
+    let installed_entry_ids = installed_catalog_entry_ids(state)?;
+    get_catalog_entry_payload(request, &installed_entry_ids).await
+}
+
+pub async fn install_skill_from_catalog_with_runtime_state(
+    request: InstallSkillFromCatalogRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ImportSkillResponse, CommandErrorPayload> {
+    let materialized = materialize_skill_from_catalog(request).await?;
+    let response = install_skill_package_with_runtime_state(
+        materialized.package_path.clone(),
+        Some(materialized.origin.clone()),
+        state,
+    )
+    .await?;
+    drop(materialized);
+    Ok(response)
+}
+
+fn installed_catalog_entry_ids(
+    state: &DesktopRuntimeState,
+) -> Result<HashSet<String>, CommandErrorPayload> {
+    Ok(state
+        .skill_store
+        .load_records()?
+        .into_iter()
+        .filter_map(|record| record.origin.map(|origin| origin.entry_id))
+        .collect())
+}
+
 pub async fn import_skill_with_runtime_state(
     request: ImportSkillRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ImportSkillResponse, CommandErrorPayload> {
+    let source_path = ensure_import_skill_source_path(&request.source_path)?;
+    install_skill_package_with_runtime_state(source_path, None, state).await
+}
+
+async fn install_skill_package_with_runtime_state(
+    source_path: PathBuf,
+    origin: Option<SkillInstallOriginRecord>,
     state: &DesktopRuntimeState,
 ) -> Result<ImportSkillResponse, CommandErrorPayload> {
     let harness = state.harness().ok_or_else(|| {
         runtime_unavailable("Importing skills requires the runtime skill facade.")
     })?;
-    let source_path = ensure_import_skill_source_path(&request.source_path)?;
     let entry_path = source_path.join(SKILL_PACKAGE_ENTRY_FILE);
     let entry_metadata = std::fs::metadata(&entry_path).map_err(|error| {
         runtime_operation_failed(format!("skill entry metadata failed: {error}"))
@@ -3629,6 +4716,7 @@ pub async fn import_skill_with_runtime_state(
         tags: validated.summary.tags,
         category: validated.summary.category,
         last_validation_error: None,
+        origin,
     };
     state
         .skill_store
@@ -3888,6 +4976,7 @@ fn managed_skill_summary(
         category: record.category.clone(),
         imported_at: Some(record.imported_at.clone()),
         updated_at: Some(record.updated_at.clone()),
+        origin: record.origin.clone(),
     }
 }
 
@@ -3904,6 +4993,7 @@ fn runtime_skill_summary_payload(skill: &RuntimeSkillSummary) -> SkillSummaryPay
         category: skill.category.clone(),
         imported_at: None,
         updated_at: None,
+        origin: None,
     }
 }
 
@@ -4168,17 +5258,24 @@ async fn mcp_config_from_records(
     records: Vec<McpServerConfigRecord>,
     default_session_id: SessionId,
     default_agent_id: AgentId,
+    diagnostic_store: Arc<dyn McpDiagnosticStore>,
+    workspace_root: &Path,
 ) -> Result<McpConfig, CommandErrorPayload> {
     let registry = McpRegistry::new();
     let mut server_ids_to_inject = Vec::new();
 
     for record in records {
         ensure_mcp_server_record(&record)?;
+        if !record.enabled {
+            continue;
+        }
         let server_id = register_mcp_record_with_registry(
             &record,
             &registry,
             default_session_id,
             default_agent_id,
+            Arc::clone(&diagnostic_store),
+            workspace_root,
         )
         .await?;
         if matches!(
@@ -4199,6 +5296,7 @@ async fn register_mcp_record_with_harness(
     record: &McpServerConfigRecord,
     harness: &Harness,
     default_session_id: SessionId,
+    state: &DesktopRuntimeState,
 ) -> Result<McpServerSummaryPayload, CommandErrorPayload> {
     let Some(config) = harness.mcp_config() else {
         return Ok(mcp_server_summary_from_record(record));
@@ -4208,6 +5306,8 @@ async fn register_mcp_record_with_harness(
         &config.registry,
         default_session_id,
         AgentId::new(),
+        Arc::clone(&state.mcp_diagnostic_store),
+        state.workspace_root(),
     )
     .await?;
 
@@ -4245,17 +5345,16 @@ async fn register_mcp_record_with_registry(
     registry: &McpRegistry,
     default_session_id: SessionId,
     default_agent_id: AgentId,
+    diagnostic_store: Arc<dyn McpDiagnosticStore>,
+    workspace_root: &Path,
 ) -> Result<McpServerId, CommandErrorPayload> {
-    let spec = mcp_server_spec_from_record(record)?;
+    let spec = mcp_server_spec_from_record(record, workspace_root)?;
     let server_id = spec.server_id.clone();
     let scope = mcp_server_scope_from_record(record, default_session_id, default_agent_id)?;
+    let transport = mcp_transport_for_config(&record.transport);
+    let event_sink = Arc::new(DesktopMcpEventSink { diagnostic_store });
     match registry
-        .add_managed_server(
-            spec.clone(),
-            scope.clone(),
-            Arc::new(StdioTransport::new()),
-            Arc::new(DesktopMcpEventSink),
-        )
+        .add_managed_server(spec.clone(), scope.clone(), transport, event_sink)
         .await
     {
         Ok(()) => {}
@@ -4296,23 +5395,138 @@ async fn remove_mcp_server_from_harness(
 
 fn mcp_server_spec_from_record(
     record: &McpServerConfigRecord,
+    workspace_root: &Path,
 ) -> Result<McpServerSpec, CommandErrorPayload> {
     match &record.transport {
-        McpServerTransportConfig::Stdio { command, args } => Ok(McpServerSpec::new(
+        McpServerTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            inherit_env,
+            working_dir,
+        } => {
+            let mut policy = StdioPolicy::default();
+            policy.working_dir = Some(mcp_stdio_working_dir(
+                working_dir.as_deref(),
+                workspace_root,
+            )?);
+            Ok(McpServerSpec::new(
+                McpServerId(record.id.clone()),
+                record.display_name.clone(),
+                TransportChoice::Stdio {
+                    command: command.clone(),
+                    args: args.clone(),
+                    env: mcp_stdio_env(env, inherit_env),
+                    policy,
+                },
+                McpServerSource::Workspace,
+            ))
+        }
+        McpServerTransportConfig::Http {
+            url,
+            bearer_token_env_var,
+            headers,
+            headers_from_env,
+        } => Ok(McpServerSpec::new(
             McpServerId(record.id.clone()),
             record.display_name.clone(),
-            TransportChoice::Stdio {
-                command: command.clone(),
-                args: args.clone(),
-                env: StdioEnv::default(),
-                policy: StdioPolicy::default(),
+            TransportChoice::Http {
+                url: url.clone(),
+                headers: mcp_http_headers(
+                    headers,
+                    headers_from_env,
+                    bearer_token_env_var.as_deref(),
+                )?,
             },
             McpServerSource::Workspace,
         )),
         McpServerTransportConfig::InProcess => Err(invalid_payload(
-            "transport.kind must be stdio for workspace MCP servers".to_owned(),
+            "transport.kind must be stdio or http for workspace MCP servers".to_owned(),
         )),
     }
+}
+
+fn mcp_transport_for_config(
+    transport: &McpServerTransportConfig,
+) -> Arc<dyn jyowo_harness_sdk::ext::McpTransport> {
+    match transport {
+        McpServerTransportConfig::Http { .. } => Arc::new(HttpTransport::new()),
+        McpServerTransportConfig::Stdio { .. } | McpServerTransportConfig::InProcess => {
+            Arc::new(StdioTransport::new())
+        }
+    }
+}
+
+fn mcp_stdio_env(env: &[McpNameValueRecord], inherit_env: &[String]) -> StdioEnv {
+    let extra = env
+        .iter()
+        .map(|record| (record.key.clone(), record.value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    if inherit_env.is_empty() {
+        StdioEnv::InheritWithDeny {
+            deny: StdioEnv::default_deny_envs(),
+            extra,
+        }
+    } else {
+        StdioEnv::Allowlist {
+            inherit: inherit_env.iter().cloned().collect::<BTreeSet<_>>(),
+            extra,
+        }
+    }
+}
+
+fn mcp_stdio_working_dir(
+    working_dir: Option<&str>,
+    workspace_root: &Path,
+) -> Result<PathBuf, CommandErrorPayload> {
+    let Some(working_dir) = working_dir else {
+        return Ok(workspace_root.to_path_buf());
+    };
+    ensure_non_empty("transport.workingDir", working_dir)?;
+    let candidate = PathBuf::from(working_dir);
+    let candidate = if candidate.is_absolute() {
+        candidate
+    } else {
+        workspace_root.join(candidate)
+    };
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|error| invalid_payload(format!("transport.workingDir is invalid: {error}")))?;
+    if !canonical.starts_with(workspace_root) {
+        return Err(invalid_payload(
+            "transport.workingDir must stay inside the workspace".to_owned(),
+        ));
+    }
+    Ok(canonical)
+}
+
+fn mcp_http_headers(
+    headers: &[McpNameValueRecord],
+    headers_from_env: &[McpHeaderEnvRecord],
+    bearer_token_env_var: Option<&str>,
+) -> Result<BTreeMap<String, String>, CommandErrorPayload> {
+    let mut resolved = BTreeMap::new();
+    for header in headers {
+        resolved.insert(header.key.trim().to_owned(), header.value.clone());
+    }
+    for header in headers_from_env {
+        let value = std::env::var(&header.env_var).map_err(|_| {
+            runtime_operation_failed(format!(
+                "MCP header env var is unavailable: {}",
+                header.env_var
+            ))
+        })?;
+        resolved.insert(header.key.trim().to_owned(), value);
+    }
+    if let Some(env_var) = bearer_token_env_var {
+        let token = std::env::var(env_var).map_err(|_| {
+            runtime_operation_failed(format!(
+                "MCP bearer token env var is unavailable: {env_var}"
+            ))
+        })?;
+        resolved.insert("Authorization".to_owned(), format!("Bearer {token}"));
+    }
+    Ok(resolved)
 }
 
 fn mcp_server_scope_from_record(
@@ -4330,10 +5544,133 @@ fn mcp_server_scope_from_record(
     }
 }
 
-struct DesktopMcpEventSink;
+struct DesktopMcpEventSink {
+    diagnostic_store: Arc<dyn McpDiagnosticStore>,
+}
 
 impl McpEventSink for DesktopMcpEventSink {
-    fn emit(&self, _event: Event) {}
+    fn emit(&self, event: Event) {
+        if let Some(record) = mcp_diagnostic_record_from_event(event) {
+            let _ = self.diagnostic_store.append_record(&record);
+        }
+    }
+}
+
+pub fn mcp_diagnostic_record_from_event(event: Event) -> Option<McpDiagnosticRecord> {
+    let (server_id, event_type, severity, summary, timestamp) = match event {
+        Event::McpToolInjected(event) => (
+            event.server_id.0,
+            "tool_injected",
+            McpDiagnosticSeverity::Info,
+            "MCP tool exposed.",
+            event.at.to_rfc3339(),
+        ),
+        Event::McpConnectionLost(event) => (
+            event.server_id.0,
+            "connection_lost",
+            if event.terminal {
+                McpDiagnosticSeverity::Error
+            } else {
+                McpDiagnosticSeverity::Warning
+            },
+            if event.terminal {
+                "MCP server connection lost."
+            } else {
+                "MCP server connection lost; reconnecting."
+            },
+            event.at.to_rfc3339(),
+        ),
+        Event::McpConnectionRecovered(event) => (
+            event.server_id.0,
+            "connection_recovered",
+            McpDiagnosticSeverity::Info,
+            "MCP server connection recovered.",
+            event.at.to_rfc3339(),
+        ),
+        Event::McpOAuthRefresh(event) => (
+            event.server_id.0,
+            "oauth_refresh",
+            match event.outcome {
+                harness_contracts::McpOAuthRefreshOutcome::Error => McpDiagnosticSeverity::Error,
+                _ => McpDiagnosticSeverity::Info,
+            },
+            match event.outcome {
+                harness_contracts::McpOAuthRefreshOutcome::Started => "MCP OAuth refresh started.",
+                harness_contracts::McpOAuthRefreshOutcome::Success => {
+                    "MCP OAuth refresh completed."
+                }
+                harness_contracts::McpOAuthRefreshOutcome::Error => "MCP OAuth refresh failed.",
+            },
+            event.at.to_rfc3339(),
+        ),
+        Event::McpElicitationRequested(event) => (
+            event.server_id.0,
+            "elicitation_requested",
+            McpDiagnosticSeverity::Info,
+            "MCP elicitation requested.",
+            event.at.to_rfc3339(),
+        ),
+        Event::McpElicitationResolved(event) => (
+            event.server_id.0,
+            "elicitation_resolved",
+            match event.outcome {
+                harness_contracts::ElicitationOutcome::Provided { .. } => {
+                    McpDiagnosticSeverity::Info
+                }
+                _ => McpDiagnosticSeverity::Warning,
+            },
+            "MCP elicitation resolved.",
+            event.at.to_rfc3339(),
+        ),
+        Event::McpToolsListChanged(event) => (
+            event.server_id.0,
+            "tools_changed",
+            McpDiagnosticSeverity::Info,
+            "MCP tools changed.",
+            event.received_at.to_rfc3339(),
+        ),
+        Event::McpResourceUpdated(event) => (
+            event.server_id.0,
+            "resource_updated",
+            McpDiagnosticSeverity::Info,
+            match event.kind {
+                harness_contracts::McpResourceUpdateKind::PromptsListChanged { .. } => {
+                    "MCP prompts changed."
+                }
+                harness_contracts::McpResourceUpdateKind::ListChanged { .. } => {
+                    "MCP resources changed."
+                }
+                harness_contracts::McpResourceUpdateKind::ResourceUpdated { .. } => {
+                    "MCP resource updated."
+                }
+                _ => "MCP resource updated.",
+            },
+            event.at.to_rfc3339(),
+        ),
+        Event::McpSamplingRequested(event) => (
+            event.server_id.0,
+            "sampling",
+            match event.outcome {
+                harness_contracts::SamplingOutcome::Completed => McpDiagnosticSeverity::Info,
+                harness_contracts::SamplingOutcome::UpstreamError { .. } => {
+                    McpDiagnosticSeverity::Error
+                }
+                _ => McpDiagnosticSeverity::Warning,
+            },
+            "MCP sampling request handled.",
+            event.at.to_rfc3339(),
+        ),
+        _ => return None,
+    };
+
+    Some(McpDiagnosticRecord {
+        event_type: event_type.to_owned(),
+        id: format!("mcp-diagnostic-{}", EventId::new()),
+        server_id,
+        severity,
+        summary: summary.to_owned(),
+        timestamp,
+    })
 }
 
 async fn mcp_server_summary_from_registry(
@@ -4348,9 +5685,14 @@ async fn mcp_server_summary_from_registry(
 
     Some(McpServerSummaryPayload {
         display_name: spec.display_name,
+        enabled: true,
         exposed_tool_count: exposed_tool_count.try_into().unwrap_or(u32::MAX),
         id: server_id.0.clone(),
+        last_diagnostic: None,
+        last_diagnostic_at: None,
+        last_diagnostic_severity: None,
         last_error,
+        manageable: false,
         origin: mcp_server_origin_payload(&spec.source),
         scope: mcp_server_scope_payload(&scope),
         status,
@@ -4361,13 +5703,43 @@ async fn mcp_server_summary_from_registry(
 fn mcp_server_summary_from_record(record: &McpServerConfigRecord) -> McpServerSummaryPayload {
     McpServerSummaryPayload {
         display_name: record.display_name.clone(),
+        enabled: record.enabled,
         exposed_tool_count: 0,
         id: record.id.clone(),
+        last_diagnostic: None,
+        last_diagnostic_at: None,
+        last_diagnostic_severity: None,
         last_error: None,
+        manageable: true,
         origin: "workspace",
         scope: record.scope.clone(),
-        status: "configured",
+        status: if record.enabled {
+            "configured"
+        } else {
+            "disabled"
+        },
         transport: mcp_transport_config_payload(&record.transport),
+    }
+}
+
+fn mcp_last_diagnostics_by_server(
+    records: &[McpDiagnosticRecord],
+) -> BTreeMap<String, McpDiagnosticRecord> {
+    let mut last = BTreeMap::new();
+    for record in records {
+        last.insert(record.server_id.clone(), record.clone());
+    }
+    last
+}
+
+fn apply_mcp_last_diagnostic(
+    summary: &mut McpServerSummaryPayload,
+    diagnostic: Option<&McpDiagnosticRecord>,
+) {
+    if let Some(diagnostic) = diagnostic {
+        summary.last_diagnostic = Some(diagnostic.summary.clone());
+        summary.last_diagnostic_at = Some(diagnostic.timestamp.clone());
+        summary.last_diagnostic_severity = Some(diagnostic.severity);
     }
 }
 
@@ -6083,7 +7455,13 @@ fn ensure_mcp_server_transport(
     transport: &McpServerTransportConfig,
 ) -> Result<(), CommandErrorPayload> {
     match transport {
-        McpServerTransportConfig::Stdio { command, args } => {
+        McpServerTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            inherit_env,
+            working_dir,
+        } => {
             ensure_non_empty("transport.command", command)?;
             if args.iter().any(|arg| arg.trim().is_empty()) {
                 return Err(invalid_payload(
@@ -6103,15 +7481,143 @@ fn ensure_mcp_server_transport(
                     "transport.args must not contain secret-bearing values".to_owned(),
                 ));
             }
+            if env.len() > 64 {
+                return Err(invalid_payload(
+                    "transport.env must contain at most 64 values".to_owned(),
+                ));
+            }
+            for item in env {
+                ensure_env_var_name("transport.env.key", &item.key)?;
+                ensure_max_bytes("transport.env.value", &item.value, 4096)?;
+                if mcp_env_key_looks_secret_bearing(&item.key) || looks_like_raw_secret(&item.value)
+                {
+                    return Err(invalid_payload(
+                        "transport.env must not contain secret-bearing values".to_owned(),
+                    ));
+                }
+            }
+            if inherit_env.len() > 128 {
+                return Err(invalid_payload(
+                    "transport.inheritEnv must contain at most 128 values".to_owned(),
+                ));
+            }
+            for item in inherit_env {
+                ensure_env_var_name("transport.inheritEnv", item)?;
+            }
+            if let Some(working_dir) = working_dir {
+                ensure_non_empty("transport.workingDir", working_dir)?;
+                ensure_max_bytes("transport.workingDir", working_dir, 4096)?;
+            }
+        }
+        McpServerTransportConfig::Http {
+            url,
+            bearer_token_env_var,
+            headers,
+            headers_from_env,
+        } => {
+            ensure_mcp_http_url(url)?;
+            if let Some(env_var) = bearer_token_env_var {
+                ensure_env_var_name("transport.bearerTokenEnvVar", env_var)?;
+            }
+            if headers.len() > 64 || headers_from_env.len() > 64 {
+                return Err(invalid_payload(
+                    "transport.headers must contain at most 64 values".to_owned(),
+                ));
+            }
+            for header in headers {
+                ensure_http_header_name("transport.headers.key", &header.key)?;
+                ensure_max_bytes("transport.headers.value", &header.value, 8192)?;
+                if mcp_http_header_is_sensitive(&header.key)
+                    || looks_like_raw_secret(&header.value)
+                    || mcp_header_value_looks_secret_bearing(&header.value)
+                {
+                    return Err(invalid_payload(
+                        "transport.headers must not contain secret-bearing values".to_owned(),
+                    ));
+                }
+            }
+            for header in headers_from_env {
+                ensure_http_header_name("transport.headersFromEnv.key", &header.key)?;
+                ensure_env_var_name("transport.headersFromEnv.envVar", &header.env_var)?;
+                if mcp_http_header_is_sensitive(&header.key) {
+                    return Err(invalid_payload(
+                        "transport.headersFromEnv must not contain sensitive header names"
+                            .to_owned(),
+                    ));
+                }
+            }
         }
         McpServerTransportConfig::InProcess => {
             return Err(invalid_payload(
-                "transport.kind must be stdio for workspace MCP servers".to_owned(),
+                "transport.kind must be stdio or http for workspace MCP servers".to_owned(),
             ));
         }
     }
 
     Ok(())
+}
+
+fn ensure_env_var_name(field: &'static str, value: &str) -> Result<(), CommandErrorPayload> {
+    ensure_non_empty(field, value)?;
+    let mut chars = value.chars();
+    let valid = chars
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
+        && chars.all(|character| character.is_ascii_alphanumeric() || character == '_');
+    if !valid {
+        return Err(invalid_payload(format!("{field} is invalid")));
+    }
+    Ok(())
+}
+
+fn ensure_http_header_name(field: &'static str, value: &str) -> Result<(), CommandErrorPayload> {
+    ensure_non_empty(field, value)?;
+    reqwest::header::HeaderName::from_bytes(value.trim().as_bytes())
+        .map_err(|_| invalid_payload(format!("{field} is invalid")))?;
+    Ok(())
+}
+
+fn ensure_mcp_http_url(value: &str) -> Result<(), CommandErrorPayload> {
+    ensure_non_empty("transport.url", value)?;
+    let url = reqwest::Url::parse(value)
+        .map_err(|error| invalid_payload(format!("transport.url is invalid: {error}")))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(invalid_payload(
+            "transport.url must be an http or https URL".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn mcp_env_key_looks_secret_bearing(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase().replace('-', "_");
+    [
+        "auth",
+        "api_key",
+        "apikey",
+        "authorization",
+        "bearer",
+        "password",
+        "secret",
+        "token",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+fn mcp_http_header_is_sensitive(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "authorization" | "cookie" | "set-cookie" | "proxy-authorization"
+    )
+}
+
+fn mcp_header_value_looks_secret_bearing(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized.starts_with("bearer ")
+        || normalized.contains(" token")
+        || normalized.contains("secret")
+        || normalized.contains("password")
 }
 
 fn mcp_stdio_arg_looks_secret_bearing(arg: &str) -> bool {
@@ -6213,6 +7719,7 @@ fn mcp_transport_payload(transport: &TransportChoice) -> &'static str {
 fn mcp_transport_config_payload(transport: &McpServerTransportConfig) -> &'static str {
     match transport {
         McpServerTransportConfig::Stdio { .. } => "stdio",
+        McpServerTransportConfig::Http { .. } => "http",
         McpServerTransportConfig::InProcess => "inProcess",
     }
 }
@@ -6824,6 +8331,9 @@ fn run_event_type_label(value: &str) -> Result<&'static str, CommandErrorPayload
         "assistant.delta" => Ok("assistant.delta"),
         "assistant.thinking.delta" => Ok("assistant.thinking.delta"),
         "assistant.completed" => Ok("assistant.completed"),
+        "assistant.review.requested" => Ok("assistant.review.requested"),
+        "assistant.clarification.requested" => Ok("assistant.clarification.requested"),
+        "assistant.notice" => Ok("assistant.notice"),
         "tool.requested" => Ok("tool.requested"),
         "tool.approved" => Ok("tool.approved"),
         "tool.denied" => Ok("tool.denied"),
@@ -6862,6 +8372,7 @@ fn permission_requested_run_event(
             request_id: event.request_id.to_string(),
             severity: severity_display(event.severity),
             target: subject.target,
+            tool_use_id: event.tool_use_id.to_string(),
             workspace_boundary: "current workspace".to_owned(),
         })
         .unwrap_or_else(|_| json!({})),
@@ -6893,22 +8404,22 @@ fn permission_subject_display(
         PermissionSubject::ToolInvocation { tool, .. } => PermissionSubjectDisplay {
             exposure: "Can invoke a runtime tool.".to_owned(),
             operation: "Use tool".to_owned(),
-            target: redacted_display(tool.clone(), redactor),
+            target: public_text_display(tool.clone(), redactor),
         },
         PermissionSubject::FileWrite { path, .. } => PermissionSubjectDisplay {
             exposure: "Can write a file in the workspace.".to_owned(),
             operation: "Write file".to_owned(),
-            target: safe_path_label(path),
+            target: safe_path_label(path, redactor),
         },
         PermissionSubject::FileDelete { path } => PermissionSubjectDisplay {
             exposure: "Can delete a file in the workspace.".to_owned(),
             operation: "Delete file".to_owned(),
-            target: safe_path_label(path),
+            target: safe_path_label(path, redactor),
         },
         PermissionSubject::NetworkAccess { host, port } => PermissionSubjectDisplay {
             exposure: "Can access a network endpoint.".to_owned(),
             operation: "Access network".to_owned(),
-            target: redacted_display(
+            target: public_text_display(
                 port.map_or_else(|| host.clone(), |port| format!("{host}:{port}")),
                 redactor,
             ),
@@ -6921,12 +8432,12 @@ fn permission_subject_display(
         PermissionSubject::McpToolCall { server, tool, .. } => PermissionSubjectDisplay {
             exposure: "Can invoke an MCP tool.".to_owned(),
             operation: "Use MCP tool".to_owned(),
-            target: redacted_display(format!("{server}/{tool}"), redactor),
+            target: public_text_display(format!("{server}/{tool}"), redactor),
         },
         PermissionSubject::Custom { kind, .. } => PermissionSubjectDisplay {
             exposure: "Can perform a custom permission-gated operation.".to_owned(),
             operation: "Review custom operation".to_owned(),
-            target: redacted_display(kind.clone(), redactor),
+            target: public_text_display(kind.clone(), redactor),
         },
         _ => PermissionSubjectDisplay {
             exposure: "Can continue a permission-gated operation.".to_owned(),
@@ -6946,7 +8457,7 @@ fn decision_scope_display(scope: &DecisionScope, redactor: &dyn Redactor) -> Str
         DecisionScope::GlobPattern(_) => "this workspace glob".to_owned(),
         DecisionScope::ExecuteCodeScript { .. } => "execute code script".to_owned(),
         DecisionScope::Any => "any matching operation".to_owned(),
-        _ => redacted_display("current operation".to_owned(), redactor),
+        _ => public_text_display("current operation".to_owned(), redactor),
     }
 }
 
@@ -6957,17 +8468,19 @@ fn safe_command_label(command: &str, redactor: &dyn Redactor) -> String {
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .unwrap_or(executable_token);
-    redacted_display(executable.to_owned(), redactor)
+    public_text_display(executable.to_owned(), redactor)
 }
 
-fn safe_path_label(path: &Path) -> String {
-    path.file_name()
+fn safe_path_label(path: &Path, redactor: &dyn Redactor) -> String {
+    let label = path
+        .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .map_or_else(
             || "workspace file".to_owned(),
             |name| format!("workspace file: {name}"),
-        )
+        );
+    public_text_display(label, redactor)
 }
 
 async fn read_replay_run_events(
@@ -7131,17 +8644,36 @@ fn message_content_display(content: &MessageContent, redactor: &dyn Redactor) ->
             .join("\n"),
     };
 
-    redact_private_absolute_paths(redacted_display(value, redactor))
+    public_text_display(value, redactor)
 }
 
 fn redact_private_absolute_paths(value: String) -> String {
+    redact_unsafe_display_text(&value)
+}
+
+fn public_text_display(value: String, redactor: &dyn Redactor) -> String {
+    redact_unsafe_display_text(&redacted_display(value, redactor))
+}
+
+fn public_ui_safe_text_display(value: &UiSafeText, redactor: &dyn Redactor) -> String {
+    redact_unsafe_display_text(
+        &UiSafeText::from_redacted_display(value.as_str(), redactor).into_string(),
+    )
+}
+
+fn redact_unsafe_display_text(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut index = 0;
 
     while index < value.len() {
-        if private_absolute_path_starts_at(&value, index) {
+        if unsafe_url_starts_at(value, index) {
             output.push_str("[REDACTED]");
-            index = private_absolute_path_end(&value, index);
+            index = unsafe_url_token_end(value, index);
+            continue;
+        }
+        if local_unsafe_path_starts_at(value, index) {
+            output.push_str("[REDACTED]");
+            index = unsafe_token_end(value, index);
             continue;
         }
 
@@ -7156,27 +8688,182 @@ fn redact_private_absolute_paths(value: String) -> String {
     output
 }
 
-fn private_absolute_path_starts_at(value: &str, index: usize) -> bool {
+fn token_starts_at(value: &str, index: usize) -> bool {
+    if index == 0 {
+        return true;
+    }
+    value[..index]
+        .chars()
+        .next_back()
+        .is_some_and(|ch| ch.is_whitespace() || (!ch.is_alphanumeric() && ch != '_'))
+}
+
+fn unsafe_url_starts_at(value: &str, index: usize) -> bool {
+    if unsafe_opaque_url_starts_at(value, index) {
+        return true;
+    }
+
     let tail = &value[index..];
-    tail.starts_with("/Users/")
-        || tail.starts_with("/home/")
-        || tail.starts_with("/private/var/")
-        || is_windows_absolute_path_start(tail)
+    let Some(separator) = tail.find("://") else {
+        return false;
+    };
+    if separator == 0 {
+        return false;
+    }
+    tail[..separator]
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+}
+
+fn unsafe_opaque_url_starts_at(value: &str, index: usize) -> bool {
+    const SCHEMES: &[&str] = &["blob:", "data:", "file:", "javascript:", "mailto:"];
+    let tail = &value[index..];
+    ascii_token_starts_at(value, index)
+        && SCHEMES.iter().any(|scheme| {
+            tail.get(..scheme.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
+        })
+}
+
+fn ascii_token_starts_at(value: &str, index: usize) -> bool {
+    if index == 0 {
+        return true;
+    }
+    value[..index]
+        .chars()
+        .next_back()
+        .is_some_and(|ch| ch.is_whitespace() || (!ch.is_ascii_alphanumeric() && ch != '_'))
+}
+
+fn local_unsafe_path_starts_at(value: &str, index: usize) -> bool {
+    let tail = &value[index..];
+    if tail.starts_with("~/")
+        || tail.starts_with("~\\")
+        || starts_with_jyowo_path(tail)
+        || starts_with_known_unix_absolute_root(tail)
+    {
+        return true;
+    }
+    token_starts_at(value, index) && (tail.starts_with('/') || is_windows_absolute_path_start(tail))
+}
+
+fn starts_with_jyowo_path(value: &str) -> bool {
+    value
+        .get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(".jyowo"))
+        && value
+            .as_bytes()
+            .get(6)
+            .is_some_and(|byte| matches!(byte, b'/' | b'\\'))
 }
 
 fn is_windows_absolute_path_start(value: &str) -> bool {
     let bytes = value.as_bytes();
-    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
 }
 
-fn private_absolute_path_end(value: &str, start: usize) -> usize {
-    for (offset, ch) in value[start..].char_indices() {
-        if ch.is_whitespace() || matches!(ch, '"' | '\'' | '`' | ',' | ';' | ')' | ']' | '}') {
-            return start + offset;
-        }
+fn starts_with_known_unix_absolute_root(value: &str) -> bool {
+    const ROOTS: &[&str] = &[
+        "/Applications",
+        "/Library",
+        "/System",
+        "/Users",
+        "/Volumes",
+        "/dev",
+        "/etc",
+        "/home",
+        "/media",
+        "/mnt",
+        "/opt",
+        "/private",
+        "/root",
+        "/run",
+        "/tmp",
+        "/usr",
+        "/var",
+    ];
+
+    ROOTS.iter().any(|root| {
+        value
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\'))
+    })
+}
+
+fn unsafe_url_token_end(value: &str, start: usize) -> usize {
+    if starts_with_unsafe_opaque_scheme(value, start, "data:")
+        || starts_with_unsafe_opaque_scheme(value, start, "javascript:")
+    {
+        return unsafe_data_url_token_end(value, start);
     }
 
-    value.len()
+    unsafe_token_end(value, start)
+}
+
+fn starts_with_unsafe_opaque_scheme(value: &str, start: usize, scheme: &str) -> bool {
+    ascii_token_starts_at(value, start)
+        && value[start..]
+            .get(..scheme.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
+}
+
+fn unsafe_data_url_token_end(value: &str, start: usize) -> usize {
+    value[start..]
+        .char_indices()
+        .find_map(|(offset, ch)| {
+            (matches!(
+                ch,
+                '"' | '\''
+                    | '`'
+                    | '，'
+                    | '。'
+                    | '；'
+                    | '、'
+                    | '）'
+                    | '】'
+                    | '」'
+                    | '》'
+                    | '！'
+                    | '？'
+            ))
+            .then_some(start + offset)
+        })
+        .unwrap_or(value.len())
+}
+
+fn unsafe_token_end(value: &str, start: usize) -> usize {
+    value[start..]
+        .char_indices()
+        .find_map(|(offset, ch)| {
+            (ch.is_whitespace()
+                || matches!(
+                    ch,
+                    '"' | '\''
+                        | '`'
+                        | ')'
+                        | ']'
+                        | '}'
+                        | ','
+                        | ';'
+                        | '<'
+                        | '>'
+                        | '，'
+                        | '。'
+                        | '；'
+                        | '、'
+                        | '）'
+                        | '】'
+                        | '」'
+                        | '》'
+                        | '！'
+                        | '？'
+                ))
+            .then_some(start + offset)
+        })
+        .unwrap_or(value.len())
 }
 
 fn truncate_utf8(value: String, max_bytes: usize) -> String {
@@ -7220,7 +8907,7 @@ fn context_decisions_from_pending_requests(
             request_id: Some(pending.request.request_id.to_string()),
             title: format!(
                 "Approve {}",
-                redacted_display(pending.request.tool_name, redactor)
+                public_text_display(pending.request.tool_name, redactor)
             ),
         })
         .collect()
@@ -7469,7 +9156,10 @@ impl RunEventMapper {
                     Some(RunEventPayload {
                         id: event_id,
                         conversation_sequence: 0,
-                        payload: json!({ "text": redact_private_absolute_paths(redacted_display(text, redactor)) }),
+                        payload: json!({
+                            "messageId": event.message_id.to_string(),
+                            "text": public_text_display(text, redactor),
+                        }),
                         run_id: event.run_id.to_string(),
                         sequence: 0,
                         source: "assistant",
@@ -7478,20 +9168,37 @@ impl RunEventMapper {
                         visibility: "public",
                     })
                 }
-                DeltaChunk::Thought(thought) => {
+                DeltaChunk::Thought(_) => {
                     if !self.is_allowed_run(&event.run_id) {
-                        return None;
-                    }
-
-                    let text = thought.text.unwrap_or_default();
-                    if text.is_empty() {
                         return None;
                     }
 
                     Some(RunEventPayload {
                         id: event_id,
                         conversation_sequence: 0,
-                        payload: json!({ "text": redact_private_absolute_paths(redacted_display(text, redactor)) }),
+                        payload: json!({
+                            "status": "running",
+                        }),
+                        run_id: event.run_id.to_string(),
+                        sequence: 0,
+                        source: "assistant",
+                        timestamp: event.at.to_rfc3339(),
+                        event_type: "assistant.thinking.delta",
+                        visibility: "public",
+                    })
+                }
+                DeltaChunk::ReasoningSummary(summary) => {
+                    if !self.is_allowed_run(&event.run_id) {
+                        return None;
+                    }
+
+                    Some(RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({
+                            "safeSummaryDelta": public_text_display(summary.text, redactor),
+                            "status": "running",
+                        }),
                         run_id: event.run_id.to_string(),
                         sequence: 0,
                         source: "assistant",
@@ -7516,6 +9223,12 @@ impl RunEventMapper {
                     payload: json!({
                         "messageId": event.message_id.to_string(),
                         "body": message_content_display(&event.content, redactor),
+                        "toolUses": event.tool_uses.iter().map(|tool_use| {
+                            json!({
+                                "toolUseId": tool_use.tool_use_id.to_string(),
+                                "toolName": public_text_display(tool_use.tool_name.clone(), redactor),
+                            })
+                        }).collect::<Vec<_>>(),
                     }),
                     run_id: event.run_id.to_string(),
                     sequence: 0,
@@ -7530,13 +9243,25 @@ impl RunEventMapper {
                     return None;
                 }
 
+                let artifact_kind = event.kind;
+                let mut payload = json!({
+                    "artifactId": event.artifact_id,
+                    "kind": public_text_display(artifact_kind.clone(), redactor),
+                    "status": artifact_status_label(event.status),
+                    "source": artifact_source_label(event.source),
+                    "title": public_text_display(event.title, redactor),
+                });
+                if let Some(preview) = event.preview {
+                    payload["summary"] = json!(public_text_display(preview, redactor));
+                }
+                if let Some(media) = artifact_media_payload(event.blob_ref.as_ref(), &artifact_kind) {
+                    payload["media"] = media;
+                }
+
                 Some(RunEventPayload {
                     id: event_id,
                     conversation_sequence: 0,
-                    payload: json!({
-                        "artifactId": event.artifact_id,
-                        "status": artifact_status_label(event.status),
-                    }),
+                    payload,
                     run_id: event.run_id.to_string(),
                     sequence: 0,
                     source: "engine",
@@ -7551,8 +9276,21 @@ impl RunEventMapper {
                 }
 
                 let mut payload = json!({ "artifactId": event.artifact_id });
+                payload["source"] = json!(artifact_source_label(event.source));
+                if let Some(title) = event.title.as_ref() {
+                    payload["title"] = json!(public_text_display(title.clone(), redactor));
+                }
+                if let Some(kind) = event.kind.as_ref() {
+                    payload["kind"] = json!(public_text_display(kind.clone(), redactor));
+                    if let Some(media) = artifact_media_payload(event.blob_ref.as_ref(), kind) {
+                        payload["media"] = media;
+                    }
+                }
                 if let Some(status) = event.status {
                     payload["status"] = json!(artifact_status_label(status));
+                }
+                if let Some(preview) = event.preview.as_ref() {
+                    payload["summary"] = json!(public_text_display(preview.clone(), redactor));
                 }
 
                 Some(RunEventPayload {
@@ -7567,20 +9305,91 @@ impl RunEventMapper {
                     visibility: "public",
                 })
             }
+            Event::AssistantReviewRequested(event) => {
+                if !self.is_allowed_run(&event.run_id) {
+                    return None;
+                }
+
+                let mut payload = json!({
+                    "requestId": event.request_id.to_string(),
+                    "title": public_ui_safe_text_display(&event.title, redactor),
+                });
+                if let Some(body) = event.body.as_ref() {
+                    payload["body"] = json!(public_ui_safe_text_display(body, redactor));
+                }
+
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload,
+                    run_id: event.run_id.to_string(),
+                    sequence: 0,
+                    source: "assistant",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "assistant.review.requested",
+                    visibility: "public",
+                })
+            }
+            Event::AssistantClarificationRequested(event) => {
+                if !self.is_allowed_run(&event.run_id) {
+                    return None;
+                }
+
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "requestId": event.request_id.to_string(),
+                        "prompt": public_ui_safe_text_display(&event.prompt, redactor),
+                    }),
+                    run_id: event.run_id.to_string(),
+                    sequence: 0,
+                    source: "assistant",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "assistant.clarification.requested",
+                    visibility: "public",
+                })
+            }
+            Event::AssistantNotice(event) => {
+                if !self.is_allowed_run(&event.run_id) {
+                    return None;
+                }
+
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "noticeId": event.notice_id.to_string(),
+                        "body": public_ui_safe_text_display(&event.body, redactor),
+                    }),
+                    run_id: event.run_id.to_string(),
+                    sequence: 0,
+                    source: "assistant",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "assistant.notice",
+                    visibility: "public",
+                })
+            }
             Event::ToolUseRequested(event) => {
                 if !self.is_allowed_run(&event.run_id) {
                     return None;
                 }
 
                 self.tool_run_ids.insert(event.tool_use_id, event.run_id);
+                let mut payload = json!({
+                    "argumentsSummary": "Input withheld from conversation timeline.",
+                    "toolName": public_text_display(event.tool_name.clone(), redactor),
+                    "toolUseId": event.tool_use_id.to_string(),
+                });
+                if let Some(command) =
+                    safe_tool_command_preview(&event.tool_name, &event.input, redactor)
+                {
+                    payload["command"] = json!(command);
+                }
                 Some(RunEventPayload {
                     id: event_id,
                     conversation_sequence: 0,
-                    payload: json!({
-                        "argumentsSummary": "Input withheld from conversation timeline.",
-                        "toolName": redacted_display(event.tool_name, redactor),
-                        "toolUseId": event.tool_use_id.to_string(),
-                    }),
+                    payload,
                     run_id: event.run_id.to_string(),
                     sequence: 0,
                     source: "tool",
@@ -7699,6 +9508,43 @@ impl RunEventMapper {
 
 fn tool_result_summary(_result: impl Serialize) -> String {
     "Output withheld from conversation timeline.".to_owned()
+}
+
+fn safe_tool_command_preview(
+    tool_name: &str,
+    input: &Value,
+    redactor: &dyn Redactor,
+) -> Option<String> {
+    if !is_command_tool_name(tool_name) {
+        return None;
+    }
+    let command = input.get("command").and_then(Value::as_str)?.trim();
+    if command.is_empty() || contains_obvious_secret(command) {
+        return None;
+    }
+    Some(truncate_utf8(
+        redact_private_absolute_paths(redacted_display(command.to_owned(), redactor)),
+        1_200,
+    ))
+}
+
+fn is_command_tool_name(tool_name: &str) -> bool {
+    let normalized = tool_name.to_ascii_lowercase();
+    normalized == "bash" || normalized.contains("shell")
+}
+
+fn contains_obvious_secret(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("authorization:")
+        || lower.contains("bearer ")
+        || lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("token=")
+        || lower.contains("secret=")
+        || lower.contains("password=")
+        || lower.contains("sk-")
+        || lower.contains("ghp_")
+        || lower.contains("xoxb-")
 }
 
 fn permission_decision_payload(decision: Decision) -> &'static str {
@@ -7927,6 +9773,14 @@ pub struct SwitchProjectResponse {
     pub project: ProjectRecord,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteProjectResponse {
+    pub path: String,
+    pub active_path: Option<String>,
+    pub status: &'static str,
+}
+
 #[tauri::command]
 pub fn list_projects(project_registry: tauri::State<'_, ProjectRegistry>) -> ListProjectsResponse {
     ListProjectsResponse {
@@ -7946,6 +9800,32 @@ pub async fn switch_project(
     let new_runtime = runtime_state_for_workspace(workspace_root).await?;
     *runtime_handle.write().await = new_runtime;
     Ok(SwitchProjectResponse { project })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn delete_project(
+    path: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+    project_registry: tauri::State<'_, ProjectRegistry>,
+) -> Result<DeleteProjectResponse, CommandErrorPayload> {
+    if path.trim().is_empty() {
+        return Err(CommandErrorPayload {
+            code: "INVALID_PAYLOAD",
+            message: "project path is required".to_owned(),
+        });
+    }
+
+    let removed = project_registry.remove(&PathBuf::from(path))?;
+    let active_path = project_registry.active_path();
+    if active_path.is_none() {
+        *runtime_handle.write().await = unconfigured_runtime_state();
+    }
+
+    Ok(DeleteProjectResponse {
+        path: removed.path,
+        active_path,
+        status: "deleted",
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -8089,6 +9969,7 @@ pub async fn list_mcp_servers(
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn save_mcp_server(
+    enabled: Option<bool>,
     display_name: String,
     id: String,
     scope: String,
@@ -8099,6 +9980,7 @@ pub async fn save_mcp_server(
     let _mcp_server_guard = runtime_state.mcp_server_lock.lock().await;
     save_mcp_server_with_runtime_state(
         SaveMcpServerRequest {
+            enabled: enabled.unwrap_or(true),
             display_name,
             id,
             scope,
@@ -8110,6 +9992,16 @@ pub async fn save_mcp_server(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub async fn get_mcp_server_config(
+    id: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetMcpServerConfigResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_mcp_server_config_with_runtime_state(GetMcpServerConfigRequest { id }, &*runtime_state)
+        .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub async fn delete_mcp_server(
     id: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
@@ -8117,6 +10009,94 @@ pub async fn delete_mcp_server(
     let runtime_state = runtime_handle.read().await;
     let _mcp_server_guard = runtime_state.mcp_server_lock.lock().await;
     delete_mcp_server_with_runtime_state(DeleteMcpServerRequest { id }, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn set_mcp_server_enabled(
+    id: String,
+    enabled: bool,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<SetMcpServerEnabledResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let _mcp_server_guard = runtime_state.mcp_server_lock.lock().await;
+    set_mcp_server_enabled_with_runtime_state(
+        SetMcpServerEnabledRequest { id, enabled },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn restart_mcp_server(
+    id: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<RestartMcpServerResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let _mcp_server_guard = runtime_state.mcp_server_lock.lock().await;
+    restart_mcp_server_with_runtime_state(RestartMcpServerRequest { id }, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_mcp_diagnostics(
+    server_id: Option<String>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListMcpDiagnosticsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    list_mcp_diagnostics_with_runtime_state(
+        ListMcpDiagnosticsRequest { server_id },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn clear_mcp_diagnostics(
+    server_id: Option<String>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ClearMcpDiagnosticsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    clear_mcp_diagnostics_with_runtime_state(
+        ClearMcpDiagnosticsRequest { server_id },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn subscribe_mcp_diagnostics(
+    server_id: Option<String>,
+    window: tauri::Window,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<SubscribeMcpDiagnosticsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let window_label = window.label().to_owned();
+    let emitter = Arc::new(move |batch: McpDiagnosticBatchPayload| {
+        window
+            .emit("mcp_diagnostic_batch", batch)
+            .map_err(|error| error.to_string())
+    });
+    subscribe_mcp_diagnostics_for_window_with_runtime_state(
+        SubscribeMcpDiagnosticsRequest { server_id },
+        window_label,
+        emitter,
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn unsubscribe_mcp_diagnostics(
+    subscription_id: String,
+    window: tauri::Window,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<UnsubscribeMcpDiagnosticsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    unsubscribe_mcp_diagnostics_for_window_with_runtime_state(
+        UnsubscribeMcpDiagnosticsRequest { subscription_id },
+        window.label().to_owned(),
+        &*runtime_state,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -8144,6 +10124,72 @@ pub async fn get_skill_file(
 ) -> Result<GetSkillFileResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     get_skill_file_with_runtime_state(GetSkillFileRequest { id, path }, &*runtime_state).await
+}
+
+#[tauri::command]
+pub async fn list_skill_catalog_sources(
+) -> Result<ListSkillCatalogSourcesResponse, CommandErrorPayload> {
+    list_skill_catalog_sources_with_runtime_state().await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_skill_catalog_entries(
+    source_id: String,
+    query: Option<String>,
+    cursor: Option<String>,
+    sort: Option<String>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListSkillCatalogEntriesResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    list_skill_catalog_entries_with_runtime_state(
+        ListSkillCatalogEntriesRequest {
+            source_id,
+            query,
+            cursor,
+            sort,
+        },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_skill_catalog_entry(
+    source_id: String,
+    entry_id: String,
+    version: Option<String>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetSkillCatalogEntryResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_skill_catalog_entry_with_runtime_state(
+        GetSkillCatalogEntryRequest {
+            source_id,
+            entry_id,
+            version,
+        },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn install_skill_from_catalog(
+    source_id: String,
+    entry_id: String,
+    version: Option<String>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ImportSkillResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let _skill_store_guard = runtime_state.skill_store_lock.lock().await;
+    install_skill_from_catalog_with_runtime_state(
+        InstallSkillFromCatalogRequest {
+            source_id,
+            entry_id,
+            version,
+        },
+        &*runtime_state,
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -8258,6 +10304,23 @@ pub async fn list_artifacts(
     let runtime_state = runtime_handle.read().await;
     list_artifacts_with_runtime_state(ListArtifactsRequest { conversation_id }, &*runtime_state)
         .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_artifact_media_preview(
+    conversation_id: String,
+    artifact_id: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetArtifactMediaPreviewResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id,
+            artifact_id,
+        },
+        &*runtime_state,
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]

@@ -3,7 +3,7 @@ import { memo } from 'react'
 import type { ConversationEventRef, ConversationTurn } from '@/shared/tauri/commands'
 import { ConversationTurnView } from './conversation-turn-view'
 
-export const ConversationBlockRow = memo(function ConversationBlockRow({
+export const ConversationTurnRow = memo(function ConversationTurnRow({
   turn,
   onOpenDetails,
   onPermissionResolve,
@@ -19,7 +19,7 @@ export const ConversationBlockRow = memo(function ConversationBlockRow({
   onReviewContinue?: (prompt: string) => void
 }) {
   return (
-    <div data-conversation-turn-id={turn.id} id={`conversation-block-${turn.id}`}>
+    <div data-conversation-turn-id={turn.id} id={`conversation-turn-${turn.id}`}>
       <ConversationTurnView
         onOpenDetails={onOpenDetails}
         onPermissionResolve={onPermissionResolve}

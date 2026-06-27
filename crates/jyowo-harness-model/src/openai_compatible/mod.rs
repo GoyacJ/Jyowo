@@ -890,15 +890,17 @@ mod credential_pool_tests {
             |r| r,
         );
         let client = client_with_provider(&server, resolver, "openai-round-robin");
+        let mut ctx = test_context();
+        ctx.retry_policy.max_attempts = 1;
 
         client
-            .infer(request(), test_context())
+            .infer(request(), ctx.clone())
             .await
             .unwrap()
             .collect::<Vec<_>>()
             .await;
         client
-            .infer(request(), test_context())
+            .infer(request(), ctx)
             .await
             .unwrap()
             .collect::<Vec<_>>()

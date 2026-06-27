@@ -23,14 +23,15 @@ use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
     AgentId, AgentRef, BudgetKind, CacheImpact, CapabilityRegistry, CorrelationId, DecidedBy,
     Decision, Event, ForkReason, JournalOffset, KillScope, Message, MessageContent, MessageId,
-    MessageMetadata, MessagePart, MessageRole, PermissionRequestedEvent, PermissionResolvedEvent,
-    RunId, SandboxPolicy, SessionForkedEvent, SessionId, SessionSnapshotKind, SnapshotId,
-    SubagentAnnouncedEvent, SubagentCapAnnouncement, SubagentContextReport, SubagentId,
-    SubagentParentContext, SubagentPermissionForwardedEvent, SubagentPermissionResolvedEvent,
-    SubagentRunnerCap, SubagentSpawnHandle, SubagentSpawnPausedEvent, SubagentSpawnedEvent,
-    SubagentStalledEvent, SubagentTerminatedEvent, SubagentTerminationReason, TenantId,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolUseId, TranscriptRef, TurnInput, UsageSnapshot, UserMessageAppendedEvent,
+    MessageMetadata, MessagePart, MessageRole, NoopRedactor, PermissionRequestedEvent,
+    PermissionResolvedEvent, RunId, SandboxPolicy, SessionForkedEvent, SessionId,
+    SessionSnapshotKind, SnapshotId, SubagentAnnouncedEvent, SubagentCapAnnouncement,
+    SubagentContextReport, SubagentId, SubagentParentContext, SubagentPermissionForwardedEvent,
+    SubagentPermissionResolvedEvent, SubagentRunnerCap, SubagentSpawnHandle,
+    SubagentSpawnPausedEvent, SubagentSpawnedEvent, SubagentStalledEvent, SubagentTerminatedEvent,
+    SubagentTerminationReason, TenantId, ToolCapability, ToolDescriptor, ToolError, ToolGroup,
+    ToolOrigin, ToolProperties, ToolResult, ToolUseId, TranscriptRef, TurnInput, UsageSnapshot,
+    UserMessageAppendedEvent,
 };
 use harness_journal::{AppendMetadata, EventStore, ReplayCursor};
 use harness_model::{AuxExecutor, AuxModelProvider, AuxTask, ModelProtocol, ModelRequest};
@@ -2243,6 +2244,7 @@ pub mod testing {
             sandbox: None,
             permission_broker: Arc::new(AllowBroker),
             cap_registry,
+            redactor: Arc::new(NoopRedactor),
             interrupt: harness_tool::InterruptToken::new(),
             parent_run: None,
         }

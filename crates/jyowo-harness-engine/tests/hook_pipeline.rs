@@ -9,9 +9,9 @@ use harness_contracts::{
     BudgetMetric, CapabilityRegistry, Decision, DecisionScope, DeferPolicy, EndReason, Event,
     HookEventKind, HookFailureMode, InteractivityLevel, Message, MessageId, MessagePart,
     MessageRole, ModelError, NoopRedactor, OverflowAction, PermissionError, PermissionMode,
-    PermissionSubject, ProviderRestriction, Redactor, ResultBudget, RunId, SessionId, StopReason,
-    TenantId, ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode,
-    ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
+    PermissionSubject, ProviderRestriction, RedactRules, Redactor, ResultBudget, RunId, SessionId,
+    StopReason, TenantId, ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
+    ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{
@@ -24,6 +24,7 @@ use harness_model::{
     ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
     ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
+use harness_observability::Observer;
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_sandbox::{ExecSpec, SandboxBaseConfig, StdioSpec};
 use harness_tool::{
@@ -82,6 +83,49 @@ async fn pre_tool_use_rewrites_before_permission() {
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::HookRewroteInput(_))));
+}
+
+#[tokio::test]
+async fn user_prompt_hook_receives_redacted_prompt_payload() {
+    let captured = Arc::new(Mutex::new(None));
+    let harness = TestHarness::new_with_redactor(
+        vec![text_events("done")],
+        Box::new(EchoTool::new()),
+        vec![Box::new(CaptureUserPromptInputHook {
+            captured: Arc::clone(&captured),
+        })],
+        Arc::new(RecordingBroker::new(Decision::AllowOnce)),
+        Arc::new(SecretRedactor),
+    )
+    .await;
+
+    harness.run("prompt secret-token").await.unwrap();
+
+    let captured = captured.lock().await.take().expect("hook input captured");
+    assert_eq!(captured["prompt"], json!("prompt [redacted]"));
+}
+
+#[tokio::test]
+async fn pre_tool_use_hook_receives_redacted_tool_input_payload() {
+    let captured = Arc::new(Mutex::new(None));
+    let harness = TestHarness::new_with_redactor(
+        vec![
+            tool_call_events("Echo", json!({ "value": "secret-token" })),
+            text_events("done"),
+        ],
+        Box::new(EchoTool::new()),
+        vec![Box::new(CapturePreToolInputHook {
+            captured: Arc::clone(&captured),
+        })],
+        Arc::new(RecordingBroker::new(Decision::AllowOnce)),
+        Arc::new(SecretRedactor),
+    )
+    .await;
+
+    harness.run("use tool").await.unwrap();
+
+    let captured = captured.lock().await.take().expect("hook input captured");
+    assert_eq!(captured["value"], json!("[redacted]"));
 }
 
 #[tokio::test]
@@ -189,6 +233,92 @@ async fn transform_and_post_tool_hooks_are_applied() {
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::HookReturnedAdditionalContext(_))));
+}
+
+#[tokio::test]
+async fn post_tool_hooks_receive_redacted_tool_output_payloads() {
+    let captured = Arc::new(Mutex::new(Default::default()));
+    let harness = TestHarness::new_with_redactor(
+        vec![
+            tool_call_events("Echo", json!({ "value": "secret-token" })),
+            text_events("done"),
+        ],
+        Box::new(EchoTool::new()),
+        vec![Box::new(CapturePostToolPayloadHook {
+            captured: Arc::clone(&captured),
+        })],
+        Arc::new(RecordingBroker::new(Decision::AllowOnce)),
+        Arc::new(SecretRedactor),
+    )
+    .await;
+
+    harness.run("post tool redaction").await.unwrap();
+
+    let captured = captured.lock().await.clone();
+    assert_eq!(
+        captured.terminal_raw.as_deref(),
+        Some(b"[redacted]".as_ref())
+    );
+    assert_eq!(
+        captured.transform_result,
+        Some(ToolResult::Text("[redacted]".to_owned()))
+    );
+    assert_eq!(
+        captured.post_result,
+        Some(ToolResult::Text("[redacted]".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn post_tool_failure_hook_receives_redacted_error_payload() {
+    let captured = Arc::new(Mutex::new(None));
+    let harness = TestHarness::new_with_redactor(
+        vec![
+            tool_call_events("Fail", json!({ "value": "secret-token" })),
+            text_events("done"),
+        ],
+        Box::new(FailingTool::new()),
+        vec![Box::new(CapturePostToolFailureHook {
+            captured: Arc::clone(&captured),
+        })],
+        Arc::new(RecordingBroker::new(Decision::AllowOnce)),
+        Arc::new(SecretRedactor),
+    )
+    .await;
+
+    harness.run("post tool failure redaction").await.unwrap();
+
+    let captured = captured.lock().await.take().expect("hook error captured");
+    assert_eq!(captured.message, "internal: failed with [redacted]");
+}
+
+#[tokio::test]
+async fn permission_request_hook_receives_redacted_detail_payload() {
+    let captured = Arc::new(Mutex::new(None));
+    let harness = TestHarness::new_with_redactor(
+        vec![
+            tool_call_events("Echo", json!({ "value": "secret-token" })),
+            text_events("done"),
+        ],
+        Box::new(EchoTool::new()),
+        vec![Box::new(CapturePermissionRequestHook {
+            captured: Arc::clone(&captured),
+        })],
+        Arc::new(RecordingBroker::new(Decision::AllowOnce)),
+        Arc::new(SecretRedactor),
+    )
+    .await;
+
+    harness.run("permission redaction").await.unwrap();
+
+    let captured = captured.lock().await.take().expect("hook detail captured");
+    assert_eq!(captured.subject, "Echo");
+    assert_eq!(
+        captured.detail.as_deref(),
+        Some(
+            "ToolInvocation { tool: \"Echo\", input: Object {\"value\": String(\"[redacted]\")} }"
+        )
+    );
 }
 
 #[tokio::test]
@@ -480,6 +610,16 @@ impl TestHarness {
         hooks: Vec<Box<dyn HookHandler>>,
         broker: Arc<dyn PermissionBroker>,
     ) -> Self {
+        Self::new_with_redactor(responses, tool, hooks, broker, Arc::new(NoopRedactor)).await
+    }
+
+    async fn new_with_redactor(
+        responses: Vec<Vec<ModelStreamEvent>>,
+        tool: Box<dyn Tool>,
+        hooks: Vec<Box<dyn HookHandler>>,
+        broker: Arc<dyn PermissionBroker>,
+        redactor: Arc<dyn Redactor>,
+    ) -> Self {
         let workspace = tempfile::tempdir().unwrap();
         let tenant_id = TenantId::SINGLE;
         let session_id = SessionId::new();
@@ -523,6 +663,9 @@ impl TestHarness {
             .with_model_id("mock-model")
             .with_protocol(ModelProtocol::Messages)
             .with_cap_registry(Arc::new(CapabilityRegistry::default()))
+            .with_observer(Arc::new(
+                Observer::builder().with_redactor(redactor).build().unwrap(),
+            ))
             .build()
             .unwrap();
 
@@ -699,6 +842,57 @@ impl Tool for EchoTool {
     }
 }
 
+struct FailingTool {
+    descriptor: ToolDescriptor,
+}
+
+impl FailingTool {
+    fn new() -> Self {
+        let mut descriptor = EchoTool::new().descriptor;
+        descriptor.name = "Fail".to_owned();
+        descriptor.display_name = "Fail".to_owned();
+        Self { descriptor }
+    }
+}
+
+#[async_trait]
+impl Tool for FailingTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn validate(&self, input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
+        if input.get("value").and_then(Value::as_str).is_none() {
+            return Err(ValidationError::from("value is required"));
+        }
+        Ok(())
+    }
+
+    async fn check_permission(
+        &self,
+        input: &Value,
+        _ctx: &ToolContext,
+    ) -> harness_permission::PermissionCheck {
+        harness_permission::PermissionCheck::AskUser {
+            subject: PermissionSubject::ToolInvocation {
+                tool: "Fail".to_owned(),
+                input: input.clone(),
+            },
+            scope: DecisionScope::ExactArgs(input.clone()),
+        }
+    }
+
+    async fn execute(
+        &self,
+        _input: Value,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, harness_contracts::ToolError> {
+        Err(harness_contracts::ToolError::Internal(
+            "failed with secret-token".to_owned(),
+        ))
+    }
+}
+
 struct RecordingBroker {
     decision: Decision,
     requests: Mutex<Vec<PermissionRequest>>,
@@ -729,6 +923,68 @@ impl PermissionBroker for RecordingBroker {
         _decision: harness_permission::PersistedDecision,
     ) -> Result<(), PermissionError> {
         Ok(())
+    }
+}
+
+struct CaptureUserPromptInputHook {
+    captured: Arc<Mutex<Option<Value>>>,
+}
+
+#[async_trait]
+impl HookHandler for CaptureUserPromptInputHook {
+    fn handler_id(&self) -> &str {
+        "capture-user-prompt-input"
+    }
+
+    fn interested_events(&self) -> &[HookEventKind] {
+        &[HookEventKind::UserPromptSubmit]
+    }
+
+    async fn handle(
+        &self,
+        event: HookEvent,
+        _ctx: HookContext,
+    ) -> Result<HookOutcome, harness_contracts::HookError> {
+        let HookEvent::UserPromptSubmit { input, .. } = event else {
+            unreachable!("unexpected event");
+        };
+        *self.captured.lock().await = Some(input);
+        Ok(HookOutcome::Continue)
+    }
+}
+
+struct CapturePreToolInputHook {
+    captured: Arc<Mutex<Option<Value>>>,
+}
+
+#[async_trait]
+impl HookHandler for CapturePreToolInputHook {
+    fn handler_id(&self) -> &str {
+        "capture-pre-tool-input"
+    }
+
+    fn interested_events(&self) -> &[HookEventKind] {
+        &[HookEventKind::PreToolUse]
+    }
+
+    async fn handle(
+        &self,
+        event: HookEvent,
+        _ctx: HookContext,
+    ) -> Result<HookOutcome, harness_contracts::HookError> {
+        let HookEvent::PreToolUse { input, .. } = event else {
+            unreachable!("unexpected event");
+        };
+        *self.captured.lock().await = Some(input);
+        Ok(HookOutcome::Continue)
+    }
+}
+
+struct SecretRedactor;
+
+impl Redactor for SecretRedactor {
+    fn redact(&self, input: &str, _rules: &RedactRules) -> String {
+        input.replace("secret-token", "[redacted]")
     }
 }
 
@@ -842,6 +1098,80 @@ impl HookHandler for ToolLifecycleHook {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+struct CapturedPostToolPayloads {
+    terminal_raw: Option<Vec<u8>>,
+    transform_result: Option<ToolResult>,
+    post_result: Option<ToolResult>,
+}
+
+struct CapturePostToolPayloadHook {
+    captured: Arc<Mutex<CapturedPostToolPayloads>>,
+}
+
+#[async_trait]
+impl HookHandler for CapturePostToolPayloadHook {
+    fn handler_id(&self) -> &str {
+        "capture-post-tool-payload"
+    }
+
+    fn interested_events(&self) -> &[HookEventKind] {
+        &[
+            HookEventKind::TransformTerminalOutput,
+            HookEventKind::TransformToolResult,
+            HookEventKind::PostToolUse,
+        ]
+    }
+
+    async fn handle(
+        &self,
+        event: HookEvent,
+        _ctx: HookContext,
+    ) -> Result<HookOutcome, harness_contracts::HookError> {
+        let mut captured = self.captured.lock().await;
+        match event {
+            HookEvent::TransformTerminalOutput { raw, .. } => {
+                captured.terminal_raw = Some(raw.to_vec());
+            }
+            HookEvent::TransformToolResult { result, .. } => {
+                captured.transform_result = Some(result);
+            }
+            HookEvent::PostToolUse { result, .. } => {
+                captured.post_result = Some(result);
+            }
+            _ => unreachable!("unexpected event"),
+        }
+        Ok(HookOutcome::Continue)
+    }
+}
+
+struct CapturePostToolFailureHook {
+    captured: Arc<Mutex<Option<ToolErrorView>>>,
+}
+
+#[async_trait]
+impl HookHandler for CapturePostToolFailureHook {
+    fn handler_id(&self) -> &str {
+        "capture-post-tool-failure"
+    }
+
+    fn interested_events(&self) -> &[HookEventKind] {
+        &[HookEventKind::PostToolUseFailure]
+    }
+
+    async fn handle(
+        &self,
+        event: HookEvent,
+        _ctx: HookContext,
+    ) -> Result<HookOutcome, harness_contracts::HookError> {
+        let HookEvent::PostToolUseFailure { error, .. } = event else {
+            unreachable!("unexpected event");
+        };
+        *self.captured.lock().await = Some(error);
+        Ok(HookOutcome::Continue)
+    }
+}
+
 struct LlmApiHook;
 
 #[async_trait]
@@ -929,6 +1259,42 @@ impl HookHandler for PermissionRequestHook {
             }
             _ => unreachable!("unexpected event"),
         }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct CapturedPermissionRequest {
+    subject: String,
+    detail: Option<String>,
+}
+
+struct CapturePermissionRequestHook {
+    captured: Arc<Mutex<Option<CapturedPermissionRequest>>>,
+}
+
+#[async_trait]
+impl HookHandler for CapturePermissionRequestHook {
+    fn handler_id(&self) -> &str {
+        "capture-permission-request"
+    }
+
+    fn interested_events(&self) -> &[HookEventKind] {
+        &[HookEventKind::PermissionRequest]
+    }
+
+    async fn handle(
+        &self,
+        event: HookEvent,
+        _ctx: HookContext,
+    ) -> Result<HookOutcome, harness_contracts::HookError> {
+        let HookEvent::PermissionRequest {
+            subject, detail, ..
+        } = event
+        else {
+            unreachable!("unexpected event");
+        };
+        *self.captured.lock().await = Some(CapturedPermissionRequest { subject, detail });
+        Ok(HookOutcome::Continue)
     }
 }
 

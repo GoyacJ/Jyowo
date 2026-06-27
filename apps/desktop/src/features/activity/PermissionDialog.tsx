@@ -18,6 +18,7 @@ export type PermissionRequestDetails = {
   risk: PermissionRisk
   state: PermissionState
   target?: string
+  toolUseId?: string
   workspaceBoundary?: string
 }
 

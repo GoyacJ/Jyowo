@@ -198,11 +198,29 @@ impl JsonlEventStore {
                 }
             }
         }
-        paths.sort();
+        paths.sort_by_key(|path| self.segment_path_sort_key(session_id, path));
         if !paths.iter().any(|path| path == &active) {
             paths.push(active);
         }
         Ok(paths)
+    }
+
+    fn segment_path_sort_key(&self, session_id: SessionId, path: &Path) -> (u8, u64, PathBuf) {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return (2, u64::MAX, path.to_path_buf());
+        };
+        if name == format!("{session_id}.jsonl") {
+            return (0, 0, path.to_path_buf());
+        }
+        let prefix = format!("{session_id}.");
+        let Some(offset) = name
+            .strip_prefix(&prefix)
+            .and_then(|rest| rest.strip_suffix(".jsonl"))
+            .and_then(|offset| offset.parse::<u64>().ok())
+        else {
+            return (2, u64::MAX, path.to_path_buf());
+        };
+        (1, offset, path.to_path_buf())
     }
 
     fn session_exists(
@@ -369,48 +387,16 @@ impl EventStore for JsonlEventStore {
         limit: usize,
     ) -> Result<EventEnvelopePage, JournalError> {
         let limit = limit.clamp(1, 200);
-        let mut found_cursor = after_event_id.is_none();
-        let mut envelopes = Vec::new();
-
-        for path in self.segment_paths(tenant, session_id)? {
-            if envelopes.len() >= limit {
-                break;
-            }
-            let file = match File::open(&path) {
-                Ok(file) => file,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(journal_error(error)),
-            };
-            let mut lines = BufReader::new(file).lines().peekable();
-            while let Some(line) = lines.next() {
-                let line = line.map_err(journal_error)?;
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let envelope = match serde_json::from_str::<EventEnvelope>(&line) {
-                    Ok(envelope) => envelope,
-                    Err(_) if lines.peek().is_none() && self.options.read.tolerate_partial_tail => {
-                        continue;
-                    }
-                    Err(_) if self.options.read.tolerate_invalid_lines => continue,
-                    Err(error) => return Err(journal_error(error)),
-                };
-                if !found_cursor {
-                    found_cursor = Some(envelope.event_id) == after_event_id;
-                    continue;
-                }
-                envelopes.push(envelope);
-                if envelopes.len() >= limit {
-                    break;
-                }
-            }
-        }
-
-        if !found_cursor {
-            return Err(journal_error("conversation cursor is unknown"));
-        }
-        envelopes.sort_by_key(|envelope| envelope.offset);
-        envelopes.truncate(limit);
+        let loaded = self.load_envelopes(tenant, session_id)?;
+        let start_index = match after_event_id {
+            Some(after_event_id) => loaded
+                .iter()
+                .position(|envelope| envelope.event_id == after_event_id)
+                .map(|index| index + 1)
+                .ok_or_else(|| journal_error("conversation cursor is unknown"))?,
+            None => 0,
+        };
+        let envelopes: Vec<_> = loaded.into_iter().skip(start_index).take(limit).collect();
         let next_event_id = envelopes.last().map(|envelope| envelope.event_id);
         Ok(EventEnvelopePage {
             envelopes,

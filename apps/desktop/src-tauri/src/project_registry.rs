@@ -124,6 +124,29 @@ impl ProjectRegistry {
         Ok(record)
     }
 
+    pub fn remove(&self, workspace_root: &Path) -> Result<ProjectRecord, CommandErrorPayload> {
+        let path = workspace_root.to_string_lossy().into_owned();
+        let record = {
+            let mut data = self
+                .data
+                .lock()
+                .expect("project registry lock should not be poisoned");
+            let index = data
+                .projects
+                .iter()
+                .position(|project| project.path == path)
+                .ok_or_else(|| registry_not_found(path.clone()))?;
+            let record = data.projects.remove(index);
+            if data.active_path.as_deref() == Some(record.path.as_str()) {
+                data.active_path = None;
+            }
+            record
+        };
+
+        self.persist()?;
+        Ok(record)
+    }
+
     #[must_use]
     pub fn has_active_project(&self) -> bool {
         self.active_path().is_some()
@@ -220,6 +243,36 @@ mod tests {
             Some(temp_dir.to_string_lossy().into_owned())
         );
         assert!(registry_path.exists());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn remove_clears_active_path_when_active_project_is_removed() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let temp_dir = env::temp_dir().join(format!("jyowo-project-registry-remove-{suffix}"));
+        let workspace_root = temp_dir.join("workspace");
+        fs::create_dir_all(&workspace_root).expect("workspace should be created");
+        let registry_path = temp_dir.join("projects.json");
+        let registry = ProjectRegistry {
+            path: registry_path,
+            data: Arc::new(Mutex::new(ProjectRegistryFile::default())),
+        };
+
+        registry
+            .upsert_and_activate(&workspace_root)
+            .expect("project should be registered");
+
+        let removed = registry
+            .remove(&workspace_root)
+            .expect("project should be removed");
+
+        assert_eq!(removed.path, workspace_root.to_string_lossy());
+        assert!(registry.list_projects().is_empty());
+        assert_eq!(registry.active_path(), None);
 
         let _ = fs::remove_dir_all(temp_dir);
     }

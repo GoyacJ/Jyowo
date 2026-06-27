@@ -6,7 +6,7 @@ import { type AppLocale, DEFAULT_APP_LOCALE } from '@/shared/i18n/locales'
 type ThemeMode = 'light' | 'dark' | 'system'
 
 type TimelineScrollRequest = {
-  blockId: string
+  anchorId: string
   nonce: number
 }
 
@@ -27,7 +27,7 @@ export interface UiState {
   setSidebarCollapsed: (sidebarCollapsed: boolean) => void
   setContextPanelCollapsed: (contextPanelCollapsed: boolean) => void
   setInspectorOpen: (inspectorOpen: boolean) => void
-  requestTimelineScroll: (blockId: string) => void
+  requestTimelineScroll: (anchorId: string) => void
   clearTimelineScrollRequest: () => void
 }
 
@@ -76,10 +76,10 @@ export function createUiStore() {
     setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
     setContextPanelCollapsed: (contextPanelCollapsed) => set({ contextPanelCollapsed }),
     setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
-    requestTimelineScroll: (blockId) =>
+    requestTimelineScroll: (anchorId) =>
       set((state) => ({
         timelineScrollRequest: {
-          blockId,
+          anchorId,
           nonce: (state.timelineScrollRequest?.nonce ?? 0) + 1,
         },
       })),

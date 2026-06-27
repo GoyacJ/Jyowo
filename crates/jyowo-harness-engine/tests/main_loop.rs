@@ -10,12 +10,12 @@ use chrono::Utc;
 use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
-    BudgetMetric, CapabilityRegistry, DecidedBy, Decision, DecisionScope, DeferPolicy, DeltaChunk,
-    EndReason, Event, HookEventKind, Message, MessageId, MessagePart, MessageRole, ModelError,
-    NetworkAccess, NoopRedactor, OverflowAction, PermissionError, PermissionSubject,
-    ProviderRestriction, ResourceLimits, ResultBudget, RunId, SandboxError,
-    SandboxExecutionCompletedEvent, SandboxExecutionStartedEvent, SandboxExitStatus, SandboxMode,
-    SandboxPolicySummary, SandboxScope, SessionId, SteeringId, SteeringKind,
+    ArtifactSource, ArtifactStatus, BlobRef, BudgetMetric, CapabilityRegistry, DecidedBy, Decision,
+    DecisionScope, DeferPolicy, DeltaChunk, EndReason, Event, HookEventKind, Message, MessageId,
+    MessagePart, MessageRole, ModelError, NetworkAccess, NoopRedactor, OverflowAction,
+    PermissionError, PermissionSubject, ProviderRestriction, ResourceLimits, ResultBudget, RunId,
+    SandboxError, SandboxExecutionCompletedEvent, SandboxExecutionStartedEvent, SandboxExitStatus,
+    SandboxMode, SandboxPolicySummary, SandboxScope, SessionId, SteeringId, SteeringKind,
     SteeringMessageAppliedEvent, StopReason, TenantId, ToolDescriptor, ToolGroup, ToolOrigin,
     ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
 };
@@ -44,8 +44,8 @@ use harness_sandbox::{
 #[cfg(feature = "recall-memory")]
 use harness_tool::default_result_budget;
 use harness_tool::{
-    builtin::BashTool, SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool,
-    ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolStream, ValidationError,
+    SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool, ToolPoolFilter,
+    ToolPoolModelProfile, ToolRegistry, ToolStream, ValidationError,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -116,18 +116,70 @@ async fn text_stream_records_deltas_completion_and_run_end() {
 }
 
 #[tokio::test]
+async fn user_message_is_recorded_before_assistant_stream_events() {
+    let harness = TestHarness::new(text_events("hello from model")).await;
+
+    let events = harness.run("hello").await.unwrap();
+
+    let user_index = events
+        .iter()
+        .position(|event| matches!(event, Event::UserMessageAppended(_)))
+        .expect("user message event exists");
+    let assistant_delta_index = events
+        .iter()
+        .position(|event| matches!(event, Event::AssistantDeltaProduced(_)))
+        .expect("assistant delta event exists");
+
+    assert!(
+        user_index < assistant_delta_index,
+        "user message must be recorded before assistant streaming events"
+    );
+}
+
+#[tokio::test]
 async fn thinking_stream_keeps_thinking_out_of_final_assistant_message() {
     let harness =
         TestHarness::new(thinking_then_text_events("internal chain", "final answer")).await;
+
+    let events = harness.run("hello").await.unwrap();
+    let serialized = serde_json::to_string(&events).unwrap();
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::AssistantDeltaProduced(delta)
+            if matches!(&delta.delta, DeltaChunk::Thought(thought)
+                if thought.text.is_none()
+                    && thought.provider_native.is_none()
+                    && thought.signature.is_none())
+    )));
+    assert!(!serialized.contains("internal chain"));
+    assert!(!serialized.contains("provider native secret"));
+    assert!(!serialized.contains("signature-secret"));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::AssistantMessageCompleted(completed)
+            if completed.content == harness_contracts::MessageContent::Text("final answer".to_owned())
+    )));
+}
+
+#[tokio::test]
+async fn reasoning_summary_stream_records_safe_summary_delta() {
+    let harness = TestHarness::new(reasoning_summary_then_text_events(
+        "Checked context.",
+        "final answer",
+    ))
+    .await;
 
     let events = harness.run("hello").await.unwrap();
 
     assert!(events.iter().any(|event| matches!(
         event,
         Event::AssistantDeltaProduced(delta)
-            if matches!(&delta.delta, DeltaChunk::Thought(thought)
-                if thought.text.as_deref() == Some("internal chain"))
+            if matches!(&delta.delta, DeltaChunk::ReasoningSummary(summary)
+                if summary.text == "Checked context." && summary.provider_native.is_none())
     )));
+    let serialized = serde_json::to_string(&events).unwrap();
+    assert!(!serialized.contains("provider native secret"));
     assert!(events.iter().any(|event| matches!(
         event,
         Event::AssistantMessageCompleted(completed)
@@ -174,13 +226,76 @@ async fn tool_call_records_permission_and_tool_events() {
 }
 
 #[tokio::test]
+async fn image_blob_tool_result_creates_image_artifact_event() {
+    let harness = TestHarness::new_response_with_tool(
+        ModelResponse::Sequence(vec![
+            tool_call_events("MiniMaxTextToImage", json!({ "prompt": "grass carp" })),
+            text_events("[REDACTED]"),
+        ]),
+        Box::new(ImageBlobTool::new("MiniMaxTextToImage")),
+        None,
+    )
+    .await;
+
+    let events = harness.run("生成一张草鱼图片").await.unwrap();
+    let completed_tool_use_id = events
+        .iter()
+        .find_map(|event| match event {
+            Event::ToolUseCompleted(completed) => Some(completed.tool_use_id),
+            _ => None,
+        })
+        .expect("tool completed");
+    let artifact = events
+        .iter()
+        .find_map(|event| match event {
+            Event::ArtifactCreated(created) => Some(created),
+            _ => None,
+        })
+        .expect("image artifact created");
+
+    assert_eq!(artifact.kind, "image");
+    assert_eq!(artifact.status, ArtifactStatus::Ready);
+    assert_eq!(artifact.source, ArtifactSource::Tool);
+    assert_eq!(artifact.source_tool_use_id, Some(completed_tool_use_id));
+    assert_eq!(
+        artifact.blob_ref.as_ref().unwrap().content_type.as_deref(),
+        Some("image/png")
+    );
+    assert_eq!(artifact.preview.as_deref(), Some("生成的图片"));
+}
+
+#[tokio::test]
+async fn svg_blob_tool_result_does_not_create_image_artifact_event() {
+    let harness = TestHarness::new_response_with_tool(
+        ModelResponse::Sequence(vec![
+            tool_call_events("MiniMaxTextToImage", json!({ "prompt": "vector" })),
+            text_events("[REDACTED]"),
+        ]),
+        Box::new(ImageBlobTool::new_with_content_type(
+            "MiniMaxTextToImage",
+            "image/svg+xml",
+        )),
+        None,
+    )
+    .await;
+
+    let events = harness.run("生成一张 SVG 图片").await.unwrap();
+
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Event::ToolUseCompleted(_))));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, Event::ArtifactCreated(_))));
+}
+
+#[tokio::test]
 async fn bash_sandbox_events_are_present_in_engine_event_stream() {
-    let harness = TestHarness::new_response_with_tool_and_sandbox(
+    let harness = TestHarness::new_response_with_shell_and_sandbox(
         ModelResponse::Sequence(vec![
             tool_call_events("Bash", json!({ "command": "printf hello" })),
             text_events("done"),
         ]),
-        Box::new(BashTool::default()),
         None,
         Some(Arc::new(EventfulSandbox)),
     )
@@ -660,10 +775,42 @@ impl TestHarness {
         .await
     }
 
+    async fn new_response_with_shell_and_sandbox(
+        response: ModelResponse,
+        blob_store: Option<Arc<dyn harness_contracts::BlobStore>>,
+        sandbox: Option<Arc<dyn SandboxBackend>>,
+    ) -> Self {
+        Self::new_response_with_context_toolset_and_sandbox(
+            response,
+            ContextEngine::builder().build().unwrap(),
+            harness_tool::BuiltinToolset::Shell,
+            blob_store,
+            sandbox,
+        )
+        .await
+    }
+
     async fn new_response_with_context_tool_and_sandbox(
         response: ModelResponse,
         context: ContextEngine,
         tool: Box<dyn Tool>,
+        blob_store: Option<Arc<dyn harness_contracts::BlobStore>>,
+        sandbox: Option<Arc<dyn SandboxBackend>>,
+    ) -> Self {
+        Self::new_response_with_context_toolset_and_sandbox(
+            response,
+            context,
+            harness_tool::BuiltinToolset::Custom(vec![tool]),
+            blob_store,
+            sandbox,
+        )
+        .await
+    }
+
+    async fn new_response_with_context_toolset_and_sandbox(
+        response: ModelResponse,
+        context: ContextEngine,
+        builtin_toolset: harness_tool::BuiltinToolset,
         blob_store: Option<Arc<dyn harness_contracts::BlobStore>>,
         sandbox: Option<Arc<dyn SandboxBackend>>,
     ) -> Self {
@@ -680,7 +827,7 @@ impl TestHarness {
             .build()
             .unwrap();
         let registry = ToolRegistry::builder()
-            .with_builtin_toolset(harness_tool::BuiltinToolset::Custom(vec![tool]))
+            .with_builtin_toolset(builtin_toolset)
             .build()
             .unwrap();
         let tools = ToolPool::assemble(
@@ -839,6 +986,97 @@ impl Tool for TextTool {
     ) -> Result<ToolStream, harness_contracts::ToolError> {
         Ok(Box::pin(stream::iter([ToolEvent::Final(
             ToolResult::Text(self.output.clone()),
+        )])))
+    }
+}
+
+struct ImageBlobTool {
+    descriptor: ToolDescriptor,
+    content_type: String,
+}
+
+impl ImageBlobTool {
+    fn new(name: &str) -> Self {
+        Self::new_with_content_type(name, "image/png")
+    }
+
+    fn new_with_content_type(name: &str, content_type: &str) -> Self {
+        Self {
+            descriptor: ToolDescriptor {
+                name: name.to_owned(),
+                display_name: name.to_owned(),
+                description: "Return fixed image blob.".to_owned(),
+                category: "test".to_owned(),
+                group: ToolGroup::Custom("test".to_owned()),
+                version: "0.1.0".to_owned(),
+                input_schema: json!({ "type": "object" }),
+                output_schema: None,
+                dynamic_schema: false,
+                properties: ToolProperties {
+                    is_concurrency_safe: true,
+                    is_read_only: true,
+                    is_destructive: false,
+                    long_running: None,
+                    defer_policy: DeferPolicy::AlwaysLoad,
+                },
+                trust_level: TrustLevel::AdminTrusted,
+                required_capabilities: Vec::new(),
+                budget: ResultBudget {
+                    metric: BudgetMetric::Chars,
+                    limit: 32_000,
+                    on_overflow: OverflowAction::Offload,
+                    preview_head_chars: 2_000,
+                    preview_tail_chars: 2_000,
+                },
+                provider_restriction: ProviderRestriction::All,
+                origin: ToolOrigin::Builtin,
+                search_hint: None,
+            },
+            content_type: content_type.to_owned(),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for ImageBlobTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn validate(&self, _input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
+        Ok(())
+    }
+
+    async fn check_permission(
+        &self,
+        input: &Value,
+        _ctx: &ToolContext,
+    ) -> harness_permission::PermissionCheck {
+        harness_permission::PermissionCheck::AskUser {
+            subject: PermissionSubject::ToolInvocation {
+                tool: self.descriptor.name.clone(),
+                input: input.clone(),
+            },
+            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
+        }
+    }
+
+    async fn execute(
+        &self,
+        _input: Value,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, harness_contracts::ToolError> {
+        let blob_ref = BlobRef {
+            id: harness_contracts::BlobId::new(),
+            size: 128,
+            content_hash: [9; 32],
+            content_type: Some(self.content_type.clone()),
+        };
+        Ok(Box::pin(stream::iter([ToolEvent::Final(
+            ToolResult::Blob {
+                content_type: self.content_type.clone(),
+                blob_ref,
+            },
         )])))
     }
 }
@@ -1326,8 +1564,8 @@ fn thinking_then_text_events(thinking: &str, text: &str) -> Vec<ModelStreamEvent
         ModelStreamEvent::ContentBlockDelta {
             index: 0,
             delta: ContentDelta::Thinking(harness_model::ThinkingDelta {
-                provider_native: None,
-                signature: None,
+                provider_native: Some(json!({ "thinking": "provider native secret" })),
+                signature: Some("signature-secret".to_owned()),
                 text: Some(thinking.to_owned()),
             }),
         },
@@ -1339,6 +1577,33 @@ fn thinking_then_text_events(thinking: &str, text: &str) -> Vec<ModelStreamEvent
             stop_reason: Some(StopReason::EndTurn),
             usage_delta: UsageSnapshot::default(),
         },
+        ModelStreamEvent::MessageStop,
+    ]
+}
+
+fn reasoning_summary_then_text_events(summary: &str, text: &str) -> Vec<ModelStreamEvent> {
+    vec![
+        ModelStreamEvent::MessageStart {
+            message_id: "assistant-1".to_owned(),
+            usage: UsageSnapshot::default(),
+        },
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::ReasoningSummary(harness_model::ReasoningSummaryDelta {
+                provider_native: Some(json!({ "reasoning": "provider native secret" })),
+                text: summary.to_owned(),
+            }),
+        },
+        ModelStreamEvent::ContentBlockDelta {
+            index: 1,
+            delta: ContentDelta::Text(text.to_owned()),
+        },
+        ModelStreamEvent::MessageDelta {
+            stop_reason: Some(StopReason::EndTurn),
+            usage_delta: UsageSnapshot::default(),
+        },
+        ModelStreamEvent::ContentBlockStop { index: 0 },
+        ModelStreamEvent::ContentBlockStop { index: 1 },
         ModelStreamEvent::MessageStop,
     ]
 }

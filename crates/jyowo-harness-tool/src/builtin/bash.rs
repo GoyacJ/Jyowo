@@ -18,7 +18,7 @@ use harness_sandbox::{
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{InterruptToken, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 
 #[derive(Clone)]
 pub struct BashTool {
@@ -101,7 +101,11 @@ impl Tool for BashTool {
         let handle = execute_with_lifecycle(sandbox, spec, exec_ctx.clone())
             .await
             .map_err(ToolError::Sandbox)?;
-        Ok(stream_process_output(handle, event_sink))
+        Ok(stream_process_output(
+            handle,
+            event_sink,
+            ctx.interrupt.clone(),
+        ))
     }
 }
 
@@ -142,12 +146,16 @@ fn exec_context(ctx: &ToolContext, event_sink: Arc<dyn EventSink>) -> ExecContex
         workspace_root: ctx.workspace_root.clone(),
         correlation_id: CorrelationId::new(),
         event_sink,
-        redactor: Arc::new(harness_contracts::NoopRedactor) as Arc<dyn Redactor>,
+        redactor: Arc::clone(&ctx.redactor) as Arc<dyn Redactor>,
         blob_store: None,
     }
 }
 
-fn stream_process_output(handle: ProcessHandle, event_sink: Arc<RecordingEventSink>) -> ToolStream {
+fn stream_process_output(
+    handle: ProcessHandle,
+    event_sink: Arc<RecordingEventSink>,
+    interrupt: InterruptToken,
+) -> ToolStream {
     let activity = handle.activity.clone();
     let state = BashStreamState {
         journal_events: VecDeque::new(),
@@ -159,6 +167,7 @@ fn stream_process_output(handle: ProcessHandle, event_sink: Arc<RecordingEventSi
         stderr_decoder: Utf8ChunkDecoder::default(),
         phase: BashStreamPhase::JournalBeforeOutput,
         activity: handle.activity,
+        interrupt,
         kill_on_drop: KillOnDrop::new(activity),
         outcome: None,
     };
@@ -173,11 +182,19 @@ fn stream_process_output(handle: ProcessHandle, event_sink: Arc<RecordingEventSi
                     state.phase = BashStreamPhase::Stdout;
                 }
                 BashStreamPhase::Stdout => {
-                    match next_text_partial(&mut state.stdout, &mut state.stdout_decoder).await {
+                    match next_text_partial(
+                        &mut state.stdout,
+                        &mut state.stdout_decoder,
+                        &state.activity,
+                        &state.interrupt,
+                    )
+                    .await
+                    {
                         StreamChunk::Text(text) => {
                             return Some((ToolEvent::Partial(MessagePart::Text(text)), state));
                         }
                         StreamChunk::Done => state.phase = BashStreamPhase::Stderr,
+                        StreamChunk::Interrupted => state.phase = BashStreamPhase::WaitOutcome,
                         StreamChunk::Error(error) => {
                             state.phase = BashStreamPhase::Done;
                             return Some((ToolEvent::Error(error), state));
@@ -185,11 +202,19 @@ fn stream_process_output(handle: ProcessHandle, event_sink: Arc<RecordingEventSi
                     }
                 }
                 BashStreamPhase::Stderr => {
-                    match next_text_partial(&mut state.stderr, &mut state.stderr_decoder).await {
+                    match next_text_partial(
+                        &mut state.stderr,
+                        &mut state.stderr_decoder,
+                        &state.activity,
+                        &state.interrupt,
+                    )
+                    .await
+                    {
                         StreamChunk::Text(text) => {
                             return Some((ToolEvent::Partial(MessagePart::Text(text)), state));
                         }
                         StreamChunk::Done => state.phase = BashStreamPhase::WaitOutcome,
+                        StreamChunk::Interrupted => state.phase = BashStreamPhase::WaitOutcome,
                         StreamChunk::Error(error) => {
                             state.phase = BashStreamPhase::Done;
                             return Some((ToolEvent::Error(error), state));
@@ -197,14 +222,15 @@ fn stream_process_output(handle: ProcessHandle, event_sink: Arc<RecordingEventSi
                     }
                 }
                 BashStreamPhase::WaitOutcome => {
-                    let outcome = match state.activity.wait().await {
-                        Ok(outcome) => outcome,
-                        Err(error) => {
-                            state.kill_on_drop.disarm();
-                            state.phase = BashStreamPhase::Done;
-                            return Some((ToolEvent::Error(ToolError::Sandbox(error)), state));
-                        }
-                    };
+                    let outcome =
+                        match wait_outcome_or_interrupt(&state.activity, &state.interrupt).await {
+                            Ok(outcome) => outcome,
+                            Err(error) => {
+                                state.kill_on_drop.disarm();
+                                state.phase = BashStreamPhase::Done;
+                                return Some((ToolEvent::Error(ToolError::Sandbox(error)), state));
+                            }
+                        };
                     state.kill_on_drop.disarm();
                     state.outcome = Some(outcome);
                     state.phase = BashStreamPhase::JournalAfterWait;
@@ -260,6 +286,7 @@ struct BashStreamState {
     stderr_decoder: Utf8ChunkDecoder,
     phase: BashStreamPhase,
     activity: Arc<dyn ActivityHandle>,
+    interrupt: InterruptToken,
     kill_on_drop: KillOnDrop,
     outcome: Option<ExecOutcome>,
 }
@@ -267,12 +294,15 @@ struct BashStreamState {
 enum StreamChunk {
     Text(String),
     Done,
+    Interrupted,
     Error(ToolError),
 }
 
 async fn next_text_partial(
     stream: &mut Option<BoxStream<'static, Bytes>>,
     decoder: &mut Utf8ChunkDecoder,
+    activity: &Arc<dyn ActivityHandle>,
+    interrupt: &InterruptToken,
 ) -> StreamChunk {
     loop {
         let Some(output) = stream.as_mut() else {
@@ -283,7 +313,22 @@ async fn next_text_partial(
             };
         };
 
-        match output.next().await {
+        let next = output.next();
+        tokio::pin!(next);
+        let chunk = tokio::select! {
+            chunk = &mut next => chunk,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {
+                if interrupt.is_interrupted() {
+                    return match kill_activity(activity).await {
+                        Ok(()) => StreamChunk::Interrupted,
+                        Err(error) => StreamChunk::Error(ToolError::Sandbox(error)),
+                    };
+                }
+                continue;
+            }
+        };
+
+        match chunk {
             Some(chunk) => match decoder.push(chunk) {
                 Ok(Some(text)) => return StreamChunk::Text(text),
                 Ok(None) => {}
@@ -294,6 +339,33 @@ async fn next_text_partial(
             }
         }
     }
+}
+
+async fn wait_outcome_or_interrupt(
+    activity: &Arc<dyn ActivityHandle>,
+    interrupt: &InterruptToken,
+) -> Result<ExecOutcome, SandboxError> {
+    let mut kill_sent = false;
+    let wait = activity.wait();
+    tokio::pin!(wait);
+    loop {
+        tokio::select! {
+            outcome = &mut wait => return outcome,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(5)), if !kill_sent => {
+                if interrupt.is_interrupted() {
+                    kill_sent = true;
+                    kill_activity(activity).await?;
+                }
+            }
+        }
+    }
+}
+
+async fn kill_activity(activity: &Arc<dyn ActivityHandle>) -> Result<(), SandboxError> {
+    if activity.kill(9, KillScope::ProcessGroup).await.is_err() {
+        activity.kill(9, KillScope::Process).await?;
+    }
+    Ok(())
 }
 
 #[derive(Default)]

@@ -381,6 +381,7 @@ pub struct ErrorHints {
 pub enum ContentDelta {
     Text(String),
     Thinking(ThinkingDelta),
+    ReasoningSummary(ReasoningSummaryDelta),
     ToolUseStart {
         id: String,
         name: String,
@@ -398,6 +399,12 @@ pub struct ThinkingDelta {
     pub text: Option<String>,
     pub provider_native: Option<Value>,
     pub signature: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReasoningSummaryDelta {
+    pub text: String,
+    pub provider_native: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

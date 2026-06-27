@@ -1,10 +1,15 @@
 use crate::{RegistrationError, Tool, ToolRegistry};
 
+#[cfg(feature = "builtin-toolset")]
+use crate::ToolJournalAuthority;
+
 #[derive(Default)]
 pub enum BuiltinToolset {
     #[default]
     Default,
+    Clarification,
     Empty,
+    Shell,
     Skills,
     Custom(Vec<Box<dyn Tool>>),
 }
@@ -46,10 +51,16 @@ impl ToolRegistryBuilder {
                     registry.register(Box::<crate::builtin::GrepTool>::default())?;
                     registry.register(Box::<crate::builtin::GlobTool>::default())?;
                     registry.register(Box::<crate::builtin::ReadBlobTool>::default())?;
-                    registry.register(Box::<crate::builtin::BashTool>::default())?;
+                    registry.register_with_journal_authority(
+                        Box::<crate::builtin::BashTool>::default(),
+                        ToolJournalAuthority::Sandbox,
+                    )?;
                     registry.register(Box::<crate::builtin::WebFetchTool>::default())?;
                     registry.register(Box::<crate::builtin::WebSearchTool>::default())?;
-                    registry.register(Box::<crate::builtin::ClarifyTool>::default())?;
+                    registry.register_with_journal_authority(
+                        Box::<crate::builtin::ClarifyTool>::default(),
+                        ToolJournalAuthority::Clarification,
+                    )?;
                     registry.register(Box::<crate::builtin::SendMessageTool>::default())?;
                     registry.register(Box::<crate::builtin::TodoTool>::default())?;
                     registry.register(Box::<crate::builtin::TaskStopTool>::default())?;
@@ -57,7 +68,10 @@ impl ToolRegistryBuilder {
                     registry.register(Box::<crate::builtin::SkillsViewTool>::default())?;
                     registry.register(Box::<crate::builtin::SkillsInvokeTool>::default())?;
                     #[cfg(feature = "programmatic-tool-calling")]
-                    registry.register(Box::<crate::builtin::ExecuteCodeTool>::default())?;
+                    registry.register_with_journal_authority(
+                        Box::<crate::builtin::ExecuteCodeTool>::default(),
+                        ToolJournalAuthority::ExecuteCode,
+                    )?;
                     #[cfg(feature = "minimax-tools")]
                     {
                         registry
@@ -137,7 +151,37 @@ impl ToolRegistryBuilder {
                     }
                 }
             }
+            BuiltinToolset::Clarification => {
+                #[cfg(feature = "builtin-toolset")]
+                {
+                    registry.register_with_journal_authority(
+                        Box::<crate::builtin::ClarifyTool>::default(),
+                        ToolJournalAuthority::Clarification,
+                    )?;
+                }
+                #[cfg(not(feature = "builtin-toolset"))]
+                {
+                    return Err(RegistrationError::InvalidDescriptor(
+                        "clarification tools feature is not enabled".to_owned(),
+                    ));
+                }
+            }
             BuiltinToolset::Empty => {}
+            BuiltinToolset::Shell => {
+                #[cfg(feature = "builtin-toolset")]
+                {
+                    registry.register_with_journal_authority(
+                        Box::<crate::builtin::BashTool>::default(),
+                        ToolJournalAuthority::Sandbox,
+                    )?;
+                }
+                #[cfg(not(feature = "builtin-toolset"))]
+                {
+                    return Err(RegistrationError::InvalidDescriptor(
+                        "shell tools feature is not enabled".to_owned(),
+                    ));
+                }
+            }
             BuiltinToolset::Skills => {
                 register_skill_tools(&registry)?;
             }

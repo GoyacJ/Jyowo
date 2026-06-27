@@ -1,8 +1,9 @@
 use async_trait::async_trait;
-use futures::stream;
+use futures::{stream, StreamExt};
 use harness_contracts::{
-    ClarifyChannelCap, ClarifyChoice, ClarifyPrompt, DecisionScope, PermissionSubject,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    AssistantClarificationRequestedEvent, ClarifyChannelCap, ClarifyChoice, ClarifyPrompt,
+    DecisionScope, Event, PermissionSubject, RequestId, ToolCapability, ToolDescriptor, ToolError,
+    ToolGroup, ToolResult, UiSafeText,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -76,16 +77,27 @@ impl Tool for ClarifyTool {
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
         let channel = ctx.capability::<dyn ClarifyChannelCap>(ToolCapability::ClarifyChannel)?;
-        let answer = channel
-            .ask(prompt(&input).map_err(validation_error)?)
-            .await?;
-        Ok(Box::pin(stream::iter([ToolEvent::Final(
-            ToolResult::Structured(json!({
-                "answer": answer.answer,
-                "chosen_ids": answer.chosen_ids,
-                "answered_at": chrono::Utc::now()
-            })),
-        )])))
+        let prompt = prompt(&input).map_err(validation_error)?;
+        let request_id = RequestId::new();
+        let event = Event::AssistantClarificationRequested(AssistantClarificationRequestedEvent {
+            run_id: ctx.run_id,
+            request_id,
+            prompt: UiSafeText::from_redacted_display(&prompt.prompt, ctx.redactor.as_ref()),
+            at: chrono::Utc::now(),
+        });
+        let answer = stream::once(async move {
+            match channel.ask(prompt).await {
+                Ok(answer) => ToolEvent::Final(ToolResult::Structured(json!({
+                    "answer": answer.answer,
+                    "chosen_ids": answer.chosen_ids,
+                    "answered_at": chrono::Utc::now()
+                }))),
+                Err(error) => ToolEvent::Error(error),
+            }
+        });
+        Ok(Box::pin(
+            stream::iter([ToolEvent::Journal(event)]).chain(answer),
+        ))
     }
 }
 

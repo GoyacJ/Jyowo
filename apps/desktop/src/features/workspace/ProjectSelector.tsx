@@ -1,14 +1,29 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Check, ChevronDown, FolderOpen, Plus } from 'lucide-react'
+import { Check, ChevronDown, FolderOpen, Plus, Trash2 } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/shared/lib/utils'
-import { addProject, listProjects, switchProject } from '@/shared/tauri/commands'
+import {
+  addProject,
+  deleteProject,
+  type ListProjectsResponse,
+  listProjects,
+  switchProject,
+} from '@/shared/tauri/commands'
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { pickProjectDirectory } from '@/shared/tauri/file-dialog'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/shared/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,6 +43,9 @@ export function ProjectSelector({ compact = false }: ProjectSelectorProps) {
   const commandClient = useCommandClient()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const [pendingDeleteProject, setPendingDeleteProject] = useState<
+    ListProjectsResponse['projects'][number] | null
+  >(null)
   const projectsQuery = useQuery({
     queryKey: ['projects', 'list'],
     queryFn: () => listProjects(commandClient),
@@ -37,6 +55,18 @@ export function ProjectSelector({ compact = false }: ProjectSelectorProps) {
     mutationFn: (path: string) => switchProject(path, commandClient),
     onSuccess: async () => {
       await onProjectWorkspaceChanged(queryClient, navigate)
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (path: string) => deleteProject(path, commandClient),
+    onSuccess: async (response) => {
+      if (response.activePath === null) {
+        await onProjectWorkspaceChanged(queryClient, navigate)
+        return
+      }
+
+      await queryClient.invalidateQueries({ queryKey: ['projects', 'list'] })
     },
   })
 
@@ -51,12 +81,12 @@ export function ProjectSelector({ compact = false }: ProjectSelectorProps) {
   const activeProject =
     projectsQuery.data?.projects.find((project) => project.path === activePath) ?? null
   const errorMessage =
-    switchMutation.error || addMutation.error
-      ? getCommandErrorMessage(switchMutation.error ?? addMutation.error)
+    switchMutation.error || addMutation.error || deleteMutation.error
+      ? getCommandErrorMessage(switchMutation.error ?? addMutation.error ?? deleteMutation.error)
       : projectsQuery.error
         ? getCommandErrorMessage(projectsQuery.error)
         : undefined
-  const pending = switchMutation.isPending || addMutation.isPending
+  const pending = switchMutation.isPending || addMutation.isPending || deleteMutation.isPending
   const projectTitle = activeProject?.name ?? t('projects.noneSelected')
 
   async function openProjectDirectory() {
@@ -76,55 +106,106 @@ export function ProjectSelector({ compact = false }: ProjectSelectorProps) {
     switchMutation.mutate(path)
   }
 
+  function confirmDeleteProject() {
+    if (!pendingDeleteProject) {
+      return
+    }
+
+    deleteMutation.mutate(pendingDeleteProject.path, {
+      onSettled: () => setPendingDeleteProject(null),
+    })
+  }
+
   const projectMenu = (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        {compact ? (
-          <button
-            aria-label={t('projects.switch')}
-            className="grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-            disabled={pending || projectsQuery.isLoading}
-            title={projectTitle}
-            type="button"
-          >
-            <FolderOpen className="size-4" />
-          </button>
-        ) : (
-          <button
-            aria-label={t('projects.switch')}
-            className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md py-1 pr-1 pl-0.5 text-left text-muted-foreground hover:bg-muted hover:text-foreground"
-            disabled={pending || projectsQuery.isLoading}
-            type="button"
-          >
-            <span className="min-w-0 flex-1">
-              <span className="block truncate font-medium text-foreground text-sm">
-                {projectTitle}
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          {compact ? (
+            <button
+              aria-label={t('projects.switch')}
+              className="grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+              disabled={pending || projectsQuery.isLoading}
+              title={projectTitle}
+              type="button"
+            >
+              <FolderOpen className="size-4" />
+            </button>
+          ) : (
+            <button
+              aria-label={t('projects.switch')}
+              className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md py-1 pr-1 pl-0.5 text-left text-muted-foreground hover:bg-muted hover:text-foreground"
+              disabled={pending || projectsQuery.isLoading}
+              type="button"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium text-foreground text-sm">
+                  {projectTitle}
+                </span>
+                <span className="block truncate text-muted-foreground text-xs">
+                  {activeProject?.path ?? t('projects.pickDirectoryHint')}
+                </span>
               </span>
-              <span className="block truncate text-muted-foreground text-xs">
-                {activeProject?.path ?? t('projects.pickDirectoryHint')}
-              </span>
-            </span>
-            <ChevronDown aria-hidden="true" className="size-4 shrink-0 opacity-70" />
-          </button>
-        )}
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[min(calc(100vw-6rem),18rem)]">
-        {projectsQuery.data?.projects.map((project) => (
-          <DropdownMenuItem key={project.path} onSelect={() => selectProject(project.path)}>
-            <FolderOpen aria-hidden="true" className="size-4 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate">{project.name}</span>
-            {project.path === activePath ? (
-              <Check aria-hidden="true" className="size-4 text-foreground" />
-            ) : null}
+              <ChevronDown aria-hidden="true" className="size-4 shrink-0 opacity-70" />
+            </button>
+          )}
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-[min(calc(100vw-6rem),18rem)]">
+          {projectsQuery.data?.projects.map((project) => (
+            <div className="flex items-center gap-1" key={project.path}>
+              <DropdownMenuItem
+                className="min-w-0 flex-1"
+                onSelect={() => selectProject(project.path)}
+              >
+                <FolderOpen aria-hidden="true" className="size-4 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                {project.path === activePath ? (
+                  <Check aria-hidden="true" className="size-4 text-foreground" />
+                ) : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                aria-label={t('projects.delete', { name: project.name })}
+                className="size-8 justify-center p-0 text-destructive focus:text-destructive"
+                onSelect={() => setPendingDeleteProject(project)}
+              >
+                <Trash2 aria-hidden="true" className="size-4" />
+              </DropdownMenuItem>
+            </div>
+          ))}
+          {projectsQuery.data?.projects.length ? <DropdownMenuSeparator /> : null}
+          <DropdownMenuItem onSelect={() => void openProjectDirectory()}>
+            <Plus aria-hidden="true" className="size-4" />
+            {t('projects.new')}
           </DropdownMenuItem>
-        ))}
-        {projectsQuery.data?.projects.length ? <DropdownMenuSeparator /> : null}
-        <DropdownMenuItem onSelect={() => void openProjectDirectory()}>
-          <Plus aria-hidden="true" className="size-4" />
-          {t('projects.new')}
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDeleteProject(null)
+          }
+        }}
+        open={Boolean(pendingDeleteProject)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('projects.confirmDeleteTitle')}</DialogTitle>
+            <DialogDescription>
+              {t('projects.confirmDeleteDescription', {
+                name: pendingDeleteProject?.name ?? '',
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button onClick={() => setPendingDeleteProject(null)} type="button" variant="outline">
+              {t('actions.cancel')}
+            </Button>
+            <Button onClick={confirmDeleteProject} type="button" variant="destructive">
+              {t('projects.confirmDelete')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 
   if (compact) {

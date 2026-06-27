@@ -32,6 +32,31 @@ pub struct AssistantMessageCompletedEvent {
     pub at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AssistantReviewRequestedEvent {
+    pub run_id: RunId,
+    pub request_id: RequestId,
+    pub title: UiSafeText,
+    pub body: Option<UiSafeText>,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AssistantClarificationRequestedEvent {
+    pub run_id: RunId,
+    pub request_id: RequestId,
+    pub prompt: UiSafeText,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AssistantNoticeEvent {
+    pub run_id: RunId,
+    pub notice_id: RequestId,
+    pub body: UiSafeText,
+    pub at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MessageMetadata {
     pub source: Option<String>,
@@ -44,6 +69,7 @@ pub struct MessageMetadata {
 pub enum DeltaChunk {
     Text(String),
     Thought(ThoughtChunk),
+    ReasoningSummary(ReasoningSummaryChunk),
     ToolUseStart {
         tool_use_id: ToolUseId,
         tool_name: String,
@@ -74,6 +100,13 @@ impl From<String> for ThoughtChunk {
             signature: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ReasoningSummaryChunk {
+    pub text: String,
+    pub provider_id: String,
+    pub provider_native: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

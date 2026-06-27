@@ -98,9 +98,11 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
   const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
   const conversationListErrorMessage = createConversationMutation.error
     ? getCommandErrorMessage(createConversationMutation.error)
-    : conversationsQuery.error
-      ? getCommandErrorMessage(conversationsQuery.error)
-      : undefined
+    : deleteConversationMutation.error
+      ? getCommandErrorMessage(deleteConversationMutation.error)
+      : conversationsQuery.error
+        ? getCommandErrorMessage(conversationsQuery.error)
+        : undefined
 
   function selectConversation(conversationId: string) {
     void navigate({ search: { conversationId }, to: '/' })
@@ -115,7 +117,7 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
   }
 
   function deleteConversation(conversationId: string) {
-    void deleteConversationMutation.mutateAsync(conversationId)
+    deleteConversationMutation.mutate(conversationId)
   }
 
   function runCommand(action: CommandPaletteAction) {

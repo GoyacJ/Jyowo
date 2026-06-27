@@ -1,13 +1,13 @@
 import type { AssistantSegment, ConversationTurn, ToolAttempt } from '@/shared/tauri/commands'
-import type { PendingToolPermission } from './conversation-blocks'
 import type { ConversationTimelineState } from './conversation-timeline-store'
+import type { PendingToolPermission } from './pending-tool-permission'
 
 export type ComposerMode =
   | { kind: 'ready' }
   | { kind: 'submitting' }
   | { kind: 'running-disabled'; canCancel: boolean }
-  | { kind: 'clarification-reply'; blockId: string }
-  | { kind: 'review-comment'; blockId: string }
+  | { kind: 'clarification-reply'; segmentId: string }
+  | { kind: 'review-comment'; segmentId: string }
   | { kind: 'retry'; turnId: string }
   | { kind: 'continue' }
 
@@ -25,12 +25,12 @@ export function selectComposerMode(state: ConversationTimelineState): ComposerMo
     (segment) => segment.kind === 'clarificationRequest',
   )
   if (pendingClarification?.kind === 'clarificationRequest') {
-    return { kind: 'clarification-reply', blockId: pendingClarification.id }
+    return { kind: 'clarification-reply', segmentId: pendingClarification.id }
   }
 
   const pendingReview = findLastSegment(state.turns, (segment) => segment.kind === 'reviewRequest')
   if (pendingReview?.kind === 'reviewRequest') {
-    return { kind: 'review-comment', blockId: pendingReview.id }
+    return { kind: 'review-comment', segmentId: pendingReview.id }
   }
 
   const failedTurn = [...state.turns].reverse().find((turn) => turn.assistant?.status === 'failed')

@@ -1,4 +1,11 @@
-use std::{io, path::Path, process::Command};
+use std::{
+    io::{self, Read},
+    path::Path,
+    process::{Command, Output, Stdio},
+    sync::OnceLock,
+    thread,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use futures::stream;
@@ -89,7 +96,12 @@ impl Tool for GrepTool {
         let pattern = pattern(&input).map_err(validation_error)?;
         let mut matches = match run_ripgrep(&root, pattern, &ctx) {
             Ok(matches) => matches,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::TimedOut
+                ) =>
+            {
                 internal_grep(&root, pattern, &ctx)?
             }
             Err(error) => return Err(ToolError::Message(error.to_string())),
@@ -114,7 +126,15 @@ impl Tool for GrepTool {
 }
 
 fn run_ripgrep(root: &Path, pattern: &str, ctx: &ToolContext) -> Result<Vec<Value>, io::Error> {
-    let output = Command::new("rg")
+    if !ripgrep_is_healthy() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "ripgrep is not available",
+        ));
+    }
+
+    let mut command = Command::new("rg");
+    command
         .arg("--line-number")
         .arg("--with-filename")
         .arg("--color")
@@ -123,8 +143,8 @@ fn run_ripgrep(root: &Path, pattern: &str, ctx: &ToolContext) -> Result<Vec<Valu
         .arg("--no-follow")
         .arg("--")
         .arg(pattern)
-        .arg(root)
-        .output()?;
+        .arg(root);
+    let output = run_command_with_timeout(command, Duration::from_secs(5))?;
 
     if !output.status.success() && output.status.code() != Some(1) {
         return Err(io::Error::other(
@@ -146,6 +166,70 @@ fn run_ripgrep(root: &Path, pattern: &str, ctx: &ToolContext) -> Result<Vec<Valu
     Ok(matches)
 }
 
+fn ripgrep_is_healthy() -> bool {
+    static RIPGREP_HEALTH: OnceLock<bool> = OnceLock::new();
+    *RIPGREP_HEALTH.get_or_init(|| {
+        let mut command = Command::new("rg");
+        command.arg("--version");
+        run_command_with_timeout(command, Duration::from_millis(500))
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    })
+}
+
+fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<Output, io::Error> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("missing stdout pipe"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("missing stderr pipe"))?;
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let started_at = Instant::now();
+
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Output {
+                status,
+                stdout: join_output_reader(stdout_reader)?,
+                stderr: join_output_reader(stderr_reader)?,
+            });
+        }
+
+        if started_at.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = join_output_reader(stdout_reader);
+            let _ = join_output_reader(stderr_reader);
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "ripgrep timed out"));
+        }
+
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn join_output_reader(
+    handle: thread::JoinHandle<Result<Vec<u8>, io::Error>>,
+) -> Result<Vec<u8>, io::Error> {
+    handle
+        .join()
+        .map_err(|_| io::Error::other("output reader panicked"))?
+}
+
 fn internal_grep(root: &Path, pattern: &str, ctx: &ToolContext) -> Result<Vec<Value>, ToolError> {
     let regex = Regex::new(pattern).map_err(|error| ToolError::Message(error.to_string()))?;
     let mut matches = Vec::new();
@@ -159,10 +243,13 @@ fn collect_internal_matches(
     ctx: &ToolContext,
     matches: &mut Vec<Value>,
 ) -> Result<(), ToolError> {
-    super::workspace_path::ensure_inside_workspace(path, ctx)?;
     let meta = path
-        .metadata()
+        .symlink_metadata()
         .map_err(|error| ToolError::Message(error.to_string()))?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    super::workspace_path::ensure_inside_workspace(path, ctx)?;
     if meta.is_dir() {
         for entry in
             std::fs::read_dir(path).map_err(|error| ToolError::Message(error.to_string()))?
@@ -233,7 +320,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn internal_grep_rejects_symlink_escape() {
+    fn internal_grep_ignores_symlink_escape() {
         let root = tempdir().unwrap();
         let workspace = root.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
@@ -242,9 +329,25 @@ mod tests {
         std::os::unix::fs::symlink(&outside, workspace.join("link.txt")).unwrap();
         let ctx = tool_ctx_at(&workspace);
 
-        let error = internal_grep(&workspace, "needle", &ctx).unwrap_err();
+        let matches = internal_grep(&workspace, "needle", &ctx).unwrap();
 
-        assert!(matches!(error, ToolError::PermissionDenied(_)));
+        assert!(matches.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn internal_grep_ignores_symlink_loop() {
+        let root = tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("file.txt"), "needle\n").unwrap();
+        std::os::unix::fs::symlink(&workspace, workspace.join("loop")).unwrap();
+        let ctx = tool_ctx_at(&workspace);
+
+        let matches = internal_grep(&workspace, "needle", &ctx).unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["line"], 1);
     }
 
     fn tool_ctx_at(workspace_root: &Path) -> ToolContext {
@@ -260,6 +363,7 @@ mod tests {
             sandbox: None,
             permission_broker: std::sync::Arc::new(NoopBroker),
             cap_registry: std::sync::Arc::new(CapabilityRegistry::default()),
+            redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
             interrupt: InterruptToken::default(),
             parent_run: None,
         }
