@@ -28,6 +28,7 @@ pub fn run() {
             commands::get_execution_settings,
             commands::get_app_info,
             commands::get_artifact_media_preview,
+            commands::get_attachment_media_preview,
             commands::get_conversation,
             commands::get_memory_item,
             commands::get_mcp_server_config,

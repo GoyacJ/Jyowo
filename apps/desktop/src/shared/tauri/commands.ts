@@ -916,6 +916,50 @@ const getArtifactMediaPreviewResponseSchema = z
   })
   .strict()
 
+const getAttachmentMediaPreviewRequestSchema = z
+  .object({
+    conversationId: z.string().min(1),
+    attachmentId: z.string().min(1),
+  })
+  .strict()
+
+const maxAttachmentMediaPreviewBytes = 5 * 1024 * 1024
+const maxAttachmentMediaPreviewDataUrlBytes = Math.ceil(maxAttachmentMediaPreviewBytes * 1.4) + 128
+const attachmentMediaPreviewDataUrlSchema = z
+  .string()
+  .max(maxAttachmentMediaPreviewDataUrlBytes)
+  .regex(/^data:image\/(?:png|jpeg|gif|webp|avif);base64,[A-Za-z0-9+/]+={0,2}$/, {
+    message: 'attachment image preview must be an image data URL',
+  })
+  .refine((value) => !hasObviousUnredactedSecret(value), {
+    message: 'attachment image preview must not contain obvious unredacted secrets',
+  })
+  .refine((value) => !hasPrivateAbsolutePath(value), {
+    message: 'attachment image preview must not contain private absolute paths',
+  })
+
+const imageDataUrlMimeType = (value: string): string | null => {
+  const match = /^data:(image\/(?:png|jpeg|gif|webp|avif));base64,/.exec(value)
+  return match?.[1] ?? null
+}
+
+const getAttachmentMediaPreviewResponseSchema = z
+  .object({
+    dataUrl: attachmentMediaPreviewDataUrlSchema,
+    mimeType: safeArtifactImageMimeTypeSchema,
+    sizeBytes: z.number().int().nonnegative().max(maxAttachmentMediaPreviewBytes),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (imageDataUrlMimeType(value.dataUrl) !== value.mimeType) {
+      context.addIssue({
+        code: 'custom',
+        message: 'attachment image preview data URL MIME must match mimeType',
+        path: ['dataUrl'],
+      })
+    }
+  })
+
 const contextDecisionSchema = z
   .object({
     detail: z.string(),
@@ -2037,6 +2081,12 @@ export type ExportSupportBundleResponse = z.infer<typeof exportSupportBundleResp
 export type ListArtifactsResponse = z.infer<typeof listArtifactsResponseSchema>
 export type GetArtifactMediaPreviewRequest = z.infer<typeof getArtifactMediaPreviewRequestSchema>
 export type GetArtifactMediaPreviewResponse = z.infer<typeof getArtifactMediaPreviewResponseSchema>
+export type GetAttachmentMediaPreviewRequest = z.infer<
+  typeof getAttachmentMediaPreviewRequestSchema
+>
+export type GetAttachmentMediaPreviewResponse = z.infer<
+  typeof getAttachmentMediaPreviewResponseSchema
+>
 export type GetContextSnapshotRequest = z.infer<typeof getContextSnapshotRequestSchema>
 export type GetContextSnapshotResponse = z.infer<typeof getContextSnapshotResponseSchema>
 export type ProviderSettingsRequest = z.infer<typeof providerSettingsRequestSchema>
@@ -2156,6 +2206,9 @@ export interface CommandClient {
   getArtifactMediaPreview: (
     request: GetArtifactMediaPreviewRequest,
   ) => Promise<GetArtifactMediaPreviewResponse>
+  getAttachmentMediaPreview: (
+    request: GetAttachmentMediaPreviewRequest,
+  ) => Promise<GetAttachmentMediaPreviewResponse>
   listConversations: () => Promise<ListConversationsResponse>
   listEvalCases: () => Promise<ListEvalCasesResponse>
   listModelProviderCatalog: () => Promise<ModelProviderCatalogResponse>
@@ -2430,6 +2483,15 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       return parsePayload(
         command,
         getArtifactMediaPreviewResponseSchema,
+        await invoke(command, args),
+      )
+    },
+    async getAttachmentMediaPreview(request) {
+      const command = 'get_attachment_media_preview'
+      const args = parseArgs(command, getAttachmentMediaPreviewRequestSchema, request)
+      return parsePayload(
+        command,
+        getAttachmentMediaPreviewResponseSchema,
         await invoke(command, args),
       )
     },
@@ -2726,6 +2788,13 @@ export function getArtifactMediaPreview(
   client: CommandClient = tauriCommandClient,
 ): Promise<GetArtifactMediaPreviewResponse> {
   return client.getArtifactMediaPreview(request)
+}
+
+export function getAttachmentMediaPreview(
+  request: GetAttachmentMediaPreviewRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<GetAttachmentMediaPreviewResponse> {
+  return client.getAttachmentMediaPreview(request)
 }
 
 export function getConversation(

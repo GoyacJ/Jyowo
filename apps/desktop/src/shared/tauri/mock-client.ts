@@ -13,6 +13,7 @@ import type {
   ExportMemoryItemsResponse,
   ExportSupportBundleResponse,
   GetArtifactMediaPreviewResponse,
+  GetAttachmentMediaPreviewResponse,
   GetContextSnapshotResponse,
   GetConversationResponse,
   GetExecutionSettingsResponse,
@@ -949,6 +950,7 @@ export interface MockCommandClientOptions {
   healthcheck?: HarnessHealthcheck
   artifacts?: ListArtifactsResponse
   artifactMediaPreview?: GetArtifactMediaPreviewResponse
+  attachmentMediaPreview?: GetAttachmentMediaPreviewResponse
   listActivity?: ListActivityResponse
   memoryExport?: ExportMemoryItemsResponse
   evalCases?: ListEvalCasesResponse
@@ -1139,6 +1141,13 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     async getArtifactMediaPreview() {
       await wait(options.delayMs)
       return options.artifactMediaPreview ?? mockArtifactMediaPreview
+    },
+    async getAttachmentMediaPreview() {
+      await wait(options.delayMs)
+      if (options.attachmentMediaPreview) {
+        return options.attachmentMediaPreview
+      }
+      throw new Error('attachment media preview is unavailable')
     },
     async getAppInfo() {
       await wait(options.delayMs)
@@ -1798,6 +1807,7 @@ export function createRejectedCommandClient(error: unknown): CommandClient {
     getExecutionSettings: () => Promise.reject(error),
     getConversation: () => Promise.reject(error),
     getArtifactMediaPreview: () => Promise.reject(error),
+    getAttachmentMediaPreview: () => Promise.reject(error),
     getAppInfo: () => Promise.reject(error),
     getHarnessHealthcheck: () => Promise.reject(error),
     getMemoryItem: () => Promise.reject(error),
