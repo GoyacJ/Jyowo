@@ -927,7 +927,7 @@ fn project_envelope(
                     "decisionScope": decision_scope_display(&event.scope_hint),
                     "exposure": subject.exposure,
                     "operation": subject.operation,
-                    "reason": "The runtime requires approval before continuing.",
+                    "reason": "需要批准后才能继续。",
                     "requestId": event.request_id.to_string(),
                     "severity": severity_label(event.severity),
                     "target": subject.target,

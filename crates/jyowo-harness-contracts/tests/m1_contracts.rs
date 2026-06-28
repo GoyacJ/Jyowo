@@ -196,11 +196,6 @@ fn ui_safe_text_redacts_private_paths_and_obvious_secrets() {
     let redactor: &dyn Redactor = &NoopRedactor;
 
     for value in [
-        "open /Users/goya/.ssh/config",
-        "read /home/alice/.aws/credentials",
-        "tail /private/var/folders/token.txt",
-        "type C:\\Users\\alice\\.ssh\\config",
-        "type C:/Users/alice/.ssh/config",
         "Authorization: Bearer abcdef123456",
         "Bearer abcdefghijklmnop",
         "Basic abcdefghijklmnop",
@@ -233,6 +228,23 @@ fn ui_safe_text_redacts_private_paths_and_obvious_secrets() {
     ] {
         let text = UiSafeText::from_redacted_display(value, redactor);
         assert_eq!(text.as_str(), "[REDACTED]");
+    }
+
+    for (value, expected) in [
+        ("open /Users/goya/.ssh/config", "open [REDACTED]"),
+        ("read /home/alice/.aws/credentials", "read [REDACTED]"),
+        ("tail /private/var/folders/token.txt", "tail [REDACTED]"),
+        ("type C:\\Users\\alice\\.ssh\\config", "type [REDACTED]"),
+        ("type C:/Users/alice/.ssh/config", "type [REDACTED]"),
+        (
+            "PRD says use /Users/alice/project/file as an example",
+            "PRD says use [REDACTED] as an example",
+        ),
+        ("open /Users/alice/My Project/.env", "open [REDACTED]"),
+        ("type C:\\Users\\Alice\\My Project\\.env", "type [REDACTED]"),
+    ] {
+        let text = UiSafeText::from_redacted_display(value, redactor);
+        assert_eq!(text.as_str(), expected);
     }
 
     let text = UiSafeText::from_redacted_display("plain project note", redactor);

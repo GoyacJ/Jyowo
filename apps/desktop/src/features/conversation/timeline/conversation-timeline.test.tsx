@@ -66,7 +66,7 @@ describe('ConversationTimeline', () => {
     expect(screen.getByText('Tools')).toBeInTheDocument()
     expect(screen.getByText('Execution: failed')).toBeInTheDocument()
     expect(screen.getByText('Permission: approved')).toBeInTheDocument()
-    expect(screen.getByText('工具执行失败。详情可在 Activity 中查看。')).toBeInTheDocument()
+    expect(screen.getByText('工具执行失败。可在详情中查看。')).toBeInTheDocument()
     expect(screen.getByText('Final answer')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Details' }))
@@ -87,7 +87,7 @@ describe('ConversationTimeline', () => {
     expect(screen.getByText('MiniMaxTextToImage')).toBeInTheDocument()
     expect(screen.getByText('Execution: failed')).toBeInTheDocument()
     expect(screen.getByText('Permission: approved')).toBeInTheDocument()
-    expect(screen.getByText('工具执行失败。详情可在 Activity 中查看。')).toBeInTheDocument()
+    expect(screen.getByText('工具执行失败。可在详情中查看。')).toBeInTheDocument()
     expect(screen.getByText('海报生成提示词')).toBeInTheDocument()
     expect(screen.getByText('可复用的图像生成提示词已准备好。')).toBeInTheDocument()
     expect(
@@ -145,6 +145,8 @@ describe('ConversationTimeline', () => {
     )
 
     expect(screen.getByText('确认需要生成图片并展示结果。')).toBeInTheDocument()
+    expect(screen.queryByText('已搜索图片工具')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Collapsed 1 history steps/ }))
     expect(screen.getByText('已搜索图片工具')).toBeInTheDocument()
     expect(screen.getByText('$ pnpm check:desktop')).toBeInTheDocument()
     expect(screen.getByText(/render process preview/)).toBeInTheDocument()
@@ -206,7 +208,7 @@ describe('ConversationTimeline', () => {
     expect(screen.getByText('$ pnpm -C apps/desktop test -- SkillsPage')).toBeVisible()
 
     expect(screen.queryByText('$ rg "SkillsPage" apps/desktop/src')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /已运行 1 条历史命令/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Ran 1 historical commands/ }))
     expect(screen.getByText('$ rg "SkillsPage" apps/desktop/src')).toBeInTheDocument()
 
     const compaction = screen.getByText('上下文已自动压缩').closest('div')
@@ -323,13 +325,49 @@ describe('ConversationTimeline', () => {
       expect(screen.getByText('运行中 1 条')).toBeInTheDocument()
       expect(screen.getByText('等待权限 1 条')).toBeInTheDocument()
 
-      expect(screen.getByText('read_file')).toBeInTheDocument()
+      const summary = screen.getByRole('button', { name: /已运行 2 条工具/ })
+      expect(summary).toHaveAttribute('aria-expanded', 'false')
+      expect(screen.queryByText('read_file')).not.toBeInTheDocument()
+      expect(screen.queryByText('list_files')).not.toBeInTheDocument()
       expect(screen.queryByText('权限：已批准')).not.toBeInTheDocument()
+      expect(screen.getByText('exec_command')).toBeInTheDocument()
+      expect(screen.getByText('search_code')).toBeInTheDocument()
+      expect(screen.getByText('write_file')).toBeInTheDocument()
+      expect(screen.getAllByText('工具执行失败。可在详情中查看。')).toHaveLength(1)
 
-      fireEvent.click(screen.getByRole('button', { name: /read_file/ }))
+      fireEvent.click(summary)
 
+      expect(summary).toHaveAttribute('aria-expanded', 'true')
+      expect(screen.getByText('read_file')).toBeInTheDocument()
+      expect(screen.getByText('list_files')).toBeInTheDocument()
       expect(screen.getByText('权限：已批准')).toBeInTheDocument()
-      expect(screen.getByText('工具执行失败。详情可在 Activity 中查看。')).toBeInTheDocument()
+    } finally {
+      await appI18n.changeLanguage('en-US')
+    }
+  })
+
+  it('collapses completed process history while keeping failures and non-zero commands visible', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    try {
+      render(<ConversationTimeline title="Process history" turns={[processHistoryTurn()]} />)
+
+      const collapsedGroup = screen.getByRole('button', { name: /已折叠 3 条历史步骤/ })
+      expect(collapsedGroup).toHaveAttribute('aria-expanded', 'false')
+      expect(screen.queryByText('已读取 package.json')).not.toBeInTheDocument()
+      expect(screen.queryByText('已搜索 timeline')).not.toBeInTheDocument()
+      expect(screen.queryByText('$ rg "timeline" apps/desktop/src')).not.toBeInTheDocument()
+
+      expect(screen.getByText('$ pnpm -C apps/desktop test')).toBeVisible()
+      expect(screen.getByText('退出码 1')).toBeVisible()
+      expect(screen.getByText('$ pnpm -C apps/desktop lint')).toBeVisible()
+      expect(screen.getByText('退出码 2')).toBeVisible()
+
+      fireEvent.click(collapsedGroup)
+
+      expect(collapsedGroup).toHaveAttribute('aria-expanded', 'true')
+      expect(screen.getByText('已读取 package.json')).toBeInTheDocument()
+      expect(screen.getByText('已搜索 timeline')).toBeInTheDocument()
+      expect(screen.getByText('$ rg "timeline" apps/desktop/src')).toBeInTheDocument()
     } finally {
       await appI18n.changeLanguage('en-US')
     }
@@ -350,7 +388,7 @@ describe('ConversationTimeline', () => {
       <ConversationTimeline title="Tool evidence" turns={[toolEvidenceTurn()]} />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /read_file/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Ran 2 tools/ }))
     expect(screen.getByText('Permission: approved')).toBeInTheDocument()
 
     rendered.rerender(
@@ -397,9 +435,31 @@ describe('ConversationTimeline', () => {
       for (const leakedLabel of ['Tools', 'Approved', 'Complete', 'failed', 'View raw events']) {
         expect(renderedText).not.toContain(leakedLabel)
       }
+      expect(renderedText).not.toContain('Activity')
+      expect(renderedText).not.toContain('The runtime requires approval before continuing.')
     } finally {
       await appI18n.changeLanguage('en-US')
     }
+  })
+
+  it('keeps timeline bottom padding large enough for the composer reserve', () => {
+    render(<ConversationTimeline title="Composer padding" turns={[turn('Final answer')]} />)
+
+    expect(screen.getByTestId('conversation-timeline-scroll-content')).toHaveClass('pb-28')
+  })
+
+  it('adds composer reserve to virtual timeline height', () => {
+    render(
+      <ConversationTimeline
+        title="Virtual composer padding"
+        turns={Array.from({ length: 24 }, (_, index) =>
+          turn(`Virtual answer ${index}`, `virtual-${index}`),
+        )}
+      />,
+    )
+
+    const scrollContent = screen.getByTestId('conversation-timeline-scroll-content')
+    expect(scrollContent).toHaveStyle({ height: '4432px' })
   })
 
   it('renders review and clarification requests inside assistant work', () => {
@@ -590,7 +650,7 @@ function turn(
                 toolUseId: `tool-use-${suffix}`,
                 status: 'approved',
               },
-              failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+              failureSummary: '工具执行失败。可在详情中查看。',
               eventRefs: [
                 {
                   eventId: 'event-tool',
@@ -706,7 +766,7 @@ function minimaxTurn(): ConversationTurn {
                 toolUseId: 'tool-minimax',
                 status: 'approved',
               },
-              failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+              failureSummary: '工具执行失败。可在详情中查看。',
             },
           ],
         },
@@ -783,7 +843,7 @@ function toolEvidenceTurn({
               toolUseId: 'tool-exec-command',
               toolName: 'exec_command',
               status: 'failed',
-              failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+              failureSummary: '工具执行失败。可在详情中查看。',
             },
             {
               id: 'tool:search-code',
@@ -803,6 +863,102 @@ function toolEvidenceTurn({
                 requestId: 'permission-write-file',
                 toolUseId: 'tool-write-file',
                 status: 'pending',
+              },
+            },
+          ],
+        },
+      ],
+    },
+  }
+}
+
+function processHistoryTurn(): ConversationTurn {
+  return {
+    id: 'turn:user-process-history',
+    conversationId: 'conversation-process-history',
+    position: 0,
+    user: {
+      id: 'user:user-process-history',
+      messageId: 'user-process-history',
+      body: '整理执行历史',
+      timestamp,
+    },
+    assistant: {
+      id: 'assistant:run-process-history',
+      runId: 'run-process-history',
+      status: 'complete',
+      segments: [
+        {
+          kind: 'process',
+          id: 'segment:process:history',
+          order: 0,
+          status: 'failed',
+          summary: '已结束但存在失败步骤',
+          steps: [
+            {
+              id: 'process-step:read-package',
+              order: 0,
+              kind: 'fileRead',
+              status: 'complete',
+              title: '已读取 package.json',
+              detail: {
+                type: 'activity',
+                summary: '读取 package.json',
+                itemCount: 1,
+              },
+            },
+            {
+              id: 'process-step:search-timeline',
+              order: 1,
+              kind: 'fileSearch',
+              status: 'complete',
+              title: '已搜索 timeline',
+              detail: {
+                type: 'activity',
+                summary: '搜索 timeline',
+                itemCount: 2,
+              },
+            },
+            {
+              id: 'process-step:rg-complete',
+              order: 2,
+              kind: 'command',
+              status: 'complete',
+              title: '已运行历史命令',
+              detail: {
+                type: 'command',
+                command: 'rg "timeline" apps/desktop/src',
+                output: 'apps/desktop/src/features/conversation/timeline/conversation-timeline.tsx',
+                exitCode: 0,
+                durationMs: 180,
+              },
+            },
+            {
+              id: 'process-step:test-failed',
+              order: 3,
+              kind: 'command',
+              status: 'failed',
+              title: '测试失败',
+              detail: {
+                type: 'command',
+                command: 'pnpm -C apps/desktop test',
+                output: '1 failed',
+                exitCode: 1,
+                durationMs: 2100,
+              },
+            },
+            {
+              id: 'process-step:lint-non-zero',
+              order: 4,
+              kind: 'command',
+              status: 'complete',
+              title: 'lint 退出码非零',
+              detail: {
+                type: 'command',
+                command: 'pnpm -C apps/desktop lint',
+                output: 'lint errors',
+                exitCode: 2,
+                durationMs: 900,
               },
             },
           ],

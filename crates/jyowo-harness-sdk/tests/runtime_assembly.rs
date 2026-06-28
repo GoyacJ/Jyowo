@@ -116,6 +116,46 @@ fn conversation_turn_input_ask_mode_preserves_prompt_text() {
 }
 
 #[test]
+fn default_conversation_system_prompt_keeps_jyowo_identity() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-default-jyowo-system-prompt");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![vec![ModelStreamEvent::MessageStop]],
+        ));
+        let harness = Harness::builder()
+            .with_model_arc(model.clone())
+            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+
+        let options = SessionOptions::new(&workspace)
+            .with_session_id(session_id)
+            .with_system_prompt_addendum("保留用户提供的附加约束。");
+        harness
+            .open_or_create_conversation_session(options.clone())
+            .await
+            .expect("session should open");
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options,
+                input: ConversationTurnInput::ask("hello"),
+            })
+            .await
+            .expect("turn should run");
+
+        let system = model.requests().await[0].system.clone().unwrap_or_default();
+        assert!(system.contains("Jyowo"));
+        assert!(system.contains("不能以底层 provider 身份自称"));
+        assert!(system.contains("保留用户提供的附加约束。"));
+    });
+}
+
+#[test]
 fn conversation_session_uses_descriptor_protocol_when_options_omit_protocol() {
     block_on(async {
         let workspace = unique_workspace("sdk-conversation-descriptor-api-mode");

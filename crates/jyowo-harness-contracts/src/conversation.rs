@@ -27,7 +27,11 @@ impl UiSafeText {
     #[must_use]
     pub fn from_redacted_display(value: impl AsRef<str>, redactor: &dyn Redactor) -> Self {
         let redacted = redactor.redact(value.as_ref(), &RedactRules::default());
-        if contains_private_absolute_path(&redacted) || contains_obvious_secret(&redacted) {
+        if contains_obvious_secret(&redacted) {
+            return Self(REDACTED.to_owned());
+        }
+        let redacted = redact_private_absolute_paths(&redacted);
+        if contains_private_absolute_path(&redacted) {
             return Self(REDACTED.to_owned());
         }
         Self(redacted)
@@ -575,6 +579,93 @@ fn contains_private_absolute_path(value: &str) -> bool {
         || value.contains("/home/")
         || value.contains("/private/var/")
         || contains_windows_absolute_path(value)
+}
+
+fn redact_private_absolute_paths(value: &str) -> String {
+    let mut redacted = String::with_capacity(value.len());
+    let mut index = 0;
+    while index < value.len() {
+        if is_private_path_start(value, index) {
+            redacted.push_str(REDACTED);
+            index = private_path_end(value, index);
+            continue;
+        }
+        let Some(ch) = value[index..].chars().next() else {
+            break;
+        };
+        redacted.push(ch);
+        index += ch.len_utf8();
+    }
+    redacted
+}
+
+fn is_private_path_start(value: &str, index: usize) -> bool {
+    let suffix = &value[index..];
+    suffix.starts_with("/Users/")
+        || suffix.starts_with("/home/")
+        || suffix.starts_with("/private/var/")
+        || is_windows_absolute_path_at(value, index)
+}
+
+fn is_windows_absolute_path_at(value: &str, index: usize) -> bool {
+    let bytes = value.as_bytes();
+    index + 2 < bytes.len()
+        && bytes[index].is_ascii_alphabetic()
+        && bytes[index + 1] == b':'
+        && matches!(bytes[index + 2], b'\\' | b'/')
+}
+
+fn private_path_end(value: &str, start: usize) -> usize {
+    let mut index = start;
+    while index < value.len() {
+        let Some(ch) = value[index..].chars().next() else {
+            break;
+        };
+        if is_private_path_delimiter(ch) {
+            break;
+        }
+        if ch.is_whitespace() {
+            let next_index = index + ch.len_utf8();
+            if private_path_continues_after_whitespace(value, next_index) {
+                index = next_index;
+                continue;
+            }
+            break;
+        }
+        index += ch.len_utf8();
+    }
+    index
+}
+
+fn is_private_path_delimiter(ch: char) -> bool {
+    matches!(ch, '"' | '\'' | ')' | ']' | '}' | '<' | '>')
+}
+
+fn private_path_continues_after_whitespace(value: &str, start: usize) -> bool {
+    let mut index = start;
+    while index < value.len() {
+        let Some(ch) = value[index..].chars().next() else {
+            return false;
+        };
+        if matches!(ch, ' ' | '\t') {
+            index += ch.len_utf8();
+            continue;
+        }
+        break;
+    }
+
+    let token_start = index;
+    while index < value.len() {
+        let Some(ch) = value[index..].chars().next() else {
+            break;
+        };
+        if ch.is_whitespace() || is_private_path_delimiter(ch) {
+            break;
+        }
+        index += ch.len_utf8();
+    }
+    let token = &value[token_start..index];
+    token.contains('/') || token.contains('\\') || token.starts_with('.')
 }
 
 fn contains_windows_absolute_path(value: &str) -> bool {

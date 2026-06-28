@@ -126,7 +126,7 @@ describe('ConversationWorkspace', () => {
     expect(await screen.findByText('帮我生成一张海报图')).toBeInTheDocument()
     expect(screen.getByText('正在检查可用的图像工具')).toBeInTheDocument()
     expect(screen.getByText('MiniMaxTextToImage')).toBeInTheDocument()
-    expect(screen.getByText('工具执行失败。详情可在 Activity 中查看。')).toBeInTheDocument()
+    expect(screen.getByText('工具执行失败。可在详情中查看。')).toBeInTheDocument()
     expect(screen.getByText('海报生成提示词')).toBeInTheDocument()
     expect(screen.getByText('可复用的图像生成提示词已准备好。')).toBeInTheDocument()
     expect(
@@ -543,7 +543,7 @@ function minimaxTurn(): ConversationTurn {
                 toolUseId: 'tool-minimax',
                 status: 'approved',
               },
-              failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+              failureSummary: '工具执行失败。可在详情中查看。',
             },
           ],
         },

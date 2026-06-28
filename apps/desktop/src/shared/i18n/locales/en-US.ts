@@ -114,6 +114,10 @@ export const enUS = {
       process: 'Work process',
       processComplete: 'Work process complete',
       processStepDetails: 'Details',
+      processGroup: {
+        commandHistory: 'Ran {{count}} historical commands',
+        history: 'Collapsed {{count}} history steps',
+      },
       processWithheld: 'Process details are withheld',
       commandEvidence: {
         shell: 'Shell',

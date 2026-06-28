@@ -148,7 +148,7 @@ export const codexStyleEvidenceTurns: ConversationTurn[] = [
               toolUseId: 'tool-test-skills-page',
               toolName: 'exec_command',
               status: 'failed',
-              failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+              failureSummary: '工具执行失败。可在详情中查看。',
             },
           ],
         },

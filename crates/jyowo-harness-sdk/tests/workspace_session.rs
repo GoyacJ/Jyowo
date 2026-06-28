@@ -182,7 +182,10 @@ fn default_session_options_apply_to_normal_create_session() {
         assert!(requests[0].extra["relay_logical_call_key"]
             .as_str()
             .is_some_and(|value| value.starts_with("engine_turn:")));
-        assert_eq!(requests[0].system.as_deref(), Some("default addendum"));
+        let system = requests[0].system.as_deref().unwrap_or_default();
+        assert!(system.contains("Jyowo"));
+        assert!(system.contains("不能以底层 provider 身份自称"));
+        assert!(system.contains("default addendum"));
     });
 }
 

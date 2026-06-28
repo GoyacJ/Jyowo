@@ -204,6 +204,42 @@ async fn run_turn_keeps_session_open_after_completed_run() {
 }
 
 #[tokio::test]
+async fn run_turn_sends_previous_user_and_assistant_messages_to_next_model_request() {
+    let harness = TestHarness::new(text_events("first assistant answer")).await;
+
+    harness
+        .session
+        .run_turn("first user request")
+        .await
+        .unwrap();
+    harness
+        .model
+        .replace_events(text_events("second assistant answer"))
+        .await;
+    harness
+        .session
+        .run_turn("second user request")
+        .await
+        .unwrap();
+
+    let requests = harness.model.requests().await;
+    assert_eq!(requests.len(), 2);
+    let second_request_messages = requests[1]
+        .messages
+        .iter()
+        .map(|message| (message.role, message_text(message)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        second_request_messages,
+        vec![
+            (MessageRole::User, "first user request".to_owned()),
+            (MessageRole::Assistant, "first assistant answer".to_owned()),
+            (MessageRole::User, "second user request".to_owned()),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn run_turn_keeps_thinking_out_of_durable_events() {
     let harness =
         TestHarness::new(thinking_then_text_events("internal chain", "final answer")).await;
@@ -643,7 +679,6 @@ impl RecordingModelProvider {
         *self.response.lock().await = response;
     }
 
-    #[cfg(feature = "steering")]
     async fn requests(&self) -> Vec<ModelRequest> {
         self.requests.lock().await.clone()
     }

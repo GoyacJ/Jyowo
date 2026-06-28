@@ -88,7 +88,7 @@ function validWorktreePage(): PageConversationWorktreeResponse {
                     summary: 'Approved once',
                     eventRefs: [{ eventId: 'event-004', cursor: cursor('', 4) }],
                   },
-                  failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+                  failureSummary: '工具执行失败。可在详情中查看。',
                   eventRefs: [{ eventId: 'event-005', cursor: cursor('', 5) }],
                 },
               ],

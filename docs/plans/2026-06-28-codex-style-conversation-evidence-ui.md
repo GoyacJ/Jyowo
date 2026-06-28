@@ -8,6 +8,12 @@
 
 **Tech Stack:** React 19, TypeScript 6, Tailwind CSS v4, TanStack Virtual, Storybook 10, Vitest, Testing Library, Playwright, Rust, serde, schemars, Zod, shiki, lucide-react.
 
+## Current Status And Supplement
+
+首轮实施后发现仍有若干验收缺口：上下文连续性、provider 身份约束、zh-CN 固定 runtime 文案、历史步骤折叠聚合、完成 run 内失败步骤表达、composer 底部遮挡风险，以及普通正文被路径脱敏误伤的风险。
+
+这些缺口不推翻本计划。补充计划记录在 `docs/plans/2026-06-28-codex-style-conversation-evidence-ui-supplement.md`。后续实现和验收必须同时对照本计划和该 supplement。
+
 ---
 
 ## Design Intent

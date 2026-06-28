@@ -114,6 +114,10 @@ export const zhCN = {
       process: '工作过程',
       processComplete: '已完成工作过程',
       processStepDetails: '详情',
+      processGroup: {
+        commandHistory: '已运行 {{count}} 条历史命令',
+        history: '已折叠 {{count}} 条历史步骤',
+      },
       processWithheld: '过程详情已隐藏',
       commandEvidence: {
         shell: 'Shell',

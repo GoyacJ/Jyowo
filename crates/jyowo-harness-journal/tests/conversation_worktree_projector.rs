@@ -288,8 +288,73 @@ fn projects_one_user_prompt_and_tool_loop_into_one_assistant_work_tree() {
     );
     assert_eq!(
         group.attempts[0].failure_summary.as_ref().unwrap().as_str(),
-        "工具执行失败。详情可在 Activity 中查看。"
+        "工具执行失败。可在详情中查看。"
     );
+}
+
+#[test]
+fn completed_tool_attempt_remains_projected_for_timeline_grouping() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "read file"),
+        tool_requested(2, "event-tool-requested", "run-1", "tool-a"),
+        event(
+            3,
+            "event-tool-completed",
+            "run-1",
+            "tool.completed",
+            json!({
+                "toolUseId": "tool-a",
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+    let group = assistant
+        .segments
+        .iter()
+        .find_map(tool_group)
+        .expect("completed tool group should stay visible to the timeline");
+
+    assert_eq!(group.attempts.len(), 1);
+    assert_eq!(group.attempts[0].status, ToolAttemptStatus::Completed);
+}
+
+#[test]
+fn completed_run_with_failed_process_step_projects_mixed_failure_summary() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "run checks"),
+        tool_requested(2, "event-tool-requested", "run-1", "tool-a"),
+        event(
+            3,
+            "event-tool-failed",
+            "run-1",
+            "tool.failed",
+            json!({
+                "toolUseId": "tool-a",
+                "message": "Tool error withheld from conversation timeline.",
+            }),
+        ),
+        event(
+            4,
+            "event-run-ended",
+            "run-1",
+            "run.ended",
+            json!({ "reason": "completed" }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+    assert_eq!(assistant.status, AssistantWorkStatus::Complete);
+
+    let process = assistant
+        .segments
+        .iter()
+        .find_map(process_segment)
+        .expect("process segment should exist");
+    assert_eq!(process.status, ProcessSegmentStatus::Failed);
+    assert_eq!(process.summary.as_str(), "已结束但存在失败步骤");
 }
 
 #[test]
@@ -308,7 +373,7 @@ fn merges_late_user_message_into_synthetic_turn_for_assistant_first_events() {
             "event-assistant",
             "run-1",
             "assistant-1",
-            "你好！我是 MiniMax-M3。",
+            "你好，我可以继续处理。",
         ),
         event(
             4,
@@ -340,8 +405,38 @@ fn merges_late_user_message_into_synthetic_turn_for_assistant_first_events() {
         .collect::<Vec<_>>();
     assert_eq!(text_segments.len(), 1);
     assert_eq!(text_segments[0].message_id, "assistant-1");
-    assert_eq!(text_segments[0].body.as_str(), "你好！我是 MiniMax-M3。");
+    assert_eq!(text_segments[0].body.as_str(), "你好，我可以继续处理。");
     assert_eq!(text_segments[0].event_refs.len(), 2);
+}
+
+#[test]
+fn engine_failed_projects_generic_failure_without_activity_label() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "run task"),
+        event(
+            2,
+            "event-engine-failed",
+            "run-1",
+            "engine.failed",
+            json!({
+                "code": "runtime_error",
+                "message": "raw runtime failure",
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+    let error = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::Error(error) => Some(error),
+            _ => None,
+        })
+        .expect("error segment should be projected");
+
+    assert_eq!(error.body.as_str(), "执行失败。可在详情中查看。");
 }
 
 #[test]
@@ -1276,7 +1371,7 @@ fn minimax_style_generation_flow_stays_in_one_safe_assistant_work_tree() {
     );
     assert_eq!(
         attempt.failure_summary.as_ref().unwrap().as_str(),
-        "工具执行失败。详情可在 Activity 中查看。"
+        "工具执行失败。可在详情中查看。"
     );
 
     let final_text = assistant
@@ -1427,7 +1522,7 @@ fn tool_lifecycle_adds_safe_process_steps_without_payloads() {
 }
 
 #[test]
-fn completed_tool_attempt_is_pruned_even_when_permission_resolves_late() {
+fn completed_tool_attempt_stays_projected_when_permission_resolves_late() {
     let events = vec![
         user_event(1, "event-user", "run-1", "user-1", "use tool"),
         event(
@@ -1476,7 +1571,18 @@ fn completed_tool_attempt_is_pruned_even_when_permission_resolves_late() {
     let projection = project_conversation_worktree_snapshot("conversation-1", events);
     let assistant = projection.turns[0].assistant.as_ref().unwrap();
 
-    assert!(assistant.segments.iter().find_map(tool_group).is_none());
+    let group = assistant
+        .segments
+        .iter()
+        .find_map(tool_group)
+        .expect("completed tool group should stay projected");
+    assert_eq!(group.attempts.len(), 1);
+    assert_eq!(group.attempts[0].status, ToolAttemptStatus::Completed);
+    assert_eq!(
+        group.attempts[0].permission.as_ref().unwrap().status,
+        ToolPermissionStatus::Approved
+    );
+
     let process = assistant
         .segments
         .iter()

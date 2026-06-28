@@ -1,4 +1,4 @@
-import { Wrench } from 'lucide-react'
+import { ChevronDown, ChevronRight, Wrench } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/shared/lib/utils'
 import type { ToolAttempt } from '@/shared/tauri/commands'
@@ -10,9 +10,18 @@ type ToolEvidenceCounts = {
   waitingPermissionCount: number
 }
 
-export function ToolEvidenceSummary({ attempts }: { attempts: ToolAttempt[] }) {
+export function ToolEvidenceSummary({
+  attempts,
+  completedGroupOpen = false,
+  onCompletedGroupToggle,
+}: {
+  attempts: ToolAttempt[]
+  completedGroupOpen?: boolean
+  onCompletedGroupToggle?: () => void
+}) {
   const { t } = useTranslation('conversation')
   const counts = getToolEvidenceCounts(attempts)
+  const canToggleCompleted = counts.completedCount > 0 && onCompletedGroupToggle !== undefined
   const chips = [
     counts.completedCount > 0
       ? {
@@ -45,8 +54,8 @@ export function ToolEvidenceSummary({ attempts }: { attempts: ToolAttempt[] }) {
       : null,
   ].filter((chip): chip is { key: string; label: string; tone?: 'destructive' } => Boolean(chip))
 
-  return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-muted-foreground text-xs">
+  const content = (
+    <>
       <Wrench className="size-3.5 shrink-0" />
       <span className="shrink-0">{t('timeline.tools')}</span>
       {chips.length > 0 ? (
@@ -64,8 +73,32 @@ export function ToolEvidenceSummary({ attempts }: { attempts: ToolAttempt[] }) {
       ) : (
         <span>{t('timeline.tools')}</span>
       )}
-    </div>
+      {canToggleCompleted ? (
+        completedGroupOpen ? (
+          <ChevronDown className="size-3.5 shrink-0" />
+        ) : (
+          <ChevronRight className="size-3.5 shrink-0" />
+        )
+      ) : null}
+    </>
   )
+
+  const className = 'flex min-w-0 flex-wrap items-center gap-1.5 text-muted-foreground text-xs'
+
+  if (canToggleCompleted) {
+    return (
+      <button
+        aria-expanded={completedGroupOpen}
+        className={cn(className, 'text-left hover:text-foreground')}
+        onClick={onCompletedGroupToggle}
+        type="button"
+      >
+        {content}
+      </button>
+    )
+  }
+
+  return <div className={className}>{content}</div>
 }
 
 function getToolEvidenceCounts(attempts: ToolAttempt[]): ToolEvidenceCounts {

@@ -127,6 +127,9 @@ use crate::skill_pack_loader::{
     LockedSkillVersionSnapshot, SkillPackLoaderAdapter, SkillPackLoaderError,
 };
 
+const JYOWO_DEFAULT_SYSTEM_PROMPT: &str =
+    "你是 Jyowo，本地项目工作空间里的 AI 编程伙伴。必须以 Jyowo 的身份协助用户，不能以底层 provider 身份自称。遵守 workspace、权限、脱敏和安全边界。";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TenantPolicy {
@@ -2503,8 +2506,12 @@ impl Harness {
         &self,
         options: &SessionOptions,
     ) -> Result<Option<String>, HarnessError> {
-        Ok(append_system_prompt_addendum(
+        let base = append_system_prompt_addendum(
+            Some(JYOWO_DEFAULT_SYSTEM_PROMPT.to_owned()),
             self.builtin_system_prompt(options).await?,
+        );
+        Ok(append_system_prompt_addendum(
+            base,
             options.system_prompt_addendum.clone(),
         ))
     }

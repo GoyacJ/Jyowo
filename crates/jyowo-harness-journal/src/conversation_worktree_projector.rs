@@ -62,7 +62,6 @@ pub fn project_conversation_worktree_snapshot(
                     ToolAttemptStatus::Completed,
                 ) {
                     state.project_tool_completed_process_step(&event, event_ref, tool_name);
-                    state.prune_completed_tool_attempt(&event.run_id);
                 }
             }
             "tool.failed" => state.project_tool_failed(&event, event_ref),
@@ -953,8 +952,20 @@ impl ProjectionState<'_> {
                     continue;
                 };
                 if matches!(process.status, ProcessSegmentStatus::Running) {
-                    process.status = ProcessSegmentStatus::Complete;
-                    process.summary = ui_text("已完成工作过程");
+                    let has_failed_step = process
+                        .steps
+                        .iter()
+                        .any(|step| matches!(step.status, ProcessStepStatus::Failed));
+                    process.status = if has_failed_step {
+                        ProcessSegmentStatus::Failed
+                    } else {
+                        ProcessSegmentStatus::Complete
+                    };
+                    process.summary = ui_text(if has_failed_step {
+                        "已结束但存在失败步骤"
+                    } else {
+                        "已完成工作过程"
+                    });
                     for step in &mut process.steps {
                         if matches!(step.status, ProcessStepStatus::Running) {
                             step.status = ProcessStepStatus::Complete;
@@ -989,7 +1000,7 @@ impl ProjectionState<'_> {
             .push(AssistantSegment::Error(ErrorSegment {
                 id: format!("segment:error:{}", event.id),
                 order,
-                body: ui_text("执行失败。详情可在 Activity 中查看。"),
+                body: ui_text("执行失败。可在详情中查看。"),
                 event_refs: vec![event_ref],
             }));
     }
@@ -1238,25 +1249,6 @@ impl ProjectionState<'_> {
         renumber_segments(assistant);
     }
 
-    fn prune_completed_tool_attempt(&mut self, run_id: &str) {
-        let Some(index) = self.run_turns.get(run_id).copied() else {
-            return;
-        };
-        let Some(assistant) = self.turns[index].assistant.as_mut() else {
-            return;
-        };
-        assistant.segments.retain_mut(|segment| {
-            let AssistantSegment::ToolGroup(group) = segment else {
-                return true;
-            };
-            group
-                .attempts
-                .retain(|attempt| !matches!(attempt.status, ToolAttemptStatus::Completed));
-            !group.attempts.is_empty()
-        });
-        renumber_segments(assistant);
-    }
-
     fn unique_tool_attempt_id_for_run(&self, run_id: &str) -> Option<String> {
         let index = self.run_turns.get(run_id).copied()?;
         let assistant = self.turns[index].assistant.as_ref()?;
@@ -1278,7 +1270,7 @@ impl ProjectionState<'_> {
 
 #[must_use]
 pub fn safe_tool_failure_summary(_event: &ConversationTimelineEvent) -> UiSafeText {
-    ui_text("工具执行失败。详情可在 Activity 中查看。")
+    ui_text("工具执行失败。可在详情中查看。")
 }
 
 fn merge_process_step_detail(

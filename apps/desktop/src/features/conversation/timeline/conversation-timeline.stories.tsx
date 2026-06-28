@@ -138,7 +138,7 @@ const baseTurn: ConversationTurn = {
             toolUseId: 'tool-002',
             toolName: 'exec_command',
             status: 'failed',
-            failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+            failureSummary: '工具执行失败。可在详情中查看。',
           },
           {
             id: 'tool:tool-003',
@@ -226,6 +226,46 @@ export const CodexEvidencePermissionPending: Story = {
   parameters: {
     backgrounds: { default: 'dark' },
     themeMode: 'dark',
+  },
+}
+
+export const CodexEvidenceCollapsedHistory: Story = {
+  args: {
+    title: 'Codex-style collapsed history',
+    turns: [collapsedHistoryTurn()],
+  },
+  parameters: {
+    backgrounds: { default: 'dark' },
+    themeMode: 'dark',
+  },
+}
+
+export const CodexEvidenceCompletedRunWithFailedStep: Story = {
+  args: {
+    title: 'Codex-style completed run with failed step',
+    turns: [completedRunWithFailedStepTurn()],
+  },
+  parameters: {
+    backgrounds: { default: 'dark' },
+    themeMode: 'dark',
+  },
+}
+
+export const CodexEvidenceRepeatedSearchFailures: Story = {
+  args: {
+    title: 'Codex-style repeated search failures',
+    turns: [repeatedSearchFailuresTurn()],
+  },
+  parameters: {
+    backgrounds: { default: 'dark' },
+    themeMode: 'dark',
+  },
+}
+
+export const CodexEvidenceBottomComposerOverlap: Story = {
+  args: {
+    title: 'Codex-style bottom composer reserve',
+    turns: bottomComposerOverlapTurns(),
   },
 }
 
@@ -339,7 +379,7 @@ export const MultipleToolAttempts: Story = {
                 toolUseId: 'tool-multiple-1',
                 toolName: 'pnpm test',
                 status: 'failed',
-                failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+                failureSummary: '工具执行失败。可在详情中查看。',
               },
               {
                 id: 'tool:multiple-2',
@@ -491,7 +531,7 @@ export const FinalAnswerAfterFailedTool: Story = {
                 toolUseId: 'tool-failed-final',
                 toolName: 'pnpm check',
                 status: 'failed',
-                failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+                failureSummary: '工具执行失败。可在详情中查看。',
               },
             ],
           },
@@ -622,6 +662,212 @@ export const LongConversation: Story = {
       })),
     ],
   },
+}
+
+function collapsedHistoryTurn(): ConversationTurn {
+  return storyTurn('codex-collapsed-history', '整理历史执行证据。', {
+    id: 'assistant:run-codex-collapsed-history',
+    runId: 'run-codex-collapsed-history',
+    status: 'complete',
+    segments: [
+      {
+        kind: 'process',
+        id: 'segment:process:codex-collapsed-history',
+        order: 0,
+        status: 'failed',
+        summary: '已结束但存在失败步骤',
+        steps: [
+          {
+            id: 'process-step:collapsed-read',
+            order: 0,
+            kind: 'fileRead',
+            status: 'complete',
+            title: '已读取 package.json',
+            detail: {
+              type: 'activity',
+              summary: '读取 package.json',
+              itemCount: 1,
+            },
+          },
+          {
+            id: 'process-step:collapsed-search',
+            order: 1,
+            kind: 'fileSearch',
+            status: 'complete',
+            title: '已搜索 timeline',
+            detail: {
+              type: 'activity',
+              summary: '搜索 timeline',
+              itemCount: 2,
+            },
+          },
+          {
+            id: 'process-step:collapsed-rg',
+            order: 2,
+            kind: 'command',
+            status: 'complete',
+            title: '已运行历史命令',
+            detail: {
+              type: 'command',
+              command: 'rg "timeline" apps/desktop/src',
+              output: 'apps/desktop/src/features/conversation/timeline/conversation-timeline.tsx',
+              exitCode: 0,
+              durationMs: 180,
+            },
+          },
+          {
+            id: 'process-step:collapsed-test-failed',
+            order: 3,
+            kind: 'command',
+            status: 'failed',
+            title: '测试失败',
+            detail: {
+              type: 'command',
+              command: 'pnpm -C apps/desktop test',
+              output: '1 failed',
+              exitCode: 1,
+              durationMs: 2100,
+            },
+          },
+        ],
+      },
+    ],
+  })
+}
+
+function completedRunWithFailedStepTurn(): ConversationTurn {
+  return storyTurn('codex-complete-with-failed-step', '运行检查并总结结果。', {
+    id: 'assistant:run-complete-with-failed-step',
+    runId: 'run-complete-with-failed-step',
+    status: 'complete',
+    segments: [
+      {
+        kind: 'process',
+        id: 'segment:process:complete-with-failed-step',
+        order: 0,
+        status: 'failed',
+        summary: '已结束但存在失败步骤',
+        steps: [
+          {
+            id: 'process-step:completed-typecheck',
+            order: 0,
+            kind: 'command',
+            status: 'complete',
+            title: '类型检查通过',
+            detail: {
+              type: 'command',
+              command: 'pnpm -C apps/desktop typecheck',
+              output: 'passed',
+              exitCode: 0,
+              durationMs: 1500,
+            },
+          },
+          {
+            id: 'process-step:failed-storybook',
+            order: 1,
+            kind: 'command',
+            status: 'failed',
+            title: 'Storybook 构建失败',
+            detail: {
+              type: 'command',
+              command: 'pnpm -C apps/desktop build-storybook',
+              output: 'Missing i18n key: timeline.processGroup.history',
+              exitCode: 1,
+              durationMs: 6400,
+            },
+          },
+          {
+            id: 'process-step:completed-summary',
+            order: 2,
+            kind: 'synthesis',
+            status: 'complete',
+            title: '整理失败摘要',
+            body: 'run 已结束，但仍需要显示失败步骤。',
+          },
+        ],
+      },
+      {
+        kind: 'text',
+        id: 'segment:text:complete-with-failed-step',
+        order: 1,
+        messageId: 'assistant-message-complete-with-failed-step',
+        body: '已保留失败步骤和后续处理线索。',
+      },
+    ],
+  })
+}
+
+function repeatedSearchFailuresTurn(): ConversationTurn {
+  return storyTurn('codex-repeated-search-failures', '查找相关文件。', {
+    id: 'assistant:run-repeated-search-failures',
+    runId: 'run-repeated-search-failures',
+    status: 'running',
+    segments: [
+      {
+        kind: 'toolGroup',
+        id: 'segment:tools:repeated-search-failures',
+        order: 0,
+        attempts: [
+          {
+            id: 'tool:search-failure-1',
+            order: 0,
+            toolUseId: 'tool-search-failure-1',
+            toolName: 'search_code',
+            status: 'failed',
+            failureSummary: '工具执行失败。可在详情中查看。',
+          },
+          {
+            id: 'tool:search-failure-2',
+            order: 1,
+            toolUseId: 'tool-search-failure-2',
+            toolName: 'search_code',
+            status: 'failed',
+            failureSummary: '工具执行失败。可在详情中查看。',
+          },
+          {
+            id: 'tool:search-failure-3',
+            order: 2,
+            toolUseId: 'tool-search-failure-3',
+            toolName: 'search_code',
+            status: 'failed',
+            failureSummary: '工具执行失败。可在详情中查看。',
+          },
+        ],
+      },
+    ],
+  })
+}
+
+function bottomComposerOverlapTurns(): ConversationTurn[] {
+  return Array.from({ length: 28 }, (_, index) => {
+    const isLast = index === 27
+    const turn = storyTurn(
+      `bottom-reserve-${index}`,
+      isLast ? '确认最后一条消息不会被 composer 遮挡。' : `继续第 ${index + 1} 轮。`,
+      {
+        id: `assistant:run-bottom-reserve-${index}`,
+        runId: `run-bottom-reserve-${index}`,
+        status: 'complete',
+        segments: [
+          {
+            kind: 'text',
+            id: `segment:text:bottom-reserve-${index}`,
+            order: 0,
+            messageId: `assistant-message-bottom-reserve-${index}`,
+            body: isLast
+              ? '最后一条 assistant 内容保留在底部 padding 之上。'
+              : `第 ${index + 1} 轮已完成。`,
+          },
+        ],
+      },
+    )
+
+    return {
+      ...turn,
+      conversationId: 'conversation-bottom-reserve',
+      position: index,
+    }
+  })
 }
 
 function StoryFrame({ children, theme }: { children: ReactNode; theme: 'dark' | 'light' }) {

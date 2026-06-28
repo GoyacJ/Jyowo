@@ -8,6 +8,7 @@ import { ConversationTurnRow } from './conversation-turn-row'
 import { useConversationScrollAnchor } from './use-conversation-scroll-anchor'
 
 const estimatedTurnHeightPx = 180
+const composerReservePx = 112
 const virtualListThreshold = 24
 
 export function ConversationTimeline({
@@ -124,9 +125,10 @@ export function ConversationTimeline({
         {timelineTurns.length > 0 ? (
           useVirtualList ? (
             <div
-              className="relative pb-4"
+              className="relative pb-28"
+              data-testid="conversation-timeline-scroll-content"
               ref={listRef}
-              style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+              style={{ height: `${rowVirtualizer.getTotalSize() + composerReservePx}px` }}
             >
               {rowVirtualizer.getVirtualItems().map((virtualRow) => {
                 const turn = timelineTurns[virtualRow.index]
@@ -154,7 +156,7 @@ export function ConversationTimeline({
               <div aria-hidden="true" ref={endRef} />
             </div>
           ) : (
-            <div className="grid gap-5 pb-4">
+            <div className="grid gap-5 pb-28" data-testid="conversation-timeline-scroll-content">
               {timelineTurns.map((turn) => (
                 <ConversationTurnRow
                   key={turn.id}

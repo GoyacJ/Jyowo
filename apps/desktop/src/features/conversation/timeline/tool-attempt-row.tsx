@@ -9,6 +9,7 @@ export function ToolAttemptRow({
   attempt,
   attemptCount,
   conversationId,
+  defaultDetailOpen,
   onOpenDetails,
   onPermissionResolve,
   runId,
@@ -18,6 +19,7 @@ export function ToolAttemptRow({
   attempt: ToolAttempt
   attemptCount: number
   conversationId: string
+  defaultDetailOpen?: boolean
   onOpenDetails?: (eventRef: ConversationEventRef) => void
   onPermissionResolve?: (request: {
     conversationId: string
@@ -36,7 +38,7 @@ export function ToolAttemptRow({
   const setDisclosureOpen = useUiStore((state) => state.setEvidenceDisclosureOpen)
   const hasDetails = Boolean(attempt.permission || attempt.failureSummary)
   const forcedOpen = isForcedOpenAttempt(attempt)
-  const defaultOpen = getDefaultOpen(attempt, attemptCount)
+  const defaultOpen = defaultDetailOpen ?? getDefaultOpen(attempt, attemptCount)
   const open = forcedOpen || (storedOpen ?? defaultOpen)
   const canToggle = hasDetails && !forcedOpen
 
@@ -87,7 +89,7 @@ export function ToolAttemptRow({
             />
           ) : null}
           {attempt.failureSummary ? (
-            <p className="rounded-md bg-destructive/10 px-3 py-2 text-destructive text-sm">
+            <p className="border-destructive/40 border-l pl-3 text-destructive text-sm">
               {attempt.failureSummary}
             </p>
           ) : null}

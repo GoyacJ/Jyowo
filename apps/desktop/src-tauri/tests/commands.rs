@@ -5731,7 +5731,7 @@ async fn list_activity_with_runtime_state_maps_assistant_interaction_events() {
         .iter()
         .find(|event| event.event_type == "assistant.review.requested")
         .expect("activity should include review");
-    assert_eq!(review.payload["title"], json!("[REDACTED]"));
+    assert_eq!(review.payload["title"], json!("Review http[REDACTED]"));
     assert!(review.payload["body"]
         .as_str()
         .is_some_and(|body| body.contains("[REDACTED]")));
@@ -6533,7 +6533,7 @@ async fn page_conversation_worktree_with_runtime_state_returns_safe_turn_tree() 
     );
     assert_eq!(
         tool.failure_summary.as_ref().unwrap().as_str(),
-        "工具执行失败。详情可在 Activity 中查看。"
+        "工具执行失败。可在详情中查看。"
     );
 
     assert!(
