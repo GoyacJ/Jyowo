@@ -14,6 +14,7 @@ export interface UiState {
   activeRunConversationId: string | undefined
   activeRunId: string | undefined
   activeRunsByConversation: Record<string, string>
+  evidenceDisclosureOpen: Record<string, boolean>
   theme: ThemeMode
   locale: AppLocale
   sidebarCollapsed: boolean
@@ -21,6 +22,8 @@ export interface UiState {
   inspectorOpen: boolean
   timelineScrollRequest: TimelineScrollRequest | null
   clearActiveRun: (conversationId?: string) => void
+  resetEvidenceDisclosure: () => void
+  setEvidenceDisclosureOpen: (id: string, open: boolean) => void
   setActiveRun: (activeRun: { conversationId: string; runId: string }) => void
   setTheme: (theme: ThemeMode) => void
   setLocale: (locale: AppLocale) => void
@@ -36,6 +39,7 @@ export function createUiStore() {
     activeRunConversationId: undefined,
     activeRunId: undefined,
     activeRunsByConversation: {},
+    evidenceDisclosureOpen: {},
     theme: 'light',
     locale: DEFAULT_APP_LOCALE,
     sidebarCollapsed: false,
@@ -62,6 +66,14 @@ export function createUiStore() {
           activeRunsByConversation,
         }
       }),
+    resetEvidenceDisclosure: () => set({ evidenceDisclosureOpen: {} }),
+    setEvidenceDisclosureOpen: (id, open) =>
+      set((state) => ({
+        evidenceDisclosureOpen: {
+          ...state.evidenceDisclosureOpen,
+          [id]: open,
+        },
+      })),
     setActiveRun: (activeRun) =>
       set((state) => ({
         activeRunConversationId: activeRun.conversationId,

@@ -10,18 +10,18 @@ use harness_context::ContextSessionView;
 use harness_contracts::{
     ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, AssistantDeltaProducedEvent,
     AssistantMessageCompletedEvent, BlobRef, BudgetKind, CausationId, ContextPatchLifecycle,
-    ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource, DecidedBy, Decision, DecisionId,
-    DeltaChunk, DenyReason, EndReason, Event, EventId, ExecFingerprint, FallbackPolicy,
-    HookContextPatchEvent, HookEventKind, HookFailedEvent, HookOutcomeInconsistentEvent,
-    HookOutcomeSummary, HookPermissionConflictEvent, HookReturnedUnsupportedEvent,
-    HookRewroteInputEvent, HookTriggeredEvent, InteractivityLevel, Message, MessageContent,
-    MessageId, MessageMetadata, MessagePart, MessageRole, ModelError, ModelRef, PermissionMode,
-    PermissionRequestSuppressedEvent, PermissionRequestedEvent, PermissionResolvedEvent,
-    PricingSnapshotId, RedactRules, Redactor, RequestId, RunEndedEvent, RunId, RunStartedEvent,
-    SessionId, StopReason, SuppressionReason, TeamId, TenantId, ToolDescriptor, ToolError,
-    ToolErrorPayload, ToolResult, ToolResultPart, ToolUseApprovedEvent, ToolUseCompletedEvent,
-    ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, TrustLevel,
-    TurnInput, UsageAccumulatedEvent, UsageSnapshot,
+    ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource, ConversationAttachmentReference,
+    DecidedBy, Decision, DecisionId, DeltaChunk, DenyReason, EndReason, Event, EventId,
+    ExecFingerprint, FallbackPolicy, HookContextPatchEvent, HookEventKind, HookFailedEvent,
+    HookOutcomeInconsistentEvent, HookOutcomeSummary, HookPermissionConflictEvent,
+    HookReturnedUnsupportedEvent, HookRewroteInputEvent, HookTriggeredEvent, InteractivityLevel,
+    Message, MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, ModelError,
+    ModelRef, PermissionMode, PermissionRequestSuppressedEvent, PermissionRequestedEvent,
+    PermissionResolvedEvent, PricingSnapshotId, RedactRules, Redactor, RequestId, RunEndedEvent,
+    RunId, RunStartedEvent, SessionId, StopReason, SuppressionReason, TeamId, TenantId,
+    ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolResultPart, ToolUseApprovedEvent,
+    ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
+    ToolUseRequestedEvent, TrustLevel, TurnInput, UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_hook::{
     DispatchResult, HookContext, HookEvent, HookFailureCause, HookMessageView, HookOutcome,
@@ -1830,6 +1830,7 @@ async fn append_user_message_if_needed(
                 message_id: next_input.message.id,
                 content: message_content(&next_input.message),
                 metadata: message_metadata(client_message_id),
+                attachments: attachments_from_turn_metadata(&next_input.metadata),
                 at: harness_contracts::now(),
             },
         )],
@@ -1850,6 +1851,14 @@ fn append_text_to_message(message: &mut Message, text: &str) {
         return;
     }
     message.parts.push(MessagePart::Text(text.to_owned()));
+}
+
+fn attachments_from_turn_metadata(metadata: &Value) -> Vec<ConversationAttachmentReference> {
+    metadata
+        .get("attachments")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
 }
 
 async fn append(

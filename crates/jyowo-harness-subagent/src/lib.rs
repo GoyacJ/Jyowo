@@ -772,6 +772,7 @@ impl SubagentAnnouncementRenderer {
             message_id: harness_contracts::MessageId::new(),
             content: MessageContent::Text(rendered.user_message),
             metadata,
+            attachments: Vec::new(),
             at: Utc::now(),
         })
     }
@@ -1646,6 +1647,7 @@ impl DefaultSubagentRunner {
                         message_id: harness_contracts::MessageId::new(),
                         content: MessageContent::Text(rendered.user_message),
                         metadata,
+                        attachments: Vec::new(),
                         at: Utc::now(),
                     }),
                 ],

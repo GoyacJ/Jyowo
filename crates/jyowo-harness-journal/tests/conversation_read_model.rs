@@ -50,6 +50,41 @@ fn user_message(run_id: RunId, message_id: MessageId, body: &str) -> Event {
             source: None,
             labels,
         },
+        attachments: Vec::new(),
+        at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(1),
+    })
+}
+
+fn user_message_with_attachment(run_id: RunId, message_id: MessageId, body: &str) -> Event {
+    Event::UserMessageAppended(UserMessageAppendedEvent {
+        run_id,
+        message_id,
+        content: MessageContent::Text(body.to_owned()),
+        metadata: MessageMetadata::default(),
+        attachments: vec![ConversationAttachmentReference {
+            id: "attachment-001".to_owned(),
+            name: "notes.txt".to_owned(),
+            mime_type: "text/plain".to_owned(),
+            size_bytes: 128,
+            blob_ref: blob_ref_with_content_type(128, "text/plain"),
+        }],
+        at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(1),
+    })
+}
+
+fn user_message_with_unsafe_attachment(run_id: RunId, message_id: MessageId, body: &str) -> Event {
+    Event::UserMessageAppended(UserMessageAppendedEvent {
+        run_id,
+        message_id,
+        content: MessageContent::Text(body.to_owned()),
+        metadata: MessageMetadata::default(),
+        attachments: vec![ConversationAttachmentReference {
+            id: "attachment-001".to_owned(),
+            name: "/Users/alice/.ssh/id_rsa sk-secret-token".to_owned(),
+            mime_type: "text/plain authorization bearer secret-token".to_owned(),
+            size_bytes: 128,
+            blob_ref: blob_ref_with_content_type(128, "file:///Users/alice/private.txt"),
+        }],
         at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(1),
     })
 }
@@ -663,6 +698,7 @@ async fn sqlite_conversation_read_model_redacts_urls_and_blob_paths_from_public_
                 run_id,
                 notice_id,
                 body: UiSafeText::from_trusted_redacted("Read 路径：.jyowo/runtime/blobs/blob-001"),
+                code: None,
                 at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(5),
             }),
         ),
@@ -809,6 +845,84 @@ async fn sqlite_conversation_read_model_projects_assistant_delta_message_id() {
 
     assert_eq!(delta.payload["text"], "hello");
     assert_eq!(delta.payload["messageId"], message_id.to_string());
+}
+
+#[tokio::test]
+async fn sqlite_conversation_read_model_projects_user_message_attachments() {
+    let root = temp_root("user-message-attachments");
+    let store = SqliteConversationReadModelStore::open(root.join("read-model.sqlite"))
+        .await
+        .expect("store opens");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let message_id = MessageId::new();
+    let envelopes = vec![envelope(
+        tenant_id,
+        session_id,
+        1,
+        user_message_with_attachment(run_id, message_id, "Summarize this attachment"),
+    )];
+
+    store
+        .apply_envelopes(tenant_id, session_id, &envelopes, None)
+        .await
+        .expect("projection applies");
+
+    let page = store
+        .page_timeline(tenant_id, session_id, None, 20)
+        .await
+        .expect("timeline loads");
+    let user = page
+        .events
+        .iter()
+        .find(|event| event.event_type == "user.message.appended")
+        .expect("user message is projected");
+
+    assert_eq!(user.payload["attachments"][0]["name"], "notes.txt");
+    assert_eq!(user.payload["attachments"][0]["mimeType"], "text/plain");
+    assert_eq!(user.payload["attachments"][0]["sizeBytes"], 128);
+}
+
+#[tokio::test]
+async fn sqlite_conversation_read_model_redacts_unsafe_attachment_metadata() {
+    let root = temp_root("unsafe-user-message-attachments");
+    let store = SqliteConversationReadModelStore::open(root.join("read-model.sqlite"))
+        .await
+        .expect("store opens");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let message_id = MessageId::new();
+    let envelopes = vec![envelope(
+        tenant_id,
+        session_id,
+        1,
+        user_message_with_unsafe_attachment(run_id, message_id, "Summarize this attachment"),
+    )];
+
+    store
+        .apply_envelopes(tenant_id, session_id, &envelopes, None)
+        .await
+        .expect("projection applies");
+
+    let page = store
+        .page_timeline(tenant_id, session_id, None, 20)
+        .await
+        .expect("timeline loads");
+    let user = page
+        .events
+        .iter()
+        .find(|event| event.event_type == "user.message.appended")
+        .expect("user message is projected");
+    let attachment = &user.payload["attachments"][0];
+
+    assert_eq!(attachment["name"], "[REDACTED]");
+    assert_eq!(attachment["mimeType"], "application/octet-stream");
+    assert_eq!(
+        attachment["blobRef"]["contentType"],
+        serde_json::Value::Null
+    );
 }
 
 #[tokio::test]
@@ -1847,6 +1961,7 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
                 body: UiSafeText::from_trusted_redacted(
                     "Tool output was summarized from /home/example/private.",
                 ),
+                code: None,
                 at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(8),
             }),
         ),

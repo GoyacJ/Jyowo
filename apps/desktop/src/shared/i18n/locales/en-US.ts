@@ -96,6 +96,10 @@ export const enUS = {
       emptyTitle: 'Start a conversation',
       emptyDescription: 'Ask Jyowo to work in this project.',
       executionStatus: 'Execution: {{status}}',
+      assistantStatus: {
+        running: 'Processing',
+        failed: 'Failed',
+      },
       jumpToLatest: 'Jump to latest',
       permissionStatus: 'Permission: {{status}}',
       permissionStatusLabel: {
@@ -111,6 +115,12 @@ export const enUS = {
       processComplete: 'Work process complete',
       processStepDetails: 'Details',
       processWithheld: 'Process details are withheld',
+      commandEvidence: {
+        shell: 'Shell',
+        copy: 'Copy command output',
+        exitCode: 'exit {{code}}',
+        duration: '{{duration}} ms',
+      },
       reasoningComplete: 'Reasoning process complete',
       reasoningProcess: 'Reasoning process',
       thinkingSummary: 'Thinking summary',
@@ -122,6 +132,12 @@ export const enUS = {
         queued: 'queued',
         running: 'running',
         waitingPermission: 'waiting for permission',
+      },
+      toolEvidenceSummary: {
+        completed: 'Ran {{count}} tools',
+        failed: '{{count}} failed',
+        running: '{{count}} running',
+        waitingPermission: '{{count}} waiting for permission',
       },
       tools: 'Tools',
     },

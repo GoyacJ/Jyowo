@@ -4,8 +4,8 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    ArtifactSource, ArtifactStatus, BlobRef, ConversationCursor, ConversationMessage,
-    ConversationMessageAuthor, ConversationSnapshot, ConversationSummary,
+    ArtifactSource, ArtifactStatus, BlobRef, ConversationAttachmentReference, ConversationCursor,
+    ConversationMessage, ConversationMessageAuthor, ConversationSnapshot, ConversationSummary,
     ConversationTimelineEvent, ConversationTimelinePage, ConversationTurnCursor,
     ConversationWorktreePage, Decision, DecisionScope, DeltaChunk, Event, EventId, JournalError,
     MessageContent, MessagePart, PermissionSubject, RequestId, RunId, SessionId, Severity,
@@ -22,7 +22,7 @@ use crate::{
 
 const CONVERSATION_READ_MODEL_PROJECTION_VERSION_KEY: &str =
     "conversation_read_model_projection_version";
-const CONVERSATION_READ_MODEL_PROJECTION_VERSION: &str = "5";
+const CONVERSATION_READ_MODEL_PROJECTION_VERSION: &str = "6";
 const CONVERSATION_READ_MODEL_CACHE_TABLES: [&str; 6] = [
     "conversation_projection_permission_context",
     "conversation_projection_tool_context",
@@ -663,6 +663,7 @@ fn project_envelope(
                     "messageId": event.message_id.to_string(),
                     "body": body.as_str(),
                     "clientMessageId": message.client_message_id,
+                    "attachments": attachment_references_payload(&event.attachments),
                 }),
                 Some(message),
                 event.at,
@@ -823,10 +824,16 @@ fn project_envelope(
             "assistant.notice",
             "assistant",
             "public",
-            json!({
+            {
+                let mut payload = json!({
                 "noticeId": event.notice_id.to_string(),
                 "body": safe_text(event.body.as_str()).into_string(),
-            }),
+                });
+                if let Some(code) = event.code.as_ref() {
+                    payload["code"] = json!(code);
+                }
+                payload
+            },
             None,
             event.at,
         ),
@@ -1026,6 +1033,75 @@ fn message_content_display(content: &MessageContent) -> UiSafeText {
             .join("\n"),
     };
     safe_text(value)
+}
+
+fn attachment_references_payload(attachments: &[ConversationAttachmentReference]) -> Vec<Value> {
+    attachments
+        .iter()
+        .map(|attachment| {
+            json!({
+                "id": attachment.id,
+                "name": safe_attachment_name(&attachment.name).as_str(),
+                "mimeType": safe_mime_type(&attachment.mime_type),
+                "sizeBytes": attachment.size_bytes,
+                "blobRef": {
+                    "id": attachment.blob_ref.id.to_string(),
+                    "size": attachment.blob_ref.size,
+                    "contentHash": attachment.blob_ref.content_hash,
+                    "contentType": attachment
+                        .blob_ref
+                        .content_type
+                        .as_deref()
+                        .and_then(safe_optional_mime_type),
+                },
+            })
+        })
+        .collect()
+}
+
+fn safe_attachment_name(value: &str) -> UiSafeText {
+    let safe = safe_text(value);
+    if safe.as_str().contains("[REDACTED]") {
+        UiSafeText::from_trusted_redacted("[REDACTED]")
+    } else {
+        safe
+    }
+}
+
+fn safe_mime_type(value: &str) -> &str {
+    safe_optional_mime_type(value).unwrap_or("application/octet-stream")
+}
+
+fn safe_optional_mime_type(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty()
+        || contains_obvious_secret(value)
+        || redact_unsafe_process_text(value) != value
+        || !is_mime_type_shape(value)
+    {
+        return None;
+    }
+
+    Some(value)
+}
+
+fn is_mime_type_shape(value: &str) -> bool {
+    let Some((kind, subtype)) = value.split_once('/') else {
+        return false;
+    };
+
+    !kind.is_empty()
+        && !subtype.is_empty()
+        && kind.bytes().all(is_mime_token_byte)
+        && subtype.bytes().all(is_mime_token_byte)
+}
+
+fn is_mime_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'!' | b'#' | b'$' | b'&' | b'-' | b'^' | b'_' | b'.' | b'+'
+        )
 }
 
 fn safe_text(value: impl AsRef<str>) -> UiSafeText {

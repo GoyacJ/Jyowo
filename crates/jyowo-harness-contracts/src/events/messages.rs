@@ -9,6 +9,8 @@ pub struct UserMessageAppendedEvent {
     pub message_id: MessageId,
     pub content: MessageContent,
     pub metadata: MessageMetadata,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ConversationAttachmentReference>,
     pub at: DateTime<Utc>,
 }
 
@@ -54,6 +56,8 @@ pub struct AssistantNoticeEvent {
     pub run_id: RunId,
     pub notice_id: RequestId,
     pub body: UiSafeText,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<AssistantNoticeCode>,
     pub at: DateTime<Utc>,
 }
 

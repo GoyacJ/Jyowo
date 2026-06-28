@@ -134,9 +134,10 @@ fn conversation_session_uses_descriptor_protocol_when_options_omit_protocol() {
             )
             .with_protocol(ModelProtocol::Responses),
         );
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let harness = Harness::builder()
             .with_model_arc(model.clone())
-            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .build()
             .await
@@ -178,9 +179,10 @@ fn conversation_turn_input_renders_references_and_attachments_context_block() {
                 ModelStreamEvent::MessageStop,
             ]],
         ));
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let harness = Harness::builder()
             .with_model_arc(model.clone())
-            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .build()
             .await
@@ -238,6 +240,24 @@ fn conversation_turn_input_renders_references_and_attachments_context_block() {
         assert!(text.contains("attachment: notes.txt text/plain 12 bytes attachment-001"));
         assert!(!text.contains("Command intent only."));
         assert!(text.ends_with("use these references"));
+
+        let events: Vec<_> = store
+            .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+            .await
+            .expect("events should be readable")
+            .collect()
+            .await;
+        let attachment = events
+            .iter()
+            .find_map(|event| match event {
+                Event::UserMessageAppended(event) => event.attachments.first(),
+                _ => None,
+            })
+            .expect("user event should keep attachment metadata");
+        assert_eq!(attachment.id, "attachment-001");
+        assert_eq!(attachment.name, "notes.txt");
+        assert_eq!(attachment.mime_type, "text/plain");
+        assert_eq!(attachment.size_bytes, 12);
     });
 }
 

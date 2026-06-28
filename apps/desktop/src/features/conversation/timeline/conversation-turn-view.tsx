@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import type { ConversationEventRef, ConversationTurn } from '@/shared/tauri/commands'
 import { AssistantWorkView } from './assistant-work-view'
+import { UserAttachmentStrip } from './user-attachment-strip'
 
 export function ConversationTurnView({
   turn,
@@ -22,9 +23,12 @@ export function ConversationTurnView({
   return (
     <article aria-label={t('turnLabel')} className="grid gap-4">
       <section className="flex justify-end">
-        <div className="max-w-[78%] rounded-md bg-primary px-4 py-3 text-primary-foreground">
-          <div className="mb-1 font-medium text-xs opacity-80">{t('userAuthor')}</div>
-          <p className="whitespace-pre-wrap text-sm leading-6">{turn.user.body}</p>
+        <div className="flex max-w-[92%] flex-col items-end gap-2 sm:max-w-[78%]">
+          <UserAttachmentStrip attachments={turn.user.attachments ?? []} />
+          <div className="w-full rounded-md border border-border bg-muted px-4 py-3 text-foreground">
+            <div className="mb-1 text-muted-foreground text-xs">{t('userAuthor')}</div>
+            <p className="whitespace-pre-wrap text-sm leading-6">{turn.user.body}</p>
+          </div>
         </div>
       </section>
       {turn.assistant ? (

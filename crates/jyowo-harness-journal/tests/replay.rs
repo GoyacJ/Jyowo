@@ -24,6 +24,7 @@ fn session_projection_replays_message_usage_and_end_state() {
             message_id: user_message_id,
             content: MessageContent::Text("hello".to_owned()),
             metadata: MessageMetadata::default(),
+            attachments: Vec::new(),
             at: now,
         }),
         Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {

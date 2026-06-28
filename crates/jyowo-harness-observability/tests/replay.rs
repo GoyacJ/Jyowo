@@ -452,6 +452,7 @@ fn session_events(
             message_id: MessageId::new(),
             content: MessageContent::Text(user.to_owned()),
             metadata: MessageMetadata::default(),
+            attachments: Vec::new(),
             at: harness_contracts::now(),
         }),
         Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {

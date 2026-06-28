@@ -742,6 +742,115 @@ describe('CommandClient', () => {
     })
   })
 
+  it('accepts structured notice codes in conversation worktree pages', async () => {
+    const payload = validWorktreePage()
+    const assistant = payload.turns[0].assistant
+    if (!assistant) {
+      throw new Error('assistant fixture missing')
+    }
+    assistant.segments = [
+      {
+        kind: 'notice',
+        id: 'segment:notice:context-compacted',
+        order: 0,
+        body: '上下文已自动压缩',
+        code: 'contextCompacted',
+      },
+      {
+        kind: 'notice',
+        id: 'segment:notice:future',
+        order: 1,
+        body: 'Future notice',
+        code: 'futureNoticeCode',
+      },
+    ]
+
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+      ),
+    ).resolves.toMatchObject({
+      turns: [
+        {
+          assistant: {
+            segments: [
+              { kind: 'notice', code: 'contextCompacted' },
+              { kind: 'notice', code: 'futureNoticeCode' },
+            ],
+          },
+        },
+      ],
+    })
+  })
+
+  it('accepts historical user attachments in conversation worktree pages', async () => {
+    const payload = validWorktreePage() as unknown as Record<string, unknown>
+    const turns = payload.turns as Array<Record<string, unknown>>
+    const user = turns[0].user as Record<string, unknown>
+    user.attachments = [
+      {
+        blob_ref: {
+          content_hash: validBlobRef.contentHash,
+          content_type: validBlobRef.contentType,
+          id: validBlobRef.id,
+          size: validBlobRef.size,
+        },
+        id: validAttachmentId,
+        mime_type: 'text/plain',
+        name: 'notes.txt',
+        size_bytes: 128,
+      },
+    ]
+
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+      ),
+    ).resolves.toMatchObject({
+      turns: [
+        {
+          user: {
+            attachments: [
+              {
+                id: validAttachmentId,
+                mimeType: 'text/plain',
+                name: 'notes.txt',
+                sizeBytes: 128,
+              },
+            ],
+          },
+        },
+      ],
+    })
+  })
+
+  it('rejects unsafe historical attachment metadata in conversation worktree pages', async () => {
+    const payload = validWorktreePage() as unknown as Record<string, unknown>
+    const turns = payload.turns as Array<Record<string, unknown>>
+    const user = turns[0].user as Record<string, unknown>
+    user.attachments = [
+      {
+        blobRef: {
+          ...validBlobRef,
+          contentType: 'file:///Users/alice/private.txt',
+        },
+        id: validAttachmentId,
+        mimeType: 'text/plain authorization bearer secret-token',
+        name: '/Users/alice/.ssh/id_rsa',
+        sizeBytes: 128,
+      },
+    ]
+
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+      ),
+    ).rejects.toThrow()
+  })
+
   it('rejects malformed conversation worktree payloads at the IPC boundary', async () => {
     const invalidCases = [
       (page: ReturnType<typeof validWorktreePage>) => {

@@ -75,8 +75,22 @@ describe('conversation components', () => {
 
     expect(screen.getByText('apps/desktop/src-tauri/src/lib.rs')).toBeInTheDocument()
     expect(screen.getByText('+46')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Open in editor' })).toBeInTheDocument()
+    expect(screen.getByText('-0')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Copy diff' })).toBeInTheDocument()
+  })
+
+  it('keeps diff metadata lines neutral in legacy diff previews', () => {
+    render(
+      <DiffPreview
+        addedLineCount={1}
+        filename="apps/desktop/src/demo.ts"
+        lines={['--- a/demo.ts', '+++ b/demo.ts', '@@ -1 +1 @@', '- oldValue()', '+ newValue()']}
+        removedLineCount={1}
+      />,
+    )
+
+    expect(screen.getByText('+++ b/demo.ts').closest('div')).not.toHaveClass('bg-success/10')
+    expect(screen.getByText('--- a/demo.ts').closest('div')).not.toHaveClass('bg-destructive/10')
   })
 
   it('renders decision, review, and large diff states', () => {

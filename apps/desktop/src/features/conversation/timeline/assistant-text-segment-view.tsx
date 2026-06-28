@@ -1,3 +1,4 @@
+import { MarkdownMessage } from '@/shared/markdown/MarkdownMessage'
 import type { TextSegment } from '@/shared/tauri/commands'
 
 export function AssistantTextSegmentView({ segment }: { segment: TextSegment }) {
@@ -5,5 +6,5 @@ export function AssistantTextSegmentView({ segment }: { segment: TextSegment }) 
     return null
   }
 
-  return <p className="whitespace-pre-wrap text-sm leading-6">{segment.body}</p>
+  return <MarkdownMessage className="text-foreground">{segment.body}</MarkdownMessage>
 }

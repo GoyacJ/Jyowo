@@ -21,6 +21,7 @@
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
     "test:e2e": "env -u FORCE_COLOR -u NO_COLOR playwright test",
+    "test:e2e:storybook": "env -u FORCE_COLOR -u NO_COLOR playwright test -c playwright.storybook.config.ts",
     "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm knip",
     "check:full": "pnpm check && pnpm build-storybook && pnpm test:e2e && pnpm tauri build",
     "tauri": "tauri"

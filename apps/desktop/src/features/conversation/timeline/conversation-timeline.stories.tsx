@@ -5,6 +5,11 @@ import type { ReactNode } from 'react'
 import type { ConversationTurn } from '@/shared/tauri/commands'
 import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import {
+  codexAttachmentStressTurns,
+  codexLargeDiffTurns,
+  codexStyleEvidenceTurns,
+} from './conversation-evidence-fixtures'
 import { ConversationTimeline } from './conversation-timeline'
 
 const meta = {
@@ -18,17 +23,18 @@ const meta = {
     turns: [],
   },
   decorators: [
-    ((StoryComponent) => {
+    ((StoryComponent, context) => {
       const queryClient = new QueryClient({
         defaultOptions: {
           queries: { retry: false },
         },
       })
+      const theme = context.parameters.themeMode === 'dark' ? 'dark' : 'light'
 
       return (
         <CommandClientProvider client={createMockCommandClient()}>
           <QueryClientProvider client={queryClient}>
-            <StoryFrame>
+            <StoryFrame theme={theme}>
               <StoryComponent />
             </StoryFrame>
           </QueryClientProvider>
@@ -171,6 +177,86 @@ const baseTurn: ConversationTurn = {
 }
 
 export const Empty: Story = {}
+
+export const CodexEvidenceFlow: Story = {
+  args: {
+    title: 'Codex-style evidence flow',
+    turns: codexStyleEvidenceTurns,
+  },
+  parameters: {
+    backgrounds: { default: 'dark' },
+    themeMode: 'dark',
+  },
+}
+
+export const CodexEvidenceRunning: Story = {
+  args: {
+    title: 'Codex-style running evidence',
+    turns: codexEvidenceTurnsWithStatus('running'),
+  },
+  parameters: {
+    backgrounds: { default: 'dark' },
+    themeMode: 'dark',
+  },
+}
+
+export const CodexEvidenceFailedCommand: Story = {
+  args: {
+    title: 'Codex-style failed command',
+    turns: codexStyleEvidenceTurns,
+  },
+  parameters: {
+    backgrounds: { default: 'dark' },
+    themeMode: 'dark',
+  },
+}
+
+export const CodexEvidenceLargeDiff: Story = {
+  args: {
+    title: 'Codex-style large diff',
+    turns: codexLargeDiffTurns,
+  },
+}
+
+export const CodexEvidencePermissionPending: Story = {
+  args: {
+    title: 'Codex-style permission pending',
+    turns: [baseTurn],
+  },
+  parameters: {
+    backgrounds: { default: 'dark' },
+    themeMode: 'dark',
+  },
+}
+
+export const CodexEvidenceContextCompacted: Story = {
+  args: {
+    title: 'Codex-style context compaction',
+    turns: codexStyleEvidenceTurns,
+  },
+}
+
+export const CodexEvidenceAttachmentsMetadataOnly: Story = {
+  args: {
+    title: 'Codex-style attachment metadata',
+    turns: codexAttachmentStressTurns,
+  },
+}
+
+export const CodexEvidenceAttachmentsWithSafePreview: Story = {
+  args: {
+    title: 'Codex-style attachment preview fallback',
+    turns: codexAttachmentStressTurns,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Attachment safe preview is not exposed by the current worktree contract, so image attachments render as metadata chips instead of blob-backed thumbnails.',
+      },
+    },
+  },
+}
 
 export const SimpleCompletedTurn: Story = {
   args: {
@@ -538,10 +624,39 @@ export const LongConversation: Story = {
   },
 }
 
-function StoryFrame({ children }: { children: ReactNode }) {
+function StoryFrame({ children, theme }: { children: ReactNode; theme: 'dark' | 'light' }) {
   return (
-    <main className="h-screen bg-background p-6 text-foreground">
+    <main
+      className={`${theme === 'dark' ? 'dark ' : ''}h-screen bg-background p-6 text-foreground`}
+    >
       <div className="mx-auto h-full max-w-[980px]">{children}</div>
     </main>
   )
+}
+
+function codexEvidenceTurnsWithStatus(
+  status: NonNullable<ConversationTurn['assistant']>['status'],
+): ConversationTurn[] {
+  return codexStyleEvidenceTurns.map((turn) => ({
+    ...turn,
+    id: `${turn.id}:${status}`,
+    assistant: turn.assistant
+      ? {
+          ...turn.assistant,
+          id: `${turn.assistant.id}:${status}`,
+          runId: `${turn.assistant.runId}:${status}`,
+          status,
+          segments: turn.assistant.segments.map((segment) => {
+            if (segment.kind !== 'process') {
+              return segment
+            }
+
+            return {
+              ...segment,
+              status: status === 'failed' ? 'failed' : 'running',
+            }
+          }),
+        }
+      : undefined,
+  }))
 }

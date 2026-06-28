@@ -5700,6 +5700,7 @@ async fn list_activity_with_runtime_state_maps_assistant_interaction_events() {
                     body: UiSafeText::from_trusted_redacted(
                         "Generation queued at 路径：.jyowo/runtime/blobs/blob-002.",
                     ),
+                    code: None,
                     at: now(),
                 }),
             ],
@@ -5817,6 +5818,7 @@ async fn page_conversation_timeline_with_runtime_state_accepts_assistant_interac
                     body: UiSafeText::from_trusted_redacted(
                         "Generation queued from /home/example/private.",
                     ),
+                    code: None,
                     at: now(),
                 }),
             ],
@@ -6408,6 +6410,7 @@ async fn page_conversation_worktree_with_runtime_state_returns_safe_turn_tree() 
                     message_id: user_message_id,
                     content: MessageContent::Text("请生成图片".to_owned()),
                     metadata: MessageMetadata::default(),
+                    attachments: Vec::new(),
                     at: now(),
                 }),
                 Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {

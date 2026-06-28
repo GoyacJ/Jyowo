@@ -4,13 +4,13 @@ use std::collections::{HashMap, HashSet};
 
 use harness_contracts::{
     ArtifactMediaKind, ArtifactMediaPreview, ArtifactSegment, ArtifactSource, ArtifactStatus,
-    AssistantSegment, AssistantWork, AssistantWorkStatus, ClarificationRequestSegment,
-    ConversationCursor, ConversationEventRef, ConversationTimelineEvent, ConversationTurn,
-    ConversationTurnUserMessage, ConversationWorktreePage, ErrorSegment, NoticeSegment,
-    ProcessDiffFile, ProcessSegment, ProcessSegmentStatus, ProcessStep, ProcessStepDetail,
-    ProcessStepKind, ProcessStepStatus, ReviewRequestSegment, TextSegment, ThinkingSegmentStatus,
-    ThinkingSummary, ToolAttempt, ToolAttemptStatus, ToolGroupSegment, ToolPermissionState,
-    ToolPermissionStatus, UiSafeText,
+    AssistantNoticeCode, AssistantSegment, AssistantWork, AssistantWorkStatus, BlobId, BlobRef,
+    ClarificationRequestSegment, ConversationAttachmentReference, ConversationCursor,
+    ConversationEventRef, ConversationTimelineEvent, ConversationTurn, ConversationTurnUserMessage,
+    ConversationWorktreePage, ErrorSegment, NoticeSegment, ProcessDiffFile, ProcessSegment,
+    ProcessSegmentStatus, ProcessStep, ProcessStepDetail, ProcessStepKind, ProcessStepStatus,
+    ReviewRequestSegment, TextSegment, ThinkingSegmentStatus, ThinkingSummary, ToolAttempt,
+    ToolAttemptStatus, ToolGroupSegment, ToolPermissionState, ToolPermissionStatus, UiSafeText,
 };
 use serde_json::Value;
 
@@ -905,6 +905,7 @@ impl ProjectionState<'_> {
         let Some(body) = string_field(&event.payload, "body") else {
             return;
         };
+        let code = notice_code_field(&event.payload, "code");
         let assistant = self.assistant_work(event, event_ref.clone());
         if let Some(existing) = assistant
             .segments
@@ -919,6 +920,7 @@ impl ProjectionState<'_> {
             })
         {
             existing.body = ui_text(body);
+            existing.code = code;
             existing.event_refs.push(event_ref);
             return;
         }
@@ -929,6 +931,7 @@ impl ProjectionState<'_> {
                 id: format!("segment:notice:{notice_id}"),
                 order,
                 body: ui_text(body),
+                code,
                 event_refs: vec![event_ref],
             }));
     }
@@ -1026,6 +1029,7 @@ impl ProjectionState<'_> {
                 message_id,
                 body: ui_text(""),
                 client_message_id: None,
+                attachments: Vec::new(),
                 timestamp: event.timestamp,
                 event_refs: Vec::new(),
             },
@@ -1562,9 +1566,63 @@ fn user_message_from_event(
         message_id,
         body: ui_text(string_field(&event.payload, "body").unwrap_or_default()),
         client_message_id: string_field(&event.payload, "clientMessageId"),
+        attachments: attachment_references_field(&event.payload, "attachments"),
         timestamp: event.timestamp,
         event_refs: vec![event_ref],
     }
+}
+
+fn attachment_references_field(value: &Value, field: &str) -> Vec<ConversationAttachmentReference> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(attachment_reference_from_value)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn attachment_reference_from_value(value: &Value) -> Option<ConversationAttachmentReference> {
+    let blob_ref = value
+        .get("blobRef")
+        .or_else(|| value.get("blob_ref"))
+        .and_then(blob_ref_from_value)?;
+    Some(ConversationAttachmentReference {
+        id: string_field(value, "id")?,
+        name: string_field(value, "name")?,
+        mime_type: string_field(value, "mimeType").or_else(|| string_field(value, "mime_type"))?,
+        size_bytes: u64_field(value, "sizeBytes").or_else(|| u64_field(value, "size_bytes"))?,
+        blob_ref,
+    })
+}
+
+fn blob_ref_from_value(value: &Value) -> Option<BlobRef> {
+    let id = BlobId::parse(&string_field(value, "id")?).ok()?;
+    Some(BlobRef {
+        id,
+        size: u64_field(value, "size")?,
+        content_hash: content_hash_field(value)?,
+        content_type: value
+            .get("contentType")
+            .or_else(|| value.get("content_type"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn content_hash_field(value: &Value) -> Option<[u8; 32]> {
+    let items = value
+        .get("contentHash")
+        .or_else(|| value.get("content_hash"))?
+        .as_array()?;
+    let bytes = items
+        .iter()
+        .map(|item| item.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+        .collect::<Option<Vec<_>>>()?;
+    bytes.try_into().ok()
 }
 
 fn is_synthetic_user_message_for_run(user: &ConversationTurnUserMessage, run_id: &str) -> bool {
@@ -1580,6 +1638,13 @@ fn string_field(value: &Value, field: &str) -> Option<String> {
         .get(field)
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
+}
+
+fn notice_code_field(value: &Value, field: &str) -> Option<AssistantNoticeCode> {
+    match string_field(value, field).as_deref() {
+        Some("contextCompacted") => Some(AssistantNoticeCode::ContextCompacted),
+        _ => None,
+    }
 }
 
 fn u64_field(value: &Value, field: &str) -> Option<u64> {

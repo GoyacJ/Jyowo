@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use harness_contracts::{
-    ConfigHash, ContextPatchRequest, ContextPatchSinkCap, DeferredToolsDeltaAttachment, EndReason,
-    Event, InteractivityLevel, MessageId, MessagePart, PermissionMode, RunId, SessionCreatedEvent,
-    SessionEndedEvent, SessionError, SessionId, SnapshotId, TeamId, TenantId, ToolSearchMode,
-    UsageSnapshot, WorkspaceId,
+    ConfigHash, ContextPatchRequest, ContextPatchSinkCap, ConversationAttachmentReference,
+    DeferredToolsDeltaAttachment, EndReason, Event, InteractivityLevel, MessageId, MessagePart,
+    PermissionMode, RunId, SessionCreatedEvent, SessionEndedEvent, SessionError, SessionId,
+    SnapshotId, TeamId, TenantId, ToolSearchMode, UsageSnapshot, WorkspaceId,
 };
 use harness_journal::EventStore;
 use harness_model::ModelProtocol;
@@ -36,6 +36,7 @@ pub struct SessionTurnContext {
     pub run_id: RunId,
     pub message_id: MessageId,
     pub client_message_id: Option<String>,
+    pub attachments: Vec<ConversationAttachmentReference>,
     pub turn_index: usize,
     pub permission_mode: PermissionMode,
     pub interactivity: InteractivityLevel,
@@ -381,6 +382,20 @@ impl Session {
         parts: Vec<MessagePart>,
         client_message_id: Option<String>,
     ) -> Result<(), SessionError> {
+        self.run_turn_parts_with_client_message_id_and_attachments(
+            parts,
+            client_message_id,
+            Vec::new(),
+        )
+        .await
+    }
+
+    pub async fn run_turn_parts_with_client_message_id_and_attachments(
+        &self,
+        parts: Vec<MessagePart>,
+        client_message_id: Option<String>,
+        attachments: Vec<ConversationAttachmentReference>,
+    ) -> Result<(), SessionError> {
         if self.state.lock().await.ended {
             return Err(SessionError::Message("session already ended".to_owned()));
         }
@@ -406,6 +421,7 @@ impl Session {
                 run_id,
                 message_id,
                 client_message_id,
+                attachments,
                 turn_index: projection.messages.len(),
                 permission_mode: self.options.permission_mode,
                 interactivity: self.options.interactivity,
@@ -429,7 +445,7 @@ impl Session {
                 .push_deferred_tools_delta(self.tenant_id(), self.session_id(), delta)
                 .map_err(session_error)?;
         }
-        crate::turn::run_turn(self, runtime, parts, client_message_id).await
+        crate::turn::run_turn(self, runtime, parts, client_message_id, attachments).await
     }
 
     pub async fn interrupt(&self) -> Result<(), SessionError> {

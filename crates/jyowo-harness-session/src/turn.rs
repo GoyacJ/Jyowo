@@ -8,14 +8,14 @@ use futures::StreamExt;
 use harness_context::{ContextEngine, ContextSessionView};
 use harness_contracts::{
     AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobStore, CapabilityRegistry,
-    CausationId, CorrelationId, DecidedBy, Decision, DecisionId, DeltaChunk, DenyReason, EndReason,
-    Event, EventId, FallbackPolicy, InteractivityLevel, Message, MessageContent, MessageId,
-    MessageMetadata, MessagePart, MessageRole, PermissionMode, PermissionRequestedEvent,
-    PermissionResolvedEvent, RedactRules, Redactor, RunEndedEvent, RunId, RunStartedEvent,
-    SessionError, SessionId, StopReason, TeamId, TenantId, ToolDescriptor, ToolError,
-    ToolErrorPayload, ToolResult, ToolUseApprovedEvent, ToolUseCompletedEvent, ToolUseDeniedEvent,
-    ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseSummary, TrustLevel, TurnInput,
-    UsageSnapshot,
+    CausationId, ConversationAttachmentReference, CorrelationId, DecidedBy, Decision, DecisionId,
+    DeltaChunk, DenyReason, EndReason, Event, EventId, FallbackPolicy, InteractivityLevel, Message,
+    MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, PermissionMode,
+    PermissionRequestedEvent, PermissionResolvedEvent, RedactRules, Redactor, RunEndedEvent, RunId,
+    RunStartedEvent, SessionError, SessionId, StopReason, TeamId, TenantId, ToolDescriptor,
+    ToolError, ToolErrorPayload, ToolResult, ToolUseApprovedEvent, ToolUseCompletedEvent,
+    ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseSummary,
+    TrustLevel, TurnInput, UsageSnapshot,
 };
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookMessageView, HookOutcome, HookSessionView,
@@ -62,6 +62,7 @@ pub(crate) async fn run_turn(
     runtime: SessionTurnRuntime,
     parts: Vec<MessagePart>,
     client_message_id: Option<String>,
+    attachments: Vec<ConversationAttachmentReference>,
 ) -> Result<(), SessionError> {
     let run_id = RunId::new();
     let projection = session.projection().await;
@@ -167,6 +168,7 @@ pub(crate) async fn run_turn(
             message_id: turn_input.message.id,
             content: message_content(&turn_input.message),
             metadata: message_metadata(client_message_id.as_deref()),
+            attachments,
             at: harness_contracts::now(),
         });
     session

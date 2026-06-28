@@ -70,6 +70,20 @@ const conversationDisplayTextSchema = z
     message: 'conversation display text must not contain unsafe display references',
   })
 
+const mimeTypeMetadataSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => !hasObviousUnredactedSecret(value), {
+    message: 'attachment MIME metadata must not contain obvious unredacted secrets',
+  })
+  .refine((value) => !hasUnsafeDisplayReference(value), {
+    message: 'attachment MIME metadata must not contain unsafe display references',
+  })
+  .refine((value) => /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(value), {
+    message: 'attachment MIME metadata must be a MIME type',
+  })
+
 const appInfoSchema = z
   .object({
     name: z.literal('Jyowo'),
@@ -210,12 +224,12 @@ const contextReferenceSchema = z.discriminatedUnion('kind', [
     .strict(),
 ])
 
-const attachmentReferenceSchema = z
+const attachmentReferenceCamelSchema = z
   .object({
     blobRef: z
       .object({
         contentHash: z.array(z.number().int().min(0).max(255)).length(32),
-        contentType: z.string().trim().min(1).nullable().optional(),
+        contentType: mimeTypeMetadataSchema.nullable().optional(),
         id: z.string().trim().min(1),
         size: z.number().int().min(0),
       })
@@ -224,11 +238,46 @@ const attachmentReferenceSchema = z
       .string()
       .trim()
       .regex(/^attachment-[0-9a-fA-F]{64}$/),
-    mimeType: z.string().trim().min(1),
-    name: z.string().trim().min(1),
+    mimeType: mimeTypeMetadataSchema,
+    name: conversationDisplayTextSchema.pipe(z.string().trim().min(1)),
     sizeBytes: z.number().int().min(0),
   })
   .strict()
+const attachmentReferenceSnakeSchema = z
+  .object({
+    blob_ref: z
+      .object({
+        content_hash: z.array(z.number().int().min(0).max(255)).length(32),
+        content_type: mimeTypeMetadataSchema.nullable().optional(),
+        id: z.string().trim().min(1),
+        size: z.number().int().min(0),
+      })
+      .strict(),
+    id: z
+      .string()
+      .trim()
+      .regex(/^attachment-[0-9a-fA-F]{64}$/),
+    mime_type: mimeTypeMetadataSchema,
+    name: conversationDisplayTextSchema.pipe(z.string().trim().min(1)),
+    size_bytes: z.number().int().min(0),
+  })
+  .strict()
+  .transform((attachment) => ({
+    blobRef: {
+      contentHash: attachment.blob_ref.content_hash,
+      contentType: attachment.blob_ref.content_type,
+      id: attachment.blob_ref.id,
+      size: attachment.blob_ref.size,
+    },
+    id: attachment.id,
+    mimeType: attachment.mime_type,
+    name: attachment.name,
+    sizeBytes: attachment.size_bytes,
+  }))
+const attachmentReferenceSchema = z.union([
+  attachmentReferenceCamelSchema,
+  attachmentReferenceSnakeSchema,
+])
 
 const startRunRequestSchema = z
   .object({
@@ -661,6 +710,7 @@ const noticeSegmentSchema = z
     id: z.string().min(1),
     order: z.number().int().nonnegative(),
     body: conversationDisplayTextSchema,
+    code: z.string().min(1).optional(),
     eventRefs: z.array(conversationEventRefSchema).optional(),
   })
   .strict()
@@ -703,6 +753,7 @@ const conversationTurnUserMessageSchema = z
     messageId: z.string().min(1),
     body: conversationDisplayTextSchema,
     clientMessageId: z.string().min(1).optional(),
+    attachments: z.array(attachmentReferenceSchema).optional(),
     timestamp: z.string().datetime({ offset: true }),
     eventRefs: z.array(conversationEventRefSchema).optional(),
   })

@@ -1517,7 +1517,11 @@ impl Harness {
             .resume_sdk_session_from_projection(options.clone(), projection)
             .await?;
         session
-            .run_turn_parts_with_client_message_id(parts, request.input.client_message_id.clone())
+            .run_turn_parts_with_client_message_id_and_attachments(
+                parts,
+                request.input.client_message_id.clone(),
+                request.input.attachments.clone(),
+            )
             .await?;
         let new_events = self
             .inner
@@ -5049,7 +5053,11 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
                 parts: vec![MessagePart::Text(prompt)],
                 created_at: harness_contracts::now(),
             },
-            metadata: conversation_turn_metadata(ctx.turn_index, ctx.client_message_id.clone()),
+            metadata: conversation_turn_metadata(
+                ctx.turn_index,
+                ctx.client_message_id.clone(),
+                ctx.attachments.clone(),
+            ),
         };
         let cancellation = CancellationToken::new();
         let _active_run = ActiveConversationRunGuard::register(
@@ -5113,10 +5121,14 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
 fn conversation_turn_metadata(
     turn_index: usize,
     client_message_id: Option<String>,
+    attachments: Vec<ConversationAttachmentReference>,
 ) -> serde_json::Value {
     let mut metadata = json!({ "turn": turn_index });
     if let Some(client_message_id) = client_message_id.filter(|value| is_uuid_v4_like(value)) {
         metadata["clientMessageId"] = json!(client_message_id);
+    }
+    if !attachments.is_empty() {
+        metadata["attachments"] = json!(attachments);
     }
     metadata
 }
@@ -5153,12 +5165,14 @@ mod conversation_metadata_tests {
         let uuid_v1 = "00000000-0000-1000-8000-000000000001";
 
         assert_eq!(
-            conversation_turn_metadata(1, Some(uuid_v4.to_owned()))["clientMessageId"],
+            conversation_turn_metadata(1, Some(uuid_v4.to_owned()), Vec::new())["clientMessageId"],
             uuid_v4
         );
-        assert!(conversation_turn_metadata(1, Some(uuid_v1.to_owned()))
-            .get("clientMessageId")
-            .is_none());
+        assert!(
+            conversation_turn_metadata(1, Some(uuid_v1.to_owned()), Vec::new())
+                .get("clientMessageId")
+                .is_none()
+        );
     }
 }
 

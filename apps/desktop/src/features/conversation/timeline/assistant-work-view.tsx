@@ -34,13 +34,25 @@ export function AssistantWorkView({
 
   return (
     <section className="max-w-[86%]">
-      <div className="mb-2 font-semibold text-sm">{t('timeline.assistantAuthor')}</div>
+      <div className="mb-2 text-muted-foreground text-xs">{t('timeline.assistantAuthor')}</div>
+      {assistant.status === 'running' || assistant.status === 'failed' ? (
+        <div className="mb-3 border-border border-b pb-2 text-muted-foreground text-xs">
+          {assistant.status === 'running'
+            ? t('timeline.assistantStatus.running')
+            : t('timeline.assistantStatus.failed')}
+        </div>
+      ) : null}
       <div className="grid gap-3">
         {assistant.segments.map((segment) => {
           switch (segment.kind) {
             case 'process':
               return (
-                <ProcessPanel conversationId={conversationId} key={segment.id} segment={segment} />
+                <ProcessPanel
+                  conversationId={conversationId}
+                  key={segment.id}
+                  runId={assistant.runId}
+                  segment={segment}
+                />
               )
             case 'thinking':
               return <ThinkingPanel key={segment.id} segment={segment} />
@@ -53,6 +65,7 @@ export function AssistantWorkView({
                   key={segment.id}
                   onOpenDetails={onOpenDetails}
                   onPermissionResolve={onPermissionResolve}
+                  runId={assistant.runId}
                   segment={segment}
                   turnId={turnId}
                 />

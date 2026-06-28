@@ -126,6 +126,19 @@ const uuidV4Schema = z
 const toolInputWithheldMessage = 'Input withheld from conversation timeline.'
 const toolErrorWithheldMessage = 'Tool error withheld from conversation timeline.'
 const toolDisplayTextSchema = permissionDisplayTextSchema
+const mimeTypeMetadataSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => !hasObviousUnredactedSecret(value), {
+    message: 'attachment MIME metadata must not contain obvious unredacted secrets',
+  })
+  .refine((value) => !hasUnsafeDisplayReference(value), {
+    message: 'attachment MIME metadata must not contain unsafe display references',
+  })
+  .refine((value) => /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(value), {
+    message: 'attachment MIME metadata must be a MIME type',
+  })
 const toolDiffFileSchema = z
   .object({
     path: toolDisplayTextSchema,
@@ -160,6 +173,25 @@ const runEndedPayloadSchema = z
     usage: usageSummarySchema.optional(),
   })
   .strict()
+const attachmentReferenceSchema = z
+  .object({
+    blobRef: z
+      .object({
+        contentHash: z.array(z.number().int().min(0).max(255)).length(32),
+        contentType: mimeTypeMetadataSchema.nullable().optional(),
+        id: z.string().trim().min(1),
+        size: z.number().int().nonnegative(),
+      })
+      .strict(),
+    id: z
+      .string()
+      .trim()
+      .regex(/^attachment-[0-9a-fA-F]{64}$/),
+    mimeType: mimeTypeMetadataSchema,
+    name: toolDisplayTextSchema.pipe(z.string().trim().min(1)),
+    sizeBytes: z.number().int().nonnegative(),
+  })
+  .strict()
 const assistantDeltaPayloadSchema = z
   .object({
     messageId: z.string().min(1),
@@ -169,6 +201,7 @@ const assistantDeltaPayloadSchema = z
 const userMessageAppendedPayloadSchema = z
   .object({
     body: z.string(),
+    attachments: z.array(attachmentReferenceSchema).optional(),
     clientMessageId: uuidV4Schema.optional(),
     messageId: z.string().min(1),
   })
@@ -335,6 +368,7 @@ const assistantNoticePayloadSchema = z
   .object({
     noticeId: requestIdSchema,
     body: z.string().min(1),
+    code: z.string().min(1).optional(),
   })
   .strict()
 const engineFailedPayloadSchema = z

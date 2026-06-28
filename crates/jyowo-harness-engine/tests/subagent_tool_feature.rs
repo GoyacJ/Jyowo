@@ -2259,6 +2259,7 @@ fn parent_transcript_events(
             message_id: MessageId::new(),
             content: MessageContent::Text(latest_user.to_owned()),
             metadata: Default::default(),
+            attachments: Vec::new(),
             at: harness_contracts::now(),
         }),
         Event::RunEnded(harness_contracts::RunEndedEvent {

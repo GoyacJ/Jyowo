@@ -46,6 +46,7 @@ fn user_message(run_id: RunId, message_id: MessageId, body: &str) -> Event {
         message_id,
         content: MessageContent::Text(body.to_owned()),
         metadata: MessageMetadata::default(),
+        attachments: Vec::new(),
         at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(1),
     })
 }

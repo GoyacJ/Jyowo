@@ -70,6 +70,11 @@ requests, clarification requests, notices, errors, and final answers.
 Raw `RunEvent` data belongs to Activity, Details, Replay, and Raw JSON. It must
 not become the product model for the main conversation canvas.
 
+Conversation canvas renders assistant work as narrative text plus execution evidence
+blocks. Evidence blocks include status rows, diff blocks, command blocks, tool rows,
+permission panels, artifact previews, historical attachment chips, and compaction
+notices. Raw events remain in Activity, Details, Replay, and Raw JSON.
+
 ## Core Principles
 
 Conversation-first:

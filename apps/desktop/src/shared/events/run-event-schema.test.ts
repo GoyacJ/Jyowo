@@ -176,6 +176,7 @@ describe('RunEvent schema', () => {
             payload: {
               noticeId: '01HZ0000000000000000000003',
               body: 'Tool output was summarized.',
+              code: 'contextCompacted',
             },
           },
         ])
@@ -185,6 +186,30 @@ describe('RunEvent schema', () => {
       'assistant.clarification.requested',
       'assistant.notice',
     ])
+  })
+
+  it('accepts unknown assistant notice codes for forward-compatible normal rendering', () => {
+    const event = runEventSchema.parse({
+      id: 'evt-notice',
+      conversationSequence: 14,
+      runId: 'run-001',
+      sequence: 14,
+      timestamp: '2026-06-17T00:00:00.000Z',
+      type: 'assistant.notice',
+      source: 'assistant',
+      visibility: 'public',
+      payload: {
+        noticeId: '01HZ0000000000000000000003',
+        body: 'Tool output was summarized.',
+        code: 'futureNoticeCode',
+      },
+    })
+
+    expect(event.payload).toEqual({
+      noticeId: '01HZ0000000000000000000003',
+      body: 'Tool output was summarized.',
+      code: 'futureNoticeCode',
+    })
   })
 
   it('accepts assistant review requests without optional body text', () => {
@@ -418,6 +443,86 @@ describe('RunEvent schema', () => {
           body: 'Continue',
           clientMessageId: '00000000-0000-1000-8000-000000000001',
           messageId: 'message-001',
+        },
+      }),
+    ).toThrow()
+  })
+
+  it('accepts historical attachments on user message events', () => {
+    const event = runEventSchema.parse({
+      id: 'evt-user-message',
+      conversationSequence: 12,
+      runId: 'run-001',
+      sequence: 12,
+      timestamp: '2026-06-17T00:00:00.000Z',
+      type: 'user.message.appended',
+      source: 'user',
+      visibility: 'public',
+      payload: {
+        body: 'Continue',
+        messageId: 'message-001',
+        attachments: [
+          {
+            blobRef: {
+              contentHash: Array.from({ length: 32 }, () => 7),
+              contentType: 'text/plain',
+              id: 'blob-001',
+              size: 128,
+            },
+            id: 'attachment-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+            mimeType: 'text/plain',
+            name: 'notes.txt',
+            sizeBytes: 128,
+          },
+        ],
+      },
+    })
+
+    expect(event.type).toBe('user.message.appended')
+    if (event.type !== 'user.message.appended') {
+      throw new Error('expected user message event')
+    }
+    if (!event.payload) {
+      throw new Error('expected user message payload')
+    }
+
+    expect(event.payload.attachments).toEqual([
+      expect.objectContaining({
+        mimeType: 'text/plain',
+        name: 'notes.txt',
+        sizeBytes: 128,
+      }),
+    ])
+  })
+
+  it('rejects unsafe historical attachment metadata on user message events', () => {
+    expect(() =>
+      runEventSchema.parse({
+        id: 'evt-user-message',
+        conversationSequence: 12,
+        runId: 'run-001',
+        sequence: 12,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'user.message.appended',
+        source: 'user',
+        visibility: 'public',
+        payload: {
+          body: 'Continue',
+          messageId: 'message-001',
+          attachments: [
+            {
+              blobRef: {
+                contentHash: Array.from({ length: 32 }, () => 7),
+                contentType: 'file:///Users/alice/private.txt',
+                id: 'blob-001',
+                size: 128,
+              },
+              id: 'attachment-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              mimeType: 'text/plain authorization bearer secret-token',
+              name: '/Users/alice/.ssh/id_rsa',
+              sizeBytes: 128,
+            },
+          ],
         },
       }),
     ).toThrow()

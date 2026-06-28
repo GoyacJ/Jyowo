@@ -96,6 +96,10 @@ export const zhCN = {
       emptyTitle: '开始对话',
       emptyDescription: '让 Jyowo 在这个项目里帮你工作。',
       executionStatus: '执行：{{status}}',
+      assistantStatus: {
+        running: '处理中',
+        failed: '失败',
+      },
       jumpToLatest: '跳到最新',
       permissionStatus: '权限：{{status}}',
       permissionStatusLabel: {
@@ -111,6 +115,12 @@ export const zhCN = {
       processComplete: '已完成工作过程',
       processStepDetails: '详情',
       processWithheld: '过程详情已隐藏',
+      commandEvidence: {
+        shell: 'Shell',
+        copy: '复制命令输出',
+        exitCode: '退出码 {{code}}',
+        duration: '{{duration}} ms',
+      },
       reasoningComplete: '已完成推理过程',
       reasoningProcess: '推理过程',
       thinkingSummary: '思考摘要',
@@ -122,6 +132,12 @@ export const zhCN = {
         queued: '排队中',
         running: '运行中',
         waitingPermission: '等待权限',
+      },
+      toolEvidenceSummary: {
+        completed: '已运行 {{count}} 条工具',
+        failed: '失败 {{count}} 条',
+        running: '运行中 {{count}} 条',
+        waitingPermission: '等待权限 {{count}} 条',
       },
       tools: '工具',
     },

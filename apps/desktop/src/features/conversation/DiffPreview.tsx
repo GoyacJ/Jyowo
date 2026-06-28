@@ -1,10 +1,12 @@
-import { DiffViewer, type DiffViewerLine } from './DiffViewer'
+import { DiffViewer } from './DiffViewer'
+import { parseDiffEvidenceLines } from './timeline/diff-evidence-block'
 
 export interface DiffPreviewProps {
   filename: string
   addedLineCount: number
   lines: string[]
   maxVisibleLines?: number
+  removedLineCount?: number
 }
 
 export function DiffPreview({
@@ -12,21 +14,19 @@ export function DiffPreview({
   filename,
   lines,
   maxVisibleLines,
+  removedLineCount,
 }: DiffPreviewProps) {
   return (
     <DiffViewer
       addedLineCount={addedLineCount}
       filename={filename}
-      lines={toLines(lines)}
+      lines={parseDiffEvidenceLines(lines.join('\n'))}
       maxVisibleLines={maxVisibleLines}
+      removedLineCount={removedLineCount ?? countRemovedLines(lines)}
     />
   )
 }
 
-function toLines(lines: string[]): DiffViewerLine[] {
-  return lines.map((line, index) => ({
-    content: line.replace(/^[+-]\s?/, ''),
-    lineNumber: index + 1,
-    type: line.startsWith('-') ? 'removed' : line.startsWith('+') ? 'added' : 'context',
-  }))
+function countRemovedLines(lines: string[]) {
+  return lines.filter((line) => line.startsWith('-') && !line.startsWith('---')).length
 }

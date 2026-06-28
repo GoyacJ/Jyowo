@@ -9,6 +9,53 @@
         "messageId": "user-message-1",
         "body": "Generate an image",
         "clientMessageId": "00000000-0000-4000-8000-000000000001",
+        "attachments": [
+          {
+            "id": "attachment-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "name": "reference.png",
+            "mime_type": "image/png",
+            "size_bytes": 128,
+            "blob_ref": {
+              "id": "01HZ0000000000000000000010",
+              "size": 128,
+              "content_hash": [
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7,
+                7
+              ],
+              "content_type": "image/png"
+            }
+          }
+        ],
         "timestamp": "1970-01-01T00:00:00Z",
         "eventRefs": [
           {

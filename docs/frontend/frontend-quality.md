@@ -21,6 +21,8 @@ Must test:
   review, clarification, withheld, and error states
 - `ProcessPanel` reasoning, activity, command, diff, tool, artifact, withheld,
   and failed steps
+- Codex-style evidence conversation fixture, dark-theme evidence screenshot target,
+  large diff, failed command, historical attachments, and collapsed completed history
 - worktree projection store behavior, `clientMessageId` optimistic confirmation,
   turn ordering, throttled live invalidation, gap recovery, and refetch
   reconciliation

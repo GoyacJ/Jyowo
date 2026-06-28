@@ -111,11 +111,13 @@ fn assistant_review_requested_segment_source_events_serialize_with_stable_tags()
         run_id,
         notice_id: RequestId::new(),
         body: UiSafeText::from_trusted_redacted("Tool output was summarized."),
+        code: Some(AssistantNoticeCode::ContextCompacted),
         at,
     });
     let value = serde_json::to_value(notice).unwrap();
     assert_eq!(value["type"], "assistant_notice");
     assert_eq!(value["body"], "Tool output was summarized.");
+    assert_eq!(value["code"], "contextCompacted");
     assert!(value.get("session_id").is_none());
 }
 
@@ -296,6 +298,13 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                 message_id: "user-message-1".to_owned(),
                 body: UiSafeText::from_trusted_redacted("Generate an image"),
                 client_message_id: Some("client-1".to_owned()),
+                attachments: vec![ConversationAttachmentReference {
+                    id: "attachment-001".to_owned(),
+                    name: "reference.png".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                    size_bytes: 128,
+                    blob_ref: test_blob_ref(128, "image/png"),
+                }],
                 timestamp: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
                 event_refs: vec![event_ref.clone()],
             },
@@ -421,6 +430,7 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                         id: "segment:notice:event-1".to_owned(),
                         order: 7,
                         body: UiSafeText::from_trusted_redacted("Tool output was summarized."),
+                        code: Some(AssistantNoticeCode::ContextCompacted),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::Error(ErrorSegment {
@@ -448,6 +458,14 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
     assert_eq!(value["turns"][0]["id"], "turn:user-message-1");
     assert_eq!(value["turns"][0]["position"], 7);
     assert_eq!(value["turns"][0]["user"]["id"], "user:user-message-1");
+    assert_eq!(
+        value["turns"][0]["user"]["attachments"][0]["name"],
+        "reference.png"
+    );
+    assert_eq!(
+        value["turns"][0]["user"]["attachments"][0]["mime_type"],
+        "image/png"
+    );
     assert_eq!(value["turns"][0]["assistant"]["id"], "assistant:run-1");
     assert_eq!(value["turns"][0]["assistant"]["status"], "running");
     assert_eq!(
@@ -795,6 +813,33 @@ fn conversation_turn_input_keeps_stable_wire_shape() {
     let roundtrip: ConversationTurnInput =
         serde_json::from_value(value).expect("conversation turn input should deserialize");
     assert_eq!(roundtrip, input);
+}
+
+#[test]
+fn user_message_appended_event_keeps_attachment_metadata() {
+    let event = Event::UserMessageAppended(UserMessageAppendedEvent {
+        run_id: RunId::new(),
+        message_id: MessageId::new(),
+        content: MessageContent::Text("Summarize this file".to_owned()),
+        metadata: MessageMetadata::default(),
+        attachments: vec![ConversationAttachmentReference {
+            id: "attachment-001".to_owned(),
+            name: "notes.txt".to_owned(),
+            mime_type: "text/plain".to_owned(),
+            size_bytes: 128,
+            blob_ref: test_blob_ref(128, "text/plain"),
+        }],
+        at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+    });
+
+    let value = serde_json::to_value(&event).expect("event should serialize");
+
+    assert_eq!(value["type"], "user_message_appended");
+    assert_eq!(value["attachments"][0]["name"], "notes.txt");
+    assert_eq!(value["attachments"][0]["mime_type"], "text/plain");
+
+    let roundtrip: Event = serde_json::from_value(value).expect("event should deserialize");
+    assert_eq!(roundtrip, event);
 }
 
 fn test_blob_ref(size: u64, content_type: &str) -> BlobRef {

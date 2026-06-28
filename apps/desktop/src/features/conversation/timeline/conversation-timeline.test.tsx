@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { appI18n } from '@/shared/i18n/i18n'
@@ -9,7 +9,13 @@ import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient, ConversationTurn } from '@/shared/tauri/commands'
 import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import {
+  codexAttachmentStressTurns,
+  codexLargeDiffTurns,
+  codexStyleEvidenceTurns,
+} from './conversation-evidence-fixtures'
 import { ConversationTimeline } from './conversation-timeline'
+import { parseDiffEvidenceLines } from './diff-evidence-block'
 
 const timestamp = '2026-06-17T00:00:00.000Z'
 
@@ -17,6 +23,7 @@ describe('ConversationTimeline', () => {
   afterEach(() => {
     act(() => {
       uiStore.getState().clearTimelineScrollRequest()
+      uiStore.getState().resetEvidenceDisclosure()
     })
   })
 
@@ -139,9 +146,9 @@ describe('ConversationTimeline', () => {
 
     expect(screen.getByText('确认需要生成图片并展示结果。')).toBeInTheDocument()
     expect(screen.getByText('已搜索图片工具')).toBeInTheDocument()
-    expect(screen.getByText('pnpm check:desktop')).toBeInTheDocument()
+    expect(screen.getByText('$ pnpm check:desktop')).toBeInTheDocument()
     expect(screen.getByText(/render process preview/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Open in editor' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy diff' })).toBeInTheDocument()
     expect(screen.getByText('Generated image')).toBeInTheDocument()
     expect(screen.queryByText('Image artifact ready')).not.toBeInTheDocument()
     expect(screen.getByText('图片已生成。')).toBeInTheDocument()
@@ -155,6 +162,207 @@ describe('ConversationTimeline', () => {
       },
     ])
     expect(document.body.textContent ?? '').not.toContain('[REDACTED]')
+  })
+
+  it('renders a Codex-style evidence conversation from the worktree projection', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    try {
+      render(<ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />)
+
+      expect(screen.getByText('已编辑 1 个文件')).toBeInTheDocument()
+      expect(screen.getByText('reference.png')).toBeInTheDocument()
+      expect(screen.getByText('notes.txt')).toBeInTheDocument()
+      expect(screen.getByText('2 KB')).toBeInTheDocument()
+      expect(screen.getByText('128 B')).toBeInTheDocument()
+      expect(screen.getByText('SkillsPage.test.tsx')).toBeInTheDocument()
+      expect(screen.getByText('+61')).toBeInTheDocument()
+      expect(screen.getByText('-2')).toBeInTheDocument()
+      expect(screen.getByText('$ pnpm -C apps/desktop test -- SkillsPage')).toBeInTheDocument()
+      expect(screen.getByText('退出码 1')).toBeInTheDocument()
+      expect(screen.getByText('上下文已自动压缩')).toBeInTheDocument()
+      expect(screen.getByText('红测和失败证据已经保留，下一步修复实现。')).toBeInTheDocument()
+    } finally {
+      await appI18n.changeLanguage('en-US')
+    }
+  })
+
+  it('renders Codex evidence blocks with stable DOM shape and disclosure rules', () => {
+    render(<ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />)
+
+    const diffScrollRegion = screen.getByTestId('diff-scroll-region')
+    expect(diffScrollRegion).toHaveClass('overflow-auto')
+    expect(diffScrollRegion).toHaveClass('bg-code-background')
+    expect(screen.getByText('12/12')).toBeInTheDocument()
+
+    const metadataLine = screen.getByText('+++ b/SkillsPage.test.tsx').closest('div')
+    expect(metadataLine).not.toHaveClass('bg-success/10')
+
+    const commandBlock = screen
+      .getByText('$ pnpm -C apps/desktop test -- SkillsPage')
+      .closest('section')
+    expect(commandBlock).toHaveClass('bg-terminal-background')
+    expect(screen.getByTestId('command-output-scroll-region')).toHaveClass('overflow-auto')
+    expect(screen.getByText('exit 1')).toBeInTheDocument()
+    expect(screen.getByText('$ pnpm -C apps/desktop test -- SkillsPage')).toBeVisible()
+
+    expect(screen.queryByText('$ rg "SkillsPage" apps/desktop/src')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /已运行 1 条历史命令/ }))
+    expect(screen.getByText('$ rg "SkillsPage" apps/desktop/src')).toBeInTheDocument()
+
+    const compaction = screen.getByText('上下文已自动压缩').closest('div')
+    expect(compaction).toHaveTextContent('上下文已自动压缩')
+
+    const userBubble = screen
+      .getByText('请按 Codex 风格把这次红测、文件修改和失败命令展示在同一条对话里。')
+      .closest('div')
+    expect(userBubble).toHaveClass('bg-muted')
+    expect(userBubble).not.toHaveClass('bg-primary')
+  })
+
+  it('keeps large diff content inside the evidence scroll region', () => {
+    render(<ConversationTimeline title="Large diff" turns={codexLargeDiffTurns} />)
+
+    expect(screen.getByText('ConversationTimeline.test.tsx')).toBeInTheDocument()
+    const diffScrollRegion = screen.getByTestId('diff-scroll-region')
+
+    expect(diffScrollRegion).toHaveClass('max-h-[360px]')
+    expect(diffScrollRegion).toHaveClass('overflow-auto')
+    expect(diffScrollRegion).toHaveTextContent('row 0')
+  })
+
+  it('preserves indentation when parsing added and removed diff lines', () => {
+    const lines = parseDiffEvidenceLines(
+      ['@@ -1,2 +1,2 @@', '-  oldValue()', '+  newValue()'].join('\n'),
+    )
+
+    expect(lines[1]).toMatchObject({
+      content: '  oldValue()',
+      oldLineNumber: 1,
+      prefix: '-',
+      type: 'removed',
+    })
+    expect(lines[2]).toMatchObject({
+      content: '  newValue()',
+      newLineNumber: 1,
+      prefix: '+',
+      type: 'added',
+    })
+  })
+
+  it('renders historical attachments before the user message without fetching blob content', () => {
+    const getArtifactMediaPreview = vi.fn()
+    renderTimelineWithClient(
+      <ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />,
+      {
+        ...createMockCommandClient(),
+        getArtifactMediaPreview,
+      },
+    )
+
+    const article = screen.getByLabelText('Conversation turn')
+    const reference = screen.getByText('reference.png')
+    const prompt = screen.getByText(
+      '请按 Codex 风格把这次红测、文件修改和失败命令展示在同一条对话里。',
+    )
+
+    expect(article.compareDocumentPosition(reference) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    )
+    expect(reference.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    )
+    expect(screen.getByText('image/png')).toBeInTheDocument()
+    expect(getArtifactMediaPreview).not.toHaveBeenCalled()
+  })
+
+  it('renders attachment chips as a right-aligned metadata strip with internal overflow', () => {
+    const getArtifactMediaPreview = vi.fn()
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+
+    try {
+      renderTimelineWithClient(
+        <ConversationTimeline title="Attachment evidence" turns={codexAttachmentStressTurns} />,
+        {
+          ...createMockCommandClient(),
+          getArtifactMediaPreview,
+        },
+      )
+
+      const attachmentStrip = screen.getByLabelText('User attachments')
+      expect(attachmentStrip).toHaveClass('ml-auto')
+      expect(attachmentStrip.parentElement).toHaveClass('overflow-x-auto')
+      expect(within(attachmentStrip).getAllByRole('listitem')).toHaveLength(5)
+
+      const reference = screen.getByText('reference.png')
+      const prompt = screen.getByText(
+        '请按 Codex 风格把这次红测、文件修改和失败命令展示在同一条对话里。',
+      )
+      expect(reference.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      )
+
+      expect(screen.getAllByText('image/png')).not.toHaveLength(0)
+      expect(screen.getByText('report.pdf')).toBeInTheDocument()
+      expect(screen.getByText('32 KB')).toBeInTheDocument()
+      expect(screen.queryByRole('img', { name: /reference\.png/ })).not.toBeInTheDocument()
+      expect(getArtifactMediaPreview).not.toHaveBeenCalled()
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('summarizes tool attempts and collapses low-signal completed rows', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    try {
+      render(<ConversationTimeline title="Tool evidence" turns={[toolEvidenceTurn()]} />)
+
+      expect(screen.getByText('已运行 2 条工具')).toBeInTheDocument()
+      expect(screen.getByText('失败 1 条')).toBeInTheDocument()
+      expect(screen.getByText('运行中 1 条')).toBeInTheDocument()
+      expect(screen.getByText('等待权限 1 条')).toBeInTheDocument()
+
+      expect(screen.getByText('read_file')).toBeInTheDocument()
+      expect(screen.queryByText('权限：已批准')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /read_file/ }))
+
+      expect(screen.getByText('权限：已批准')).toBeInTheDocument()
+      expect(screen.getByText('工具执行失败。详情可在 Activity 中查看。')).toBeInTheDocument()
+    } finally {
+      await appI18n.changeLanguage('en-US')
+    }
+  })
+
+  it('keeps permission requests nested under the owning tool row', () => {
+    render(<ConversationTimeline title="Tool evidence" turns={[toolEvidenceTurn()]} />)
+
+    const toolRow = screen.getByText('write_file').closest('[data-tool-attempt-id]')
+
+    expect(toolRow).not.toBeNull()
+    expect(within(toolRow as HTMLElement).getByText('Permission: pending')).toBeInTheDocument()
+    expect(screen.queryByText('Permission request')).not.toBeInTheDocument()
+  })
+
+  it('scopes tool disclosure state by conversation and run identity', () => {
+    const rendered = render(
+      <ConversationTimeline title="Tool evidence" turns={[toolEvidenceTurn()]} />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /read_file/ }))
+    expect(screen.getByText('Permission: approved')).toBeInTheDocument()
+
+    rendered.rerender(
+      <ConversationTimeline
+        title="Tool evidence"
+        turns={[
+          toolEvidenceTurn({ conversationId: 'conversation-tool-evidence-2', runId: 'run-2' }),
+        ]}
+      />,
+    )
+
+    expect(screen.queryByText('Permission: approved')).not.toBeInTheDocument()
   })
 
   it('shows a safe placeholder when a process image artifact preview is loading or unavailable', async () => {
@@ -516,6 +724,88 @@ function minimaxTurn(): ConversationTurn {
           order: 3,
           messageId: 'assistant-final',
           body: '图像工具失败后，我保留了可复用的提示词和下一步建议。',
+        },
+      ],
+    },
+  }
+}
+
+function toolEvidenceTurn({
+  conversationId = 'conversation-tool-evidence',
+  runId = 'run-tool-evidence',
+}: {
+  conversationId?: string
+  runId?: string
+} = {}): ConversationTurn {
+  return {
+    id: 'turn:user-tool-evidence',
+    conversationId,
+    position: 0,
+    user: {
+      id: 'user:user-tool-evidence',
+      messageId: 'user-tool-evidence',
+      body: '检查工具执行过程',
+      timestamp,
+    },
+    assistant: {
+      id: 'assistant:run-tool-evidence',
+      runId,
+      status: 'running',
+      segments: [
+        {
+          kind: 'toolGroup',
+          id: 'segment:tools:tool-evidence',
+          order: 0,
+          attempts: [
+            {
+              id: 'tool:read-file',
+              order: 0,
+              toolUseId: 'tool-read-file',
+              toolName: 'read_file',
+              status: 'completed',
+              permission: {
+                id: 'permission:read-file',
+                requestId: 'permission-read-file',
+                toolUseId: 'tool-read-file',
+                status: 'approved',
+              },
+            },
+            {
+              id: 'tool:list-files',
+              order: 1,
+              toolUseId: 'tool-list-files',
+              toolName: 'list_files',
+              status: 'completed',
+            },
+            {
+              id: 'tool:exec-command',
+              order: 2,
+              toolUseId: 'tool-exec-command',
+              toolName: 'exec_command',
+              status: 'failed',
+              failureSummary: '工具执行失败。详情可在 Activity 中查看。',
+            },
+            {
+              id: 'tool:search-code',
+              order: 3,
+              toolUseId: 'tool-search-code',
+              toolName: 'search_code',
+              status: 'running',
+            },
+            {
+              id: 'tool:write-file',
+              order: 4,
+              toolUseId: 'tool-write-file',
+              toolName: 'write_file',
+              status: 'waitingPermission',
+              permission: {
+                id: 'permission:write-file',
+                requestId: 'permission-write-file',
+                toolUseId: 'tool-write-file',
+                status: 'pending',
+              },
+            },
+          ],
         },
       ],
     },

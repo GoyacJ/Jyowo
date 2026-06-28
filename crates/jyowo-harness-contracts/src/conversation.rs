@@ -8,7 +8,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ArtifactSource, ArtifactStatus, EventId, RedactRules, Redactor};
+use crate::{
+    ArtifactSource, ArtifactStatus, ConversationAttachmentReference, EventId, RedactRules, Redactor,
+};
 
 const REDACTED: &str = "[REDACTED]";
 
@@ -165,6 +167,8 @@ pub struct ConversationTurnUserMessage {
     pub body: UiSafeText,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ConversationAttachmentReference>,
     pub timestamp: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_refs: Vec<ConversationEventRef>,
@@ -521,10 +525,18 @@ pub struct ClarificationRequestSegment {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub enum AssistantNoticeCode {
+    ContextCompacted,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct NoticeSegment {
     pub id: String,
     pub order: u32,
     pub body: UiSafeText,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<AssistantNoticeCode>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_refs: Vec<ConversationEventRef>,
 }

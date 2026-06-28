@@ -48,6 +48,62 @@ fn user_event(
     event
 }
 
+fn user_event_with_attachment(
+    sequence: u64,
+    id: &str,
+    run_id: &str,
+    message_id: &str,
+    body: &str,
+) -> ConversationTimelineEvent {
+    let blob_id = BlobId::new().to_string();
+    let mut event = event(
+        sequence,
+        id,
+        run_id,
+        "user.message.appended",
+        json!({
+            "messageId": message_id,
+            "body": body,
+            "attachments": [
+                {
+                    "id": "attachment-001",
+                    "name": "notes.txt",
+                    "mimeType": "text/plain",
+                    "sizeBytes": 128,
+                    "blobRef": {
+                        "id": blob_id,
+                        "size": 128,
+                        "contentHash": [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7],
+                        "contentType": "text/plain"
+                    }
+                }
+            ],
+        }),
+    );
+    event.source = "user".to_owned();
+    event
+}
+
+#[test]
+fn user_message_attachments_project_to_turn_user() {
+    let events = vec![user_event_with_attachment(
+        1,
+        "event-user",
+        "run-1",
+        "user-1",
+        "Summarize the attachment",
+    )];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let attachment = &projection.turns[0].user.attachments[0];
+
+    assert_eq!(attachment.id, "attachment-001");
+    assert_eq!(attachment.name, "notes.txt");
+    assert_eq!(attachment.mime_type, "text/plain");
+    assert_eq!(attachment.size_bytes, 128);
+    assert_eq!(attachment.blob_ref.size, 128);
+}
+
 fn assistant_completed(
     sequence: u64,
     id: &str,
@@ -875,6 +931,7 @@ fn review_clarification_and_notice_events_create_ordered_segments() {
             json!({
                 "noticeId": "notice-1",
                 "body": "Tool output was summarized.",
+                "code": "contextCompacted",
             }),
         ),
     ];
@@ -912,6 +969,7 @@ fn review_clarification_and_notice_events_create_ordered_segments() {
     assert_eq!(notice.id, "segment:notice:notice-1");
     assert_eq!(notice.order, 3);
     assert_eq!(notice.body.as_str(), "Tool output was summarized.");
+    assert_eq!(notice.code, Some(AssistantNoticeCode::ContextCompacted));
 }
 
 #[test]

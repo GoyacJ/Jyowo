@@ -34,6 +34,7 @@ async fn fork_writes_lineage_and_inherits_parent_history() {
                     message_id: MessageId::new(),
                     content: MessageContent::Text("parent history".to_owned()),
                     metadata: MessageMetadata::default(),
+                    attachments: Vec::new(),
                     at: harness_contracts::now(),
                 },
             )],

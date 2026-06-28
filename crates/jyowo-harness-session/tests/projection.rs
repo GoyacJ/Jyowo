@@ -37,6 +37,7 @@ async fn projection_replay_is_idempotent() {
             message_id: MessageId::new(),
             content: MessageContent::Text("list files".to_owned()),
             metadata: MessageMetadata::default(),
+            attachments: Vec::new(),
             at: harness_contracts::now(),
         }),
         Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {

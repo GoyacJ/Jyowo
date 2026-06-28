@@ -193,6 +193,12 @@ features/conversation
   Composer
   PlanBlock
   ProgressBlock
+  ProcessStatusRow
+  CommandEvidenceBlock
+  DiffEvidenceBlock
+  ToolEvidenceSummary
+  UserAttachmentStrip
+  ContextCompactionNotice
   ArtifactPreview
   ReviewRequest
   DecisionCard
@@ -218,6 +224,9 @@ Component ownership:
 
 - `shared/ui` owns reusable interaction primitives and visual variants.
 - `features/conversation` owns the natural chat surface and embedded work blocks.
+- `features/conversation/timeline` owns conversation evidence blocks:
+  `CommandEvidenceBlock`, `DiffEvidenceBlock`, `ProcessStatusRow`,
+  `ToolEvidenceSummary`, `UserAttachmentStrip`, and `ContextCompactionNotice`.
 - `features/workspace` owns project and conversation navigation.
 - `features/context` owns secondary project context and references.
 - `features/activity` owns compact execution visibility and detailed drill-down.
