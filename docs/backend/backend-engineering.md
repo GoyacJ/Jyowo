@@ -216,12 +216,14 @@ get_mcp_server_config
 get_provider_config_api_key
 get_replay_timeline
 get_skill_catalog_entry
+get_skill_catalog_file
 get_skill_detail
 get_skill_file
 harness_healthcheck
 list_activity
 list_conversations
 list_skill_catalog_entries
+list_skill_catalog_install_tasks
 list_skill_catalog_sources
 list_reference_candidates
 list_model_provider_catalog
@@ -312,6 +314,12 @@ get_skill_catalog_entry(
   entry_id: String,
   version: Option<String>
 ) -> Result<GetSkillCatalogEntryResponse, CommandErrorPayload>
+get_skill_catalog_file(
+  source_id: String,
+  entry_id: String,
+  version: Option<String>,
+  path: String
+) -> Result<GetSkillCatalogFileResponse, CommandErrorPayload>
 harness_healthcheck() -> HarnessHealthcheckPayload
 list_activity(
   conversation_id: Option<String>,
@@ -322,8 +330,10 @@ list_skill_catalog_entries(
   source_id: String,
   query: Option<String>,
   cursor: Option<String>,
+  limit: Option<u32>,
   sort: Option<String>
 ) -> Result<ListSkillCatalogEntriesResponse, CommandErrorPayload>
+list_skill_catalog_install_tasks() -> Result<ListSkillCatalogInstallTasksResponse, CommandErrorPayload>
 list_skill_catalog_sources() -> Result<ListSkillCatalogSourcesResponse, CommandErrorPayload>
 list_reference_candidates(
   conversation_id: String
@@ -377,8 +387,14 @@ import_skill(source_path: String) -> Result<ImportSkillResponse, CommandErrorPay
 install_skill_from_catalog(
   source_id: String,
   entry_id: String,
-  version: Option<String>
-) -> Result<ImportSkillResponse, CommandErrorPayload>
+  version: Option<String>,
+  operation_id: Option<String>
+) -> Result<InstallSkillFromCatalogResponse, CommandErrorPayload>
+// Starts an in-process background install task and returns task state immediately.
+// Task payload: operationId, sourceId, entryId, version?, status, stage, percent,
+// startedAt, updatedAt, message?.
+// The shell also emits skill_catalog_install_progress while the task runs.
+// Event delivery failure is telemetry-only and must not alter install policy.
 set_execution_settings(
   permission_mode: PermissionMode
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload>
@@ -468,9 +484,7 @@ returns only the relative path, item count, format, and timestamp over IPC; raw
 export content must not cross into frontend state.
 
 `list_skills`, `get_skill_detail`, `get_skill_file`, `import_skill`,
-`list_skill_catalog_sources`, `list_skill_catalog_entries`,
-`get_skill_catalog_entry`, `install_skill_from_catalog`, `set_skill_enabled`,
-and `delete_skill` must go through the SDK skill facade.
+`set_skill_enabled`, and `delete_skill` must go through the SDK skill facade.
 Tauri commands may manage the workspace skill store under
 `.jyowo/runtime/skills`, but runtime registry reload, validation, and hook
 replacement stay behind the SDK boundary. `list_skills` must return only
@@ -491,6 +505,13 @@ Remote source paths, package temp paths, and rejected scan payloads must not be
 returned over IPC. Catalog install records may store source identity and
 homepage metadata as `origin`, but that metadata does not upgrade the skill's
 runtime trust.
+Catalog detail may return `validation.status = "blocked"` for malformed or
+non-installable remote entries, including entries without `SKILL.md`; that is a
+displayable validation state and should not be converted into a command error.
+`get_skill_catalog_file` reads one relative preview path from the selected
+catalog entry, rejects empty, absolute, or parent-traversal paths, returns only
+UTF-8 text, and truncates content using the same preview limit as catalog
+detail.
 
 `start_run` and `cancel_run` must go through the runtime conversation facade.
 `resolve_permission` must go through `PermissionBroker`. These shell commands

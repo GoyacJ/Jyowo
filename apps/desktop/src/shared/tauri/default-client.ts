@@ -97,6 +97,9 @@ function createDeferredMockCommandClient(): CommandClient {
     async getSkillCatalogEntry(request) {
       return (await getClient()).getSkillCatalogEntry(request)
     },
+    async getSkillCatalogFile(request) {
+      return (await getClient()).getSkillCatalogFile(request)
+    },
     async pageConversationTimeline(request) {
       return (await getClient()).pageConversationTimeline(request)
     },
@@ -114,6 +117,12 @@ function createDeferredMockCommandClient(): CommandClient {
     },
     async installSkillFromCatalog(request) {
       return (await getClient()).installSkillFromCatalog(request)
+    },
+    async listSkillCatalogInstallTasks() {
+      return (await getClient()).listSkillCatalogInstallTasks()
+    },
+    async listenSkillCatalogInstallProgress(onProgress) {
+      return (await getClient()).listenSkillCatalogInstallProgress(onProgress)
     },
     async listActivity(request) {
       return (await getClient()).listActivity(request)

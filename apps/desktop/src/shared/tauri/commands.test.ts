@@ -139,6 +139,7 @@ import {
   getProviderConfigApiKey,
   getReplayTimeline,
   getSkillCatalogEntry,
+  getSkillCatalogFile,
   getSkillDetail,
   getSkillFile,
   importSkill,
@@ -148,6 +149,7 @@ import {
   listConversations,
   listEvalCases,
   listenMcpDiagnosticBatches,
+  listenSkillCatalogInstallProgress,
   listMcpDiagnostics,
   listMcpServers,
   listMemoryItems,
@@ -155,6 +157,7 @@ import {
   listProviderSettings,
   listReferenceCandidates,
   listSkillCatalogEntries,
+  listSkillCatalogInstallTasks,
   listSkillCatalogSources,
   listSkills,
   type PageConversationWorktreeResponse,
@@ -543,6 +546,40 @@ describe('CommandClient', () => {
     })
   })
 
+  it('accepts ordinary token-counting text in conversation worktree pages', async () => {
+    const payload = clone(validWorktreePage())
+    const assistant = payload.turns[0].assistant
+    if (!assistant) {
+      throw new Error('assistant fixture missing')
+    }
+    assistant.segments.push({
+      kind: 'text',
+      id: 'segment:text:token-counting',
+      order: 3,
+      messageId: 'assistant-message-token-counting',
+      body: 'Anthropic compatible API, model list, Token 计数, Token: 统计, and token authentication.',
+    } as (typeof assistant.segments)[number])
+
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+      ),
+    ).resolves.toMatchObject({
+      turns: [
+        {
+          assistant: {
+            segments: expect.arrayContaining([
+              expect.objectContaining({
+                body: 'Anthropic compatible API, model list, Token 计数, Token: 统计, and token authentication.',
+              }),
+            ]),
+          },
+        },
+      ],
+    })
+  })
+
   it('models process segments and artifact media through Zod validation', async () => {
     const payload = validWorktreePage()
     const assistant = payload.turns[0].assistant
@@ -870,6 +907,7 @@ describe('CommandClient', () => {
     'file:///Users/goya/private/image.png',
     'javascript:alert(1)',
     'mailto:user@example.com',
+    'token=secret',
     '.jyowo/runtime/blobs/blob-001',
     '.JYOWO/runtime/blobs/blob-001',
     '/tmp/provider-output',
@@ -3035,29 +3073,52 @@ describe('CommandClient', () => {
           files: [{ kind: 'file', path: 'SKILL.md', sizeBytes: 512 }],
           readmePreview: 'Create distinctive frontend interfaces.',
           validation: {
+            issueCodes: [],
             issues: [],
             status: 'ready',
           },
         }
       }
 
-      return {
-        skill: {
-          description: 'Create frontend interfaces.',
-          enabled: true,
-          id: 'skill-remote',
-          manageable: true,
-          name: 'frontend-design',
-          origin: {
-            entryId: 'anthropic:frontend-design',
-            installedFromCatalog: true,
-            sourceId: 'anthropic',
-            sourceLabel: 'Anthropic Skills',
-            version: 'main',
+      if (command === 'get_skill_catalog_file') {
+        return {
+          file: {
+            content: 'Create distinctive frontend interfaces.',
+            path: 'SKILL.md',
+            truncated: false,
           },
-          sourceKind: 'workspace',
-          status: 'ready',
-          tags: ['frontend'],
+        }
+      }
+
+      if (command === 'list_skill_catalog_install_tasks') {
+        return {
+          tasks: [
+            {
+              entryId: 'anthropic:frontend-design',
+              operationId: 'catalog-install-001',
+              percent: 45,
+              sourceId: 'anthropic',
+              stage: 'downloading',
+              startedAt: '2026-06-28T00:00:00Z',
+              status: 'running',
+              updatedAt: '2026-06-28T00:00:01Z',
+              version: 'main',
+            },
+          ],
+        }
+      }
+
+      return {
+        task: {
+          entryId: 'anthropic:frontend-design',
+          operationId: 'catalog-install-001',
+          percent: 5,
+          sourceId: 'anthropic',
+          stage: 'preparing',
+          startedAt: '2026-06-28T00:00:00Z',
+          status: 'running',
+          updatedAt: '2026-06-28T00:00:00Z',
+          version: 'main',
         },
       }
     })
@@ -3069,7 +3130,7 @@ describe('CommandClient', () => {
     )
     await expect(
       listSkillCatalogEntries(
-        { cursor: 'cursor-1', query: 'front', sourceId: 'anthropic' },
+        { cursor: 'cursor-1', limit: 12, query: 'front', sourceId: 'anthropic' },
         client,
       ),
     ).resolves.toHaveProperty('entries.0.entryId', 'anthropic:frontend-design')
@@ -3080,15 +3141,36 @@ describe('CommandClient', () => {
       ),
     ).resolves.toHaveProperty('validation.status', 'ready')
     await expect(
-      installSkillFromCatalog(
-        { entryId: 'anthropic:frontend-design', sourceId: 'anthropic', version: 'main' },
+      getSkillCatalogFile(
+        {
+          entryId: 'anthropic:frontend-design',
+          path: 'SKILL.md',
+          sourceId: 'anthropic',
+          version: 'main',
+        },
         client,
       ),
-    ).resolves.toHaveProperty('skill.origin.sourceId', 'anthropic')
+    ).resolves.toHaveProperty('file.content', 'Create distinctive frontend interfaces.')
+    await expect(listSkillCatalogInstallTasks(client)).resolves.toHaveProperty(
+      'tasks.0.operationId',
+      'catalog-install-001',
+    )
+    await expect(
+      installSkillFromCatalog(
+        {
+          entryId: 'anthropic:frontend-design',
+          operationId: 'catalog-install-001',
+          sourceId: 'anthropic',
+          version: 'main',
+        },
+        client,
+      ),
+    ).resolves.toHaveProperty('task.operationId', 'catalog-install-001')
 
     expect(invoke).toHaveBeenCalledWith('list_skill_catalog_sources')
     expect(invoke).toHaveBeenCalledWith('list_skill_catalog_entries', {
       cursor: 'cursor-1',
+      limit: 12,
       query: 'front',
       sourceId: 'anthropic',
     })
@@ -3097,11 +3179,62 @@ describe('CommandClient', () => {
       sourceId: 'anthropic',
       version: 'main',
     })
-    expect(invoke).toHaveBeenCalledWith('install_skill_from_catalog', {
+    expect(invoke).toHaveBeenCalledWith('get_skill_catalog_file', {
       entryId: 'anthropic:frontend-design',
+      path: 'SKILL.md',
       sourceId: 'anthropic',
       version: 'main',
     })
+    expect(invoke).toHaveBeenCalledWith('list_skill_catalog_install_tasks')
+    expect(invoke).toHaveBeenCalledWith('install_skill_from_catalog', {
+      entryId: 'anthropic:frontend-design',
+      operationId: 'catalog-install-001',
+      sourceId: 'anthropic',
+      version: 'main',
+    })
+  })
+
+  it('listens to validated skill catalog install progress events', async () => {
+    const invoke = vi.fn()
+    const unlisten = vi.fn()
+    let tauriEventHandler: ((event: { payload: unknown }) => void) | undefined
+    tauriListenMock.mockImplementationOnce(async (_eventName, handler) => {
+      tauriEventHandler = handler
+      return unlisten
+    })
+    const client = createInvokeCommandClient(invoke)
+    const progressEvents: unknown[] = []
+
+    const cleanup = await listenSkillCatalogInstallProgress((progress) => {
+      progressEvents.push(progress)
+    }, client)
+    tauriEventHandler?.({
+      payload: {
+        entryId: 'anthropic:frontend-design',
+        operationId: 'catalog-install-001',
+        percent: 45,
+        sourceId: 'anthropic',
+        stage: 'downloading',
+        version: 'main',
+      },
+    })
+    cleanup()
+
+    expect(tauriListenMock).toHaveBeenCalledWith(
+      'skill_catalog_install_progress',
+      expect.any(Function),
+    )
+    expect(progressEvents).toEqual([
+      {
+        entryId: 'anthropic:frontend-design',
+        operationId: 'catalog-install-001',
+        percent: 45,
+        sourceId: 'anthropic',
+        stage: 'downloading',
+        version: 'main',
+      },
+    ])
+    expect(unlisten).toHaveBeenCalledTimes(1)
   })
 
   it('rejects invalid skill catalog command args and payloads', async () => {
@@ -3122,7 +3255,16 @@ describe('CommandClient', () => {
       TauriCommandPayloadError,
     )
     await expect(
+      listSkillCatalogEntries({ limit: 0, sourceId: 'anthropic' }, client),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
       getSkillCatalogEntry({ entryId: '', sourceId: 'anthropic' }, client),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      getSkillCatalogFile(
+        { entryId: 'anthropic:frontend-design', path: '../SKILL.md', sourceId: 'anthropic' },
+        client,
+      ),
     ).rejects.toThrow(TauriCommandPayloadError)
     await expect(
       installSkillFromCatalog(
@@ -3130,6 +3272,34 @@ describe('CommandClient', () => {
         client,
       ),
     ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      installSkillFromCatalog(
+        { entryId: 'anthropic:frontend-design', operationId: '', sourceId: 'anthropic' },
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
     await expect(listSkillCatalogSources(client)).rejects.toThrow(TauriCommandPayloadError)
+
+    let tauriEventHandler: ((event: { payload: unknown }) => void) | undefined
+    tauriListenMock.mockImplementationOnce(async (_eventName, handler) => {
+      tauriEventHandler = handler
+      return vi.fn()
+    })
+    const progressEvents: unknown[] = []
+    await listenSkillCatalogInstallProgress((progress) => {
+      progressEvents.push(progress)
+    }, client)
+    expect(() =>
+      tauriEventHandler?.({
+        payload: {
+          entryId: 'anthropic:frontend-design',
+          operationId: 'catalog-install-001',
+          percent: 101,
+          sourceId: 'anthropic',
+          stage: 'downloaded',
+        },
+      }),
+    ).toThrow(TauriCommandPayloadError)
+    expect(progressEvents).toEqual([])
   })
 })

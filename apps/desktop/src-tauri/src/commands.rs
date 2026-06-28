@@ -50,11 +50,13 @@ use tokio::task::JoinHandle;
 use crate::project_registry::{ProjectRecord, ProjectRegistry};
 use crate::skill_catalog::{
     get_skill_catalog_entry as get_catalog_entry_payload,
+    get_skill_catalog_file as get_catalog_file_payload,
     list_skill_catalog_entries as list_catalog_entries_payload,
-    list_skill_catalog_sources as list_catalog_sources_payload, materialize_skill_from_catalog,
-    GetSkillCatalogEntryRequest, GetSkillCatalogEntryResponse, InstallSkillFromCatalogRequest,
-    ListSkillCatalogEntriesRequest, ListSkillCatalogEntriesResponse,
-    ListSkillCatalogSourcesResponse, SkillInstallOriginRecord,
+    list_skill_catalog_sources as list_catalog_sources_payload, mark_catalog_entry_name_conflict,
+    materialize_skill_from_catalog_with_progress, GetSkillCatalogEntryRequest,
+    GetSkillCatalogEntryResponse, GetSkillCatalogFileRequest, GetSkillCatalogFileResponse,
+    InstallSkillFromCatalogRequest, ListSkillCatalogEntriesRequest,
+    ListSkillCatalogEntriesResponse, ListSkillCatalogSourcesResponse, SkillInstallOriginRecord,
 };
 
 const START_RUN_STARTED_TIMEOUT: Duration = Duration::from_secs(5);
@@ -787,6 +789,59 @@ pub struct GetSkillFileResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ImportSkillResponse {
     pub skill: SkillSummaryPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillCatalogInstallProgressPayload {
+    pub operation_id: String,
+    pub source_id: String,
+    pub entry_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub stage: &'static str,
+    pub percent: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+pub type SkillCatalogInstallProgressEmitter =
+    Arc<dyn Fn(SkillCatalogInstallProgressPayload) + Send + Sync>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillCatalogInstallTaskPayload {
+    pub operation_id: String,
+    pub source_id: String,
+    pub entry_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub stage: String,
+    pub percent: u8,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub started_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListSkillCatalogInstallTasksResponse {
+    pub tasks: Vec<SkillCatalogInstallTaskPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallSkillFromCatalogResponse {
+    pub task: SkillCatalogInstallTaskPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SkillCatalogInstallTaskKey {
+    source_id: String,
+    entry_id: String,
+    version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2251,6 +2306,8 @@ pub struct DesktopRuntimeState {
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
     execution_settings_lock: Arc<tokio::sync::Mutex<()>>,
     execution_settings_store: Arc<DesktopExecutionSettingsStore>,
+    skill_catalog_install_tasks:
+        Arc<RwLock<HashMap<SkillCatalogInstallTaskKey, SkillCatalogInstallTaskPayload>>>,
     skill_store: Arc<dyn SkillStore>,
     skill_store_lock: Arc<tokio::sync::Mutex<()>>,
     start_run_lock: Arc<tokio::sync::Mutex<()>>,
@@ -2307,6 +2364,7 @@ impl DesktopRuntimeState {
             execution_settings_store: Arc::new(DesktopExecutionSettingsStore::new(
                 workspace_root.clone(),
             )),
+            skill_catalog_install_tasks: Arc::new(RwLock::new(HashMap::new())),
             skill_store: Arc::new(DesktopSkillStore::new(workspace_root.clone())),
             skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             start_run_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -2410,6 +2468,7 @@ impl DesktopRuntimeState {
             execution_settings_store: Arc::new(DesktopExecutionSettingsStore::new(
                 workspace_root.clone(),
             )),
+            skill_catalog_install_tasks: Arc::new(RwLock::new(HashMap::new())),
             skill_store: Arc::new(DesktopSkillStore::new(workspace_root.clone())),
             skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             start_run_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -4623,22 +4682,337 @@ pub async fn get_skill_catalog_entry_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<GetSkillCatalogEntryResponse, CommandErrorPayload> {
     let installed_entry_ids = installed_catalog_entry_ids(state)?;
-    get_catalog_entry_payload(request, &installed_entry_ids).await
+    let mut response = get_catalog_entry_payload(request, &installed_entry_ids).await?;
+    if active_skill_names(state)?.contains(response.entry.name.as_str()) {
+        mark_catalog_entry_name_conflict(&mut response);
+    }
+    Ok(response)
+}
+
+pub async fn get_skill_catalog_file_with_runtime_state(
+    request: GetSkillCatalogFileRequest,
+    _state: &DesktopRuntimeState,
+) -> Result<GetSkillCatalogFileResponse, CommandErrorPayload> {
+    get_catalog_file_payload(request).await
+}
+
+pub async fn list_skill_catalog_install_tasks_with_runtime_state(
+    state: &DesktopRuntimeState,
+) -> Result<ListSkillCatalogInstallTasksResponse, CommandErrorPayload> {
+    let mut tasks = state
+        .skill_catalog_install_tasks
+        .read()
+        .map_err(|_| {
+            runtime_operation_failed("skill catalog install tasks unavailable".to_owned())
+        })?
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    tasks.sort_by(|left, right| {
+        left.source_id
+            .cmp(&right.source_id)
+            .then(left.entry_id.cmp(&right.entry_id))
+            .then(left.version.cmp(&right.version))
+    });
+    Ok(ListSkillCatalogInstallTasksResponse { tasks })
 }
 
 pub async fn install_skill_from_catalog_with_runtime_state(
     request: InstallSkillFromCatalogRequest,
     state: &DesktopRuntimeState,
+) -> Result<InstallSkillFromCatalogResponse, CommandErrorPayload> {
+    start_skill_catalog_install_task_with_runtime_state(request, state.clone(), None).await
+}
+
+pub async fn start_skill_catalog_install_task_with_runtime_state(
+    request: InstallSkillFromCatalogRequest,
+    state: DesktopRuntimeState,
+    emitter: Option<SkillCatalogInstallProgressEmitter>,
+) -> Result<InstallSkillFromCatalogResponse, CommandErrorPayload> {
+    let (task, request, created) =
+        get_or_create_skill_catalog_install_task_record(&state, &request)?;
+    if !created {
+        return Ok(InstallSkillFromCatalogResponse { task });
+    }
+
+    let state_for_task = state.clone();
+    let request_for_task = request.clone();
+    let recording_emitter = skill_catalog_install_task_emitter(state, request, emitter);
+    tauri::async_runtime::spawn(async move {
+        let _skill_store_guard = state_for_task.skill_store_lock.lock().await;
+        let _ = install_skill_from_catalog_with_progress(
+            request_for_task,
+            &state_for_task,
+            Some(recording_emitter),
+        )
+        .await;
+    });
+
+    Ok(InstallSkillFromCatalogResponse { task })
+}
+
+pub async fn install_skill_from_catalog_package_with_runtime_state(
+    request: InstallSkillFromCatalogRequest,
+    state: &DesktopRuntimeState,
 ) -> Result<ImportSkillResponse, CommandErrorPayload> {
-    let materialized = materialize_skill_from_catalog(request).await?;
-    let response = install_skill_package_with_runtime_state(
-        materialized.package_path.clone(),
-        Some(materialized.origin.clone()),
+    install_skill_from_catalog_with_progress(
+        request,
         state,
+        None::<SkillCatalogInstallProgressEmitter>,
     )
-    .await?;
-    drop(materialized);
-    Ok(response)
+    .await
+}
+
+pub async fn install_skill_from_catalog_with_progress(
+    request: InstallSkillFromCatalogRequest,
+    state: &DesktopRuntimeState,
+    emitter: Option<SkillCatalogInstallProgressEmitter>,
+) -> Result<ImportSkillResponse, CommandErrorPayload> {
+    validate_catalog_install_operation_id(&request)?;
+    let result: Result<ImportSkillResponse, CommandErrorPayload> = async {
+        emit_skill_catalog_install_progress(&emitter, &request, "preparing", 5, None);
+        let catalog_progress = |stage: &str, percent: u8| {
+            emit_skill_catalog_install_progress(&emitter, &request, stage, percent, None);
+        };
+        let materialized =
+            materialize_skill_from_catalog_with_progress(request.clone(), Some(&catalog_progress))
+                .await?;
+        let response = install_skill_package_with_progress(
+            materialized.package_path.clone(),
+            Some(materialized.origin.clone()),
+            state,
+            Some((&emitter, &request)),
+        )
+        .await?;
+        drop(materialized);
+        emit_skill_catalog_install_progress(&emitter, &request, "completed", 100, None);
+        Ok(response)
+    }
+    .await;
+
+    if let Err(error) = &result {
+        emit_skill_catalog_install_progress(
+            &emitter,
+            &request,
+            "failed",
+            100,
+            Some(error.message.clone()),
+        );
+    }
+
+    result
+}
+
+#[cfg(test)]
+fn get_or_create_skill_catalog_install_task(
+    state: &DesktopRuntimeState,
+    request: &InstallSkillFromCatalogRequest,
+) -> Result<SkillCatalogInstallTaskPayload, CommandErrorPayload> {
+    let (task, _, _) = get_or_create_skill_catalog_install_task_record(state, request)?;
+    Ok(task)
+}
+
+fn get_or_create_skill_catalog_install_task_record(
+    state: &DesktopRuntimeState,
+    request: &InstallSkillFromCatalogRequest,
+) -> Result<
+    (
+        SkillCatalogInstallTaskPayload,
+        InstallSkillFromCatalogRequest,
+        bool,
+    ),
+    CommandErrorPayload,
+> {
+    let key = skill_catalog_install_task_key(request)?;
+    let mut tasks = state.skill_catalog_install_tasks.write().map_err(|_| {
+        runtime_operation_failed("skill catalog install tasks unavailable".to_owned())
+    })?;
+    if let Some(existing) = tasks.get(&key) {
+        if existing.status == "running" {
+            let request = InstallSkillFromCatalogRequest {
+                operation_id: Some(existing.operation_id.clone()),
+                ..request.clone()
+            };
+            return Ok((existing.clone(), request, false));
+        }
+    }
+
+    let operation_id = match request.operation_id.as_deref() {
+        Some(operation_id) => {
+            ensure_non_empty("operationId", operation_id)?;
+            operation_id.to_owned()
+        }
+        None => catalog_install_operation_id(),
+    };
+    let now = now().to_rfc3339();
+    let task = SkillCatalogInstallTaskPayload {
+        operation_id: operation_id.clone(),
+        source_id: request.source_id.clone(),
+        entry_id: request.entry_id.clone(),
+        version: request.version.clone(),
+        stage: "preparing".to_owned(),
+        percent: 5,
+        status: "running".to_owned(),
+        message: None,
+        started_at: now.clone(),
+        updated_at: now,
+    };
+    tasks.insert(key, task.clone());
+    let request = InstallSkillFromCatalogRequest {
+        operation_id: Some(operation_id),
+        ..request.clone()
+    };
+    Ok((task, request, true))
+}
+
+#[cfg(test)]
+async fn record_skill_catalog_install_task_progress(
+    state: &DesktopRuntimeState,
+    request: &InstallSkillFromCatalogRequest,
+    stage: &str,
+    percent: u8,
+    message: Option<String>,
+) -> Result<SkillCatalogInstallTaskPayload, CommandErrorPayload> {
+    let operation_id = request
+        .operation_id
+        .as_deref()
+        .ok_or_else(|| invalid_payload("operationId is required".to_owned()))?;
+    let payload = SkillCatalogInstallProgressPayload {
+        operation_id: operation_id.to_owned(),
+        source_id: request.source_id.clone(),
+        entry_id: request.entry_id.clone(),
+        version: request.version.clone(),
+        stage: skill_catalog_install_stage(stage),
+        percent,
+        message,
+    };
+    record_skill_catalog_install_task_payload(state, payload)
+}
+
+fn record_skill_catalog_install_task_payload(
+    state: &DesktopRuntimeState,
+    payload: SkillCatalogInstallProgressPayload,
+) -> Result<SkillCatalogInstallTaskPayload, CommandErrorPayload> {
+    let key = SkillCatalogInstallTaskKey {
+        source_id: payload.source_id.clone(),
+        entry_id: payload.entry_id.clone(),
+        version: payload.version.clone(),
+    };
+    let mut tasks = state.skill_catalog_install_tasks.write().map_err(|_| {
+        runtime_operation_failed("skill catalog install tasks unavailable".to_owned())
+    })?;
+    let now = now().to_rfc3339();
+    let task = tasks
+        .entry(key)
+        .or_insert_with(|| SkillCatalogInstallTaskPayload {
+            operation_id: payload.operation_id.clone(),
+            source_id: payload.source_id.clone(),
+            entry_id: payload.entry_id.clone(),
+            version: payload.version.clone(),
+            stage: "preparing".to_owned(),
+            percent: 5,
+            status: "running".to_owned(),
+            message: None,
+            started_at: now.clone(),
+            updated_at: now.clone(),
+        });
+    task.operation_id = payload.operation_id;
+    task.stage = payload.stage.to_owned();
+    task.percent = payload.percent.min(100);
+    task.status = match payload.stage {
+        "completed" => "completed",
+        "failed" => "failed",
+        _ => "running",
+    }
+    .to_owned();
+    task.message = payload.message;
+    task.updated_at = now;
+    Ok(task.clone())
+}
+
+fn skill_catalog_install_task_emitter(
+    state: DesktopRuntimeState,
+    request: InstallSkillFromCatalogRequest,
+    emitter: Option<SkillCatalogInstallProgressEmitter>,
+) -> SkillCatalogInstallProgressEmitter {
+    Arc::new(move |payload| {
+        let _ = record_skill_catalog_install_task_payload(&state, payload.clone());
+        if payload.operation_id == request.operation_id.clone().unwrap_or_default() {
+            if let Some(emitter) = &emitter {
+                emitter(payload);
+            }
+        }
+    })
+}
+
+fn skill_catalog_install_task_key(
+    request: &InstallSkillFromCatalogRequest,
+) -> Result<SkillCatalogInstallTaskKey, CommandErrorPayload> {
+    ensure_non_empty("sourceId", &request.source_id)?;
+    ensure_non_empty("entryId", &request.entry_id)?;
+    if let Some(version) = request.version.as_deref() {
+        ensure_non_empty("version", version)?;
+    }
+    Ok(SkillCatalogInstallTaskKey {
+        source_id: request.source_id.clone(),
+        entry_id: request.entry_id.clone(),
+        version: request.version.clone(),
+    })
+}
+
+fn catalog_install_operation_id() -> String {
+    format!("catalog-install-{}", skill_import_id())
+}
+
+fn validate_catalog_install_operation_id(
+    request: &InstallSkillFromCatalogRequest,
+) -> Result<(), CommandErrorPayload> {
+    if let Some(operation_id) = request.operation_id.as_deref() {
+        ensure_non_empty("operationId", operation_id)?;
+    }
+    Ok(())
+}
+
+fn emit_skill_catalog_install_progress(
+    emitter: &Option<SkillCatalogInstallProgressEmitter>,
+    request: &InstallSkillFromCatalogRequest,
+    stage: &str,
+    percent: u8,
+    message: Option<String>,
+) {
+    let Some(operation_id) = request.operation_id.clone() else {
+        return;
+    };
+    let Some(emitter) = emitter else {
+        return;
+    };
+    let stage = skill_catalog_install_stage(stage);
+    let payload = SkillCatalogInstallProgressPayload {
+        operation_id,
+        source_id: request.source_id.clone(),
+        entry_id: request.entry_id.clone(),
+        version: request.version.clone(),
+        stage,
+        percent: percent.min(100),
+        message,
+    };
+    // Progress events are UI telemetry. Failure to emit must not change install policy.
+    emitter(payload);
+}
+
+fn skill_catalog_install_stage(stage: &str) -> &'static str {
+    match stage {
+        "preparing" => "preparing",
+        "resolving" => "resolving",
+        "checking" => "checking",
+        "downloading" => "downloading",
+        "validating" => "validating",
+        "copying" => "copying",
+        "reloading" => "reloading",
+        "completed" => "completed",
+        "failed" => "failed",
+        _ => "preparing",
+    }
 }
 
 fn installed_catalog_entry_ids(
@@ -4650,6 +5024,25 @@ fn installed_catalog_entry_ids(
         .into_iter()
         .filter_map(|record| record.origin.map(|origin| origin.entry_id))
         .collect())
+}
+
+fn active_skill_names(state: &DesktopRuntimeState) -> Result<HashSet<String>, CommandErrorPayload> {
+    let mut names = state
+        .skill_store
+        .load_records()?
+        .into_iter()
+        .filter(|record| record.enabled)
+        .map(|record| record.name)
+        .collect::<HashSet<_>>();
+    if let Some(harness) = state.harness() {
+        names.extend(
+            harness
+                .list_runtime_skills()
+                .into_iter()
+                .map(|skill| skill.name),
+        );
+    }
+    Ok(names)
 }
 
 pub async fn import_skill_with_runtime_state(
@@ -4665,9 +5058,24 @@ async fn install_skill_package_with_runtime_state(
     origin: Option<SkillInstallOriginRecord>,
     state: &DesktopRuntimeState,
 ) -> Result<ImportSkillResponse, CommandErrorPayload> {
+    install_skill_package_with_progress(source_path, origin, state, None).await
+}
+
+async fn install_skill_package_with_progress(
+    source_path: PathBuf,
+    origin: Option<SkillInstallOriginRecord>,
+    state: &DesktopRuntimeState,
+    progress_context: Option<(
+        &Option<SkillCatalogInstallProgressEmitter>,
+        &InstallSkillFromCatalogRequest,
+    )>,
+) -> Result<ImportSkillResponse, CommandErrorPayload> {
     let harness = state.harness().ok_or_else(|| {
         runtime_unavailable("Importing skills requires the runtime skill facade.")
     })?;
+    if let Some((emitter, request)) = progress_context {
+        emit_skill_catalog_install_progress(emitter, request, "validating", 65, None);
+    }
     let entry_path = source_path.join(SKILL_PACKAGE_ENTRY_FILE);
     let entry_metadata = std::fs::metadata(&entry_path).map_err(|error| {
         runtime_operation_failed(format!("skill entry metadata failed: {error}"))
@@ -4683,6 +5091,9 @@ async fn install_skill_package_with_runtime_state(
         .validate_workspace_skill_markdown(&markdown, Some(entry_path))
         .await
         .map_err(|error| invalid_payload(error.to_string()))?;
+    if let Some((emitter, request)) = progress_context {
+        emit_skill_catalog_install_progress(emitter, request, "validating", 72, None);
+    }
     let content_hash = hash_skill_package(&source_path)?;
 
     let mut records = state.skill_store.load_records()?;
@@ -4718,6 +5129,9 @@ async fn install_skill_package_with_runtime_state(
         last_validation_error: None,
         origin,
     };
+    if let Some((emitter, request)) = progress_context {
+        emit_skill_catalog_install_progress(emitter, request, "copying", 82, None);
+    }
     state
         .skill_store
         .write_skill_package(&record.id, true, &source_path)?;
@@ -4727,6 +5141,9 @@ async fn install_skill_package_with_runtime_state(
     if let Err(error) = state.skill_store.save_records(&records) {
         let _ = state.skill_store.delete_skill_package(&record.id);
         return Err(error);
+    }
+    if let Some((emitter, request)) = progress_context {
+        emit_skill_catalog_install_progress(emitter, request, "reloading", 95, None);
     }
     if let Err(error) = reload_managed_skills(state, &harness).await {
         let _ = state.skill_store.delete_skill_package(&record.id);
@@ -10137,6 +10554,7 @@ pub async fn list_skill_catalog_entries(
     source_id: String,
     query: Option<String>,
     cursor: Option<String>,
+    limit: Option<u32>,
     sort: Option<String>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListSkillCatalogEntriesResponse, CommandErrorPayload> {
@@ -10146,6 +10564,7 @@ pub async fn list_skill_catalog_entries(
             source_id,
             query,
             cursor,
+            limit,
             sort,
         },
         &*runtime_state,
@@ -10173,21 +10592,59 @@ pub async fn get_skill_catalog_entry(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub async fn get_skill_catalog_file(
+    source_id: String,
+    entry_id: String,
+    version: Option<String>,
+    path: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetSkillCatalogFileResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_skill_catalog_file_with_runtime_state(
+        GetSkillCatalogFileRequest {
+            source_id,
+            entry_id,
+            version,
+            path,
+        },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_skill_catalog_install_tasks(
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListSkillCatalogInstallTasksResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    list_skill_catalog_install_tasks_with_runtime_state(&*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub async fn install_skill_from_catalog(
     source_id: String,
     entry_id: String,
     version: Option<String>,
+    operation_id: Option<String>,
+    window: tauri::Window,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ImportSkillResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    let _skill_store_guard = runtime_state.skill_store_lock.lock().await;
-    install_skill_from_catalog_with_runtime_state(
+) -> Result<InstallSkillFromCatalogResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await.clone();
+    let emitter: Option<SkillCatalogInstallProgressEmitter> = Some({
+        let window = window.clone();
+        Arc::new(move |payload: SkillCatalogInstallProgressPayload| {
+            let _ = window.emit("skill_catalog_install_progress", payload);
+        }) as SkillCatalogInstallProgressEmitter
+    });
+    start_skill_catalog_install_task_with_runtime_state(
         InstallSkillFromCatalogRequest {
             source_id,
             entry_id,
             version,
+            operation_id,
         },
-        &*runtime_state,
+        runtime_state,
+        emitter,
     )
     .await
 }
@@ -10629,6 +11086,103 @@ mod tests {
             ),
             "Run error withheld from conversation timeline."
         );
+    }
+
+    #[test]
+    fn skill_catalog_progress_payload_serializes_camel_case() {
+        let payload = SkillCatalogInstallProgressPayload {
+            operation_id: "catalog-install-001".to_owned(),
+            source_id: "anthropic".to_owned(),
+            entry_id: "anthropic:frontend-design".to_owned(),
+            version: Some("main".to_owned()),
+            stage: "downloading",
+            percent: 45,
+            message: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(payload).unwrap(),
+            serde_json::json!({
+                "operationId": "catalog-install-001",
+                "sourceId": "anthropic",
+                "entryId": "anthropic:frontend-design",
+                "version": "main",
+                "stage": "downloading",
+                "percent": 45
+            })
+        );
+        assert_eq!(skill_catalog_install_stage("unknown"), "preparing");
+    }
+
+    #[test]
+    fn skill_catalog_progress_emit_requires_operation_id_and_clamps_percent() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_events = events.clone();
+        let emitter: Option<SkillCatalogInstallProgressEmitter> = Some(Arc::new(move |payload| {
+            captured_events.lock().unwrap().push(payload);
+        }));
+        let request = InstallSkillFromCatalogRequest {
+            source_id: "anthropic".to_owned(),
+            entry_id: "anthropic:frontend-design".to_owned(),
+            version: Some("main".to_owned()),
+            operation_id: Some("catalog-install-001".to_owned()),
+        };
+
+        emit_skill_catalog_install_progress(&emitter, &request, "downloading", 250, None);
+
+        let recorded_events = events.lock().unwrap();
+        assert_eq!(recorded_events.len(), 1);
+        assert_eq!(recorded_events[0].stage, "downloading");
+        assert_eq!(recorded_events[0].percent, 100);
+        drop(recorded_events);
+
+        let request_without_operation = InstallSkillFromCatalogRequest {
+            operation_id: None,
+            ..request
+        };
+        emit_skill_catalog_install_progress(
+            &emitter,
+            &request_without_operation,
+            "downloading",
+            25,
+            None,
+        );
+
+        assert_eq!(events.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn skill_catalog_install_tasks_are_deduped_and_listable_by_entry() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let request = InstallSkillFromCatalogRequest {
+            source_id: "anthropic".to_owned(),
+            entry_id: "anthropic:frontend-design".to_owned(),
+            version: Some("main".to_owned()),
+            operation_id: Some("catalog-install-001".to_owned()),
+        };
+        let duplicate_request = InstallSkillFromCatalogRequest {
+            operation_id: Some("catalog-install-002".to_owned()),
+            ..request.clone()
+        };
+
+        let first = get_or_create_skill_catalog_install_task(&state, &request).unwrap();
+        let duplicate =
+            get_or_create_skill_catalog_install_task(&state, &duplicate_request).unwrap();
+        record_skill_catalog_install_task_progress(&state, &request, "downloading", 45, None)
+            .await
+            .unwrap();
+        let tasks = list_skill_catalog_install_tasks_with_runtime_state(&state)
+            .await
+            .unwrap();
+
+        assert_eq!(duplicate.operation_id, first.operation_id);
+        assert_eq!(tasks.tasks.len(), 1);
+        assert_eq!(tasks.tasks[0].operation_id, "catalog-install-001");
+        assert_eq!(tasks.tasks[0].stage, "downloading");
+        assert_eq!(tasks.tasks[0].percent, 45);
+        assert_eq!(tasks.tasks[0].status, "running");
     }
 
     #[test]

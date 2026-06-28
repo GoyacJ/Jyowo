@@ -6,7 +6,13 @@ import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SkillSettingsPage } from '@/features/settings/SkillSettings'
 import { AppI18nProvider } from '@/shared/i18n/i18n'
-import type { CommandClient, ListSkillsResponse } from '@/shared/tauri/commands'
+import type {
+  CommandClient,
+  GetSkillCatalogEntryResponse,
+  InstallSkillFromCatalogResponse,
+  ListSkillsResponse,
+  SkillCatalogInstallProgressPayload,
+} from '@/shared/tauri/commands'
 import { createMockCommandClient, createRejectedCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
 
@@ -184,22 +190,16 @@ describe('SkillsPage', () => {
 
   it('installs a skill from the catalog', async () => {
     const installSkillFromCatalog = vi.fn().mockResolvedValue({
-      skill: {
-        description: 'Create distinctive frontend interfaces.',
-        enabled: true,
-        id: 'skill-catalog-001',
-        manageable: true,
-        name: 'frontend-design',
-        origin: {
-          entryId: 'anthropic:frontend-design',
-          installedFromCatalog: true,
-          sourceId: 'anthropic',
-          sourceLabel: 'Anthropic Skills',
-          version: 'main',
-        },
-        sourceKind: 'workspace',
-        status: 'ready',
-        tags: ['frontend'],
+      task: {
+        entryId: 'anthropic:frontend-design',
+        operationId: 'catalog-install-001',
+        percent: 5,
+        sourceId: 'anthropic',
+        stage: 'preparing',
+        startedAt: '2026-06-28T00:00:00Z',
+        status: 'running',
+        updatedAt: '2026-06-28T00:00:00Z',
+        version: 'main',
       },
     })
     const client = {
@@ -209,19 +209,338 @@ describe('SkillsPage', () => {
 
     renderSkillsPage(client)
 
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Catalog' }))
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '技能目录' }))
 
     expect(await screen.findByRole('button', { name: /frontend-design/ })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /frontend-design/ }))
-    fireEvent.click(await screen.findByRole('button', { name: '安装' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: 'frontend-design' })).toBeInTheDocument()
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '安装' })).toBeEnabled())
+    fireEvent.click(within(dialog).getByRole('button', { name: '安装' }))
 
     await waitFor(() =>
       expect(installSkillFromCatalog).toHaveBeenCalledWith({
         entryId: 'anthropic:frontend-design',
+        operationId: expect.stringMatching(/^catalog-install-/),
         sourceId: 'anthropic',
         version: 'main',
       }),
     )
+  })
+
+  it('shows running catalog install progress on the catalog entry card', async () => {
+    const client = createMockCommandClient({
+      skillCatalogInstallTasks: {
+        tasks: [
+          {
+            entryId: 'anthropic:frontend-design',
+            operationId: 'catalog-install-001',
+            percent: 45,
+            sourceId: 'anthropic',
+            stage: 'downloading',
+            startedAt: '2026-06-28T00:00:00Z',
+            status: 'running',
+            updatedAt: '2026-06-28T00:00:01Z',
+            version: 'main',
+          },
+        ],
+      },
+    })
+
+    renderSkillsPage(client)
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '技能目录' }))
+
+    const entryCard = await screen.findByRole('button', { name: /frontend-design/ })
+    expect(within(entryCard).getByText('45%')).toBeInTheDocument()
+  })
+
+  it('shows the backend catalog install error message', async () => {
+    const installSkillFromCatalog = vi
+      .fn()
+      .mockRejectedValue({ code: 'missing_skill_file', message: '缺少 SKILL.md。' })
+    const client = {
+      ...createMockCommandClient(),
+      installSkillFromCatalog,
+    }
+
+    renderSkillsPage(client)
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '技能目录' }))
+    fireEvent.click(await screen.findByRole('button', { name: /frontend-design/ }))
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '安装' })).toBeEnabled())
+    fireEvent.click(within(dialog).getByRole('button', { name: '安装' }))
+
+    expect(await within(dialog).findByText('缺少 SKILL.md。')).toBeInTheDocument()
+    expect(within(dialog).queryByText('目录技能无法安装。')).not.toBeInTheDocument()
+  })
+
+  it('shows real catalog install progress inside the install button', async () => {
+    let progressListener: (progress: SkillCatalogInstallProgressPayload) => void = (_progress) => {
+      throw new Error('catalog install progress listener was not registered')
+    }
+    let resolveInstall: () => void = () => {
+      throw new Error('catalog install resolver was not registered')
+    }
+    const installSkillFromCatalog = vi.fn<CommandClient['installSkillFromCatalog']>(
+      () =>
+        new Promise<InstallSkillFromCatalogResponse>((resolve) => {
+          resolveInstall = () =>
+            resolve({
+              task: {
+                entryId: 'anthropic:frontend-design',
+                operationId: 'catalog-install-001',
+                percent: 5,
+                sourceId: 'anthropic',
+                stage: 'preparing',
+                startedAt: '2026-06-28T00:00:00Z',
+                status: 'running',
+                updatedAt: '2026-06-28T00:00:00Z',
+                version: 'main',
+              },
+            } satisfies InstallSkillFromCatalogResponse)
+        }),
+    )
+    const unlisten = vi.fn()
+    const listenSkillCatalogInstallProgress = vi.fn(
+      async (listener: (progress: SkillCatalogInstallProgressPayload) => void) => {
+        progressListener = listener
+        return unlisten
+      },
+    )
+    const client = {
+      ...createMockCommandClient(),
+      installSkillFromCatalog,
+      listenSkillCatalogInstallProgress,
+    }
+
+    const rendered = renderSkillsPage(client)
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '技能目录' }))
+    fireEvent.click(await screen.findByRole('button', { name: /frontend-design/ }))
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '安装' })).toBeEnabled())
+    fireEvent.click(within(dialog).getByRole('button', { name: '安装' }))
+
+    await waitFor(() => expect(listenSkillCatalogInstallProgress).toHaveBeenCalledTimes(1))
+    const operationId = installSkillFromCatalog.mock.calls[0]?.[0]?.operationId
+    expect(operationId).toEqual(expect.stringMatching(/^catalog-install-/))
+    if (typeof operationId !== 'string') {
+      throw new Error('expected catalog install operation id')
+    }
+    progressListener({
+      entryId: 'anthropic:frontend-design',
+      operationId,
+      percent: 45,
+      sourceId: 'anthropic',
+      stage: 'downloading',
+      version: 'main',
+    })
+
+    expect(await within(dialog).findByRole('button', { name: /正在下载 45%/ })).toBeDisabled()
+    resolveInstall()
+    await waitFor(() => expect(installSkillFromCatalog).toHaveBeenCalledTimes(1))
+    expect(unlisten).not.toHaveBeenCalled()
+
+    rendered.unmount()
+    await waitFor(() => expect(unlisten).toHaveBeenCalledTimes(1))
+  })
+
+  it('shows blocked catalog validation instead of a detail load error', async () => {
+    const blockedDetail: GetSkillCatalogEntryResponse = {
+      entry: {
+        description: 'Community entry without a skill package.',
+        entryId: 'awesome:missing-skill',
+        installable: false,
+        installed: false,
+        name: 'missing-skill',
+        sourceId: 'awesome-agent-skills',
+        sourceLabel: 'Awesome Agent Skills',
+        tags: [],
+        trustLevel: 'curated',
+        version: 'main',
+      },
+      files: [{ kind: 'file', path: 'README.md', sizeBytes: 128 }],
+      readmePreview: 'Community entry without a SKILL.md file.',
+      validation: {
+        issueCodes: ['missing_skill_file'],
+        issues: ['缺少 SKILL.md。'],
+        status: 'blocked',
+      },
+    }
+    const client = createMockCommandClient({
+      skillCatalogEntries: { entries: [blockedDetail.entry] },
+      skillCatalogEntry: blockedDetail,
+    })
+
+    renderSkillsPage(client)
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '技能目录' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'missing-skill' }))
+    const dialog = await screen.findByRole('dialog')
+
+    expect(await within(dialog).findByText('缺少 SKILL.md。')).toBeInTheDocument()
+    expect(within(dialog).queryByText('目录详情无法加载。')).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: '安装' })).not.toBeInTheDocument()
+  })
+
+  it('previews catalog files and switches content from the file tree', async () => {
+    const detail: GetSkillCatalogEntryResponse = {
+      entry: {
+        description: 'Create distinctive frontend interfaces.',
+        entryId: 'anthropic:frontend-design',
+        installable: true,
+        installed: false,
+        name: 'frontend-design',
+        sourceId: 'anthropic',
+        sourceLabel: 'Anthropic Skills',
+        tags: ['frontend'],
+        trustLevel: 'official',
+        version: 'main',
+      },
+      files: [
+        { kind: 'file', path: 'README.md', sizeBytes: 96 },
+        { kind: 'file', path: 'SKILL.md', sizeBytes: 128 },
+        { kind: 'directory', path: 'references' },
+        { kind: 'file', path: 'references/style.md', sizeBytes: 64 },
+      ],
+      validation: {
+        issues: [],
+        status: 'ready',
+      },
+    }
+    const getSkillCatalogFile = vi.fn(({ path }: { path: string }) =>
+      Promise.resolve({
+        file: {
+          content: `Catalog content for ${path}`,
+          path,
+          truncated: path === 'references/style.md',
+        },
+      }),
+    )
+    const client = {
+      ...createMockCommandClient({ skillCatalogEntry: detail }),
+      getSkillCatalogFile,
+    }
+
+    renderSkillsPage(client)
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '技能目录' }))
+    fireEvent.click(await screen.findByRole('button', { name: /frontend-design/ }))
+    const dialog = await screen.findByRole('dialog')
+
+    expect(await within(dialog).findByRole('button', { name: /SKILL.md/ })).toBeInTheDocument()
+    expect(await within(dialog).findByText('Catalog content for SKILL.md')).toBeInTheDocument()
+    expect(getSkillCatalogFile).toHaveBeenCalledWith({
+      entryId: 'anthropic:frontend-design',
+      path: 'SKILL.md',
+      sourceId: 'anthropic',
+      version: 'main',
+    })
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /style.md/ }))
+
+    expect(
+      await within(dialog).findByText('Catalog content for references/style.md'),
+    ).toBeInTheDocument()
+    expect(within(dialog).getByText('文件内容已截断。')).toBeInTheDocument()
+  })
+
+  it('disables catalog installation when validation is blocked', async () => {
+    const blockedDetail: GetSkillCatalogEntryResponse = {
+      entry: {
+        description: 'Name already exists.',
+        entryId: 'anthropic:frontend-design',
+        installable: true,
+        installed: false,
+        name: 'frontend-design',
+        sourceId: 'anthropic',
+        sourceLabel: 'Anthropic Skills',
+        tags: [],
+        trustLevel: 'official',
+        version: 'main',
+      },
+      files: [{ kind: 'file', path: 'SKILL.md' }],
+      validation: {
+        issueCodes: ['active_skill_name_exists'],
+        issues: ['同名技能已存在。'],
+        status: 'blocked',
+      },
+    }
+    const installSkillFromCatalog = vi.fn()
+    const client = {
+      ...createMockCommandClient({ skillCatalogEntry: blockedDetail }),
+      installSkillFromCatalog,
+    }
+
+    renderSkillsPage(client)
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '技能目录' }))
+    fireEvent.click(await screen.findByRole('button', { name: /frontend-design/ }))
+    const dialog = await screen.findByRole('dialog')
+
+    expect(await within(dialog).findByText('同名技能已存在。')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: '安装' })).toBeDisabled()
+  })
+
+  it('localizes catalog sources and paginates catalog entries', async () => {
+    const listSkillCatalogEntries = vi
+      .fn()
+      .mockResolvedValueOnce({
+        entries: Array.from({ length: 12 }, (_, index) => ({
+          description: `Catalog skill ${index + 1}`,
+          entryId: `anthropic:skill-${index + 1}`,
+          installable: true,
+          installed: false,
+          name: `skill-${index + 1}`,
+          sourceId: 'anthropic',
+          sourceLabel: 'Anthropic Skills',
+          tags: [],
+          trustLevel: 'official',
+          version: 'main',
+        })),
+        nextCursor: 'offset:12',
+      })
+      .mockResolvedValueOnce({
+        entries: [
+          {
+            description: 'Catalog skill 13',
+            entryId: 'anthropic:skill-13',
+            installable: true,
+            installed: false,
+            name: 'skill-13',
+            sourceId: 'anthropic',
+            sourceLabel: 'Anthropic Skills',
+            tags: [],
+            trustLevel: 'official',
+            version: 'main',
+          },
+        ],
+      })
+    const client = {
+      ...createMockCommandClient(),
+      listSkillCatalogEntries,
+    }
+
+    renderSkillsPage(client)
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '技能目录' }))
+
+    expect(
+      await screen.findByRole('button', { name: /官方 Anthropic 技能仓库/ }),
+    ).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'skill-1' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'skill-13' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+
+    expect(await screen.findByRole('button', { name: 'skill-13' })).toBeInTheDocument()
+    expect(listSkillCatalogEntries).toHaveBeenLastCalledWith({
+      cursor: 'offset:12',
+      limit: 12,
+      sourceId: 'anthropic',
+    })
   })
 
   it('allows workspace skills to be disabled, enabled, and deleted', async () => {

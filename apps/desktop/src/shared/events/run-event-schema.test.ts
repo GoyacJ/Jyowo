@@ -497,6 +497,18 @@ describe('RunEvent schema', () => {
     ).toThrow()
   })
 
+  it('accepts ordinary token-counting text in visible event payloads', () => {
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[2],
+        payload: {
+          messageId: 'msg-001',
+          text: 'Anthropic compatible API, model list, Token 计数, Token: 统计, and token authentication.',
+        },
+      }),
+    ).not.toThrow()
+  })
+
   it('rejects private paths adjacent to punctuation in event payloads', () => {
     expect(() =>
       runEventSchema.parse({
@@ -994,6 +1006,14 @@ describe('RunEvent schema', () => {
       runEventSchema.parse({
         ...runEventFixtures[11],
         payload: { message: 'request failed with api_key=secret-token' },
+        visibility: 'redacted',
+      }),
+    ).toThrow()
+
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[11],
+        payload: { message: 'request failed with token=secret' },
         visibility: 'redacted',
       }),
     ).toThrow()

@@ -20,9 +20,11 @@ import type {
   GetMemoryItemResponse,
   GetProviderConfigApiKeyResponse,
   GetSkillCatalogEntryResponse,
+  GetSkillCatalogFileResponse,
   GetSkillDetailResponse,
   GetSkillFileResponse,
   HarnessHealthcheck,
+  InstallSkillFromCatalogRequest,
   InstallSkillFromCatalogResponse,
   ListActivityResponse,
   ListArtifactsResponse,
@@ -35,6 +37,7 @@ import type {
   ListProviderSettingsResponse,
   ListReferenceCandidatesResponse,
   ListSkillCatalogEntriesResponse,
+  ListSkillCatalogInstallTasksResponse,
   ListSkillCatalogSourcesResponse,
   ListSkillsResponse,
   ModelProviderCatalogResponse,
@@ -49,6 +52,7 @@ import type {
   SetConversationModelConfigResponse,
   SetExecutionSettingsResponse,
   SetMcpServerEnabledResponse,
+  SkillCatalogInstallProgressPayload,
   SkillSummary,
   StartRunResponse,
   SubscribeConversationEventsResponse,
@@ -541,6 +545,18 @@ const mockSkillEntryFile: GetSkillFileResponse = {
   },
 }
 
+const mockSkillCatalogFile: GetSkillCatalogFileResponse = {
+  file: {
+    content: 'Write concise release notes from the current workspace diff.',
+    path: 'SKILL.md',
+    truncated: false,
+  },
+}
+
+const mockSkillCatalogInstallTasks: ListSkillCatalogInstallTasksResponse = {
+  tasks: [],
+}
+
 const mockSaveMcpServer: SaveMcpServerResponse = {
   server: {
     displayName: 'Workspace GitHub',
@@ -959,7 +975,9 @@ export interface MockCommandClientOptions {
   skillDetail?: GetSkillDetailResponse
   skillFile?: GetSkillFileResponse
   skillCatalogEntry?: GetSkillCatalogEntryResponse
+  skillCatalogFile?: GetSkillCatalogFileResponse
   skillCatalogEntries?: ListSkillCatalogEntriesResponse
+  skillCatalogInstallTasks?: ListSkillCatalogInstallTasksResponse
   skillCatalogSources?: ListSkillCatalogSourcesResponse
   skillCatalogInstall?: InstallSkillFromCatalogResponse
   skills?: ListSkillsResponse
@@ -996,6 +1014,9 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     cloneResponse(options.conversationWorktreePage ?? mockConversationWorktreePage),
   )
   const pendingBatchTimeouts = new Map<number, () => void>()
+  const catalogInstallProgressListeners = new Set<
+    (progress: SkillCatalogInstallProgressPayload) => void
+  >()
   const mockEventState: MockConversationEventState = {
     getListener: () => batchListener,
     getSubscription: () => activeSubscription,
@@ -1012,6 +1033,27 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       resolve()
     }
     pendingBatchTimeouts.clear()
+  }
+  const emitCatalogInstallProgress = (
+    request: InstallSkillFromCatalogRequest,
+    stage: SkillCatalogInstallProgressPayload['stage'],
+    percent: number,
+  ) => {
+    if (!request.operationId) {
+      return
+    }
+
+    const payload = {
+      entryId: request.entryId,
+      operationId: request.operationId,
+      percent,
+      sourceId: request.sourceId,
+      stage,
+      version: request.version,
+    } satisfies SkillCatalogInstallProgressPayload
+    for (const listener of catalogInstallProgressListeners) {
+      listener(payload)
+    }
   }
 
   return {
@@ -1125,6 +1167,10 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       return options.skillCatalogEntry ?? mockSkillCatalogEntry
     },
+    async getSkillCatalogFile() {
+      await wait(options.delayMs)
+      return options.skillCatalogFile ?? mockSkillCatalogFile
+    },
     async pageConversationTimeline(request) {
       await wait(options.delayMs)
       const page = options.conversationTimelinePage ?? {
@@ -1198,27 +1244,35 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       return { skill: mockWorkspaceSkill }
     },
-    async installSkillFromCatalog() {
+    async installSkillFromCatalog(request) {
+      emitCatalogInstallProgress(request, 'preparing', 5)
       await wait(options.delayMs)
+      emitCatalogInstallProgress(request, 'completed', 100)
       return (
         options.skillCatalogInstall ?? {
-          skill: {
-            ...mockSkillCatalogEntry.entry,
-            enabled: true,
-            id: 'skill-catalog-001',
-            manageable: true,
-            origin: {
-              entryId: mockSkillCatalogEntry.entry.entryId,
-              installedFromCatalog: true,
-              sourceId: mockSkillCatalogEntry.entry.sourceId,
-              sourceLabel: mockSkillCatalogEntry.entry.sourceLabel,
-              version: mockSkillCatalogEntry.entry.version,
-            },
-            sourceKind: 'workspace',
-            status: 'ready',
+          task: {
+            entryId: request.entryId,
+            operationId: request.operationId ?? 'catalog-install-mock',
+            percent: 5,
+            sourceId: request.sourceId,
+            stage: 'preparing',
+            startedAt: '2026-06-28T00:00:00Z',
+            status: 'running',
+            updatedAt: '2026-06-28T00:00:00Z',
+            version: request.version,
           },
         }
       )
+    },
+    async listSkillCatalogInstallTasks() {
+      await wait(options.delayMs)
+      return options.skillCatalogInstallTasks ?? mockSkillCatalogInstallTasks
+    },
+    async listenSkillCatalogInstallProgress(onProgress) {
+      catalogInstallProgressListeners.add(onProgress)
+      return () => {
+        catalogInstallProgressListeners.delete(onProgress)
+      }
     },
     async listActivity() {
       await wait(options.delayMs)
@@ -1751,12 +1805,15 @@ export function createRejectedCommandClient(error: unknown): CommandClient {
     getProviderConfigApiKey: () => Promise.reject(error),
     getReplayTimeline: () => Promise.reject(error),
     getSkillCatalogEntry: () => Promise.reject(error),
+    getSkillCatalogFile: () => Promise.reject(error),
     pageConversationTimeline: () => Promise.reject(error),
     pageConversationWorktree: () => Promise.reject(error),
     getSkillDetail: () => Promise.reject(error),
     getSkillFile: () => Promise.reject(error),
     importSkill: () => Promise.reject(error),
     installSkillFromCatalog: () => Promise.reject(error),
+    listSkillCatalogInstallTasks: () => Promise.reject(error),
+    listenSkillCatalogInstallProgress: () => Promise.reject(error),
     listActivity: () => Promise.reject(error),
     listArtifacts: () => Promise.reject(error),
     listConversations: () => Promise.reject(error),

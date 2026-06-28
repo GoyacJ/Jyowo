@@ -9,10 +9,11 @@ const unredactedSecretPatterns = [
   /\bAuthorization:?\s*Bearer\s+\S+/i,
   /\bAuthorization:?\s*Basic\s+\S+/i,
   /\bBasic\s+[A-Za-z0-9+/=]{8,}\b/,
-  /\b(?:api[_-]?key|token|secret|password)\b\s*(?:=|\s+)\s*\S+/i,
+  /\b(?:api[_-]?key|token|secret|password)\b\s*[:=]\s*(?=[A-Za-z0-9._~+/=-]{6,}\b)(?=[A-Za-z0-9._~+/=-]*[0-9_~+/=-])[A-Za-z0-9._~+/=-]+\b/i,
+  /\b(?:api[_-]?key|token|secret|password)\b\s+(?=[A-Za-z0-9._~+/=-]{12,}\b)(?=[A-Za-z0-9._~+/=-]*[0-9_~+/=-])[A-Za-z0-9._~+/=-]+\b/i,
   /\b--(?:api-key|token|secret|password)\b\s+\S+/i,
   /\b[A-Za-z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|ACCESS_KEY)[A-Za-z0-9_]*\s*=\s*\S+/i,
-  /\b[A-Za-z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|ACCESS_KEY)[A-Za-z0-9_]*\s+\S+/i,
+  /\b[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|ACCESS_KEY)[A-Z0-9_]*\s+[A-Za-z0-9._~+/=-]{8,}\b/,
   /\bsk-[A-Za-z0-9]{12,}/i,
   /\bgh[pousr]_[A-Za-z0-9_]{20,}/i,
   /\bAKIA[0-9A-Z]{16}\b/,
@@ -1577,6 +1578,7 @@ const skillCatalogEntrySchema = z
 
 const skillCatalogValidationSchema = z
   .object({
+    issueCodes: z.array(z.string().min(1)).optional(),
     issues: z.array(z.string()),
     status: z.enum(['ready', 'warning', 'blocked']),
   })
@@ -1591,6 +1593,7 @@ const listSkillCatalogSourcesResponseSchema = z
 const listSkillCatalogEntriesRequestSchema = z
   .object({
     cursor: z.string().trim().min(1).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
     query: z.string().trim().optional(),
     sort: z.enum(['recommended', 'updated', 'downloads', 'trending']).optional(),
     sourceId: skillCatalogSourceIdSchema,
@@ -1612,6 +1615,24 @@ const getSkillCatalogEntryRequestSchema = z
   })
   .strict()
 
+const catalogFilePathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine(
+    (path) =>
+      !path.startsWith('/') &&
+      !/^[A-Za-z]:[\\/]/.test(path) &&
+      !path.split('/').some((segment) => segment === '..'),
+    'Catalog file path must be relative and stay inside the skill package.',
+  )
+
+const getSkillCatalogFileRequestSchema = getSkillCatalogEntryRequestSchema
+  .extend({
+    path: catalogFilePathSchema,
+  })
+  .strict()
+
 const skillCatalogFileSchema = z
   .object({
     kind: skillFileKindSchema,
@@ -1629,11 +1650,82 @@ const getSkillCatalogEntryResponseSchema = z
   })
   .strict()
 
+const skillCatalogFileContentSchema = z
+  .object({
+    content: z.string(),
+    path: z.string().min(1),
+    truncated: z.boolean(),
+  })
+  .strict()
+
+const getSkillCatalogFileResponseSchema = z
+  .object({
+    file: skillCatalogFileContentSchema,
+  })
+  .strict()
+
 const installSkillFromCatalogRequestSchema = getSkillCatalogEntryRequestSchema
+  .extend({
+    operationId: z.string().trim().min(1).optional(),
+  })
+  .strict()
+
+const skillCatalogInstallTaskSchema = z
+  .object({
+    entryId: z.string().min(1),
+    message: z.string().min(1).optional(),
+    operationId: z.string().min(1),
+    percent: z.number().int().min(0).max(100),
+    sourceId: z.string().min(1),
+    stage: z.enum([
+      'preparing',
+      'resolving',
+      'checking',
+      'downloading',
+      'validating',
+      'copying',
+      'reloading',
+      'completed',
+      'failed',
+    ]),
+    startedAt: z.string().min(1),
+    status: z.enum(['running', 'completed', 'failed']),
+    updatedAt: z.string().min(1),
+    version: z.string().min(1).optional(),
+  })
+  .strict()
+
+const listSkillCatalogInstallTasksResponseSchema = z
+  .object({
+    tasks: z.array(skillCatalogInstallTaskSchema),
+  })
+  .strict()
 
 const installSkillFromCatalogResponseSchema = z
   .object({
-    skill: skillSummarySchema,
+    task: skillCatalogInstallTaskSchema,
+  })
+  .strict()
+
+const skillCatalogInstallProgressPayloadSchema = z
+  .object({
+    entryId: z.string().min(1),
+    message: z.string().min(1).optional(),
+    operationId: z.string().min(1),
+    percent: z.number().int().min(0).max(100),
+    sourceId: z.string().min(1),
+    stage: z.enum([
+      'preparing',
+      'resolving',
+      'checking',
+      'downloading',
+      'validating',
+      'copying',
+      'reloading',
+      'completed',
+      'failed',
+    ]),
+    version: z.string().min(1).optional(),
   })
   .strict()
 
@@ -1940,6 +2032,7 @@ export type SkillCatalogSource = z.infer<typeof skillCatalogSourceSchema>
 export type SkillCatalogEntry = z.infer<typeof skillCatalogEntrySchema>
 export type ListSkillCatalogEntriesRequest = z.infer<typeof listSkillCatalogEntriesRequestSchema>
 export type GetSkillCatalogEntryRequest = z.infer<typeof getSkillCatalogEntryRequestSchema>
+export type GetSkillCatalogFileRequest = z.infer<typeof getSkillCatalogFileRequestSchema>
 export type InstallSkillFromCatalogRequest = z.infer<typeof installSkillFromCatalogRequestSchema>
 export type ListSkillsResponse = z.infer<typeof listSkillsResponseSchema>
 export type GetSkillDetailResponse = z.infer<typeof getSkillDetailResponseSchema>
@@ -1950,7 +2043,15 @@ export type DeleteSkillResponse = z.infer<typeof deleteSkillResponseSchema>
 export type ListSkillCatalogSourcesResponse = z.infer<typeof listSkillCatalogSourcesResponseSchema>
 export type ListSkillCatalogEntriesResponse = z.infer<typeof listSkillCatalogEntriesResponseSchema>
 export type GetSkillCatalogEntryResponse = z.infer<typeof getSkillCatalogEntryResponseSchema>
+export type GetSkillCatalogFileResponse = z.infer<typeof getSkillCatalogFileResponseSchema>
+export type SkillCatalogInstallTask = z.infer<typeof skillCatalogInstallTaskSchema>
+export type ListSkillCatalogInstallTasksResponse = z.infer<
+  typeof listSkillCatalogInstallTasksResponseSchema
+>
 export type InstallSkillFromCatalogResponse = z.infer<typeof installSkillFromCatalogResponseSchema>
+export type SkillCatalogInstallProgressPayload = z.infer<
+  typeof skillCatalogInstallProgressPayloadSchema
+>
 export type MemoryItemSummary = z.infer<typeof memoryItemSummarySchema>
 export type ListMemoryItemsResponse = z.infer<typeof listMemoryItemsResponseSchema>
 export type GetMemoryItemResponse = z.infer<typeof getMemoryItemResponseSchema>
@@ -1985,12 +2086,17 @@ export interface CommandClient {
   getSkillCatalogEntry: (
     request: GetSkillCatalogEntryRequest,
   ) => Promise<GetSkillCatalogEntryResponse>
+  getSkillCatalogFile: (request: GetSkillCatalogFileRequest) => Promise<GetSkillCatalogFileResponse>
   getSkillDetail: (id: string) => Promise<GetSkillDetailResponse>
   getSkillFile: (id: string, path: string) => Promise<GetSkillFileResponse>
   importSkill: (sourcePath: string) => Promise<ImportSkillResponse>
   installSkillFromCatalog: (
     request: InstallSkillFromCatalogRequest,
   ) => Promise<InstallSkillFromCatalogResponse>
+  listSkillCatalogInstallTasks: () => Promise<ListSkillCatalogInstallTasksResponse>
+  listenSkillCatalogInstallProgress: (
+    onProgress: (progress: SkillCatalogInstallProgressPayload) => void,
+  ) => Promise<() => void>
   exportMemoryItems: () => Promise<ExportMemoryItemsResponse>
   exportSupportBundle: (request: ExportSupportBundleRequest) => Promise<ExportSupportBundleResponse>
   getExecutionSettings: () => Promise<GetExecutionSettingsResponse>
@@ -2184,6 +2290,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, getSkillCatalogEntryRequestSchema, request)
       return parsePayload(command, getSkillCatalogEntryResponseSchema, await invoke(command, args))
     },
+    async getSkillCatalogFile(request) {
+      const command = 'get_skill_catalog_file'
+      const args = parseArgs(command, getSkillCatalogFileRequestSchema, request)
+      return parsePayload(command, getSkillCatalogFileResponseSchema, await invoke(command, args))
+    },
     async pageConversationTimeline(request) {
       const command = 'page_conversation_timeline'
       const args = parseArgs(command, pageConversationTimelineRequestSchema, request)
@@ -2230,6 +2341,27 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         installSkillFromCatalogResponseSchema,
         await invoke(command, args),
       )
+    },
+    async listSkillCatalogInstallTasks() {
+      const command = 'list_skill_catalog_install_tasks'
+      return parsePayload(
+        command,
+        listSkillCatalogInstallTasksResponseSchema,
+        await invoke(command),
+      )
+    },
+    async listenSkillCatalogInstallProgress(onProgress) {
+      const unlisten = await tauriListen<unknown>('skill_catalog_install_progress', (event) => {
+        onProgress(
+          parsePayload(
+            'skill_catalog_install_progress',
+            skillCatalogInstallProgressPayloadSchema,
+            event.payload,
+          ),
+        )
+      })
+
+      return unlisten
     },
     async listActivity(request) {
       const command = 'list_activity'
@@ -2719,11 +2851,31 @@ export function getSkillCatalogEntry(
   return client.getSkillCatalogEntry(request)
 }
 
+export function getSkillCatalogFile(
+  request: GetSkillCatalogFileRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<GetSkillCatalogFileResponse> {
+  return client.getSkillCatalogFile(request)
+}
+
 export function installSkillFromCatalog(
   request: InstallSkillFromCatalogRequest,
   client: CommandClient = tauriCommandClient,
 ): Promise<InstallSkillFromCatalogResponse> {
   return client.installSkillFromCatalog(request)
+}
+
+export function listSkillCatalogInstallTasks(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListSkillCatalogInstallTasksResponse> {
+  return client.listSkillCatalogInstallTasks()
+}
+
+export function listenSkillCatalogInstallProgress(
+  onProgress: (progress: SkillCatalogInstallProgressPayload) => void,
+  client: CommandClient = tauriCommandClient,
+): Promise<() => void> {
+  return client.listenSkillCatalogInstallProgress(onProgress)
 }
 
 export function importSkill(

@@ -15,15 +15,21 @@ import { useTranslation } from 'react-i18next'
 
 import {
   deleteSkill,
+  type GetSkillCatalogFileResponse,
   getSkillCatalogEntry,
+  getSkillCatalogFile,
   getSkillDetail,
   getSkillFile,
   importSkill,
   installSkillFromCatalog,
+  listenSkillCatalogInstallProgress,
   listSkillCatalogEntries,
+  listSkillCatalogInstallTasks,
   listSkillCatalogSources,
   listSkills,
   type SkillCatalogEntry,
+  type SkillCatalogInstallProgressPayload,
+  type SkillCatalogInstallTask,
   type SkillCatalogSource,
   type SkillFile,
   type SkillSummary,
@@ -43,6 +49,7 @@ import {
 } from '@/shared/ui/dialog'
 import { Switch } from '@/shared/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shared/ui/tooltip'
 
 import { MCPManager } from './MCPManager'
 
@@ -77,8 +84,15 @@ const skillQueryKeys = {
   all: ['skills'] as const,
   catalogDetail: (sourceId: string, entryId: string | null, version: string | null) =>
     [...skillQueryKeys.all, 'catalog', 'detail', sourceId, entryId, version] as const,
-  catalogEntries: (sourceId: string, query: string) =>
-    [...skillQueryKeys.all, 'catalog', 'entries', sourceId, query] as const,
+  catalogEntries: (sourceId: string, query: string, cursor: string | null) =>
+    [...skillQueryKeys.all, 'catalog', 'entries', sourceId, query, cursor] as const,
+  catalogFile: (
+    sourceId: string,
+    entryId: string | null,
+    version: string | null,
+    path: string | null,
+  ) => [...skillQueryKeys.all, 'catalog', 'file', sourceId, entryId, version, path] as const,
+  catalogInstallTasks: () => [...skillQueryKeys.all, 'catalog', 'installTasks'] as const,
   catalogSources: () => [...skillQueryKeys.all, 'catalog', 'sources'] as const,
   detail: (id: string | null) => [...skillQueryKeys.all, 'detail', id] as const,
   file: (id: string | null, path: string | null) =>
@@ -87,10 +101,15 @@ const skillQueryKeys = {
 }
 
 const SKILLS_PAGE_SIZE = 8
+const CATALOG_PAGE_SIZE = 12
 
 type SkillStatusFilter = 'all' | SkillSummary['status']
 type SkillSourceFilter = 'all' | SkillSummary['sourceKind']
 type SkillCatalogSourceId = SkillCatalogSource['id']
+type CatalogInstallMutationRequest = {
+  entry: SkillCatalogEntry
+  operationId: string
+}
 
 function useSkills() {
   const commandClient = useCommandClient()
@@ -170,14 +189,20 @@ function useSkillCatalogSources() {
   })
 }
 
-function useSkillCatalogEntries(sourceId: SkillCatalogSourceId, query: string) {
+function useSkillCatalogEntries(
+  sourceId: SkillCatalogSourceId,
+  query: string,
+  cursor: string | null,
+) {
   const commandClient = useCommandClient()
 
   return useQuery({
-    queryKey: skillQueryKeys.catalogEntries(sourceId, query),
+    queryKey: skillQueryKeys.catalogEntries(sourceId, query, cursor),
     queryFn: () =>
       listSkillCatalogEntries(
         {
+          cursor: cursor ?? undefined,
+          limit: CATALOG_PAGE_SIZE,
           query: query.trim() || undefined,
           sourceId,
         },
@@ -186,11 +211,15 @@ function useSkillCatalogEntries(sourceId: SkillCatalogSourceId, query: string) {
   })
 }
 
-function useSkillCatalogEntry(sourceId: SkillCatalogSourceId, entry: SkillCatalogEntry | null) {
+function useSkillCatalogEntry(
+  sourceId: SkillCatalogSourceId,
+  entry: SkillCatalogEntry | null,
+  enabled: boolean,
+) {
   const commandClient = useCommandClient()
 
   return useQuery({
-    enabled: entry !== null,
+    enabled: enabled && entry !== null,
     queryKey: skillQueryKeys.catalogDetail(
       sourceId,
       entry?.entryId ?? null,
@@ -208,24 +237,178 @@ function useSkillCatalogEntry(sourceId: SkillCatalogSourceId, entry: SkillCatalo
   })
 }
 
+function useSkillCatalogFile(
+  sourceId: SkillCatalogSourceId,
+  entry: SkillCatalogEntry | null,
+  path: string | null,
+  enabled: boolean,
+) {
+  const commandClient = useCommandClient()
+
+  return useQuery({
+    enabled: enabled && entry !== null && path !== null,
+    queryKey: skillQueryKeys.catalogFile(
+      sourceId,
+      entry?.entryId ?? null,
+      entry?.version ?? null,
+      path,
+    ),
+    queryFn: () =>
+      getSkillCatalogFile(
+        {
+          entryId: entry?.entryId ?? '',
+          path: path ?? '',
+          sourceId,
+          version: entry?.version,
+        },
+        commandClient,
+      ),
+  })
+}
+
+function useSkillCatalogInstallTasks() {
+  const commandClient = useCommandClient()
+
+  return useQuery({
+    queryKey: skillQueryKeys.catalogInstallTasks(),
+    queryFn: () => listSkillCatalogInstallTasks(commandClient),
+    refetchInterval: (query) =>
+      query.state.data?.tasks.some((task) => task.status === 'running') ? 1000 : false,
+  })
+}
+
 function useInstallSkillFromCatalog() {
   const commandClient = useCommandClient()
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (entry: SkillCatalogEntry) =>
+    mutationFn: ({ entry, operationId }: CatalogInstallMutationRequest) =>
       installSkillFromCatalog(
         {
           entryId: entry.entryId,
+          operationId,
           sourceId: entry.sourceId,
           version: entry.version,
         },
         commandClient,
       ),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: skillQueryKeys.all })
+    onSuccess: async (response) => {
+      queryClient.setQueryData(
+        skillQueryKeys.catalogInstallTasks(),
+        upsertCatalogInstallTask(response.task),
+      )
+      await queryClient.invalidateQueries({ queryKey: skillQueryKeys.list() })
     },
   })
+}
+
+function catalogInstallTaskKey(input: {
+  entryId: string
+  sourceId: string
+  version?: string | null
+}) {
+  return `${input.sourceId}\u0000${input.entryId}\u0000${input.version ?? ''}`
+}
+
+function findCatalogInstallTask(
+  tasks: SkillCatalogInstallTask[],
+  entry: SkillCatalogEntry | null | undefined,
+) {
+  if (!entry) {
+    return null
+  }
+
+  const entryKey = catalogInstallTaskKey(entry)
+  return tasks.find((task) => catalogInstallTaskKey(task) === entryKey) ?? null
+}
+
+function upsertCatalogInstallTask(nextTask: SkillCatalogInstallTask) {
+  return (current?: { tasks: SkillCatalogInstallTask[] }) => {
+    const currentTasks = current?.tasks ?? []
+    const nextKey = catalogInstallTaskKey(nextTask)
+    const existing = currentTasks.find((task) => catalogInstallTaskKey(task) === nextKey)
+    if (existing && existing.updatedAt > nextTask.updatedAt) {
+      return { tasks: currentTasks }
+    }
+
+    const tasks = currentTasks.filter((task) => catalogInstallTaskKey(task) !== nextKey)
+    return { tasks: [...tasks, nextTask] }
+  }
+}
+
+function catalogInstallTaskFromProgress(
+  progress: SkillCatalogInstallProgressPayload,
+  existing: SkillCatalogInstallTask | null,
+): SkillCatalogInstallTask {
+  const now = new Date().toISOString()
+  const status =
+    progress.stage === 'completed'
+      ? 'completed'
+      : progress.stage === 'failed'
+        ? 'failed'
+        : 'running'
+
+  return {
+    entryId: progress.entryId,
+    message: progress.message,
+    operationId: progress.operationId,
+    percent: progress.percent,
+    sourceId: progress.sourceId,
+    stage: progress.stage,
+    startedAt: existing?.startedAt ?? now,
+    status,
+    updatedAt: now,
+    version: progress.version,
+  }
+}
+
+type CatalogFileSummary = {
+  kind: SkillFile['kind']
+  path: string
+  sizeBytes?: number
+}
+
+function buildCatalogFileTree(files: CatalogFileSummary[]): SkillFile[] {
+  return files.map((file) => {
+    const parts = file.path.split('/').filter(Boolean)
+
+    return {
+      depth: Math.max(0, parts.length - 1),
+      kind: file.kind,
+      name: parts.at(-1) ?? file.path,
+      path: file.path,
+      sizeBytes: file.sizeBytes,
+    }
+  })
+}
+
+function commandErrorMessage(error: unknown, fallback: string): string {
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === 'string' && message.trim().length > 0) {
+      return message
+    }
+  }
+
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message
+  }
+
+  return fallback
+}
+
+function catalogFileErrorMessage(error: unknown, fallback: string, previewUnavailable: string) {
+  const message = commandErrorMessage(error, fallback)
+  return message === 'catalog text file must be valid UTF-8' ? previewUnavailable : message
+}
+
+function createCatalogInstallOperationId() {
+  const randomUUID = globalThis.crypto?.randomUUID?.()
+  if (randomUUID) {
+    return `catalog-install-${randomUUID}`
+  }
+
+  return `catalog-install-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
 export function SkillSettingsPage() {
@@ -572,42 +755,210 @@ function InstalledSkillsManager() {
 
 function SkillCatalogManager() {
   const { t } = useTranslation('skills')
+  const commandClient = useCommandClient()
+  const queryClient = useQueryClient()
   const sourcesQuery = useSkillCatalogSources()
+  const catalogInstallTasksQuery = useSkillCatalogInstallTasks()
   const installMutation = useInstallSkillFromCatalog()
   const [sourceId, setSourceId] = useState<SkillCatalogSourceId>('anthropic')
   const [search, setSearch] = useState('')
-  const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null)
-  const entriesQuery = useSkillCatalogEntries(sourceId, search)
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [cursorHistory, setCursorHistory] = useState<(string | null)[]>([])
+  const [selectedEntry, setSelectedEntry] = useState<SkillCatalogEntry | null>(null)
+  const [selectedCatalogFilePath, setSelectedCatalogFilePath] = useState<string | null>(null)
+  const [catalogInstallSetupError, setCatalogInstallSetupError] = useState<unknown>(null)
+  const [detailOpen, setDetailOpen] = useState(false)
+  const entriesQuery = useSkillCatalogEntries(sourceId, search, cursor)
   const entries = entriesQuery.data?.entries ?? []
-  const selectedEntry = entries.find((entry) => entry.entryId === selectedEntryId) ?? null
-  const detailQuery = useSkillCatalogEntry(sourceId, selectedEntry)
+  const catalogInstallTasks = catalogInstallTasksQuery.data?.tasks ?? []
+  const detailQuery = useSkillCatalogEntry(sourceId, selectedEntry, detailOpen)
+  const catalogFileQuery = useSkillCatalogFile(
+    sourceId,
+    selectedEntry,
+    selectedCatalogFilePath,
+    detailOpen,
+  )
   const selectedSource = sourcesQuery.data?.sources.find((source) => source.id === sourceId)
+  const detailEntry = detailQuery.data?.entry ?? selectedEntry
+  const catalogFiles = useMemo(
+    () => buildCatalogFileTree(detailQuery.data?.files ?? []),
+    [detailQuery.data?.files],
+  )
+  const selectedCatalogInstallTask = findCatalogInstallTask(catalogInstallTasks, selectedEntry)
+  const selectedCatalogInstallInFlight = selectedCatalogInstallTask?.status === 'running'
+  const selectedCatalogInstallCompleted = selectedCatalogInstallTask?.status === 'completed'
+  const catalogInstallDisabled =
+    installMutation.isPending ||
+    selectedCatalogInstallInFlight ||
+    selectedCatalogInstallCompleted ||
+    detailQuery.isLoading ||
+    !detailQuery.data ||
+    detailEntry?.installable === false ||
+    detailEntry?.installed === true ||
+    detailQuery.data.validation.status === 'blocked'
+  const catalogInstallPercent = selectedCatalogInstallTask?.percent ?? 5
+  const catalogInstallStage = selectedCatalogInstallTask?.stage ?? 'preparing'
 
   useEffect(() => {
-    setSelectedEntryId(null)
-  }, [sourceId])
-
-  useEffect(() => {
-    if (selectedEntryId === null && entries.length > 0) {
-      setSelectedEntryId(entries[0]?.entryId ?? null)
+    if (selectedCatalogFilePath !== null || catalogFiles.length === 0) {
+      return
     }
-  }, [entries, selectedEntryId])
+    const skillFile =
+      catalogFiles.find((file) => file.kind === 'file' && file.path === 'SKILL.md') ??
+      catalogFiles.find((file) => file.kind === 'file')
+    if (skillFile) {
+      setSelectedCatalogFilePath(skillFile.path)
+    }
+  }, [catalogFiles, selectedCatalogFilePath])
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | null = null
+
+    listenSkillCatalogInstallProgress((progress) => {
+      queryClient.setQueryData(skillQueryKeys.catalogInstallTasks(), (current) => {
+        const tasks = (current as { tasks: SkillCatalogInstallTask[] } | undefined)?.tasks ?? []
+        const existing =
+          tasks.find((task) => task.operationId === progress.operationId) ??
+          tasks.find((task) => catalogInstallTaskKey(task) === catalogInstallTaskKey(progress)) ??
+          null
+        const nextTask = catalogInstallTaskFromProgress(progress, existing)
+        return upsertCatalogInstallTask(nextTask)({ tasks })
+      })
+
+      if (progress.stage === 'completed' || progress.stage === 'failed') {
+        void queryClient.invalidateQueries({ queryKey: skillQueryKeys.list() })
+        void queryClient.invalidateQueries({ queryKey: [...skillQueryKeys.all, 'catalog'] })
+      }
+    }, commandClient)
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup()
+          return
+        }
+        unlisten = cleanup
+      })
+      .catch((error: unknown) => {
+        setCatalogInstallSetupError(error)
+      })
+
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [commandClient, queryClient])
+
+  function resetCatalogSelection() {
+    setSelectedEntry(null)
+    setSelectedCatalogFilePath(null)
+    setCatalogInstallSetupError(null)
+    setDetailOpen(false)
+    setCursor(null)
+    setCursorHistory([])
+    installMutation.reset()
+  }
 
   function selectSource(nextSourceId: SkillCatalogSourceId) {
     setSourceId(nextSourceId)
     setSearch('')
+    resetCatalogSelection()
   }
 
-  async function installSelectedEntry() {
-    if (selectedEntry === null || !selectedEntry.installable || selectedEntry.installed) {
+  function updateCatalogSearch(value: string) {
+    setSearch(value)
+    resetCatalogSelection()
+  }
+
+  function openEntry(entry: SkillCatalogEntry) {
+    setSelectedEntry(entry)
+    setSelectedCatalogFilePath(null)
+    setCatalogInstallSetupError(null)
+    installMutation.reset()
+    setDetailOpen(true)
+  }
+
+  function goToNextPage() {
+    const nextCursor = entriesQuery.data?.nextCursor
+    if (!nextCursor) {
+      return
+    }
+    setCursorHistory((current) => [...current, cursor])
+    setCursor(nextCursor)
+  }
+
+  function goToPreviousPage() {
+    setCursorHistory((current) => {
+      const nextHistory = current.slice(0, -1)
+      setCursor(current.at(-1) ?? null)
+      return nextHistory
+    })
+  }
+
+  function catalogSourceLabel(source: SkillCatalogSource) {
+    return t(`catalog.sourcesById.${source.id}.label`, { defaultValue: source.label })
+  }
+
+  function catalogSourceDescription(source: SkillCatalogSource) {
+    return t(`catalog.sourcesById.${source.id}.description`, {
+      defaultValue: source.description,
+    })
+  }
+
+  function catalogSourceLabelById(entry: SkillCatalogEntry) {
+    const source = sourcesQuery.data?.sources.find((candidate) => candidate.id === entry.sourceId)
+    return source ? catalogSourceLabel(source) : entry.sourceLabel
+  }
+
+  function installSelectedEntry() {
+    if (selectedEntry === null || catalogInstallDisabled) {
       return
     }
 
-    await installMutation.mutateAsync(selectedEntry)
+    const operationId = createCatalogInstallOperationId()
+    const startedAt = new Date().toISOString()
+    queryClient.setQueryData(
+      skillQueryKeys.catalogInstallTasks(),
+      upsertCatalogInstallTask({
+        entryId: selectedEntry.entryId,
+        operationId,
+        percent: 5,
+        sourceId: selectedEntry.sourceId,
+        stage: 'preparing',
+        startedAt,
+        status: 'running',
+        updatedAt: startedAt,
+        version: selectedEntry.version,
+      }),
+    )
+    setCatalogInstallSetupError(null)
+
+    installMutation.mutate(
+      { entry: selectedEntry, operationId },
+      {
+        onError: (error) => {
+          const failedAt = new Date().toISOString()
+          queryClient.setQueryData(
+            skillQueryKeys.catalogInstallTasks(),
+            upsertCatalogInstallTask({
+              entryId: selectedEntry.entryId,
+              message: commandErrorMessage(error, t('catalog.installError')),
+              operationId,
+              percent: 100,
+              sourceId: selectedEntry.sourceId,
+              stage: 'failed',
+              startedAt,
+              status: 'failed',
+              updatedAt: failedAt,
+              version: selectedEntry.version,
+            }),
+          )
+        },
+      },
+    )
   }
 
   return (
-    <section className="grid min-h-[560px] gap-4 lg:grid-cols-[220px_minmax(240px,320px)_minmax(0,1fr)]">
+    <section className="grid min-h-[560px] gap-4 lg:grid-cols-[240px_minmax(0,1fr)]">
       <section
         aria-label={t('catalog.sourcesLabel')}
         className="rounded-md border border-border bg-background"
@@ -633,10 +984,12 @@ function SkillCatalogManager() {
               type="button"
             >
               <span className="flex items-center justify-between gap-2">
-                <span className="font-medium">{source.label}</span>
+                <span className="font-medium">{catalogSourceLabel(source)}</span>
                 <Badge variant="outline">{t(`catalog.trust.${source.trustLevel}`)}</Badge>
               </span>
-              <span className="mt-1 block text-muted-foreground text-xs">{source.description}</span>
+              <span className="mt-1 block text-muted-foreground text-xs">
+                {catalogSourceDescription(source)}
+              </span>
             </button>
           ))}
         </div>
@@ -652,7 +1005,7 @@ function SkillCatalogManager() {
             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <input
               className="h-10 w-full rounded-md border border-border bg-background pl-9 pr-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onChange={(event) => setSearch(event.target.value)}
+              onChange={(event) => updateCatalogSearch(event.target.value)}
               placeholder={t('catalog.search')}
               value={search}
             />
@@ -672,120 +1025,287 @@ function SkillCatalogManager() {
               {t('catalog.empty')}
             </div>
           ) : null}
-          {entries.map((entry) => (
-            <button
-              aria-pressed={entry.entryId === selectedEntryId}
-              className="block w-full rounded-md border border-border bg-surface px-3 py-2 text-left text-sm transition-colors data-[selected=true]:border-primary data-[selected=true]:bg-muted/35"
-              data-selected={entry.entryId === selectedEntryId}
-              key={entry.entryId}
-              onClick={() => setSelectedEntryId(entry.entryId)}
-              type="button"
-            >
-              <span className="flex items-center justify-between gap-2">
-                <span className="min-w-0 truncate font-medium">{entry.name}</span>
-                {entry.installed ? <Badge variant="success">{t('catalog.installed')}</Badge> : null}
-              </span>
-              <span className="mt-1 line-clamp-2 text-muted-foreground text-xs">
-                {entry.description}
-              </span>
-              <span className="mt-2 flex flex-wrap gap-1">
-                <Badge variant="outline">{entry.sourceLabel}</Badge>
-                {entry.version ? <Badge variant="outline">{entry.version}</Badge> : null}
-              </span>
-            </button>
-          ))}
+          <TooltipProvider delayDuration={250}>
+            {entries.map((entry) => {
+              const installTask = findCatalogInstallTask(catalogInstallTasks, entry)
+              const running = installTask?.status === 'running'
+
+              return (
+                <Tooltip key={entry.entryId}>
+                  <TooltipTrigger asChild>
+                    <button
+                      aria-label={entry.name}
+                      className="relative block w-full overflow-hidden rounded-md border border-border bg-surface px-3 py-2 text-left text-sm transition-colors hover:border-primary/60 hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onClick={() => openEntry(entry)}
+                      type="button"
+                    >
+                      {running ? (
+                        <span
+                          aria-hidden="true"
+                          className="absolute inset-y-0 left-0 bg-primary/15 transition-[width]"
+                          style={{ width: `${installTask.percent}%` }}
+                        />
+                      ) : null}
+                      <span className="relative z-10 block">
+                        <span className="flex items-center justify-between gap-2">
+                          <span className="min-w-0 truncate font-medium">{entry.name}</span>
+                          {running ? (
+                            <span className="shrink-0 font-medium text-primary text-xs">
+                              {installTask.percent}%
+                            </span>
+                          ) : null}
+                          {!running && entry.installed ? (
+                            <Badge variant="success">{t('catalog.installed')}</Badge>
+                          ) : null}
+                        </span>
+                        <span className="mt-1 line-clamp-2 text-muted-foreground text-xs">
+                          {entry.description}
+                        </span>
+                        <span className="mt-2 flex flex-wrap gap-1">
+                          <Badge variant="outline">{catalogSourceLabelById(entry)}</Badge>
+                          {entry.version ? <Badge variant="outline">{entry.version}</Badge> : null}
+                        </span>
+                      </span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-80 space-y-1.5 leading-5">
+                    <div className="font-medium">{entry.name}</div>
+                    <div className="text-muted-foreground">{entry.description}</div>
+                    <div className="flex flex-wrap gap-1 pt-1">
+                      <Badge variant="outline">{catalogSourceLabelById(entry)}</Badge>
+                      <Badge variant="outline">{t(`catalog.trust.${entry.trustLevel}`)}</Badge>
+                      {entry.tags.slice(0, 3).map((tag) => (
+                        <Badge key={tag} variant="outline">
+                          {tag}
+                        </Badge>
+                      ))}
+                    </div>
+                  </TooltipContent>
+                </Tooltip>
+              )
+            })}
+          </TooltipProvider>
+        </div>
+        <div className="flex items-center justify-between gap-2 border-border border-t p-2">
+          <Button
+            disabled={cursorHistory.length === 0 || entriesQuery.isFetching}
+            onClick={goToPreviousPage}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <ChevronLeft data-icon className="size-4" />
+            {t('pagination.previous')}
+          </Button>
+          <span className="text-muted-foreground text-sm">
+            {t('catalog.pageInfo', { page: cursorHistory.length + 1 })}
+          </span>
+          <Button
+            disabled={!entriesQuery.data?.nextCursor || entriesQuery.isFetching}
+            onClick={goToNextPage}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {t('pagination.next')}
+            <ChevronRight data-icon className="size-4" />
+          </Button>
         </div>
       </section>
 
-      <section
-        aria-label={t('catalog.detailLabel')}
-        className="min-h-0 rounded-md border border-border bg-background"
+      <Dialog
+        onOpenChange={(open) => {
+          setDetailOpen(open)
+          if (!open) {
+            setSelectedEntry(null)
+          }
+        }}
+        open={detailOpen}
       >
-        {selectedEntry === null ? (
-          <div className="px-4 py-8 text-center text-muted-foreground text-sm">
-            {selectedSource?.installable === false
-              ? t('catalog.specOnly')
-              : t('catalog.selectEntry')}
-          </div>
-        ) : (
-          <div className="flex h-full min-h-0 flex-col">
-            <div className="border-border border-b px-4 py-3">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="truncate font-semibold text-base">{selectedEntry.name}</h3>
-                  <p className="mt-1 max-w-2xl text-muted-foreground text-sm">
-                    {selectedEntry.description}
-                  </p>
+        <DialogContent className="max-h-[min(780px,calc(100vh-2rem))] w-[min(calc(100vw-2rem),68rem)] overflow-hidden p-0">
+          {selectedEntry === null ? null : (
+            <div className="grid min-h-[620px] min-w-0 grid-cols-[minmax(200px,260px)_minmax(0,1fr)]">
+              <section
+                aria-label={t('catalog.files')}
+                className="min-h-0 border-border border-r bg-background"
+              >
+                <div className="border-border border-b px-3 py-2 font-medium text-sm">
+                  {t('catalog.files')}
                 </div>
-                <Button
-                  disabled={
-                    installMutation.isPending ||
-                    selectedEntry.installed ||
-                    !selectedEntry.installable ||
-                    detailQuery.data?.validation.status === 'blocked'
-                  }
-                  onClick={installSelectedEntry}
-                  type="button"
-                >
-                  <Download data-icon className="size-4" />
-                  {selectedEntry.installed ? t('catalog.installed') : t('catalog.install')}
-                </Button>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-1">
-                <Badge variant="outline">{selectedEntry.sourceLabel}</Badge>
-                <Badge variant="outline">{t(`catalog.trust.${selectedEntry.trustLevel}`)}</Badge>
-                {detailQuery.data?.validation.status ? (
-                  <Badge variant="outline">
-                    {t(`catalog.validation.${detailQuery.data.validation.status}`)}
-                  </Badge>
+                {detailQuery.isLoading ? (
+                  <div className="p-3 text-muted-foreground text-sm">
+                    {t('catalog.loadingDetail')}
+                  </div>
                 ) : null}
-              </div>
-            </div>
-
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-              {detailQuery.isLoading ? (
-                <div className="text-muted-foreground text-sm">{t('catalog.loadingDetail')}</div>
-              ) : null}
-              {detailQuery.isError || installMutation.isError ? (
-                <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
-                  {installMutation.isError ? t('catalog.installError') : t('catalog.detailError')}
-                </div>
-              ) : null}
-              {detailQuery.data?.validation.issues.length ? (
-                <div className="rounded-md border border-border bg-muted/25 px-3 py-2 text-sm">
-                  <div className="font-medium">{t('catalog.validationIssues')}</div>
-                  <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
-                    {detailQuery.data.validation.issues.map((issue) => (
-                      <li key={issue}>{issue}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-              {detailQuery.data?.readmePreview ? (
-                <pre className="max-h-72 overflow-auto rounded-md border border-border bg-muted/20 p-3 text-xs leading-relaxed">
-                  {detailQuery.data.readmePreview}
-                </pre>
-              ) : null}
-              {detailQuery.data?.files?.length ? (
-                <div>
-                  <div className="mb-2 font-medium text-sm">{t('catalog.files')}</div>
-                  <div className="space-y-1">
-                    {detailQuery.data.files.slice(0, 12).map((file) => (
-                      <div
-                        className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5 text-sm"
+                {!detailQuery.isLoading && catalogFiles.length === 0 ? (
+                  <div className="p-3 text-muted-foreground text-sm">{t('catalog.noFiles')}</div>
+                ) : null}
+                {catalogFiles.length > 0 ? (
+                  <div className="max-h-[576px] overflow-y-auto p-2">
+                    {catalogFiles.map((file) => (
+                      <SkillFileRow
+                        file={file}
                         key={file.path}
-                      >
-                        <FileText className="size-4 text-muted-foreground" />
-                        <span className="truncate">{file.path}</span>
-                      </div>
+                        onSelectFile={setSelectedCatalogFilePath}
+                        selected={file.path === selectedCatalogFilePath}
+                      />
                     ))}
                   </div>
+                ) : null}
+              </section>
+
+              <section className="flex min-h-0 min-w-0 flex-col">
+                <div className="border-border border-b p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <DialogHeader className="min-w-0">
+                      <DialogTitle>{detailEntry?.name ?? selectedEntry.name}</DialogTitle>
+                      <DialogDescription>
+                        {detailEntry?.description ?? selectedEntry.description}
+                      </DialogDescription>
+                    </DialogHeader>
+                    {selectedEntry.installable ? (
+                      <Button
+                        className="relative min-w-36 overflow-hidden"
+                        disabled={catalogInstallDisabled}
+                        onClick={installSelectedEntry}
+                        type="button"
+                      >
+                        {selectedCatalogInstallInFlight ? (
+                          <>
+                            <span
+                              aria-hidden="true"
+                              className="absolute inset-y-0 left-0 bg-primary/20 transition-[width]"
+                              style={{ width: `${catalogInstallPercent}%` }}
+                            />
+                            <span className="relative z-10 inline-flex items-center gap-2">
+                              <Download data-icon className="size-4" />
+                              {t(`catalog.installProgress.${catalogInstallStage}`)}{' '}
+                              {catalogInstallPercent}%
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <Download data-icon className="size-4" />
+                            {detailEntry?.installed || selectedCatalogInstallCompleted
+                              ? t('catalog.installed')
+                              : t('catalog.install')}
+                          </>
+                        )}
+                      </Button>
+                    ) : null}
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-1">
+                    <Badge variant="outline">{catalogSourceLabelById(selectedEntry)}</Badge>
+                    <Badge variant="outline">
+                      {t(`catalog.trust.${selectedEntry.trustLevel}`)}
+                    </Badge>
+                    {detailQuery.data?.validation.status ? (
+                      <Badge variant="outline">
+                        {t(`catalog.validation.${detailQuery.data.validation.status}`)}
+                      </Badge>
+                    ) : null}
+                    {selectedEntry.tags.map((tag) => (
+                      <Badge key={tag} variant="outline">
+                        {tag}
+                      </Badge>
+                    ))}
+                  </div>
+
+                  <div className="mt-3 space-y-2">
+                    {detailQuery.isLoading ? (
+                      <div className="text-muted-foreground text-sm">
+                        {t('catalog.loadingDetail')}
+                      </div>
+                    ) : null}
+                    {detailQuery.isError ? (
+                      <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
+                        {commandErrorMessage(detailQuery.error, t('catalog.detailError'))}
+                      </div>
+                    ) : null}
+                    {catalogInstallSetupError !== null || installMutation.isError ? (
+                      <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
+                        {commandErrorMessage(
+                          catalogInstallSetupError ?? installMutation.error,
+                          t('catalog.installError'),
+                        )}
+                      </div>
+                    ) : null}
+                    {selectedCatalogInstallTask?.status === 'failed' && !installMutation.isError ? (
+                      <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
+                        {selectedCatalogInstallTask.message ?? t('catalog.installError')}
+                      </div>
+                    ) : null}
+                    {detailQuery.data?.validation.issues.length ? (
+                      <div className="rounded-md border border-border bg-muted/25 px-3 py-2 text-sm">
+                        <div className="font-medium">{t('catalog.validationIssues')}</div>
+                        <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
+                          {detailQuery.data.validation.issues.map((issue) => (
+                            <li key={issue}>{issue}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {selectedSource?.installable === false && !detailQuery.data?.readmePreview ? (
+                      <div className="text-muted-foreground text-sm">{t('catalog.specOnly')}</div>
+                    ) : null}
+                  </div>
                 </div>
-              ) : null}
+
+                <CatalogFilePreview
+                  fileQuery={catalogFileQuery}
+                  readmePreview={detailQuery.data?.readmePreview}
+                  selectedFilePath={selectedCatalogFilePath}
+                />
+              </section>
             </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </section>
+  )
+}
+
+function CatalogFilePreview({
+  fileQuery,
+  readmePreview,
+  selectedFilePath,
+}: {
+  fileQuery: ReturnType<typeof useSkillCatalogFile>
+  readmePreview: string | undefined
+  selectedFilePath: string | null
+}) {
+  const { t } = useTranslation('skills')
+  const selectedFile = fileQuery.data?.file as GetSkillCatalogFileResponse['file'] | undefined
+  const title = selectedFile?.path ?? selectedFilePath ?? t('content.title')
+
+  return (
+    <section className="min-h-0 min-w-0 flex-1">
+      <div className="border-border border-b px-3 py-2 font-medium text-sm">{title}</div>
+      <div className="max-h-[420px] min-h-[360px] overflow-auto">
+        {selectedFile?.truncated ? (
+          <div className="border-border border-b bg-muted/25 px-3 py-2 text-muted-foreground text-sm">
+            {t('catalog.fileTruncated')}
           </div>
+        ) : null}
+        {fileQuery.isError ? (
+          <div className="m-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
+            {catalogFileErrorMessage(
+              fileQuery.error,
+              t('catalog.fileLoadError'),
+              t('catalog.filePreviewUnavailable'),
+            )}
+          </div>
+        ) : (
+          <pre className="min-h-[360px] max-w-full p-3 text-sm leading-6">
+            <code className="block min-w-full w-max whitespace-pre">
+              {fileQuery.isLoading
+                ? t('catalog.loadingFile')
+                : (selectedFile?.content ?? readmePreview ?? t('content.empty'))}
+            </code>
+          </pre>
         )}
-      </section>
+      </div>
     </section>
   )
 }

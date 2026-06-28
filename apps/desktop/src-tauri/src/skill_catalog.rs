@@ -33,6 +33,8 @@ pub struct ListSkillCatalogEntriesRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort: Option<String>,
 }
 
@@ -45,7 +47,26 @@ pub struct GetSkillCatalogEntryRequest {
     pub version: Option<String>,
 }
 
-pub type InstallSkillFromCatalogRequest = GetSkillCatalogEntryRequest;
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct InstallSkillFromCatalogRequest {
+    pub source_id: String,
+    pub entry_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GetSkillCatalogFileRequest {
+    pub source_id: String,
+    pub entry_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub path: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,6 +116,8 @@ pub struct SkillCatalogEntryPayload {
 pub struct SkillCatalogValidationPayload {
     pub status: String,
     pub issues: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issue_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -131,11 +154,27 @@ pub struct GetSkillCatalogEntryResponse {
     pub files: Option<Vec<SkillCatalogFilePayload>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillCatalogFileContentPayload {
+    pub path: String,
+    pub content: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetSkillCatalogFileResponse {
+    pub file: SkillCatalogFileContentPayload,
+}
+
 pub struct MaterializedCatalogSkill {
     pub temp_dir: TempDir,
     pub package_path: PathBuf,
     pub origin: SkillInstallOriginRecord,
 }
+
+pub type CatalogInstallProgressSink<'a> = &'a (dyn Fn(&str, u8) + Send + Sync);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GithubSkillRef {
@@ -166,7 +205,7 @@ struct GithubCommitResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 struct ClawHubListResponse {
-    #[serde(default)]
+    #[serde(default, alias = "results")]
     items: Vec<ClawHubSkillItem>,
     #[serde(default, rename = "nextCursor")]
     next_cursor: Option<String>,
@@ -175,6 +214,8 @@ struct ClawHubListResponse {
 #[derive(Debug, Clone, Deserialize)]
 struct ClawHubSkillItem {
     slug: String,
+    #[serde(default, rename = "ownerHandle")]
+    owner_handle: Option<String>,
     #[serde(default, rename = "displayName")]
     display_name: Option<String>,
     #[serde(default)]
@@ -183,8 +224,44 @@ struct ClawHubSkillItem {
     description: Option<String>,
     #[serde(default)]
     topics: Vec<String>,
+    #[serde(default)]
+    version: Option<String>,
     #[serde(default, rename = "latestVersion")]
     latest_version: Option<ClawHubVersionSummary>,
+}
+
+#[derive(Debug, Clone)]
+struct ClawHubDetailResponse {
+    skill: ClawHubSkillItem,
+}
+
+impl<'de> Deserialize<'de> for ClawHubDetailResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wrapped {
+            skill: ClawHubSkillItem,
+        }
+
+        let value = Value::deserialize(deserializer)?;
+        if value.get("skill").is_some() {
+            let wrapped = Wrapped::deserialize(value).map_err(serde::de::Error::custom)?;
+            Ok(Self {
+                skill: wrapped.skill,
+            })
+        } else {
+            let skill = ClawHubSkillItem::deserialize(value).map_err(serde::de::Error::custom)?;
+            Ok(Self { skill })
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClawHubEntryKey {
+    owner_handle: Option<String>,
+    slug: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -255,8 +332,12 @@ pub async fn list_skill_catalog_entries(
 ) -> Result<ListSkillCatalogEntriesResponse, CommandErrorPayload> {
     ensure_catalog_source(&request.source_id)?;
     match request.source_id.as_str() {
-        "anthropic" => list_anthropic_entries(installed_entry_ids).await,
-        "agent-skills-spec" => Ok(list_agent_skill_spec_entry(installed_entry_ids)),
+        "anthropic" => list_anthropic_entries(&request, installed_entry_ids).await,
+        "agent-skills-spec" => Ok(paginate_catalog_entries(
+            list_agent_skill_spec_entry(installed_entry_ids).entries,
+            request.cursor.as_deref(),
+            request.limit,
+        )),
         "awesome-agent-skills" => list_awesome_entries(&request, installed_entry_ids).await,
         "clawhub" => list_clawhub_entries(&request, installed_entry_ids).await,
         _ => Err(invalid_payload("unknown skill catalog source".to_owned())),
@@ -284,6 +365,7 @@ pub async fn get_skill_catalog_entry(
                 "Anthropic Skills",
                 "official",
                 installed_entry_ids,
+                false,
             )
             .await?
         }
@@ -296,6 +378,7 @@ pub async fn get_skill_catalog_entry(
                 "Awesome Agent Skills",
                 "curated",
                 installed_entry_ids,
+                true,
             )
             .await?
         }
@@ -305,8 +388,75 @@ pub async fn get_skill_catalog_entry(
     Ok(response)
 }
 
+pub async fn get_skill_catalog_file(
+    request: GetSkillCatalogFileRequest,
+) -> Result<GetSkillCatalogFileResponse, CommandErrorPayload> {
+    ensure_catalog_source(&request.source_id)?;
+    let path = ensure_catalog_file_path(&request.path)?;
+    match request.source_id.as_str() {
+        "anthropic" => {
+            let reference = request
+                .version
+                .unwrap_or_else(|| ANTHROPIC_REPO_REF.to_owned());
+            let skill_path = entry_tail(&request.entry_id, "anthropic:")?;
+            let source_path = catalog_file_source_path(skill_path, &path);
+            fetch_raw_github_file_preview(
+                ANTHROPIC_REPO_OWNER,
+                ANTHROPIC_REPO_NAME,
+                &reference,
+                &source_path,
+                &path,
+            )
+            .await
+        }
+        "awesome-agent-skills" => {
+            let github_ref = parse_awesome_entry_id(&request.entry_id)?;
+            let source_path = catalog_file_source_path(&github_ref.path, &path);
+            fetch_raw_github_file_preview(
+                &github_ref.owner,
+                &github_ref.repo,
+                request.version.as_deref().unwrap_or(&github_ref.reference),
+                &source_path,
+                &path,
+            )
+            .await
+        }
+        "clawhub" => {
+            let key = parse_clawhub_entry_id(&request.entry_id)?;
+            let client = http_client()?;
+            fetch_clawhub_file_preview(
+                &client,
+                &key.slug,
+                key.owner_handle.as_deref(),
+                request.version.as_deref(),
+                &path,
+            )
+            .await
+        }
+        "agent-skills-spec" => {
+            if path == "SKILL.md" {
+                Ok(catalog_file_response(
+                    &path,
+                    "Requires frontmatter name and description.\nSkill name must be lowercase alphanumeric with hyphens.\n".to_owned(),
+                    false,
+                ))
+            } else {
+                Err(invalid_payload("catalog file not found".to_owned()))
+            }
+        }
+        _ => Err(invalid_payload("unknown skill catalog source".to_owned())),
+    }
+}
+
 pub async fn materialize_skill_from_catalog(
     request: InstallSkillFromCatalogRequest,
+) -> Result<MaterializedCatalogSkill, CommandErrorPayload> {
+    materialize_skill_from_catalog_with_progress(request, None).await
+}
+
+pub async fn materialize_skill_from_catalog_with_progress(
+    request: InstallSkillFromCatalogRequest,
+    progress: Option<CatalogInstallProgressSink<'_>>,
 ) -> Result<MaterializedCatalogSkill, CommandErrorPayload> {
     ensure_catalog_source(&request.source_id)?;
     match request.source_id.as_str() {
@@ -324,6 +474,7 @@ pub async fn materialize_skill_from_catalog(
                 "Anthropic Skills",
                 request.entry_id,
                 Some("https://github.com/anthropics/skills".to_owned()),
+                progress,
             )
             .await
         }
@@ -340,10 +491,11 @@ pub async fn materialize_skill_from_catalog(
                 "Awesome Agent Skills",
                 request.entry_id,
                 homepage,
+                progress,
             )
             .await
         }
-        "clawhub" => materialize_clawhub_skill(request).await,
+        "clawhub" => materialize_clawhub_skill(request, progress).await,
         "agent-skills-spec" => Err(invalid_payload(
             "Agent Skills spec is a validation standard, not an install source".to_owned(),
         )),
@@ -371,6 +523,7 @@ fn installed(installed_entry_ids: &HashSet<String>, entry_id: &str) -> bool {
 }
 
 async fn list_anthropic_entries(
+    request: &ListSkillCatalogEntriesRequest,
     installed_entry_ids: &HashSet<String>,
 ) -> Result<ListSkillCatalogEntriesResponse, CommandErrorPayload> {
     let tree = fetch_github_tree(
@@ -381,18 +534,15 @@ async fn list_anthropic_entries(
     .await?;
     let mut entries = Vec::new();
     for item in tree.tree.iter().filter(|item| item.kind == "blob") {
-        let Some(dir) = item.path.strip_suffix("/SKILL.md") else {
+        let Some(dir) = anthropic_skill_dir_from_tree_path(&item.path) else {
             continue;
         };
-        if dir.contains('/') {
-            continue;
-        }
         let entry_id = format!("anthropic:{dir}");
         let summary = fetch_github_skill_summary(
             ANTHROPIC_REPO_OWNER,
             ANTHROPIC_REPO_NAME,
             ANTHROPIC_REPO_REF,
-            dir,
+            &dir,
         )
         .await
         .unwrap_or_else(|_| SkillFrontmatterSummary {
@@ -417,10 +567,11 @@ async fn list_anthropic_entries(
         });
     }
     entries.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(ListSkillCatalogEntriesResponse {
+    Ok(paginate_catalog_entries(
         entries,
-        next_cursor: None,
-    })
+        request.cursor.as_deref(),
+        request.limit,
+    ))
 }
 
 fn list_agent_skill_spec_entry(
@@ -462,6 +613,11 @@ fn get_agent_skill_spec_entry(
                 "Requires SKILL.md at the skill root.".to_owned(),
                 "Requires frontmatter name and description.".to_owned(),
                 "Skill name must be lowercase alphanumeric with hyphens.".to_owned(),
+            ],
+            issue_codes: vec![
+                "skill_root_required".to_owned(),
+                "frontmatter_required".to_owned(),
+                "skill_name_format".to_owned(),
             ],
         },
         readme_preview: Some(
@@ -523,10 +679,11 @@ async fn list_awesome_entries(
         });
     }
     entries.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(ListSkillCatalogEntriesResponse {
+    Ok(paginate_catalog_entries(
         entries,
-        next_cursor: None,
-    })
+        request.cursor.as_deref(),
+        request.limit,
+    ))
 }
 
 async fn list_clawhub_entries(
@@ -545,10 +702,11 @@ async fn list_clawhub_entries(
         )
     } else {
         let sort = request.sort.as_deref().unwrap_or("recommended");
+        let limit = request.limit.unwrap_or(40).clamp(1, 100).to_string();
         reqwest::Url::parse_with_params(
             "https://clawhub.ai/api/v1/skills",
             [
-                ("limit", "40"),
+                ("limit", limit.as_str()),
                 ("sort", sort),
                 ("nonSuspiciousOnly", "true"),
             ],
@@ -577,8 +735,12 @@ async fn list_clawhub_entries(
         .items
         .into_iter()
         .map(|item| {
-            let version = item.latest_version.map(|latest| latest.version);
-            let entry_id = format!("clawhub:{}", item.slug);
+            let version = item.version.clone().or_else(|| {
+                item.latest_version
+                    .as_ref()
+                    .map(|latest| latest.version.clone())
+            });
+            let entry_id = clawhub_entry_id(&item);
             SkillCatalogEntryPayload {
                 source_id: "clawhub".to_owned(),
                 source_label: "ClawHub".to_owned(),
@@ -593,7 +755,10 @@ async fn list_clawhub_entries(
                 installed: installed(installed_entry_ids, &entry_id),
                 tags: item.topics,
                 version,
-                homepage_url: Some(format!("https://clawhub.ai/skills/{}", item.slug)),
+                homepage_url: Some(clawhub_homepage_url(
+                    &item.slug,
+                    item.owner_handle.as_deref(),
+                )),
             }
         })
         .collect();
@@ -609,14 +774,31 @@ async fn get_github_catalog_entry(
     source_label: &str,
     trust_level: &str,
     installed_entry_ids: &HashSet<String>,
+    block_missing_skill: bool,
 ) -> Result<GetSkillCatalogEntryResponse, CommandErrorPayload> {
-    let skill_markdown = fetch_raw_github_file(
+    let skill_markdown = match fetch_raw_github_file(
         &github_ref.owner,
         &github_ref.repo,
         &github_ref.reference,
         &format!("{}/SKILL.md", github_ref.path),
     )
-    .await?;
+    .await
+    {
+        Ok(markdown) => markdown,
+        Err(_error) if block_missing_skill => {
+            return Ok(blocked_github_catalog_entry(
+                request,
+                github_ref,
+                source_label,
+                trust_level,
+                installed_entry_ids,
+                "SKILL.md is not readable from this catalog entry.",
+                "skill_file_unreadable",
+            )
+            .await);
+        }
+        Err(error) => return Err(error),
+    };
     let summary = parse_skill_frontmatter_summary(&skill_markdown).unwrap_or_else(|| {
         SkillFrontmatterSummary {
             name: github_ref.path.clone(),
@@ -624,24 +806,7 @@ async fn get_github_catalog_entry(
             tags: Vec::new(),
         }
     });
-    let files = fetch_github_tree(&github_ref.owner, &github_ref.repo, &github_ref.reference)
-        .await?
-        .tree
-        .into_iter()
-        .filter_map(|item| {
-            let relative = item.path.strip_prefix(&format!("{}/", github_ref.path))?;
-            Some(SkillCatalogFilePayload {
-                path: relative.to_owned(),
-                kind: if item.kind == "tree" {
-                    "directory"
-                } else {
-                    "file"
-                }
-                .to_owned(),
-                size_bytes: item.size,
-            })
-        })
-        .collect::<Vec<_>>();
+    let files = github_catalog_files(&github_ref).await?;
     Ok(GetSkillCatalogEntryResponse {
         entry: SkillCatalogEntryPayload {
             source_id: request.source_id.clone(),
@@ -665,42 +830,135 @@ async fn get_github_catalog_entry(
     })
 }
 
+async fn blocked_github_catalog_entry(
+    request: &GetSkillCatalogEntryRequest,
+    github_ref: GithubSkillRef,
+    source_label: &str,
+    trust_level: &str,
+    installed_entry_ids: &HashSet<String>,
+    issue: &str,
+    issue_code: &str,
+) -> GetSkillCatalogEntryResponse {
+    let files = github_catalog_files(&github_ref).await.ok();
+    GetSkillCatalogEntryResponse {
+        entry: SkillCatalogEntryPayload {
+            source_id: request.source_id.clone(),
+            source_label: source_label.to_owned(),
+            entry_id: request.entry_id.clone(),
+            name: github_ref
+                .path
+                .rsplit('/')
+                .next()
+                .filter(|value| !value.is_empty())
+                .unwrap_or(github_ref.path.as_str())
+                .to_owned(),
+            description: format!(
+                "{}/{}: {}",
+                github_ref.owner, github_ref.repo, github_ref.path
+            ),
+            trust_level: trust_level.to_owned(),
+            installable: false,
+            installed: installed(installed_entry_ids, &request.entry_id),
+            tags: Vec::new(),
+            version: Some(github_ref.reference.clone()),
+            homepage_url: Some(format!(
+                "https://github.com/{}/{}/tree/{}/{}",
+                github_ref.owner, github_ref.repo, github_ref.reference, github_ref.path
+            )),
+        },
+        validation: SkillCatalogValidationPayload {
+            status: "blocked".to_owned(),
+            issues: vec![issue.to_owned()],
+            issue_codes: vec![issue_code.to_owned()],
+        },
+        readme_preview: None,
+        files,
+    }
+}
+
+async fn github_catalog_files(
+    github_ref: &GithubSkillRef,
+) -> Result<Vec<SkillCatalogFilePayload>, CommandErrorPayload> {
+    Ok(
+        fetch_github_tree(&github_ref.owner, &github_ref.repo, &github_ref.reference)
+            .await?
+            .tree
+            .into_iter()
+            .filter_map(|item| {
+                let relative = item.path.strip_prefix(&format!("{}/", github_ref.path))?;
+                Some(SkillCatalogFilePayload {
+                    path: relative.to_owned(),
+                    kind: if item.kind == "tree" {
+                        "directory"
+                    } else {
+                        "file"
+                    }
+                    .to_owned(),
+                    size_bytes: item.size,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
 async fn get_clawhub_entry(
     request: &GetSkillCatalogEntryRequest,
     installed_entry_ids: &HashSet<String>,
 ) -> Result<GetSkillCatalogEntryResponse, CommandErrorPayload> {
-    let slug = entry_tail(&request.entry_id, "clawhub:")?;
+    let key = parse_clawhub_entry_id(&request.entry_id)?;
     let client = http_client()?;
-    let detail_url = format!("https://clawhub.ai/api/v1/skills/{slug}");
+    let mut detail_url =
+        reqwest::Url::parse(&format!("https://clawhub.ai/api/v1/skills/{}", key.slug)).map_err(
+            |error| runtime_operation_failed(format!("ClawHub detail URL build failed: {error}")),
+        )?;
+    append_owner_handle(&mut detail_url, key.owner_handle.as_deref());
     let detail = ensure_success(client.get(detail_url).send().await.map_err(|error| {
         runtime_operation_failed(format!("ClawHub detail request failed: {error}"))
     })?)
     .await?
-    .json::<ClawHubSkillItem>()
+    .json::<ClawHubDetailResponse>()
     .await
-    .map_err(|error| runtime_operation_failed(format!("ClawHub detail parse failed: {error}")))?;
+    .map_err(|error| runtime_operation_failed(format!("ClawHub detail parse failed: {error}")))?
+    .skill;
     let version = request.version.clone().or_else(|| {
-        detail
-            .latest_version
-            .as_ref()
-            .map(|latest| latest.version.clone())
+        detail.version.clone().or_else(|| {
+            detail
+                .latest_version
+                .as_ref()
+                .map(|latest| latest.version.clone())
+        })
     });
-    let scan_status = fetch_clawhub_scan_status(&client, slug, version.as_deref()).await?;
+    let owner_handle = key
+        .owner_handle
+        .as_deref()
+        .or(detail.owner_handle.as_deref());
+    let scan_status =
+        fetch_clawhub_scan_status(&client, &key.slug, owner_handle, version.as_deref()).await?;
     let mut issues = Vec::new();
+    let mut issue_codes = Vec::new();
     if !clawhub_scan_allows_install(scan_status.as_deref()) {
         issues.push("ClawHub scan is not clean.".to_owned());
+        issue_codes.push("clawhub_scan_not_clean".to_owned());
     }
-    let markdown = fetch_clawhub_file(&client, slug, version.as_deref(), "SKILL.md")
-        .await
-        .ok();
+    let markdown = fetch_clawhub_file(
+        &client,
+        &key.slug,
+        owner_handle,
+        version.as_deref(),
+        "SKILL.md",
+    )
+    .await
+    .ok();
     let validation = markdown
         .as_deref()
         .map(validate_catalog_markdown)
         .unwrap_or_else(|| SkillCatalogValidationPayload {
             status: "blocked".to_owned(),
             issues: vec!["SKILL.md is not readable from ClawHub.".to_owned()],
+            issue_codes: vec!["skill_file_unreadable".to_owned()],
         });
     issues.extend(validation.issues.clone());
+    issue_codes.extend(validation.issue_codes.clone());
     let status = if issues.is_empty() {
         "ready"
     } else {
@@ -721,11 +979,12 @@ async fn get_clawhub_entry(
             installed: installed(installed_entry_ids, &request.entry_id),
             tags: detail.topics,
             version,
-            homepage_url: Some(format!("https://clawhub.ai/skills/{slug}")),
+            homepage_url: Some(clawhub_homepage_url(&key.slug, owner_handle)),
         },
         validation: SkillCatalogValidationPayload {
             status: status.to_owned(),
             issues,
+            issue_codes,
         },
         readme_preview: markdown.map(|value| value.chars().take(2_000).collect()),
         files: None,
@@ -738,13 +997,16 @@ async fn materialize_github_skill(
     source_label: &str,
     entry_id: String,
     homepage_url: Option<String>,
+    progress: Option<CatalogInstallProgressSink<'_>>,
 ) -> Result<MaterializedCatalogSkill, CommandErrorPayload> {
+    emit_catalog_progress(progress, "resolving", 10);
     let commit =
         resolve_github_commit(&github_ref.owner, &github_ref.repo, &github_ref.reference).await?;
+    emit_catalog_progress(progress, "checking", 18);
     let tree = fetch_github_tree(&github_ref.owner, &github_ref.repo, &commit).await?;
     let temp_dir = tempfile::tempdir()
         .map_err(|error| runtime_operation_failed(format!("catalog temp dir failed: {error}")))?;
-    let package_path = temp_dir.path().join("package");
+    let package_path = catalog_package_path(temp_dir.path())?;
     fs::create_dir_all(&package_path).map_err(|error| {
         runtime_operation_failed(format!("catalog package dir failed: {error}"))
     })?;
@@ -764,6 +1026,8 @@ async fn materialize_github_skill(
             "catalog skill must contain SKILL.md".to_owned(),
         ));
     }
+    emit_catalog_progress(progress, "downloading", 25);
+    let total_files = files.len().max(1);
     let mut file_count = 0_usize;
     let mut total_bytes = 0_usize;
     for (source_path, relative, declared_size) in files {
@@ -803,6 +1067,8 @@ async fn materialize_github_skill(
         fs::write(&destination, content).map_err(|error| {
             runtime_operation_failed(format!("catalog package file write failed: {error}"))
         })?;
+        let percent = 25 + ((file_count * 35) / total_files).min(35);
+        emit_catalog_progress(progress, "downloading", percent as u8);
     }
     Ok(MaterializedCatalogSkill {
         temp_dir,
@@ -821,10 +1087,18 @@ async fn materialize_github_skill(
 
 async fn materialize_clawhub_skill(
     request: InstallSkillFromCatalogRequest,
+    progress: Option<CatalogInstallProgressSink<'_>>,
 ) -> Result<MaterializedCatalogSkill, CommandErrorPayload> {
-    let slug = entry_tail(&request.entry_id, "clawhub:")?.to_owned();
+    let key = parse_clawhub_entry_id(&request.entry_id)?;
     let client = http_client()?;
-    let scan_status = fetch_clawhub_scan_status(&client, &slug, request.version.as_deref()).await?;
+    emit_catalog_progress(progress, "checking", 15);
+    let scan_status = fetch_clawhub_scan_status(
+        &client,
+        &key.slug,
+        key.owner_handle.as_deref(),
+        request.version.as_deref(),
+    )
+    .await?;
     if !clawhub_scan_allows_install(scan_status.as_deref()) {
         return Err(invalid_payload(
             "ClawHub skill scan is not clean".to_owned(),
@@ -832,11 +1106,12 @@ async fn materialize_clawhub_skill(
     }
     let mut url = reqwest::Url::parse_with_params(
         "https://clawhub.ai/api/v1/download",
-        [("slug", slug.as_str())],
+        [("slug", key.slug.as_str())],
     )
     .map_err(|error| {
         runtime_operation_failed(format!("ClawHub download URL build failed: {error}"))
     })?;
+    append_owner_handle(&mut url, key.owner_handle.as_deref());
     if let Some(version) = request.version.as_deref() {
         url.query_pairs_mut().append_pair("version", version);
     }
@@ -878,19 +1153,22 @@ async fn materialize_clawhub_skill(
             "ClawHub",
             request.entry_id,
             Some(handoff.archive_url),
+            progress,
         )
         .await;
     }
+    emit_catalog_progress(progress, "downloading", 25);
     let bytes = read_response_bytes_limited(
         response,
         MAX_CATALOG_DOWNLOAD_BYTES,
         "catalog download is too large",
         "ClawHub download bytes failed",
+        progress,
     )
     .await?;
     let temp_dir = tempfile::tempdir()
         .map_err(|error| runtime_operation_failed(format!("catalog temp dir failed: {error}")))?;
-    let package_path = temp_dir.path().join("package");
+    let package_path = catalog_package_path(temp_dir.path())?;
     fs::create_dir_all(&package_path).map_err(|error| {
         runtime_operation_failed(format!("catalog package dir failed: {error}"))
     })?;
@@ -904,7 +1182,7 @@ async fn materialize_clawhub_skill(
             entry_id: request.entry_id,
             version: request.version,
             commit_sha: None,
-            homepage_url: Some(format!("https://clawhub.ai/skills/{slug}")),
+            homepage_url: Some(clawhub_homepage_url(&key.slug, key.owner_handle.as_deref())),
             installed_from_catalog: true,
         },
     })
@@ -1068,6 +1346,27 @@ async fn fetch_raw_github_file(
         .map_err(|_| invalid_payload("catalog text file must be valid UTF-8".to_owned()))
 }
 
+async fn fetch_raw_github_file_preview(
+    owner: &str,
+    repo: &str,
+    reference: &str,
+    source_path: &str,
+    display_path: &str,
+) -> Result<GetSkillCatalogFileResponse, CommandErrorPayload> {
+    let client = http_client()?;
+    let url = format!(
+        "https://raw.githubusercontent.com/{owner}/{repo}/{reference}/{}",
+        source_path.trim_start_matches('/')
+    );
+    let response = ensure_success(client.get(url).send().await.map_err(|error| {
+        runtime_operation_failed(format!("GitHub raw request failed: {error}"))
+    })?)
+    .await?;
+    let (content, truncated) =
+        read_response_text_preview(response, "GitHub raw bytes failed").await?;
+    Ok(catalog_file_response(display_path, content, truncated))
+}
+
 async fn fetch_raw_github_file_bytes(
     owner: &str,
     repo: &str,
@@ -1090,6 +1389,7 @@ async fn fetch_raw_github_file_bytes(
         max_bytes,
         too_large_message,
         "GitHub raw bytes failed",
+        None,
     )
     .await
 }
@@ -1097,6 +1397,7 @@ async fn fetch_raw_github_file_bytes(
 async fn fetch_clawhub_file(
     client: &reqwest::Client,
     slug: &str,
+    owner_handle: Option<&str>,
     version: Option<&str>,
     path: &str,
 ) -> Result<String, CommandErrorPayload> {
@@ -1105,6 +1406,7 @@ async fn fetch_clawhub_file(
         [("path", path)],
     )
     .map_err(|error| runtime_operation_failed(format!("ClawHub file URL build failed: {error}")))?;
+    append_owner_handle(&mut url, owner_handle);
     if let Some(version) = version {
         url.query_pairs_mut().append_pair("version", version);
     }
@@ -1117,9 +1419,70 @@ async fn fetch_clawhub_file(
         MAX_CATALOG_PREVIEW_BYTES,
         "catalog text file is too large",
         "ClawHub file read failed",
+        None,
     )
     .await?;
     String::from_utf8(bytes)
+        .map_err(|_| invalid_payload("catalog text file must be valid UTF-8".to_owned()))
+}
+
+async fn fetch_clawhub_file_preview(
+    client: &reqwest::Client,
+    slug: &str,
+    owner_handle: Option<&str>,
+    version: Option<&str>,
+    path: &str,
+) -> Result<GetSkillCatalogFileResponse, CommandErrorPayload> {
+    let mut url = reqwest::Url::parse_with_params(
+        &format!("https://clawhub.ai/api/v1/skills/{slug}/file"),
+        [("path", path)],
+    )
+    .map_err(|error| runtime_operation_failed(format!("ClawHub file URL build failed: {error}")))?;
+    append_owner_handle(&mut url, owner_handle);
+    if let Some(version) = version {
+        url.query_pairs_mut().append_pair("version", version);
+    }
+    let response = ensure_success(client.get(url).send().await.map_err(|error| {
+        runtime_operation_failed(format!("ClawHub file request failed: {error}"))
+    })?)
+    .await?;
+    let (content, truncated) =
+        read_response_text_preview(response, "ClawHub file read failed").await?;
+    Ok(catalog_file_response(path, content, truncated))
+}
+
+async fn read_response_text_preview(
+    mut response: reqwest::Response,
+    read_context: &str,
+) -> Result<(String, bool), CommandErrorPayload> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| runtime_operation_failed(format!("{read_context}: {error}")))?
+    {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > MAX_CATALOG_PREVIEW_BYTES {
+            break;
+        }
+    }
+    let truncated = bytes.len() > MAX_CATALOG_PREVIEW_BYTES;
+    if truncated {
+        bytes.truncate(MAX_CATALOG_PREVIEW_BYTES);
+    }
+    match std::str::from_utf8(&bytes) {
+        Ok(_) => {}
+        Err(error) if truncated && error.error_len().is_none() => {
+            bytes.truncate(error.valid_up_to());
+        }
+        Err(_) => {
+            return Err(invalid_payload(
+                "catalog text file must be valid UTF-8".to_owned(),
+            ));
+        }
+    }
+    String::from_utf8(bytes)
+        .map(|content| (content, truncated))
         .map_err(|_| invalid_payload("catalog text file must be valid UTF-8".to_owned()))
 }
 
@@ -1128,11 +1491,10 @@ async fn read_response_bytes_limited(
     max_bytes: usize,
     too_large_message: &str,
     read_context: &str,
+    progress: Option<CatalogInstallProgressSink<'_>>,
 ) -> Result<Vec<u8>, CommandErrorPayload> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > max_bytes as u64)
-    {
+    let content_length = response.content_length();
+    if content_length.is_some_and(|length| length > max_bytes as u64) {
         return Err(invalid_payload(too_large_message.to_owned()));
     }
     let mut bytes = Vec::new();
@@ -1145,19 +1507,27 @@ async fn read_response_bytes_limited(
         if bytes.len() > max_bytes {
             return Err(invalid_payload(too_large_message.to_owned()));
         }
+        if let Some(content_length) = content_length.filter(|length| *length > 0) {
+            let ratio = (bytes.len() as f64 / content_length as f64).clamp(0.0, 1.0);
+            let percent = 25 + (ratio * 35.0).round() as u8;
+            emit_catalog_progress(progress, "downloading", percent.min(60));
+        }
     }
+    emit_catalog_progress(progress, "downloading", 60);
     Ok(bytes)
 }
 
 async fn fetch_clawhub_scan_status(
     client: &reqwest::Client,
     slug: &str,
+    owner_handle: Option<&str>,
     version: Option<&str>,
 ) -> Result<Option<String>, CommandErrorPayload> {
     let mut url = reqwest::Url::parse(&format!("https://clawhub.ai/api/v1/skills/{slug}/scan"))
         .map_err(|error| {
             runtime_operation_failed(format!("ClawHub scan URL build failed: {error}"))
         })?;
+    append_owner_handle(&mut url, owner_handle);
     if let Some(version) = version {
         url.query_pairs_mut().append_pair("version", version);
     }
@@ -1245,14 +1615,17 @@ fn parse_skill_frontmatter_summary(markdown: &str) -> Option<SkillFrontmatterSum
 
 fn validate_catalog_markdown(markdown: &str) -> SkillCatalogValidationPayload {
     let mut issues = Vec::new();
+    let mut issue_codes = Vec::new();
     let Some(summary) = parse_skill_frontmatter_summary(markdown) else {
         return SkillCatalogValidationPayload {
             status: "blocked".to_owned(),
             issues: vec!["SKILL.md must contain name and description frontmatter.".to_owned()],
+            issue_codes: vec!["frontmatter_required".to_owned()],
         };
     };
     if summary.name.chars().count() > 64 {
         issues.push("Skill name exceeds 64 characters.".to_owned());
+        issue_codes.push("skill_name_too_long".to_owned());
     }
     if !summary
         .name
@@ -1260,6 +1633,7 @@ fn validate_catalog_markdown(markdown: &str) -> SkillCatalogValidationPayload {
         .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
     {
         issues.push("Skill name must use lowercase letters, numbers, and hyphens.".to_owned());
+        issue_codes.push("skill_name_format".to_owned());
     }
     SkillCatalogValidationPayload {
         status: if issues.is_empty() {
@@ -1269,6 +1643,7 @@ fn validate_catalog_markdown(markdown: &str) -> SkillCatalogValidationPayload {
         }
         .to_owned(),
         issues,
+        issue_codes,
     }
 }
 
@@ -1397,6 +1772,144 @@ fn awesome_markdown_contains_entry(markdown: &str, github_ref: &GithubSkillRef) 
         .any(|candidate| candidate == *github_ref)
 }
 
+fn anthropic_skill_dir_from_tree_path(path: &str) -> Option<String> {
+    let dir = path.strip_suffix("/SKILL.md")?;
+    if dir.trim().is_empty() {
+        None
+    } else {
+        Some(dir.to_owned())
+    }
+}
+
+fn paginate_catalog_entries(
+    entries: Vec<SkillCatalogEntryPayload>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+) -> ListSkillCatalogEntriesResponse {
+    let Some(limit) = limit.and_then(|value| usize::try_from(value).ok()) else {
+        return ListSkillCatalogEntriesResponse {
+            entries,
+            next_cursor: None,
+        };
+    };
+    let limit = limit.clamp(1, 100);
+    let offset = cursor
+        .and_then(|value| value.strip_prefix("offset:"))
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let total = entries.len();
+    let page_entries = entries
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect::<Vec<_>>();
+    let next_offset = offset.saturating_add(page_entries.len());
+    let next_cursor = (next_offset < total).then(|| format!("offset:{next_offset}"));
+
+    ListSkillCatalogEntriesResponse {
+        entries: page_entries,
+        next_cursor,
+    }
+}
+
+fn clawhub_entry_id(item: &ClawHubSkillItem) -> String {
+    match item
+        .owner_handle
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        Some(owner_handle) => format!("clawhub:{owner_handle}/{}", item.slug),
+        None => format!("clawhub:{}", item.slug),
+    }
+}
+
+fn parse_clawhub_entry_id(entry_id: &str) -> Result<ClawHubEntryKey, CommandErrorPayload> {
+    let raw = entry_tail(entry_id, "clawhub:")?;
+    let (owner_handle, slug) = match raw.split_once('/') {
+        Some((owner_handle, slug)) => {
+            if owner_handle.trim().is_empty() || slug.trim().is_empty() {
+                return Err(invalid_payload("invalid ClawHub entry id".to_owned()));
+            }
+            (Some(owner_handle.to_owned()), slug.to_owned())
+        }
+        None => (None, raw.to_owned()),
+    };
+
+    Ok(ClawHubEntryKey { owner_handle, slug })
+}
+
+fn append_owner_handle(url: &mut reqwest::Url, owner_handle: Option<&str>) {
+    if let Some(owner_handle) = owner_handle.filter(|value| !value.trim().is_empty()) {
+        url.query_pairs_mut()
+            .append_pair("ownerHandle", owner_handle.trim());
+    }
+}
+
+fn clawhub_homepage_url(slug: &str, owner_handle: Option<&str>) -> String {
+    let mut url = reqwest::Url::parse(&format!("https://clawhub.ai/skills/{slug}"))
+        .unwrap_or_else(|_| reqwest::Url::parse("https://clawhub.ai/skills").expect("static URL"));
+    append_owner_handle(&mut url, owner_handle);
+    url.to_string()
+}
+
+pub fn mark_catalog_entry_name_conflict(response: &mut GetSkillCatalogEntryResponse) {
+    if response.entry.installed || response.validation.status == "blocked" {
+        return;
+    }
+    response.entry.installable = false;
+    response.validation.status = "blocked".to_owned();
+    response.validation.issues.push(format!(
+        "Active skill name already exists: {}",
+        response.entry.name
+    ));
+    response
+        .validation
+        .issue_codes
+        .push("active_skill_name_exists".to_owned());
+}
+
+fn catalog_file_response(
+    path: &str,
+    content: String,
+    truncated: bool,
+) -> GetSkillCatalogFileResponse {
+    GetSkillCatalogFileResponse {
+        file: SkillCatalogFileContentPayload {
+            path: path.to_owned(),
+            content,
+            truncated,
+        },
+    }
+}
+
+fn ensure_catalog_file_path(path: &str) -> Result<String, CommandErrorPayload> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(invalid_payload("catalog file path is required".to_owned()));
+    }
+    let relative = Path::new(trimmed);
+    if relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        })
+    {
+        return Err(invalid_payload("catalog file path is unsafe".to_owned()));
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn catalog_file_source_path(skill_path: &str, file_path: &str) -> String {
+    let skill_path = skill_path.trim_matches('/');
+    if skill_path.is_empty() {
+        file_path.trim_start_matches('/').to_owned()
+    } else {
+        format!("{}/{}", skill_path, file_path.trim_start_matches('/'))
+    }
+}
+
 fn entry_tail<'a>(entry_id: &'a str, prefix: &str) -> Result<&'a str, CommandErrorPayload> {
     entry_id
         .strip_prefix(prefix)
@@ -1418,6 +1931,23 @@ fn safe_join(root: &Path, relative: &Path) -> Result<PathBuf, CommandErrorPayloa
         ));
     }
     Ok(root.join(relative))
+}
+
+fn catalog_package_path(temp_root: &Path) -> Result<PathBuf, CommandErrorPayload> {
+    let canonical_root = temp_root.canonicalize().map_err(|error| {
+        runtime_operation_failed(format!("catalog temp dir canonicalize failed: {error}"))
+    })?;
+    Ok(canonical_root.join("package"))
+}
+
+fn emit_catalog_progress(
+    progress: Option<CatalogInstallProgressSink<'_>>,
+    stage: &str,
+    percent: u8,
+) {
+    if let Some(progress) = progress {
+        progress(stage, percent.min(100));
+    }
 }
 
 fn invalid_payload(message: String) -> CommandErrorPayload {
@@ -1477,6 +2007,156 @@ mod tests {
     }
 
     #[test]
+    fn github_blob_skill_links_parse_to_skill_directory() {
+        let parsed =
+            parse_github_tree_url("https://github.com/example/skills/blob/main/foo/SKILL.md")
+                .expect("github blob link should parse");
+
+        assert_eq!(parsed.owner, "example");
+        assert_eq!(parsed.repo, "skills");
+        assert_eq!(parsed.reference, "main");
+        assert_eq!(parsed.path, "foo");
+    }
+
+    #[test]
+    fn catalog_file_paths_reject_escape_and_empty_values() {
+        assert!(ensure_catalog_file_path("SKILL.md").is_ok());
+        assert!(ensure_catalog_file_path("references/guide.md").is_ok());
+        assert!(ensure_catalog_file_path("").is_err());
+        assert!(ensure_catalog_file_path("/SKILL.md").is_err());
+        assert!(ensure_catalog_file_path("../SKILL.md").is_err());
+        assert!(ensure_catalog_file_path("references/../SKILL.md").is_err());
+    }
+
+    #[test]
+    fn catalog_file_response_tracks_truncation() {
+        let response = catalog_file_response("SKILL.md", "hello".to_owned(), true);
+
+        assert_eq!(response.file.path, "SKILL.md");
+        assert_eq!(response.file.content, "hello");
+        assert!(response.file.truncated);
+    }
+
+    #[test]
+    fn catalog_entry_name_conflict_blocks_install() {
+        let mut response = GetSkillCatalogEntryResponse {
+            entry: SkillCatalogEntryPayload {
+                source_id: "anthropic".to_owned(),
+                source_label: "Anthropic Skills".to_owned(),
+                entry_id: "anthropic:frontend-design".to_owned(),
+                name: "frontend-design".to_owned(),
+                description: "Design frontend interfaces.".to_owned(),
+                trust_level: "official".to_owned(),
+                installable: true,
+                installed: false,
+                tags: Vec::new(),
+                version: Some("main".to_owned()),
+                homepage_url: None,
+            },
+            validation: SkillCatalogValidationPayload {
+                status: "ready".to_owned(),
+                issues: Vec::new(),
+                issue_codes: Vec::new(),
+            },
+            readme_preview: None,
+            files: None,
+        };
+
+        mark_catalog_entry_name_conflict(&mut response);
+
+        assert!(!response.entry.installable);
+        assert_eq!(response.validation.status, "blocked");
+        assert_eq!(
+            response.validation.issue_codes,
+            vec!["active_skill_name_exists".to_owned()]
+        );
+    }
+
+    #[test]
+    fn anthropic_skill_paths_include_nested_skills_directory() {
+        assert_eq!(
+            anthropic_skill_dir_from_tree_path("template/SKILL.md"),
+            Some("template".to_owned())
+        );
+        assert_eq!(
+            anthropic_skill_dir_from_tree_path("skills/frontend-design/SKILL.md"),
+            Some("skills/frontend-design".to_owned())
+        );
+        assert_eq!(anthropic_skill_dir_from_tree_path("README.md"), None);
+    }
+
+    #[test]
+    fn catalog_entries_can_be_offset_paginated() {
+        let entries = (0..5)
+            .map(|index| SkillCatalogEntryPayload {
+                source_id: "anthropic".to_owned(),
+                source_label: "Anthropic Skills".to_owned(),
+                entry_id: format!("anthropic:skill-{index}"),
+                name: format!("skill-{index}"),
+                description: "Skill package.".to_owned(),
+                trust_level: "official".to_owned(),
+                installable: true,
+                installed: false,
+                tags: Vec::new(),
+                version: Some("main".to_owned()),
+                homepage_url: None,
+            })
+            .collect::<Vec<_>>();
+
+        let first_page = paginate_catalog_entries(entries.clone(), None, Some(2));
+        assert_eq!(first_page.entries.len(), 2);
+        assert_eq!(first_page.entries[0].entry_id, "anthropic:skill-0");
+        assert_eq!(first_page.next_cursor.as_deref(), Some("offset:2"));
+
+        let second_page = paginate_catalog_entries(entries, Some("offset:2"), Some(2));
+        assert_eq!(second_page.entries.len(), 2);
+        assert_eq!(second_page.entries[0].entry_id, "anthropic:skill-2");
+        assert_eq!(second_page.next_cursor.as_deref(), Some("offset:4"));
+    }
+
+    #[test]
+    fn clawhub_search_results_parse_as_list_items() {
+        let payload = serde_json::json!({
+            "results": [
+                {
+                    "slug": "self-improving-agent",
+                    "displayName": "Self Improving Agent",
+                    "summary": "Log learnings after each task.",
+                    "topics": ["self-improvement"],
+                    "ownerHandle": "kingaiwork",
+                    "version": "1.0.0"
+                }
+            ],
+            "nextCursor": "cursor-2"
+        });
+
+        let parsed: ClawHubListResponse = serde_json::from_value(payload).unwrap();
+        assert_eq!(parsed.items.len(), 1);
+        assert_eq!(parsed.items[0].owner_handle.as_deref(), Some("kingaiwork"));
+        assert_eq!(
+            clawhub_entry_id(&parsed.items[0]),
+            "clawhub:kingaiwork/self-improving-agent"
+        );
+    }
+
+    #[test]
+    fn clawhub_detail_response_accepts_wrapped_skill_payload() {
+        let payload = serde_json::json!({
+            "skill": {
+                "slug": "skill-vetter",
+                "displayName": "Skill Vetter",
+                "summary": "Security-first skill vetting.",
+                "topics": ["security"],
+                "latestVersion": { "version": "1.0.0" }
+            }
+        });
+
+        let parsed: ClawHubDetailResponse = serde_json::from_value(payload).unwrap();
+        assert_eq!(parsed.skill.slug, "skill-vetter");
+        assert_eq!(parsed.skill.display_name.as_deref(), Some("Skill Vetter"));
+    }
+
+    #[test]
     fn awesome_entry_must_exist_in_catalog_markdown() {
         let markdown = "- [Listed](https://github.com/example/skills/tree/main/listed)\n";
         let listed = GithubSkillRef {
@@ -1517,5 +2197,20 @@ mod tests {
 
         assert_eq!(error.code, "INVALID_PAYLOAD");
         assert_eq!(error.message, "skill package file is too large");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_package_path_canonicalizes_symlinked_temp_root() {
+        let real_temp_root = tempfile::tempdir().unwrap();
+        let link_parent = tempfile::tempdir().unwrap();
+        let link_root = link_parent.path().join("catalog-temp-link");
+        std::os::unix::fs::symlink(real_temp_root.path(), &link_root).unwrap();
+
+        let package_path = catalog_package_path(&link_root).unwrap();
+
+        assert!(package_path.starts_with(real_temp_root.path().canonicalize().unwrap()));
+        assert!(!package_path.starts_with(&link_root));
+        assert_eq!(package_path.file_name().unwrap(), "package");
     }
 }
