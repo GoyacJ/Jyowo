@@ -1,8 +1,16 @@
+import { useQuery } from '@tanstack/react-query'
 import { FileText, Image as ImageIcon } from 'lucide-react'
 
 import type { AttachmentReference } from '@/shared/tauri/commands'
+import { useCommandClient } from '@/shared/tauri/react'
 
-export function UserAttachmentStrip({ attachments }: { attachments: AttachmentReference[] }) {
+export function UserAttachmentStrip({
+  attachments,
+  conversationId,
+}: {
+  attachments: AttachmentReference[]
+  conversationId: string
+}) {
   if (attachments.length === 0) {
     return null
   }
@@ -12,7 +20,7 @@ export function UserAttachmentStrip({ attachments }: { attachments: AttachmentRe
       <ul className="ml-auto flex w-max max-w-none gap-2" aria-label="User attachments">
         {attachments.map((attachment) => (
           <li key={attachment.id}>
-            <AttachmentChip attachment={attachment} />
+            <AttachmentPreviewOrChip attachment={attachment} conversationId={conversationId} />
           </li>
         ))}
       </ul>
@@ -20,8 +28,41 @@ export function UserAttachmentStrip({ attachments }: { attachments: AttachmentRe
   )
 }
 
+function AttachmentPreviewOrChip({
+  attachment,
+  conversationId,
+}: {
+  attachment: AttachmentReference
+  conversationId: string
+}) {
+  const commandClient = useCommandClient()
+  const canPreviewImage = isPreviewableImageMime(attachment.mimeType)
+  const previewQuery = useQuery({
+    enabled: canPreviewImage,
+    queryKey: ['conversation-attachment-preview', conversationId, attachment.id],
+    queryFn: () =>
+      commandClient.getAttachmentMediaPreview({
+        conversationId,
+        attachmentId: attachment.id,
+      }),
+  })
+
+  if (!canPreviewImage || previewQuery.isPending || previewQuery.isError) {
+    return <AttachmentChip attachment={attachment} />
+  }
+
+  return (
+    <img
+      alt={attachment.name}
+      className="h-14 w-40 rounded-md border border-border bg-surface object-cover shadow-sm sm:h-[72px] sm:w-48"
+      src={previewQuery.data.dataUrl}
+      title={`${attachment.name} · ${attachment.mimeType} · ${formatBytes(attachment.sizeBytes)}`}
+    />
+  )
+}
+
 function AttachmentChip({ attachment }: { attachment: AttachmentReference }) {
-  const isImage = attachment.mimeType.startsWith('image/')
+  const isImage = isPreviewableImageMime(attachment.mimeType)
   const Icon = isImage ? ImageIcon : FileText
 
   return (
@@ -42,6 +83,12 @@ function AttachmentChip({ attachment }: { attachment: AttachmentReference }) {
         </div>
       </div>
     </div>
+  )
+}
+
+function isPreviewableImageMime(mimeType: string) {
+  return ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif'].includes(
+    mimeType.split(';')[0]?.trim().toLowerCase() ?? '',
   )
 }
 

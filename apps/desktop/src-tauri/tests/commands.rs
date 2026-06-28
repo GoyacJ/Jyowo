@@ -1,15 +1,19 @@
 use async_trait::async_trait;
+use base64::{engine::general_purpose, Engine as _};
 use futures::stream;
 use harness_contracts::{
     AssistantClarificationRequestedEvent, AssistantDeltaProducedEvent,
     AssistantMessageCompletedEvent, AssistantNoticeEvent, AssistantReviewRequestedEvent,
-    ConfigHash, CorrelationId, DecidedBy, EngineError, EngineFailedEvent, EventId,
-    McpConnectionLostEvent, McpConnectionLostReason, MessageContent, MessageId, MessageMetadata,
-    PermissionRequestedEvent, PermissionResolvedEvent, ReasoningSummaryChunk, RunStartedEvent,
-    SnapshotId, StopReason, ToolErrorPayload, ToolUseFailedEvent, ToolUseRequestedEvent,
-    ToolUseSummary, TurnInput, UiSafeText, UserMessageAppendedEvent,
+    ConfigHash, ConversationAttachmentReference, CorrelationId, DecidedBy, EngineError,
+    EngineFailedEvent, EventId, McpConnectionLostEvent, McpConnectionLostReason, MessageContent,
+    MessageId, MessageMetadata, PermissionRequestedEvent, PermissionResolvedEvent,
+    ReasoningSummaryChunk, RunStartedEvent, SnapshotId, StopReason, ToolErrorPayload,
+    ToolUseFailedEvent, ToolUseRequestedEvent, ToolUseSummary, TurnInput, UiSafeText,
+    UserMessageAppendedEvent,
 };
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
+use image::codecs::{gif::GifEncoder, jpeg::JpegEncoder, webp::WebPEncoder};
+use image::{ExtendedColorType, ImageEncoder};
 use jyowo_desktop_shell::commands::{
     cancel_run_payload, cancel_run_with_runtime_state,
     create_attachment_from_path_with_runtime_state, create_conversation_with_runtime_state,
@@ -17,16 +21,16 @@ use jyowo_desktop_shell::commands::{
     delete_mcp_server_with_store, delete_memory_item_with_runtime_state,
     delete_skill_with_runtime_state, export_memory_items_with_runtime_state,
     export_support_bundle_with_runtime_state, get_app_info_payload,
-    get_artifact_media_preview_with_runtime_state, get_context_snapshot_with_runtime_state,
-    get_conversation_with_runtime_state, get_execution_settings_with_store,
-    get_mcp_server_config_with_runtime_state, get_mcp_server_config_with_store,
-    get_memory_item_with_runtime_state, get_provider_config_api_key_with_runtime_state,
-    get_provider_config_api_key_with_store, get_replay_timeline_with_runtime_state,
-    get_skill_detail_with_runtime_state, get_skill_file_with_runtime_state,
-    harness_healthcheck_payload, import_skill_with_runtime_state, list_activity_payload,
-    list_activity_with_runtime_state, list_artifacts_with_runtime_state,
-    list_conversations_with_runtime_state, list_eval_cases_payload,
-    list_eval_cases_with_runtime_state, list_mcp_diagnostics_with_store,
+    get_artifact_media_preview_with_runtime_state, get_attachment_media_preview_with_runtime_state,
+    get_context_snapshot_with_runtime_state, get_conversation_with_runtime_state,
+    get_execution_settings_with_store, get_mcp_server_config_with_runtime_state,
+    get_mcp_server_config_with_store, get_memory_item_with_runtime_state,
+    get_provider_config_api_key_with_runtime_state, get_provider_config_api_key_with_store,
+    get_replay_timeline_with_runtime_state, get_skill_detail_with_runtime_state,
+    get_skill_file_with_runtime_state, harness_healthcheck_payload,
+    import_skill_with_runtime_state, list_activity_payload, list_activity_with_runtime_state,
+    list_artifacts_with_runtime_state, list_conversations_with_runtime_state,
+    list_eval_cases_payload, list_eval_cases_with_runtime_state, list_mcp_diagnostics_with_store,
     list_mcp_servers_with_runtime_state, list_memory_items_with_runtime_state,
     list_model_provider_catalog_payload, list_provider_settings_with_store,
     list_reference_candidates_with_runtime_state, list_skills_with_runtime_state,
@@ -50,12 +54,13 @@ use jyowo_desktop_shell::commands::{
     DeleteMemoryItemRequest, DeleteSkillRequest, DesktopExecutionSettingsStore,
     DesktopMcpDiagnosticStore, DesktopProviderSettingsStore, DesktopRuntimeState,
     DesktopSkillStore, ExportSupportBundleRequest, GetArtifactMediaPreviewRequest,
-    GetContextSnapshotRequest, GetConversationRequest, GetMcpServerConfigRequest,
-    GetMemoryItemRequest, GetProviderConfigApiKeyRequest, GetSkillDetailRequest,
-    GetSkillFileRequest, ImportSkillRequest, ListActivityRequest, ListArtifactsRequest,
-    ListReferenceCandidatesRequest, McpDiagnosticRecord, McpDiagnosticSeverity, McpDiagnosticStore,
-    McpHeaderEnvRecord, McpNameValueRecord, McpServerConfigRecord, McpServerStore,
-    McpServerTransportConfig, PageConversationTimelineRequest, PageConversationWorktreeDirection,
+    GetAttachmentMediaPreviewRequest, GetContextSnapshotRequest, GetConversationRequest,
+    GetMcpServerConfigRequest, GetMemoryItemRequest, GetProviderConfigApiKeyRequest,
+    GetSkillDetailRequest, GetSkillFileRequest, ImportSkillRequest, ListActivityRequest,
+    ListArtifactsRequest, ListReferenceCandidatesRequest, McpDiagnosticRecord,
+    McpDiagnosticSeverity, McpDiagnosticStore, McpHeaderEnvRecord, McpNameValueRecord,
+    McpServerConfigRecord, McpServerStore, McpServerTransportConfig,
+    PageConversationTimelineRequest, PageConversationWorktreeDirection,
     PageConversationWorktreeRequest, PermissionDecision, ProviderConfigRecord,
     ProviderModelDescriptorRecord, ProviderModelLifecycleRecord, ProviderModelModalityRecord,
     ProviderSettingsRecord, ProviderSettingsRequest, ProviderSettingsStore, ReplayTimelineRequest,
@@ -3440,6 +3445,731 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_too_large_image_b
 
     assert_eq!(error.code, "INVALID_PAYLOAD");
     assert!(error.message.contains("too large"));
+}
+
+#[tokio::test]
+async fn get_attachment_media_preview_with_runtime_state_returns_current_conversation_image_data_url(
+) {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    let image_bytes = minimal_png();
+    append_user_message_attachment_for_preview(
+        &state,
+        session_id,
+        "attachment-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "reference.png",
+        "image/png",
+        image_bytes.clone(),
+        BlobRetention::TenantScoped,
+    )
+    .await;
+
+    let payload = get_attachment_media_preview_with_runtime_state(
+        GetAttachmentMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            attachment_id:
+                "attachment-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("image attachment preview should load");
+
+    assert_eq!(payload.mime_type, "image/png");
+    assert_eq!(payload.size_bytes, image_bytes.len() as u64);
+    assert!(payload.data_url.starts_with("data:image/png;base64,"));
+    assert!(!payload.data_url.contains(".jyowo"));
+    assert!(!payload.data_url.contains("/Users/"));
+    assert!(!payload.data_url.contains("attachment-aaaaaaaa"));
+}
+
+#[tokio::test]
+async fn get_attachment_media_preview_with_runtime_state_strips_png_metadata() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    let image_bytes = png_with_ancillary_chunk(
+        *b"tEXt",
+        b"path=/Users/goya/.jyowo/runtime/blobs/private.png",
+    );
+    append_user_message_attachment_for_preview(
+        &state,
+        session_id,
+        "attachment-7777777777777777777777777777777777777777777777777777777777777777",
+        "metadata.png",
+        "image/png",
+        image_bytes,
+        BlobRetention::TenantScoped,
+    )
+    .await;
+
+    let payload = get_attachment_media_preview_with_runtime_state(
+        GetAttachmentMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            attachment_id:
+                "attachment-7777777777777777777777777777777777777777777777777777777777777777"
+                    .to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("metadata-bearing PNG should be sanitized");
+
+    let sanitized = attachment_preview_data_url_bytes(&payload.data_url);
+    assert!(sanitized.starts_with(b"\x89PNG\r\n\x1A\n"));
+    assert!(!sanitized.windows(4).any(|window| window == b"tEXt"));
+    assert!(!String::from_utf8_lossy(&sanitized).contains("/Users/goya"));
+}
+
+#[tokio::test]
+async fn get_attachment_media_preview_with_runtime_state_rejects_png_declaring_huge_dimensions() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_user_message_attachment_for_preview(
+        &state,
+        session_id,
+        "attachment-9999999999999999999999999999999999999999999999999999999999999999",
+        "huge.png",
+        "image/png",
+        png_with_dimensions(100_000, 100_000),
+        BlobRetention::TenantScoped,
+    )
+    .await;
+
+    let error = get_attachment_media_preview_with_runtime_state(
+        GetAttachmentMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            attachment_id:
+                "attachment-9999999999999999999999999999999999999999999999999999999999999999"
+                    .to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("PNG dimensions must be bounded before returning a preview");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("too large"));
+}
+
+#[tokio::test]
+async fn get_attachment_media_preview_with_runtime_state_accepts_supported_image_formats_as_safe_png(
+) {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+
+    let cases = [
+        (
+            "jpeg",
+            "a",
+            "image/jpeg",
+            supported_preview_image_with_metadata("image/jpeg", b"path=/Users/goya/.jyowo/jpeg"),
+            "image/png",
+        ),
+        (
+            "gif",
+            "b",
+            "image/gif",
+            supported_preview_image_with_metadata("image/gif", b"path=/Users/goya/.jyowo/gif"),
+            "image/png",
+        ),
+        (
+            "webp",
+            "c",
+            "image/webp",
+            supported_preview_image_with_metadata("image/webp", b"path=/Users/goya/.jyowo/webp"),
+            "image/png",
+        ),
+        (
+            "avif",
+            "d",
+            "image/avif",
+            supported_preview_image_with_metadata("image/avif", b""),
+            "image/avif",
+        ),
+    ];
+
+    for (suffix, id_hex, mime_type, image_bytes, expected_preview_mime_type) in cases {
+        let attachment_id = format!("attachment-{}", id_hex.repeat(64));
+        append_user_message_attachment_for_preview(
+            &state,
+            session_id,
+            &attachment_id,
+            &format!("preview.{suffix}"),
+            mime_type,
+            image_bytes,
+            BlobRetention::TenantScoped,
+        )
+        .await;
+
+        let payload = get_attachment_media_preview_with_runtime_state(
+            GetAttachmentMediaPreviewRequest {
+                conversation_id: session_id.to_string(),
+                attachment_id: attachment_id.clone(),
+            },
+            &state,
+        )
+        .await
+        .expect("supported image attachment should return a safe preview");
+
+        assert_eq!(payload.mime_type, expected_preview_mime_type);
+        assert!(payload
+            .data_url
+            .starts_with(&format!("data:{expected_preview_mime_type};base64,")));
+        assert!(!payload.data_url.contains(".jyowo"));
+        assert!(!payload.data_url.contains("/Users/"));
+        assert!(!payload.data_url.contains(&attachment_id));
+        let sanitized = attachment_preview_data_url_bytes_with_mime(
+            &payload.data_url,
+            expected_preview_mime_type,
+        );
+        assert_eq!(payload.size_bytes, sanitized.len() as u64);
+        assert_eq!(
+            detect_test_image_mime(&sanitized),
+            Some(expected_preview_mime_type)
+        );
+        assert!(!String::from_utf8_lossy(&sanitized).contains("/Users/goya"));
+    }
+}
+
+#[tokio::test]
+async fn get_attachment_media_preview_with_runtime_state_rejects_avif_with_unsafe_metadata() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_user_message_attachment_for_preview(
+        &state,
+        session_id,
+        "attachment-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "unsafe.avif",
+        "image/avif",
+        supported_preview_image_with_metadata("image/avif", b"path=/Users/goya/.jyowo/avif"),
+        BlobRetention::TenantScoped,
+    )
+    .await;
+
+    let error = get_attachment_media_preview_with_runtime_state(
+        GetAttachmentMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            attachment_id:
+                "attachment-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                    .to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("AVIF metadata with private paths should be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(
+        error.message.contains("unsafe metadata"),
+        "unexpected error message: {}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn get_attachment_media_preview_with_runtime_state_rejects_avif_with_exif_metadata() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_user_message_attachment_for_preview(
+        &state,
+        session_id,
+        "attachment-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "exif.avif",
+        "image/avif",
+        avif_with_exif_metadata(),
+        BlobRetention::TenantScoped,
+    )
+    .await;
+
+    let error = get_attachment_media_preview_with_runtime_state(
+        GetAttachmentMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            attachment_id:
+                "attachment-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                    .to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("AVIF Exif metadata should be rejected before preview");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(
+        error.message.contains("unsafe metadata"),
+        "unexpected error message: {}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn get_attachment_media_preview_with_runtime_state_rejects_missing_attachment() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+
+    let error = get_attachment_media_preview_with_runtime_state(
+        GetAttachmentMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            attachment_id:
+                "attachment-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("missing attachment should be rejected");
+
+    assert_eq!(error.code, "NOT_FOUND");
+}
+
+#[tokio::test]
+async fn get_attachment_media_preview_with_runtime_state_rejects_non_image_attachment() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_user_message_attachment_for_preview(
+        &state,
+        session_id,
+        "attachment-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "notes.txt",
+        "text/plain",
+        b"hello".to_vec(),
+        BlobRetention::TenantScoped,
+    )
+    .await;
+
+    let error = get_attachment_media_preview_with_runtime_state(
+        GetAttachmentMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            attachment_id:
+                "attachment-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("non-image attachment should be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("only available for images"));
+}
+
+#[tokio::test]
+async fn get_attachment_media_preview_with_runtime_state_rejects_mismatched_image_mime() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_user_message_attachment_for_preview_with_blob_mime(
+        &state,
+        session_id,
+        "attachment-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "mismatch.png",
+        "image/png",
+        "image/jpeg",
+        minimal_png(),
+        BlobRetention::TenantScoped,
+    )
+    .await;
+
+    let error = get_attachment_media_preview_with_runtime_state(
+        GetAttachmentMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            attachment_id:
+                "attachment-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                    .to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("mismatched attachment MIME should be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("only available for images"));
+}
+
+#[tokio::test]
+async fn get_attachment_media_preview_with_runtime_state_rejects_unsafe_image_pixels_or_payload() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_user_message_attachment_for_preview(
+        &state,
+        session_id,
+        "attachment-9999999999999999999999999999999999999999999999999999999999999999",
+        "unsafe-metadata.png",
+        "image/png",
+        b"\x89PNG\r\n\x1A\ntext:/Users/goya/.jyowo/runtime/blobs/private.png token=secret-value"
+            .to_vec(),
+        BlobRetention::TenantScoped,
+    )
+    .await;
+
+    let error = get_attachment_media_preview_with_runtime_state(
+        GetAttachmentMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            attachment_id:
+                "attachment-9999999999999999999999999999999999999999999999999999999999999999"
+                    .to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("unsafe image payload should be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("unsafe metadata") || error.message.contains("malformed"));
+}
+
+#[tokio::test]
+async fn get_attachment_media_preview_with_runtime_state_strips_attachment_id_in_png_metadata() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    let attachment_id =
+        "attachment-8888888888888888888888888888888888888888888888888888888888888888";
+    open_conversation_session(&state, session_id).await;
+    let image_bytes = png_with_ancillary_chunk(*b"iTXt", attachment_id.as_bytes());
+    append_user_message_attachment_for_preview(
+        &state,
+        session_id,
+        attachment_id,
+        "attachment-id-metadata.png",
+        "image/png",
+        image_bytes,
+        BlobRetention::TenantScoped,
+    )
+    .await;
+
+    let payload = get_attachment_media_preview_with_runtime_state(
+        GetAttachmentMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            attachment_id: attachment_id.to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("attachment id in PNG metadata should be stripped");
+
+    let sanitized = attachment_preview_data_url_bytes(&payload.data_url);
+    assert!(!String::from_utf8_lossy(&sanitized).contains(attachment_id));
+    assert!(!sanitized.windows(4).any(|window| window == b"iTXt"));
+}
+
+#[tokio::test]
+async fn get_attachment_media_preview_with_runtime_state_rejects_other_conversation_attachment() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    let other_session_id = SessionId::new();
+    open_conversation_session(&state, session_id).await;
+    open_conversation_session(&state, other_session_id).await;
+    append_user_message_attachment_for_preview(
+        &state,
+        other_session_id,
+        "attachment-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "other.png",
+        "image/png",
+        minimal_png(),
+        BlobRetention::TenantScoped,
+    )
+    .await;
+
+    let error = get_attachment_media_preview_with_runtime_state(
+        GetAttachmentMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            attachment_id:
+                "attachment-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                    .to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("attachment from another conversation should be rejected");
+
+    assert_eq!(error.code, "NOT_FOUND");
+}
+
+#[tokio::test]
+async fn get_attachment_media_preview_with_runtime_state_rejects_other_session_scoped_blob() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    let other_session_id = SessionId::new();
+    open_conversation_session(&state, session_id).await;
+    open_conversation_session(&state, other_session_id).await;
+    append_user_message_attachment_for_preview(
+        &state,
+        session_id,
+        "attachment-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "cross-session.png",
+        "image/png",
+        minimal_png(),
+        BlobRetention::SessionScoped(other_session_id),
+    )
+    .await;
+
+    let error = get_attachment_media_preview_with_runtime_state(
+        GetAttachmentMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            attachment_id:
+                "attachment-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                    .to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("other session scoped blob should be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+async fn append_user_message_attachment_for_preview(
+    state: &DesktopRuntimeState,
+    session_id: SessionId,
+    attachment_id: &str,
+    name: &str,
+    mime_type: &str,
+    bytes: Vec<u8>,
+    retention: BlobRetention,
+) {
+    append_user_message_attachment_for_preview_with_blob_mime(
+        state,
+        session_id,
+        attachment_id,
+        name,
+        mime_type,
+        mime_type,
+        bytes,
+        retention,
+    )
+    .await;
+}
+
+async fn append_user_message_attachment_for_preview_with_blob_mime(
+    state: &DesktopRuntimeState,
+    session_id: SessionId,
+    attachment_id: &str,
+    name: &str,
+    attachment_mime_type: &str,
+    blob_mime_type: &str,
+    bytes: Vec<u8>,
+    retention: BlobRetention,
+) {
+    let size = bytes.len() as u64;
+    let content_hash = *blake3::hash(&bytes).as_bytes();
+    let blob_store = FileBlobStore::open(
+        state
+            .workspace_root()
+            .join(".jyowo")
+            .join("runtime")
+            .join("blobs"),
+    )
+    .expect("blob store opens");
+    let blob_ref = blob_store
+        .put(
+            TenantId::SINGLE,
+            bytes::Bytes::from(bytes),
+            BlobMeta {
+                content_type: Some(blob_mime_type.to_owned()),
+                size,
+                content_hash,
+                created_at: now(),
+                retention,
+            },
+        )
+        .await
+        .expect("attachment blob writes");
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::UserMessageAppended(UserMessageAppendedEvent {
+                run_id: RunId::new(),
+                message_id: MessageId::new(),
+                content: MessageContent::Text("attached file".to_owned()),
+                metadata: MessageMetadata::default(),
+                attachments: vec![ConversationAttachmentReference {
+                    id: attachment_id.to_owned(),
+                    name: name.to_owned(),
+                    mime_type: attachment_mime_type.to_owned(),
+                    size_bytes: size,
+                    blob_ref,
+                }],
+                at: now(),
+            })],
+        )
+        .await
+        .expect("user message attachment event should append");
+}
+
+fn minimal_png() -> Vec<u8> {
+    vec![
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ]
+}
+
+fn supported_preview_image_with_metadata(mime_type: &str, metadata: &[u8]) -> Vec<u8> {
+    let rgba = [
+        0xE5, 0x2B, 0x50, 0xFF, 0x1E, 0x88, 0xE5, 0xFF, 0xF9, 0xA8, 0x25, 0xFF, 0x12, 0x12, 0x12,
+        0xFF,
+    ];
+    match mime_type {
+        "image/jpeg" => {
+            let rgb = rgba
+                .chunks_exact(4)
+                .flat_map(|pixel| pixel[..3].iter().copied())
+                .collect::<Vec<_>>();
+            let mut encoded = Vec::new();
+            JpegEncoder::new(&mut encoded)
+                .write_image(&rgb, 2, 2, ExtendedColorType::Rgb8)
+                .expect("test JPEG encodes");
+            jpeg_with_app_metadata(encoded, metadata)
+        }
+        "image/gif" => {
+            let mut encoded = Vec::new();
+            GifEncoder::new(&mut encoded)
+                .encode(&rgba, 2, 2, ExtendedColorType::Rgba8)
+                .expect("test GIF encodes");
+            gif_with_comment_metadata(encoded, metadata)
+        }
+        "image/webp" => {
+            let mut encoded = Vec::new();
+            WebPEncoder::new_lossless(&mut encoded)
+                .write_image(&rgba, 2, 2, ExtendedColorType::Rgba8)
+                .expect("test WebP encodes");
+            webp_with_exif_metadata(encoded, metadata)
+        }
+        "image/avif" => {
+            let encoded = minimal_avif();
+            if metadata.is_empty() {
+                encoded
+            } else {
+                iso_bmff_with_free_metadata(encoded, metadata)
+            }
+        }
+        _ => panic!("unsupported test MIME type: {mime_type}"),
+    }
+}
+
+fn minimal_avif() -> Vec<u8> {
+    general_purpose::STANDARD
+        .decode(
+            "AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUEAAADrbWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAAAAAAAOcGl0bQAAAAAAAQAAAB5pbG9jAAAAAEQAAAEAAQAAAAEAAAETAAAAJAAAAChpaW5mAAAAAAABAAAAGmluZmUCAAAAAAEAAGF2MDFDb2xvcgAAAABqaXBycAAAAEtpcGNvAAAAFGlzcGUAAAAAAAAAQAAAAEAAAAAQcGl4aQAAAAADCAgIAAAADGF2MUOBIAAAAAAAE2NvbHJuY2x4AAEAAgAAgAAAABdpcG1hAAAAAAAAAAEAAQQBAoMEAAAALG1kYXQSAAoGOBV//YJAMhgQAAC0UbTwxPOBGQHm72pfRNB5F8X+BlQ=",
+        )
+        .expect("embedded AVIF fixture decodes")
+}
+
+fn avif_with_exif_metadata() -> Vec<u8> {
+    general_purpose::STANDARD
+        .decode(include_str!("fixtures/avif-with-exif-metadata.b64").replace(['\n', '\r'], ""))
+        .expect("embedded AVIF Exif fixture decodes")
+}
+
+fn jpeg_with_app_metadata(encoded: Vec<u8>, metadata: &[u8]) -> Vec<u8> {
+    assert!(encoded.starts_with(&[0xFF, 0xD8]));
+    let segment_len = u16::try_from(metadata.len() + 2).expect("test metadata fits JPEG segment");
+    let mut output = Vec::with_capacity(encoded.len() + metadata.len() + 4);
+    output.extend_from_slice(&encoded[..2]);
+    output.extend_from_slice(&[0xFF, 0xE1]);
+    output.extend_from_slice(&segment_len.to_be_bytes());
+    output.extend_from_slice(metadata);
+    output.extend_from_slice(&encoded[2..]);
+    output
+}
+
+fn gif_with_comment_metadata(mut encoded: Vec<u8>, metadata: &[u8]) -> Vec<u8> {
+    assert_eq!(encoded.last(), Some(&0x3B));
+    let mut comment = vec![0x21, 0xFE];
+    for chunk in metadata.chunks(255) {
+        comment.push(u8::try_from(chunk.len()).expect("GIF comment chunk length fits"));
+        comment.extend_from_slice(chunk);
+    }
+    comment.push(0);
+    encoded.splice(encoded.len() - 1..encoded.len() - 1, comment);
+    encoded
+}
+
+fn webp_with_exif_metadata(mut encoded: Vec<u8>, metadata: &[u8]) -> Vec<u8> {
+    assert!(encoded.len() >= 12 && encoded.starts_with(b"RIFF") && &encoded[8..12] == b"WEBP");
+    encoded.extend_from_slice(b"EXIF");
+    encoded.extend_from_slice(&(metadata.len() as u32).to_le_bytes());
+    encoded.extend_from_slice(metadata);
+    if metadata.len() % 2 == 1 {
+        encoded.push(0);
+    }
+    let riff_size = u32::try_from(encoded.len() - 8).expect("test WebP fits RIFF size");
+    encoded[4..8].copy_from_slice(&riff_size.to_le_bytes());
+    encoded
+}
+
+fn iso_bmff_with_free_metadata(mut encoded: Vec<u8>, metadata: &[u8]) -> Vec<u8> {
+    assert!(encoded.len() >= 12 && &encoded[4..8] == b"ftyp");
+    let box_size = u32::try_from(metadata.len() + 8).expect("test metadata fits BMFF box");
+    encoded.extend_from_slice(&box_size.to_be_bytes());
+    encoded.extend_from_slice(b"free");
+    encoded.extend_from_slice(metadata);
+    encoded
+}
+
+fn png_with_ancillary_chunk(chunk_type: [u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut png = minimal_png();
+    let iend_offset = png
+        .windows(4)
+        .position(|window| window == b"IEND")
+        .expect("minimal png has IEND")
+        - 4;
+    let mut chunk = Vec::new();
+    chunk.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    chunk.extend_from_slice(&chunk_type);
+    chunk.extend_from_slice(data);
+    chunk.extend_from_slice(&[0, 0, 0, 0]);
+    png.splice(iend_offset..iend_offset, chunk);
+    png
+}
+
+fn png_with_dimensions(width: u32, height: u32) -> Vec<u8> {
+    let mut png = minimal_png();
+    png[16..20].copy_from_slice(&width.to_be_bytes());
+    png[20..24].copy_from_slice(&height.to_be_bytes());
+    png
+}
+
+fn attachment_preview_data_url_bytes(data_url: &str) -> Vec<u8> {
+    attachment_preview_data_url_bytes_with_mime(data_url, "image/png")
+}
+
+fn attachment_preview_data_url_bytes_with_mime(data_url: &str, mime_type: &str) -> Vec<u8> {
+    let encoded = data_url
+        .strip_prefix(&format!("data:{mime_type};base64,"))
+        .expect("preview uses expected data URL MIME type");
+    general_purpose::STANDARD
+        .decode(encoded)
+        .expect("preview data URL decodes")
+}
+
+fn detect_test_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1A\n") {
+        return Some("image/png");
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        let major_brand = &bytes[8..12];
+        if major_brand == b"avif" || major_brand == b"avis" {
+            return Some("image/avif");
+        }
+    }
+    None
 }
 
 async fn append_artifact_event_for_preview(

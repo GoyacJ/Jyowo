@@ -191,6 +191,10 @@ export const zhCN = {
     reviewRequest: '审查请求',
     reviewGeneratedFoundation: '审查生成的基础实现',
     userAuthor: '你',
+    userMessage: {
+      copy: '复制消息',
+      timestampLabel: '消息时间',
+    },
     turnLabel: '对话轮次',
     now: '刚刚',
     messageStatus: {
