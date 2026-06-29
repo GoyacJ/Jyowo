@@ -6,9 +6,9 @@ use futures::{stream, StreamExt};
 use harness_contracts::{
     AssistantMessageCompletedEvent, BlobId, BlobRef, ConfigHash, ContentHash, EndReason, Event,
     JournalOffset, Message, MessageContent, MessageId, MessagePart, MessageRole, ModelError,
-    NoopRedactor, RunId, RunStartedEvent, SnapshotId, StopReason, SubagentContextReport,
-    SubagentStatus, SubagentTerminationReason, ToolResult, ToolUseCompletedEvent, ToolUseId,
-    TranscriptRef, UsageSnapshot, UserMessageAppendedEvent,
+    NoopRedactor, PermissionMode, RunId, RunStartedEvent, SnapshotId, StopReason,
+    SubagentContextReport, SubagentStatus, SubagentTerminationReason, ToolResult,
+    ToolUseCompletedEvent, ToolUseId, TranscriptRef, UsageSnapshot, UserMessageAppendedEvent,
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
@@ -1077,6 +1077,7 @@ fn parent_transcript_events(
             effective_config_hash: ConfigHash([0; 32]),
             started_at: harness_contracts::now(),
             correlation_id: harness_contracts::CorrelationId::new(),
+            permission_mode: PermissionMode::Default,
         }),
         Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
             run_id,

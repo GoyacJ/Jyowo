@@ -408,9 +408,11 @@ delete_project(path: string): {
 }
 
 start_run(request: {
+  attachments?: AttachmentReference[]
   clientMessageId: string
-  contextReferences?: string[]
+  contextReferences?: ContextReference[]
   conversationId: string
+  permissionMode?: 'default' | 'auto' | 'bypass_permissions'
   prompt: string
 }): {
   runId: string
@@ -876,8 +878,13 @@ Conversation timeline:
 - `ConversationWorkspace` composes `useConversationTimeline`,
   `ConversationTimeline`, and `Composer`; it must not merge messages, activity
   events, artifacts, and local optimistic arrays itself.
+- `ConversationWorkspace` loads `get_execution_settings` to initialize the
+  composer's permission mode. Composer permission changes are local UI state
+  for later sends and must not call `set_execution_settings`.
 - `clientMessageId` is generated before `start_run` and is the only key that
   confirms an optimistic user message. Body text must not be used for matching.
+- `Composer` submits the current `permissionMode` with every run request.
+  Settings only stores the default mode used to initialize new composer state.
 - `conversationSequence` is the backend-provided conversation order key.
   Frontend code must not sort conversation turns by `(runId, sequence)`.
 - Feature code must not call Tauri `listen` directly. `shared/tauri` owns the
@@ -1006,6 +1013,10 @@ Rules:
 - parse all event payloads with Zod
 - render by discriminated union
 - use exhaustive checks
+- `run.started` payloads may include
+  `permissionMode: 'default' | 'plan' | 'accept_edits' | 'bypass_permissions' | 'dont_ask' | 'auto'`
+- `permission.requested` payloads may include `autoResolved: true` when a run
+  authorization mode automatically allowed the request without interactive UI.
 - Raw JSON shows redacted payload only
 - withheld payloads are not rendered
 - frontend schema does not replace Rust canonical events

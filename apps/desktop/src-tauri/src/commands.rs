@@ -1285,7 +1285,10 @@ fn ensure_execution_settings_record(
 }
 
 fn auto_mode_available() -> bool {
-    cfg!(feature = "auto-mode")
+    // The desktop shell does not currently assemble an AuxLlmBroker-backed
+    // permission runtime. Keep Auto fail-closed even if the placeholder feature
+    // is enabled.
+    false
 }
 
 fn remove_invalid_provider_settings_file(settings_path: &Path) -> Result<(), CommandErrorPayload> {
@@ -2549,18 +2552,12 @@ impl DesktopRuntimeState {
         model_id: String,
         protocol: ModelProtocol,
     ) -> SessionOptions {
-        let permission_mode = self
-            .execution_settings_store
-            .load_record()
-            .map(|record| record.permission_mode)
-            .unwrap_or(PermissionMode::Default);
         SessionOptions::new(&self.workspace_root)
             .with_tenant_id(TenantId::SINGLE)
             .with_session_id(session_id)
             .with_interactivity(InteractivityLevel::FullyInteractive)
             .with_model_id(model_id)
             .with_protocol(protocol)
-            .with_permission_mode(permission_mode)
     }
 
     #[must_use]
@@ -2877,6 +2874,8 @@ pub struct StartRunRequest {
     #[serde(default)]
     pub context_references: Option<Vec<ContextReferencePayload>>,
     pub conversation_id: String,
+    #[serde(default)]
+    pub permission_mode: Option<PermissionMode>,
     pub prompt: String,
 }
 
@@ -3068,6 +3067,7 @@ pub enum RunEventBodyPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionRequestedRunEventPayload {
+    pub auto_resolved: bool,
     pub decision_scope: String,
     pub exposure: String,
     pub operation: String,
@@ -3252,6 +3252,12 @@ pub struct GetContextSnapshotResponse {
 pub struct GetExecutionSettingsResponse {
     pub permission_mode: PermissionMode,
     pub auto_mode_available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetExecutionSettingsRequest {
+    pub workspace_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -4054,10 +4060,33 @@ pub fn get_execution_settings_with_store(
     store: &DesktopExecutionSettingsStore,
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
     let record = store.load_record()?;
+    let permission_mode = effective_execution_settings_permission_mode(record.permission_mode);
     Ok(GetExecutionSettingsResponse {
-        permission_mode: record.permission_mode,
+        permission_mode,
         auto_mode_available: auto_mode_available(),
     })
+}
+
+pub fn get_execution_settings_for_request(
+    request: GetExecutionSettingsRequest,
+    active_store: &DesktopExecutionSettingsStore,
+    project_registry: &ProjectRegistry,
+) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
+    let Some(workspace_path) = request.workspace_path else {
+        return get_execution_settings_with_store(active_store);
+    };
+    let workspace_root =
+        canonical_workspace_root(PathBuf::from(workspace_path), "workspace path".to_owned())?;
+    let workspace_root_text = workspace_root.to_string_lossy();
+    if !project_registry
+        .list_projects()
+        .iter()
+        .any(|project| project.path == workspace_root_text.as_ref())
+    {
+        return Err(invalid_payload("project is not registered".to_owned()));
+    }
+    let store = DesktopExecutionSettingsStore::new(workspace_root);
+    get_execution_settings_with_store(&store)
 }
 
 pub fn set_execution_settings_with_store(
@@ -6441,6 +6470,9 @@ pub fn start_run_payload(
     if let Some(client_message_id) = request.client_message_id.as_deref() {
         validate_client_message_id(client_message_id)?;
     }
+    if let Some(permission_mode) = request.permission_mode {
+        ensure_start_run_permission_mode(permission_mode)?;
+    }
     validate_context_reference_payloads(request.context_references.as_deref())?;
     validate_attachment_reference_payloads(request.attachments.as_deref())?;
 
@@ -6471,6 +6503,10 @@ pub async fn start_run_with_runtime_state(
         )));
     }
 
+    let permission_mode = resolve_start_run_permission_mode(
+        request.permission_mode,
+        &state.execution_settings_store,
+    )?;
     let input = build_conversation_turn_input(&request, state).await?;
     let _start_run_guard = state.start_run_lock.lock().await;
     let (harness, options) =
@@ -6509,6 +6545,7 @@ pub async fn start_run_with_runtime_state(
             .submit_conversation_turn(ConversationTurnRequest {
                 options: run_options,
                 input,
+                permission_mode_override: Some(permission_mode),
             })
             .await
     });
@@ -7571,6 +7608,45 @@ async fn build_conversation_turn_input(
             state.workspace_root(),
         )?,
     })
+}
+
+fn resolve_start_run_permission_mode(
+    requested: Option<PermissionMode>,
+    store: &DesktopExecutionSettingsStore,
+) -> Result<PermissionMode, CommandErrorPayload> {
+    let permission_mode = match requested {
+        Some(permission_mode) => permission_mode,
+        None => effective_execution_settings_permission_mode(store.load_record()?.permission_mode),
+    };
+    ensure_start_run_permission_mode(permission_mode)?;
+    Ok(permission_mode)
+}
+
+fn effective_execution_settings_permission_mode(permission_mode: PermissionMode) -> PermissionMode {
+    if permission_mode == PermissionMode::Auto && !auto_mode_available() {
+        PermissionMode::Default
+    } else {
+        permission_mode
+    }
+}
+
+fn ensure_start_run_permission_mode(
+    permission_mode: PermissionMode,
+) -> Result<(), CommandErrorPayload> {
+    match permission_mode {
+        PermissionMode::Default | PermissionMode::Auto | PermissionMode::BypassPermissions => {}
+        _ => {
+            return Err(invalid_payload(
+                "permissionMode must be default, auto, or bypass_permissions".to_owned(),
+            ));
+        }
+    }
+    if permission_mode == PermissionMode::Auto && !auto_mode_available() {
+        return Err(invalid_payload(
+            "permissionMode auto is not available in this desktop build".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 async fn validate_context_references(
@@ -8777,15 +8853,21 @@ fn permission_requested_run_event(
         unreachable!("permission activity must be built from PermissionRequested events");
     };
     let subject = permission_subject_display(&event.subject, redactor);
+    let reason = if event.auto_resolved {
+        "已按本次授权模式自动允许。"
+    } else {
+        "需要批准后才能继续。"
+    };
 
     RunEventPayload {
         id: event_id,
         conversation_sequence: sequence,
         payload: serde_json::to_value(PermissionRequestedRunEventPayload {
+            auto_resolved: event.auto_resolved,
             decision_scope: decision_scope_display(&event.scope_hint, redactor),
             exposure: subject.exposure,
             operation: subject.operation,
-            reason: "The runtime requires approval before continuing.".to_owned(),
+            reason: reason.to_owned(),
             request_id: event.request_id.to_string(),
             severity: severity_display(event.severity),
             target: subject.target,
@@ -9497,7 +9579,10 @@ impl RunEventMapper {
                 Some(RunEventPayload {
                     id: event_id,
                     conversation_sequence: 0,
-                    payload: json!({ "sessionId": event.session_id.to_string() }),
+                    payload: json!({
+                        "permissionMode": event.permission_mode,
+                        "sessionId": event.session_id.to_string(),
+                    }),
                     run_id: event.run_id.to_string(),
                     sequence: 0,
                     source: "engine",
@@ -10265,10 +10350,16 @@ pub async fn list_model_provider_catalog() -> ModelProviderCatalogResponse {
 
 #[tauri::command(rename_all = "camelCase")]
 pub fn get_execution_settings(
+    workspace_path: Option<String>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+    project_registry: tauri::State<'_, ProjectRegistry>,
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.blocking_read();
-    get_execution_settings_with_store(runtime_state.execution_settings_store.as_ref())
+    get_execution_settings_for_request(
+        GetExecutionSettingsRequest { workspace_path },
+        runtime_state.execution_settings_store.as_ref(),
+        &project_registry,
+    )
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -10835,6 +10926,7 @@ pub async fn start_run(
     client_message_id: Option<String>,
     context_references: Option<Vec<ContextReferencePayload>>,
     conversation_id: String,
+    permission_mode: Option<PermissionMode>,
     prompt: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<StartRunResponse, CommandErrorPayload> {
@@ -10845,6 +10937,7 @@ pub async fn start_run(
             client_message_id,
             context_references,
             conversation_id,
+            permission_mode,
             prompt,
         },
         &*runtime_state,

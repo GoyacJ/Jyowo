@@ -101,7 +101,7 @@ export function ExecutionSettings() {
             const descriptionKey =
               option.value === 'auto' && !autoModeAvailable
                 ? 'execution.mode.auto.unavailable'
-                : (`execution.mode.${option.value === 'bypass_permissions' ? 'bypass' : option.value}.description` as const)
+                : permissionModeDescriptionKey(option.value)
 
             return (
               <label
@@ -142,4 +142,15 @@ export function ExecutionSettings() {
       </div>
     </section>
   )
+}
+
+function permissionModeDescriptionKey(permissionMode: PermissionMode) {
+  switch (permissionMode) {
+    case 'default':
+      return 'execution.mode.standard.description'
+    case 'auto':
+      return 'execution.mode.auto.description'
+    case 'bypass_permissions':
+      return 'execution.mode.bypass.description'
+  }
 }

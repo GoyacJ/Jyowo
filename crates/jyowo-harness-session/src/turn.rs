@@ -26,7 +26,8 @@ use harness_model::{
     ModelStreamEvent,
 };
 use harness_permission::{
-    PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision, RuleSnapshot,
+    hard_policy_denies_from_context, PermissionBroker, PermissionContext, PermissionRequest,
+    PersistedDecision, RuleSnapshot,
 };
 use harness_sandbox::SandboxBackend;
 use harness_tool::{
@@ -63,6 +64,7 @@ pub(crate) async fn run_turn(
     parts: Vec<MessagePart>,
     client_message_id: Option<String>,
     attachments: Vec<ConversationAttachmentReference>,
+    permission_mode: PermissionMode,
 ) -> Result<(), SessionError> {
     let run_id = RunId::new();
     let projection = session.projection().await;
@@ -90,6 +92,7 @@ pub(crate) async fn run_turn(
         effective_config_hash: session.effective_config_hash(),
         started_at: harness_contracts::now(),
         correlation_id: CorrelationId::new(),
+        permission_mode,
     });
     session
         .append_events(std::slice::from_ref(&run_started))
@@ -103,7 +106,13 @@ pub(crate) async fn run_turn(
                 run_id,
                 input: redact_json_strings(json!({ "prompt": prompt }), runtime.redactor.as_ref()),
             },
-            hook_context(session, &runtime, run_id, &projection.messages),
+            hook_context(
+                session,
+                &runtime,
+                run_id,
+                &projection.messages,
+                permission_mode,
+            ),
         )
         .await
     {
@@ -310,7 +319,7 @@ pub(crate) async fn run_turn(
                 interrupt: InterruptToken::new(),
                 parent_run: None,
             },
-            permission_context: permission_context(session, run_id),
+            permission_context: permission_context(session, run_id, permission_mode),
             blob_store: runtime.blob_store.clone(),
             event_emitter: tool_event_emitter,
         },
@@ -503,6 +512,7 @@ struct TurnHookView {
     workspace_root: PathBuf,
     messages: Vec<Message>,
     redactor: Arc<dyn Redactor>,
+    permission_mode: PermissionMode,
 }
 
 impl HookSessionView for TurnHookView {
@@ -526,7 +536,7 @@ impl HookSessionView for TurnHookView {
     }
 
     fn permission_mode(&self) -> PermissionMode {
-        PermissionMode::Default
+        self.permission_mode
     }
 
     fn redacted(&self) -> &dyn Redactor {
@@ -542,6 +552,7 @@ impl HookSessionView for TurnHookView {
 struct PermissionDecisionRecord {
     request: PermissionRequest,
     decision: Decision,
+    auto_resolved: bool,
 }
 
 struct RecordingPermissionBroker {
@@ -565,12 +576,40 @@ impl RecordingPermissionBroker {
 #[async_trait]
 impl PermissionBroker for RecordingPermissionBroker {
     async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
-        let decision = self.inner.decide(request.clone(), ctx).await;
+        if self.hard_policy_denies(&request, &ctx).await {
+            let decision = Decision::DenyOnce;
+            self.records.lock().await.push(PermissionDecisionRecord {
+                request,
+                decision: decision.clone(),
+                auto_resolved: false,
+            });
+            return decision;
+        }
+
+        let permission_mode = ctx.permission_mode;
+        let decision = normalize_permission_decision(
+            self.inner.decide(request.clone(), ctx).await,
+            permission_mode,
+        );
+        let auto_resolved = matches!(
+            permission_mode,
+            PermissionMode::BypassPermissions | PermissionMode::DontAsk
+        ) && decision_allows(&decision);
         self.records.lock().await.push(PermissionDecisionRecord {
             request,
             decision: decision.clone(),
+            auto_resolved,
         });
         decision
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        request: &PermissionRequest,
+        ctx: &PermissionContext,
+    ) -> bool {
+        self.inner.hard_policy_denies(request, ctx).await
+            || hard_policy_denies_from_context(request, ctx)
     }
 
     async fn persist(
@@ -603,6 +642,7 @@ fn hook_context(
     runtime: &SessionTurnRuntime,
     run_id: RunId,
     messages: &[Message],
+    permission_mode: PermissionMode,
 ) -> HookContext {
     HookContext {
         tenant_id: session.tenant_id(),
@@ -612,13 +652,14 @@ fn hook_context(
         correlation_id: CorrelationId::new(),
         causation_id: CausationId::new(),
         trust_level: TrustLevel::UserControlled,
-        permission_mode: PermissionMode::Default,
+        permission_mode,
         interactivity: InteractivityLevel::NoInteractive,
         at: harness_contracts::now(),
         view: Arc::new(TurnHookView {
             workspace_root: session.options().workspace_root.clone(),
             messages: messages.to_vec(),
             redactor: runtime.redactor.clone(),
+            permission_mode,
         }),
         upstream_outcome: None,
         replay_mode: ReplayMode::Live,
@@ -644,9 +685,13 @@ fn redact_json_strings(value: Value, redactor: &dyn Redactor) -> Value {
     }
 }
 
-fn permission_context(session: &Session, run_id: RunId) -> PermissionContext {
+fn permission_context(
+    session: &Session,
+    run_id: RunId,
+    permission_mode: PermissionMode,
+) -> PermissionContext {
     PermissionContext {
-        permission_mode: PermissionMode::Default,
+        permission_mode,
         previous_mode: None,
         session_id: session.session_id(),
         tenant_id: session.tenant_id(),
@@ -698,6 +743,7 @@ fn permission_events(run_id: RunId, records: Vec<PermissionDecisionRecord>) -> V
             fingerprint: None,
             presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
             interactivity: InteractivityLevel::NoInteractive,
+            auto_resolved: record.auto_resolved,
             causation_id: EventId::new(),
             at: harness_contracts::now(),
         }));
@@ -837,35 +883,6 @@ fn is_uuid_v4_like(value: &str) -> bool {
         .all(|(_, byte)| byte.is_ascii_hexdigit())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{message_metadata, turn_metadata};
-
-    #[test]
-    fn turn_and_message_metadata_keep_only_uuid_v4_client_message_ids() {
-        let uuid_v4 = "00000000-0000-4000-8000-000000000001";
-        let uuid_v1 = "00000000-0000-1000-8000-000000000001";
-
-        assert_eq!(
-            turn_metadata(1, Some(uuid_v4.to_owned()))["clientMessageId"],
-            uuid_v4
-        );
-        assert!(turn_metadata(1, Some(uuid_v1.to_owned()))
-            .get("clientMessageId")
-            .is_none());
-        assert_eq!(
-            message_metadata(Some(uuid_v4))
-                .labels
-                .get("clientMessageId")
-                .map(String::as_str),
-            Some(uuid_v4)
-        );
-        assert!(!message_metadata(Some(uuid_v1))
-            .labels
-            .contains_key("clientMessageId"));
-    }
-}
-
 #[cfg(feature = "steering")]
 async fn apply_steering(
     session: &Session,
@@ -937,11 +954,28 @@ fn add_usage(total: &mut UsageSnapshot, delta: &UsageSnapshot) {
     total.tool_calls = total.tool_calls.saturating_add(delta.tool_calls);
 }
 
+fn normalize_permission_decision(decision: Decision, permission_mode: PermissionMode) -> Decision {
+    if matches!(
+        permission_mode,
+        PermissionMode::BypassPermissions | PermissionMode::DontAsk
+    ) && !decision_allows(&decision)
+        && !decision_denies(&decision)
+    {
+        return Decision::AllowOnce;
+    }
+
+    decision
+}
+
 fn decision_allows(decision: &Decision) -> bool {
     matches!(
         decision,
         Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent
     )
+}
+
+fn decision_denies(decision: &Decision) -> bool {
+    matches!(decision, Decision::DenyOnce | Decision::DenyPermanent)
 }
 
 fn tool_error_payload(error: &ToolError) -> ToolErrorPayload {
@@ -963,5 +997,119 @@ fn tool_error_payload(error: &ToolError) -> ToolErrorPayload {
         .to_owned(),
         message: error.to_string(),
         retriable: matches!(error, ToolError::Timeout | ToolError::Interrupted),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use harness_contracts::{DecisionScope, PermissionSubject, RequestId, Severity};
+
+    #[test]
+    fn turn_and_message_metadata_keep_only_uuid_v4_client_message_ids() {
+        let uuid_v4 = "00000000-0000-4000-8000-000000000001";
+        let uuid_v1 = "00000000-0000-1000-8000-000000000001";
+
+        assert_eq!(
+            turn_metadata(1, Some(uuid_v4.to_owned()))["clientMessageId"],
+            uuid_v4
+        );
+        assert!(turn_metadata(1, Some(uuid_v1.to_owned()))
+            .get("clientMessageId")
+            .is_none());
+        assert_eq!(
+            message_metadata(Some(uuid_v4))
+                .labels
+                .get("clientMessageId")
+                .map(String::as_str),
+            Some(uuid_v4)
+        );
+        assert!(!message_metadata(Some(uuid_v1))
+            .labels
+            .contains_key("clientMessageId"));
+    }
+
+    #[derive(Default)]
+    struct HardPolicyBroker {
+        decide_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl PermissionBroker for HardPolicyBroker {
+        async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+            self.decide_calls.fetch_add(1, Ordering::SeqCst);
+            Decision::AllowOnce
+        }
+
+        async fn hard_policy_denies(
+            &self,
+            _request: &PermissionRequest,
+            _ctx: &PermissionContext,
+        ) -> bool {
+            true
+        }
+
+        async fn persist(
+            &self,
+            _decision: PersistedDecision,
+        ) -> Result<(), harness_contracts::PermissionError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn recording_permission_broker_denies_hard_policy_before_inner_decide() {
+        let inner = Arc::new(HardPolicyBroker::default());
+        let broker = RecordingPermissionBroker::new(inner.clone());
+        let request = permission_request();
+        let ctx = permission_context_for(&request);
+
+        assert_eq!(
+            broker.decide(request.clone(), ctx.clone()).await,
+            Decision::DenyOnce
+        );
+        assert!(broker.hard_policy_denies(&request, &ctx).await);
+        assert_eq!(inner.decide_calls.load(Ordering::SeqCst), 0);
+        let records = broker.records().await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].decision, Decision::DenyOnce);
+    }
+
+    fn permission_request() -> PermissionRequest {
+        PermissionRequest {
+            request_id: RequestId::new(),
+            tenant_id: TenantId::SINGLE,
+            session_id: SessionId::new(),
+            tool_use_id: ToolUseId::new(),
+            tool_name: "FileWrite".to_owned(),
+            subject: PermissionSubject::ToolInvocation {
+                tool: "FileWrite".to_owned(),
+                input: json!({ "path": "README.md" }),
+            },
+            severity: Severity::High,
+            scope_hint: DecisionScope::Any,
+            created_at: harness_contracts::now(),
+        }
+    }
+
+    fn permission_context_for(request: &PermissionRequest) -> PermissionContext {
+        PermissionContext {
+            permission_mode: PermissionMode::Default,
+            previous_mode: None,
+            session_id: request.session_id,
+            tenant_id: request.tenant_id,
+            run_id: Some(RunId::new()),
+            interactivity: InteractivityLevel::FullyInteractive,
+            timeout_policy: None,
+            fallback_policy: FallbackPolicy::DenyAll,
+            rule_snapshot: Arc::new(RuleSnapshot {
+                rules: Vec::new(),
+                generation: 0,
+                built_at: harness_contracts::now(),
+            }),
+            hook_overrides: Vec::new(),
+        }
     }
 }

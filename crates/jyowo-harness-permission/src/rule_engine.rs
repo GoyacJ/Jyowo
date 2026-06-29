@@ -6,15 +6,15 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
-    Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionError,
+    Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionError, PermissionMode,
     PermissionSubject, RuleSource, ShellKind, TenantId,
 };
 use tokio::task::JoinHandle;
 
 use crate::{
-    DangerousPatternLibrary, DecisionPersistence, InlineRuleProvider, NoopDecisionPersistence,
-    PermissionBroker, PermissionContext, PermissionRequest, PermissionRule, PersistedDecision,
-    RuleAction, RuleProvider, RuleSnapshot,
+    policy_scope_matches_request, DangerousPatternLibrary, DecisionPersistence, InlineRuleProvider,
+    NoopDecisionPersistence, PermissionBroker, PermissionContext, PermissionRequest,
+    PermissionRule, PersistedDecision, RuleAction, RuleProvider, RuleSnapshot,
 };
 
 pub struct RuleEngineBroker {
@@ -24,6 +24,7 @@ pub struct RuleEngineBroker {
     tenant: TenantId,
     persistence: Arc<dyn DecisionPersistence>,
     dangerous_patterns: Option<DangerousPatternLibrary>,
+    policy_deny_only: bool,
     watch_task: Option<JoinHandle<()>>,
 }
 
@@ -33,6 +34,7 @@ pub struct RuleEngineBrokerBuilder {
     fallback: FallbackPolicy,
     dangerous_patterns: Option<DangerousPatternLibrary>,
     persistence: Arc<dyn DecisionPersistence>,
+    policy_deny_only: bool,
 }
 
 impl RuleEngineBroker {
@@ -43,6 +45,7 @@ impl RuleEngineBroker {
             fallback: FallbackPolicy::AskUser,
             dangerous_patterns: None,
             persistence: Arc::new(NoopDecisionPersistence),
+            policy_deny_only: false,
         }
     }
 
@@ -100,6 +103,12 @@ impl RuleEngineBrokerBuilder {
     }
 
     #[must_use]
+    pub fn policy_deny_only(mut self) -> Self {
+        self.policy_deny_only = true;
+        self
+    }
+
+    #[must_use]
     pub fn with_platform_dangerous_library(mut self, shell_kind: ShellKind) -> Self {
         self.dangerous_patterns = Some(DangerousPatternLibrary::for_shell_kind(shell_kind));
         self
@@ -122,6 +131,7 @@ impl RuleEngineBrokerBuilder {
             tenant: self.tenant,
             persistence: self.persistence,
             dangerous_patterns: self.dangerous_patterns,
+            policy_deny_only: self.policy_deny_only,
             watch_task,
         })
     }
@@ -132,18 +142,34 @@ impl PermissionBroker for RuleEngineBroker {
     async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
         let snapshot = self.current_snapshot();
         let rule = select_rule(&snapshot.rules, &request.scope_hint);
-        if matches!(rule, Some(rule) if rule.source == RuleSource::Policy && matches!(rule.action, RuleAction::Deny))
-        {
+        if policy_rule_denies(rule) {
             return Decision::DenyOnce;
         }
 
-        if self.is_dangerous_command(&request) {
+        if self.policy_deny_only {
+            return Decision::Escalate;
+        }
+
+        let is_dangerous_command = self.is_dangerous_command(&request);
+        if is_dangerous_command
+            && !matches!(
+                ctx.permission_mode,
+                PermissionMode::BypassPermissions | PermissionMode::DontAsk
+            )
+        {
             return match ctx.interactivity {
                 InteractivityLevel::NoInteractive => Decision::DenyOnce,
                 InteractivityLevel::FullyInteractive
                 | InteractivityLevel::DeferredInteractive
                 | _ => Decision::Escalate,
             };
+        }
+
+        if matches!(
+            ctx.permission_mode,
+            PermissionMode::BypassPermissions | PermissionMode::DontAsk
+        ) {
+            return Decision::AllowOnce;
         }
 
         let Some(rule) = rule else {
@@ -162,6 +188,16 @@ impl PermissionBroker for RuleEngineBroker {
         }
     }
 
+    async fn hard_policy_denies(
+        &self,
+        request: &PermissionRequest,
+        _ctx: &PermissionContext,
+    ) -> bool {
+        let snapshot = self.current_snapshot();
+        let rule = select_rule(&snapshot.rules, &request.scope_hint);
+        policy_rule_denies(rule)
+    }
+
     async fn persist(&self, decision: PersistedDecision) -> Result<(), PermissionError> {
         if decision.source == RuleSource::Policy {
             return Err(PermissionError::Message(
@@ -171,6 +207,10 @@ impl PermissionBroker for RuleEngineBroker {
 
         self.persistence.persist(decision).await
     }
+}
+
+fn policy_rule_denies(rule: Option<&PermissionRule>) -> bool {
+    matches!(rule, Some(rule) if rule.source == RuleSource::Policy && matches!(rule.action, RuleAction::Deny))
 }
 
 impl RuleEngineBroker {
@@ -260,7 +300,7 @@ fn select_rule<'a>(
 ) -> Option<&'a PermissionRule> {
     if let Some(policy_deny) = rules.iter().find(|rule| {
         rule.source == RuleSource::Policy
-            && rule.scope == *scope
+            && policy_scope_matches_request(&rule.scope, scope)
             && matches!(rule.action, RuleAction::Deny)
     }) {
         return Some(policy_deny);

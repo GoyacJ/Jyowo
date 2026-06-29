@@ -6,11 +6,12 @@ use std::time::Duration;
 use chrono::Utc;
 use harness_contracts::{
     Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionError, PermissionMode,
-    PermissionSubject, RequestId, SessionId, Severity, TenantId, TimeoutPolicy, ToolUseId,
+    PermissionSubject, RequestId, RuleSource, SessionId, Severity, TenantId, TimeoutPolicy,
+    ToolUseId,
 };
 use harness_permission::{
-    CancelReason, PermissionBroker, PermissionContext, PermissionRequest, RuleSnapshot,
-    StreamBasedBroker, StreamBrokerConfig,
+    CancelReason, PermissionBroker, PermissionContext, PermissionRequest, PermissionRule,
+    RuleAction, RuleSnapshot, StreamBasedBroker, StreamBrokerConfig,
 };
 
 #[test]
@@ -183,6 +184,53 @@ async fn no_interactive_fails_safe_without_pending_request() {
         broker.decide(permission_request(), ctx).await,
         Decision::DenyOnce
     );
+    assert!(receiver.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn bypass_permission_mode_allows_without_pending_request() {
+    let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    });
+    let mut ctx = permission_context(None);
+    ctx.permission_mode = PermissionMode::BypassPermissions;
+
+    assert_eq!(
+        broker.decide(permission_request(), ctx).await,
+        Decision::AllowOnce
+    );
+    assert!(resolver.pending_requests().is_empty());
+    assert!(receiver.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn policy_deny_wins_before_bypass_permission_mode() {
+    let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    });
+    let mut ctx = permission_context(None);
+    ctx.permission_mode = PermissionMode::BypassPermissions;
+    ctx.rule_snapshot = Arc::new(RuleSnapshot {
+        rules: vec![PermissionRule {
+            id: "policy-deny-shell".to_owned(),
+            priority: 1,
+            scope: DecisionScope::ToolName("shell".to_owned()),
+            action: RuleAction::Deny,
+            source: RuleSource::Policy,
+        }],
+        generation: 1,
+        built_at: Utc::now(),
+    });
+
+    assert_eq!(
+        broker.decide(permission_request(), ctx).await,
+        Decision::DenyOnce
+    );
+    assert!(resolver.pending_requests().is_empty());
     assert!(receiver.try_recv().is_err());
 }
 

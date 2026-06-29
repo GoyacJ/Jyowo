@@ -1250,6 +1250,7 @@ describe('CommandClient', () => {
               label: 'Filesystem MCP',
             },
           ],
+          permissionMode: 'bypass_permissions',
           prompt: 'Continue implementation',
         },
         client,
@@ -1308,6 +1309,7 @@ describe('CommandClient', () => {
           label: 'Filesystem MCP',
         },
       ],
+      permissionMode: 'bypass_permissions',
       prompt: 'Continue implementation',
     })
     expect(invoke).toHaveBeenCalledWith('cancel_run', { runId: 'run-001' })
@@ -1468,6 +1470,16 @@ describe('CommandClient', () => {
         {
           clientMessageId: '00000000-0000-1000-8000-000000000001',
           conversationId: 'conversation-001',
+          prompt: 'Continue',
+        },
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      startRun(
+        {
+          conversationId: 'conversation-001',
+          permissionMode: 'ask' as never,
           prompt: 'Continue',
         },
         client,

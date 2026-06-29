@@ -23,9 +23,9 @@ use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
     AgentId, AgentRef, BudgetKind, CacheImpact, CapabilityRegistry, CorrelationId, DecidedBy,
     Decision, Event, ForkReason, JournalOffset, KillScope, Message, MessageContent, MessageId,
-    MessageMetadata, MessagePart, MessageRole, NoopRedactor, PermissionRequestedEvent,
-    PermissionResolvedEvent, RunId, SandboxPolicy, SessionForkedEvent, SessionId,
-    SessionSnapshotKind, SnapshotId, SubagentAnnouncedEvent, SubagentCapAnnouncement,
+    MessageMetadata, MessagePart, MessageRole, NoopRedactor, PermissionMode,
+    PermissionRequestedEvent, PermissionResolvedEvent, RunId, SandboxPolicy, SessionForkedEvent,
+    SessionId, SessionSnapshotKind, SnapshotId, SubagentAnnouncedEvent, SubagentCapAnnouncement,
     SubagentContextReport, SubagentId, SubagentParentContext, SubagentPermissionForwardedEvent,
     SubagentPermissionResolvedEvent, SubagentRunnerCap, SubagentSpawnHandle,
     SubagentSpawnPausedEvent, SubagentSpawnedEvent, SubagentStalledEvent, SubagentTerminatedEvent,
@@ -35,7 +35,10 @@ use harness_contracts::{
 };
 use harness_journal::{AppendMetadata, EventStore, ReplayCursor};
 use harness_model::{AuxExecutor, AuxModelProvider, AuxTask, ModelProtocol, ModelRequest};
-use harness_permission::{PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest};
+use harness_permission::{
+    hard_policy_denies_from_context, PermissionBroker, PermissionCheck, PermissionContext,
+    PermissionRequest,
+};
 use harness_session::{Session, SessionOptions};
 use harness_tool::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -508,6 +511,10 @@ impl PermissionBroker for SubagentPermissionBridge {
         let parent_decided_by = DecidedBy::Broker {
             broker_id: "parent".to_owned(),
         };
+        let auto_resolved = matches!(
+            ctx.permission_mode,
+            PermissionMode::BypassPermissions | PermissionMode::DontAsk
+        );
         let _ = self
             .event_store
             .append_with_metadata(
@@ -531,6 +538,7 @@ impl PermissionBroker for SubagentPermissionBridge {
                     fingerprint: None,
                     presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                     interactivity: ctx.interactivity,
+                    auto_resolved,
                     causation_id,
                     at: Utc::now(),
                 })],
@@ -560,7 +568,11 @@ impl PermissionBroker for SubagentPermissionBridge {
             )
             .await;
 
-        let decision = self.parent_broker.decide(request.clone(), ctx).await;
+        let decision = if self.hard_policy_denies(&request, &ctx).await {
+            Decision::DenyOnce
+        } else {
+            self.parent_broker.decide(request.clone(), ctx).await
+        };
         let forwarded_decided_by = DecidedBy::ParentForwarded {
             parent_session_id: self.parent_session_id,
             original_decided_by: Box::new(parent_decided_by),
@@ -609,6 +621,15 @@ impl PermissionBroker for SubagentPermissionBridge {
             )
             .await;
         decision
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        request: &PermissionRequest,
+        ctx: &PermissionContext,
+    ) -> bool {
+        self.parent_broker.hard_policy_denies(request, ctx).await
+            || hard_policy_denies_from_context(request, ctx)
     }
 
     async fn persist(

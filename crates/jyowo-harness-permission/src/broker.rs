@@ -8,13 +8,47 @@ use harness_contracts::{
     Severity, TenantId, TimeoutPolicy, ToolUseId,
 };
 
-use crate::rule::{OverrideDecision, RuleSnapshot};
+use crate::rule::{OverrideDecision, RuleAction, RuleSnapshot};
 
 #[async_trait]
 pub trait PermissionBroker: Send + Sync + 'static {
     async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision;
 
+    async fn hard_policy_denies(
+        &self,
+        _request: &PermissionRequest,
+        _ctx: &PermissionContext,
+    ) -> bool {
+        false
+    }
+
     async fn persist(&self, decision: PersistedDecision) -> Result<(), PermissionError>;
+}
+
+#[must_use]
+pub fn hard_policy_denies_from_context(
+    request: &PermissionRequest,
+    ctx: &PermissionContext,
+) -> bool {
+    ctx.rule_snapshot.rules.iter().any(|rule| {
+        rule.source == RuleSource::Policy
+            && policy_scope_matches_request(&rule.scope, &request.scope_hint)
+            && matches!(rule.action, RuleAction::Deny)
+    })
+}
+
+#[must_use]
+pub fn policy_scope_matches_request(
+    rule_scope: &DecisionScope,
+    request_scope: &DecisionScope,
+) -> bool {
+    match (rule_scope, request_scope) {
+        (DecisionScope::Any, _) => true,
+        (DecisionScope::PathPrefix(rule_path), DecisionScope::PathPrefix(request_path)) => {
+            request_path.starts_with(rule_path)
+        }
+        _ => rule_scope == request_scope,
+    }
 }
 
 #[async_trait]

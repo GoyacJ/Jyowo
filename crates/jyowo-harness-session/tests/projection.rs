@@ -75,6 +75,7 @@ async fn projection_replay_is_idempotent() {
             fingerprint: None,
             presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
             interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
+            auto_resolved: false,
             causation_id: EventId::new(),
             at: harness_contracts::now(),
         }),

@@ -396,9 +396,26 @@ impl Session {
         client_message_id: Option<String>,
         attachments: Vec<ConversationAttachmentReference>,
     ) -> Result<(), SessionError> {
+        self.run_turn_parts_with_client_message_id_attachments_and_permission_mode(
+            parts,
+            client_message_id,
+            attachments,
+            None,
+        )
+        .await
+    }
+
+    pub async fn run_turn_parts_with_client_message_id_attachments_and_permission_mode(
+        &self,
+        parts: Vec<MessagePart>,
+        client_message_id: Option<String>,
+        attachments: Vec<ConversationAttachmentReference>,
+        permission_mode_override: Option<PermissionMode>,
+    ) -> Result<(), SessionError> {
         if self.state.lock().await.ended {
             return Err(SessionError::Message("session already ended".to_owned()));
         }
+        let permission_mode = permission_mode_override.unwrap_or(self.options.permission_mode);
         if let Some(runner) = self.turn_runner() {
             let Some(prompt) = text_only_parts(&parts) else {
                 return Err(SessionError::Message(
@@ -423,7 +440,7 @@ impl Session {
                 client_message_id,
                 attachments,
                 turn_index: projection.messages.len(),
-                permission_mode: self.options.permission_mode,
+                permission_mode,
                 interactivity: self.options.interactivity,
                 pending_deferred_tools_delta,
                 user_id: self.options.user_id.clone(),
@@ -445,7 +462,15 @@ impl Session {
                 .push_deferred_tools_delta(self.tenant_id(), self.session_id(), delta)
                 .map_err(session_error)?;
         }
-        crate::turn::run_turn(self, runtime, parts, client_message_id, attachments).await
+        crate::turn::run_turn(
+            self,
+            runtime,
+            parts,
+            client_message_id,
+            attachments,
+            permission_mode,
+        )
+        .await
     }
 
     pub async fn interrupt(&self) -> Result<(), SessionError> {
@@ -595,6 +620,25 @@ pub(crate) fn session_error(error: impl std::fmt::Display) -> SessionError {
 }
 
 pub fn session_options_hash(options: &SessionOptions) -> [u8; 32] {
+    hash_json(&json!({
+        "workspace_ref": options.workspace_ref,
+        "workspace_root": options.workspace_root,
+        "workspace_bootstrap": options.workspace_bootstrap,
+        "tenant_id": options.tenant_id,
+        "session_id": options.session_id,
+        "tool_search": options.tool_search,
+        "model_id": options.model_id,
+        "protocol": options.protocol.map(protocol_name),
+        "model_extra": options.model_extra,
+        "interactivity": options.interactivity,
+        "user_id": options.user_id,
+        "team_id": options.team_id,
+        "system_prompt_addendum": options.system_prompt_addendum,
+        "max_iterations": options.max_iterations,
+    }))
+}
+
+pub fn legacy_session_options_hash_with_permission_mode(options: &SessionOptions) -> [u8; 32] {
     hash_json(&json!({
         "workspace_ref": options.workspace_ref,
         "workspace_root": options.workspace_root,

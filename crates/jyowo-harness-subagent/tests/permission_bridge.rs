@@ -149,6 +149,175 @@ async fn bridge_forwards_and_resolves_child_permission_requests() {
 }
 
 #[tokio::test]
+async fn bridge_forwards_parent_hard_policy_probe() {
+    let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let parent_session_id = SessionId::new();
+    let parent_run_id = RunId::new();
+    let child_session_id = SessionId::new();
+    let bridge = SubagentPermissionBridge::new(
+        Arc::new(HardPolicyBroker),
+        store,
+        TenantId::SINGLE,
+        parent_session_id,
+        parent_run_id,
+        SubagentId::new(),
+    );
+    let request = PermissionRequest {
+        request_id: RequestId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: child_session_id,
+        tool_use_id: ToolUseId::new(),
+        tool_name: "FileWrite".to_owned(),
+        subject: PermissionSubject::ToolInvocation {
+            tool: "FileWrite".to_owned(),
+            input: serde_json::json!({ "path": "README.md" }),
+        },
+        severity: Severity::High,
+        scope_hint: DecisionScope::Any,
+        created_at: harness_contracts::now(),
+    };
+
+    assert!(
+        bridge
+            .hard_policy_denies(&request, &permission_context(child_session_id))
+            .await
+    );
+}
+
+#[tokio::test]
+async fn bridge_decide_denies_parent_hard_policy_before_parent_allow() {
+    let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let parent_session_id = SessionId::new();
+    let parent_run_id = RunId::new();
+    let child_session_id = SessionId::new();
+    let child_run_id = RunId::new();
+    let subagent_id = SubagentId::new();
+    let correlation_id = CorrelationId::new();
+    let bridge = SubagentPermissionBridge::new(
+        Arc::new(HardPolicyBroker),
+        store.clone(),
+        TenantId::SINGLE,
+        parent_session_id,
+        parent_run_id,
+        subagent_id,
+    )
+    .with_child_context(child_session_id, child_run_id, correlation_id);
+    let request_id = RequestId::new();
+
+    let decision = bridge
+        .decide(
+            PermissionRequest {
+                request_id,
+                tenant_id: TenantId::SINGLE,
+                session_id: child_session_id,
+                tool_use_id: ToolUseId::new(),
+                tool_name: "FileWrite".to_owned(),
+                subject: PermissionSubject::ToolInvocation {
+                    tool: "FileWrite".to_owned(),
+                    input: serde_json::json!({ "path": "README.md" }),
+                },
+                severity: Severity::High,
+                scope_hint: DecisionScope::Any,
+                created_at: harness_contracts::now(),
+            },
+            permission_context(child_session_id),
+        )
+        .await;
+
+    assert_eq!(decision, Decision::DenyOnce);
+
+    let parent_events: Vec<_> = store
+        .read(TenantId::SINGLE, parent_session_id, ReplayCursor::FromStart)
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    assert!(parent_events.iter().any(|event| {
+        matches!(
+            event,
+            Event::SubagentPermissionResolved(resolved)
+                if resolved.parent_session_id == parent_session_id
+                    && resolved.subagent_id == subagent_id
+                    && resolved.original_request_id == request_id
+                    && resolved.decision == Decision::DenyOnce
+        )
+    }));
+
+    let child_events: Vec<_> = store
+        .read(TenantId::SINGLE, child_session_id, ReplayCursor::FromStart)
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    assert!(child_events.iter().any(|event| {
+        matches!(
+            event,
+            Event::PermissionResolved(resolved)
+                if resolved.request_id == request_id
+                    && resolved.decision == Decision::DenyOnce
+        )
+    }));
+}
+
+#[tokio::test]
+async fn bridge_marks_child_permission_request_auto_resolved_for_bypass_mode() {
+    let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let parent_session_id = SessionId::new();
+    let parent_run_id = RunId::new();
+    let child_session_id = SessionId::new();
+    let child_run_id = RunId::new();
+    let correlation_id = CorrelationId::new();
+    let bridge = SubagentPermissionBridge::new(
+        Arc::new(AllowBroker),
+        store.clone(),
+        TenantId::SINGLE,
+        parent_session_id,
+        parent_run_id,
+        SubagentId::new(),
+    )
+    .with_child_context(child_session_id, child_run_id, correlation_id);
+    let request_id = RequestId::new();
+    let mut ctx = permission_context(child_session_id);
+    ctx.permission_mode = PermissionMode::BypassPermissions;
+    ctx.interactivity = InteractivityLevel::NoInteractive;
+
+    let decision = bridge
+        .decide(
+            PermissionRequest {
+                request_id,
+                tenant_id: TenantId::SINGLE,
+                session_id: child_session_id,
+                tool_use_id: ToolUseId::new(),
+                tool_name: "FileWrite".to_owned(),
+                subject: PermissionSubject::ToolInvocation {
+                    tool: "FileWrite".to_owned(),
+                    input: serde_json::json!({ "path": "README.md" }),
+                },
+                severity: Severity::High,
+                scope_hint: DecisionScope::Any,
+                created_at: harness_contracts::now(),
+            },
+            ctx,
+        )
+        .await;
+
+    assert_eq!(decision, Decision::AllowOnce);
+    let child_events: Vec<_> = store
+        .read(TenantId::SINGLE, child_session_id, ReplayCursor::FromStart)
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    assert!(child_events.iter().any(|event| {
+        matches!(
+            event,
+            Event::PermissionRequested(requested)
+                if requested.request_id == request_id && requested.auto_resolved
+        )
+    }));
+}
+
+#[tokio::test]
 async fn bridge_preserves_decision_scope_matrix() {
     let cases = vec![
         (Decision::AllowOnce, DecisionScope::Any),
@@ -437,6 +606,30 @@ struct FixedBroker {
 impl PermissionBroker for FixedBroker {
     async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
         self.decision.clone()
+    }
+
+    async fn persist(
+        &self,
+        _decision: harness_permission::PersistedDecision,
+    ) -> Result<(), harness_contracts::PermissionError> {
+        Ok(())
+    }
+}
+
+struct HardPolicyBroker;
+
+#[async_trait]
+impl PermissionBroker for HardPolicyBroker {
+    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+        Decision::AllowOnce
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        _request: &PermissionRequest,
+        _ctx: &PermissionContext,
+    ) -> bool {
+        true
     }
 
     async fn persist(

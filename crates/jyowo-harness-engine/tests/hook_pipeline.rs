@@ -680,6 +680,15 @@ impl TestHarness {
     }
 
     async fn run(&self, text: &str) -> Result<Vec<Event>, harness_contracts::EngineError> {
+        self.run_with_permission_mode(text, PermissionMode::Default)
+            .await
+    }
+
+    async fn run_with_permission_mode(
+        &self,
+        text: &str,
+        permission_mode: PermissionMode,
+    ) -> Result<Vec<Event>, harness_contracts::EngineError> {
         let events = self
             .engine
             .run(
@@ -688,7 +697,8 @@ impl TestHarness {
                     session_id: self.session_id,
                 },
                 turn_input(text),
-                RunContext::new(self.tenant_id, self.session_id, RunId::new()),
+                RunContext::new(self.tenant_id, self.session_id, RunId::new())
+                    .with_permission_mode(permission_mode),
             )
             .await?
             .collect::<Vec<_>>()

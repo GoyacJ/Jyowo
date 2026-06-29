@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { runEventsSchema } from '@/shared/events/run-event-schema'
 
 const uuidV4Pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const permissionModeSchema = z.enum(['default', 'auto', 'bypass_permissions'])
 const unredactedSecretPatterns = [
   /\bAuthorization:?\s*Bearer\s+\S+/i,
   /\bAuthorization:?\s*Basic\s+\S+/i,
@@ -285,6 +286,7 @@ const startRunRequestSchema = z
     clientMessageId: z.uuid().regex(uuidV4Pattern).optional(),
     conversationId: z.string().min(1),
     contextReferences: z.array(contextReferenceSchema).optional(),
+    permissionMode: permissionModeSchema.optional(),
     prompt: z.string().min(1),
   })
   .strict()
@@ -1109,12 +1111,16 @@ const saveProviderSettingsResponseSchema = z
   })
   .strict()
 
-const permissionModeSchema = z.enum(['default', 'auto', 'bypass_permissions'])
-
 const getExecutionSettingsResponseSchema = z
   .object({
     autoModeAvailable: z.boolean(),
     permissionMode: permissionModeSchema,
+  })
+  .strict()
+
+const getExecutionSettingsRequestSchema = z
+  .object({
+    workspacePath: z.string().trim().min(1).optional(),
   })
   .strict()
 
@@ -2050,6 +2056,7 @@ export type ListProviderSettingsResponse = z.infer<typeof listProviderSettingsRe
 export type SaveProviderSettingsResponse = z.infer<typeof saveProviderSettingsResponseSchema>
 export type PermissionMode = z.infer<typeof permissionModeSchema>
 export type GetExecutionSettingsResponse = z.infer<typeof getExecutionSettingsResponseSchema>
+export type GetExecutionSettingsRequest = z.infer<typeof getExecutionSettingsRequestSchema>
 export type SetExecutionSettingsRequest = z.infer<typeof setExecutionSettingsRequestSchema>
 export type SetExecutionSettingsResponse = z.infer<typeof setExecutionSettingsResponseSchema>
 export type RequestProviderConfigApiKeyRevealResponse = z.infer<
@@ -2150,7 +2157,9 @@ export interface CommandClient {
   ) => Promise<() => void>
   exportMemoryItems: () => Promise<ExportMemoryItemsResponse>
   exportSupportBundle: (request: ExportSupportBundleRequest) => Promise<ExportSupportBundleResponse>
-  getExecutionSettings: () => Promise<GetExecutionSettingsResponse>
+  getExecutionSettings: (
+    request?: GetExecutionSettingsRequest,
+  ) => Promise<GetExecutionSettingsResponse>
   listActivity: (request: ListActivityRequest) => Promise<ListActivityResponse>
   listArtifacts: (request: ListArtifactsRequest) => Promise<ListArtifactsResponse>
   getArtifactMediaPreview: (
@@ -2295,9 +2304,17 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, getContextSnapshotRequestSchema, request)
       return parsePayload(command, getContextSnapshotResponseSchema, await invoke(command, args))
     },
-    async getExecutionSettings() {
+    async getExecutionSettings(request) {
       const command = 'get_execution_settings'
-      return parsePayload(command, getExecutionSettingsResponseSchema, await invoke(command))
+      const args =
+        request === undefined
+          ? undefined
+          : parseArgs(command, getExecutionSettingsRequestSchema, request)
+      return parsePayload(
+        command,
+        getExecutionSettingsResponseSchema,
+        args === undefined ? await invoke(command) : await invoke(command, args),
+      )
     },
     async getConversation(conversationId) {
       const command = 'get_conversation'
@@ -3033,8 +3050,9 @@ export function deleteProject(
 
 export function getExecutionSettings(
   client: CommandClient = tauriCommandClient,
+  request?: GetExecutionSettingsRequest,
 ): Promise<GetExecutionSettingsResponse> {
-  return client.getExecutionSettings()
+  return client.getExecutionSettings(request)
 }
 
 export function setExecutionSettings(

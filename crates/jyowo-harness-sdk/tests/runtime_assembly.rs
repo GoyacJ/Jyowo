@@ -13,8 +13,8 @@ use harness_contracts::{
     DeferPolicy, DeferredToolHint, EndReason, Event, HookEventKind,
     ManifestValidationFailure as ContractManifestValidationFailure, McpServerId, McpServerSource,
     MemoryError, MemoryId, MemoryKind, MemorySessionCtx, MemorySource, MemoryVisibility, MessageId,
-    MessagePart, ModelError, PluginId, ProviderRestriction, RedactRules, Redactor, RequestId,
-    SessionCreatedEvent, SessionSummaryView, SnapshotId, SteeringBody, SteeringKind,
+    MessagePart, ModelError, PermissionMode, PluginId, ProviderRestriction, RedactRules, Redactor,
+    RequestId, SessionCreatedEvent, SessionSummaryView, SnapshotId, SteeringBody, SteeringKind,
     SteeringSource, TeamId, TenantId, ToolDeferredPoolChangedEvent, ToolDescriptor, ToolGroup,
     ToolOrigin, ToolPoolChangeSource, ToolProperties, ToolResult, ToolSearchMode, ToolUseId,
     TrustLevel, UsageSnapshot,
@@ -42,7 +42,7 @@ use harness_plugin::{
     PluginEventSink, PluginManifest, PluginManifestLoader, PluginName, PluginRegistry,
     StaticLinkRuntimeLoader,
 };
-use harness_session::{ConfigDelta, ReloadMode};
+use harness_session::{session_options_hash, ConfigDelta, ReloadMode};
 use harness_skill::{
     BundledSkillRecord, SkillLoader, SkillPlatform, SkillRegistration, SkillSource,
     SkillSourceConfig,
@@ -106,6 +106,7 @@ fn conversation_turn_input_ask_mode_preserves_prompt_text() {
             .submit_conversation_turn(ConversationTurnRequest {
                 options: SessionOptions::new(&workspace).with_session_id(session_id),
                 input: ConversationTurnInput::ask("plain user question"),
+                permission_mode_override: None,
             })
             .await
             .expect("turn should run");
@@ -144,6 +145,7 @@ fn default_conversation_system_prompt_keeps_jyowo_identity() {
             .submit_conversation_turn(ConversationTurnRequest {
                 options,
                 input: ConversationTurnInput::ask("hello"),
+                permission_mode_override: None,
             })
             .await
             .expect("turn should run");
@@ -194,6 +196,7 @@ fn conversation_session_uses_descriptor_protocol_when_options_omit_protocol() {
             .submit_conversation_turn(ConversationTurnRequest {
                 options,
                 input: ConversationTurnInput::ask("plain user question"),
+                permission_mode_override: None,
             })
             .await
             .expect("turn should run");
@@ -266,6 +269,7 @@ fn conversation_turn_input_renders_references_and_attachments_context_block() {
                         blob_ref: test_blob_ref(12, "text/plain"),
                     }],
                 },
+                permission_mode_override: None,
             })
             .await
             .expect("turn should run");
@@ -416,6 +420,7 @@ fn conversation_facade_opens_submits_and_pages_session_events() {
             .submit_conversation_turn(ConversationTurnRequest {
                 options: SessionOptions::new(&workspace).with_session_id(session_id),
                 input: ConversationTurnInput::ask("use facade path"),
+                permission_mode_override: None,
             })
             .await
             .expect("turn should run through the conversation facade");
@@ -511,6 +516,7 @@ fn conversation_facade_pages_and_deletes_when_model_runtime_defaults_change() {
             .submit_conversation_turn(ConversationTurnRequest {
                 options: changed_defaults_options.clone(),
                 input: ConversationTurnInput::ask("continue with the selected model"),
+                permission_mode_override: None,
             })
             .await
             .expect("historical conversation submit must survive model default changes");
@@ -521,6 +527,123 @@ fn conversation_facade_pages_and_deletes_when_model_runtime_defaults_change() {
             .await
             .expect("historical conversation delete must survive model default changes");
         assert!(deleted);
+    });
+}
+
+#[test]
+fn conversation_turn_permission_override_is_run_scoped() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-run-permission-override");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![
+                vec![ModelStreamEvent::MessageStop],
+                vec![ModelStreamEvent::MessageStop],
+            ],
+        ));
+        let harness = Harness::builder()
+            .with_model_arc(model)
+            .with_store_arc(store.clone())
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+        let options = SessionOptions::new(&workspace).with_session_id(session_id);
+
+        harness
+            .open_or_create_conversation_session(options.clone())
+            .await
+            .expect("session should open");
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: options.clone(),
+                input: ConversationTurnInput::ask("use full access for this run"),
+                permission_mode_override: Some(PermissionMode::BypassPermissions),
+            })
+            .await
+            .expect("override turn should run");
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: options.clone(),
+                input: ConversationTurnInput::ask("use default permission mode again"),
+                permission_mode_override: None,
+            })
+            .await
+            .expect("next turn should run with session default");
+
+        let events: Vec<_> = store
+            .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+            .await
+            .expect("events should be readable")
+            .collect()
+            .await;
+        let created_hash = events
+            .iter()
+            .find_map(|event| match event {
+                Event::SessionCreated(created) => Some(created.options_hash),
+                _ => None,
+            })
+            .expect("session creation event should be emitted");
+        let run_modes = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::RunStarted(started) => Some(started.permission_mode),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        let mut expected_options = options.clone();
+        expected_options.workspace_root = expected_options
+            .workspace_root
+            .canonicalize()
+            .expect("workspace root should canonicalize");
+        assert_eq!(created_hash, session_options_hash(&expected_options));
+        assert_eq!(
+            run_modes,
+            vec![PermissionMode::BypassPermissions, PermissionMode::Default]
+        );
+    });
+}
+
+#[test]
+fn legacy_conversation_session_hash_accepts_permission_mode_variant() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-legacy-session-permission-hash");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![vec![ModelStreamEvent::MessageStop]],
+        ));
+        let harness = Harness::builder()
+            .with_model_arc(model)
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+        let legacy_options = SessionOptions::new(&workspace)
+            .with_session_id(session_id)
+            .with_permission_mode(PermissionMode::BypassPermissions);
+        let current_options = SessionOptions::new(&workspace).with_session_id(session_id);
+
+        harness
+            .open_or_create_conversation_session(legacy_options)
+            .await
+            .expect("legacy session should open");
+        let receipt = harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: current_options,
+                input: ConversationTurnInput::ask("continue old conversation"),
+                permission_mode_override: None,
+            })
+            .await
+            .expect("old session should continue under current default identity");
+
+        assert_eq!(receipt.session_id, session_id);
     });
 }
 
@@ -553,6 +676,7 @@ async fn conversation_facade_cancels_active_run_through_sdk_registry() {
             .submit_conversation_turn(ConversationTurnRequest {
                 options: SessionOptions::new(&run_workspace).with_session_id(session_id),
                 input: ConversationTurnInput::ask("cancel active facade run"),
+                permission_mode_override: None,
             })
             .await
     });
@@ -613,6 +737,7 @@ async fn conversation_facade_delete_cancels_active_run_and_blocks_late_appends()
             .submit_conversation_turn(ConversationTurnRequest {
                 options: SessionOptions::new(&run_workspace).with_session_id(session_id),
                 input: ConversationTurnInput::ask("delete active facade run"),
+                permission_mode_override: None,
             })
             .await
     });
@@ -780,6 +905,7 @@ fn conversation_facade_rejects_tenant_policy_bypass_before_reading_events() {
                     .with_tenant_id(TenantId::SHARED)
                     .with_session_id(session_id),
                 input: ConversationTurnInput::ask("must not read shared tenant"),
+                permission_mode_override: None,
             })
             .await
             .expect_err("restricted tenant policy must block submit before event replay");
@@ -828,6 +954,7 @@ fn conversation_facade_reopens_with_workspace_bound_options() {
             .submit_conversation_turn(ConversationTurnRequest {
                 options: options.clone(),
                 input: ConversationTurnInput::ask("use workspace model"),
+                permission_mode_override: None,
             })
             .await
             .expect("workspace-bound conversation should submit");

@@ -18,6 +18,8 @@ pub struct PermissionRequestedEvent {
     pub fingerprint: Option<ExecFingerprint>,
     pub presented_options: Vec<Decision>,
     pub interactivity: InteractivityLevel,
+    #[serde(default)]
+    pub auto_resolved: bool,
     pub causation_id: EventId,
     pub at: DateTime<Utc>,
 }

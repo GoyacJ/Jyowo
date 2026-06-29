@@ -100,7 +100,9 @@ Local-first:
 - API keys MUST NOT enter model context.
 - Trace data defaults to local storage.
 - Memory must be inspectable, editable, deletable, and exportable.
-- High-risk operations require explicit approval.
+- High-risk operations require explicit approval unless the user explicitly selects
+  full access for the current composer run. Rust hard policy deny rules still
+  override every composer mode.
 
 Trust without admin posture:
 
@@ -175,7 +177,9 @@ Conversation page:
 - bottom composer
 
 The composer is the main action entry. It should support plain language, attachments,
-context references, tool selection, and send.
+context references, per-run permission mode, tool selection, and send.
+The permission mode control belongs in the composer toolbar, not as the primary
+setting page action. Settings stores the default mode only.
 
 Context panel:
 
@@ -570,6 +574,18 @@ MCP tool call: based on tool scope
 - workspace boundary
 - data exposure
 - whether the decision applies once, for this run, or permanently
+
+Composer permission mode labels:
+
+```text
+Request approval
+Auto approve
+Full access
+```
+
+`Full access` must use warning styling and explain that it skips permission
+confirmation for the run. It must not imply bypassing workspace, sandbox,
+redaction, payload validation, or hard deny policy.
 
 Button rules:
 

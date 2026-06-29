@@ -15,6 +15,12 @@ pub struct RunStartedEvent {
     pub effective_config_hash: ConfigHash,
     pub started_at: DateTime<Utc>,
     pub correlation_id: CorrelationId,
+    #[serde(default = "default_permission_mode")]
+    pub permission_mode: PermissionMode,
+}
+
+fn default_permission_mode() -> PermissionMode {
+    PermissionMode::Default
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

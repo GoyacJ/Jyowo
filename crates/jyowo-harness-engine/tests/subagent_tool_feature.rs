@@ -14,8 +14,8 @@ use harness_contracts::{
     AssistantMessageCompletedEvent, BlobStore, BudgetKind, CapabilityRegistry, ConfigHash,
     Decision, DeferPolicy, EndReason, Event, McpOrigin, McpServerId, McpServerSource, Message,
     MessageContent, MessageId, MessagePart, MessageRole, ModelError, NetworkAccess, NoopRedactor,
-    PermissionError, ProviderRestriction, ResourceLimits, ResultBudget, RunId, RunStartedEvent,
-    SandboxMode, SandboxPolicy, SandboxScope, SessionId, SnapshotId, StopReason,
+    PermissionError, PermissionMode, ProviderRestriction, ResourceLimits, ResultBudget, RunId,
+    RunStartedEvent, SandboxMode, SandboxPolicy, SandboxScope, SessionId, SnapshotId, StopReason,
     SubagentTerminationReason, TenantId, ToolCapability, ToolDescriptor, ToolError, ToolGroup,
     ToolOrigin, ToolProperties, ToolResult, ToolUseCompletedEvent, ToolUseId, TrustLevel,
     TurnInput, UsageSnapshot, UserMessageAppendedEvent,
@@ -2236,6 +2236,7 @@ fn parent_transcript_events(
             effective_config_hash: ConfigHash([0; 32]),
             started_at: harness_contracts::now(),
             correlation_id: harness_contracts::CorrelationId::new(),
+            permission_mode: PermissionMode::Default,
         }),
         Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
             run_id,

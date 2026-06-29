@@ -865,6 +865,7 @@ impl SamplingJsonRpcHandler {
                 fingerprint: None,
                 presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                 interactivity: InteractivityLevel::FullyInteractive,
+                auto_resolved: false,
                 causation_id: EventId::new(),
                 at: now(),
             }));

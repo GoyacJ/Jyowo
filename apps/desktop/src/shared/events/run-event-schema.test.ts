@@ -88,6 +88,40 @@ describe('RunEvent schema', () => {
     ])
   })
 
+  it('accepts run started permission mode payloads', () => {
+    const event = runEventSchema.parse({
+      ...runEventFixtures[0],
+      payload: {
+        sessionId: 'conversation-001',
+        permissionMode: 'bypass_permissions',
+      },
+    })
+
+    expect(event.payload).toEqual({
+      sessionId: 'conversation-001',
+      permissionMode: 'bypass_permissions',
+    })
+  })
+
+  it.each([
+    'default',
+    'plan',
+    'accept_edits',
+    'bypass_permissions',
+    'dont_ask',
+    'auto',
+  ])('accepts contract permission mode %s in run started events', (permissionMode) => {
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[0],
+        payload: {
+          sessionId: 'conversation-001',
+          permissionMode,
+        },
+      }),
+    ).not.toThrow()
+  })
+
   it('accepts safe assistant completed tool use metadata', () => {
     expect(() =>
       runEventSchema.parse({

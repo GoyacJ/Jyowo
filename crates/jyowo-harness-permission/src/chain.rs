@@ -4,12 +4,12 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use harness_contracts::{
     DecidedBy, Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionError,
-    PermissionSubject,
+    PermissionMode, PermissionSubject,
 };
 
 use crate::{
-    DecisionPersistence, NoopDecisionPersistence, PermissionBroker, PermissionContext,
-    PermissionRequest, PersistedDecision,
+    hard_policy_denies_from_context, DecisionPersistence, NoopDecisionPersistence,
+    PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
 };
 
 pub struct ChainedBroker {
@@ -104,6 +104,10 @@ impl ChainedBrokerBuilder {
 #[async_trait]
 impl PermissionBroker for ChainedBroker {
     async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
+        if self.hard_policy_denies(&request, &ctx).await {
+            return Decision::DenyOnce;
+        }
+
         for broker in &self.chain {
             match broker.decide(request.clone(), ctx.clone()).await {
                 Decision::Escalate => continue,
@@ -111,6 +115,19 @@ impl PermissionBroker for ChainedBroker {
             }
         }
         self.terminator.terminate(&request, &ctx).await
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        request: &PermissionRequest,
+        ctx: &PermissionContext,
+    ) -> bool {
+        for broker in &self.chain {
+            if broker.hard_policy_denies(request, ctx).await {
+                return true;
+            }
+        }
+        hard_policy_denies_from_context(request, ctx)
     }
 
     async fn persist(&self, decision: PersistedDecision) -> Result<(), PermissionError> {
@@ -129,6 +146,17 @@ impl FallbackTerminator {
 impl PermissionTerminator for FallbackTerminator {
     #[allow(clippy::match_same_arms)]
     async fn terminate(&self, request: &PermissionRequest, ctx: &PermissionContext) -> Decision {
+        if hard_policy_denies_from_context(request, ctx) {
+            return Decision::DenyOnce;
+        }
+
+        if matches!(
+            ctx.permission_mode,
+            PermissionMode::BypassPermissions | PermissionMode::DontAsk
+        ) {
+            return Decision::AllowOnce;
+        }
+
         match self.policy {
             FallbackPolicy::AskUser => match ctx.interactivity {
                 InteractivityLevel::FullyInteractive => Decision::Escalate,

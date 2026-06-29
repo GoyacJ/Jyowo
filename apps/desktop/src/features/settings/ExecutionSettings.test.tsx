@@ -64,6 +64,24 @@ describe('ExecutionSettings', () => {
     )
 
     expect(await screen.findByText(/Auto approval is unavailable/i)).toBeInTheDocument()
-    expect(screen.getByLabelText(/Auto/i)).toBeDisabled()
+    expect(screen.getByDisplayValue('auto')).toBeDisabled()
+  })
+
+  it('labels settings as the default permission mode without leaking translation keys', async () => {
+    uiStore.getState().setLocale('en-US')
+
+    renderExecutionSettings(
+      createMockCommandClient({
+        executionSettings: {
+          autoModeAvailable: false,
+          permissionMode: 'default',
+        },
+      }),
+    )
+
+    expect(
+      await screen.findByRole('heading', { name: 'Default Permission Mode' }),
+    ).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('execution.mode.default.description')
   })
 })
