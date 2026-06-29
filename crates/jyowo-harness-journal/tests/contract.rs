@@ -1,8 +1,9 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use futures::StreamExt;
+use async_trait::async_trait;
+use futures::{stream, StreamExt};
 use harness_contracts::*;
 use harness_journal::*;
 
@@ -40,7 +41,7 @@ fn snapshot(session_id: SessionId) -> SessionSnapshot {
 
 #[tokio::test]
 async fn event_store_authorizes_only_current_run_offloaded_blobs() {
-    let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let store: Arc<dyn EventStore> = Arc::new(OffloadedBlobAuthorizerStore::default());
     let authorizer = EventStoreOffloadedBlobAuthorizer::new(store.clone());
     let tenant_id = TenantId::SINGLE;
     let session_id = SessionId::new();
@@ -81,6 +82,144 @@ async fn event_store_authorizes_only_current_run_offloaded_blobs() {
         .expect_err("other run is denied");
 
     assert!(matches!(error, ToolError::PermissionDenied(_)));
+}
+
+#[derive(Default)]
+struct OffloadedBlobAuthorizerStore {
+    envelopes: Mutex<Vec<EventEnvelope>>,
+}
+
+#[async_trait]
+impl EventStore for OffloadedBlobAuthorizerStore {
+    async fn append(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        let mut envelopes = self
+            .envelopes
+            .lock()
+            .map_err(|_| JournalError::Message("event store lock poisoned".to_owned()))?;
+        for event in events {
+            let offset = JournalOffset(envelopes.len() as u64);
+            envelopes.push(EventEnvelope {
+                offset,
+                event_id: EventId::new(),
+                session_id,
+                tenant_id: tenant,
+                run_id: None,
+                correlation_id: CorrelationId::new(),
+                causation_id: None,
+                schema_version: SchemaVersion::CURRENT,
+                recorded_at: harness_contracts::now(),
+                payload: event.clone(),
+            });
+        }
+
+        Ok(envelopes
+            .last()
+            .map(|envelope| envelope.offset)
+            .unwrap_or(JournalOffset(0)))
+    }
+
+    async fn read_envelopes(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        cursor: ReplayCursor,
+    ) -> Result<futures::stream::BoxStream<'static, EventEnvelope>, JournalError> {
+        let envelopes = self
+            .envelopes
+            .lock()
+            .map_err(|_| JournalError::Message("event store lock poisoned".to_owned()))?
+            .iter()
+            .filter(|envelope| envelope.tenant_id == tenant && envelope.session_id == session_id)
+            .filter(|envelope| match cursor {
+                ReplayCursor::FromStart => true,
+                ReplayCursor::FromOffset(offset) => envelope.offset > offset,
+                _ => false,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        Ok(stream::iter(envelopes).boxed())
+    }
+
+    async fn query_after(
+        &self,
+        tenant: TenantId,
+        after: Option<EventId>,
+        limit: usize,
+    ) -> Result<Vec<EventEnvelope>, JournalError> {
+        let mut envelopes = self
+            .envelopes
+            .lock()
+            .map_err(|_| JournalError::Message("event store lock poisoned".to_owned()))?
+            .iter()
+            .filter(|envelope| envelope.tenant_id == tenant)
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(after) = after {
+            if let Some(index) = envelopes
+                .iter()
+                .position(|envelope| envelope.event_id == after)
+            {
+                envelopes.drain(..=index);
+            }
+        }
+        envelopes.truncate(limit);
+        Ok(envelopes)
+    }
+
+    async fn snapshot(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+    ) -> Result<Option<SessionSnapshot>, JournalError> {
+        Ok(None)
+    }
+
+    async fn save_snapshot(
+        &self,
+        _tenant: TenantId,
+        _snapshot: SessionSnapshot,
+    ) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    async fn compact_link(
+        &self,
+        _parent: SessionId,
+        _child: SessionId,
+        _reason: ForkReason,
+    ) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    async fn delete_session(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+    ) -> Result<bool, JournalError> {
+        Ok(false)
+    }
+
+    async fn list_sessions(
+        &self,
+        _tenant: TenantId,
+        _filter: SessionFilter,
+    ) -> Result<Vec<SessionSummary>, JournalError> {
+        Ok(Vec::new())
+    }
+
+    async fn prune(
+        &self,
+        _tenant: TenantId,
+        _policy: PrunePolicy,
+    ) -> Result<PruneReport, JournalError> {
+        Ok(PruneReport::default())
+    }
 }
 
 async fn run_contract<S: EventStore>(store: &S) {

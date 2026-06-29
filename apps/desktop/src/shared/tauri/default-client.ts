@@ -79,6 +79,9 @@ function createDeferredMockCommandClient(): CommandClient {
     async getArtifactMediaPreview(request) {
       return (await getClient()).getArtifactMediaPreview(request)
     },
+    async getAttachmentMediaPreview(request) {
+      return (await getClient()).getAttachmentMediaPreview(request)
+    },
     async getHarnessHealthcheck() {
       return (await getClient()).getHarnessHealthcheck()
     },

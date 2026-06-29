@@ -11,6 +11,16 @@ import { CommandClientProvider } from '@/shared/tauri/react'
 
 import { ExecutionSettings } from './ExecutionSettings'
 
+const agentCapabilities = {
+  agentTeamsAvailable: false,
+  agentTeamsEnabled: false,
+  backgroundAgentsAvailable: false,
+  backgroundAgentsEnabled: false,
+  subagentsAvailable: false,
+  subagentsEnabled: false,
+  unavailableReasons: [],
+}
+
 function renderExecutionSettings(commandClient: CommandClient = createMockCommandClient()) {
   return render(
     <CommandClientProvider client={commandClient}>
@@ -28,6 +38,7 @@ describe('ExecutionSettings', () => {
 
   it('loads and saves permission mode', async () => {
     const setExecutionSettings = vi.fn(async () => ({
+      agentCapabilities,
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'bypass_permissions' as const,
@@ -35,6 +46,7 @@ describe('ExecutionSettings', () => {
     const commandClient = {
       ...createMockCommandClient(),
       getExecutionSettings: async () => ({
+        agentCapabilities,
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'default' as const,
@@ -50,14 +62,18 @@ describe('ExecutionSettings', () => {
 
     await waitFor(() => {
       expect(setExecutionSettings).toHaveBeenCalledWith({
+        agentTeamsEnabled: false,
+        backgroundAgentsEnabled: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'bypass_permissions',
+        subagentsEnabled: false,
       })
     })
   })
 
   it('loads and saves context compression trigger ratio', async () => {
     const setExecutionSettings = vi.fn(async () => ({
+      agentCapabilities,
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.75,
       permissionMode: 'default' as const,
@@ -65,6 +81,7 @@ describe('ExecutionSettings', () => {
     const commandClient = {
       ...createMockCommandClient(),
       getExecutionSettings: async () => ({
+        agentCapabilities,
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'default' as const,
@@ -82,8 +99,11 @@ describe('ExecutionSettings', () => {
 
     await waitFor(() => {
       expect(setExecutionSettings).toHaveBeenCalledWith({
+        agentTeamsEnabled: false,
+        backgroundAgentsEnabled: false,
         contextCompressionTriggerRatio: 0.75,
         permissionMode: 'default',
+        subagentsEnabled: false,
       })
     })
   })
@@ -94,6 +114,7 @@ describe('ExecutionSettings', () => {
     renderExecutionSettings(
       createMockCommandClient({
         executionSettings: {
+          agentCapabilities,
           autoModeAvailable: false,
           contextCompressionTriggerRatio: 0.8,
           permissionMode: 'default',

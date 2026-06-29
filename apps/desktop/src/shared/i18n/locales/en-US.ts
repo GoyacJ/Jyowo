@@ -191,6 +191,10 @@ export const enUS = {
     reviewRequest: 'Review request',
     reviewGeneratedFoundation: 'Review generated foundation',
     userAuthor: 'You',
+    userMessage: {
+      copy: 'Copy message',
+      timestampLabel: 'Message timestamp',
+    },
     turnLabel: 'Conversation turn',
     now: 'Now',
     messageStatus: {

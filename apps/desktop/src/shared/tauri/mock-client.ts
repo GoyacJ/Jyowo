@@ -13,6 +13,7 @@ import type {
   ExportMemoryItemsResponse,
   ExportSupportBundleResponse,
   GetArtifactMediaPreviewResponse,
+  GetAttachmentMediaPreviewResponse,
   GetContextSnapshotResponse,
   GetConversationResponse,
   GetExecutionSettingsResponse,
@@ -339,13 +340,25 @@ const mockProviderSettingsList: ListProviderSettingsResponse = {
   configs: [],
 }
 
+const mockAgentCapabilities = {
+  agentTeamsAvailable: false,
+  agentTeamsEnabled: false,
+  backgroundAgentsAvailable: false,
+  backgroundAgentsEnabled: false,
+  subagentsAvailable: false,
+  subagentsEnabled: false,
+  unavailableReasons: [],
+}
+
 const mockExecutionSettings: GetExecutionSettingsResponse = {
+  agentCapabilities: mockAgentCapabilities,
   autoModeAvailable: false,
   contextCompressionTriggerRatio: 0.8,
   permissionMode: 'default',
 }
 
 const mockSetExecutionSettings: SetExecutionSettingsResponse = {
+  agentCapabilities: mockAgentCapabilities,
   autoModeAvailable: false,
   contextCompressionTriggerRatio: 0.8,
   permissionMode: 'default',
@@ -951,6 +964,7 @@ export interface MockCommandClientOptions {
   healthcheck?: HarnessHealthcheck
   artifacts?: ListArtifactsResponse
   artifactMediaPreview?: GetArtifactMediaPreviewResponse
+  attachmentMediaPreview?: GetAttachmentMediaPreviewResponse
   listActivity?: ListActivityResponse
   memoryExport?: ExportMemoryItemsResponse
   evalCases?: ListEvalCasesResponse
@@ -1141,6 +1155,13 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     async getArtifactMediaPreview() {
       await wait(options.delayMs)
       return options.artifactMediaPreview ?? mockArtifactMediaPreview
+    },
+    async getAttachmentMediaPreview() {
+      await wait(options.delayMs)
+      if (options.attachmentMediaPreview) {
+        return options.attachmentMediaPreview
+      }
+      throw new Error('attachment media preview is unavailable')
     },
     async getAppInfo() {
       await wait(options.delayMs)
@@ -1449,6 +1470,12 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       return (
         options.setExecutionSettings ?? {
           ...mockSetExecutionSettings,
+          agentCapabilities: {
+            ...mockSetExecutionSettings.agentCapabilities,
+            agentTeamsEnabled: request.agentTeamsEnabled,
+            backgroundAgentsEnabled: request.backgroundAgentsEnabled,
+            subagentsEnabled: request.subagentsEnabled,
+          },
           contextCompressionTriggerRatio: request.contextCompressionTriggerRatio,
           permissionMode: request.permissionMode,
         }
@@ -1801,6 +1828,7 @@ export function createRejectedCommandClient(error: unknown): CommandClient {
     getExecutionSettings: () => Promise.reject(error),
     getConversation: () => Promise.reject(error),
     getArtifactMediaPreview: () => Promise.reject(error),
+    getAttachmentMediaPreview: () => Promise.reject(error),
     getAppInfo: () => Promise.reject(error),
     getHarnessHealthcheck: () => Promise.reject(error),
     getMemoryItem: () => Promise.reject(error),

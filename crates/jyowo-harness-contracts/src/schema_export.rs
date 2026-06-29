@@ -42,6 +42,12 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         "conversation_model_capability",
         ConversationModelCapability
     );
+    insert_schema!(schemas, "agent_capability_kind", AgentCapabilityKind);
+    insert_schema!(
+        schemas,
+        "agent_capability_unavailable_reason",
+        AgentCapabilityUnavailableReason
+    );
     insert_schema!(
         schemas,
         "provider_service_capability",

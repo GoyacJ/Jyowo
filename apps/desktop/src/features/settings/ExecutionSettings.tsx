@@ -14,11 +14,20 @@ const permissionModeOptions = [
   { value: 'bypass_permissions', labelKey: 'execution.mode.bypass.label' },
 ] as const satisfies ReadonlyArray<{ value: PermissionMode; labelKey: string }>
 
+const defaultAgentCapabilitySettings = {
+  agentTeamsEnabled: false,
+  backgroundAgentsEnabled: false,
+  subagentsEnabled: false,
+}
+
 export function ExecutionSettings() {
   const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [contextCompressionTriggerPercent, setContextCompressionTriggerPercent] = useState(80)
+  const [agentCapabilitySettings, setAgentCapabilitySettings] = useState(
+    defaultAgentCapabilitySettings,
+  )
   const [autoModeAvailable, setAutoModeAvailable] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -42,6 +51,11 @@ export function ExecutionSettings() {
         setContextCompressionTriggerPercent(
           Math.round(settings.contextCompressionTriggerRatio * 100),
         )
+        setAgentCapabilitySettings({
+          agentTeamsEnabled: settings.agentCapabilities.agentTeamsEnabled,
+          backgroundAgentsEnabled: settings.agentCapabilities.backgroundAgentsEnabled,
+          subagentsEnabled: settings.agentCapabilities.subagentsEnabled,
+        })
         setAutoModeAvailable(settings.autoModeAvailable)
       } catch (error) {
         if (!cancelled) {
@@ -72,6 +86,7 @@ export function ExecutionSettings() {
     try {
       const settings = await setExecutionSettings(
         {
+          ...agentCapabilitySettings,
           contextCompressionTriggerRatio: nextContextCompressionTriggerPercent / 100,
           permissionMode: nextMode,
         },
@@ -79,6 +94,11 @@ export function ExecutionSettings() {
       )
       setPermissionMode(settings.permissionMode)
       setContextCompressionTriggerPercent(Math.round(settings.contextCompressionTriggerRatio * 100))
+      setAgentCapabilitySettings({
+        agentTeamsEnabled: settings.agentCapabilities.agentTeamsEnabled,
+        backgroundAgentsEnabled: settings.agentCapabilities.backgroundAgentsEnabled,
+        subagentsEnabled: settings.agentCapabilities.subagentsEnabled,
+      })
       setAutoModeAvailable(settings.autoModeAvailable)
       setSavedMessage(t('execution.saved'))
     } catch (error) {

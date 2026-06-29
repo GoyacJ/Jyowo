@@ -286,9 +286,44 @@ fn projects_one_user_prompt_and_tool_loop_into_one_assistant_work_tree() {
         group.attempts[0].permission.as_ref().unwrap().status,
         ToolPermissionStatus::Approved
     );
+    assert_eq!(group.attempts[0].permission.as_ref().unwrap().summary, None);
     assert_eq!(
         group.attempts[0].failure_summary.as_ref().unwrap().as_str(),
         "工具执行失败。可在详情中查看。"
+    );
+}
+
+#[test]
+fn pending_permission_preserves_request_summary() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "use tool"),
+        tool_requested(2, "event-tool-a", "run-1", "tool-a"),
+        event(
+            3,
+            "event-permission-requested",
+            "run-1",
+            "permission.requested",
+            json!({
+                "requestId": "request-a",
+                "toolUseId": "tool-a",
+                "reason": "需要批准后才能继续。",
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+    let group = assistant
+        .segments
+        .iter()
+        .find_map(tool_group)
+        .expect("tool group exists");
+    let permission = group.attempts[0].permission.as_ref().unwrap();
+
+    assert_eq!(permission.status, ToolPermissionStatus::Pending);
+    assert_eq!(
+        permission.summary.as_ref().map(|summary| summary.as_str()),
+        Some("需要批准后才能继续。")
     );
 }
 

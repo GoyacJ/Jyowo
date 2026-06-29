@@ -679,6 +679,7 @@ impl ProjectionState<'_> {
             }
             if let Some(permission) = attempt.permission.as_mut() {
                 permission.status = status;
+                permission.summary = None;
                 permission.event_refs.push(event_ref);
             }
         }
