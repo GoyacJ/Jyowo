@@ -1,6 +1,7 @@
 use crate::provider_media::{
     download_provider_https_media, validate_media_bytes, ProviderMediaBytes,
-    ProviderMediaDownloader, ReqwestProviderMediaDownloader, MAX_MINIMAX_MEDIA_BYTES,
+    ProviderMediaDownloadRequest, ProviderMediaDownloader, ReqwestProviderMediaDownloader,
+    MAX_MINIMAX_MEDIA_BYTES,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
@@ -21,6 +22,7 @@ use url::Url;
 use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 
 const POLL_OPERATION_ID: &str = "seedance.video_generation.query";
+const SEEDANCE_VIDEO_MIME_TYPES: &[&str] = &["video/mp4"];
 
 macro_rules! seedance_create_tool {
     ($type_name:ident, $name:literal, $display_name:literal, $description:literal) => {
@@ -158,6 +160,7 @@ fn execute_query_request(
     descriptor: &ToolDescriptor,
 ) -> ToolStream {
     let (operation_id, route_kind) = service_credential_context(descriptor);
+    let media_operation_id = operation_id.clone();
     Box::pin(stream::once(async move {
         let result = async {
             let credential = seedance_credential(&ctx, operation_id, route_kind).await?;
@@ -171,7 +174,18 @@ fn execute_query_request(
                 .query_video_generation_task(&task_id)
                 .await
                 .map_err(model_error)?;
-            query_tool_result_from_response(response, &ctx, &ReqwestProviderMediaDownloader).await
+            let media_operation_id = media_operation_id.as_deref().ok_or_else(|| {
+                ToolError::PermissionDenied(
+                    "Seedance media operation credential context is incomplete".to_owned(),
+                )
+            })?;
+            query_tool_result_from_response(
+                response,
+                &ctx,
+                media_operation_id,
+                &ReqwestProviderMediaDownloader,
+            )
+            .await
         }
         .await;
         match result {
@@ -184,10 +198,13 @@ fn execute_query_request(
 async fn query_tool_result_from_response(
     response: Value,
     ctx: &ToolContext,
+    operation_id: &str,
     downloader: &dyn ProviderMediaDownloader,
 ) -> Result<ToolResult, ToolError> {
     if let Some(candidate) = select_media_candidate(&response, ModelModality::Video) {
-        let media = resolve_media_candidate(candidate, ModelModality::Video, downloader).await?;
+        let media =
+            resolve_media_candidate(candidate, operation_id, ModelModality::Video, downloader)
+                .await?;
         let mime_type =
             validate_media_bytes(&media.bytes, ModelModality::Video, Some(&media.mime_type))?;
         let blob_ref = write_media_blob(ctx, media.bytes, &mime_type).await?;
@@ -370,6 +387,7 @@ fn is_likely_media_url_key(key: &str, modality: ModelModality) -> bool {
 
 async fn resolve_media_candidate(
     candidate: MediaCandidate,
+    operation_id: &str,
     modality: ModelModality,
     downloader: &dyn ProviderMediaDownloader,
 ) -> Result<ProviderMediaBytes, ToolError> {
@@ -378,11 +396,15 @@ async fn resolve_media_candidate(
         MediaCandidate::Base64(value) => decode_base64_media(&value, modality),
         MediaCandidate::HttpsUrl(value) => {
             download_provider_https_media(
-                SEEDANCE_PROVIDER_ID,
-                &value,
-                modality,
+                ProviderMediaDownloadRequest {
+                    provider_id: SEEDANCE_PROVIDER_ID,
+                    operation_id,
+                    url: &value,
+                    artifact_kind: modality,
+                    expected_mime_types: SEEDANCE_VIDEO_MIME_TYPES,
+                    max_bytes: MAX_MINIMAX_MEDIA_BYTES,
+                },
                 downloader,
-                MAX_MINIMAX_MEDIA_BYTES,
             )
             .await
         }

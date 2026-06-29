@@ -61,6 +61,28 @@ async fn seedance_query_running_task_returns_status() {
 }
 
 #[tokio::test]
+async fn seedance_query_task_percent_encodes_task_id_path_segment() {
+    let server = MockServer::start().await;
+    let client = SeedanceApiClient::from_api_key("provider-key").with_base_url(server.uri());
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/contents/generations/tasks/cgt%2Ftask%3Fwith%23reserved%25chars",
+        ))
+        .and(header("authorization", "Bearer provider-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "running"})))
+        .mount(&server)
+        .await;
+
+    let response = client
+        .query_video_generation_task("cgt/task?with#reserved%chars")
+        .await
+        .expect("query task should percent-encode path segment");
+
+    assert_eq!(response["status"], "running");
+}
+
+#[tokio::test]
 async fn seedance_query_completed_task_returns_video_url() {
     let server = MockServer::start().await;
     let client = SeedanceApiClient::from_api_key("provider-key").with_base_url(server.uri());

@@ -1,6 +1,7 @@
 use crate::provider_media::{
-    download_provider_https_media, validate_media_bytes, ProviderMediaBytes,
-    ProviderMediaDownloader, ReqwestProviderMediaDownloader, MAX_MINIMAX_MEDIA_BYTES,
+    download_provider_https_media, safe_mime_types_for_modality, validate_media_bytes,
+    ProviderMediaBytes, ProviderMediaDownloadRequest, ProviderMediaDownloader,
+    ReqwestProviderMediaDownloader, MAX_MINIMAX_MEDIA_BYTES,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
@@ -915,6 +916,7 @@ where
     Fut: std::future::Future<Output = Result<Value, ToolError>> + Send + 'static,
 {
     let (operation_id, route_kind) = service_credential_context(descriptor);
+    let media_operation_id = operation_id.clone();
     Box::pin(stream::once(async move {
         let result = async {
             let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
@@ -924,9 +926,15 @@ where
                 client = client.with_base_url(base_url);
             }
             let response = call(client, request).await?;
+            let media_operation_id = media_operation_id.as_deref().ok_or_else(|| {
+                ToolError::PermissionDenied(
+                    "MiniMax media operation credential context is incomplete".to_owned(),
+                )
+            })?;
             media_tool_result_from_response(
                 response,
                 &ctx,
+                media_operation_id,
                 artifact_kind,
                 title,
                 &ReqwestProviderMediaDownloader,
@@ -954,6 +962,7 @@ where
     Fut: std::future::Future<Output = Result<Value, ToolError>> + Send + 'static,
 {
     let (operation_id, route_kind) = service_credential_context(descriptor);
+    let media_operation_id = operation_id.clone();
     Box::pin(stream::once(async move {
         let result = async {
             let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
@@ -963,9 +972,15 @@ where
                 client = client.with_base_url(base_url);
             }
             let response = call(client, request).await?;
+            let media_operation_id = media_operation_id.as_deref().ok_or_else(|| {
+                ToolError::PermissionDenied(
+                    "MiniMax media operation credential context is incomplete".to_owned(),
+                )
+            })?;
             query_tool_result_from_response(
                 response,
                 &ctx,
+                media_operation_id,
                 artifact_kind,
                 title,
                 &ReqwestProviderMediaDownloader,
@@ -1015,6 +1030,7 @@ fn execute_image_request(
     descriptor: &ToolDescriptor,
 ) -> ToolStream {
     let (operation_id, route_kind) = service_credential_context(descriptor);
+    let media_operation_id = operation_id.clone();
     Box::pin(stream::once(async move {
         let result = async {
             let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
@@ -1028,7 +1044,13 @@ fn execute_image_request(
                 .image_generation(request)
                 .await
                 .map_err(model_error)?;
-            image_tool_result_from_response(response, &ctx, base_url.as_deref()).await
+            let media_operation_id = media_operation_id.as_deref().ok_or_else(|| {
+                ToolError::PermissionDenied(
+                    "MiniMax media operation credential context is incomplete".to_owned(),
+                )
+            })?;
+            image_tool_result_from_response(response, &ctx, base_url.as_deref(), media_operation_id)
+                .await
         }
         .await;
         match result {
@@ -1042,11 +1064,13 @@ async fn image_tool_result_from_response(
     response: Value,
     ctx: &ToolContext,
     provider_base_url: Option<&str>,
+    operation_id: &str,
 ) -> Result<ToolResult, ToolError> {
     image_tool_result_from_response_with_downloader(
         response,
         ctx,
         provider_base_url,
+        operation_id,
         &ReqwestProviderMediaDownloader,
     )
     .await
@@ -1056,11 +1080,13 @@ async fn image_tool_result_from_response_with_downloader(
     response: Value,
     ctx: &ToolContext,
     _provider_base_url: Option<&str>,
+    operation_id: &str,
     downloader: &dyn ProviderMediaDownloader,
 ) -> Result<ToolResult, ToolError> {
     media_tool_result_from_response(
         response,
         ctx,
+        operation_id,
         ModelModality::Image,
         "Generated image",
         downloader,
@@ -1071,6 +1097,7 @@ async fn image_tool_result_from_response_with_downloader(
 async fn media_tool_result_from_response(
     response: Value,
     ctx: &ToolContext,
+    operation_id: &str,
     modality: ModelModality,
     title: &str,
     downloader: &dyn ProviderMediaDownloader,
@@ -1081,7 +1108,7 @@ async fn media_tool_result_from_response(
             modality_label(modality)
         ))
     })?;
-    let media = resolve_media_candidate(candidate, modality, downloader).await?;
+    let media = resolve_media_candidate(candidate, operation_id, modality, downloader).await?;
     let mime_type = validate_media_bytes(&media.bytes, modality, Some(&media.mime_type))?;
     let blob_ref = write_media_blob(ctx, media.bytes, &mime_type).await?;
     Ok(artifact_tool_result(modality, mime_type, blob_ref, title))
@@ -1090,12 +1117,13 @@ async fn media_tool_result_from_response(
 async fn query_tool_result_from_response(
     response: Value,
     ctx: &ToolContext,
+    operation_id: &str,
     modality: ModelModality,
     title: &str,
     downloader: &dyn ProviderMediaDownloader,
 ) -> Result<ToolResult, ToolError> {
     if let Some(candidate) = select_media_candidate(&response, modality) {
-        let media = resolve_media_candidate(candidate, modality, downloader).await?;
+        let media = resolve_media_candidate(candidate, operation_id, modality, downloader).await?;
         let mime_type = validate_media_bytes(&media.bytes, modality, Some(&media.mime_type))?;
         let blob_ref = write_media_blob(ctx, media.bytes, &mime_type).await?;
         return Ok(artifact_tool_result(modality, mime_type, blob_ref, title));
@@ -1313,6 +1341,7 @@ fn is_likely_media_url_key(key: &str, modality: ModelModality) -> bool {
 
 async fn resolve_media_candidate(
     candidate: MediaCandidate,
+    operation_id: &str,
     modality: ModelModality,
     downloader: &dyn ProviderMediaDownloader,
 ) -> Result<ProviderMediaBytes, ToolError> {
@@ -1321,11 +1350,15 @@ async fn resolve_media_candidate(
         MediaCandidate::Base64(value) => decode_base64_media(&value, modality),
         MediaCandidate::HttpsUrl(value) => {
             download_provider_https_media(
-                MINIMAX_PROVIDER_ID,
-                &value,
-                modality,
+                ProviderMediaDownloadRequest {
+                    provider_id: MINIMAX_PROVIDER_ID,
+                    operation_id,
+                    url: &value,
+                    artifact_kind: modality,
+                    expected_mime_types: safe_mime_types_for_modality(modality),
+                    max_bytes: MAX_MINIMAX_MEDIA_BYTES,
+                },
                 downloader,
-                MAX_MINIMAX_MEDIA_BYTES,
             )
             .await
         }
@@ -1717,6 +1750,7 @@ mod tests {
             }),
             &ctx,
             None,
+            "minimax.image_generation",
         )
         .await
         .expect("image result is extracted");
@@ -1750,6 +1784,7 @@ mod tests {
             }),
             &ctx,
             None,
+            "minimax.image_generation",
         )
         .await
         .expect_err("disallowed host is rejected");
@@ -1772,6 +1807,7 @@ mod tests {
             }),
             &ctx,
             Some("https://proxy.example.invalid"),
+            "minimax.image_generation",
             &downloader,
         )
         .await
@@ -1796,6 +1832,7 @@ mod tests {
             }),
             &ctx,
             None,
+            "minimax.image_generation",
         )
         .await
         .expect_err("svg data URL should be rejected");
@@ -1815,6 +1852,7 @@ mod tests {
             }),
             &ctx,
             None,
+            "minimax.image_generation",
         )
         .await
         .expect_err("oversized inline image should be rejected");
@@ -1834,6 +1872,7 @@ mod tests {
             }),
             &ctx,
             None,
+            "minimax.image_generation",
             &downloader,
         )
         .await
@@ -1854,6 +1893,7 @@ mod tests {
             }),
             &ctx,
             None,
+            "minimax.image_generation",
             &downloader,
         )
         .await

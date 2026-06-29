@@ -1,12 +1,41 @@
 //! Shared provider media download policy and validation helpers.
 //!
 //! Pure validation compiles unconditionally. HTTP download uses `reqwest` behind
-//! `minimax-tools`.
+//! `minimax-tools` or `seedance-tools`.
 
-use harness_contracts::{BudgetMetric, ModelModality, ToolError};
+#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+use harness_contracts::BudgetMetric;
+use harness_contracts::{ModelModality, ToolError};
 use url::Url;
 
 pub const MAX_MINIMAX_MEDIA_BYTES: u64 = 10 * 1024 * 1024;
+pub const SAFE_IMAGE_MIME_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+];
+pub const SAFE_VIDEO_MIME_TYPES: &[&str] = &["video/mp4", "video/webm", "video/quicktime"];
+pub const SAFE_AUDIO_MIME_TYPES: &[&str] = &[
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/ogg",
+    "audio/wav",
+    "audio/webm",
+];
+pub const SEEDANCE_VIDEO_MIME_TYPES: &[&str] = &["video/mp4"];
+
+#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderMediaDownloadRequest<'a> {
+    pub provider_id: &'a str,
+    pub operation_id: &'a str,
+    pub url: &'a str,
+    pub artifact_kind: ModelModality,
+    pub expected_mime_types: &'a [&'a str],
+    pub max_bytes: u64,
+}
 
 #[derive(Debug, Clone)]
 pub struct ProviderMediaBytes {
@@ -117,6 +146,43 @@ pub fn safe_mime_for_modality(value: &str, modality: ModelModality) -> Option<&'
     }
 }
 
+pub fn safe_mime_types_for_modality(modality: ModelModality) -> &'static [&'static str] {
+    match modality {
+        ModelModality::Image => SAFE_IMAGE_MIME_TYPES,
+        ModelModality::Video => SAFE_VIDEO_MIME_TYPES,
+        ModelModality::Audio => SAFE_AUDIO_MIME_TYPES,
+        ModelModality::Text | ModelModality::Embedding | ModelModality::File => &[],
+    }
+}
+
+pub fn provider_media_mime_policy(
+    provider_id: &str,
+    operation_id: &str,
+    artifact_kind: ModelModality,
+) -> Option<&'static [&'static str]> {
+    match (provider_id, operation_id, artifact_kind) {
+        ("minimax", "minimax.image_generation", ModelModality::Image) => {
+            Some(SAFE_IMAGE_MIME_TYPES)
+        }
+        (
+            "minimax",
+            "minimax.video_generation.query" | "minimax.video_template.query",
+            ModelModality::Video,
+        ) => Some(SAFE_VIDEO_MIME_TYPES),
+        (
+            "minimax",
+            "minimax.text_to_speech.sync"
+            | "minimax.text_to_speech.async.query"
+            | "minimax.music_generation",
+            ModelModality::Audio,
+        ) => Some(SAFE_AUDIO_MIME_TYPES),
+        ("doubao", "seedance.video_generation.query", ModelModality::Video) => {
+            Some(SEEDANCE_VIDEO_MIME_TYPES)
+        }
+        _ => None,
+    }
+}
+
 pub fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1A\n") {
         return Some("image/png");
@@ -223,6 +289,15 @@ fn normalized_mime(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
+#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+fn mime_policy_matches(expected: &[&str], policy: &[&str]) -> bool {
+    expected.len() == policy.len()
+        && expected
+            .iter()
+            .zip(policy)
+            .all(|(expected, policy)| normalized_mime(expected) == *policy)
+}
+
 #[async_trait::async_trait]
 pub trait ProviderMediaDownloader: Send + Sync {
     async fn download(
@@ -320,24 +395,78 @@ impl ProviderMediaDownloader for ReqwestProviderMediaDownloader {
 
 #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
 pub async fn download_provider_https_media(
-    provider_id: &str,
-    url_str: &str,
-    modality: ModelModality,
+    request: ProviderMediaDownloadRequest<'_>,
     downloader: &dyn ProviderMediaDownloader,
-    max_bytes: u64,
 ) -> Result<ProviderMediaBytes, ToolError> {
-    let url = validate_https_media_url(url_str)?;
-    if !is_allowed_provider_media_host(provider_id, &url) {
+    let mime_policy = provider_media_mime_policy(
+        request.provider_id,
+        request.operation_id,
+        request.artifact_kind,
+    )
+    .ok_or_else(|| {
+        ToolError::PermissionDenied("provider media operation is not allowed".to_owned())
+    })?;
+    if request.operation_id.trim().is_empty() {
+        return Err(ToolError::PermissionDenied(
+            "provider media operation is not allowed".to_owned(),
+        ));
+    }
+    if !mime_policy_matches(request.expected_mime_types, mime_policy) {
+        return Err(ToolError::PermissionDenied(
+            "provider media operation is not allowed".to_owned(),
+        ));
+    }
+
+    let url = validate_https_media_url(request.url)?;
+    if !is_allowed_provider_media_host(request.provider_id, &url) {
         return Err(ToolError::PermissionDenied(
             "provider media asset host is not allowed".to_owned(),
         ));
     }
-    downloader.download(&url, max_bytes, modality).await
+    let media = downloader
+        .download(&url, request.max_bytes, request.artifact_kind)
+        .await?;
+    let mime_type =
+        validate_media_bytes(&media.bytes, request.artifact_kind, Some(&media.mime_type))?;
+    if !mime_policy
+        .iter()
+        .any(|expected| normalized_mime(expected) == mime_type)
+    {
+        return Err(ToolError::Message(
+            "provider media payload MIME type is not allowed for operation".to_owned(),
+        ));
+    }
+    Ok(ProviderMediaBytes {
+        bytes: media.bytes,
+        mime_type,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+    struct StaticProviderMediaDownloader {
+        bytes: Vec<u8>,
+        mime_type: &'static str,
+    }
+
+    #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+    #[async_trait::async_trait]
+    impl ProviderMediaDownloader for StaticProviderMediaDownloader {
+        async fn download(
+            &self,
+            _url: &Url,
+            _max_bytes: u64,
+            _modality: ModelModality,
+        ) -> Result<ProviderMediaBytes, ToolError> {
+            Ok(ProviderMediaBytes {
+                bytes: self.bytes.clone(),
+                mime_type: self.mime_type.to_owned(),
+            })
+        }
+    }
 
     #[test]
     fn minimax_media_host_allowlist_accepts_provider_cdn() {
@@ -361,5 +490,92 @@ mod tests {
     fn audio_mime_detection_matches_mp3_id3_header() {
         let bytes = b"ID3\x04\x00\x00\x00\x00\x00\x00";
         assert_eq!(detect_audio_mime(bytes), Some("audio/mpeg"));
+    }
+
+    #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+    #[tokio::test]
+    async fn provider_media_download_rejects_mime_outside_expected_set() {
+        let downloader = StaticProviderMediaDownloader {
+            bytes: vec![0x1A, 0x45, 0xDF, 0xA3, 0x01],
+            mime_type: "video/webm",
+        };
+
+        let error = download_provider_https_media(
+            ProviderMediaDownloadRequest {
+                provider_id: "doubao",
+                operation_id: "seedance.video_generation.query",
+                url: "https://ark.cn-beijing.volces.com/video.webm",
+                artifact_kind: ModelModality::Video,
+                expected_mime_types: SEEDANCE_VIDEO_MIME_TYPES,
+                max_bytes: 1024,
+            },
+            &downloader,
+        )
+        .await
+        .expect_err("media MIME outside operation policy should fail");
+
+        assert!(matches!(
+            error,
+            ToolError::Message(message)
+                if message == "provider media payload MIME type is not allowed for operation"
+        ));
+    }
+
+    #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+    #[tokio::test]
+    async fn provider_media_download_rejects_unregistered_policy_tuple() {
+        let downloader = StaticProviderMediaDownloader {
+            bytes: b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00".to_vec(),
+            mime_type: "video/mp4",
+        };
+
+        let error = download_provider_https_media(
+            ProviderMediaDownloadRequest {
+                provider_id: "minimax",
+                operation_id: "minimax.unknown.query",
+                url: "https://assets.minimaxi.com/video.mp4",
+                artifact_kind: ModelModality::Video,
+                expected_mime_types: SAFE_VIDEO_MIME_TYPES,
+                max_bytes: 1024,
+            },
+            &downloader,
+        )
+        .await
+        .expect_err("unregistered provider media policy tuple should fail");
+
+        assert!(matches!(
+            error,
+            ToolError::PermissionDenied(message)
+                if message == "provider media operation is not allowed"
+        ));
+    }
+
+    #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+    #[tokio::test]
+    async fn provider_media_download_rejects_operation_artifact_mismatch() {
+        let downloader = StaticProviderMediaDownloader {
+            bytes: b"\x89PNG\r\n\x1A\n".to_vec(),
+            mime_type: "image/png",
+        };
+
+        let error = download_provider_https_media(
+            ProviderMediaDownloadRequest {
+                provider_id: "minimax",
+                operation_id: "minimax.video_generation.query",
+                url: "https://assets.minimaxi.com/image.png",
+                artifact_kind: ModelModality::Image,
+                expected_mime_types: SAFE_IMAGE_MIME_TYPES,
+                max_bytes: 1024,
+            },
+            &downloader,
+        )
+        .await
+        .expect_err("operation and artifact kind mismatch should fail");
+
+        assert!(matches!(
+            error,
+            ToolError::PermissionDenied(message)
+                if message == "provider media operation is not allowed"
+        ));
     }
 }
