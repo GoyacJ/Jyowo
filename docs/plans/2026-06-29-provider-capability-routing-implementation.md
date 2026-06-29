@@ -214,15 +214,10 @@ Use this binding for route filtering and credential resolution.
 
 Provider service tools should return explicit artifact metadata instead of relying on engine heuristics.
 
-Target shape:
+Target contract:
 
 ```rust
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ServiceToolOutput {
-    Structured {
-        value: serde_json::Value,
-    },
+pub enum ToolResultPart {
     Artifact {
         artifact_kind: ModelModality,
         content_type: String,
@@ -230,16 +225,23 @@ pub enum ServiceToolOutput {
         title: String,
         preview: Option<String>,
     },
-    AsyncJob {
-        job_id: String,
-        poll_operation_id: String,
-        artifact_kind: ModelModality,
-        title: String,
-    },
+    // existing variants stay unchanged
 }
 ```
 
-Implement this as a typed `ToolResultPart::Artifact`. Do not add a top-level `ToolResult::Artifact` variant. If existing orchestration cannot carry result parts, stop and revise this plan before implementing a different public contract.
+Async service jobs must use existing structured tool output, not a new orphan enum:
+
+```json
+{
+  "kind": "async_job",
+  "jobId": "provider-task-id",
+  "pollOperationId": "minimax.video_generation.query",
+  "artifactKind": "video",
+  "title": "Generated video"
+}
+```
+
+Implement artifacts as typed `ToolResultPart::Artifact`. Do not add a separate service-output enum. Do not add a top-level `ToolResult::Artifact` variant. If existing orchestration cannot carry result parts, stop and revise this plan before implementing a different public contract.
 
 ## Required Task Loop
 
@@ -278,6 +280,7 @@ Every task must follow this exact loop.
    - If `FAIL`, fix findings and repeat the subagent audit.
    - `FAIL` blocks commit and blocks moving to the next task.
    - Do not mark the task complete without a passing subagent audit.
+   - Optional Task 8 may be marked `SKIPPED` only when official API facts are unavailable. In that case, run a skip audit instead of an implementation audit. The skip audit must verify the source-facts note exists and no Seedance code, tests, or fake fixtures were added.
 
 7. **Commit**
    - Commit only the files touched by the task.
@@ -441,7 +444,7 @@ No code commit is required for this task.
 
 ## Task 1: Route Contracts
 
-**Goal:** Add stable public contracts for provider capability routes and tool service bindings.
+**Goal:** Add stable public contracts for provider capability routes, route options, adapter availability, and tool service bindings.
 
 **Files:**
 
@@ -459,14 +462,17 @@ Confirm the exact public contract names:
 CapabilityRouteKind
 ProviderCapabilityRoute
 ProviderCapabilityRouteSettings
+ProviderCapabilityRouteOption
+ListProviderCapabilityRouteOptionsResponse
 ToolServiceBinding
+ProviderServiceAdapterAvailability
 ProviderCredentialResolveContext.operation_id
 ProviderCredentialResolveContext.route_kind
 ```
 
 Use these names unless there is a compile conflict. If there is a conflict, record the reason before renaming.
 
-Do not introduce `CapabilityRoute` or `ProviderCapabilityRouteRecord` as separate public types. If a private persistence wrapper becomes necessary, name it in the pre-task analysis and keep public serde contracts limited to `ProviderCapabilityRoute` and `ProviderCapabilityRouteSettings`.
+Do not introduce `CapabilityRoute` or `ProviderCapabilityRouteRecord` as separate public types. If a private persistence wrapper becomes necessary, name it in the pre-task analysis and keep public serde contracts limited to the names listed above.
 
 **Step 2: Write failing contract tests**
 
@@ -477,8 +483,11 @@ Test requirements:
 - `CapabilityRouteKind` serializes as snake_case.
 - `ProviderCapabilityRoute` serializes as camelCase.
 - `ProviderCapabilityRouteSettings` rejects unknown fields.
+- `ProviderCapabilityRouteOption` omits `unavailableReason` when it is `None`.
+- `ListProviderCapabilityRouteOptionsResponse` serializes as camelCase.
 - Empty `operation_ids` is rejected by validation helper.
 - `ToolServiceBinding` serializes as camelCase.
+- `ProviderServiceAdapterAvailability` serializes descriptor-derived bindings without provider allowlists.
 - `ProviderCredentialResolveContext` can round-trip with `operationId` and `routeKind`.
 
 Run:
@@ -526,6 +535,27 @@ pub struct ProviderCapabilityRouteSettings {
     pub version: u32,
     pub routes: Vec<ProviderCapabilityRoute>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderCapabilityRouteOption {
+    pub kind: CapabilityRouteKind,
+    pub config_id: String,
+    pub provider_id: String,
+    pub operation_id: String,
+    pub output_artifact: ModelModality,
+    pub execution: ProviderServiceExecution,
+    pub cost_risk: ProviderServiceCostRisk,
+    pub runtime_supported: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ListProviderCapabilityRouteOptionsResponse {
+    pub options: Vec<ProviderCapabilityRouteOption>,
+}
 ```
 
 Add a validation helper in the same crate:
@@ -552,6 +582,12 @@ pub struct ToolServiceBinding {
     pub operation_id: String,
     pub route_kind: CapabilityRouteKind,
     pub output_artifact: ModelModality,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderServiceAdapterAvailability {
+    pub bindings: Vec<ToolServiceBinding>,
 }
 ```
 
@@ -624,9 +660,9 @@ git commit -m "feat: add provider capability route contracts"
 
 ---
 
-## Task 2: Desktop Route Store And Validation
+## Task 2: Desktop Route Store And Pure Validation
 
-**Goal:** Persist workspace capability routes, expose backend-derived route options, and validate routes against provider settings, provider catalog, and runtime adapter availability.
+**Goal:** Add persisted route storage and pure backend helpers that validate routes against provider settings, provider catalog, and injected runtime adapter availability.
 
 **Files:**
 
@@ -734,15 +770,7 @@ Do not accept frontend-provided provider display names or model descriptors as a
 
 **Step 5: Add backend route option builder**
 
-Add a backend value object for runtime adapter availability:
-
-```rust
-pub struct ProviderServiceAdapterAvailability {
-    pub bindings: Vec<ToolServiceBinding>,
-}
-```
-
-Implement a local helper on this value object:
+Use `ProviderServiceAdapterAvailability` and `ProviderCapabilityRouteOption` from Task 1. Implement a local helper near the route validation code:
 
 ```rust
 fn has_service_adapter(
@@ -757,27 +785,9 @@ Production adapter availability must be populated from actual registered tool de
 
 Task 2 may use test-only `ProviderServiceAdapterAvailability` values inside tests to prove validation branches. Those values must live in test code only and must not be used by production commands.
 
-Add a route option payload:
+Build `ProviderCapabilityRouteOption` values from provider settings, provider catalog service capabilities, and adapter availability. Options are for UX only. Save/delete validation remains backend authority.
 
-```rust
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct ProviderCapabilityRouteOption {
-    pub kind: CapabilityRouteKind,
-    pub config_id: String,
-    pub provider_id: String,
-    pub operation_id: String,
-    pub output_artifact: ModelModality,
-    pub execution: ProviderServiceExecution,
-    pub cost_risk: ProviderServiceCostRisk,
-    pub runtime_supported: bool,
-    pub unavailable_reason: Option<String>,
-}
-```
-
-Build options from provider settings, provider catalog service capabilities, and adapter availability. Options are for UX only. Save/delete validation remains backend authority.
-
-Do not construct production adapter availability in Task 2. Route validation and option building must accept `ProviderServiceAdapterAvailability` as an input. Tests may inject populated availability; production wiring is completed by Task 5 and Task 10.
+Do not construct production adapter availability in Task 2. Route validation and option building must accept `ProviderServiceAdapterAvailability` as an input. Tests may inject populated availability; descriptor-derived production availability is added in Task 4 and wired to desktop runtime in Task 9.
 
 **Step 6: Add command payload types**
 
@@ -789,23 +799,22 @@ pub struct SaveProviderCapabilityRouteRequest
 pub struct SaveProviderCapabilityRouteResponse
 pub struct DeleteProviderCapabilityRouteRequest
 pub struct DeleteProviderCapabilityRouteResponse
-pub struct ListProviderCapabilityRouteOptionsResponse
 ```
 
-Use camelCase serde.
+Use camelCase serde. Use Task 1 `ListProviderCapabilityRouteOptionsResponse`; do not redefine that payload in `commands.rs`.
 
-**Step 7: Add functions**
+**Step 7: Add pure store/helper functions**
 
 Add:
 
 ```rust
-pub async fn list_provider_capability_routes_with_runtime_state(...)
-pub async fn save_provider_capability_route_with_runtime_state(...)
-pub async fn delete_provider_capability_route_with_runtime_state(...)
-pub async fn list_provider_capability_route_options_with_runtime_state(...)
+fn list_provider_capability_routes_with_store(...)
+fn save_provider_capability_route_with_store(...)
+fn delete_provider_capability_route_with_store(...)
+fn list_provider_capability_route_options_from_inputs(...)
 ```
 
-Use a route settings lock on `DesktopRuntimeState`.
+These functions must accept explicit store, provider settings, provider catalog, and adapter availability inputs. Do not add `DesktopRuntimeState` fields, locks, or runtime wiring in Task 2.
 
 **Step 8: Run focused tests**
 
@@ -897,7 +906,9 @@ commands::save_provider_capability_route,
 commands::delete_provider_capability_route,
 ```
 
-Add command functions in `commands.rs` that call the runtime-state helpers from Task 2.
+Add command functions in `commands.rs` that call the Task 2 store and pure validation helpers.
+
+Task 3 must not add route settings fields or locks to `DesktopRuntimeState`. Until Task 9 wires descriptor-derived availability, `list_provider_capability_route_options` may pass `ProviderServiceAdapterAvailability::default()` so every provider service option is reported as unsupported. This is a conservative incomplete-runtime state, not a fake success. Do not hardcode any provider operation as supported.
 
 **Step 4: Add TypeScript schemas**
 
@@ -983,9 +994,9 @@ git commit -m "feat: expose provider capability route commands"
 - Modify: `crates/jyowo-harness-tool/src/builtin/minimax.rs`
 - Modify: `crates/jyowo-harness-tool/src/builder.rs`
 - Modify: `crates/jyowo-harness-tool/src/registry.rs`
-- Modify: `crates/jyowo-harness-engine/src/turn.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness.rs`
 - Test: `crates/jyowo-harness-tool/tests/registry.rs`
-- Test: `crates/jyowo-harness-engine/tests/*`
+- Test: `crates/jyowo-harness-sdk/tests/runtime_assembly.rs`
 
 **Step 1: Pre-task analysis**
 
@@ -1013,7 +1024,7 @@ Run:
 
 ```bash
 cargo test -p jyowo-harness-tool --test registry minimax_service_binding -- --nocapture
-cargo test -p jyowo-harness-engine capability_route_filter -- --nocapture
+cargo test -p jyowo-harness-sdk --test runtime_assembly capability_route_filter -- --nocapture
 ```
 
 Expected:
@@ -1051,13 +1062,13 @@ provider catalog operation alone is not runtime support
 commands.rs must not contain provider operation allowlists
 ```
 
-Task 10 will pass these bindings to desktop route validation and route options as `ProviderServiceAdapterAvailability`.
+Task 9 will pass these bindings to desktop route validation and route options as `ProviderServiceAdapterAvailability`.
 
-Do not add desktop route store wiring in Task 5. That belongs to Task 10.
+Do not add desktop route store wiring in Task 4. That belongs to Task 9.
 
 **Step 5: Implement filter**
 
-Extend `filter_unavailable_tools` or add a nearby helper:
+Extend `filter_unavailable_tools` in `crates/jyowo-harness-sdk/src/harness.rs` or add a nearby helper:
 
 ```rust
 fn filter_unrouted_service_tools(
@@ -1075,11 +1086,13 @@ Rules:
 - Disabled route does not match.
 - Missing route settings means no service tools are exposed.
 
+Do not move route filtering into `crates/jyowo-harness-engine/src/turn.rs`. The engine keeps the existing tool-calling gate; SDK ToolPool assembly owns route-based service tool visibility.
+
 **Step 6: Run focused tests**
 
 ```bash
 cargo test -p jyowo-harness-tool --test registry minimax_service_binding -- --nocapture
-cargo test -p jyowo-harness-engine capability_route_filter -- --nocapture
+cargo test -p jyowo-harness-sdk --test runtime_assembly capability_route_filter -- --nocapture
 cargo check --workspace
 ```
 
@@ -1096,7 +1109,7 @@ Confirm:
 - No service tool can leak into the prompt without route config.
 - Existing non-service tools still appear when allowed.
 - Tool hiding for no tool-calling model remains unchanged.
-- No provider-specific logic was added to engine.
+- No route filtering or provider-specific logic was added to engine.
 - Runtime adapter support is derived from descriptors, not a duplicated allowlist.
 - No desktop route store or `startRun` wiring was added in this task.
 
@@ -1107,15 +1120,15 @@ Run the required subagent audit for Task 4.
 **Step 9: Commit**
 
 ```bash
-git add crates/jyowo-harness-tool/src/builtin/minimax.rs crates/jyowo-harness-tool/src/builder.rs crates/jyowo-harness-tool/src/registry.rs crates/jyowo-harness-engine/src/turn.rs crates/jyowo-harness-tool/tests/registry.rs
+git add crates/jyowo-harness-tool/src/builtin/minimax.rs crates/jyowo-harness-tool/src/builder.rs crates/jyowo-harness-tool/src/registry.rs crates/jyowo-harness-sdk/src/harness.rs crates/jyowo-harness-tool/tests/registry.rs crates/jyowo-harness-sdk/tests/runtime_assembly.rs
 git commit -m "feat: filter service tools by capability routes"
 ```
 
 ---
 
-## Task 5: Operation-Scoped Credential Resolution
+## Task 5: Operation-Scoped Credential Context
 
-**Goal:** Resolve provider credentials by explicit service operation, not only provider id.
+**Goal:** Carry explicit service operation metadata through provider service tools without changing route-store runtime wiring yet.
 
 **Files:**
 
@@ -1136,18 +1149,15 @@ rg -n "ProviderCredentialResolveContext|resolve_provider_credential|minimax_cred
 
 Backend resolver tests:
 
-- Image operation resolves the config selected by image route.
-- Video operation resolves the config selected by video route.
-- Missing route denies credential.
-- Wrong provider denies credential.
-- Disabled route denies credential.
 - Existing provider-only resolution still works for non-service tools where allowed.
+- Routed service contexts fail closed until Task 9 wires route settings into `DesktopProviderCredentialResolver`.
 
 MiniMax tool tests:
 
 - Image tool passes `operation_id = minimax.image_generation`.
 - Video tool passes video operation id.
 - TTS tool passes TTS operation id.
+- Routed service tools do not call credential resolution without both `operation_id` and `route_kind`.
 
 Run:
 
@@ -1159,33 +1169,25 @@ cargo test -p jyowo-harness-tool --test minimax_tools credential_route -- --noca
 Expected:
 
 ```text
-FAIL because operation-scoped resolution does not exist.
+FAIL because service operation metadata is not passed through credential context.
 ```
 
-**Step 3: Update DesktopProviderCredentialResolver**
+**Step 3: Keep DesktopProviderCredentialResolver conservative**
 
-Resolution order:
+In Task 5, update `DesktopProviderCredentialResolver` only enough to recognize routed service context:
 
 ```text
 if operation_id and route_kind are present:
-  find enabled capability route matching operation + kind + provider
-  find provider config by route.config_id
-  validate provider id and API key
-  return route credential
+  return PermissionDenied because route settings are not wired yet
 else:
   preserve existing provider-only behavior for existing non-service tools
 ```
 
-Do not fall back from routed service operation to default provider config.
+Do not add a route store, route settings lock, or route lookup in Task 5. That belongs to Task 9.
 
-Fail closed for routed operations:
+Do not fall back from routed service operation to default provider config. Failing closed here is intentional until Task 9 provides route settings.
 
-```text
-route missing -> PermissionDenied
-config missing -> PermissionDenied
-provider mismatch -> PermissionDenied
-api key missing -> PermissionDenied
-```
+Before Task 9, do not distinguish route-missing, config-missing, provider-mismatch, or API-key-missing cases for routed service operations. Any context with both `operation_id` and `route_kind` returns one generic `PermissionDenied`.
 
 **Step 4: Update MiniMax tools**
 
@@ -1199,7 +1201,7 @@ async fn minimax_credential(
 ) -> Result<ProviderCredential, ToolError>
 ```
 
-Every MiniMax service tool must pass its operation id.
+Every MiniMax service tool must pass its operation id and route kind. Non-service MiniMax compatibility tools may keep provider-only resolution only if they are not service-routed tools.
 
 **Step 5: Run focused tests**
 
@@ -1221,8 +1223,8 @@ Run security subagent audit.
 
 Audit must verify:
 
-- Routed service operations never fall back to default credential.
-- Wrong route cannot borrow another provider API key.
+- Routed service operations never fall back to default credential before route wiring exists.
+- No route store or runtime state wiring was added in Task 5.
 - API key is not serialized to frontend or logs.
 - Permission denial messages do not reveal key material.
 
@@ -1234,7 +1236,7 @@ Run the required subagent audit for Task 5.
 
 ```bash
 git add apps/desktop/src-tauri/src/commands.rs apps/desktop/src-tauri/tests/commands.rs crates/jyowo-harness-tool/src/builtin/minimax.rs crates/jyowo-harness-tool/tests/minimax_tools.rs
-git commit -m "feat: resolve provider credentials by service route"
+git commit -m "feat: pass service operation credential context"
 ```
 
 ---
@@ -1249,10 +1251,26 @@ git commit -m "feat: resolve provider credentials by service route"
 - Modify: `crates/jyowo-harness-contracts/src/schema_export.rs`
 - Modify: `crates/jyowo-harness-engine/src/turn.rs`
 - Modify: `crates/jyowo-harness-journal/src/conversation_read_model.rs`
+- Modify: `crates/jyowo-harness-context/src/engine.rs`
+- Modify: `crates/jyowo-harness-context/src/stages/mod.rs`
+- Modify: `crates/jyowo-harness-model/src/openai_compatible/mod.rs`
+- Modify: `crates/jyowo-harness-model/src/anthropic/client.rs`
+- Modify: `crates/jyowo-harness-model/src/gemini/mod.rs`
+- Modify: `crates/jyowo-harness-model/src/token_counter.rs`
+- Modify: `crates/jyowo-harness-mcp/src/server.rs`
+- Modify: `crates/jyowo-harness-mcp/src/wrapper.rs`
+- Modify: `crates/jyowo-harness-tool/src/builtin/minimax.rs`
+- Modify: `crates/jyowo-harness-tool/src/orchestrator.rs`
+- Modify: `crates/jyowo-harness-tool/src/result_budget.rs`
 - Modify: `apps/desktop/src-tauri/src/commands.rs`
 - Modify: `apps/desktop/src/shared/events/run-event-schema.ts`
 - Modify: `apps/desktop/src/shared/tauri/commands.ts`
 - Test: `crates/jyowo-harness-engine/tests/*`
+- Test: `crates/jyowo-harness-model/tests/token_counter.rs`
+- Test: `crates/jyowo-harness-tool/tests/minimax_tools.rs`
+- Test: `crates/jyowo-harness-tool/tests/orchestrator.rs`
+- Test: `crates/jyowo-harness-tool/tests/result_budget.rs`
+- Test: `crates/jyowo-harness-mcp/tests/server.rs`
 - Test: `crates/jyowo-harness-journal/tests/conversation_read_model.rs`
 - Test: `apps/desktop/src-tauri/tests/commands.rs`
 - Test: `apps/desktop/src/shared/events/run-event-schema.test.ts`
@@ -1264,6 +1282,7 @@ Inspect current artifact paths:
 
 ```bash
 rg -n "image_artifact_blob|ArtifactCreated|ArtifactUpdated|ArtifactStatus|ArtifactSource|ToolResult::Blob|ToolResultPart::Blob|artifact_media_kind_from_label|artifactMediaPreviewSchema" crates apps
+rg -n "ToolResultPart::|match .*ToolResultPart|ToolResultPart \\{" crates apps
 ```
 
 **Step 2: Write failing tests**
@@ -1275,6 +1294,11 @@ Add tests for:
 - `ToolResult` can carry typed audio artifact output.
 - Engine creates `ArtifactCreated` from typed artifact output.
 - Engine does not use provider name or tool name to infer artifact kind.
+- MiniMax image generation returns typed image artifact output in this task.
+- Model adapters reject `ToolResultPart::Artifact` fail-closed instead of serializing raw blob metadata to model providers.
+- MCP server/wrapper conversion handles artifact parts explicitly.
+- Context summarization handles artifact parts explicitly.
+- Tool orchestrator/result budget preserve or summarize artifact parts explicitly.
 - Mismatched content type and artifact kind is rejected.
 - Read model projects image/video/audio media consistently.
 - Tauri payload validates media kind and MIME type.
@@ -1304,6 +1328,25 @@ Artifact {
 
 Do not add provider-specific variants. Do not add a top-level `ToolResult::Artifact` variant. If `ToolResultPart::Artifact` cannot work with existing orchestration, stop and revise this plan before changing the public result contract.
 
+Represent async provider jobs as existing structured output:
+
+```rust
+ToolResultPart::Structured {
+    value: serde_json::json!({
+        "kind": "async_job",
+        "jobId": job_id,
+        "pollOperationId": poll_operation_id,
+        "artifactKind": artifact_kind,
+        "title": title,
+    }),
+    schema_ref: Some("provider_service_async_job.v1".to_string()),
+}
+```
+
+Do not add a separate service-output enum.
+
+Update every `ToolResultPart` match in the files listed above. Artifact parts must not be silently dropped by wildcard arms.
+
 **Step 4: Update engine artifact creation**
 
 Replace `image_artifact_blob` and `is_image_artifact_tool` with typed artifact extraction:
@@ -1320,10 +1363,21 @@ Rules:
 - Blob content type must also be safe.
 - Title and preview are sanitized through existing event/read-model paths.
 - Unknown or unsupported artifact kind is ignored or rejected fail-closed.
+- Artifact parts are not sent raw to model providers. Provider adapters must convert them to sanitized text, a safe reference summary, or reject them fail-closed with the existing invalid-request error style.
 
-**Step 5: Preserve existing image behavior through typed output**
+**Step 5: Migrate MiniMax image output in the same task**
 
-Do not regress existing MiniMax image artifact behavior. Task 7 will update MiniMax image tool to return typed artifact output. Until then, tests may keep old behavior only if needed, but the final state must not rely on tool name matching.
+Update MiniMax image generation and image-to-image tools to return `ToolResultPart::Artifact` for image outputs in Task 6.
+
+Requirements:
+
+- Use the existing `BlobWriter`.
+- Preserve current image MIME detection.
+- Preserve allowed host checks for provider image download.
+- Return artifact title such as `Generated image`.
+- Do not rely on engine tool-name heuristics.
+
+Do not leave a temporary compatibility path that keeps `is_image_artifact_tool` or provider-name matching alive.
 
 **Step 6: Update frontend schemas**
 
@@ -1343,7 +1397,13 @@ Do not loosen MIME checks.
 cargo test -p jyowo-harness-engine artifact -- --nocapture
 cargo test -p jyowo-harness-journal --test conversation_read_model artifact -- --nocapture
 cargo test -p jyowo-desktop-shell --test commands artifact -- --nocapture
+cargo test -p jyowo-harness-model --test token_counter artifact -- --nocapture
+cargo test -p jyowo-harness-tool --test minimax_tools minimax_image_typed_artifact -- --nocapture
+cargo test -p jyowo-harness-tool --test orchestrator artifact -- --nocapture
+cargo test -p jyowo-harness-tool --test result_budget artifact -- --nocapture
+cargo test -p jyowo-harness-mcp --test server artifact -- --nocapture
 pnpm -C apps/desktop test -- run-event-schema.test.ts commands.test.ts
+rg -n "ToolResultPart::" crates/jyowo-harness-context crates/jyowo-harness-model crates/jyowo-harness-mcp crates/jyowo-harness-tool crates/jyowo-harness-engine crates/jyowo-harness-journal
 cargo check --workspace
 pnpm -C apps/desktop typecheck
 ```
@@ -1364,6 +1424,7 @@ Audit must verify:
 - Artifact kind cannot be spoofed through title, preview, or content type text.
 - Blob references are not exposed without existing authorization path.
 - No raw provider URL becomes a trusted local artifact without validation.
+- Model providers do not receive raw artifact blob metadata.
 
 **Step 9: Subagent audit**
 
@@ -1372,7 +1433,7 @@ Run the required subagent audit for Task 6.
 **Step 10: Commit**
 
 ```bash
-git add crates/jyowo-harness-contracts/src/messages.rs crates/jyowo-harness-contracts/src/schema_export.rs crates/jyowo-harness-engine/src/turn.rs crates/jyowo-harness-journal/src/conversation_read_model.rs apps/desktop/src-tauri/src/commands.rs apps/desktop/src/shared/events/run-event-schema.ts apps/desktop/src/shared/tauri/commands.ts crates/jyowo-harness-journal/tests/conversation_read_model.rs apps/desktop/src-tauri/tests/commands.rs apps/desktop/src/shared/events/run-event-schema.test.ts apps/desktop/src/shared/tauri/commands.test.ts
+git add crates/jyowo-harness-contracts/src/messages.rs crates/jyowo-harness-contracts/src/schema_export.rs crates/jyowo-harness-engine/src/turn.rs crates/jyowo-harness-journal/src/conversation_read_model.rs crates/jyowo-harness-context/src/engine.rs crates/jyowo-harness-context/src/stages/mod.rs crates/jyowo-harness-model/src/openai_compatible/mod.rs crates/jyowo-harness-model/src/anthropic/client.rs crates/jyowo-harness-model/src/gemini/mod.rs crates/jyowo-harness-model/src/token_counter.rs crates/jyowo-harness-mcp/src/server.rs crates/jyowo-harness-mcp/src/wrapper.rs crates/jyowo-harness-tool/src/builtin/minimax.rs crates/jyowo-harness-tool/src/orchestrator.rs crates/jyowo-harness-tool/src/result_budget.rs apps/desktop/src-tauri/src/commands.rs apps/desktop/src/shared/events/run-event-schema.ts apps/desktop/src/shared/tauri/commands.ts crates/jyowo-harness-model/tests/token_counter.rs crates/jyowo-harness-tool/tests/minimax_tools.rs crates/jyowo-harness-tool/tests/orchestrator.rs crates/jyowo-harness-tool/tests/result_budget.rs crates/jyowo-harness-mcp/tests/server.rs crates/jyowo-harness-journal/tests/conversation_read_model.rs apps/desktop/src-tauri/tests/commands.rs apps/desktop/src/shared/events/run-event-schema.test.ts apps/desktop/src/shared/tauri/commands.test.ts
 git commit -m "feat: create artifacts from typed tool output"
 ```
 
@@ -1380,11 +1441,12 @@ git commit -m "feat: create artifacts from typed tool output"
 
 ## Task 7: MiniMax Route-Backed Service Tools
 
-**Goal:** Convert existing MiniMax image, video, audio, and music tools to the route-backed credential and typed artifact pipeline.
+**Goal:** Convert existing MiniMax video, audio, and music tools to the route-backed credential and typed artifact pipeline. MiniMax image artifact output was migrated in Task 6.
 
 **Files:**
 
 - Modify: `crates/jyowo-harness-tool/src/builtin/minimax.rs`
+- Modify: `crates/jyowo-harness-tool/Cargo.toml`
 - Create: `crates/jyowo-harness-tool/src/provider_media.rs`
 - Modify: `crates/jyowo-harness-tool/src/lib.rs`
 - Modify: `crates/jyowo-harness-tool/tests/minimax_tools.rs`
@@ -1402,8 +1464,8 @@ rg -n "image_generation|video_generation|query_video_generation|text_to_speech|m
 
 Add tests for:
 
-- Image generation returns typed image artifact output.
-- Image-to-image returns typed image artifact output.
+- Image generation keeps returning typed image artifact output from Task 6.
+- Image-to-image keeps returning typed image artifact output from Task 6.
 - Video generation returns structured async job output with task id and poll operation.
 - Video query with final video URL writes video blob and returns typed video artifact output.
 - TTS sync returns typed audio artifact output when provider returns audio bytes or URL.
@@ -1424,7 +1486,7 @@ cargo test -p jyowo-harness-model --test minimax_api -- --nocapture
 Expected:
 
 ```text
-FAIL because MiniMax tools still return structured or image-only outputs.
+FAIL because MiniMax video/audio/music tools still return structured or non-artifact outputs.
 ```
 
 **Step 3: Add provider media download helper**
@@ -1447,9 +1509,19 @@ errors are redacted and do not include credentials or signed query strings
 
 Do not put this logic only inside MiniMax video code. Future providers must reuse this helper or a stricter provider-specific wrapper around it.
 
-**Step 4: Update image tools**
+Feature-gate rule:
 
-Update MiniMax image tools to return typed artifact output.
+```rust
+// provider_media.rs
+// Policy structs and pure validation helpers may compile unconditionally.
+// HTTP download code that uses reqwest must be behind #[cfg(feature = "minimax-tools")].
+```
+
+Keep `reqwest` optional in `crates/jyowo-harness-tool/Cargo.toml`. Do not move `reqwest` into default dependencies.
+
+**Step 4: Verify image tools already use typed output**
+
+Verify MiniMax image tools already return typed artifact output from Task 6.
 
 Requirements:
 
@@ -1458,6 +1530,8 @@ Requirements:
 - Preserve allowed host checks for provider image download.
 - Return artifact title such as `Generated image`.
 - Do not rely on engine tool-name heuristics.
+
+If any of these are false, stop and fix Task 6 before continuing. Do not reintroduce image-specific engine heuristics in Task 7.
 
 **Step 5: Update video tools**
 
@@ -1491,6 +1565,8 @@ TTS and music tools:
 cargo test -p jyowo-harness-tool --test minimax_tools minimax_service_artifact -- --nocapture
 cargo test -p jyowo-harness-model --test minimax_api -- --nocapture
 cargo test -p jyowo-harness-tool --test minimax_tools -- --nocapture
+cargo check -p jyowo-harness-tool --no-default-features
+cargo check -p jyowo-harness-tool --features minimax-tools
 cargo check --workspace
 ```
 
@@ -1520,7 +1596,7 @@ Run the required subagent audit for Task 7.
 **Step 10: Commit**
 
 ```bash
-git add crates/jyowo-harness-tool/src/builtin/minimax.rs crates/jyowo-harness-tool/src/provider_media.rs crates/jyowo-harness-tool/src/lib.rs crates/jyowo-harness-tool/tests/minimax_tools.rs crates/jyowo-harness-model/tests/minimax_api.rs
+git add crates/jyowo-harness-tool/src/builtin/minimax.rs crates/jyowo-harness-tool/Cargo.toml crates/jyowo-harness-tool/src/provider_media.rs crates/jyowo-harness-tool/src/lib.rs crates/jyowo-harness-tool/tests/minimax_tools.rs crates/jyowo-harness-model/tests/minimax_api.rs
 git commit -m "feat: route MiniMax service tools to typed artifacts"
 ```
 
@@ -1530,7 +1606,7 @@ git commit -m "feat: route MiniMax service tools to typed artifacts"
 
 **Goal:** Add real Seedance video generation support as a provider service route only when official API evidence is available. Do not create a fake Seedance adapter.
 
-This task is optional and must not block the core provider capability routing implementation. If official API facts are unavailable, mark this task `SKIPPED: official Seedance API evidence unavailable`, do not create code or tests, and continue with Task 9.
+This task is optional and must not block the core provider capability routing implementation. If official API facts are unavailable, mark this task `SKIPPED: official Seedance API evidence unavailable`, do not create code or tests, run the skip audit in Step 9, and continue with Task 9.
 
 **Files:**
 
@@ -1571,7 +1647,7 @@ official source URL
 verified date
 ```
 
-If official source-backed API facts are unavailable, stop this task. Do not implement a fake adapter. Do not leave failing Seedance tests in the branch. Record the skipped status in the final delivery summary.
+If official source-backed API facts are unavailable, stop this task. Do not implement a fake adapter. Do not leave failing Seedance tests in the branch. Record the skipped status in the final delivery summary and in the Task 8 note.
 
 **Step 2: Write failing tests from documented contract**
 
@@ -1685,7 +1761,7 @@ PASS
 
 **Step 8: Security audit**
 
-Run security subagent audit.
+Run security subagent audit only if Seedance code was implemented.
 
 Audit must verify:
 
@@ -1698,6 +1774,23 @@ Audit must verify:
 **Step 9: Subagent audit**
 
 Run the required subagent audit for Optional Task 8 if this task is implemented.
+
+If this task is skipped, run a skip audit instead:
+
+```text
+Audit Optional Task 8 skip from docs/plans/2026-06-29-provider-capability-routing-implementation.md.
+
+Check:
+- Task note contains `SKIPPED: official Seedance API evidence unavailable`
+- no Seedance source files were created or modified
+- no Seedance tests or fake fixtures were added
+- no provider catalog entry was guessed
+
+Return:
+- PASS or FAIL
+- inspected files
+- explicit decision: may continue to Task 9 / may not continue
+```
 
 **Step 10: Commit**
 
@@ -1718,10 +1811,8 @@ git commit -m "feat: add Seedance video service route"
 
 - Modify: `apps/desktop/src-tauri/src/commands.rs`
 - Modify: `crates/jyowo-harness-sdk/src/harness.rs`
-- Modify: `crates/jyowo-harness-engine/src/turn.rs`
 - Test: `apps/desktop/src-tauri/tests/commands.rs`
 - Test: `crates/jyowo-harness-sdk/tests/runtime_assembly.rs`
-- Test: `crates/jyowo-harness-engine/tests/*`
 
 **Step 1: Pre-task analysis**
 
@@ -1731,7 +1822,11 @@ Trace current start run:
 rg -n "start_run_with_runtime_state|build_desktop_harness|engine_for_session|ToolPool::assemble|prompt_visible_tools_for_model|model_request_tools|ArtifactCreated" apps/desktop/src-tauri/src/commands.rs crates/jyowo-harness-sdk/src/harness.rs crates/jyowo-harness-engine/src/turn.rs
 ```
 
-Confirm Task 4 already added `ToolServiceBinding`, descriptor-derived adapter availability, and the pure route filter helper. Do not recreate those concepts in Task 10.
+Confirm Task 4 already added `ToolServiceBinding`, descriptor-derived adapter availability, and the pure route filter helper. Do not recreate those concepts in Task 9.
+
+Confirm `crates/jyowo-harness-engine/src/turn.rs` still only owns the existing tool-calling visibility gate.
+
+Route filtering belongs in SDK ToolPool assembly.
 
 **Step 2: Write failing integration tests**
 
@@ -1742,6 +1837,10 @@ Add tests for:
 - Main model without tool calling exposes no service tools even when route exists.
 - Route points to MiniMax image profile while main model profile is OpenAI-like.
 - Tool call resolves MiniMax route credential, not main model credential.
+- Missing route denies routed service credential.
+- Wrong provider denies routed service credential.
+- Disabled route denies routed service credential.
+- Routed service operation never falls back to default provider credential.
 - Typed image artifact appears in conversation/read-model payload.
 - Video route exposes video create and query tools only when route exists.
 - TTS route exposes TTS tools only when route exists.
@@ -1750,8 +1849,8 @@ Run:
 
 ```bash
 cargo test -p jyowo-desktop-shell --test commands capability_route_conversation -- --nocapture
+cargo test -p jyowo-desktop-shell --test commands provider_credential_route -- --nocapture
 cargo test -p jyowo-harness-sdk --test runtime_assembly capability_route -- --nocapture
-cargo test -p jyowo-harness-engine capability_route -- --nocapture
 ```
 
 Expected:
@@ -1776,7 +1875,35 @@ Default behavior:
 missing route file -> empty routes -> no service tools exposed
 ```
 
-**Step 4: Ensure conversation model selection remains separate**
+**Step 4: Wire route-aware credential resolution**
+
+Extend `DesktopProviderCredentialResolver` with the route store from Step 3.
+
+Resolution order:
+
+```text
+if operation_id and route_kind are present:
+  load current capability route settings
+  find enabled route matching operation + kind + provider
+  find provider config by route.config_id
+  validate provider id and API key
+  return route credential
+else:
+  preserve existing provider-only behavior for existing non-service tools
+```
+
+Fail closed for routed operations:
+
+```text
+route missing -> PermissionDenied
+config missing -> PermissionDenied
+provider mismatch -> PermissionDenied
+api key missing -> PermissionDenied
+```
+
+Do not fall back from a routed service operation to default provider config.
+
+**Step 5: Ensure conversation model selection remains separate**
 
 Do not add `modelConfigId` to `startRun`.
 
@@ -1793,7 +1920,7 @@ Capability routes come from:
 provider-capability-routes.json
 ```
 
-**Step 5: Add route state to harness options or builder**
+**Step 6: Add route state to harness options or builder**
 
 Keep backend ownership.
 
@@ -1808,16 +1935,16 @@ or equivalent internal option.
 
 Do not put desktop-only store code inside lower-level crates.
 
-Apply the pure route filter from Task 5 during ToolPool assembly. This is the only task that wires persisted route settings into a conversation run.
+Apply the pure route filter from Task 4 during ToolPool assembly in `crates/jyowo-harness-sdk/src/harness.rs`. This is the only task that wires persisted route settings into a conversation run.
 
-Also pass the descriptor-derived `Vec<ToolServiceBinding>` from Task 5 into desktop route validation and route option building as `ProviderServiceAdapterAvailability`.
+Also pass the descriptor-derived `Vec<ToolServiceBinding>` from Task 4 into desktop route validation and route option building as `ProviderServiceAdapterAvailability`.
 
-**Step 6: Run focused tests**
+**Step 7: Run focused tests**
 
 ```bash
 cargo test -p jyowo-desktop-shell --test commands capability_route_conversation -- --nocapture
+cargo test -p jyowo-desktop-shell --test commands provider_credential_route -- --nocapture
 cargo test -p jyowo-harness-sdk --test runtime_assembly capability_route -- --nocapture
-cargo test -p jyowo-harness-engine capability_route -- --nocapture
 cargo check --workspace
 ```
 
@@ -1827,7 +1954,19 @@ Expected:
 PASS
 ```
 
-**Step 7: Pre-completion self-audit**
+**Step 8: Security audit**
+
+Run security subagent audit.
+
+Audit must verify:
+
+- Routed service operations never fall back to default credential.
+- Wrong route cannot borrow another provider API key.
+- API key is not serialized to frontend or logs.
+- Permission denial messages do not reveal key material.
+- Route store reload does not race into stale credential use for newly built runs.
+
+**Step 9: Pre-completion self-audit**
 
 Confirm:
 
@@ -1835,17 +1974,18 @@ Confirm:
 - Main model and route model cannot overwrite each other.
 - Route changes affect newly built harness/runtime consistently.
 - Route missing means service tools hidden, not runtime failure after prompt exposure.
+- Route credential resolution uses route settings and does not duplicate route validation logic.
 - Route filtering uses Task 4 helper and does not duplicate filtering logic.
 - No provider operation allowlist was added to desktop commands.
 
-**Step 8: Subagent audit**
+**Step 10: Subagent audit**
 
 Run the required subagent audit for Task 9.
 
-**Step 9: Commit**
+**Step 11: Commit**
 
 ```bash
-git add apps/desktop/src-tauri/src/commands.rs crates/jyowo-harness-sdk/src/harness.rs crates/jyowo-harness-engine/src/turn.rs apps/desktop/src-tauri/tests/commands.rs crates/jyowo-harness-sdk/tests/runtime_assembly.rs
+git add apps/desktop/src-tauri/src/commands.rs crates/jyowo-harness-sdk/src/harness.rs apps/desktop/src-tauri/tests/commands.rs crates/jyowo-harness-sdk/tests/runtime_assembly.rs
 git commit -m "feat: integrate capability routes into conversations"
 ```
 
@@ -2201,11 +2341,13 @@ Check every task:
 - operation-scoped credentials
 - typed artifacts
 - MiniMax adapter
-- optional Seedance adapter if implemented
+- optional Seedance adapter if implemented, or verified `SKIPPED` note if official docs were unavailable
 - docs
 - gates
 
-Return PASS only if no task is partially implemented and no fake runtime behavior exists.
+Also verify the final delivery summary records Optional Task 8 as implemented with official source evidence or `SKIPPED: official Seedance API evidence unavailable`.
+
+Return PASS only if no implemented task is partial, Optional Task 8 is either implemented from official API facts or explicitly skipped with a passing skip audit, the final summary includes the Optional Task 8 status, and no fake runtime behavior exists.
 ```
 
 **Step 6: Final security audit**
@@ -2252,7 +2394,8 @@ Final response must include:
 - commits
 - gates run with pass/fail status
 - any manual test limitation
-- optional provider adapter skipped because official docs were unavailable
+- per-task subagent audit status for implemented tasks
+- Optional Task 8 status: implemented with official source evidence, or `SKIPPED: official Seedance API evidence unavailable`
 
 ## Acceptance Criteria
 
@@ -2274,7 +2417,7 @@ The feature is complete only when all criteria are met.
 - Frontend route UI covers loading, empty, error, ready states.
 - Zod validates all new Tauri payloads.
 - Docs describe route architecture and onboarding rules.
-- Per-task subagent audits passed.
+- Per-task subagent audits passed for implemented tasks, and Optional Task 8 has a passing implementation audit or skip audit.
 - Final full-branch subagent audit passed.
 - Security audit passed.
 - `pnpm check` passed, or any failure is documented as pre-existing and unrelated with evidence.
