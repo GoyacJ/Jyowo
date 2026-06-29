@@ -200,6 +200,18 @@ fn count_tool_result(result: &ToolResult, model: &str, counter: &dyn TokenCounte
                 ToolResultPart::Error { code, message, .. } => {
                     counter.count_tokens(code, model) + counter.count_tokens(message, model)
                 }
+                ToolResultPart::Artifact {
+                    content_type,
+                    title,
+                    preview,
+                    ..
+                } => {
+                    counter.count_tokens(content_type, model)
+                        + counter.count_tokens(title, model)
+                        + preview
+                            .as_deref()
+                            .map_or(0, |preview| counter.count_tokens(preview, model))
+                }
                 _ => 0,
             })
             .sum(),

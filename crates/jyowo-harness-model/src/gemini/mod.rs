@@ -263,6 +263,12 @@ fn tool_result_part(part: &ToolResultPart) -> Result<Value, ModelError> {
         ToolResultPart::Blob { .. } => Err(ModelError::InvalidRequest(
             "GeminiProvider does not inline blob tool result parts in M2-T04.7".to_owned(),
         )),
+        ToolResultPart::Artifact { title, preview, .. } => Ok(json!({
+            "text": preview
+                .as_deref()
+                .filter(|text| !text.is_empty())
+                .unwrap_or(title.as_str()),
+        })),
         _ => Err(ModelError::InvalidRequest(
             "unsupported Gemini tool result part".to_owned(),
         )),

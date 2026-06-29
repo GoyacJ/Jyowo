@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{BlobRef, JournalOffset, MemoryId, MessageId, ToolUseId, TranscriptRef, UsageSnapshot};
+use crate::{BlobRef, JournalOffset, MemoryId, MessageId, ModelModality, ToolUseId, TranscriptRef, UsageSnapshot};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TurnInput {
@@ -184,6 +184,13 @@ pub enum ToolResultPart {
         code: String,
         message: String,
         retriable: bool,
+    },
+    Artifact {
+        artifact_kind: ModelModality,
+        content_type: String,
+        blob_ref: BlobRef,
+        title: String,
+        preview: Option<String>,
     },
 }
 

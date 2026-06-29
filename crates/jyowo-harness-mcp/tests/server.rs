@@ -86,6 +86,36 @@ async fn server_calls_tool_and_maps_results() {
 }
 
 #[tokio::test]
+async fn server_maps_typed_artifact_tool_results() {
+    let server = adapter_with(vec![test_tool(
+        "artifact",
+        Behavior::Mixed(vec![ToolResultPart::Artifact {
+            artifact_kind: harness_contracts::ModelModality::Image,
+            content_type: "image/png".to_owned(),
+            blob_ref: harness_contracts::BlobRef {
+                id: harness_contracts::BlobId::new(),
+                size: 128,
+                content_hash: [3; 32],
+                content_type: Some("image/png".to_owned()),
+            },
+            title: "Generated image".to_owned(),
+            preview: Some("Generated image".to_owned()),
+        }]),
+    )]);
+
+    let result = call_tool(&server, "artifact", json!({})).await;
+    assert_eq!(result.content.len(), 1);
+    assert!(matches!(
+        &result.content[0],
+        harness_mcp::McpContent::Json { value }
+            if value["kind"] == "artifact"
+                && value["title"] == "Generated image"
+                && value["contentType"] == "image/png"
+                && value.get("blobRef").is_none()
+    ));
+}
+
+#[tokio::test]
 async fn server_maps_validation_and_permission_failures_to_tool_errors() {
     let validate_server = adapter_with(vec![test_tool("bad_input", Behavior::ValidateError)]);
     let validate_result = call_tool(&validate_server, "bad_input", json!({})).await;

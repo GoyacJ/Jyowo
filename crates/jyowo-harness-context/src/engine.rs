@@ -1503,6 +1503,9 @@ fn tool_result_text_for_memory_hint(result: &harness_contracts::ToolResult) -> O
                     harness_contracts::ToolResultPart::Code { text, .. } => Some(text.clone()),
                     harness_contracts::ToolResultPart::Reference { summary, .. }
                     | harness_contracts::ToolResultPart::Blob { summary, .. } => summary.clone(),
+                    harness_contracts::ToolResultPart::Artifact { title, preview, .. } => {
+                        preview.clone().or_else(|| Some(title.clone()))
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()

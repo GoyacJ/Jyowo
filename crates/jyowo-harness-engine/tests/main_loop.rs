@@ -17,8 +17,10 @@ use harness_contracts::{
     SandboxError, SandboxExecutionCompletedEvent, SandboxExecutionStartedEvent, SandboxExitStatus,
     SandboxMode, SandboxPolicySummary, SandboxScope, SessionId, SteeringId, SteeringKind,
     SteeringMessageAppliedEvent, StopReason, TenantId, ToolDescriptor, ToolGroup, ToolOrigin,
-    ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
+    ToolProperties, ToolResult, ToolResultPart, ToolSearchMode, ToolUseId, TrustLevel, TurnInput,
+    UsageSnapshot,
 };
+use harness_model::ModelModality;
 use harness_engine::{
     Engine, EngineError, EngineId, EngineRunner, RunContext, SessionHandle, SteeringDrain,
     SteeringMerge,
@@ -226,13 +228,13 @@ async fn tool_call_records_permission_and_tool_events() {
 }
 
 #[tokio::test]
-async fn image_blob_tool_result_creates_image_artifact_event() {
+async fn typed_image_artifact_tool_result_creates_image_artifact_event() {
     let harness = TestHarness::new_response_with_tool(
         ModelResponse::Sequence(vec![
-            tool_call_events("MiniMaxTextToImage", json!({ "prompt": "grass carp" })),
+            tool_call_events("ProviderImageService", json!({ "prompt": "grass carp" })),
             text_events("[REDACTED]"),
         ]),
-        Box::new(ImageBlobTool::new("MiniMaxTextToImage")),
+        Box::new(TypedImageArtifactTool::new("ProviderImageService", "image/png")),
         None,
     )
     .await;
@@ -254,6 +256,7 @@ async fn image_blob_tool_result_creates_image_artifact_event() {
         .expect("image artifact created");
 
     assert_eq!(artifact.kind, "image");
+    assert_eq!(artifact.title, "Generated image");
     assert_eq!(artifact.status, ArtifactStatus::Ready);
     assert_eq!(artifact.source, ArtifactSource::Tool);
     assert_eq!(artifact.source_tool_use_id, Some(completed_tool_use_id));
@@ -261,18 +264,18 @@ async fn image_blob_tool_result_creates_image_artifact_event() {
         artifact.blob_ref.as_ref().unwrap().content_type.as_deref(),
         Some("image/png")
     );
-    assert_eq!(artifact.preview.as_deref(), Some("生成的图片"));
+    assert_eq!(artifact.preview.as_deref(), Some("Generated image"));
 }
 
 #[tokio::test]
-async fn svg_blob_tool_result_does_not_create_image_artifact_event() {
+async fn svg_typed_artifact_tool_result_does_not_create_image_artifact_event() {
     let harness = TestHarness::new_response_with_tool(
         ModelResponse::Sequence(vec![
-            tool_call_events("MiniMaxTextToImage", json!({ "prompt": "vector" })),
+            tool_call_events("ProviderImageService", json!({ "prompt": "vector" })),
             text_events("[REDACTED]"),
         ]),
-        Box::new(ImageBlobTool::new_with_content_type(
-            "MiniMaxTextToImage",
+        Box::new(TypedImageArtifactTool::new(
+            "ProviderImageService",
             "image/svg+xml",
         )),
         None,
@@ -280,6 +283,28 @@ async fn svg_blob_tool_result_does_not_create_image_artifact_event() {
     .await;
 
     let events = harness.run("生成一张 SVG 图片").await.unwrap();
+
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Event::ToolUseCompleted(_))));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, Event::ArtifactCreated(_))));
+}
+
+#[tokio::test]
+async fn legacy_blob_tool_result_without_typed_artifact_does_not_create_artifact_event() {
+    let harness = TestHarness::new_response_with_tool(
+        ModelResponse::Sequence(vec![
+            tool_call_events("MiniMaxTextToImage", json!({ "prompt": "grass carp" })),
+            text_events("[REDACTED]"),
+        ]),
+        Box::new(ImageBlobTool::new("MiniMaxTextToImage")),
+        None,
+    )
+    .await;
+
+    let events = harness.run("生成一张草鱼图片").await.unwrap();
 
     assert!(events
         .iter()
@@ -988,6 +1013,97 @@ impl Tool for TextTool {
         Ok(Box::pin(stream::iter([ToolEvent::Final(
             ToolResult::Text(self.output.clone()),
         )])))
+    }
+}
+
+struct TypedImageArtifactTool {
+    descriptor: ToolDescriptor,
+    content_type: String,
+}
+
+impl TypedImageArtifactTool {
+    fn new(name: &str, content_type: &str) -> Self {
+        Self {
+            descriptor: ToolDescriptor {
+                name: name.to_owned(),
+                display_name: name.to_owned(),
+                description: "Return typed image artifact output.".to_owned(),
+                category: "test".to_owned(),
+                group: ToolGroup::Custom("test".to_owned()),
+                version: "0.1.0".to_owned(),
+                input_schema: json!({ "type": "object" }),
+                output_schema: None,
+                dynamic_schema: false,
+                properties: ToolProperties {
+                    is_concurrency_safe: true,
+                    is_read_only: true,
+                    is_destructive: false,
+                    long_running: None,
+                    defer_policy: DeferPolicy::AlwaysLoad,
+                },
+                trust_level: TrustLevel::AdminTrusted,
+                required_capabilities: Vec::new(),
+                budget: ResultBudget {
+                    metric: BudgetMetric::Chars,
+                    limit: 32_000,
+                    on_overflow: OverflowAction::Offload,
+                    preview_head_chars: 2_000,
+                    preview_tail_chars: 2_000,
+                },
+                provider_restriction: ProviderRestriction::All,
+                origin: ToolOrigin::Builtin,
+                search_hint: None,
+                service_binding: None,
+            },
+            content_type: content_type.to_owned(),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for TypedImageArtifactTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn validate(&self, _input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
+        Ok(())
+    }
+
+    async fn check_permission(
+        &self,
+        input: &Value,
+        _ctx: &ToolContext,
+    ) -> harness_permission::PermissionCheck {
+        harness_permission::PermissionCheck::AskUser {
+            subject: PermissionSubject::ToolInvocation {
+                tool: self.descriptor.name.clone(),
+                input: input.clone(),
+            },
+            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
+        }
+    }
+
+    async fn execute(
+        &self,
+        _input: Value,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, harness_contracts::ToolError> {
+        let blob_ref = BlobRef {
+            id: harness_contracts::BlobId::new(),
+            size: 128,
+            content_hash: [9; 32],
+            content_type: Some(self.content_type.clone()),
+        };
+        Ok(Box::pin(stream::iter([ToolEvent::Final(ToolResult::Mixed(vec![
+            ToolResultPart::Artifact {
+                artifact_kind: ModelModality::Image,
+                content_type: self.content_type.clone(),
+                blob_ref,
+                title: "Generated image".to_owned(),
+                preview: Some("Generated image".to_owned()),
+            },
+        ]))])))
     }
 }
 

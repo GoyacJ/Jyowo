@@ -135,6 +135,51 @@ async fn offload_budget_writes_full_text_and_returns_preview_with_metadata() {
 }
 
 #[tokio::test]
+async fn typed_artifact_result_is_preserved_without_budget_offload() {
+    let blob_ref = harness_contracts::BlobRef {
+        id: harness_contracts::BlobId::new(),
+        size: 128,
+        content_hash: [4; 32],
+        content_type: Some("image/png".to_owned()),
+    };
+    let (pool, call) = pool_with_tool(
+        "artifact",
+        budget(5, OverflowAction::Offload),
+        vec![ToolEvent::Final(ToolResult::Mixed(vec![ToolResultPart::Artifact {
+            artifact_kind: harness_contracts::ModelModality::Image,
+            content_type: "image/png".to_owned(),
+            blob_ref: blob_ref.clone(),
+            title: "Generated image".to_owned(),
+            preview: Some("Generated image".to_owned()),
+        }]))],
+    )
+    .await;
+    let blob_store = Arc::new(RecordingBlobStore::default());
+
+    let results = dispatch(
+        pool,
+        call,
+        Some(blob_store.clone()),
+        Arc::new(RecordingEmitter::default()),
+    )
+    .await;
+
+    let Ok(ToolResult::Mixed(parts)) = &results[0].result else {
+        panic!("expected typed artifact result: {:?}", results[0].result);
+    };
+    assert!(matches!(
+        parts.first(),
+        Some(ToolResultPart::Artifact {
+            title,
+            preview: Some(preview),
+            ..
+        }) if title == "Generated image" && preview == "Generated image"
+    ));
+    assert!(blob_store.puts().is_empty());
+    assert_eq!(results[0].overflow, None);
+}
+
+#[tokio::test]
 async fn offload_budget_reports_blob_failures() {
     let (pool, call) = pool_with_tool(
         "offload_fail",

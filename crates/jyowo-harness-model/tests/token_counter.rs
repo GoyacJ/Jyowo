@@ -1,5 +1,8 @@
 use chrono::Utc;
-use harness_contracts::{Message, MessageId, MessagePart, MessageRole};
+use harness_contracts::{
+    BlobId, BlobRef, Message, MessageId, MessagePart, MessageRole, ModelModality, ToolResult,
+    ToolResultPart, ToolUseId,
+};
 use harness_model::{
     AnthropicCounter, ApproximateCounter, ImageDetail, ImageMeta, TiktokenCounter, TokenCounter,
 };
@@ -75,4 +78,26 @@ fn approximate_counter_counts_gemini_image_tiles() {
 
     assert_eq!(counter.count_image(&image, "gemini-2.5-flash"), Some(1032));
     assert_eq!(counter.count_image(&image, "unknown-model"), None);
+}
+
+#[test]
+fn artifact_tool_result_parts_are_counted_without_blob_metadata() {
+    let counter = ApproximateCounter;
+    let message = message(vec![MessagePart::ToolResult {
+        tool_use_id: ToolUseId::new(),
+        content: ToolResult::Mixed(vec![ToolResultPart::Artifact {
+            artifact_kind: ModelModality::Image,
+            content_type: "image/png".to_owned(),
+            blob_ref: BlobRef {
+                id: BlobId::new(),
+                size: 128,
+                content_hash: [2; 32],
+                content_type: Some("image/png".to_owned()),
+            },
+            title: "Generated image".to_owned(),
+            preview: Some("preview".to_owned()),
+        }]),
+    }]);
+
+    assert!(counter.count_messages(&[message], "unknown") > 0);
 }

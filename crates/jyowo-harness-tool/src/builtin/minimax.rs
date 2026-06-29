@@ -784,23 +784,13 @@ async fn image_tool_result_from_response_with_downloader(
         ImageCandidate::HttpsUrl(value) => download_https_image(&value, downloader).await?,
     };
     let blob_ref = write_image_blob(ctx, image.bytes, &image.mime_type).await?;
-    Ok(ToolResult::Mixed(vec![
-        ToolResultPart::Structured {
-            value: json!({
-                "kind": "image",
-                "status": "ready",
-                "summary": "生成的图片",
-                "mimeType": image.mime_type,
-                "sizeBytes": blob_ref.size,
-            }),
-            schema_ref: None,
-        },
-        ToolResultPart::Blob {
-            content_type: image.mime_type,
-            blob_ref,
-            summary: Some("生成的图片".to_owned()),
-        },
-    ]))
+    Ok(ToolResult::Mixed(vec![ToolResultPart::Artifact {
+        artifact_kind: ModelModality::Image,
+        content_type: image.mime_type.clone(),
+        blob_ref,
+        title: "Generated image".to_owned(),
+        preview: Some("Generated image".to_owned()),
+    }]))
 }
 
 async fn write_image_blob(
@@ -1389,7 +1379,7 @@ mod tests {
     use futures::future::BoxFuture;
     use harness_contracts::{
         AgentId, BlobMeta, BlobRef, BlobWriterCap, CapabilityRegistry, CorrelationId, Decision,
-        PermissionError, RunId, SessionId, TenantId, ToolResultPart, ToolUseId,
+        ModelModality, PermissionError, RunId, SessionId, TenantId, ToolResultPart, ToolUseId,
     };
     use harness_permission::{
         PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
@@ -1418,7 +1408,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn image_response_base64_is_stored_as_blob_result() {
+    async fn minimax_image_typed_artifact_from_base64_response() {
         let ctx = test_context(Arc::new(CapturingBlobWriter));
         let result = image_tool_result_from_response(
             json!({
@@ -1438,18 +1428,16 @@ mod tests {
         };
         assert!(parts.iter().any(|part| matches!(
             part,
-            ToolResultPart::Structured { value, .. }
-                if value["kind"] == "image" && value.get("url").is_none()
-        )));
-        assert!(parts.iter().any(|part| matches!(
-            part,
-            ToolResultPart::Blob {
+            ToolResultPart::Artifact {
+                artifact_kind: ModelModality::Image,
                 content_type,
                 blob_ref,
-                summary
+                title,
+                preview,
             } if content_type == "image/png"
                 && blob_ref.content_type.as_deref() == Some("image/png")
-                && summary.as_deref() == Some("生成的图片")
+                && title == "Generated image"
+                && preview.as_deref() == Some("Generated image")
         )));
     }
 
