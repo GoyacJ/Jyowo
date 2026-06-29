@@ -12,8 +12,11 @@ use bytes::Bytes;
 use chrono::{NaiveDate, Utc};
 use futures::StreamExt;
 use harness_contracts::{
-    AgentCapabilityKind, AgentCapabilityUnavailableReason, ConversationCursor,
-    ConversationMessageAuthor, ConversationTurnCursor, ConversationWorktreePage, UiSafeText,
+    validate_provider_capability_route, AgentCapabilityKind, AgentCapabilityUnavailableReason,
+    CapabilityRouteKind, ConversationCursor, ConversationMessageAuthor, ConversationTurnCursor,
+    ConversationWorktreePage, ListProviderCapabilityRouteOptionsResponse, ProviderCapabilityRoute,
+    ProviderCapabilityRouteOption, ProviderCapabilityRouteSettings,
+    ProviderServiceAdapterAvailability, UiSafeText,
 };
 use image::{ImageFormat, ImageReader, Limits};
 use jyowo_harness_sdk::builtin::{
@@ -147,6 +150,43 @@ pub struct ValidateProviderSettingsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SaveProviderSettingsResponse {
     pub config: ProviderConfigPayload,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListProviderCapabilityRoutesResponse {
+    pub version: u32,
+    pub routes: Vec<ProviderCapabilityRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SaveProviderCapabilityRouteRequest {
+    pub route: ProviderCapabilityRoute,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveProviderCapabilityRouteResponse {
+    pub version: u32,
+    pub routes: Vec<ProviderCapabilityRoute>,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DeleteProviderCapabilityRouteRequest {
+    pub kind: CapabilityRouteKind,
+    pub config_id: String,
+    pub provider_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteProviderCapabilityRouteResponse {
+    pub version: u32,
+    pub routes: Vec<ProviderCapabilityRoute>,
     pub status: &'static str,
 }
 
@@ -955,6 +995,26 @@ pub trait ProviderSettingsStore: Send + Sync {
     fn save_record(&self, record: &ProviderSettingsRecord) -> Result<(), CommandErrorPayload>;
 }
 
+#[derive(Debug)]
+pub struct ProviderCapabilityRouteValidationToken {
+    _private: (),
+}
+
+mod provider_capability_route_store_seal {
+    pub trait Sealed {}
+}
+
+pub trait ProviderCapabilityRouteStore:
+    provider_capability_route_store_seal::Sealed + Send + Sync
+{
+    fn load_record(&self) -> Result<Option<ProviderCapabilityRouteSettings>, CommandErrorPayload>;
+    fn save_record(
+        &self,
+        record: &ProviderCapabilityRouteSettings,
+        validation: ProviderCapabilityRouteValidationToken,
+    ) -> Result<(), CommandErrorPayload>;
+}
+
 pub trait ConversationModelConfigStore: Send + Sync {
     fn load_records(&self) -> Result<HashMap<String, String>, CommandErrorPayload>;
     fn save_records(&self, records: &HashMap<String, String>) -> Result<(), CommandErrorPayload>;
@@ -1200,6 +1260,110 @@ impl Default for ExecutionSettingsRecord {
 }
 
 #[derive(Clone)]
+pub struct DesktopProviderCapabilityRouteStore {
+    workspace_root: PathBuf,
+}
+
+impl DesktopProviderCapabilityRouteStore {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root }
+    }
+
+    fn settings_path(&self) -> PathBuf {
+        self.workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("provider-capability-routes.json")
+    }
+}
+
+impl provider_capability_route_store_seal::Sealed for DesktopProviderCapabilityRouteStore {}
+
+impl ProviderCapabilityRouteStore for DesktopProviderCapabilityRouteStore {
+    fn load_record(&self) -> Result<Option<ProviderCapabilityRouteSettings>, CommandErrorPayload> {
+        let settings_path = self.settings_path();
+        ensure_no_symlink_components(&settings_path, "provider capability route file")?;
+        match std::fs::read(&settings_path) {
+            Ok(bytes) => match serde_json::from_slice::<ProviderCapabilityRouteSettings>(&bytes) {
+                Ok(record) => Ok(Some(record)),
+                Err(_) => {
+                    remove_invalid_provider_capability_route_file(&settings_path)?;
+                    Ok(None)
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(runtime_operation_failed(format!(
+                "provider capability route read failed: {error}"
+            ))),
+        }
+    }
+
+    fn save_record(
+        &self,
+        record: &ProviderCapabilityRouteSettings,
+        _validation: ProviderCapabilityRouteValidationToken,
+    ) -> Result<(), CommandErrorPayload> {
+        ensure_provider_capability_route_settings_record(record)?;
+        let settings_path = self.settings_path();
+        let parent = settings_path.parent().ok_or_else(|| {
+            runtime_operation_failed("provider capability route path has no parent".to_owned())
+        })?;
+        ensure_no_symlink_components(parent, "provider capability route directory")?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            runtime_operation_failed(format!(
+                "provider capability route directory unavailable: {error}"
+            ))
+        })?;
+        ensure_no_symlink_components(parent, "provider capability route directory")?;
+        let bytes = serde_json::to_vec_pretty(record).map_err(|error| {
+            runtime_operation_failed(format!(
+                "provider capability route serialization failed: {error}"
+            ))
+        })?;
+        let temp_path = settings_path.with_file_name(format!(
+            "{}.{}.tmp",
+            settings_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("provider-capability-routes.json"),
+            RunId::new()
+        ));
+        ensure_no_symlink_components(&temp_path, "provider capability route temp file")?;
+        let mut open_options = std::fs::OpenOptions::new();
+        open_options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+
+            open_options.mode(0o600);
+        }
+        let mut temp_file = open_options.open(&temp_path).map_err(|error| {
+            runtime_operation_failed(format!(
+                "provider capability route temp open failed: {error}"
+            ))
+        })?;
+        if let Err(error) = temp_file.write_all(&bytes) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(runtime_operation_failed(format!(
+                "provider capability route write failed: {error}"
+            )));
+        }
+        if let Err(error) = temp_file.sync_all() {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(runtime_operation_failed(format!(
+                "provider capability route sync failed: {error}"
+            )));
+        }
+        drop(temp_file);
+        ensure_no_symlink_components(&settings_path, "provider capability route file")?;
+        std::fs::rename(&temp_path, &settings_path).map_err(|error| {
+            let _ = std::fs::remove_file(&temp_path);
+            runtime_operation_failed(format!("provider capability route commit failed: {error}"))
+        })
+    }
+}
+
+#[derive(Clone)]
 pub struct DesktopExecutionSettingsStore {
     workspace_root: PathBuf,
 }
@@ -1427,6 +1591,18 @@ fn remove_invalid_provider_settings_file(settings_path: &Path) -> Result<(), Com
     }
 }
 
+fn remove_invalid_provider_capability_route_file(
+    settings_path: &Path,
+) -> Result<(), CommandErrorPayload> {
+    match std::fs::remove_file(settings_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(runtime_operation_failed(format!(
+            "provider capability route cleanup failed: {error}"
+        ))),
+    }
+}
+
 fn ensure_provider_settings_record(
     record: &ProviderSettingsRecord,
 ) -> Result<(), CommandErrorPayload> {
@@ -1466,6 +1642,28 @@ fn ensure_provider_settings_record(
         return Err(runtime_operation_failed(
             "apiKey is required for every provider config".to_owned(),
         ));
+    }
+
+    Ok(())
+}
+
+fn empty_provider_capability_route_settings() -> ProviderCapabilityRouteSettings {
+    ProviderCapabilityRouteSettings {
+        version: 1,
+        routes: Vec::new(),
+    }
+}
+
+fn ensure_provider_capability_route_settings_record(
+    record: &ProviderCapabilityRouteSettings,
+) -> Result<(), CommandErrorPayload> {
+    if record.version != 1 {
+        return Err(runtime_operation_failed(
+            "provider capability route version must be 1".to_owned(),
+        ));
+    }
+    for route in &record.routes {
+        validate_provider_capability_route(route).map_err(runtime_operation_failed)?;
     }
 
     Ok(())
@@ -4731,6 +4929,316 @@ pub async fn list_provider_settings_with_store(
         default_config_id: record.default_config_id.clone(),
         configs: provider_config_payloads(&record)?,
     })
+}
+
+pub async fn list_provider_capability_routes_with_store(
+    store: &dyn ProviderCapabilityRouteStore,
+    provider_settings: &ProviderSettingsRecord,
+    provider_catalog: &ModelProviderCatalogResponse,
+    adapter_availability: &ProviderServiceAdapterAvailability,
+) -> Result<ListProviderCapabilityRoutesResponse, CommandErrorPayload> {
+    let record = store
+        .load_record()?
+        .unwrap_or_else(empty_provider_capability_route_settings);
+    let _validation = ensure_provider_capability_route_settings(
+        &record,
+        provider_settings,
+        provider_catalog,
+        adapter_availability,
+    )?;
+
+    Ok(ListProviderCapabilityRoutesResponse {
+        version: record.version,
+        routes: record.routes,
+    })
+}
+
+pub async fn save_provider_capability_route_settings_with_store(
+    settings: ProviderCapabilityRouteSettings,
+    store: &dyn ProviderCapabilityRouteStore,
+    provider_settings: &ProviderSettingsRecord,
+    provider_catalog: &ModelProviderCatalogResponse,
+    adapter_availability: &ProviderServiceAdapterAvailability,
+) -> Result<SaveProviderCapabilityRouteResponse, CommandErrorPayload> {
+    let validation = ensure_provider_capability_route_settings(
+        &settings,
+        provider_settings,
+        provider_catalog,
+        adapter_availability,
+    )?;
+    store.save_record(&settings, validation)?;
+
+    Ok(SaveProviderCapabilityRouteResponse {
+        version: settings.version,
+        routes: settings.routes,
+        status: "saved",
+    })
+}
+
+pub async fn save_provider_capability_route_with_store(
+    request: SaveProviderCapabilityRouteRequest,
+    store: &dyn ProviderCapabilityRouteStore,
+    provider_settings: &ProviderSettingsRecord,
+    provider_catalog: &ModelProviderCatalogResponse,
+    adapter_availability: &ProviderServiceAdapterAvailability,
+) -> Result<SaveProviderCapabilityRouteResponse, CommandErrorPayload> {
+    let mut record = store
+        .load_record()?
+        .unwrap_or_else(empty_provider_capability_route_settings);
+    record.routes.retain(|route| {
+        route.kind != request.route.kind
+            || route.config_id != request.route.config_id
+            || route.provider_id != request.route.provider_id
+    });
+    record.routes.push(request.route);
+    let validation = ensure_provider_capability_route_settings(
+        &record,
+        provider_settings,
+        provider_catalog,
+        adapter_availability,
+    )?;
+    store.save_record(&record, validation)?;
+
+    Ok(SaveProviderCapabilityRouteResponse {
+        version: record.version,
+        routes: record.routes,
+        status: "saved",
+    })
+}
+
+pub async fn delete_provider_capability_route_with_store(
+    request: DeleteProviderCapabilityRouteRequest,
+    store: &dyn ProviderCapabilityRouteStore,
+    provider_settings: &ProviderSettingsRecord,
+    provider_catalog: &ModelProviderCatalogResponse,
+    adapter_availability: &ProviderServiceAdapterAvailability,
+) -> Result<DeleteProviderCapabilityRouteResponse, CommandErrorPayload> {
+    ensure_non_empty("configId", &request.config_id)?;
+    ensure_non_empty("providerId", &request.provider_id)?;
+    let mut record = store
+        .load_record()?
+        .unwrap_or_else(empty_provider_capability_route_settings);
+    ensure_provider_capability_route_settings_record(&record)?;
+    record.routes.retain(|route| {
+        route.kind != request.kind
+            || route.config_id != request.config_id
+            || route.provider_id != request.provider_id
+    });
+    let validation = ensure_provider_capability_route_settings(
+        &record,
+        provider_settings,
+        provider_catalog,
+        adapter_availability,
+    )?;
+    store.save_record(&record, validation)?;
+
+    Ok(DeleteProviderCapabilityRouteResponse {
+        version: record.version,
+        routes: record.routes,
+        status: "deleted",
+    })
+}
+
+pub fn list_provider_capability_route_options_from_inputs(
+    _store: &dyn ProviderCapabilityRouteStore,
+    provider_settings: &ProviderSettingsRecord,
+    provider_catalog: &ModelProviderCatalogResponse,
+    adapter_availability: &ProviderServiceAdapterAvailability,
+) -> Result<ListProviderCapabilityRouteOptionsResponse, CommandErrorPayload> {
+    let mut options = Vec::new();
+
+    for config in &provider_settings.configs {
+        let Some(provider) = provider_catalog
+            .providers
+            .iter()
+            .find(|provider| provider.provider_id == config.provider_id)
+        else {
+            continue;
+        };
+
+        for capability in &provider.service_capabilities {
+            let Some(kind) = route_kind_for_service_capability(capability) else {
+                continue;
+            };
+            let runtime_supported = has_service_adapter(
+                adapter_availability,
+                &config.provider_id,
+                &capability.operation_id,
+                kind,
+            );
+            options.push(ProviderCapabilityRouteOption {
+                kind,
+                config_id: config.id.clone(),
+                provider_id: config.provider_id.clone(),
+                operation_id: capability.operation_id.clone(),
+                output_artifact: model_modality_from_record(&capability.output_artifact),
+                execution: provider_service_execution_from_payload(capability.execution)?,
+                cost_risk: provider_service_cost_risk_from_payload(capability.cost_risk)?,
+                runtime_supported,
+                unavailable_reason: (!runtime_supported)
+                    .then(|| "runtime adapter unavailable".to_owned()),
+            });
+        }
+    }
+
+    Ok(ListProviderCapabilityRouteOptionsResponse { options })
+}
+
+fn ensure_provider_capability_route_settings(
+    routes: &ProviderCapabilityRouteSettings,
+    provider_settings: &ProviderSettingsRecord,
+    provider_catalog: &ModelProviderCatalogResponse,
+    adapter_availability: &ProviderServiceAdapterAvailability,
+) -> Result<ProviderCapabilityRouteValidationToken, CommandErrorPayload> {
+    ensure_provider_capability_route_settings_record(routes).map_err(|error| {
+        if error.code == "RUNTIME_OPERATION_FAILED" {
+            invalid_payload(error.message)
+        } else {
+            error
+        }
+    })?;
+
+    let mut enabled_kind_targets: HashMap<CapabilityRouteKind, (&str, &str)> = HashMap::new();
+    for route in &routes.routes {
+        let Some(config) = provider_settings
+            .configs
+            .iter()
+            .find(|config| config.id == route.config_id)
+        else {
+            return Err(invalid_payload(
+                "provider capability route configId must reference an existing provider config"
+                    .to_owned(),
+            ));
+        };
+        if config.api_key.trim().is_empty() {
+            return Err(invalid_payload(
+                "provider capability route config must have an apiKey".to_owned(),
+            ));
+        }
+        if route.provider_id != config.provider_id {
+            return Err(invalid_payload(
+                "provider capability route providerId must match the provider config".to_owned(),
+            ));
+        }
+
+        for operation_id in &route.operation_ids {
+            let Some(capability) =
+                provider_service_capability(provider_catalog, &route.provider_id, operation_id)
+            else {
+                return Err(invalid_payload(
+                    "provider capability route operationId is not declared by the provider catalog"
+                        .to_owned(),
+                ));
+            };
+            if route_kind_for_service_capability(capability) != Some(route.kind) {
+                return Err(invalid_payload(
+                    "provider capability route kind does not match operationId".to_owned(),
+                ));
+            }
+            if route.enabled
+                && !has_service_adapter(
+                    adapter_availability,
+                    &route.provider_id,
+                    operation_id,
+                    route.kind,
+                )
+            {
+                return Err(invalid_payload(
+                    "provider capability route operationId has no runtime adapter".to_owned(),
+                ));
+            }
+        }
+
+        if route.enabled {
+            match enabled_kind_targets.insert(route.kind, (&route.config_id, &route.provider_id)) {
+                Some((config_id, provider_id))
+                    if config_id != route.config_id || provider_id != route.provider_id =>
+                {
+                    return Err(invalid_payload(
+                        "provider capability route kind cannot target multiple provider configs"
+                            .to_owned(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(ProviderCapabilityRouteValidationToken { _private: () })
+}
+
+fn provider_service_capability<'a>(
+    provider_catalog: &'a ModelProviderCatalogResponse,
+    provider_id: &str,
+    operation_id: &str,
+) -> Option<&'a ProviderServiceCapabilityPayload> {
+    provider_catalog
+        .providers
+        .iter()
+        .find(|provider| provider.provider_id == provider_id)?
+        .service_capabilities
+        .iter()
+        .find(|capability| capability.operation_id == operation_id)
+}
+
+fn has_service_adapter(
+    availability: &ProviderServiceAdapterAvailability,
+    provider_id: &str,
+    operation_id: &str,
+    route_kind: CapabilityRouteKind,
+) -> bool {
+    availability.bindings.iter().any(|binding| {
+        binding.provider_id == provider_id
+            && binding.operation_id == operation_id
+            && binding.route_kind == route_kind
+    })
+}
+
+fn route_kind_for_service_capability(
+    capability: &ProviderServiceCapabilityPayload,
+) -> Option<CapabilityRouteKind> {
+    match capability.category {
+        "image" => Some(CapabilityRouteKind::ImageGeneration),
+        "video" => Some(CapabilityRouteKind::VideoGeneration),
+        "music" => Some(CapabilityRouteKind::MusicGeneration),
+        "audio" if operation_id_is_speech_to_text(&capability.operation_id) => {
+            Some(CapabilityRouteKind::SpeechToText)
+        }
+        "audio" => Some(CapabilityRouteKind::TextToSpeech),
+        _ => None,
+    }
+}
+
+fn operation_id_is_speech_to_text(operation_id: &str) -> bool {
+    operation_id.contains("speech_to_text")
+        || operation_id.contains("speech-to-text")
+        || operation_id.contains("transcription")
+}
+
+fn provider_service_execution_from_payload(
+    execution: &str,
+) -> Result<ProviderServiceExecution, CommandErrorPayload> {
+    match execution {
+        "sync" => Ok(ProviderServiceExecution::Sync),
+        "async_job" => Ok(ProviderServiceExecution::AsyncJob),
+        "websocket" => Ok(ProviderServiceExecution::Websocket),
+        _ => Err(invalid_payload(
+            "provider service execution is not supported".to_owned(),
+        )),
+    }
+}
+
+fn provider_service_cost_risk_from_payload(
+    cost_risk: &str,
+) -> Result<ProviderServiceCostRisk, CommandErrorPayload> {
+    match cost_risk {
+        "low" => Ok(ProviderServiceCostRisk::Low),
+        "medium" => Ok(ProviderServiceCostRisk::Medium),
+        "high" => Ok(ProviderServiceCostRisk::High),
+        _ => Err(invalid_payload(
+            "provider service cost risk is not supported".to_owned(),
+        )),
+    }
 }
 
 fn provider_config_with_api_key<'a>(

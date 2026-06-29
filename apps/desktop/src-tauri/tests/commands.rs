@@ -4,12 +4,13 @@ use futures::stream;
 use harness_contracts::{
     AssistantClarificationRequestedEvent, AssistantDeltaProducedEvent,
     AssistantMessageCompletedEvent, AssistantNoticeEvent, AssistantReviewRequestedEvent,
-    ConfigHash, ConversationAttachmentReference, CorrelationId, DecidedBy, EngineError,
-    EngineFailedEvent, EventId, McpConnectionLostEvent, McpConnectionLostReason, MessageContent,
-    MessageId, MessageMetadata, PermissionRequestedEvent, PermissionResolvedEvent,
+    CapabilityRouteKind, ConfigHash, ConversationAttachmentReference, CorrelationId, DecidedBy,
+    EngineError, EngineFailedEvent, EventId, McpConnectionLostEvent, McpConnectionLostReason,
+    MessageContent, MessageId, MessageMetadata, ModelModality, PermissionRequestedEvent,
+    PermissionResolvedEvent, ProviderCapabilityRoute, ProviderServiceAdapterAvailability,
     ReasoningSummaryChunk, RunStartedEvent, SnapshotId, StopReason, ToolErrorPayload,
-    ToolUseFailedEvent, ToolUseRequestedEvent, ToolUseSummary, TurnInput, UiSafeText,
-    UserMessageAppendedEvent,
+    ToolServiceBinding, ToolUseFailedEvent, ToolUseRequestedEvent, ToolUseSummary, TurnInput,
+    UiSafeText, UserMessageAppendedEvent,
 };
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
 use image::codecs::{gif::GifEncoder, jpeg::JpegEncoder, webp::WebPEncoder};
@@ -19,21 +20,22 @@ use jyowo_desktop_shell::commands::{
     create_attachment_from_path_with_runtime_state, create_conversation_with_runtime_state,
     delete_conversation_with_runtime_state, delete_mcp_server_with_runtime_state,
     delete_mcp_server_with_store, delete_memory_item_with_runtime_state,
-    delete_skill_with_runtime_state, export_memory_items_with_runtime_state,
-    export_support_bundle_with_runtime_state, get_app_info_payload,
-    get_artifact_media_preview_with_runtime_state, get_attachment_media_preview_with_runtime_state,
-    get_context_snapshot_with_runtime_state, get_conversation_with_runtime_state,
-    get_execution_settings_for_request, get_execution_settings_with_store,
-    get_mcp_server_config_with_runtime_state, get_mcp_server_config_with_store,
-    get_memory_item_with_runtime_state, get_provider_config_api_key_with_runtime_state,
-    get_provider_config_api_key_with_store, get_replay_timeline_with_runtime_state,
-    get_skill_detail_with_runtime_state, get_skill_file_with_runtime_state,
-    harness_healthcheck_payload, import_skill_with_runtime_state, list_activity_payload,
-    list_activity_with_runtime_state, list_artifacts_with_runtime_state,
-    list_conversations_with_runtime_state, list_eval_cases_payload,
-    list_eval_cases_with_runtime_state, list_mcp_diagnostics_with_store,
+    delete_provider_capability_route_with_store, delete_skill_with_runtime_state,
+    export_memory_items_with_runtime_state, export_support_bundle_with_runtime_state,
+    get_app_info_payload, get_artifact_media_preview_with_runtime_state,
+    get_attachment_media_preview_with_runtime_state, get_context_snapshot_with_runtime_state,
+    get_conversation_with_runtime_state, get_execution_settings_for_request,
+    get_execution_settings_with_store, get_mcp_server_config_with_runtime_state,
+    get_mcp_server_config_with_store, get_memory_item_with_runtime_state,
+    get_provider_config_api_key_with_runtime_state, get_provider_config_api_key_with_store,
+    get_replay_timeline_with_runtime_state, get_skill_detail_with_runtime_state,
+    get_skill_file_with_runtime_state, harness_healthcheck_payload,
+    import_skill_with_runtime_state, list_activity_payload, list_activity_with_runtime_state,
+    list_artifacts_with_runtime_state, list_conversations_with_runtime_state,
+    list_eval_cases_payload, list_eval_cases_with_runtime_state, list_mcp_diagnostics_with_store,
     list_mcp_servers_with_runtime_state, list_memory_items_with_runtime_state,
-    list_model_provider_catalog_payload, list_provider_settings_with_store,
+    list_model_provider_catalog_payload, list_provider_capability_route_options_from_inputs,
+    list_provider_capability_routes_with_store, list_provider_settings_with_store,
     list_reference_candidates_with_runtime_state, list_skills_with_runtime_state,
     mcp_diagnostic_record_from_event, page_conversation_timeline_with_runtime_state,
     page_conversation_worktree_with_runtime_state,
@@ -43,6 +45,7 @@ use jyowo_desktop_shell::commands::{
     resolve_permission_with_runtime_state, restart_mcp_server_with_runtime_state,
     run_eval_case_payload, run_eval_case_with_runtime_state, runtime_state_async,
     runtime_state_for_workspace, save_mcp_server_with_runtime_state, save_mcp_server_with_store,
+    save_provider_capability_route_settings_with_store, save_provider_capability_route_with_store,
     save_provider_settings_with_runtime_state, save_provider_settings_with_store,
     set_conversation_model_config_with_runtime_state, set_execution_settings_with_store,
     set_mcp_server_enabled_with_runtime_state, set_skill_enabled_with_runtime_state,
@@ -53,21 +56,23 @@ use jyowo_desktop_shell::commands::{
     ArtifactSummaryPayload, AttachmentBlobRefPayload, AttachmentReferencePayload, CancelRunRequest,
     ContextReferencePayload, ConversationEventBatchPayload, ConversationModelCapabilityRecord,
     CreateAttachmentFromPathRequest, DeleteConversationRequest, DeleteMcpServerRequest,
-    DeleteMemoryItemRequest, DeleteSkillRequest, DesktopExecutionSettingsStore,
-    DesktopMcpDiagnosticStore, DesktopProviderSettingsStore, DesktopRuntimeState,
-    DesktopSkillStore, ExportSupportBundleRequest, GetArtifactMediaPreviewRequest,
-    GetAttachmentMediaPreviewRequest, GetContextSnapshotRequest, GetConversationRequest,
-    GetExecutionSettingsRequest, GetMcpServerConfigRequest, GetMemoryItemRequest,
-    GetProviderConfigApiKeyRequest, GetSkillDetailRequest, GetSkillFileRequest, ImportSkillRequest,
-    ListActivityRequest, ListArtifactsRequest, ListReferenceCandidatesRequest, McpDiagnosticRecord,
+    DeleteMemoryItemRequest, DeleteProviderCapabilityRouteRequest, DeleteSkillRequest,
+    DesktopExecutionSettingsStore, DesktopMcpDiagnosticStore, DesktopProviderCapabilityRouteStore,
+    DesktopProviderSettingsStore, DesktopRuntimeState, DesktopSkillStore,
+    ExportSupportBundleRequest, GetArtifactMediaPreviewRequest, GetAttachmentMediaPreviewRequest,
+    GetContextSnapshotRequest, GetConversationRequest, GetExecutionSettingsRequest,
+    GetMcpServerConfigRequest, GetMemoryItemRequest, GetProviderConfigApiKeyRequest,
+    GetSkillDetailRequest, GetSkillFileRequest, ImportSkillRequest, ListActivityRequest,
+    ListArtifactsRequest, ListReferenceCandidatesRequest, McpDiagnosticRecord,
     McpDiagnosticSeverity, McpDiagnosticStore, McpHeaderEnvRecord, McpNameValueRecord,
     McpServerConfigRecord, McpServerStore, McpServerTransportConfig,
     PageConversationTimelineRequest, PageConversationWorktreeDirection,
-    PageConversationWorktreeRequest, PermissionDecision, ProviderConfigRecord,
-    ProviderModelDescriptorRecord, ProviderModelLifecycleRecord, ProviderModelModalityRecord,
-    ProviderSettingsRecord, ProviderSettingsRequest, ProviderSettingsStore, ReplayTimelineRequest,
-    RequestProviderConfigApiKeyRevealRequest, ResolvePermissionRequest, RestartMcpServerRequest,
-    RunEvalCaseRequest, SaveMcpServerRequest, SetConversationModelConfigRequest,
+    PageConversationWorktreeRequest, PermissionDecision, ProviderCapabilityRouteStore,
+    ProviderConfigRecord, ProviderModelDescriptorRecord, ProviderModelLifecycleRecord,
+    ProviderModelModalityRecord, ProviderSettingsRecord, ProviderSettingsRequest,
+    ProviderSettingsStore, ReplayTimelineRequest, RequestProviderConfigApiKeyRevealRequest,
+    ResolvePermissionRequest, RestartMcpServerRequest, RunEvalCaseRequest, SaveMcpServerRequest,
+    SaveProviderCapabilityRouteRequest, SetConversationModelConfigRequest,
     SetExecutionSettingsRequest, SetMcpServerEnabledRequest, SetSkillEnabledRequest, SkillStore,
     SkillStoreRecord, StartRunRequest, SubscribeConversationEventsRequest,
     UnsubscribeConversationEventsRequest, UpdateMemoryItemRequest, ValidateProviderSettingsRequest,
@@ -1309,6 +1314,497 @@ fn desktop_provider_settings_store_deletes_legacy_provider_settings_file() {
     assert!(!settings_path.exists());
 }
 
+#[tokio::test]
+async fn provider_capability_route_missing_file_returns_empty_settings() {
+    let workspace = canonical_unique_workspace("provider-capability-route-missing");
+    let store = DesktopProviderCapabilityRouteStore::new(workspace);
+
+    let payload = list_provider_capability_routes_with_store(
+        &store,
+        &ProviderSettingsRecord::default(),
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(payload.version, 1);
+    assert!(payload.routes.is_empty());
+}
+
+#[tokio::test]
+async fn provider_capability_route_save_writes_runtime_file() {
+    let workspace = canonical_unique_workspace("provider-capability-route-save-file");
+    let store = DesktopProviderCapabilityRouteStore::new(workspace.clone());
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
+    let catalog = list_model_provider_catalog_payload();
+    let availability = minimax_image_adapter_availability();
+
+    save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest {
+            route: minimax_image_route("minimax-image", true),
+        },
+        &store,
+        &provider_settings,
+        &catalog,
+        &availability,
+    )
+    .await
+    .unwrap();
+
+    let route_path = workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("provider-capability-routes.json");
+    let saved: Value = serde_json::from_slice(&std::fs::read(route_path).unwrap()).unwrap();
+
+    assert_eq!(saved["version"], 1);
+    assert_eq!(saved["routes"][0]["kind"], "image_generation");
+    assert_eq!(saved["routes"][0]["configId"], "minimax-image");
+}
+
+#[tokio::test]
+async fn provider_capability_route_rejects_missing_config_id() {
+    let store = provider_capability_route_store("provider-capability-route-missing-config");
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
+    let error = save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest {
+            route: minimax_image_route("missing", true),
+        },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &minimax_image_adapter_availability(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn provider_capability_route_rejects_provider_mismatch() {
+    let store = provider_capability_route_store("provider-capability-route-provider-mismatch");
+    let provider_settings = ProviderSettingsRecord {
+        default_config_id: Some("openai-image".to_owned()),
+        configs: vec![ProviderConfigRecord {
+            api_key: "provider-test-token".to_owned(),
+            protocol: ModelProtocol::Responses,
+            base_url: None,
+            display_name: "OpenAI".to_owned(),
+            id: "openai-image".to_owned(),
+            model_id: "gpt-5.4-mini".to_owned(),
+            provider_id: "openai".to_owned(),
+            model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+        }],
+    };
+    let mut route = minimax_image_route("openai-image", true);
+    route.provider_id = "minimax".to_owned();
+
+    let error = save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest { route },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &minimax_image_adapter_availability(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn provider_capability_route_rejects_profile_without_api_key() {
+    let store = provider_capability_route_store("provider-capability-route-no-api-key");
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-image", false);
+
+    let error = save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest {
+            route: minimax_image_route("minimax-image", true),
+        },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &minimax_image_adapter_availability(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn provider_capability_route_rejects_operation_not_in_catalog() {
+    let store = provider_capability_route_store("provider-capability-route-unknown-operation");
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
+    let mut route = minimax_image_route("minimax-image", true);
+    route.operation_ids = vec!["minimax.unknown".to_owned()];
+
+    let error = save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest { route },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn provider_capability_route_rejects_catalog_operation_without_adapter() {
+    let store = provider_capability_route_store("provider-capability-route-no-adapter");
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
+
+    let error = save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest {
+            route: minimax_image_route("minimax-image", true),
+        },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn provider_capability_route_rejects_contract_validation_failure() {
+    let store = provider_capability_route_store("provider-capability-route-contract-validation");
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
+    let mut route = minimax_image_route("minimax-image", true);
+    route.operation_ids.clear();
+
+    let error = save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest { route },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &minimax_image_adapter_availability(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn provider_capability_route_rejects_version_mismatch() {
+    let store = provider_capability_route_store("provider-capability-route-version-mismatch");
+
+    let error = save_provider_capability_route_settings_with_store(
+        harness_contracts::ProviderCapabilityRouteSettings {
+            version: 2,
+            routes: Vec::new(),
+        },
+        &store,
+        &ProviderSettingsRecord::default(),
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn provider_capability_route_rejects_same_enabled_kind_for_multiple_configs() {
+    let store = provider_capability_route_store("provider-capability-route-kind-conflict");
+    let mut provider_settings =
+        provider_settings_record_with_minimax_config("minimax-image-primary", true);
+    let mut secondary = provider_settings.configs[0].clone();
+    secondary.id = "minimax-image-secondary".to_owned();
+    provider_settings.configs.push(secondary);
+
+    let error = save_provider_capability_route_settings_with_store(
+        harness_contracts::ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: vec![
+                minimax_image_route("minimax-image-primary", true),
+                minimax_image_route("minimax-image-secondary", true),
+            ],
+        },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &minimax_image_adapter_availability(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[test]
+fn provider_capability_route_options_use_injected_adapter_availability() {
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
+    let store = provider_capability_route_store("provider-capability-route-options-unsupported");
+
+    let unsupported = list_provider_capability_route_options_from_inputs(
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .unwrap();
+    let image_option = unsupported
+        .options
+        .iter()
+        .find(|option| option.operation_id == "minimax.image_generation")
+        .unwrap();
+    assert!(!image_option.runtime_supported);
+
+    let store = provider_capability_route_store("provider-capability-route-options-supported");
+    let supported = list_provider_capability_route_options_from_inputs(
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &minimax_image_adapter_availability(),
+    )
+    .unwrap();
+    let image_option = supported
+        .options
+        .iter()
+        .find(|option| option.operation_id == "minimax.image_generation")
+        .unwrap();
+    assert!(image_option.runtime_supported);
+}
+
+#[test]
+fn provider_capability_route_options_never_expose_api_keys() {
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
+    let store = provider_capability_route_store("provider-capability-route-options-redaction");
+
+    let payload = list_provider_capability_route_options_from_inputs(
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &minimax_image_adapter_availability(),
+    )
+    .unwrap();
+    let serialized = serde_json::to_string(&payload).unwrap();
+
+    assert!(!serialized.contains("provider-test-token"));
+}
+
+#[tokio::test]
+async fn provider_capability_route_disabled_route_is_saved() {
+    let store = provider_capability_route_store("provider-capability-route-disabled");
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
+
+    let payload = save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest {
+            route: minimax_image_route("minimax-image", false),
+        },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .unwrap();
+
+    assert!(!payload.routes[0].enabled);
+    let saved = list_provider_capability_routes_with_store(
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(saved.routes.len(), 1);
+}
+
+#[tokio::test]
+async fn provider_capability_route_delete_removes_matching_route() {
+    let store = provider_capability_route_store("provider-capability-route-delete");
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
+    save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest {
+            route: minimax_image_route("minimax-image", true),
+        },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &minimax_image_adapter_availability(),
+    )
+    .await
+    .unwrap();
+
+    let payload = delete_provider_capability_route_with_store(
+        DeleteProviderCapabilityRouteRequest {
+            kind: CapabilityRouteKind::ImageGeneration,
+            config_id: "minimax-image".to_owned(),
+            provider_id: "minimax".to_owned(),
+        },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .unwrap();
+
+    assert!(payload.routes.is_empty());
+    let saved = list_provider_capability_routes_with_store(
+        &store,
+        &ProviderSettingsRecord::default(),
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .unwrap();
+    assert!(saved.routes.is_empty());
+}
+
+#[tokio::test]
+async fn provider_capability_route_saving_empty_routes_writes_empty_settings() {
+    let workspace = canonical_unique_workspace("provider-capability-route-empty-save");
+    let store = DesktopProviderCapabilityRouteStore::new(workspace.clone());
+
+    save_provider_capability_route_settings_with_store(
+        harness_contracts::ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: Vec::new(),
+        },
+        &store,
+        &ProviderSettingsRecord::default(),
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .unwrap();
+
+    let route_path = workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("provider-capability-routes.json");
+    let saved: Value = serde_json::from_slice(&std::fs::read(route_path).unwrap()).unwrap();
+
+    assert_eq!(saved, json!({ "version": 1, "routes": [] }));
+}
+
+#[tokio::test]
+async fn provider_capability_route_invalid_file_is_removed_and_returns_empty_settings() {
+    let workspace = canonical_unique_workspace("provider-capability-route-invalid-file");
+    let route_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&route_dir).unwrap();
+    let route_path = route_dir.join("provider-capability-routes.json");
+    std::fs::write(
+        &route_path,
+        br#"{ "version": 1, "routes": [], "apiKey": "secret" }"#,
+    )
+    .unwrap();
+    let store = DesktopProviderCapabilityRouteStore::new(workspace);
+
+    let payload = list_provider_capability_routes_with_store(
+        &store,
+        &ProviderSettingsRecord::default(),
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(payload.version, 1);
+    assert!(payload.routes.is_empty());
+    assert!(!route_path.exists());
+}
+
+#[tokio::test]
+async fn provider_capability_route_malformed_json_file_is_removed_and_returns_empty_settings() {
+    let workspace = canonical_unique_workspace("provider-capability-route-malformed-file");
+    let route_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&route_dir).unwrap();
+    let route_path = route_dir.join("provider-capability-routes.json");
+    std::fs::write(&route_path, br#"{ "version": 1, "routes": ["#).unwrap();
+    let store = DesktopProviderCapabilityRouteStore::new(workspace);
+
+    let payload = list_provider_capability_routes_with_store(
+        &store,
+        &ProviderSettingsRecord::default(),
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(payload.version, 1);
+    assert!(payload.routes.is_empty());
+    assert!(!route_path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn desktop_provider_capability_route_store_writes_owner_only_file_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let workspace = canonical_unique_workspace("provider-capability-route-owner-only");
+    let store = DesktopProviderCapabilityRouteStore::new(workspace.clone());
+    save_provider_capability_route_settings_with_store(
+        harness_contracts::ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: Vec::new(),
+        },
+        &store,
+        &ProviderSettingsRecord::default(),
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .unwrap();
+
+    let route_path = workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("provider-capability-routes.json");
+    let mode = std::fs::metadata(route_path).unwrap().permissions().mode() & 0o777;
+
+    assert_eq!(mode, 0o600);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn desktop_provider_capability_route_store_rejects_symlink_settings_file() {
+    let workspace = canonical_unique_workspace("provider-capability-route-symlink-file");
+    let external = canonical_unique_workspace("provider-capability-route-external-target");
+    let route_dir = workspace.join(".jyowo").join("runtime");
+    let route_path = route_dir.join("provider-capability-routes.json");
+    std::fs::create_dir_all(&route_dir).unwrap();
+    std::os::unix::fs::symlink(
+        external.join("provider-capability-routes.json"),
+        &route_path,
+    )
+    .unwrap();
+    let store = DesktopProviderCapabilityRouteStore::new(workspace);
+
+    let error = store.load_record().unwrap_err();
+    assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+
+    let error = save_provider_capability_route_settings_with_store(
+        harness_contracts::ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: Vec::new(),
+        },
+        &store,
+        &ProviderSettingsRecord::default(),
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+    assert!(route_path.is_symlink());
+}
+
 fn openrouter_descriptor_record(
     model_id: &str,
     input_modalities: Vec<ProviderModelModalityRecord>,
@@ -1358,6 +1854,79 @@ fn openai_descriptor_record(model_id: &str) -> ProviderModelDescriptorRecord {
         model_id: model_id.to_owned(),
         provider_id: "openai".to_owned(),
     }
+}
+
+fn provider_settings_record_with_minimax_config(
+    config_id: &str,
+    has_api_key: bool,
+) -> ProviderSettingsRecord {
+    ProviderSettingsRecord {
+        default_config_id: Some(config_id.to_owned()),
+        configs: vec![ProviderConfigRecord {
+            api_key: if has_api_key {
+                "provider-test-token".to_owned()
+            } else {
+                String::new()
+            },
+            protocol: ModelProtocol::ChatCompletions,
+            base_url: None,
+            display_name: "MiniMax service".to_owned(),
+            id: config_id.to_owned(),
+            model_id: "minimax-text-01".to_owned(),
+            provider_id: "minimax".to_owned(),
+            model_descriptor: ProviderModelDescriptorRecord {
+                protocol: ModelProtocol::ChatCompletions,
+                conversation_capability: ConversationModelCapabilityRecord {
+                    input_modalities: vec![ProviderModelModalityRecord::Text],
+                    output_modalities: vec![ProviderModelModalityRecord::Text],
+                    context_window: 1_000_000,
+                    max_output_tokens: 8_192,
+                    streaming: true,
+                    tool_calling: true,
+                    reasoning: false,
+                    prompt_cache: false,
+                    structured_output: true,
+                },
+                context_window: 1_000_000,
+                display_name: "MiniMax text".to_owned(),
+                lifecycle: ProviderModelLifecycleRecord::Stable,
+                max_output_tokens: 8_192,
+                model_id: "minimax-text-01".to_owned(),
+                provider_id: "minimax".to_owned(),
+            },
+        }],
+    }
+}
+
+fn minimax_image_route(config_id: &str, enabled: bool) -> ProviderCapabilityRoute {
+    ProviderCapabilityRoute {
+        kind: CapabilityRouteKind::ImageGeneration,
+        config_id: config_id.to_owned(),
+        provider_id: "minimax".to_owned(),
+        operation_ids: vec!["minimax.image_generation".to_owned()],
+        enabled,
+    }
+}
+
+fn minimax_image_adapter_availability() -> ProviderServiceAdapterAvailability {
+    ProviderServiceAdapterAvailability {
+        bindings: vec![ToolServiceBinding {
+            provider_id: "minimax".to_owned(),
+            operation_id: "minimax.image_generation".to_owned(),
+            route_kind: CapabilityRouteKind::ImageGeneration,
+            output_artifact: ModelModality::Image,
+        }],
+    }
+}
+
+fn canonical_unique_workspace(name: &str) -> PathBuf {
+    let workspace = unique_workspace(name);
+    std::fs::create_dir_all(&workspace).unwrap();
+    workspace.canonicalize().unwrap()
+}
+
+fn provider_capability_route_store(name: &str) -> DesktopProviderCapabilityRouteStore {
+    DesktopProviderCapabilityRouteStore::new(canonical_unique_workspace(name))
 }
 
 #[test]
