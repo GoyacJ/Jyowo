@@ -58,6 +58,7 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('tab', { name: '工具' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'MCP' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '模型' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '关于' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: '语言' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '模型配置' })).not.toBeInTheDocument()
 
@@ -80,6 +81,10 @@ describe('SettingsPage', () => {
     expect(
       await screen.findByRole('heading', { name: '选择一个已保存配置查看详情。' }),
     ).toBeInTheDocument()
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '关于' }))
+
+    expect(await screen.findByRole('heading', { name: '关于 Jyowo' })).toBeInTheDocument()
   })
 
   it('owns the right pane scroll container', () => {

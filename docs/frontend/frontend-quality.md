@@ -43,6 +43,8 @@ Must test:
 - system status page loading, ready, and error
 - PermissionDialog decision flow
 - ProviderSettingsForm validation
+- About settings version display, update check, update available, download
+  progress, installed pending restart, failure, and release notes rendering
 - MCP server config validation
 - Memory edit/delete UI
 - DiffViewer large diff fallback
@@ -105,6 +107,9 @@ pnpm build
 pnpm lint
 pnpm format
 pnpm check:docs
+pnpm check:release-version
+pnpm check:release-workflow
+pnpm check:tauri-updater
 pnpm check:desktop
 pnpm check:desktop:full
 pnpm check:rust
@@ -130,6 +135,9 @@ pnpm -C apps/desktop check:full
 `pnpm check` must run:
 
 ```text
+release version consistency
+release workflow policy
+Tauri updater policy
 frontend docs structure and required concepts
 desktop typecheck
 desktop lint
@@ -209,6 +217,15 @@ PR requirements:
 
 Native desktop CI may be slower and can run on protected branches or release candidates.
 
+Release workflow:
+
+- tag pushes matching `v*.*.*` run release packaging
+- release jobs run `pnpm check:release-version` before platform builds
+- the build matrix covers `windows-latest`, `macos-latest`, and `ubuntu-22.04`
+- Linux release builds install WebKit, GTK, AppIndicator, librsvg, and patchelf
+- Tauri updater artifacts are signed with `TAURI_SIGNING_PRIVATE_KEY`
+- updater/process plugin imports stay inside `shared/tauri`
+
 ## Documentation Policy
 
 Active frontend docs:
@@ -227,6 +244,7 @@ Update docs when changing:
 - directory structure
 - IPC command surface
 - Tauri capabilities
+- updater/process plugin wrapper usage
 - permission UI behavior
 - RunEvent schema
 - state ownership

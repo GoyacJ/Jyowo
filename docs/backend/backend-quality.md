@@ -178,6 +178,12 @@ cargo test --workspace
 
 The `desktop-build` job runs the full desktop gate and Tauri build on macOS.
 
+The release workflow is separate from PR CI. Tag pushes matching `v*.*.*` must
+check release version consistency before building Windows, macOS, and Linux
+installers. Tauri updater signing uses `TAURI_SIGNING_PRIVATE_KEY`; platform
+code-signing and notarization require explicit GitHub secret configuration
+before enabling.
+
 ## Review Checklist
 
 Architecture:

@@ -13,6 +13,9 @@
     "lint": "pnpm -C apps/desktop lint",
     "format": "pnpm -C apps/desktop format",
     "check:agent-docs": "node scripts/check-agent-docs.mjs",
+    "check:release-version": "node --test scripts/check-release-version.test.mjs && node scripts/check-release-version.mjs",
+    "check:release-workflow": "node --test scripts/release-workflow-policy.test.mjs",
+    "check:tauri-updater": "node --test scripts/tauri-updater-policy.test.mjs",
     "check:frontend-docs": "node scripts/check-frontend-docs.mjs",
     "check:backend-docs": "node --test scripts/backend-docs-policy.test.mjs && node scripts/check-backend-docs.mjs",
     "check:docs": "pnpm check:agent-docs && pnpm check:frontend-docs && pnpm check:backend-docs",
@@ -20,7 +23,7 @@
     "check:rust": "pnpm check:rust-deps && cargo fmt --all --check && cargo check --workspace && cargo test --workspace",
     "check:desktop": "pnpm -C apps/desktop check",
     "check:desktop:full": "pnpm -C apps/desktop check:full",
-    "check": "pnpm check:docs && pnpm check:desktop && pnpm check:rust",
+    "check": "pnpm check:release-version && pnpm check:release-workflow && pnpm check:tauri-updater && pnpm check:docs && pnpm check:desktop && pnpm check:rust",
     "tauri": "tauri"
   },
   "devDependencies": {

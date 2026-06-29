@@ -24,7 +24,9 @@ shiki
 cmdk
 react-resizable-panels
 @chenglou/pretext
+@tauri-apps/plugin-process
 @tauri-apps/plugin-store
+@tauri-apps/plugin-updater
 lucide-react
 clsx
 tailwind-merge
@@ -88,6 +90,9 @@ Application libraries:
 - `shiki` owns code block, command output, and diff-adjacent syntax highlighting.
 - `cmdk` owns command palette behavior.
 - `react-resizable-panels` owns resizable shell regions.
+- `@tauri-apps/plugin-updater` and `@tauri-apps/plugin-process` are used only
+  through `shared/tauri/updater`. Feature code must not import raw updater or
+  process plugin modules.
 - `@tauri-apps/plugin-store` owns non-sensitive local UI preferences.
 - `@chenglou/pretext` owns text measurement only through `shared/text-layout`.
 
@@ -351,6 +356,11 @@ Rules:
 - Tests, Storybook, and Playwright web mock E2E use mock clients.
 - Mock clients must not be selectable in production builds.
 - Tauri capabilities remain minimal and explicit.
+- Tauri updater/process plugin APIs go through `shared/tauri/updater`, not
+  feature components. The About settings tab may call this wrapper and must
+  reuse `get_app_info` for the installed version.
+- Release notes loaded from the updater source must render as plain text or
+  safe Markdown without raw HTML.
 - RunEvent schemas must reject raw thinking text. `assistant.delta` carries
   `messageId` and UI-safe `text`; `assistant.thinking.delta` carries only
   status or explicit UI-safe reasoning summaries.

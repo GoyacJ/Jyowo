@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { APP_LOCALES, type AppLocale } from '@/shared/i18n/locales'
 import { useUiStore } from '@/shared/state/ui-store'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
+import { AboutSettings } from './AboutSettings'
 import { ExecutionSettings } from './ExecutionSettings'
 import { MCPManager } from './MCPManager'
 import { ProviderSettingsForm } from './ProviderSettingsForm'
@@ -22,6 +23,7 @@ export function SettingsPage() {
             <TabsTrigger value="tools">{t('tabs.tools')}</TabsTrigger>
             <TabsTrigger value="mcp">{t('tabs.mcp')}</TabsTrigger>
             <TabsTrigger value="models">{t('tabs.models')}</TabsTrigger>
+            <TabsTrigger value="about">{t('tabs.about')}</TabsTrigger>
           </TabsList>
 
           <TabsContent className="space-y-5 pt-3" value="general">
@@ -39,6 +41,9 @@ export function SettingsPage() {
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="models">
             <ProviderSettingsForm />
+          </TabsContent>
+          <TabsContent className="space-y-5 pt-3" value="about">
+            <AboutSettings />
           </TabsContent>
         </Tabs>
       </div>
