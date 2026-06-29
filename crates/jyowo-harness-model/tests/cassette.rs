@@ -15,7 +15,7 @@ use harness_model::*;
 
 fn request() -> ModelRequest {
     ModelRequest {
-        model_id: "mock-model".to_owned(),
+        model_id: "test-model".to_owned(),
         messages: vec![Message {
             id: MessageId::new(),
             role: MessageRole::User,

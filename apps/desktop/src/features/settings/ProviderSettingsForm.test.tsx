@@ -10,13 +10,13 @@ import type {
   ListProviderSettingsResponse,
   ModelProviderCatalogResponse,
 } from '@/shared/tauri/commands'
-import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createTestCommandClient } from '@/testing/command-client'
 import { ProviderSettingsForm } from './ProviderSettingsForm'
 
 type ModelCatalogEntry = ModelProviderCatalogResponse['providers'][number]['models'][number]
 
-function renderProviderSettingsForm(commandClient: CommandClient = createMockCommandClient()) {
+function renderProviderSettingsForm(commandClient: CommandClient = createTestCommandClient()) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { gcTime: 0, retry: false },
@@ -131,7 +131,7 @@ const localModelDescriptor: ModelCatalogEntry = {
 describe('ProviderSettingsForm', () => {
   it('lets Minimax choose domestic or international base URL presets', async () => {
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       listModelProviderCatalog: vi.fn().mockResolvedValue({
         providers: [
           {
@@ -189,7 +189,7 @@ describe('ProviderSettingsForm', () => {
 
   it('shows provider service capabilities separately from model capabilities', async () => {
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       listModelProviderCatalog: vi.fn().mockResolvedValue({
         providers: [
           {
@@ -263,7 +263,7 @@ describe('ProviderSettingsForm', () => {
   })
 
   it('keeps creation in a dialog and shows selected profile details', async () => {
-    const client = createMockCommandClient({
+    const client = createTestCommandClient({
       providerSettingsList: {
         defaultConfigId: 'openai',
         configs: [
@@ -330,7 +330,7 @@ describe('ProviderSettingsForm', () => {
       status: 'saved',
     })
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       listProviderSettings: vi.fn().mockResolvedValue({
         defaultConfigId: 'openai',
         configs: [
@@ -404,7 +404,7 @@ describe('ProviderSettingsForm', () => {
       createDeferred<Awaited<ReturnType<CommandClient['saveProviderSettings']>>>()
     const saveProviderSettings = vi.fn(() => saveDeferred.promise)
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       listProviderSettings: vi
         .fn()
         .mockResolvedValueOnce(initialSettings)
@@ -454,7 +454,7 @@ describe('ProviderSettingsForm', () => {
 
   it('renders provider models from the backend catalog', async () => {
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       listModelProviderCatalog: vi.fn().mockResolvedValue({
         providers: [
           {
@@ -501,7 +501,7 @@ describe('ProviderSettingsForm', () => {
   it('rejects invalid input before calling the backend', async () => {
     const saveProviderSettings = vi.fn()
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       listModelProviderCatalog: vi.fn().mockResolvedValue({
         providers: [
           {
@@ -542,7 +542,7 @@ describe('ProviderSettingsForm', () => {
       runtimeStatus: { kind: 'runnable' },
     } as const
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       listModelProviderCatalog: vi.fn().mockResolvedValue({
         providers: [
           {
@@ -591,7 +591,7 @@ describe('ProviderSettingsForm', () => {
 
   it('shows model capabilities in selected profile details', async () => {
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       listProviderSettings: vi.fn().mockResolvedValue({
         defaultConfigId: 'openai',
         configs: [
@@ -640,7 +640,7 @@ describe('ProviderSettingsForm', () => {
       status: 'saved',
     })
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       listProviderSettings: vi.fn().mockResolvedValue({
         defaultConfigId: 'local',
         configs: [
@@ -726,7 +726,7 @@ describe('ProviderSettingsForm', () => {
         }),
     )
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       saveProviderSettings,
     }
 
@@ -745,7 +745,7 @@ describe('ProviderSettingsForm', () => {
 
   it('surfaces backend errors without keeping the submitted key visible', async () => {
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       saveProviderSettings: vi.fn().mockRejectedValue({
         code: 'INVALID_PAYLOAD',
         message: 'modelId must be supported by the selected provider',
@@ -771,7 +771,7 @@ describe('ProviderSettingsForm', () => {
   it('shows saved secret reference and masks the raw key after save', async () => {
     const rawKey = 'provider-test-token'
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       saveProviderSettings: vi.fn().mockResolvedValue({
         config: {
           protocol: 'responses',
@@ -818,7 +818,7 @@ describe('ProviderSettingsForm', () => {
     const requestProviderConfigApiKeyReveal = vi.fn()
     const getProviderConfigApiKey = vi.fn()
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       getProviderConfigApiKey,
       listProviderSettings: vi.fn().mockResolvedValue({
         defaultConfigId: 'openai',
@@ -866,7 +866,7 @@ describe('ProviderSettingsForm', () => {
       configId: 'openai',
     })
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       getProviderConfigApiKey,
       listProviderSettings: vi.fn().mockResolvedValue({
         defaultConfigId: 'openai',
@@ -923,7 +923,7 @@ describe('ProviderSettingsForm', () => {
       status: 'accepted',
     })
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       listProviderSettings: vi.fn().mockResolvedValue({
         defaultConfigId: 'openai',
         configs: [
@@ -970,7 +970,7 @@ describe('ProviderSettingsForm', () => {
       status: 'accepted',
     })
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       listProviderSettings: vi.fn().mockResolvedValue({
         defaultConfigId: 'openai',
         configs: [

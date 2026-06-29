@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CommandClient, ConversationEventBatchPayload } from '@/shared/tauri/commands'
-import { createMockCommandClient } from '@/shared/tauri/mock-client'
+import { createTestCommandClient } from '@/testing/command-client'
 import type { ConversationTimelineAction } from './conversation-timeline-actions'
 import { createConversationTimelineSource } from './conversation-timeline-source'
 
@@ -50,7 +50,7 @@ function createClient(overrides: Partial<CommandClient> = {}) {
   let listener: ((batch: ConversationEventBatchPayload) => void) | undefined
   const unlisten = vi.fn()
   const client = {
-    ...createMockCommandClient(),
+    ...createTestCommandClient(),
     listenConversationEventBatches: vi.fn(async (callback) => {
       listener = callback
       return unlisten

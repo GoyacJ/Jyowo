@@ -1,5 +1,5 @@
 #![cfg(any(
-    feature = "mock",
+    feature = "testing",
     feature = "anthropic",
     feature = "openai",
     feature = "openrouter",
@@ -97,12 +97,12 @@ where
     assert!(matches!(error, ModelError::DeadlineExceeded(_)));
 }
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "testing")]
 #[tokio::test]
-async fn contract_mock_provider() {
+async fn contract_test_provider() {
     run_contract_tests(
-        MockProvider::default(),
-        request("mock-model", ModelProtocol::Messages),
+        TestModelProvider::default(),
+        request("test-model", ModelProtocol::Messages),
     )
     .await;
 }

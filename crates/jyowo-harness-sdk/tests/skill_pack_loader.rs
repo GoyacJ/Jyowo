@@ -81,7 +81,7 @@ fn harness_registers_locked_skill_version_snapshot() {
 
     block_on(async {
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .build()

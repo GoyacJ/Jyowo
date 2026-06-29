@@ -6,12 +6,12 @@ import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { CommandClient } from '@/shared/tauri/commands'
-import { createMockCommandClient, createRejectedCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createRejectedTestCommandClient, createTestCommandClient } from '@/testing/command-client'
 
 import { EvalLabPage } from './EvalLabPage'
 
-function renderEvalLabPage(commandClient: CommandClient = createMockCommandClient()) {
+function renderEvalLabPage(commandClient: CommandClient = createTestCommandClient()) {
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -32,7 +32,7 @@ function renderEvalLabPage(commandClient: CommandClient = createMockCommandClien
 
 describe('EvalLabPage', () => {
   it('loads eval cases from the command client and runs a selected case', async () => {
-    const commandClient = createMockCommandClient()
+    const commandClient = createTestCommandClient()
     const listEvalCases = vi.fn(commandClient.listEvalCases)
     const runEvalCase = vi.fn(commandClient.runEvalCase)
     const trackedClient = {
@@ -54,7 +54,7 @@ describe('EvalLabPage', () => {
   })
 
   it('renders eval loading and error states without raw provider details', async () => {
-    const { unmount } = renderEvalLabPage(createMockCommandClient({ delayMs: 10 }))
+    const { unmount } = renderEvalLabPage(createTestCommandClient({ delayMs: 10 }))
 
     expect(screen.getByText('Loading eval cases')).toBeInTheDocument()
     expect(await screen.findByRole('article', { name: 'Regression smoke' })).toBeInTheDocument()
@@ -62,7 +62,9 @@ describe('EvalLabPage', () => {
     unmount()
 
     renderEvalLabPage(
-      createRejectedCommandClient(new Error('provider failed with Authorization Bearer secret')),
+      createRejectedTestCommandClient(
+        new Error('provider failed with Authorization Bearer secret'),
+      ),
     )
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Eval results could not be loaded.')

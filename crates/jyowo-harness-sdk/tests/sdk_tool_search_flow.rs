@@ -55,7 +55,7 @@ async fn sdk_tool_search_flow_searches_deferred_tools_by_default() {
             .build()
             .expect("tool registry should build"),
     )
-    .with_permission_broker(MockBroker::new(vec![Decision::AllowOnce]))
+    .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
     .build()
     .await
     .expect("harness should build");
@@ -80,7 +80,7 @@ async fn sdk_tool_search_flow_searches_deferred_tools_by_default() {
 
 #[tokio::test]
 async fn sdk_tool_search_flow_session_disabled_removes_search_tool() {
-    let model = Arc::new(MockProvider::default());
+    let model = Arc::new(TestModelProvider::default());
     let harness = harness_with_registry(
         model.clone(),
         Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))),
@@ -109,7 +109,7 @@ async fn sdk_tool_search_flow_session_disabled_removes_search_tool() {
 
 #[tokio::test]
 async fn sdk_tool_search_flow_global_disabled_overrides_session_search() {
-    let model = Arc::new(MockProvider::default());
+    let model = Arc::new(TestModelProvider::default());
     let harness = harness_with_registry(
         model.clone(),
         Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))),
@@ -177,7 +177,7 @@ async fn sdk_tool_search_flow_custom_scorer_controls_match_order() {
             .build()
             .expect("tool registry should build"),
     )
-    .with_permission_broker(MockBroker::new(vec![Decision::AllowOnce]))
+    .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
     .with_tool_search_scorer(PreferBetaScorer)
     .build()
     .await

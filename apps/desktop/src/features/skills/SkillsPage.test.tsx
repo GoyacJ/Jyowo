@@ -13,16 +13,16 @@ import type {
   ListSkillsResponse,
   SkillCatalogInstallProgressPayload,
 } from '@/shared/tauri/commands'
-import { createMockCommandClient, createRejectedCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createRejectedTestCommandClient, createTestCommandClient } from '@/testing/command-client'
 
-const openMock = vi.hoisted(() => vi.fn())
+const openDialogSpy = vi.hoisted(() => vi.fn())
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
-  open: openMock,
+  open: openDialogSpy,
 }))
 
-function renderSkillsPage(commandClient: CommandClient = createMockCommandClient()) {
+function renderSkillsPage(commandClient: CommandClient = createTestCommandClient()) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -45,7 +45,7 @@ function renderSkillsPage(commandClient: CommandClient = createMockCommandClient
 
 describe('SkillsPage', () => {
   beforeEach(() => {
-    openMock.mockReset()
+    openDialogSpy.mockReset()
   })
 
   it('renders skills, tools, and MCP sections as tabs', async () => {
@@ -75,15 +75,15 @@ describe('SkillsPage', () => {
   })
 
   it('renders loading, empty, and error states for skill list', async () => {
-    renderSkillsPage(createMockCommandClient({ delayMs: 50 }))
+    renderSkillsPage(createTestCommandClient({ delayMs: 50 }))
 
     expect(screen.getByText('正在加载技能。')).toBeInTheDocument()
 
-    renderSkillsPage(createMockCommandClient({ skills: { skills: [] } }))
+    renderSkillsPage(createTestCommandClient({ skills: { skills: [] } }))
 
     expect(await screen.findByText('暂无技能配置。')).toBeInTheDocument()
 
-    renderSkillsPage(createRejectedCommandClient(new Error('raw secret path')))
+    renderSkillsPage(createRejectedTestCommandClient(new Error('raw secret path')))
 
     expect(await screen.findByText('技能无法加载。')).toBeInTheDocument()
     expect(screen.queryByText(/raw secret path/)).not.toBeInTheDocument()
@@ -120,7 +120,7 @@ describe('SkillsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /style.md/ }))
 
     expect(
-      await within(detail).findByText('Mock content for references/style.md'),
+      await within(detail).findByText('Fixture content for references/style.md'),
     ).toBeInTheDocument()
 
     fireEvent.mouseDown(within(detail).getByRole('tab', { name: '参数' }))
@@ -150,7 +150,7 @@ describe('SkillsPage', () => {
       }),
     }
 
-    renderSkillsPage(createMockCommandClient({ skills }))
+    renderSkillsPage(createTestCommandClient({ skills }))
 
     expect(await screen.findByRole('button', { name: /Skill package 01/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Skill package 09/ })).not.toBeInTheDocument()
@@ -162,7 +162,7 @@ describe('SkillsPage', () => {
   })
 
   it('imports a skill package through the system directory picker', async () => {
-    openMock.mockResolvedValue('/tmp/release-notes')
+    openDialogSpy.mockResolvedValue('/tmp/release-notes')
     const importSkill = vi.fn().mockResolvedValue({
       skill: {
         description: 'Imported skill',
@@ -176,7 +176,7 @@ describe('SkillsPage', () => {
       },
     })
     const client = {
-      ...createMockCommandClient({ skills: { skills: [] } }),
+      ...createTestCommandClient({ skills: { skills: [] } }),
       importSkill,
     }
 
@@ -184,7 +184,9 @@ describe('SkillsPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '导入' }))
 
-    await waitFor(() => expect(openMock).toHaveBeenCalledWith({ directory: true, multiple: false }))
+    await waitFor(() =>
+      expect(openDialogSpy).toHaveBeenCalledWith({ directory: true, multiple: false }),
+    )
     await waitFor(() => expect(importSkill).toHaveBeenCalledWith('/tmp/release-notes'))
   })
 
@@ -203,7 +205,7 @@ describe('SkillsPage', () => {
       },
     })
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       installSkillFromCatalog,
     }
 
@@ -229,7 +231,7 @@ describe('SkillsPage', () => {
   })
 
   it('shows running catalog install progress on the catalog entry card', async () => {
-    const client = createMockCommandClient({
+    const client = createTestCommandClient({
       skillCatalogInstallTasks: {
         tasks: [
           {
@@ -260,7 +262,7 @@ describe('SkillsPage', () => {
       .fn()
       .mockRejectedValue({ code: 'missing_skill_file', message: '缺少 SKILL.md。' })
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       installSkillFromCatalog,
     }
 
@@ -310,7 +312,7 @@ describe('SkillsPage', () => {
       },
     )
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       installSkillFromCatalog,
       listenSkillCatalogInstallProgress,
     }
@@ -369,7 +371,7 @@ describe('SkillsPage', () => {
         status: 'blocked',
       },
     }
-    const client = createMockCommandClient({
+    const client = createTestCommandClient({
       skillCatalogEntries: { entries: [blockedDetail.entry] },
       skillCatalogEntry: blockedDetail,
     })
@@ -420,7 +422,7 @@ describe('SkillsPage', () => {
       }),
     )
     const client = {
-      ...createMockCommandClient({ skillCatalogEntry: detail }),
+      ...createTestCommandClient({ skillCatalogEntry: detail }),
       getSkillCatalogFile,
     }
 
@@ -470,7 +472,7 @@ describe('SkillsPage', () => {
     }
     const installSkillFromCatalog = vi.fn()
     const client = {
-      ...createMockCommandClient({ skillCatalogEntry: blockedDetail }),
+      ...createTestCommandClient({ skillCatalogEntry: blockedDetail }),
       installSkillFromCatalog,
     }
 
@@ -519,7 +521,7 @@ describe('SkillsPage', () => {
         ],
       })
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       listSkillCatalogEntries,
     }
 
@@ -571,7 +573,7 @@ describe('SkillsPage', () => {
     const setSkillEnabled = vi.fn().mockResolvedValue({ skill: skills.skills[0] })
     const deleteSkill = vi.fn().mockResolvedValue({ id: 'skill-001', status: 'deleted' })
     const client = {
-      ...createMockCommandClient({ skills }),
+      ...createTestCommandClient({ skills }),
       deleteSkill,
       setSkillEnabled,
     }

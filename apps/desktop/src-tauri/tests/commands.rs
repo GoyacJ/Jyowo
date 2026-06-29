@@ -90,8 +90,8 @@ use jyowo_harness_sdk::ext::{
 };
 use jyowo_harness_sdk::ext::{ContentDelta, ModelStreamEvent};
 use jyowo_harness_sdk::testing::{
-    InMemoryEventStore, MockMemoryProvider, MockProvider, NoopRedactor, NoopSandbox,
-    ScriptedProvider, ScriptedResponse,
+    InMemoryEventStore, InMemoryMemoryProvider, NoopRedactor, NoopSandbox, ScriptedProvider,
+    ScriptedResponse, TestModelProvider,
 };
 use jyowo_harness_sdk::{
     ConversationEventsPageRequest, Harness, HarnessOptions, McpConfig, StreamPermissionRuntime,
@@ -2450,7 +2450,7 @@ async fn mcp_diagnostic_store_retains_recent_records_and_filters_by_server() {
 
 #[tokio::test]
 async fn memory_commands_list_inspect_update_delete_and_export_visible_items() {
-    let provider = Arc::new(MockMemoryProvider::new("mock"));
+    let provider = Arc::new(InMemoryMemoryProvider::new("test"));
     let state = runtime_state_with_memory_provider(provider.clone()).await;
     let session_id = state.default_conversation_id();
     let visible = test_memory_record(session_id, "Prefers concise Chinese responses");
@@ -2853,7 +2853,7 @@ async fn get_and_delete_conversation_with_runtime_state_survive_runtime_option_c
     let harness = state
         .harness()
         .expect("runtime state should retain the configured harness");
-    state.replace_harness(harness, "mock-model".to_owned(), ModelProtocol::Responses);
+    state.replace_harness(harness, "test-model".to_owned(), ModelProtocol::Responses);
 
     let detail = get_conversation_with_runtime_state(
         GetConversationRequest {
@@ -8785,7 +8785,7 @@ async fn runtime_state_rejects_harness_and_stream_permission_runtime_from_differ
     let harness = Arc::new(
         Harness::builder()
             .with_options(test_harness_options(&workspace))
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -9126,7 +9126,7 @@ async fn runtime_state_with_harness_for_workspace(workspace: PathBuf) -> Desktop
     let harness = Arc::new(
         Harness::builder()
             .with_options(test_harness_options(&workspace))
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -9147,7 +9147,7 @@ async fn runtime_state_with_harness_for_workspace(workspace: PathBuf) -> Desktop
 }
 
 async fn runtime_state_with_memory_provider(
-    provider: Arc<MockMemoryProvider>,
+    provider: Arc<InMemoryMemoryProvider>,
 ) -> DesktopRuntimeState {
     let workspace = unique_workspace("memory-provider");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -9159,7 +9159,7 @@ async fn runtime_state_with_memory_provider(
     let harness = Arc::new(
         Harness::builder()
             .with_options(test_harness_options(&workspace))
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -9206,7 +9206,7 @@ async fn runtime_state_with_mcp_registry_for_workspace(
     let harness = Arc::new(
         Harness::builder()
             .with_options(test_harness_options(&workspace))
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker_arc(
@@ -9279,7 +9279,7 @@ async fn runtime_state_with_scripted_model_for_workspace(
 fn test_harness_options(workspace: &Path) -> HarnessOptions {
     let mut options = HarnessOptions::default();
     options.workspace_root = workspace.to_path_buf();
-    options.model_id = "mock-model".to_owned();
+    options.model_id = "test-model".to_owned();
     options
 }
 

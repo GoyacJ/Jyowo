@@ -23,7 +23,7 @@ use serde_json::json;
 
 #[tokio::test]
 async fn sdk_workspace_flow_binds_session_loads_bootstrap_and_merges_defaults() {
-    let model = Arc::new(MockProvider::default());
+    let model = Arc::new(TestModelProvider::default());
     let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let harness = Harness::builder()
         .with_model_arc(model.clone())
@@ -44,7 +44,7 @@ async fn sdk_workspace_flow_binds_session_loads_bootstrap_and_merges_defaults() 
                 .with_bootstrap_files(vec![BootstrapFileSpec::required("AGENTS.md")])
                 .with_default_session_options(
                     SessionOptions::default()
-                        .with_model_id("mock-model")
+                        .with_model_id("test-model")
                         .with_model_extra(json!({ "source": "workspace" }))
                         .with_system_prompt_addendum("workspace default"),
                 ),
@@ -68,7 +68,7 @@ async fn sdk_workspace_flow_binds_session_loads_bootstrap_and_merges_defaults() 
         .into_iter()
         .next()
         .expect("model should receive one request");
-    assert_eq!(request.model_id, "mock-model");
+    assert_eq!(request.model_id, "test-model");
     assert_eq!(request.extra["source"], json!("workspace"));
     assert!(request.extra["relay_logical_call_key"]
         .as_str()
@@ -99,7 +99,7 @@ async fn sdk_skill_flow_uses_turn_snapshot_then_next_turn_sees_reload() {
         .with_model_arc(model)
         .with_store_arc(store.clone())
         .with_sandbox(NoopSandbox::new())
-        .with_permission_broker(MockBroker::new(vec![
+        .with_permission_broker(TestBroker::new(vec![
             Decision::AllowOnce,
             Decision::AllowOnce,
         ]))
@@ -183,11 +183,11 @@ impl SkillListTwiceProvider {
 #[async_trait]
 impl ModelProvider for SkillListTwiceProvider {
     fn provider_id(&self) -> &str {
-        "mock"
+        "test"
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        MockProvider::default().supported_models()
+        TestModelProvider::default().supported_models()
     }
 
     async fn infer(

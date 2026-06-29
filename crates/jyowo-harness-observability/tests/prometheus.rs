@@ -14,7 +14,7 @@ fn prometheus_exporter_renders_usage_scrape() {
     let observer = Observer::builder().with_prometheus(bind).build().unwrap();
 
     observer.usage.record(
-        UsageScope::Model("mock/usage-model".to_owned()),
+        UsageScope::Model("test/usage-model".to_owned()),
         None,
         UsageSnapshot {
             input_tokens: 3,
@@ -31,7 +31,7 @@ fn prometheus_exporter_renders_usage_scrape() {
     let scrape = exporter.scrape();
 
     assert!(scrape.contains("jyowo_harness_usage_input_tokens"));
-    assert!(scrape.contains("scope=\"model\",id=\"mock/usage-model\"} 3"));
+    assert!(scrape.contains("scope=\"model\",id=\"test/usage-model\"} 3"));
     assert!(scrape.contains("jyowo_harness_usage_cost_micros{scope=\"model\""));
 }
 
@@ -41,7 +41,7 @@ fn prometheus_exporter_renders_model_metrics_scrape() {
     let observer = Observer::builder().with_prometheus(bind).build().unwrap();
 
     observer.model_metrics.record_infer(
-        "mock/usage-model",
+        "test/usage-model",
         Duration::from_millis(42),
         &UsageSnapshot {
             input_tokens: 3,
@@ -54,33 +54,33 @@ fn prometheus_exporter_renders_model_metrics_scrape() {
     );
     observer
         .model_metrics
-        .record_credential_pool_cooldown("mock/usage-model");
+        .record_credential_pool_cooldown("test/usage-model");
     observer
         .model_metrics
-        .record_model_error("mock/usage-model", "timeout");
+        .record_model_error("test/usage-model", "timeout");
     observer
         .model_metrics
-        .record_stream_error("mock/usage-model", "provider");
+        .record_stream_error("test/usage-model", "provider");
     observer
         .model_metrics
-        .record_aux_queue_wait("mock/usage-model", Duration::from_millis(9));
+        .record_aux_queue_wait("test/usage-model", Duration::from_millis(9));
 
     let scrape = observer.prometheus.as_ref().unwrap().scrape();
 
-    assert!(scrape.contains("jyowo_harness_model_infer_duration_ms{model=\"mock/usage-model\"} 42"));
-    assert!(scrape.contains("jyowo_harness_model_tokens_input{model=\"mock/usage-model\"} 3"));
-    assert!(scrape.contains("jyowo_harness_model_tokens_output{model=\"mock/usage-model\"} 5"));
+    assert!(scrape.contains("jyowo_harness_model_infer_duration_ms{model=\"test/usage-model\"} 42"));
+    assert!(scrape.contains("jyowo_harness_model_tokens_input{model=\"test/usage-model\"} 3"));
+    assert!(scrape.contains("jyowo_harness_model_tokens_output{model=\"test/usage-model\"} 5"));
     assert!(
-        scrape.contains("jyowo_harness_model_cache_creation_tokens{model=\"mock/usage-model\"} 7")
+        scrape.contains("jyowo_harness_model_cache_creation_tokens{model=\"test/usage-model\"} 7")
     );
-    assert!(scrape.contains("jyowo_harness_model_cache_read_tokens{model=\"mock/usage-model\"} 2"));
+    assert!(scrape.contains("jyowo_harness_model_cache_read_tokens{model=\"test/usage-model\"} 2"));
     assert!(scrape
-        .contains("jyowo_harness_credential_pool_cooldowns_total{model=\"mock/usage-model\"} 1"));
+        .contains("jyowo_harness_credential_pool_cooldowns_total{model=\"test/usage-model\"} 1"));
     assert!(scrape.contains(
-        "jyowo_harness_model_errors_total{model=\"mock/usage-model\",class=\"timeout\"} 1"
+        "jyowo_harness_model_errors_total{model=\"test/usage-model\",class=\"timeout\"} 1"
     ));
     assert!(scrape.contains(
-        "jyowo_harness_model_stream_error_total{model=\"mock/usage-model\",class=\"provider\"} 1"
+        "jyowo_harness_model_stream_error_total{model=\"test/usage-model\",class=\"provider\"} 1"
     ));
-    assert!(scrape.contains("jyowo_harness_aux_model_queue_wait_ms{model=\"mock/usage-model\"} 9"));
+    assert!(scrape.contains("jyowo_harness_aux_model_queue_wait_ms{model=\"test/usage-model\"} 9"));
 }

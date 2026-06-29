@@ -10,12 +10,12 @@ import type {
   McpDiagnosticBatchPayload,
   McpServerSummary,
 } from '@/shared/tauri/commands'
-import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createTestCommandClient } from '@/testing/command-client'
 
 import { MCPManager } from './MCPManager'
 
-function renderMCPManager(commandClient: CommandClient = createMockCommandClient()) {
+function renderMCPManager(commandClient: CommandClient = createTestCommandClient()) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -55,7 +55,7 @@ function mcpServer(overrides: Partial<McpServerSummary> = {}): McpServerSummary 
 describe('MCPManager', () => {
   it('renders the loading state while MCP servers load', () => {
     renderMCPManager({
-      ...createMockCommandClient({ mcpDiagnostics: { events: [] } }),
+      ...createTestCommandClient({ mcpDiagnostics: { events: [] } }),
       listMcpServers: vi.fn(() => new Promise<never>(() => undefined)),
     })
 
@@ -64,7 +64,7 @@ describe('MCPManager', () => {
 
   it('renders a sanitized failure state when MCP servers cannot load', async () => {
     renderMCPManager({
-      ...createMockCommandClient({ mcpDiagnostics: { events: [] } }),
+      ...createTestCommandClient({ mcpDiagnostics: { events: [] } }),
       listMcpServers: vi.fn().mockRejectedValue(new Error('Authorization=Bearer mcp-secret-token')),
     })
 
@@ -74,7 +74,7 @@ describe('MCPManager', () => {
 
   it('renders an empty support surface when no MCP servers are configured', async () => {
     renderMCPManager(
-      createMockCommandClient({
+      createTestCommandClient({
         mcpDiagnostics: { events: [] },
         mcpServers: { servers: [] },
       }),
@@ -86,7 +86,7 @@ describe('MCPManager', () => {
 
   it('shows server status, origin, tool count, scope, and transport', async () => {
     renderMCPManager(
-      createMockCommandClient({
+      createTestCommandClient({
         mcpDiagnostics: { events: [] },
         mcpServers: {
           servers: [
@@ -130,7 +130,7 @@ describe('MCPManager', () => {
   it('rejects invalid config before calling the backend', async () => {
     const saveMcpServer = vi.fn()
     const client = {
-      ...createMockCommandClient({ mcpDiagnostics: { events: [] }, mcpServers: { servers: [] } }),
+      ...createTestCommandClient({ mcpDiagnostics: { events: [] }, mcpServers: { servers: [] } }),
       saveMcpServer,
     }
 
@@ -148,7 +148,7 @@ describe('MCPManager', () => {
   it('renders a sanitized connection failure without leaking raw backend details', async () => {
     const rawError = 'spawn failed: Authorization=Bearer mcp-secret-token'
     const client = {
-      ...createMockCommandClient({ mcpDiagnostics: { events: [] }, mcpServers: { servers: [] } }),
+      ...createTestCommandClient({ mcpDiagnostics: { events: [] }, mcpServers: { servers: [] } }),
       saveMcpServer: vi.fn().mockRejectedValue(new Error(rawError)),
     }
 
@@ -171,7 +171,7 @@ describe('MCPManager', () => {
   it('toggles a workspace-managed server', async () => {
     const setMcpServerEnabled = vi.fn().mockResolvedValue({ server: mcpServer({ enabled: false }) })
     const client = {
-      ...createMockCommandClient({
+      ...createTestCommandClient({
         mcpDiagnostics: { events: [] },
         mcpServers: { servers: [mcpServer()] },
       }),
@@ -188,7 +188,7 @@ describe('MCPManager', () => {
   it('restarts a workspace-managed server', async () => {
     const restartMcpServer = vi.fn().mockResolvedValue({ server: mcpServer() })
     const client = {
-      ...createMockCommandClient({
+      ...createTestCommandClient({
         mcpDiagnostics: { events: [] },
         mcpServers: { servers: [mcpServer()] },
       }),
@@ -211,7 +211,7 @@ describe('MCPManager', () => {
       .mockResolvedValueOnce({ servers: [] })
     const deleteMcpServer = vi.fn().mockResolvedValue({ id: 'github', status: 'deleted' })
     const client = {
-      ...createMockCommandClient({ mcpDiagnostics: { events: [] } }),
+      ...createTestCommandClient({ mcpDiagnostics: { events: [] } }),
       deleteMcpServer,
       listMcpServers,
     }
@@ -227,7 +227,7 @@ describe('MCPManager', () => {
   it('submits a stdio server payload from the dialog', async () => {
     const saveMcpServer = vi.fn().mockResolvedValue({ server: mcpServer({ status: 'configured' }) })
     const client = {
-      ...createMockCommandClient({ mcpDiagnostics: { events: [] }, mcpServers: { servers: [] } }),
+      ...createTestCommandClient({ mcpDiagnostics: { events: [] }, mcpServers: { servers: [] } }),
       saveMcpServer,
     }
 
@@ -280,7 +280,7 @@ describe('MCPManager', () => {
       .fn()
       .mockResolvedValue({ server: mcpServer({ id: 'remote-context', transport: 'http' }) })
     const client = {
-      ...createMockCommandClient({ mcpDiagnostics: { events: [] }, mcpServers: { servers: [] } }),
+      ...createTestCommandClient({ mcpDiagnostics: { events: [] }, mcpServers: { servers: [] } }),
       saveMcpServer,
     }
 
@@ -344,7 +344,7 @@ describe('MCPManager', () => {
     })
     const saveMcpServer = vi.fn().mockResolvedValue({ server: mcpServer({ status: 'configured' }) })
     const client = {
-      ...createMockCommandClient({
+      ...createTestCommandClient({
         mcpDiagnostics: { events: [] },
         mcpServers: { servers: [mcpServer()] },
       }),
@@ -380,7 +380,7 @@ describe('MCPManager', () => {
   it('renders live diagnostics without leaking raw payload details', async () => {
     let emitBatch: ((batch: McpDiagnosticBatchPayload) => void) | undefined
     const client = {
-      ...createMockCommandClient({
+      ...createTestCommandClient({
         mcpDiagnostics: { events: [] },
         mcpServers: { servers: [mcpServer()] },
         subscribeMcpDiagnostics: {

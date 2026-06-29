@@ -29,7 +29,7 @@ fn harness_builder_creates_testing_harness_and_session() {
         let workspace = unique_workspace("sdk-facade-session");
         std::fs::create_dir_all(&workspace).unwrap();
 
-        let model = Arc::new(MockProvider::default());
+        let model = Arc::new(TestModelProvider::default());
         let model_provider: Arc<dyn ModelProvider> = model.clone();
         let harness = Harness::builder()
             .with_model_arc(model_provider)
@@ -83,9 +83,9 @@ fn harness_builder_accepts_full_facade_dependencies_and_overrides() {
             display_name: "second".to_owned(),
             ..TenantPolicy::default()
         };
-        let first_model = Arc::new(MockProvider::default());
+        let first_model = Arc::new(TestModelProvider::default());
         let first_model_provider: Arc<dyn ModelProvider> = first_model.clone();
-        let second_model = Arc::new(MockProvider::default());
+        let second_model = Arc::new(TestModelProvider::default());
         let second_model_provider: Arc<dyn ModelProvider> = second_model.clone();
         let first_store: Arc<dyn EventStore> =
             Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
@@ -93,16 +93,16 @@ fn harness_builder_accepts_full_facade_dependencies_and_overrides() {
             Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let first_sandbox: Arc<dyn SandboxBackend> = Arc::new(NoopSandbox::new());
         let second_sandbox: Arc<dyn SandboxBackend> = Arc::new(NoopSandbox::new());
-        let first_memory = Arc::new(MockMemoryProvider::new("first-memory"));
-        let second_memory = Arc::new(MockMemoryProvider::new("second-memory"));
+        let first_memory = Arc::new(InMemoryMemoryProvider::new("first-memory"));
+        let second_memory = Arc::new(InMemoryMemoryProvider::new("second-memory"));
         let aux = TestAuxModelProvider::default();
         let tool_registry = ToolRegistry::builder()
-            .with_tool(Box::new(MockTool::new("mock_tool")))
+            .with_tool(Box::new(TestTool::new("test_tool")))
             .build()
             .expect("tool registry should build");
         let hook_registry = HookRegistry::builder()
-            .with_hook(Box::new(MockHookHandler::new(
-                "mock-hook",
+            .with_hook(Box::new(TestHookHandler::new(
+                "test-hook",
                 vec![HookEventKind::UserPromptSubmit],
             )))
             .build()
@@ -113,7 +113,7 @@ fn harness_builder_accepts_full_facade_dependencies_and_overrides() {
             .with_model_id("first-model")
             .with_model_arc(first_model_provider)
             .with_model_arc(second_model_provider)
-            .with_model_id("mock-model")
+            .with_model_id("test-model")
             .with_store_arc(first_store)
             .with_store_arc(second_store)
             .with_sandbox_arc(first_sandbox)
@@ -138,7 +138,7 @@ fn harness_builder_accepts_full_facade_dependencies_and_overrides() {
 
         let harness = builder.build().await.expect("full builder should build");
 
-        assert_eq!(harness.options().model_id, "mock-model");
+        assert_eq!(harness.options().model_id, "test-model");
         assert_eq!(harness.options().tenant_policy.display_name, "second");
         assert_eq!(
             harness
@@ -175,7 +175,7 @@ fn harness_builder_injects_model_middlewares_into_session_engine() {
         let workspace = unique_workspace("sdk-facade-model-middleware");
         std::fs::create_dir_all(&workspace).unwrap();
 
-        let model = Arc::new(MockProvider::default());
+        let model = Arc::new(TestModelProvider::default());
         let model_provider: Arc<dyn ModelProvider> = model.clone();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let middleware: Arc<dyn InferMiddleware> = Arc::new(RecordingModelMiddleware {
@@ -215,7 +215,7 @@ fn harness_builder_installs_integrity_checked_decision_persistence() {
     block_on(async {
         let persistence = Arc::new(RecordingDecisionPersistence::trusted());
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_rule_provider(Arc::new(StaticRuleProvider))
@@ -240,7 +240,7 @@ fn harness_builder_installs_integrity_checked_decision_persistence() {
 fn harness_builder_applies_policy_deny_gate_to_explicit_permission_broker() {
     block_on(async {
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_permission_broker_arc(Arc::new(StaticPermissionBroker(Decision::AllowOnce)))
@@ -268,7 +268,7 @@ fn harness_builder_applies_policy_deny_gate_to_explicit_permission_broker() {
 fn policy_gated_permission_broker_preserves_explicit_inner_hard_policy_probe() {
     block_on(async {
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_permission_broker_arc(Arc::new(HardPolicyPermissionBroker))
@@ -294,7 +294,7 @@ fn policy_gated_permission_broker_preserves_explicit_inner_hard_policy_probe() {
 fn harness_builder_rejects_untrusted_decision_persistence() {
     block_on(async {
         let err = match Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_rule_provider(Arc::new(StaticRuleProvider))
@@ -322,7 +322,7 @@ fn harness_resolves_stream_permission_requests() {
         });
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker(broker, resolver)
@@ -403,7 +403,7 @@ fn harness_resolves_stream_elicitation_requests() {
         let request_id = RequestId::new();
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_elicitation_handler(handler.clone())
@@ -438,15 +438,15 @@ fn harness_resolves_stream_elicitation_requests() {
 }
 
 #[test]
-fn testing_module_exports_expected_mocks() {
-    let store: MockEventStore = mock_event_store(Arc::new(NoopRedactor));
-    let memory = MockMemoryProvider::new("mock-memory");
-    let tool = MockTool::new("mock-tool");
-    let hook = MockHookHandler::new("mock-hook", vec![HookEventKind::UserPromptSubmit]);
+fn testing_module_exports_expected_testing_adapters() {
+    let store: TestEventStore = test_event_store(Arc::new(NoopRedactor));
+    let memory = InMemoryMemoryProvider::new("test-memory");
+    let tool = TestTool::new("test-tool");
+    let hook = TestHookHandler::new("test-hook", vec![HookEventKind::UserPromptSubmit]);
 
-    assert_eq!(memory.provider_id(), "mock-memory");
-    assert_eq!(tool.descriptor().name, "mock-tool");
-    assert_eq!(hook.handler_id(), "mock-hook");
+    assert_eq!(memory.provider_id(), "test-memory");
+    assert_eq!(tool.descriptor().name, "test-tool");
+    assert_eq!(hook.handler_id(), "test-hook");
     drop(store);
 }
 
@@ -486,7 +486,7 @@ fn session_push_context_patch_injects_knowledge_retrieval_before_turn() {
     block_on(async {
         let workspace = unique_workspace("sdk-facade-context-patch");
         std::fs::create_dir_all(&workspace).unwrap();
-        let model = Arc::new(MockProvider::default());
+        let model = Arc::new(TestModelProvider::default());
         let session_id = SessionId::new();
         let harness = Harness::builder()
             .with_model_arc(model.clone())
@@ -581,7 +581,7 @@ fn harness_can_create_workspace_directory() {
         let workspace = unique_workspace("sdk-facade-workspace");
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .build()
@@ -602,7 +602,7 @@ fn create_workspace_initializes_governed_layout() {
     block_on(async {
         let workspace = unique_workspace("sdk-facade-workspace-layout");
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .build()
@@ -652,13 +652,13 @@ fn permission_request() -> PermissionRequest {
         tenant_id: TenantId::SINGLE,
         session_id: SessionId::new(),
         tool_use_id: ToolUseId::new(),
-        tool_name: "mock-tool".to_owned(),
+        tool_name: "test-tool".to_owned(),
         subject: PermissionSubject::Custom {
             kind: "test".to_owned(),
             payload: json!({}),
         },
         severity: Severity::Low,
-        scope_hint: DecisionScope::ToolName("mock-tool".to_owned()),
+        scope_hint: DecisionScope::ToolName("test-tool".to_owned()),
         created_at: harness_contracts::now(),
     }
 }
@@ -705,7 +705,7 @@ async fn wait_for_pending_permission(
 
 #[derive(Default)]
 struct TestAuxModelProvider {
-    inner: Arc<MockProvider>,
+    inner: Arc<TestModelProvider>,
 }
 
 #[async_trait]
@@ -770,9 +770,9 @@ impl RuleProvider for PolicyDenyRuleProvider {
         _tenant: TenantId,
     ) -> Result<Vec<PermissionRule>, harness_contracts::PermissionError> {
         Ok(vec![PermissionRule {
-            id: "deny-mock-tool".to_owned(),
+            id: "deny-test-tool".to_owned(),
             priority: 0,
-            scope: DecisionScope::ToolName("mock-tool".to_owned()),
+            scope: DecisionScope::ToolName("test-tool".to_owned()),
             action: RuleAction::Deny,
             source: RuleSource::Policy,
         }])

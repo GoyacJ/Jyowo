@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { AppI18nProvider } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
-import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createTestCommandClient } from '@/testing/command-client'
 
 import { SettingsPage } from './SettingsPage'
 
@@ -21,7 +21,7 @@ function renderSettingsPage() {
 
   function Wrapper({ children }: { children: ReactNode }) {
     return (
-      <CommandClientProvider client={createMockCommandClient()}>
+      <CommandClientProvider client={createTestCommandClient()}>
         <QueryClientProvider client={queryClient}>
           <AppI18nProvider>{children}</AppI18nProvider>
         </QueryClientProvider>

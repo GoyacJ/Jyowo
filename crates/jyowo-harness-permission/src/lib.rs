@@ -19,8 +19,6 @@ pub mod dedup;
 pub mod direct;
 #[cfg(feature = "integrity")]
 pub mod integrity_signer;
-#[cfg(any(test, feature = "mock"))]
-pub mod mock;
 pub mod persistence;
 #[cfg(feature = "rule-engine")]
 pub mod providers;
@@ -29,6 +27,8 @@ pub mod rule;
 pub mod rule_engine;
 #[cfg(feature = "stream")]
 pub mod stream;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 #[cfg(feature = "auto-mode")]
 pub use aux_llm::*;
@@ -42,8 +42,6 @@ pub use dedup::*;
 pub use direct::*;
 #[cfg(feature = "integrity")]
 pub use integrity_signer::*;
-#[cfg(any(test, feature = "mock"))]
-pub use mock::*;
 #[cfg(feature = "integrity")]
 pub use persistence::{
     FileDecisionPersistence, NoopPermissionTamperEventSink, PermissionTamperEventSink,
@@ -55,3 +53,5 @@ pub use rule::*;
 pub use rule_engine::*;
 #[cfg(feature = "stream")]
 pub use stream::*;
+#[cfg(any(test, feature = "testing"))]
+pub use testing::*;

@@ -15,7 +15,7 @@ fn audit_query_enforces_trust_and_tenant_scope() {
     block_on(async {
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .build()

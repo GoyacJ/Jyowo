@@ -14,16 +14,16 @@ pub mod conversation_read_model;
 pub mod conversation_worktree_projector;
 #[cfg(feature = "jsonl")]
 pub mod jsonl;
-#[cfg(any(test, feature = "in-memory", feature = "mock"))]
+#[cfg(any(test, feature = "in-memory", feature = "testing"))]
 pub mod memory;
-#[cfg(any(test, feature = "mock"))]
-pub mod mock;
 pub mod projection;
 pub mod retention;
 pub mod snapshot;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod store;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod version;
 
 pub use audit::*;
@@ -33,14 +33,14 @@ pub use conversation_read_model::*;
 pub use conversation_worktree_projector::*;
 #[cfg(feature = "jsonl")]
 pub use jsonl::*;
-#[cfg(any(test, feature = "in-memory", feature = "mock"))]
+#[cfg(any(test, feature = "in-memory", feature = "testing"))]
 pub use memory::*;
-#[cfg(any(test, feature = "mock"))]
-pub use mock::*;
 pub use projection::*;
 pub use retention::*;
 pub use snapshot::*;
 #[cfg(feature = "sqlite")]
 pub use sqlite::*;
 pub use store::*;
+#[cfg(any(test, feature = "testing"))]
+pub use testing::*;
 pub use version::*;

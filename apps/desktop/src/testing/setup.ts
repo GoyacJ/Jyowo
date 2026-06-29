@@ -7,13 +7,13 @@ void appI18n.changeLanguage('en-US')
 window.scrollTo = () => {}
 Element.prototype.scrollIntoView = () => {}
 
-class ResizeObserverMock {
+class TestResizeObserver {
   observe() {}
   unobserve() {}
   disconnect() {}
 }
 
-globalThis.ResizeObserver = ResizeObserverMock
+globalThis.ResizeObserver = TestResizeObserver
 
 Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
   value(contextId: string) {

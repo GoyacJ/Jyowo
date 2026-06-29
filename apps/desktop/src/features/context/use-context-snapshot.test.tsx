@@ -4,12 +4,12 @@ import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { CommandClient } from '@/shared/tauri/commands'
-import { createMockCommandClient, createRejectedCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createRejectedTestCommandClient, createTestCommandClient } from '@/testing/command-client'
 
 import { useContextSnapshot } from './use-context-snapshot'
 
-function renderUseContextSnapshot(commandClient: CommandClient = createMockCommandClient()) {
+function renderUseContextSnapshot(commandClient: CommandClient = createTestCommandClient()) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -47,7 +47,7 @@ function renderUseContextSnapshot(commandClient: CommandClient = createMockComma
 }
 
 function renderDisabledUseContextSnapshot(
-  commandClient: CommandClient = createMockCommandClient(),
+  commandClient: CommandClient = createTestCommandClient(),
 ) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -86,13 +86,13 @@ describe('useContextSnapshot', () => {
   })
 
   it('surfaces command errors without turning empty context into data', async () => {
-    renderUseContextSnapshot(createRejectedCommandClient(new Error('Context unavailable')))
+    renderUseContextSnapshot(createRejectedTestCommandClient(new Error('Context unavailable')))
 
     expect(await screen.findByText('Context unavailable')).toBeInTheDocument()
   })
 
   it('does not request context when disabled', () => {
-    const commandClient = createMockCommandClient()
+    const commandClient = createTestCommandClient()
     const getContextSnapshot = vi.fn(commandClient.getContextSnapshot)
     const trackedClient = {
       ...commandClient,

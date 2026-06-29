@@ -14,11 +14,11 @@ fn tenant_policy_filters_tools_from_sdk_runtime() {
     block_on(async {
         let workspace = unique_workspace("sdk-tenant-tools");
         std::fs::create_dir_all(&workspace).unwrap();
-        let model = Arc::new(MockProvider::default());
+        let model = Arc::new(TestModelProvider::default());
         let model_provider: Arc<dyn ModelProvider> = model.clone();
         let registry = ToolRegistry::builder()
-            .with_tool(Box::new(MockTool::new("allowed_tool")))
-            .with_tool(Box::new(MockTool::new("blocked_tool")))
+            .with_tool(Box::new(TestTool::new("allowed_tool")))
+            .with_tool(Box::new(TestTool::new("blocked_tool")))
             .build()
             .unwrap();
         let harness = Harness::builder()
@@ -56,7 +56,7 @@ fn tenant_policy_rejects_disallowed_provider() {
         let workspace = unique_workspace("sdk-tenant-provider");
         std::fs::create_dir_all(&workspace).unwrap();
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(std::sync::Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_tenant_policy(TenantPolicy {
@@ -73,7 +73,7 @@ fn tenant_policy_rejects_disallowed_provider() {
             .unwrap_err();
 
         assert!(
-            matches!(error, HarnessError::PermissionDenied(message) if message.contains("provider `mock`"))
+            matches!(error, HarnessError::PermissionDenied(message) if message.contains("provider `test`"))
         );
     });
 }
@@ -84,7 +84,7 @@ fn tenant_policy_enforces_max_concurrent_sessions() {
         let workspace = unique_workspace("sdk-tenant-session-limit");
         std::fs::create_dir_all(&workspace).unwrap();
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(std::sync::Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_tenant_policy(TenantPolicy {
@@ -122,7 +122,7 @@ fn tenant_policy_rejects_wrong_tenant_id() {
         let workspace = unique_workspace("sdk-tenant-id");
         std::fs::create_dir_all(&workspace).unwrap();
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(std::sync::Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .build()
@@ -144,7 +144,7 @@ fn tenant_policy_can_allow_adapter_scoped_tenant_ids() {
         let workspace = unique_workspace("sdk-tenant-scoped");
         std::fs::create_dir_all(&workspace).unwrap();
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(std::sync::Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_tenant_policy(TenantPolicy {

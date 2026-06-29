@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 
 #[tokio::test]
 async fn server_initialize_returns_capabilities() {
-    let server = adapter_with(vec![mock_tool("echo", Behavior::Text("ok".into()))]);
+    let server = adapter_with(vec![test_tool("echo", Behavior::Text("ok".into()))]);
 
     let response = server
         .handle_request(JsonRpcRequest::new(json!(1), "initialize", Some(json!({}))))
@@ -36,7 +36,7 @@ async fn server_initialize_returns_capabilities() {
 
 #[tokio::test]
 async fn server_lists_registered_tools() {
-    let server = adapter_with(vec![mock_tool("echo", Behavior::Text("ok".into()))]);
+    let server = adapter_with(vec![test_tool("echo", Behavior::Text("ok".into()))]);
 
     let response = server
         .handle_request(JsonRpcRequest::new(json!(2), "tools/list", Some(json!({}))))
@@ -54,9 +54,9 @@ async fn server_lists_registered_tools() {
 #[tokio::test]
 async fn server_calls_tool_and_maps_results() {
     let server = adapter_with(vec![
-        mock_tool("echo", Behavior::Text("hello".into())),
-        mock_tool("json", Behavior::Structured(json!({ "ok": true }))),
-        mock_tool(
+        test_tool("echo", Behavior::Text("hello".into())),
+        test_tool("json", Behavior::Structured(json!({ "ok": true }))),
+        test_tool(
             "mixed",
             Behavior::Mixed(vec![
                 ToolResultPart::Text {
@@ -87,17 +87,17 @@ async fn server_calls_tool_and_maps_results() {
 
 #[tokio::test]
 async fn server_maps_validation_and_permission_failures_to_tool_errors() {
-    let validate_server = adapter_with(vec![mock_tool("bad_input", Behavior::ValidateError)]);
+    let validate_server = adapter_with(vec![test_tool("bad_input", Behavior::ValidateError)]);
     let validate_result = call_tool(&validate_server, "bad_input", json!({})).await;
     assert!(validate_result.is_error);
     assert!(text_content(&validate_result).contains("validation"));
 
-    let permission_server = adapter_with(vec![mock_tool("ask", Behavior::AskPermission)]);
+    let permission_server = adapter_with(vec![test_tool("ask", Behavior::AskPermission)]);
     let permission_result = call_tool(&permission_server, "ask", json!({})).await;
     assert!(permission_result.is_error);
     assert!(text_content(&permission_result).contains("permission"));
 
-    let dangerous_server = adapter_with(vec![mock_tool("danger", Behavior::DangerousPattern)]);
+    let dangerous_server = adapter_with(vec![test_tool("danger", Behavior::DangerousPattern)]);
     let dangerous_result = call_tool(&dangerous_server, "danger", json!({})).await;
     assert!(dangerous_result.is_error);
     let dangerous_text = text_content(&dangerous_result);
@@ -107,7 +107,7 @@ async fn server_maps_validation_and_permission_failures_to_tool_errors() {
 
 #[tokio::test]
 async fn server_returns_jsonrpc_errors_for_bad_requests() {
-    let server = adapter_with(vec![mock_tool("echo", Behavior::Text("ok".into()))]);
+    let server = adapter_with(vec![test_tool("echo", Behavior::Text("ok".into()))]);
 
     let unknown_tool = server
         .handle_request(JsonRpcRequest::new(
@@ -151,7 +151,7 @@ async fn server_returns_empty_resource_and_prompt_lists() {
     assert_eq!(prompts, json!({ "prompts": [] }));
 }
 
-fn adapter_with(tools: Vec<MockTool>) -> McpServerAdapter {
+fn adapter_with(tools: Vec<TestTool>) -> McpServerAdapter {
     let registry = tools
         .into_iter()
         .fold(
@@ -201,8 +201,8 @@ fn text_content(result: &McpToolResult) -> String {
         .unwrap_or_default()
 }
 
-fn mock_tool(name: &str, behavior: Behavior) -> MockTool {
-    MockTool {
+fn test_tool(name: &str, behavior: Behavior) -> TestTool {
+    TestTool {
         descriptor: ToolDescriptor {
             name: name.to_owned(),
             display_name: name.to_owned(),
@@ -238,7 +238,7 @@ fn mock_tool(name: &str, behavior: Behavior) -> MockTool {
 }
 
 #[derive(Clone)]
-struct MockTool {
+struct TestTool {
     descriptor: ToolDescriptor,
     behavior: Behavior,
 }
@@ -254,7 +254,7 @@ enum Behavior {
 }
 
 #[async_trait]
-impl Tool for MockTool {
+impl Tool for TestTool {
     fn descriptor(&self) -> &ToolDescriptor {
         &self.descriptor
     }

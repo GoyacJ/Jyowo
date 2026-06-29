@@ -54,10 +54,10 @@ fn skill_registry_session_two_sessions_using_same_loader_do_not_fail_duplicate_s
             }],
         });
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store_arc(store)
             .with_sandbox(NoopSandbox::new())
-            .with_permission_broker(MockBroker::new(vec![Decision::AllowOnce]))
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
             .with_skill_loader(loader)
             .build()
             .await
@@ -118,7 +118,7 @@ fn skill_registry_session_skill_list_uses_turn_snapshot_after_registry_reload() 
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
-            .with_permission_broker(MockBroker::new(vec![Decision::AllowOnce]))
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
             .with_skill_loader(loader)
             .build()
             .await
@@ -221,10 +221,10 @@ unused body
             source_kind: harness_skill::DirectorySourceKind::Workspace,
         });
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
-            .with_permission_broker(MockBroker::new(vec![Decision::AllowOnce]))
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
             .with_skill_loader(loader)
             .build()
             .await

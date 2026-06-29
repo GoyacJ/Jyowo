@@ -1,4 +1,4 @@
-#![cfg(feature = "mock")]
+#![cfg(feature = "testing")]
 
 use std::sync::Arc;
 
@@ -9,8 +9,8 @@ use harness_contracts::{
     PermissionMode, PermissionSubject, RequestId, SessionId, Severity, TenantId, ToolUseId,
 };
 use harness_permission::{
-    DecisionPersistence, MockBroker, PermissionBroker, PermissionContext, PermissionRequest,
-    PersistedDecision, RuleSnapshot,
+    DecisionPersistence, PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
+    RuleSnapshot, TestBroker,
 };
 use parking_lot::Mutex;
 
@@ -28,8 +28,8 @@ impl DecisionPersistence for RecordingPersistence {
 }
 
 #[tokio::test]
-async fn mock_broker_replays_scripted_decisions_in_order() {
-    let broker = MockBroker::new(vec![Decision::AllowOnce, Decision::DenyPermanent]);
+async fn test_broker_replays_scripted_decisions_in_order() {
+    let broker = TestBroker::new(vec![Decision::AllowOnce, Decision::DenyPermanent]);
 
     assert_eq!(
         broker
@@ -46,8 +46,8 @@ async fn mock_broker_replays_scripted_decisions_in_order() {
 }
 
 #[tokio::test]
-async fn mock_broker_fails_closed_when_script_is_exhausted() {
-    let broker = MockBroker::default();
+async fn test_broker_fails_closed_when_script_is_exhausted() {
+    let broker = TestBroker::default();
 
     assert_eq!(
         broker
@@ -58,8 +58,8 @@ async fn mock_broker_fails_closed_when_script_is_exhausted() {
 }
 
 #[tokio::test]
-async fn mock_broker_records_request_and_context() {
-    let broker = MockBroker::new(vec![Decision::AllowSession]);
+async fn test_broker_records_request_and_context() {
+    let broker = TestBroker::new(vec![Decision::AllowSession]);
     let request = permission_request("recorded");
     let ctx = permission_context();
     let expected_request_id = request.request_id;
@@ -74,9 +74,9 @@ async fn mock_broker_records_request_and_context() {
 }
 
 #[tokio::test]
-async fn mock_broker_persist_delegates_to_persistence() {
+async fn test_broker_persist_delegates_to_persistence() {
     let persistence = Arc::new(RecordingPersistence::default());
-    let broker = MockBroker::default().with_persistence(persistence.clone());
+    let broker = TestBroker::default().with_persistence(persistence.clone());
     let decision_id = DecisionId::new();
     let scope = DecisionScope::ToolName("shell".to_owned());
     let decision = PersistedDecision {
@@ -92,8 +92,8 @@ async fn mock_broker_persist_delegates_to_persistence() {
 }
 
 #[tokio::test]
-async fn mock_broker_can_be_used_as_dyn_permission_broker() {
-    let broker: Box<dyn PermissionBroker> = Box::new(MockBroker::new(vec![Decision::AllowOnce]));
+async fn test_broker_can_be_used_as_dyn_permission_broker() {
+    let broker: Box<dyn PermissionBroker> = Box::new(TestBroker::new(vec![Decision::AllowOnce]));
 
     assert_eq!(
         broker

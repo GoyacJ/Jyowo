@@ -18,7 +18,7 @@ default = []
 sqlite = ["dep:rusqlite"]
 jsonl = ["dep:fs2"]
 in-memory = []
-mock = ["in-memory"]
+testing = ["in-memory"]
 blob-file = []
 blob-sqlite = ["sqlite"]
 

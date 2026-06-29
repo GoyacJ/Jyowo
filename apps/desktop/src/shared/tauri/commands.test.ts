@@ -110,12 +110,13 @@ function validWorktreePage(): PageConversationWorktreeResponse {
   }
 }
 
-const tauriListenMock = vi.hoisted(() => vi.fn())
+const tauriListenSpy = vi.hoisted(() => vi.fn())
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: tauriListenMock,
+  listen: tauriListenSpy,
 }))
 
+import { createTestCommandClient } from '@/testing/command-client'
 import {
   cancelRun,
   clearMcpDiagnostics,
@@ -181,7 +182,6 @@ import {
   validateProviderSettings,
 } from './commands'
 import { getCommandErrorMessage } from './errors'
-import { createMockCommandClient } from './mock-client'
 
 const validAttachmentId =
   'attachment-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
@@ -364,8 +364,8 @@ describe('CommandClient', () => {
     )
   })
 
-  it('supports mock clients outside the Tauri runtime', async () => {
-    const client = createMockCommandClient()
+  it('supports test clients outside the Tauri runtime', async () => {
+    const client = createTestCommandClient()
 
     await expect(getAppInfo(client)).resolves.toMatchObject({
       name: 'Jyowo',
@@ -377,8 +377,8 @@ describe('CommandClient', () => {
     })
   })
 
-  it('keeps mock timeline subscription replay separate from activity defaults', async () => {
-    const defaultClient = createMockCommandClient()
+  it('keeps fixture timeline subscription replay separate from activity defaults', async () => {
+    const defaultClient = createTestCommandClient()
 
     await expect(
       defaultClient.subscribeConversationEvents({ conversationId: 'conversation-001' }),
@@ -388,7 +388,7 @@ describe('CommandClient', () => {
       gap: false,
     })
 
-    const streamingClient = createMockCommandClient({
+    const streamingClient = createTestCommandClient({
       subscribeConversationEvents: {
         subscriptionId: 'subscription-stream',
         conversationId: 'conversation-001',
@@ -1519,7 +1519,7 @@ describe('CommandClient', () => {
     })
     const unlisten = vi.fn()
     let tauriEventHandler: ((event: { payload: unknown }) => void) | undefined
-    tauriListenMock.mockImplementationOnce(async (_eventName, handler) => {
+    tauriListenSpy.mockImplementationOnce(async (_eventName, handler) => {
       tauriEventHandler = handler
       return unlisten
     })
@@ -1571,7 +1571,7 @@ describe('CommandClient', () => {
       conversationId: 'conversation-001',
       afterCursor: cursor(''),
     })
-    expect(tauriListenMock).toHaveBeenCalledWith('conversation_event_batch', expect.any(Function))
+    expect(tauriListenSpy).toHaveBeenCalledWith('conversation_event_batch', expect.any(Function))
     expect(batches).toEqual([
       expect.objectContaining({
         subscriptionId: 'subscription-001',
@@ -1585,8 +1585,8 @@ describe('CommandClient', () => {
     })
   })
 
-  it('emits mock permission requests with production-compatible ids', async () => {
-    const client = createMockCommandClient()
+  it('emits fixture permission requests with production-compatible ids', async () => {
+    const client = createTestCommandClient()
     const permissionRequest = new Promise<string>((resolve) => {
       void client.listenConversationEventBatches((batch) => {
         const permissionEvent = batch.events.find((event) => event.type === 'permission.requested')
@@ -2320,8 +2320,8 @@ describe('CommandClient', () => {
     expect(invoke).not.toHaveBeenCalled()
   })
 
-  it('supports explicit mock behavior for conversation commands', async () => {
-    const client = createMockCommandClient()
+  it('supports explicit fixture behavior for conversation commands', async () => {
+    const client = createTestCommandClient()
 
     await expect(listConversations(client)).resolves.toHaveProperty('conversations')
     await expect(createConversation(client)).resolves.toHaveProperty('conversation.id')
@@ -2631,8 +2631,8 @@ describe('CommandClient', () => {
     })
   })
 
-  it('returns mock provider API key reveal after save without storing raw keys in list data', async () => {
-    const client = createMockCommandClient()
+  it('returns fixture provider API key reveal after save without storing raw keys in list data', async () => {
+    const client = createTestCommandClient()
     const providerToken = 'provider-test-token'
 
     await client.saveProviderSettings({
@@ -2648,7 +2648,7 @@ describe('CommandClient', () => {
       expiresInSeconds: 60,
       status: 'ready',
     })
-    expect(reveal.revealToken).toMatch(/^mock-reveal-token-\d+$/)
+    expect(reveal.revealToken).toMatch(/^fixture-reveal-token-\d+$/)
     await expect(client.getProviderConfigApiKey('openai', reveal.revealToken)).resolves.toEqual({
       apiKey: expect.any(String),
       configId: 'openai',
@@ -2990,7 +2990,7 @@ describe('CommandClient', () => {
     })
     const unlisten = vi.fn()
     let tauriEventHandler: ((event: { payload: unknown }) => void) | undefined
-    tauriListenMock.mockImplementationOnce(async (_eventName, handler) => {
+    tauriListenSpy.mockImplementationOnce(async (_eventName, handler) => {
       tauriEventHandler = handler
       return unlisten
     })
@@ -3031,7 +3031,7 @@ describe('CommandClient', () => {
       unsubscribeMcpDiagnostics('mcp-diagnostic-subscription-001', client),
     ).resolves.toHaveProperty('status', 'unsubscribed')
 
-    expect(tauriListenMock).toHaveBeenCalledWith('mcp_diagnostic_batch', expect.any(Function))
+    expect(tauriListenSpy).toHaveBeenCalledWith('mcp_diagnostic_batch', expect.any(Function))
     expect(JSON.stringify(batches)).not.toContain('mcp-secret-token')
     expect(batches).toEqual([
       expect.objectContaining({
@@ -3530,7 +3530,7 @@ describe('CommandClient', () => {
     const invoke = vi.fn()
     const unlisten = vi.fn()
     let tauriEventHandler: ((event: { payload: unknown }) => void) | undefined
-    tauriListenMock.mockImplementationOnce(async (_eventName, handler) => {
+    tauriListenSpy.mockImplementationOnce(async (_eventName, handler) => {
       tauriEventHandler = handler
       return unlisten
     })
@@ -3552,7 +3552,7 @@ describe('CommandClient', () => {
     })
     cleanup()
 
-    expect(tauriListenMock).toHaveBeenCalledWith(
+    expect(tauriListenSpy).toHaveBeenCalledWith(
       'skill_catalog_install_progress',
       expect.any(Function),
     )
@@ -3613,7 +3613,7 @@ describe('CommandClient', () => {
     await expect(listSkillCatalogSources(client)).rejects.toThrow(TauriCommandPayloadError)
 
     let tauriEventHandler: ((event: { payload: unknown }) => void) | undefined
-    tauriListenMock.mockImplementationOnce(async (_eventName, handler) => {
+    tauriListenSpy.mockImplementationOnce(async (_eventName, handler) => {
       tauriEventHandler = handler
       return vi.fn()
     })

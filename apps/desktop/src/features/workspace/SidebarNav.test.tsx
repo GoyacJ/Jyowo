@@ -8,11 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { appI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
-import { createMockCommandClient, mockJyowoProject } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createTestCommandClient, testJyowoProject } from '@/testing/command-client'
 import { SidebarNav } from './SidebarNav'
 
-const routerMock = vi.hoisted(() => ({
+const routerSpy = vi.hoisted(() => ({
   navigate: vi.fn(
     async ({ search, to }: { search?: Record<string, string | undefined>; to: string }) => {
       const nextSearch = search
@@ -27,7 +27,7 @@ const routerMock = vi.hoisted(() => ({
   ),
 }))
 
-function renderSidebarNav(commandClient: CommandClient = createMockCommandClient()) {
+function renderSidebarNav(commandClient: CommandClient = createTestCommandClient()) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -63,8 +63,8 @@ function runtimeConversationClient() {
     },
   ]
   return {
-    ...createMockCommandClient({
-      projects: mockJyowoProject,
+    ...createTestCommandClient({
+      projects: testJyowoProject,
       contextSnapshot: {
         activeArtifact: null,
         decisions: [],
@@ -88,7 +88,7 @@ function runtimeConversationClient() {
 }
 
 vi.mock('@tanstack/react-router', async () => ({
-  useNavigate: () => routerMock.navigate,
+  useNavigate: () => routerSpy.navigate,
   useRouterState: ({
     select,
   }: {
@@ -109,7 +109,7 @@ vi.mock('@tanstack/react-router', async () => ({
 
 describe('SidebarNav', () => {
   beforeEach(async () => {
-    routerMock.navigate.mockClear()
+    routerSpy.navigate.mockClear()
     await appI18n.changeLanguage('en-US')
     window.history.pushState(null, '', '/')
   })
@@ -161,7 +161,7 @@ describe('SidebarNav', () => {
       (await screen.findByText('Auth runtime')).closest('button') as HTMLButtonElement,
     )
 
-    expect(routerMock.navigate).toHaveBeenCalledWith({
+    expect(routerSpy.navigate).toHaveBeenCalledWith({
       search: { conversationId: 'conversation-runtime-002' },
       to: '/',
     })
@@ -170,8 +170,8 @@ describe('SidebarNav', () => {
   it('localizes runtime default empty conversation labels', async () => {
     await appI18n.changeLanguage('zh-CN')
     renderSidebarNav(
-      createMockCommandClient({
-        projects: mockJyowoProject,
+      createTestCommandClient({
+        projects: testJyowoProject,
         conversations: {
           conversations: [
             {
@@ -199,8 +199,8 @@ describe('SidebarNav', () => {
   it('keeps real conversation labels that match runtime default text', async () => {
     await appI18n.changeLanguage('zh-CN')
     renderSidebarNav(
-      createMockCommandClient({
-        projects: mockJyowoProject,
+      createTestCommandClient({
+        projects: testJyowoProject,
         conversations: {
           conversations: [
             {
@@ -236,7 +236,7 @@ describe('SidebarNav', () => {
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
     fireEvent.click(screen.getByRole('option', { name: 'Settings' }))
 
-    expect(routerMock.navigate).toHaveBeenCalledWith({ to: '/settings' })
+    expect(routerSpy.navigate).toHaveBeenCalledWith({ to: '/settings' })
   })
 
   it('does not expose skills as a standalone sidebar destination', () => {
@@ -264,7 +264,7 @@ describe('SidebarNav', () => {
     }))
 
     renderSidebarNav({
-      ...createMockCommandClient({ projects: mockJyowoProject }),
+      ...createTestCommandClient({ projects: testJyowoProject }),
       createConversation,
     })
 
@@ -276,7 +276,7 @@ describe('SidebarNav', () => {
       expect(createConversation).toHaveBeenCalledTimes(1)
     })
     await waitFor(() => {
-      expect(routerMock.navigate).toHaveBeenCalledWith({
+      expect(routerSpy.navigate).toHaveBeenCalledWith({
         search: {
           conversationId: 'conversation-created-001',
         },
@@ -311,7 +311,7 @@ describe('SidebarNav', () => {
       expect(createConversation).toHaveBeenCalledTimes(1)
     })
     await waitFor(() => {
-      expect(routerMock.navigate).toHaveBeenCalledWith({
+      expect(routerSpy.navigate).toHaveBeenCalledWith({
         search: {
           conversationId: 'conversation-created-002',
         },
@@ -326,7 +326,7 @@ describe('SidebarNav', () => {
     })
 
     renderSidebarNav({
-      ...createMockCommandClient({ projects: mockJyowoProject }),
+      ...createTestCommandClient({ projects: testJyowoProject }),
       createConversation,
       listConversations: vi.fn(async () => ({ conversations: [] })),
     })
@@ -337,7 +337,7 @@ describe('SidebarNav', () => {
     expect(
       await screen.findByText('conversation create failed: session event stream does not start'),
     ).toBeInTheDocument()
-    expect(routerMock.navigate).not.toHaveBeenCalledWith({
+    expect(routerSpy.navigate).not.toHaveBeenCalledWith({
       search: expect.anything(),
       to: '/',
     })
@@ -363,7 +363,7 @@ describe('SidebarNav', () => {
     })
 
     renderSidebarNav({
-      ...createMockCommandClient({ projects: mockJyowoProject }),
+      ...createTestCommandClient({ projects: testJyowoProject }),
       createConversation,
       listConversations,
     })
@@ -372,7 +372,7 @@ describe('SidebarNav', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }))
 
     await waitFor(() => {
-      expect(routerMock.navigate).toHaveBeenCalledWith({
+      expect(routerSpy.navigate).toHaveBeenCalledWith({
         search: {
           conversationId: 'conversation-created-fast-route',
         },
@@ -438,7 +438,7 @@ describe('SidebarNav', () => {
         ],
       })
     const commandClient = {
-      ...createMockCommandClient({ projects: mockJyowoProject }),
+      ...createTestCommandClient({ projects: testJyowoProject }),
       deleteConversation,
       listConversations,
     }
@@ -483,12 +483,12 @@ describe('SidebarNav', () => {
       path: '/Users/goya/Repo/Git/Jyowo',
       status: 'deleted' as const,
     }))
-    const listProjects = vi.fn().mockResolvedValueOnce(mockJyowoProject).mockResolvedValue({
+    const listProjects = vi.fn().mockResolvedValueOnce(testJyowoProject).mockResolvedValue({
       activePath: null,
       projects: [],
     })
     const commandClient = {
-      ...createMockCommandClient({ projects: mockJyowoProject }),
+      ...createTestCommandClient({ projects: testJyowoProject }),
       deleteProject,
       listProjects,
     }
@@ -517,7 +517,7 @@ describe('SidebarNav', () => {
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
     fireEvent.click(screen.getByRole('option', { name: 'Open evals' }))
 
-    expect(routerMock.navigate).toHaveBeenCalledWith({ to: '/evals' })
+    expect(routerSpy.navigate).toHaveBeenCalledWith({ to: '/evals' })
   })
 
   it('does not render a sidebar skills entry on the legacy skills route', () => {

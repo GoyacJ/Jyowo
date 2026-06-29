@@ -32,7 +32,7 @@ fn temp_workspace(name: &str) -> PathBuf {
 fn harness_options(workspace: PathBuf) -> HarnessOptions {
     let mut options = HarnessOptions::default();
     options.workspace_root = workspace;
-    options.model_id = "mock-model".to_owned();
+    options.model_id = "test-model".to_owned();
     options
 }
 
@@ -205,7 +205,7 @@ async fn page_conversation_events_uses_journal_cursor_pushdown() {
     let workspace = temp_workspace("conversation-page-pushdown");
     let harness = Harness::builder()
         .with_options(harness_options(workspace.clone()))
-        .with_model(testing::MockProvider::default())
+        .with_model(testing::TestModelProvider::default())
         .with_store_arc(store.clone())
         .with_sandbox(testing::NoopSandbox::new())
         .build()
@@ -239,7 +239,7 @@ async fn conversation_read_model_facade_returns_safe_snapshot_and_timeline() {
     let workspace = temp_workspace("conversation-read-model-facade");
     let harness = Harness::builder()
         .with_options(harness_options(workspace.clone()))
-        .with_model(testing::MockProvider::default())
+        .with_model(testing::TestModelProvider::default())
         .with_store_arc(store.clone())
         .with_sandbox(testing::NoopSandbox::new())
         .build()
@@ -303,7 +303,7 @@ async fn delete_conversation_session_removes_projected_summary_from_facade_list(
     let workspace = temp_workspace("conversation-read-model-delete-summary");
     let harness = Harness::builder()
         .with_options(harness_options(workspace.clone()))
-        .with_model(testing::MockProvider::default())
+        .with_model(testing::TestModelProvider::default())
         .with_store_arc(store.clone())
         .with_sandbox(testing::NoopSandbox::new())
         .build()
@@ -353,7 +353,7 @@ async fn delete_conversation_session_treats_orphan_projection_as_deleted() {
     let workspace = temp_workspace("conversation-read-model-delete-orphan");
     let harness = Harness::builder()
         .with_options(harness_options(workspace.clone()))
-        .with_model(testing::MockProvider::default())
+        .with_model(testing::TestModelProvider::default())
         .with_store_arc(store.clone())
         .with_sandbox(testing::NoopSandbox::new())
         .build()
@@ -403,7 +403,7 @@ async fn list_conversation_summaries_removes_stale_rows_before_returning_live_ro
     let workspace = temp_workspace("conversation-read-model-list-stale-first");
     let harness = Harness::builder()
         .with_options(harness_options(workspace.clone()))
-        .with_model(testing::MockProvider::default())
+        .with_model(testing::TestModelProvider::default())
         .with_store_arc(store.clone())
         .with_sandbox(testing::NoopSandbox::new())
         .build()
@@ -463,7 +463,7 @@ async fn conversation_read_model_facade_returns_worktree_page() {
     let workspace = temp_workspace("conversation-worktree-facade");
     let harness = Harness::builder()
         .with_options(harness_options(workspace.clone()))
-        .with_model(testing::MockProvider::default())
+        .with_model(testing::TestModelProvider::default())
         .with_store_arc(store.clone())
         .with_sandbox(testing::NoopSandbox::new())
         .build()

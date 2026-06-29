@@ -11,11 +11,11 @@ use std::sync::Arc;
 
 use jyowo_harness_sdk::builtin::*;
 use jyowo_harness_sdk::prelude::*;
-use jyowo_harness_sdk::testing::{InMemoryEventStore, MockProvider, NoopRedactor};
+use jyowo_harness_sdk::testing::{InMemoryEventStore, TestModelProvider, NoopRedactor};
 
 # futures::executor::block_on(async {
 let harness = Harness::builder()
-    .with_model(MockProvider::default())
+    .with_model(TestModelProvider::default())
     .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
     .with_sandbox(NoopSandbox::new())
     .build()
@@ -36,4 +36,4 @@ Import surfaces:
 - `prelude::*`: business-facing default API.
 - `ext::*`: traits for custom providers, stores, sandboxes, tools, hooks, and plugins.
 - `builtin::*`: feature-gated built-in implementations.
-- `testing::*`: mock and noop implementations behind the `testing` feature.
+- `testing::*`: test adapters behind the `testing` feature.

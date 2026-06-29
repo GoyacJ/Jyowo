@@ -3,14 +3,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 
 import type { ConversationTurn } from '@/shared/tauri/commands'
-import type { MockCommandClientOptions } from '@/shared/tauri/mock-client'
-import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createTestCommandClient } from '@/testing/command-client'
 import {
   codexAttachmentStressTurns,
   codexLargeDiffTurns,
   codexStyleEvidenceTurns,
-} from './conversation-evidence-fixtures'
+} from '@/testing/conversation-evidence-fixtures'
 import { ConversationTimeline } from './conversation-timeline'
 
 const meta = {
@@ -31,11 +30,9 @@ const meta = {
         },
       })
       const theme = context.parameters.themeMode === 'dark' ? 'dark' : 'light'
-      const commandClientOptions =
-        (context.parameters.commandClientOptions as MockCommandClientOptions | undefined) ?? {}
 
       return (
-        <CommandClientProvider client={createMockCommandClient(commandClientOptions)}>
+        <CommandClientProvider client={createTestCommandClient()}>
           <QueryClientProvider client={queryClient}>
             <StoryFrame theme={theme}>
               <StoryComponent />
@@ -283,28 +280,6 @@ export const CodexEvidenceAttachmentsMetadataOnly: Story = {
   args: {
     title: 'Codex-style attachment metadata',
     turns: codexAttachmentStressTurns,
-  },
-}
-
-export const CodexEvidenceAttachmentsWithSafePreview: Story = {
-  args: {
-    title: 'Codex-style attachment thumbnails',
-    turns: codexAttachmentStressTurns,
-  },
-  parameters: {
-    commandClientOptions: {
-      attachmentMediaPreview: {
-        dataUrl:
-          'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
-        mimeType: 'image/png',
-        sizeBytes: 68,
-      },
-    } satisfies MockCommandClientOptions,
-    docs: {
-      description: {
-        story: 'Image attachments render thumbnails through get_attachment_media_preview.',
-      },
-    },
   },
 }
 

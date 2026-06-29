@@ -1,4 +1,4 @@
-#![cfg(all(feature = "interactive", feature = "stream", feature = "mock"))]
+#![cfg(all(feature = "interactive", feature = "stream", feature = "testing"))]
 
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -13,8 +13,8 @@ use harness_contracts::{
     RequestId, SessionId, Severity, TenantId, TimeoutPolicy, ToolUseId,
 };
 use harness_permission::{
-    DirectBroker, MockBroker, PermissionBroker, PermissionContext, PermissionRequest, RuleSnapshot,
-    StreamBasedBroker, StreamBrokerConfig,
+    DirectBroker, PermissionBroker, PermissionContext, PermissionRequest, RuleSnapshot,
+    StreamBasedBroker, StreamBrokerConfig, TestBroker,
 };
 
 #[tokio::test]
@@ -32,10 +32,10 @@ async fn contract_stream_broker() {
 }
 
 #[tokio::test]
-async fn contract_mock_broker() {
-    mock_fail_closed_default().await;
-    mock_permission_context_required().await;
-    mock_no_state_across_calls().await;
+async fn contract_test_broker() {
+    test_fail_closed_default().await;
+    test_permission_context_required().await;
+    test_no_state_across_calls().await;
 }
 
 async fn direct_fail_closed_default() {
@@ -165,24 +165,24 @@ async fn stream_no_state_across_calls() {
     );
 }
 
-async fn mock_fail_closed_default() {
-    let broker = MockBroker::default();
+async fn test_fail_closed_default() {
+    let broker = TestBroker::default();
 
     assert_eq!(
         broker
-            .decide(permission_request("mock-deny"), permission_context(None))
+            .decide(permission_request("test-deny"), permission_context(None))
             .await,
         Decision::DenyOnce
     );
 }
 
-async fn mock_permission_context_required() {
-    let broker = MockBroker::new(vec![Decision::AllowOnce]);
+async fn test_permission_context_required() {
+    let broker = TestBroker::new(vec![Decision::AllowOnce]);
     let ctx = permission_context(None);
     let expected_session_id = ctx.session_id;
 
     assert_eq!(
-        broker.decide(permission_request("mock-ctx"), ctx).await,
+        broker.decide(permission_request("test-ctx"), ctx).await,
         Decision::AllowOnce
     );
 
@@ -190,18 +190,18 @@ async fn mock_permission_context_required() {
     assert_eq!(calls[0].ctx.session_id, expected_session_id);
 }
 
-async fn mock_no_state_across_calls() {
-    let broker = MockBroker::new(vec![Decision::AllowOnce, Decision::DenyPermanent]);
+async fn test_no_state_across_calls() {
+    let broker = TestBroker::new(vec![Decision::AllowOnce, Decision::DenyPermanent]);
 
     assert_eq!(
         broker
-            .decide(permission_request("mock-first"), permission_context(None))
+            .decide(permission_request("test-first"), permission_context(None))
             .await,
         Decision::AllowOnce
     );
     assert_eq!(
         broker
-            .decide(permission_request("mock-second"), permission_context(None))
+            .decide(permission_request("test-second"), permission_context(None))
             .await,
         Decision::DenyPermanent
     );

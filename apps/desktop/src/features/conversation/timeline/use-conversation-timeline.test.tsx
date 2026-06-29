@@ -4,8 +4,8 @@ import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { CommandClient, ConversationEventBatchPayload } from '@/shared/tauri/commands'
-import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createTestCommandClient } from '@/testing/command-client'
 import { useConversationTimeline } from './use-conversation-timeline'
 
 const timestamp = '2026-06-17T00:00:00.000Z'
@@ -118,7 +118,7 @@ describe('useConversationTimeline', () => {
     vi.useFakeTimers()
 
     let listener: ((batch: ConversationEventBatchPayload) => void) | undefined
-    const baseClient = createMockCommandClient()
+    const baseClient = createTestCommandClient()
     const pageConversationWorktree = vi.fn(baseClient.pageConversationWorktree)
     const commandClient = {
       ...baseClient,

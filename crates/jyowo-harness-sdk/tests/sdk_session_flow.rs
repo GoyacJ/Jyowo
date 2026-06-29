@@ -15,7 +15,7 @@ async fn sdk_session_flow_runs_turn_and_writes_journal_events() {
     let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
     let harness = Harness::builder()
-        .with_model(MockProvider::default().with_events(vec![
+        .with_model(TestModelProvider::default().with_events(vec![
             ModelStreamEvent::ContentBlockDelta {
                 index: 0,
                 delta: ContentDelta::Text("business answer".to_owned()),

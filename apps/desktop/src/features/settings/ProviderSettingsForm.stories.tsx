@@ -1,8 +1,9 @@
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite'
 import type { ReactNode } from 'react'
 
-import { createMockCommandClient, createRejectedCommandClient } from '@/shared/tauri/mock-client'
+import type { CommandClient } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createTestCommandClient } from '@/testing/command-client'
 
 import { ProviderSettingsForm } from './ProviderSettingsForm'
 
@@ -19,7 +20,7 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 const withClient =
-  (client: ReturnType<typeof createMockCommandClient>): Decorator =>
+  (client: CommandClient): Decorator =>
   (StoryComponent) => (
     <StoryFrame>
       <CommandClientProvider client={client}>
@@ -29,15 +30,7 @@ const withClient =
   )
 
 export const Ready: Story = {
-  decorators: [withClient(createMockCommandClient())],
-}
-
-export const SlowSave: Story = {
-  decorators: [withClient(createMockCommandClient({ delayMs: 1200 }))],
-}
-
-export const SaveFailure: Story = {
-  decorators: [withClient(createRejectedCommandClient(new Error('provider save rejected')))],
+  decorators: [withClient(createTestCommandClient())],
 }
 
 function StoryFrame({ children }: { children: ReactNode }) {

@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppI18nProvider } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
-import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createTestCommandClient } from '@/testing/command-client'
 
 import { ExecutionSettings } from './ExecutionSettings'
 
@@ -21,7 +21,7 @@ const agentCapabilities = {
   unavailableReasons: [],
 }
 
-function renderExecutionSettings(commandClient: CommandClient = createMockCommandClient()) {
+function renderExecutionSettings(commandClient: CommandClient = createTestCommandClient()) {
   return render(
     <CommandClientProvider client={commandClient}>
       <AppI18nProvider>
@@ -44,7 +44,7 @@ describe('ExecutionSettings', () => {
       permissionMode: 'bypass_permissions' as const,
     }))
     const commandClient = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       getExecutionSettings: async () => ({
         agentCapabilities,
         autoModeAvailable: false,
@@ -80,7 +80,7 @@ describe('ExecutionSettings', () => {
       permissionMode: 'default' as const,
     }))
     const commandClient = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       getExecutionSettings: async () => ({
         agentCapabilities,
         autoModeAvailable: false,
@@ -113,7 +113,7 @@ describe('ExecutionSettings', () => {
     uiStore.getState().setLocale('en-US')
 
     renderExecutionSettings(
-      createMockCommandClient({
+      createTestCommandClient({
         executionSettings: {
           agentCapabilities,
           autoModeAvailable: false,
@@ -131,7 +131,7 @@ describe('ExecutionSettings', () => {
     uiStore.getState().setLocale('en-US')
 
     renderExecutionSettings(
-      createMockCommandClient({
+      createTestCommandClient({
         executionSettings: {
           agentCapabilities,
           autoModeAvailable: false,

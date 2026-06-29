@@ -3,12 +3,11 @@ import '@testing-library/jest-dom/vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-
-import { createMockCommandClient, createRejectedCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createRejectedTestCommandClient, createTestCommandClient } from '@/testing/command-client'
 import { SystemStatusPage } from './SystemStatusPage'
 
-function renderSystemStatus(commandClient = createMockCommandClient()) {
+function renderSystemStatus(commandClient = createTestCommandClient()) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -29,7 +28,7 @@ function renderSystemStatus(commandClient = createMockCommandClient()) {
 describe('SystemStatusPage', () => {
   it('renders a loading state before IPC resolves', () => {
     renderSystemStatus(
-      createMockCommandClient({
+      createTestCommandClient({
         delayMs: 50,
       }),
     )
@@ -48,7 +47,7 @@ describe('SystemStatusPage', () => {
   })
 
   it('renders a normalized error state', async () => {
-    renderSystemStatus(createRejectedCommandClient(new Error('IPC unavailable')))
+    renderSystemStatus(createRejectedTestCommandClient(new Error('IPC unavailable')))
 
     expect(await screen.findByText('IPC unavailable')).toBeInTheDocument()
   })

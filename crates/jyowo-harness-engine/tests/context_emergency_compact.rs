@@ -44,7 +44,7 @@ async fn context_too_long_retries_once_with_emergency_compacted_prompt() {
         .with_tools(ToolPool::default())
         .with_permission_broker(Arc::new(AllowBroker))
         .with_workspace_root(workspace.path())
-        .with_model_id("mock-model")
+        .with_model_id("test-model")
         .with_cap_registry(Arc::new(CapabilityRegistry::default()))
         .build()
         .unwrap();
@@ -115,7 +115,7 @@ async fn soft_budget_compacts_before_first_model_request() {
         .with_tools(ToolPool::default())
         .with_permission_broker(Arc::new(AllowBroker))
         .with_workspace_root(workspace.path())
-        .with_model_id("mock-model")
+        .with_model_id("test-model")
         .with_cap_registry(Arc::new(CapabilityRegistry::default()))
         .build()
         .unwrap();
@@ -166,16 +166,16 @@ impl ContextTooLongThenOkModel {
 #[async_trait]
 impl ModelProvider for ContextTooLongThenOkModel {
     fn provider_id(&self) -> &str {
-        "mock"
+        "test"
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
             lifecycle: harness_model::ModelLifecycle::Stable,
-            provider_id: "mock".to_owned(),
-            model_id: "mock-model".to_owned(),
-            display_name: "Mock model".to_owned(),
+            provider_id: "test".to_owned(),
+            model_id: "test-model".to_owned(),
+            display_name: "Test model".to_owned(),
             context_window: 100,
             max_output_tokens: 10,
             conversation_capability: ConversationModelCapability::default(),
@@ -218,16 +218,16 @@ impl OkRecordingModel {
 #[async_trait]
 impl ModelProvider for OkRecordingModel {
     fn provider_id(&self) -> &str {
-        "mock"
+        "test"
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
             lifecycle: harness_model::ModelLifecycle::Stable,
-            provider_id: "mock".to_owned(),
-            model_id: "mock-model".to_owned(),
-            display_name: "Mock model".to_owned(),
+            provider_id: "test".to_owned(),
+            model_id: "test-model".to_owned(),
+            display_name: "Test model".to_owned(),
             context_window: 100,
             max_output_tokens: 10,
             conversation_capability: ConversationModelCapability::default(),

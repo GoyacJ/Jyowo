@@ -21,7 +21,7 @@ fn harness_mcp_backend_exposes_sessions_messages_events_and_channels() {
     tokio_runtime().block_on(async {
         let workspace = unique_workspace("sdk-mcp-server-adapter");
         std::fs::create_dir_all(&workspace).unwrap();
-        let model = Arc::new(MockProvider::default());
+        let model = Arc::new(TestModelProvider::default());
         let model_provider: Arc<dyn ModelProvider> = model.clone();
         let blob_store = InMemoryBlobStore::default();
         let blob_bytes = bytes::Bytes::from_static(b"attachment");
@@ -144,7 +144,7 @@ fn harness_mcp_backend_resolves_stream_permissions() {
                 max_pending: 8,
             });
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_stream_permission_broker(broker, resolver)

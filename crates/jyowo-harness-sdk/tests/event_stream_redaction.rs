@@ -30,7 +30,7 @@ async fn event_stream_redaction_redacts_business_visible_event_copy_without_muta
         .expect("append raw event");
 
     let harness = Harness::builder()
-        .with_model(testing::MockProvider::default())
+        .with_model(testing::TestModelProvider::default())
         .with_store_arc(store.clone())
         .with_sandbox(testing::NoopSandbox::new())
         .build()
@@ -82,7 +82,7 @@ async fn event_stream_redaction_is_deterministic_and_preserves_existing_replacem
         .expect("append redacted event");
 
     let harness = Harness::builder()
-        .with_model(testing::MockProvider::default())
+        .with_model(testing::TestModelProvider::default())
         .with_store_arc(store)
         .with_sandbox(testing::NoopSandbox::new())
         .build()
@@ -126,7 +126,7 @@ async fn conversation_event_page_applies_default_redaction_after_noop_observer()
             .expect("observer should build"),
     );
     let harness = Harness::builder()
-        .with_model(testing::MockProvider::default())
+        .with_model(testing::TestModelProvider::default())
         .with_store_arc(store.clone())
         .with_sandbox(testing::NoopSandbox::new())
         .with_observer(observer)

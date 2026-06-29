@@ -607,7 +607,7 @@ impl TestHarness {
             &ToolPoolFilter::default(),
             &ToolSearchMode::Disabled,
             &ToolPoolModelProfile {
-                provider: harness_contracts::ModelProvider("mock".to_owned()),
+                provider: harness_contracts::ModelProvider("test".to_owned()),
                 max_context_tokens: Some(8_000),
             },
             &SchemaResolverContext {
@@ -628,7 +628,7 @@ impl TestHarness {
             cap_registry: Arc::new(CapabilityRegistry::default()),
             redactor,
             blob_store: None,
-            model_id: "mock-model".to_owned(),
+            model_id: "test-model".to_owned(),
             model_extra: serde_json::Value::Null,
             protocol: ModelProtocol::Messages,
             system_prompt: Some("system".to_owned()),
@@ -690,7 +690,7 @@ impl TestHarness {
             &ToolPoolFilter::default(),
             &ToolSearchMode::Disabled,
             &ToolPoolModelProfile {
-                provider: harness_contracts::ModelProvider("mock".to_owned()),
+                provider: harness_contracts::ModelProvider("test".to_owned()),
                 max_context_tokens: Some(8_000),
             },
             &SchemaResolverContext {
@@ -711,7 +711,7 @@ impl TestHarness {
             cap_registry: Arc::new(cap_registry),
             redactor: Arc::new(harness_contracts::NoopRedactor),
             blob_store: None,
-            model_id: "mock-model".to_owned(),
+            model_id: "test-model".to_owned(),
             model_extra: serde_json::Value::Null,
             protocol: ModelProtocol::Messages,
             system_prompt: Some("system".to_owned()),
@@ -842,16 +842,16 @@ impl RecordingModelProvider {
 #[async_trait]
 impl ModelProvider for RecordingModelProvider {
     fn provider_id(&self) -> &'static str {
-        "mock"
+        "test"
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
             lifecycle: harness_model::ModelLifecycle::Stable,
-            provider_id: "mock".to_owned(),
-            model_id: "mock-model".to_owned(),
-            display_name: "Mock model".to_owned(),
+            provider_id: "test".to_owned(),
+            model_id: "test-model".to_owned(),
+            display_name: "Test model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
             conversation_capability: ConversationModelCapability::default(),

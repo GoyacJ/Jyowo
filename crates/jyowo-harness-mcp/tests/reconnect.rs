@@ -47,7 +47,7 @@ async fn managed_connection_emits_first_recovered_on_initial_connect() {
     let sink = Arc::new(RecordingSink::default());
     let managed = managed_connection(
         policy(0),
-        MockTransport::new(vec![Ok(MockConnection::default())]),
+        TestTransport::new(vec![Ok(TestConnection::default())]),
         sink.clone(),
     )
     .await;
@@ -70,11 +70,11 @@ async fn managed_connection_enters_reconnecting_after_call_connection_error() {
     let sink = Arc::new(RecordingSink::default());
     let managed = managed_connection(
         policy(0),
-        MockTransport::new(vec![
-            Ok(MockConnection::with_results(vec![Err(
+        TestTransport::new(vec![
+            Ok(TestConnection::with_results(vec![Err(
                 McpError::Connection("lost".into()),
             )])),
-            Ok(MockConnection::with_results(vec![Ok(McpToolResult::text(
+            Ok(TestConnection::with_results(vec![Ok(McpToolResult::text(
                 "after",
             ))])),
         ])
@@ -111,11 +111,11 @@ async fn managed_connection_reconnects_and_allows_calls_again() {
     let sink = Arc::new(RecordingSink::default());
     let managed = managed_connection(
         policy(0),
-        MockTransport::new(vec![
-            Ok(MockConnection::with_results(vec![Err(
+        TestTransport::new(vec![
+            Ok(TestConnection::with_results(vec![Err(
                 McpError::Connection("lost".into()),
             )])),
-            Ok(MockConnection::with_results(vec![Ok(McpToolResult::text(
+            Ok(TestConnection::with_results(vec![Ok(McpToolResult::text(
                 "after",
             ))])),
         ])
@@ -149,11 +149,11 @@ async fn managed_connection_records_connection_and_reconnect_metrics() {
     let metrics = Arc::new(CollectingMetrics::default());
     let managed = ManagedMcpConnection::connect_with_metrics(
         Arc::new(
-            MockTransport::new(vec![
-                Ok(MockConnection::with_results(vec![Err(
+            TestTransport::new(vec![
+                Ok(TestConnection::with_results(vec![Err(
                     McpError::Connection("lost".into()),
                 )])),
-                Ok(MockConnection::with_results(vec![Ok(McpToolResult::text(
+                Ok(TestConnection::with_results(vec![Ok(McpToolResult::text(
                     "after",
                 ))])),
             ])
@@ -182,7 +182,7 @@ async fn managed_connection_records_connection_and_reconnect_metrics() {
                 outcome: McpMetricOutcome::Success,
                 transport,
                 ..
-            } if transport == "mock"
+            } if transport == "test"
         )
     }));
     assert!(recorded.iter().any(|metric| {
@@ -212,12 +212,12 @@ async fn managed_connection_reports_schema_changed_after_reconnect() {
     let sink = Arc::new(RecordingSink::default());
     let managed = managed_connection(
         policy(0),
-        MockTransport::new(vec![
-            Ok(MockConnection::with_schema_and_results(
+        TestTransport::new(vec![
+            Ok(TestConnection::with_schema_and_results(
                 json!({ "type": "object" }),
                 vec![Err(McpError::Connection("lost".into()))],
             )),
-            Ok(MockConnection::with_schema_and_results(
+            Ok(TestConnection::with_schema_and_results(
                 json!({
                     "type": "object",
                     "required": ["query"],
@@ -262,8 +262,8 @@ async fn managed_connection_terminal_failure_after_max_attempts() {
     let sink = Arc::new(RecordingSink::default());
     let managed = managed_connection(
         policy(1),
-        MockTransport::new(vec![
-            Ok(MockConnection::with_results(vec![Err(
+        TestTransport::new(vec![
+            Ok(TestConnection::with_results(vec![Err(
                 McpError::Connection("lost".into()),
             )])),
             Err(McpError::Connection("still down".into())),
@@ -298,11 +298,11 @@ async fn managed_connection_resets_attempts_after_success_reset_window() {
     reconnect.success_reset_after = Duration::from_millis(10);
     let managed = managed_connection(
         reconnect,
-        MockTransport::new(vec![
-            Ok(MockConnection::with_results(vec![Err(
+        TestTransport::new(vec![
+            Ok(TestConnection::with_results(vec![Err(
                 McpError::Connection("lost".into()),
             )])),
-            Ok(MockConnection::with_results(vec![Ok(McpToolResult::text(
+            Ok(TestConnection::with_results(vec![Ok(McpToolResult::text(
                 "after",
             ))])),
         ])
@@ -328,7 +328,7 @@ async fn registry_add_managed_server_injects_tools_after_initial_connect() {
         .add_managed_server(
             spec,
             McpServerScope::Session(SessionId::new()),
-            Arc::new(MockTransport::new(vec![Ok(MockConnection {
+            Arc::new(TestTransport::new(vec![Ok(TestConnection {
                 tools: vec![tool("search")],
                 ..Default::default()
             })])),
@@ -378,7 +378,7 @@ fn spec(reconnect: ReconnectPolicy) -> McpServerSpec {
 
 async fn managed_connection(
     reconnect: ReconnectPolicy,
-    transport: MockTransport,
+    transport: TestTransport,
     sink: Arc<RecordingSink>,
 ) -> ManagedMcpConnection {
     ManagedMcpConnection::connect(
@@ -473,13 +473,13 @@ impl McpMetricsSink for CollectingMetrics {
 }
 
 #[derive(Clone)]
-struct MockTransport {
-    outcomes: Arc<Mutex<VecDeque<Result<MockConnection, McpError>>>>,
+struct TestTransport {
+    outcomes: Arc<Mutex<VecDeque<Result<TestConnection, McpError>>>>,
     attempt_notify: Option<Arc<Notify>>,
 }
 
-impl MockTransport {
-    fn new(outcomes: Vec<Result<MockConnection, McpError>>) -> Self {
+impl TestTransport {
+    fn new(outcomes: Vec<Result<TestConnection, McpError>>) -> Self {
         Self {
             outcomes: Arc::new(Mutex::new(VecDeque::from(outcomes))),
             attempt_notify: None,
@@ -493,9 +493,9 @@ impl MockTransport {
 }
 
 #[async_trait]
-impl McpTransport for MockTransport {
+impl McpTransport for TestTransport {
     fn transport_id(&self) -> &'static str {
-        "mock"
+        "test"
     }
 
     async fn connect(&self, _spec: McpServerSpec) -> Result<Arc<dyn McpConnection>, McpError> {
@@ -505,18 +505,18 @@ impl McpTransport for MockTransport {
         self.outcomes
             .lock()
             .pop_front()
-            .unwrap_or_else(|| Err(McpError::Connection("no mock outcome".into())))
+            .unwrap_or_else(|| Err(McpError::Connection("no test outcome".into())))
             .map(|connection| Arc::new(connection) as Arc<dyn McpConnection>)
     }
 }
 
 #[derive(Default)]
-struct MockConnection {
+struct TestConnection {
     tools: Vec<McpToolDescriptor>,
     results: Mutex<VecDeque<Result<McpToolResult, McpError>>>,
 }
 
-impl MockConnection {
+impl TestConnection {
     fn with_results(results: Vec<Result<McpToolResult, McpError>>) -> Self {
         Self {
             tools: vec![tool("search")],
@@ -536,9 +536,9 @@ impl MockConnection {
 }
 
 #[async_trait]
-impl McpConnection for MockConnection {
+impl McpConnection for TestConnection {
     fn connection_id(&self) -> &'static str {
-        "mock-connection"
+        "test-connection"
     }
 
     async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {

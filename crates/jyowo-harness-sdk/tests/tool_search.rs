@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 #[tokio::test]
 async fn global_disable_tool_search_converts_auto_defer_to_always_loaded() {
-    let model = Arc::new(testing::MockProvider::default());
+    let model = Arc::new(testing::TestModelProvider::default());
     let harness = harness_with_registry(
         model.clone(),
         ToolRegistry::builder()
@@ -58,7 +58,7 @@ async fn global_disable_tool_search_converts_auto_defer_to_always_loaded() {
 #[tokio::test]
 async fn global_disable_tool_search_rejects_force_defer_during_session_assembly() {
     let harness = harness_with_registry(
-        Arc::new(testing::MockProvider::default()),
+        Arc::new(testing::TestModelProvider::default()),
         ToolRegistry::builder()
             .with_builtin_toolset(BuiltinToolset::Empty)
             .with_tool(Box::new(TestTool::new(
@@ -89,7 +89,7 @@ async fn global_disable_tool_search_rejects_force_defer_during_session_assembly(
 
 #[tokio::test]
 async fn tenant_allowed_tools_cannot_enable_tool_search_when_tool_is_denied() {
-    let model = Arc::new(testing::MockProvider::default());
+    let model = Arc::new(testing::TestModelProvider::default());
     let mut allowed = std::collections::HashSet::new();
     allowed.insert("allowed_tool".to_owned());
     let harness = harness_with_registry(
@@ -170,7 +170,7 @@ async fn admin_custom_tool_search_scorer_changes_result_order() {
         .with_model_arc(model)
         .with_store_arc(store.clone())
         .with_sandbox(testing::NoopSandbox::new())
-        .with_permission_broker(testing::MockBroker::new(vec![Decision::AllowOnce]))
+        .with_permission_broker(testing::TestBroker::new(vec![Decision::AllowOnce]))
         .with_tool_registry(registry)
         .with_tool_search_scorer(PreferBetaScorer)
         .build()
@@ -219,7 +219,7 @@ async fn admin_custom_tool_search_scorer_changes_result_order() {
 }
 
 fn harness_with_registry(
-    model: Arc<testing::MockProvider>,
+    model: Arc<testing::TestModelProvider>,
     registry: ToolRegistry,
 ) -> jyowo_harness_sdk::HarnessBuilder<
     jyowo_harness_sdk::Set<Arc<dyn harness_model::ModelProvider>>,

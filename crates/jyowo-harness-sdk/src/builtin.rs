@@ -53,7 +53,7 @@ pub use harness_permission::{StreamBasedBroker, StreamBrokerConfig};
 #[cfg(feature = "memory-builtin")]
 pub use harness_memory::BuiltinMemory;
 #[cfg(feature = "memory-external-slot")]
-pub use harness_memory::MockMemoryProvider as InMemoryMemoryProvider;
+pub use harness_memory::InMemoryMemoryProvider;
 
 #[cfg(feature = "observability-redactor")]
 pub use harness_observability::DefaultRedactor;

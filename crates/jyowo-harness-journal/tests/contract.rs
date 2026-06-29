@@ -548,9 +548,9 @@ async fn memory_store_satisfies_event_store_contract() {
     run_contract(&store).await;
 }
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "testing")]
 #[tokio::test]
-async fn mock_store_satisfies_event_store_contract() {
-    let store = mock_event_store(Arc::new(NoopRedactor));
+async fn test_store_satisfies_event_store_contract() {
+    let store = test_event_store(Arc::new(NoopRedactor));
     run_contract(&store).await;
 }
