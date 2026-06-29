@@ -249,7 +249,6 @@ export const enUS = {
       loading: 'Loading default permission mode...',
       saving: 'Saving...',
       save: 'Save default mode',
-      saved: 'Default permission mode saved.',
       permissionMode: {
         label: 'Permission mode',
       },

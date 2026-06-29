@@ -32,7 +32,6 @@ export function ExecutionSettings() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [savedMessage, setSavedMessage] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -81,7 +80,6 @@ export function ExecutionSettings() {
   ) {
     setSaving(true)
     setErrorMessage(null)
-    setSavedMessage(null)
 
     try {
       const settings = await setExecutionSettings(
@@ -100,7 +98,6 @@ export function ExecutionSettings() {
         subagentsEnabled: settings.agentCapabilities.subagentsEnabled,
       })
       setAutoModeAvailable(settings.autoModeAvailable)
-      setSavedMessage(t('execution.saved'))
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error))
     } finally {
@@ -122,7 +119,6 @@ export function ExecutionSettings() {
 
       {loading ? <p className="text-muted-foreground text-sm">{t('execution.loading')}</p> : null}
       {errorMessage ? <p className="text-destructive text-sm">{errorMessage}</p> : null}
-      {savedMessage ? <p className="text-sm text-success">{savedMessage}</p> : null}
 
       {!loading ? (
         <div className="space-y-5">

@@ -249,7 +249,6 @@ export const zhCN = {
       loading: '正在加载默认授权模式…',
       saving: '正在保存…',
       save: '保存默认模式',
-      saved: '默认授权模式已保存。',
       permissionMode: {
         label: '权限模式',
       },

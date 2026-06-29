@@ -69,6 +69,7 @@ describe('ExecutionSettings', () => {
         subagentsEnabled: false,
       })
     })
+    expect(screen.queryByText('默认授权模式已保存。')).not.toBeInTheDocument()
   })
 
   it('loads and saves context compression trigger ratio', async () => {
