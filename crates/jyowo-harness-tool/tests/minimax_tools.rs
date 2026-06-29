@@ -11,6 +11,7 @@ use harness_contracts::{
 use harness_permission::{
     PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest, PersistedDecision,
 };
+use harness_tool::provider_media::MAX_MINIMAX_MEDIA_BYTES;
 use harness_tool::{
     BuiltinToolset, InterruptToken, MiniMaxImageToImageTool, MiniMaxMusicGenerationTool,
     MiniMaxResponsesTool, MiniMaxTextToImageTool, MiniMaxTextToSpeechAsyncQueryTool,
@@ -18,9 +19,11 @@ use harness_tool::{
     MiniMaxVideoGenerationQueryTool, MiniMaxVideoTemplateQueryTool, Tool, ToolContext, ToolEvent,
     ToolRegistryBuilder,
 };
-use harness_tool::provider_media::MAX_MINIMAX_MEDIA_BYTES;
 use serde_json::json;
-use std::{path::PathBuf, sync::{Arc, Mutex}};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 use wiremock::{
     matchers::{header, method, path, query_param},
     Mock, MockServer, ResponseTemplate,
@@ -156,9 +159,19 @@ async fn credential_route_image_tool_passes_image_generation_operation_id() {
         )
         .await;
 
-    let context = captured.lock().unwrap().pop().expect("credential context captured");
-    assert_eq!(context.operation_id.as_deref(), Some("minimax.image_generation"));
-    assert_eq!(context.route_kind, Some(CapabilityRouteKind::ImageGeneration));
+    let context = captured
+        .lock()
+        .unwrap()
+        .pop()
+        .expect("credential context captured");
+    assert_eq!(
+        context.operation_id.as_deref(),
+        Some("minimax.image_generation")
+    );
+    assert_eq!(
+        context.route_kind,
+        Some(CapabilityRouteKind::ImageGeneration)
+    );
 }
 
 #[tokio::test]
@@ -174,9 +187,19 @@ async fn credential_route_video_tool_passes_video_generation_operation_id() {
         )
         .await;
 
-    let context = captured.lock().unwrap().pop().expect("credential context captured");
-    assert_eq!(context.operation_id.as_deref(), Some("minimax.video_generation"));
-    assert_eq!(context.route_kind, Some(CapabilityRouteKind::VideoGeneration));
+    let context = captured
+        .lock()
+        .unwrap()
+        .pop()
+        .expect("credential context captured");
+    assert_eq!(
+        context.operation_id.as_deref(),
+        Some("minimax.video_generation")
+    );
+    assert_eq!(
+        context.route_kind,
+        Some(CapabilityRouteKind::VideoGeneration)
+    );
 }
 
 #[tokio::test]
@@ -192,7 +215,11 @@ async fn credential_route_tts_tool_passes_text_to_speech_operation_id() {
         )
         .await;
 
-    let context = captured.lock().unwrap().pop().expect("credential context captured");
+    let context = captured
+        .lock()
+        .unwrap()
+        .pop()
+        .expect("credential context captured");
     assert_eq!(
         context.operation_id.as_deref(),
         Some("minimax.text_to_speech.sync")
@@ -213,7 +240,11 @@ async fn credential_route_non_service_tool_uses_provider_only_context() {
         )
         .await;
 
-    let context = captured.lock().unwrap().pop().expect("credential context captured");
+    let context = captured
+        .lock()
+        .unwrap()
+        .pop()
+        .expect("credential context captured");
     assert!(context.operation_id.is_none());
     assert!(context.route_kind.is_none());
 }
@@ -242,7 +273,12 @@ async fn minimax_service_artifact_image_generation_returns_typed_image_artifact(
     )
     .await;
 
-    assert_typed_artifact(&result, ModelModality::Image, "image/png", "Generated image");
+    assert_typed_artifact(
+        &result,
+        ModelModality::Image,
+        "image/png",
+        "Generated image",
+    );
 }
 
 #[tokio::test]
@@ -264,7 +300,12 @@ async fn minimax_service_artifact_image_to_image_returns_typed_image_artifact() 
     )
     .await;
 
-    assert_typed_artifact(&result, ModelModality::Image, "image/png", "Generated image");
+    assert_typed_artifact(
+        &result,
+        ModelModality::Image,
+        "image/png",
+        "Generated image",
+    );
 }
 
 #[tokio::test]
@@ -325,7 +366,12 @@ async fn minimax_service_artifact_video_query_returns_typed_video_artifact() {
     )
     .await;
 
-    assert_typed_artifact(&result, ModelModality::Video, "video/mp4", "Generated video");
+    assert_typed_artifact(
+        &result,
+        ModelModality::Video,
+        "video/mp4",
+        "Generated video",
+    );
 }
 
 #[tokio::test]
@@ -356,7 +402,12 @@ async fn minimax_service_artifact_video_query_downloads_allowed_https_url() {
     )
     .await;
 
-    assert_typed_artifact(&result, ModelModality::Video, "video/mp4", "Generated video");
+    assert_typed_artifact(
+        &result,
+        ModelModality::Video,
+        "video/mp4",
+        "Generated video",
+    );
     let serialized = serde_json::to_string(&result).unwrap();
     assert!(!serialized.contains("private-video.mp4"));
 }
@@ -380,7 +431,12 @@ async fn minimax_service_artifact_tts_sync_returns_typed_audio_artifact() {
     )
     .await;
 
-    assert_typed_artifact(&result, ModelModality::Audio, "audio/mpeg", "Generated speech");
+    assert_typed_artifact(
+        &result,
+        ModelModality::Audio,
+        "audio/mpeg",
+        "Generated speech",
+    );
 }
 
 #[tokio::test]
@@ -414,7 +470,10 @@ async fn minimax_service_artifact_tts_async_returns_async_job_output() {
         .expect("async job output");
     assert_eq!(value["kind"], "async_job");
     assert_eq!(value["jobId"], "tts-task-1");
-    assert_eq!(value["pollOperationId"], "minimax.text_to_speech.async.query");
+    assert_eq!(
+        value["pollOperationId"],
+        "minimax.text_to_speech.async.query"
+    );
     assert_eq!(value["artifactKind"], "audio");
 }
 
@@ -440,7 +499,12 @@ async fn minimax_service_artifact_tts_async_query_returns_typed_audio_artifact()
     )
     .await;
 
-    assert_typed_artifact(&result, ModelModality::Audio, "audio/mpeg", "Generated speech");
+    assert_typed_artifact(
+        &result,
+        ModelModality::Audio,
+        "audio/mpeg",
+        "Generated speech",
+    );
 }
 
 #[tokio::test]
@@ -462,7 +526,12 @@ async fn minimax_service_artifact_music_generation_returns_typed_audio_artifact(
     )
     .await;
 
-    assert_typed_artifact(&result, ModelModality::Audio, "audio/mpeg", "Generated music");
+    assert_typed_artifact(
+        &result,
+        ModelModality::Audio,
+        "audio/mpeg",
+        "Generated music",
+    );
 }
 
 #[tokio::test]

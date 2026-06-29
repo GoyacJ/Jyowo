@@ -19,9 +19,9 @@ pub fn validate_https_media_url(url_str: &str) -> Result<Url, ToolError> {
         .map_err(|_| ToolError::Message("provider media asset URL is malformed".to_owned()))?;
     let allowed_scheme = match url.scheme() {
         "https" => true,
-        "http" => url.host_str().is_some_and(|host| {
-            matches!(host, "127.0.0.1" | "localhost" | "[::1]")
-        }),
+        "http" => url
+            .host_str()
+            .is_some_and(|host| matches!(host, "127.0.0.1" | "localhost" | "[::1]")),
         _ => false,
     };
     if !allowed_scheme {
@@ -299,8 +299,8 @@ impl ProviderMediaDownloader for ReqwestProviderMediaDownloader {
         let mut bytes = Vec::with_capacity(content_length.min(max_bytes) as usize);
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk =
-                chunk.map_err(|_| ToolError::Message("provider media download failed".to_owned()))?;
+            let chunk = chunk
+                .map_err(|_| ToolError::Message("provider media download failed".to_owned()))?;
             let next_len = u64::try_from(bytes.len())
                 .unwrap_or(u64::MAX)
                 .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));

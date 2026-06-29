@@ -8,11 +8,12 @@ use harness_contracts::{
     EngineError, EngineFailedEvent, EventId, McpConnectionLostEvent, McpConnectionLostReason,
     MessageContent, MessageId, MessageMetadata, ModelModality, PermissionRequestedEvent,
     PermissionResolvedEvent, ProviderCapabilityRoute, ProviderCapabilityRouteSettings,
-    ProviderServiceAdapterAvailability, ReasoningSummaryChunk, RunStartedEvent, SnapshotId, StopReason, ToolErrorPayload,
-    ToolServiceBinding, ToolUseFailedEvent, ToolUseRequestedEvent, ToolUseSummary, TurnInput,
-    UiSafeText, UserMessageAppendedEvent,
+    ProviderServiceAdapterAvailability, ReasoningSummaryChunk, RunStartedEvent, SnapshotId,
+    StopReason, ToolErrorPayload, ToolServiceBinding, ToolUseFailedEvent, ToolUseRequestedEvent,
+    ToolUseSummary, TurnInput, UiSafeText, UserMessageAppendedEvent,
 };
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
+use harness_tool::BuiltinToolset;
 use image::codecs::{gif::GifEncoder, jpeg::JpegEncoder, webp::WebPEncoder};
 use image::{ExtendedColorType, ImageEncoder};
 use jyowo_desktop_shell::commands::{
@@ -21,18 +22,19 @@ use jyowo_desktop_shell::commands::{
     delete_conversation_with_runtime_state, delete_mcp_server_with_runtime_state,
     delete_mcp_server_with_store, delete_memory_item_with_runtime_state,
     delete_provider_capability_route_with_store, delete_skill_with_runtime_state,
-    desktop_provider_credential_resolver_with_stores, export_memory_items_with_runtime_state, export_support_bundle_with_runtime_state,
-    get_app_info_payload, get_artifact_media_preview_with_runtime_state,
-    get_attachment_media_preview_with_runtime_state, get_context_snapshot_with_runtime_state,
-    get_conversation_with_runtime_state, get_execution_settings_for_request,
-    get_execution_settings_with_store, get_mcp_server_config_with_runtime_state,
-    get_mcp_server_config_with_store, get_memory_item_with_runtime_state,
-    get_provider_config_api_key_with_runtime_state, get_provider_config_api_key_with_store,
-    get_replay_timeline_with_runtime_state, get_skill_detail_with_runtime_state,
-    get_skill_file_with_runtime_state, harness_healthcheck_payload,
-    import_skill_with_runtime_state, list_activity_payload, list_activity_with_runtime_state,
-    list_artifacts_with_runtime_state, list_conversations_with_runtime_state,
-    list_eval_cases_payload, list_eval_cases_with_runtime_state, list_mcp_diagnostics_with_store,
+    desktop_provider_credential_resolver_with_stores, export_memory_items_with_runtime_state,
+    export_support_bundle_with_runtime_state, get_app_info_payload,
+    get_artifact_media_preview_with_runtime_state, get_attachment_media_preview_with_runtime_state,
+    get_context_snapshot_with_runtime_state, get_conversation_with_runtime_state,
+    get_execution_settings_for_request, get_execution_settings_with_store,
+    get_mcp_server_config_with_runtime_state, get_mcp_server_config_with_store,
+    get_memory_item_with_runtime_state, get_provider_config_api_key_with_runtime_state,
+    get_provider_config_api_key_with_store, get_replay_timeline_with_runtime_state,
+    get_skill_detail_with_runtime_state, get_skill_file_with_runtime_state,
+    harness_healthcheck_payload, import_skill_with_runtime_state, list_activity_payload,
+    list_activity_with_runtime_state, list_artifacts_with_runtime_state,
+    list_conversations_with_runtime_state, list_eval_cases_payload,
+    list_eval_cases_with_runtime_state, list_mcp_diagnostics_with_store,
     list_mcp_servers_with_runtime_state, list_memory_items_with_runtime_state,
     list_model_provider_catalog_payload, list_provider_capability_route_options_from_inputs,
     list_provider_capability_routes_with_store, list_provider_settings_with_store,
@@ -57,14 +59,13 @@ use jyowo_desktop_shell::commands::{
     ContextReferencePayload, ConversationEventBatchPayload, ConversationModelCapabilityRecord,
     CreateAttachmentFromPathRequest, DeleteConversationRequest, DeleteMcpServerRequest,
     DeleteMemoryItemRequest, DeleteProviderCapabilityRouteRequest, DeleteSkillRequest,
-    DesktopExecutionSettingsStore, DesktopMcpDiagnosticStore, DesktopProviderCapabilityRouteStore,
-    DesktopConversationModelConfigStore, DesktopProviderSettingsStore, DesktopRuntimeState,
-    DesktopSkillStore,
-    ExportSupportBundleRequest, GetArtifactMediaPreviewRequest, GetAttachmentMediaPreviewRequest,
-    GetContextSnapshotRequest, GetConversationRequest, GetExecutionSettingsRequest,
-    GetMcpServerConfigRequest, GetMemoryItemRequest, GetProviderConfigApiKeyRequest,
-    GetSkillDetailRequest, GetSkillFileRequest, ImportSkillRequest, ListActivityRequest,
-    ListArtifactsRequest, ListReferenceCandidatesRequest, McpDiagnosticRecord,
+    DesktopConversationModelConfigStore, DesktopExecutionSettingsStore, DesktopMcpDiagnosticStore,
+    DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore, DesktopRuntimeState,
+    DesktopSkillStore, ExportSupportBundleRequest, GetArtifactMediaPreviewRequest,
+    GetAttachmentMediaPreviewRequest, GetContextSnapshotRequest, GetConversationRequest,
+    GetExecutionSettingsRequest, GetMcpServerConfigRequest, GetMemoryItemRequest,
+    GetProviderConfigApiKeyRequest, GetSkillDetailRequest, GetSkillFileRequest, ImportSkillRequest,
+    ListActivityRequest, ListArtifactsRequest, ListReferenceCandidatesRequest, McpDiagnosticRecord,
     McpDiagnosticSeverity, McpDiagnosticStore, McpHeaderEnvRecord, McpNameValueRecord,
     McpServerConfigRecord, McpServerStore, McpServerTransportConfig,
     PageConversationTimelineRequest, PageConversationWorktreeDirection,
@@ -88,12 +89,11 @@ use jyowo_harness_sdk::ext::{
     MemoryId, MemoryKind, MemoryMetadata, MemoryRecord, MemorySource, MemoryStore,
     MemoryVisibility, Message, MessagePart, MessageRole, ModelError, ModelProtocol, OverflowAction,
     PermissionCheck, PermissionContext, PermissionMode, PermissionRequest, PermissionSubject,
-    ProviderCredentialResolveContext, ProviderRestriction,
-    RedactPatternSet, RedactRules, RedactScope, Redactor, RequestId, ResultBudget, RuleSnapshot,
-    RunId, SessionId, Severity, StreamBrokerConfig, TenantId, ToolCapability,
-    ThinkingDelta, Tool, ToolContext, ToolDescriptor, ToolError, ToolEvent, ToolGroup,
-    ToolProperties, ToolRegistry, ToolResult, ToolStream, ToolUseId, TransportChoice, TrustLevel,
-    UsageSnapshot, ValidationError,
+    ProviderCredentialResolveContext, ProviderRestriction, RedactPatternSet, RedactRules,
+    RedactScope, Redactor, RequestId, ResultBudget, RuleSnapshot, RunId, SessionId, Severity,
+    StreamBrokerConfig, TenantId, ThinkingDelta, Tool, ToolCapability, ToolContext, ToolDescriptor,
+    ToolError, ToolEvent, ToolGroup, ToolProperties, ToolRegistry, ToolResult, ToolStream,
+    ToolUseId, TransportChoice, TrustLevel, UsageSnapshot, ValidationError,
 };
 use jyowo_harness_sdk::ext::{ContentDelta, ModelStreamEvent};
 use jyowo_harness_sdk::testing::{
@@ -103,7 +103,6 @@ use jyowo_harness_sdk::testing::{
 use jyowo_harness_sdk::{
     ConversationEventsPageRequest, Harness, HarnessOptions, McpConfig, StreamPermissionRuntime,
 };
-use harness_tool::BuiltinToolset;
 use parking_lot::RwLock as ParkingRwLock;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -2143,18 +2142,18 @@ mod capability_route_conversation {
             &self,
             req: jyowo_harness_sdk::ext::ModelRequest,
             _ctx: jyowo_harness_sdk::ext::InferContext,
-        ) -> Result<
-            jyowo_harness_sdk::ext::ModelStream,
-            jyowo_harness_sdk::ext::ModelError,
-        > {
+        ) -> Result<jyowo_harness_sdk::ext::ModelStream, jyowo_harness_sdk::ext::ModelError>
+        {
             self.requests.lock().unwrap().push(req);
-            let response = self.responses.first().cloned().unwrap_or(ScriptedResponse::Stream(
-                vec![ModelStreamEvent::MessageStop],
-            ));
+            let response = self
+                .responses
+                .first()
+                .cloned()
+                .unwrap_or(ScriptedResponse::Stream(vec![
+                    ModelStreamEvent::MessageStop,
+                ]));
             match response {
-                ScriptedResponse::Stream(events) => {
-                    Ok(Box::pin(futures::stream::iter(events)))
-                }
+                ScriptedResponse::Stream(events) => Ok(Box::pin(futures::stream::iter(events))),
                 ScriptedResponse::Error(error) => Err(error),
                 ScriptedResponse::WaitForCancel => {
                     std::future::pending::<()>().await;
@@ -2181,7 +2180,11 @@ mod capability_route_conversation {
                 routes: vec![minimax_image_route("minimax-image", true)],
             },
             Arc::clone(&provider),
-            provider_settings_with_openai_and_minimax("openai-main", "minimax-image", "route-token"),
+            provider_settings_with_openai_and_minimax(
+                "openai-main",
+                "minimax-image",
+                "route-token",
+            ),
         )
         .await;
         let session_id = SessionId::new();
@@ -2219,7 +2222,11 @@ mod capability_route_conversation {
                 routes: Vec::new(),
             },
             Arc::clone(&provider),
-            provider_settings_with_openai_and_minimax("openai-main", "minimax-image", "route-token"),
+            provider_settings_with_openai_and_minimax(
+                "openai-main",
+                "minimax-image",
+                "route-token",
+            ),
         )
         .await;
         let session_id = SessionId::new();
@@ -2249,9 +2256,9 @@ mod capability_route_conversation {
         let workspace = unique_workspace("capability-route-conversation-no-tool-calling");
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace = workspace.canonicalize().unwrap();
-        let provider = Arc::new(NoToolCallingScriptedProvider::new(vec![ScriptedResponse::Stream(
-            vec![ModelStreamEvent::MessageStop],
-        )]));
+        let provider = Arc::new(NoToolCallingScriptedProvider::new(vec![
+            ScriptedResponse::Stream(vec![ModelStreamEvent::MessageStop]),
+        ]));
         let routes = Arc::new(ParkingRwLock::new(ProviderCapabilityRouteSettings {
             version: 1,
             routes: vec![minimax_image_route("minimax-image", true)],
@@ -2268,18 +2275,20 @@ mod capability_route_conversation {
                 "route-token",
             ))
             .expect("provider settings should save");
-        let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
-            default_timeout: Some(Duration::from_secs(5)),
-            heartbeat_interval: None,
-            max_pending: 16,
-        }));
+        let stream_permission_runtime =
+            Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
+                default_timeout: Some(Duration::from_secs(5)),
+                heartbeat_interval: None,
+                max_pending: 16,
+            }));
         let registry = ToolRegistry::builder()
             .with_builtin_toolset(BuiltinToolset::Default)
             .build()
             .expect("tool registry should build");
         std::fs::create_dir_all(workspace.join(".jyowo").join("runtime").join("blobs")).unwrap();
-        let blob_store = FileBlobStore::open(workspace.join(".jyowo").join("runtime").join("blobs"))
-            .expect("blob store should open");
+        let blob_store =
+            FileBlobStore::open(workspace.join(".jyowo").join("runtime").join("blobs"))
+                .expect("blob store should open");
         let harness = Arc::new(
             Harness::builder()
                 .with_options(test_harness_options(&workspace))
@@ -2348,7 +2357,11 @@ mod capability_route_conversation {
                 routes: vec![minimax_video_route("minimax-image", true)],
             },
             Arc::clone(&provider),
-            provider_settings_with_openai_and_minimax("openai-main", "minimax-image", "route-token"),
+            provider_settings_with_openai_and_minimax(
+                "openai-main",
+                "minimax-image",
+                "route-token",
+            ),
         )
         .await;
         let session_id = SessionId::new();
@@ -2387,7 +2400,11 @@ mod capability_route_conversation {
                 routes: vec![minimax_tts_route("minimax-image", true)],
             },
             Arc::clone(&provider),
-            provider_settings_with_openai_and_minimax("openai-main", "minimax-image", "route-token"),
+            provider_settings_with_openai_and_minimax(
+                "openai-main",
+                "minimax-image",
+                "route-token",
+            ),
         )
         .await;
         let session_id = SessionId::new();

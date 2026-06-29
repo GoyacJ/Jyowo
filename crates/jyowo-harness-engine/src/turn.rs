@@ -2873,7 +2873,10 @@ fn validated_typed_artifact_output(
         kind: kind.to_owned(),
         blob_ref: blob_ref.clone(),
         title: title.to_owned(),
-        preview: preview.map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned),
+        preview: preview
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned),
     })
 }
 

@@ -22,8 +22,6 @@ pub mod credential_pool;
 pub mod deepseek;
 #[cfg(feature = "doubao")]
 pub mod doubao;
-#[cfg(feature = "doubao")]
-pub mod seedance;
 #[cfg(feature = "gemini")]
 pub mod gemini;
 #[cfg(feature = "km")]
@@ -44,6 +42,8 @@ pub mod provider;
 #[cfg(feature = "qwen")]
 pub mod qwen;
 pub mod registry;
+#[cfg(feature = "doubao")]
+pub mod seedance;
 pub mod stream_aggregator;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -67,8 +67,6 @@ pub use credential_pool::*;
 pub use deepseek::*;
 #[cfg(feature = "doubao")]
 pub use doubao::*;
-#[cfg(feature = "doubao")]
-pub use seedance::*;
 #[cfg(feature = "gemini")]
 pub use gemini::*;
 pub use harness_contracts::{
@@ -92,6 +90,8 @@ pub use provider::*;
 #[cfg(feature = "qwen")]
 pub use qwen::*;
 pub use registry::*;
+#[cfg(feature = "doubao")]
+pub use seedance::*;
 pub use stream_aggregator::*;
 #[cfg(any(test, feature = "testing"))]
 pub use testing::*;

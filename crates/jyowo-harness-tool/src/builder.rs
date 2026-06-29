@@ -151,10 +151,8 @@ impl ToolRegistryBuilder {
                     }
                     #[cfg(feature = "seedance-tools")]
                     {
-                        registry
-                            .register(Box::<crate::builtin::SeedanceTextToVideo>::default())?;
-                        registry
-                            .register(Box::<crate::builtin::SeedanceImageToVideo>::default())?;
+                        registry.register(Box::<crate::builtin::SeedanceTextToVideo>::default())?;
+                        registry.register(Box::<crate::builtin::SeedanceImageToVideo>::default())?;
                         registry.register(
                             Box::<crate::builtin::SeedanceVideoGenerationQueryTool>::default(),
                         )?;

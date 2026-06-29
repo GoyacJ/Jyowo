@@ -18,6 +18,9 @@ use harness_contracts::{
     ProviderCapabilityRouteOption, ProviderCapabilityRouteSettings,
     ProviderServiceAdapterAvailability, UiSafeText,
 };
+use harness_tool::{
+    provider_service_adapter_availability_from_snapshot, BuiltinToolset, ToolRegistryBuilder,
+};
 use image::{ImageFormat, ImageReader, Limits};
 use jyowo_harness_sdk::builtin::{
     DefaultRedactor, FileBlobStore, InMemoryMemoryProvider, JsonlEventStore, LocalLlamaProvider,
@@ -44,9 +47,6 @@ use jyowo_harness_sdk::{
     ConversationAttachmentReference, ConversationContextReference, ConversationEventsPageRequest,
     ConversationTurnInput, ConversationTurnPageDirection, ConversationTurnRequest, Harness,
     McpConfig, RuntimeSkillSummary, RuntimeSkillView, SessionOptions, StreamPermissionRuntime,
-};
-use harness_tool::{
-    provider_service_adapter_availability_from_snapshot, BuiltinToolset, ToolRegistryBuilder,
 };
 use parking_lot::RwLock as ParkingRwLock;
 use serde::{Deserialize, Serialize};
@@ -1260,9 +1260,7 @@ fn default_desktop_provider_service_adapter_availability() -> ProviderServiceAda
     ToolRegistryBuilder::new()
         .with_builtin_toolset(BuiltinToolset::Default)
         .build()
-        .map(|registry| {
-            provider_service_adapter_availability_from_snapshot(&registry.snapshot())
-        })
+        .map(|registry| provider_service_adapter_availability_from_snapshot(&registry.snapshot()))
         .unwrap_or_default()
 }
 
@@ -3132,8 +3130,7 @@ async fn runtime_state_from_stream_permission_runtime(
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
     let workspace_root = canonical_workspace_root(workspace_root, "workspace root".to_owned())?;
     let route_store = DesktopProviderCapabilityRouteStore::new(workspace_root.clone());
-    let provider_capability_routes =
-        shared_provider_capability_routes_from_store(&route_store)?;
+    let provider_capability_routes = shared_provider_capability_routes_from_store(&route_store)?;
     let (harness, model_id, protocol) = build_desktop_harness(
         &workspace_root,
         Arc::clone(&stream_permission_runtime),

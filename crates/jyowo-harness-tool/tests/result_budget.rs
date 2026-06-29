@@ -145,13 +145,15 @@ async fn typed_artifact_result_is_preserved_without_budget_offload() {
     let (pool, call) = pool_with_tool(
         "artifact",
         budget(5, OverflowAction::Offload),
-        vec![ToolEvent::Final(ToolResult::Mixed(vec![ToolResultPart::Artifact {
-            artifact_kind: harness_contracts::ModelModality::Image,
-            content_type: "image/png".to_owned(),
-            blob_ref: blob_ref.clone(),
-            title: "Generated image".to_owned(),
-            preview: Some("Generated image".to_owned()),
-        }]))],
+        vec![ToolEvent::Final(ToolResult::Mixed(vec![
+            ToolResultPart::Artifact {
+                artifact_kind: harness_contracts::ModelModality::Image,
+                content_type: "image/png".to_owned(),
+                blob_ref: blob_ref.clone(),
+                title: "Generated image".to_owned(),
+                preview: Some("Generated image".to_owned()),
+            },
+        ]))],
     )
     .await;
     let blob_store = Arc::new(RecordingBlobStore::default());

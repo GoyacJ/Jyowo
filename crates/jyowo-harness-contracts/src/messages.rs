@@ -9,7 +9,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{BlobRef, JournalOffset, MemoryId, MessageId, ModelModality, ToolUseId, TranscriptRef, UsageSnapshot};
+use crate::{
+    BlobRef, JournalOffset, MemoryId, MessageId, ModelModality, ToolUseId, TranscriptRef,
+    UsageSnapshot,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TurnInput {

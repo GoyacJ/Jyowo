@@ -72,9 +72,14 @@ macro_rules! minimax_tool {
                 input: Value,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
-                Ok(execute_request(input, ctx, &self.descriptor, |client, request| async move {
-                    client.$operation(request).await.map_err(model_error)
-                }))
+                Ok(execute_request(
+                    input,
+                    ctx,
+                    &self.descriptor,
+                    |client, request| async move {
+                        client.$operation(request).await.map_err(model_error)
+                    },
+                ))
             }
         }
     };
@@ -353,10 +358,15 @@ macro_rules! minimax_string_arg_tool {
                 input: Value,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
-                Ok(execute_request(input, ctx, &self.descriptor, |client, request| async move {
-                    let value = required_string(&request, $field).map_err(validation_error)?;
-                    client.$operation(&value).await.map_err(model_error)
-                }))
+                Ok(execute_request(
+                    input,
+                    ctx,
+                    &self.descriptor,
+                    |client, request| async move {
+                        let value = required_string(&request, $field).map_err(validation_error)?;
+                        client.$operation(&value).await.map_err(model_error)
+                    },
+                ))
             }
         }
     };
@@ -663,18 +673,23 @@ impl Tool for MiniMaxFileUploadTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        Ok(execute_request(input, ctx, &self.descriptor, |client, request| async move {
-            let upload = file_upload_request(&request).map_err(validation_error)?;
-            client
-                .file_upload_with_group_id(
-                    &upload.purpose,
-                    &upload.file_name,
-                    upload.bytes,
-                    upload.group_id.as_deref(),
-                )
-                .await
-                .map_err(model_error)
-        }))
+        Ok(execute_request(
+            input,
+            ctx,
+            &self.descriptor,
+            |client, request| async move {
+                let upload = file_upload_request(&request).map_err(validation_error)?;
+                client
+                    .file_upload_with_group_id(
+                        &upload.purpose,
+                        &upload.file_name,
+                        upload.bytes,
+                        upload.group_id.as_deref(),
+                    )
+                    .await
+                    .map_err(model_error)
+            },
+        ))
     }
 }
 
@@ -745,13 +760,18 @@ impl Tool for MiniMaxFileListTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        Ok(execute_request(input, ctx, &self.descriptor, |client, request| async move {
-            let purpose = optional_string(&request, "purpose").map_err(validation_error)?;
-            client
-                .file_list(purpose.as_deref())
-                .await
-                .map_err(model_error)
-        }))
+        Ok(execute_request(
+            input,
+            ctx,
+            &self.descriptor,
+            |client, request| async move {
+                let purpose = optional_string(&request, "purpose").map_err(validation_error)?;
+                client
+                    .file_list(purpose.as_deref())
+                    .await
+                    .map_err(model_error)
+            },
+        ))
     }
 }
 
@@ -789,9 +809,12 @@ impl Tool for MiniMaxModelsListTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        Ok(execute_request(input, ctx, &self.descriptor, |client, _request| async move {
-            client.list_models().await.map_err(model_error)
-        }))
+        Ok(execute_request(
+            input,
+            ctx,
+            &self.descriptor,
+            |client, _request| async move { client.list_models().await.map_err(model_error) },
+        ))
     }
 }
 
@@ -829,15 +852,20 @@ impl Tool for MiniMaxAnthropicModelsListTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        Ok(execute_request(input, ctx, &self.descriptor, |client, request| async move {
-            let limit = optional_u32(&request, "limit").map_err(validation_error)?;
-            let after_id = optional_string(&request, "after_id").map_err(validation_error)?;
-            let before_id = optional_string(&request, "before_id").map_err(validation_error)?;
-            client
-                .list_anthropic_models(limit, after_id.as_deref(), before_id.as_deref())
-                .await
-                .map_err(model_error)
-        }))
+        Ok(execute_request(
+            input,
+            ctx,
+            &self.descriptor,
+            |client, request| async move {
+                let limit = optional_u32(&request, "limit").map_err(validation_error)?;
+                let after_id = optional_string(&request, "after_id").map_err(validation_error)?;
+                let before_id = optional_string(&request, "before_id").map_err(validation_error)?;
+                client
+                    .list_anthropic_models(limit, after_id.as_deref(), before_id.as_deref())
+                    .await
+                    .map_err(model_error)
+            },
+        ))
     }
 }
 
@@ -981,7 +1009,11 @@ where
     }))
 }
 
-fn execute_image_request(input: Value, ctx: ToolContext, descriptor: &ToolDescriptor) -> ToolStream {
+fn execute_image_request(
+    input: Value,
+    ctx: ToolContext,
+    descriptor: &ToolDescriptor,
+) -> ToolStream {
     let (operation_id, route_kind) = service_credential_context(descriptor);
     Box::pin(stream::once(async move {
         let result = async {
@@ -1052,12 +1084,7 @@ async fn media_tool_result_from_response(
     let media = resolve_media_candidate(candidate, modality, downloader).await?;
     let mime_type = validate_media_bytes(&media.bytes, modality, Some(&media.mime_type))?;
     let blob_ref = write_media_blob(ctx, media.bytes, &mime_type).await?;
-    Ok(artifact_tool_result(
-        modality,
-        mime_type,
-        blob_ref,
-        title,
-    ))
+    Ok(artifact_tool_result(modality, mime_type, blob_ref, title))
 }
 
 async fn query_tool_result_from_response(
@@ -1071,12 +1098,7 @@ async fn query_tool_result_from_response(
         let media = resolve_media_candidate(candidate, modality, downloader).await?;
         let mime_type = validate_media_bytes(&media.bytes, modality, Some(&media.mime_type))?;
         let blob_ref = write_media_blob(ctx, media.bytes, &mime_type).await?;
-        return Ok(artifact_tool_result(
-            modality,
-            mime_type,
-            blob_ref,
-            title,
-        ));
+        return Ok(artifact_tool_result(modality, mime_type, blob_ref, title));
     }
     if is_pending_task_status(&response) {
         return Ok(ToolResult::Structured(response));
@@ -1266,13 +1288,9 @@ fn is_collectible_media_url(value: &str) -> bool {
 fn is_likely_base64_media_key(key: &str, modality: ModelModality) -> bool {
     let key = key.to_ascii_lowercase();
     match modality {
-        ModelModality::Image => {
-            key.contains("base64") || key == "image" || key == "image_data"
-        }
+        ModelModality::Image => key.contains("base64") || key == "image" || key == "image_data",
         ModelModality::Video => key.contains("base64") || key == "video_data",
-        ModelModality::Audio => {
-            key.contains("base64") || key == "audio" || key == "audio_data"
-        }
+        ModelModality::Audio => key.contains("base64") || key == "audio" || key == "audio_data",
         ModelModality::Text | ModelModality::Embedding | ModelModality::File => false,
     }
 }
@@ -1314,7 +1332,10 @@ async fn resolve_media_candidate(
     }
 }
 
-fn decode_data_url_media(value: &str, modality: ModelModality) -> Result<ProviderMediaBytes, ToolError> {
+fn decode_data_url_media(
+    value: &str,
+    modality: ModelModality,
+) -> Result<ProviderMediaBytes, ToolError> {
     let comma = value
         .find(',')
         .ok_or_else(|| ToolError::Message("MiniMax media data URL is malformed".to_owned()))?;
@@ -1334,7 +1355,10 @@ fn decode_data_url_media(value: &str, modality: ModelModality) -> Result<Provide
     Ok(ProviderMediaBytes { bytes, mime_type })
 }
 
-fn decode_base64_media(value: &str, modality: ModelModality) -> Result<ProviderMediaBytes, ToolError> {
+fn decode_base64_media(
+    value: &str,
+    modality: ModelModality,
+) -> Result<ProviderMediaBytes, ToolError> {
     let bytes = decode_base64_bytes(value)?;
     let mime_type = validate_media_bytes(&bytes, modality, None)?;
     Ok(ProviderMediaBytes { bytes, mime_type })
@@ -1673,13 +1697,9 @@ mod tests {
         caps.install(ToolCapability::ProviderCredentialResolver, resolver);
         let ctx = test_context(Arc::new(CapturingBlobWriter));
 
-        let error = minimax_credential(
-            &ctx,
-            Some("minimax.image_generation".to_owned()),
-            None,
-        )
-        .await
-        .expect_err("partial service context should fail closed");
+        let error = minimax_credential(&ctx, Some("minimax.image_generation".to_owned()), None)
+            .await
+            .expect_err("partial service context should fail closed");
 
         assert!(matches!(error, ToolError::PermissionDenied(_)));
         assert!(error.to_string().contains("incomplete"));

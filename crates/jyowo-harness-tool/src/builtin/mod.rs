@@ -14,12 +14,12 @@ mod grep;
 mod list_dir;
 #[cfg(feature = "minimax-tools")]
 mod minimax;
-#[cfg(feature = "seedance-tools")]
-mod seedance;
 #[cfg(feature = "builtin-toolset")]
 mod read;
 #[cfg(feature = "builtin-toolset")]
 mod read_blob;
+#[cfg(feature = "seedance-tools")]
+mod seedance;
 #[cfg(feature = "builtin-toolset")]
 mod send_message;
 mod skills;
@@ -64,14 +64,12 @@ pub use minimax::{
     MiniMaxVideoTemplateQueryTool, MiniMaxVideoTemplateTool, MiniMaxVoiceCloneTool,
     MiniMaxVoiceDesignTool,
 };
-#[cfg(feature = "seedance-tools")]
-pub use seedance::{
-    SeedanceImageToVideo, SeedanceTextToVideo, SeedanceVideoGenerationQueryTool,
-};
 #[cfg(feature = "builtin-toolset")]
 pub use read::FileReadTool;
 #[cfg(feature = "builtin-toolset")]
 pub use read_blob::ReadBlobTool;
+#[cfg(feature = "seedance-tools")]
+pub use seedance::{SeedanceImageToVideo, SeedanceTextToVideo, SeedanceVideoGenerationQueryTool};
 #[cfg(feature = "builtin-toolset")]
 pub use send_message::SendMessageTool;
 pub use skills::{SkillsInvokeTool, SkillsListTool, SkillsViewTool};

@@ -61,7 +61,12 @@ macro_rules! seedance_create_tool {
                 input: Value,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
-                Ok(execute_create_request(input, ctx, &self.descriptor, $display_name))
+                Ok(execute_create_request(
+                    input,
+                    ctx,
+                    &self.descriptor,
+                    $display_name,
+                ))
             }
         }
     };
@@ -103,11 +108,7 @@ impl Tool for SeedanceVideoGenerationQueryTool {
         &self.descriptor
     }
 
-    async fn validate(
-        &self,
-        input: &Value,
-        _ctx: &ToolContext,
-    ) -> Result<(), ValidationError> {
+    async fn validate(&self, input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
         let request = request(input)?;
         required_string(&request, "task_id")?;
         Ok(())
@@ -151,7 +152,11 @@ fn execute_create_request(
     }))
 }
 
-fn execute_query_request(input: Value, ctx: ToolContext, descriptor: &ToolDescriptor) -> ToolStream {
+fn execute_query_request(
+    input: Value,
+    ctx: ToolContext,
+    descriptor: &ToolDescriptor,
+) -> ToolStream {
     let (operation_id, route_kind) = service_credential_context(descriptor);
     Box::pin(stream::once(async move {
         let result = async {
@@ -166,12 +171,7 @@ fn execute_query_request(input: Value, ctx: ToolContext, descriptor: &ToolDescri
                 .query_video_generation_task(&task_id)
                 .await
                 .map_err(model_error)?;
-            query_tool_result_from_response(
-                response,
-                &ctx,
-                &ReqwestProviderMediaDownloader,
-            )
-            .await
+            query_tool_result_from_response(response, &ctx, &ReqwestProviderMediaDownloader).await
         }
         .await;
         match result {
@@ -187,8 +187,7 @@ async fn query_tool_result_from_response(
     downloader: &dyn ProviderMediaDownloader,
 ) -> Result<ToolResult, ToolError> {
     if let Some(candidate) = select_media_candidate(&response, ModelModality::Video) {
-        let media =
-            resolve_media_candidate(candidate, ModelModality::Video, downloader).await?;
+        let media = resolve_media_candidate(candidate, ModelModality::Video, downloader).await?;
         let mime_type =
             validate_media_bytes(&media.bytes, ModelModality::Video, Some(&media.mime_type))?;
         let blob_ref = write_media_blob(ctx, media.bytes, &mime_type).await?;
@@ -390,7 +389,10 @@ async fn resolve_media_candidate(
     }
 }
 
-fn decode_data_url_media(value: &str, modality: ModelModality) -> Result<ProviderMediaBytes, ToolError> {
+fn decode_data_url_media(
+    value: &str,
+    modality: ModelModality,
+) -> Result<ProviderMediaBytes, ToolError> {
     let comma = value
         .find(',')
         .ok_or_else(|| ToolError::Message("Seedance media data URL is malformed".to_owned()))?;
@@ -410,7 +412,10 @@ fn decode_data_url_media(value: &str, modality: ModelModality) -> Result<Provide
     Ok(ProviderMediaBytes { bytes, mime_type })
 }
 
-fn decode_base64_media(value: &str, modality: ModelModality) -> Result<ProviderMediaBytes, ToolError> {
+fn decode_base64_media(
+    value: &str,
+    modality: ModelModality,
+) -> Result<ProviderMediaBytes, ToolError> {
     let bytes = decode_base64_bytes(value)?;
     let mime_type = validate_media_bytes(&bytes, modality, None)?;
     Ok(ProviderMediaBytes { bytes, mime_type })
@@ -514,8 +519,8 @@ fn seedance_base_url_host(base_url: Option<&str>) -> Result<(String, Option<u16>
         .map(str::trim)
         .filter(|base_url| !base_url.is_empty())
         .unwrap_or(SEEDANCE_DEFAULT_BASE_URL);
-    let url = Url::parse(raw_base_url)
-        .map_err(|_| "Seedance provider base URL is invalid".to_owned())?;
+    let url =
+        Url::parse(raw_base_url).map_err(|_| "Seedance provider base URL is invalid".to_owned())?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err("Seedance provider base URL is invalid".to_owned());
     }

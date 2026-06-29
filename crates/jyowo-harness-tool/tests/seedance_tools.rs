@@ -7,13 +7,18 @@ use harness_contracts::{
     ModelModality, PermissionError, ProviderCredential, ProviderCredentialResolveContext,
     ProviderCredentialResolverCap, ToolCapability, ToolError, ToolResult, ToolResultPart,
 };
-use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision};
+use harness_permission::{
+    PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
+};
 use harness_tool::{
     BuiltinToolset, InterruptToken, SeedanceImageToVideo, SeedanceTextToVideo,
     SeedanceVideoGenerationQueryTool, Tool, ToolContext, ToolEvent, ToolRegistryBuilder,
 };
 use serde_json::json;
-use std::{path::PathBuf, sync::{Arc, Mutex}};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 use wiremock::{
     matchers::{header, method, path},
     Mock, MockServer, ResponseTemplate,
@@ -66,7 +71,9 @@ async fn seedance_text_to_video_returns_async_job_output() {
     let part = parts
         .iter()
         .find_map(|part| match part {
-            ToolResultPart::Structured { value, schema_ref } => Some((value, schema_ref.as_deref())),
+            ToolResultPart::Structured { value, schema_ref } => {
+                Some((value, schema_ref.as_deref()))
+            }
             _ => None,
         })
         .expect("expected structured async job part");
@@ -141,7 +148,12 @@ async fn seedance_query_completed_task_returns_typed_video_artifact() {
     )
     .await;
 
-    assert_typed_artifact(&result, ModelModality::Video, "video/mp4", "Generated video");
+    assert_typed_artifact(
+        &result,
+        ModelModality::Video,
+        "video/mp4",
+        "Generated video",
+    );
 }
 
 #[tokio::test]

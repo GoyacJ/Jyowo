@@ -4865,8 +4865,9 @@ mod capability_route {
             .build()
             .expect("registry should build");
         std::fs::create_dir_all(workspace.join(".jyowo").join("runtime").join("blobs")).unwrap();
-        let blob_store = FileBlobStore::open(workspace.join(".jyowo").join("runtime").join("blobs"))
-            .expect("blob store should open");
+        let blob_store =
+            FileBlobStore::open(workspace.join(".jyowo").join("runtime").join("blobs"))
+                .expect("blob store should open");
         let harness = Harness::builder()
             .with_model_arc(Arc::clone(&provider) as Arc<dyn ModelProvider>)
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
@@ -4954,11 +4955,9 @@ mod capability_route {
     #[test]
     fn capability_route_exposes_tts_tools_when_tts_route_exists() {
         block_on(async {
-            let tool_names = session_tool_names(
-                enabled_tts_route(),
-                ConversationModelCapability::default(),
-            )
-            .await;
+            let tool_names =
+                session_tool_names(enabled_tts_route(), ConversationModelCapability::default())
+                    .await;
             assert!(tool_names.contains(&"MiniMaxTextToSpeech".to_owned()));
         });
     }

@@ -20,7 +20,6 @@ use harness_contracts::{
     ToolProperties, ToolResult, ToolResultPart, ToolSearchMode, ToolUseId, TrustLevel, TurnInput,
     UsageSnapshot,
 };
-use harness_model::ModelModality;
 use harness_engine::{
     Engine, EngineError, EngineId, EngineRunner, RunContext, SessionHandle, SteeringDrain,
     SteeringMerge,
@@ -34,6 +33,7 @@ use harness_memory::{
     MemoryLifecycle, MemoryManager, MemoryMetadata, MemoryQuery, MemoryRecord, MemoryStore,
     MemorySummary, RecallPolicy, RecallTriggerStrategy,
 };
+use harness_model::ModelModality;
 use harness_model::{
     ContentDelta, ConversationModelCapability, ErrorClass, ErrorHints, HealthStatus, InferContext,
     ModelDescriptor, ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
@@ -234,7 +234,10 @@ async fn typed_image_artifact_tool_result_creates_image_artifact_event() {
             tool_call_events("ProviderImageService", json!({ "prompt": "grass carp" })),
             text_events("[REDACTED]"),
         ]),
-        Box::new(TypedImageArtifactTool::new("ProviderImageService", "image/png")),
+        Box::new(TypedImageArtifactTool::new(
+            "ProviderImageService",
+            "image/png",
+        )),
         None,
     )
     .await;
@@ -1095,15 +1098,15 @@ impl Tool for TypedImageArtifactTool {
             content_hash: [9; 32],
             content_type: Some(self.content_type.clone()),
         };
-        Ok(Box::pin(stream::iter([ToolEvent::Final(ToolResult::Mixed(vec![
-            ToolResultPart::Artifact {
+        Ok(Box::pin(stream::iter([ToolEvent::Final(
+            ToolResult::Mixed(vec![ToolResultPart::Artifact {
                 artifact_kind: ModelModality::Image,
                 content_type: self.content_type.clone(),
                 blob_ref,
                 title: "Generated image".to_owned(),
                 preview: Some("Generated image".to_owned()),
-            },
-        ]))])))
+            }]),
+        )])))
     }
 }
 

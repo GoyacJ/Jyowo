@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 #[cfg(feature = "agents-subagent")]
 use harness_contracts::SubagentRunnerCap;
-use harness_contracts::{BlobStore, CapabilityRegistry, HarnessError, ProviderCapabilityRouteSettings, ToolCapability};
+use harness_contracts::{
+    BlobStore, CapabilityRegistry, HarnessError, ProviderCapabilityRouteSettings, ToolCapability,
+};
 use harness_hook::HookRegistry;
 use harness_journal::EventStore;
 use harness_mcp::{ElicitationHandler, StreamElicitationHandler};
@@ -402,10 +404,7 @@ impl<M, S, SB> HarnessBuilder<M, S, SB> {
     }
 
     #[must_use]
-    pub fn with_provider_capability_routes(
-        self,
-        routes: ProviderCapabilityRouteSettings,
-    ) -> Self {
+    pub fn with_provider_capability_routes(self, routes: ProviderCapabilityRouteSettings) -> Self {
         self.with_shared_provider_capability_routes(Arc::new(parking_lot::RwLock::new(routes)))
     }
 
