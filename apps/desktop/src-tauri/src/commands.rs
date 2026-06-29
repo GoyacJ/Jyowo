@@ -5956,6 +5956,10 @@ fn ensure_provider_capability_route_settings(
 
     let mut enabled_kind_targets: HashMap<CapabilityRouteKind, (&str, &str)> = HashMap::new();
     for route in &routes.routes {
+        if !route.enabled {
+            continue;
+        }
+
         let Some(config) = provider_settings
             .configs
             .iter()

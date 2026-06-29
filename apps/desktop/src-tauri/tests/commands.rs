@@ -1386,6 +1386,43 @@ async fn provider_capability_route_rejects_missing_config_id() {
 }
 
 #[tokio::test]
+async fn provider_capability_route_disabled_route_allows_stale_runtime_references() {
+    let store = provider_capability_route_store("provider-capability-route-disabled-stale");
+    let mut route = minimax_image_route("missing-minimax", false);
+    route.operation_ids = vec!["minimax.retired_image_generation".to_owned()];
+
+    let payload = save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest { route },
+        &store,
+        &ProviderSettingsRecord::default(),
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .expect("disabled route should save stale runtime references");
+
+    assert_eq!(payload.routes.len(), 1);
+    assert!(!payload.routes[0].enabled);
+    assert_eq!(payload.routes[0].config_id, "missing-minimax");
+    assert_eq!(
+        payload.routes[0].operation_ids,
+        vec!["minimax.retired_image_generation".to_owned()]
+    );
+
+    let saved = list_provider_capability_routes_with_store(
+        &store,
+        &ProviderSettingsRecord::default(),
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+    .expect("disabled stale route should remain listable");
+
+    assert_eq!(saved.routes.len(), 1);
+    assert!(!saved.routes[0].enabled);
+}
+
+#[tokio::test]
 async fn provider_capability_route_rejects_provider_mismatch() {
     let store = provider_capability_route_store("provider-capability-route-provider-mismatch");
     let provider_settings = ProviderSettingsRecord {

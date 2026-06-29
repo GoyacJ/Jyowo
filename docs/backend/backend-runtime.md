@@ -227,8 +227,8 @@ Route validation defaults:
 - Missing route file normalizes to `{ version: 1, routes: [] }`.
 - Empty route lists are valid and expose no service tools.
 - Each enabled route must reference an existing provider config with an API key.
-- `route.provider_id` must match the selected config provider.
-- Every operation id must be declared by the provider catalog for that provider.
+- Each enabled route's `provider_id` must match the selected config provider.
+- Every enabled operation id must be declared by the provider catalog for that provider.
 - Every enabled operation must have a registered runtime adapter.
 - The same enabled `CapabilityRouteKind` cannot point to multiple configs in one settings file.
 - Invalid route JSON or unknown fields remove the route file and normalize to empty version 1 settings.
@@ -253,7 +253,7 @@ Service output defaults:
 - Provider service tools return typed `ToolResultPart::Artifact` for completed media output.
 - Async provider jobs return structured tool output with `kind = async_job`, `jobId`, `pollOperationId`, and `artifactKind`.
 - Artifact kind, MIME type, and blob content type must match and fail closed on mismatch.
-- Provider media downloads must use the shared fail-closed URL and MIME policy in `jyowo-harness-tool`.
+- Provider media downloads must use the shared fail-closed URL and MIME policy in `jyowo-harness-tool` with provider id, operation id, artifact kind, and explicit expected MIME set.
 
 ## Forbidden Runtime Behavior
 
