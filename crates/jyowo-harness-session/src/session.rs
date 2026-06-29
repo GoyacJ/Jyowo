@@ -5,9 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use harness_contracts::{
     ConfigHash, ContextPatchRequest, ContextPatchSinkCap, ConversationAttachmentReference,
-    DeferredToolsDeltaAttachment, EndReason, Event, InteractivityLevel, MessageId, MessagePart,
-    PermissionMode, RunId, SessionCreatedEvent, SessionEndedEvent, SessionError, SessionId,
-    SnapshotId, TeamId, TenantId, ToolSearchMode, UsageSnapshot, WorkspaceId,
+    DeferredToolsDeltaAttachment, EndReason, Event, InteractivityLevel, Message, MessageId,
+    MessagePart, PermissionMode, RunId, SessionCreatedEvent, SessionEndedEvent, SessionError,
+    SessionId, SnapshotId, TeamId, TenantId, ToolSearchMode, UsageSnapshot, WorkspaceId,
 };
 use harness_journal::EventStore;
 use harness_model::ModelProtocol;
@@ -41,6 +41,7 @@ pub struct SessionTurnContext {
     pub permission_mode: PermissionMode,
     pub interactivity: InteractivityLevel,
     pub pending_deferred_tools_delta: Option<DeferredToolsDeltaAttachment>,
+    pub context_seed: Vec<Message>,
     #[cfg(feature = "steering")]
     pub steering_merge: Option<SynthesizedUserMessage>,
 }
@@ -107,6 +108,8 @@ pub struct SessionOptions {
     pub system_prompt_addendum: Option<String>,
     #[serde(default)]
     pub max_iterations: u32,
+    #[serde(default = "default_context_compression_trigger_ratio")]
+    pub context_compression_trigger_ratio: f32,
 }
 
 impl SessionOptions {
@@ -127,6 +130,7 @@ impl SessionOptions {
             team_id: None,
             system_prompt_addendum: None,
             max_iterations: 0,
+            context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
         }
     }
 
@@ -211,6 +215,12 @@ impl SessionOptions {
     #[must_use]
     pub fn with_max_iterations(mut self, max_iterations: u32) -> Self {
         self.max_iterations = max_iterations;
+        self
+    }
+
+    #[must_use]
+    pub fn with_context_compression_trigger_ratio(mut self, ratio: f32) -> Self {
+        self.context_compression_trigger_ratio = ratio;
         self
     }
 }
@@ -426,6 +436,7 @@ impl Session {
                 permission_mode: self.options.permission_mode,
                 interactivity: self.options.interactivity,
                 pending_deferred_tools_delta,
+                context_seed: projection.messages.clone(),
                 user_id: self.options.user_id.clone(),
                 team_id: self.options.team_id,
                 #[cfg(feature = "steering")]
@@ -611,6 +622,7 @@ pub fn session_options_hash(options: &SessionOptions) -> [u8; 32] {
         "team_id": options.team_id,
         "system_prompt_addendum": options.system_prompt_addendum,
         "max_iterations": options.max_iterations,
+        "context_compression_trigger_ratio": options.context_compression_trigger_ratio,
     }))
 }
 
@@ -668,4 +680,8 @@ fn default_permission_mode() -> PermissionMode {
 
 fn default_interactivity() -> InteractivityLevel {
     InteractivityLevel::NoInteractive
+}
+
+fn default_context_compression_trigger_ratio() -> f32 {
+    0.8
 }

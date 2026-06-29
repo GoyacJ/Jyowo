@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
-use std::io::Write;
+use std::io::{Cursor, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -12,9 +12,10 @@ use bytes::Bytes;
 use chrono::{NaiveDate, Utc};
 use futures::StreamExt;
 use harness_contracts::{
-    ConversationCursor, ConversationMessageAuthor, ConversationTurnCursor,
-    ConversationWorktreePage, UiSafeText,
+    AgentCapabilityKind, AgentCapabilityUnavailableReason, ConversationCursor,
+    ConversationMessageAuthor, ConversationTurnCursor, ConversationWorktreePage, UiSafeText,
 };
+use image::{ImageFormat, ImageReader, Limits};
 use jyowo_harness_sdk::builtin::{
     DefaultRedactor, FileBlobStore, InMemoryMemoryProvider, JsonlEventStore, LocalLlamaProvider,
     LocalSandbox,
@@ -66,6 +67,8 @@ const MAX_MEMORY_CONTENT_BYTES: usize = 64 * 1024;
 const MAX_ARTIFACT_PREVIEW_BYTES: usize = 16 * 1024;
 const MAX_ARTIFACT_MEDIA_PREVIEW_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_ATTACHMENT_PREVIEW_DECODED_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_ATTACHMENT_PREVIEW_DIMENSION: u32 = 8192;
 const MAX_TOTAL_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_OPENROUTER_MODELS_API_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SKILL_MARKDOWN_BYTES: u64 = 256 * 1024;
@@ -1161,15 +1164,39 @@ impl ProviderSettingsStore for DesktopProviderSettingsStore {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ExecutionSettingsRecord {
     #[serde(default = "default_permission_mode")]
     pub permission_mode: PermissionMode,
+    #[serde(default = "default_context_compression_trigger_ratio")]
+    pub context_compression_trigger_ratio: f32,
+    #[serde(default)]
+    pub subagents_enabled: bool,
+    #[serde(default)]
+    pub agent_teams_enabled: bool,
+    #[serde(default)]
+    pub background_agents_enabled: bool,
 }
 
 fn default_permission_mode() -> PermissionMode {
     PermissionMode::Default
+}
+
+fn default_context_compression_trigger_ratio() -> f32 {
+    0.8
+}
+
+impl Default for ExecutionSettingsRecord {
+    fn default() -> Self {
+        Self {
+            permission_mode: PermissionMode::Default,
+            context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1195,20 +1222,20 @@ impl DesktopExecutionSettingsStore {
         match std::fs::read(&settings_path) {
             Ok(bytes) => match serde_json::from_slice(&bytes) {
                 Ok(record) => {
-                    ensure_execution_settings_record(&record)?;
-                    Ok(record)
+                    if ensure_execution_settings_record(&record).is_ok() {
+                        Ok(record)
+                    } else {
+                        remove_invalid_execution_settings_file(&settings_path)?;
+                        Ok(ExecutionSettingsRecord::default())
+                    }
                 }
                 Err(_) => {
                     remove_invalid_execution_settings_file(&settings_path)?;
-                    Ok(ExecutionSettingsRecord {
-                        permission_mode: PermissionMode::Default,
-                    })
+                    Ok(ExecutionSettingsRecord::default())
                 }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(ExecutionSettingsRecord {
-                    permission_mode: PermissionMode::Default,
-                })
+                Ok(ExecutionSettingsRecord::default())
             }
             Err(error) => Err(runtime_operation_failed(format!(
                 "execution settings read failed: {error}"
@@ -1287,11 +1314,104 @@ fn ensure_execution_settings_record(
         _ => Err(invalid_payload(
             "permissionMode must be default, auto, or bypass_permissions".to_owned(),
         )),
+    }?;
+    if !(0.5..=0.95).contains(&record.context_compression_trigger_ratio)
+        || !record.context_compression_trigger_ratio.is_finite()
+    {
+        return Err(invalid_payload(
+            "contextCompressionTriggerRatio must be between 0.5 and 0.95".to_owned(),
+        ));
     }
+
+    ensure_agent_capability_setting_available(
+        record.subagents_enabled,
+        agent_capabilities_available().subagents_available,
+        "subagents",
+    )?;
+    ensure_agent_capability_setting_available(
+        record.agent_teams_enabled,
+        agent_capabilities_available().agent_teams_available,
+        "agentTeams",
+    )?;
+    ensure_agent_capability_setting_available(
+        record.background_agents_enabled,
+        agent_capabilities_available().background_agents_available,
+        "backgroundAgents",
+    )
+}
+
+fn ensure_agent_capability_setting_available(
+    enabled: bool,
+    available: bool,
+    capability: &str,
+) -> Result<(), CommandErrorPayload> {
+    if enabled && !available {
+        return Err(invalid_payload(format!(
+            "{capability} cannot be enabled in this desktop build"
+        )));
+    }
+    Ok(())
 }
 
 fn auto_mode_available() -> bool {
     cfg!(feature = "auto-mode")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCapabilitiesPayload {
+    pub subagents_enabled: bool,
+    pub agent_teams_enabled: bool,
+    pub background_agents_enabled: bool,
+    pub subagents_available: bool,
+    pub agent_teams_available: bool,
+    pub background_agents_available: bool,
+    pub unavailable_reasons: Vec<AgentCapabilityUnavailableReason>,
+}
+
+fn agent_capabilities_payload(record: &ExecutionSettingsRecord) -> AgentCapabilitiesPayload {
+    let availability = agent_capabilities_available();
+    AgentCapabilitiesPayload {
+        subagents_enabled: record.subagents_enabled,
+        agent_teams_enabled: record.agent_teams_enabled,
+        background_agents_enabled: record.background_agents_enabled,
+        subagents_available: availability.subagents_available,
+        agent_teams_available: availability.agent_teams_available,
+        background_agents_available: availability.background_agents_available,
+        unavailable_reasons: availability.unavailable_reasons,
+    }
+}
+
+fn agent_capabilities_available() -> AgentCapabilitiesPayload {
+    let subagents_available = false;
+    let agent_teams_available = false;
+    let background_agents_available = false;
+    let mut unavailable_reasons = Vec::new();
+    if !subagents_available {
+        unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
+            capability: AgentCapabilityKind::Subagents,
+        });
+    }
+    if !agent_teams_available {
+        unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
+            capability: AgentCapabilityKind::AgentTeams,
+        });
+    }
+    if !background_agents_available {
+        unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
+            capability: AgentCapabilityKind::BackgroundAgents,
+        });
+    }
+
+    AgentCapabilitiesPayload {
+        subagents_enabled: false,
+        agent_teams_enabled: false,
+        background_agents_enabled: false,
+        subagents_available,
+        agent_teams_available,
+        background_agents_available,
+        unavailable_reasons,
+    }
 }
 
 fn remove_invalid_provider_settings_file(settings_path: &Path) -> Result<(), CommandErrorPayload> {
@@ -2566,18 +2686,26 @@ impl DesktopRuntimeState {
         model_id: String,
         protocol: ModelProtocol,
     ) -> SessionOptions {
-        let permission_mode = self
-            .execution_settings_store
-            .load_record()
-            .map(|record| record.permission_mode)
-            .unwrap_or(PermissionMode::Default);
+        let execution_settings =
+            self.execution_settings_store
+                .load_record()
+                .unwrap_or(ExecutionSettingsRecord {
+                    permission_mode: PermissionMode::Default,
+                    context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
+                    subagents_enabled: false,
+                    agent_teams_enabled: false,
+                    background_agents_enabled: false,
+                });
         SessionOptions::new(&self.workspace_root)
             .with_tenant_id(TenantId::SINGLE)
             .with_session_id(session_id)
             .with_interactivity(InteractivityLevel::FullyInteractive)
             .with_model_id(model_id)
             .with_protocol(protocol)
-            .with_permission_mode(permission_mode)
+            .with_permission_mode(execution_settings.permission_mode)
+            .with_context_compression_trigger_ratio(
+                execution_settings.context_compression_trigger_ratio,
+            )
     }
 
     #[must_use]
@@ -3231,6 +3359,21 @@ pub struct GetArtifactMediaPreviewResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetAttachmentMediaPreviewRequest {
+    pub conversation_id: String,
+    pub attachment_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetAttachmentMediaPreviewResponse {
+    pub data_url: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetContextSnapshotRequest {
     pub conversation_id: Option<String>,
     pub run_id: Option<String>,
@@ -3264,24 +3407,32 @@ pub struct GetContextSnapshotResponse {
     pub project: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetExecutionSettingsResponse {
     pub permission_mode: PermissionMode,
+    pub context_compression_trigger_ratio: f32,
     pub auto_mode_available: bool,
+    pub agent_capabilities: AgentCapabilitiesPayload,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetExecutionSettingsRequest {
     pub permission_mode: PermissionMode,
+    pub context_compression_trigger_ratio: f32,
+    pub subagents_enabled: bool,
+    pub agent_teams_enabled: bool,
+    pub background_agents_enabled: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetExecutionSettingsResponse {
     pub permission_mode: PermissionMode,
+    pub context_compression_trigger_ratio: f32,
     pub auto_mode_available: bool,
+    pub agent_capabilities: AgentCapabilitiesPayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -3545,6 +3696,30 @@ pub async fn get_artifact_media_preview_with_runtime_state(
     read_artifact_image_blob_preview(state, session_id, &blob_ref).await
 }
 
+pub async fn get_attachment_media_preview_with_runtime_state(
+    request: GetAttachmentMediaPreviewRequest,
+    state: &DesktopRuntimeState,
+) -> Result<GetAttachmentMediaPreviewResponse, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
+    ensure_non_empty("attachmentId", &request.attachment_id)?;
+    ensure_attachment_id(&request.attachment_id)?;
+    let session_id = parse_session_id(&request.conversation_id)?;
+    let attachment =
+        find_attachment_media_record(state, session_id, &request.attachment_id).await?;
+    let declared_attachment_mime =
+        safe_preview_image_mime(&attachment.mime_type).ok_or_else(|| {
+            invalid_payload("attachment media preview is only available for images".to_owned())
+        })?;
+    read_attachment_image_blob_preview(
+        state,
+        session_id,
+        &request.attachment_id,
+        &attachment.blob_ref,
+        declared_attachment_mime,
+    )
+    .await
+}
+
 async fn collect_artifacts_from_runtime_state(
     state: &DesktopRuntimeState,
     session_id: SessionId,
@@ -3680,6 +3855,55 @@ async fn find_artifact_media_record(
     record.ok_or_else(|| not_found("artifact not found".to_owned()))
 }
 
+async fn find_attachment_media_record(
+    state: &DesktopRuntimeState,
+    session_id: SessionId,
+    attachment_id: &str,
+) -> Result<ConversationAttachmentReference, CommandErrorPayload> {
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Reading attachment media requires the runtime conversation facade.",
+        ));
+    };
+    if !harness
+        .conversation_session_exists(state.conversation_session_options(session_id))
+        .await
+        .map_err(|error| runtime_operation_failed(error.to_string()))?
+    {
+        return Err(not_found(format!("conversation not found: {session_id}")));
+    }
+
+    let mut after_event_id = None;
+    loop {
+        let page = harness
+            .page_conversation_events(ConversationEventsPageRequest {
+                options: state.conversation_session_options(session_id),
+                after_event_id,
+                limit: 200,
+            })
+            .await
+            .map_err(|_| runtime_operation_failed("attachment media read failed".to_owned()))?;
+        if page.events.is_empty() {
+            break;
+        }
+
+        for envelope in page.events {
+            let Event::UserMessageAppended(event) = envelope.payload else {
+                continue;
+            };
+            for attachment in event.attachments {
+                if attachment.id == attachment_id {
+                    return Ok(attachment);
+                }
+            }
+        }
+
+        after_event_id = page.next_event_id;
+    }
+
+    Err(not_found("attachment not found".to_owned()))
+}
+
 async fn read_artifact_image_blob_preview(
     state: &DesktopRuntimeState,
     session_id: SessionId,
@@ -3769,6 +3993,99 @@ async fn read_artifact_image_blob_preview(
     })
 }
 
+async fn read_attachment_image_blob_preview(
+    state: &DesktopRuntimeState,
+    session_id: SessionId,
+    attachment_id: &str,
+    blob_ref: &BlobRef,
+    declared_attachment_mime: &str,
+) -> Result<GetAttachmentMediaPreviewResponse, CommandErrorPayload> {
+    let blob_store = FileBlobStore::open(
+        state
+            .workspace_root()
+            .join(".jyowo")
+            .join("runtime")
+            .join("blobs"),
+    )
+    .map_err(|_| runtime_operation_failed("attachment image preview is unavailable".to_owned()))?;
+    let meta = blob_store
+        .head(TenantId::SINGLE, blob_ref)
+        .await
+        .map_err(|_| {
+            runtime_operation_failed("attachment image preview is unavailable".to_owned())
+        })?
+        .ok_or_else(|| {
+            runtime_operation_failed("attachment image preview is unavailable".to_owned())
+        })?;
+    match meta.retention {
+        BlobRetention::TenantScoped => {}
+        BlobRetention::SessionScoped(retention_session_id)
+            if retention_session_id == session_id => {}
+        _ => {
+            return Err(invalid_payload(
+                "attachment image preview is unavailable for this conversation".to_owned(),
+            ));
+        }
+    }
+    let declared_content_type = meta
+        .content_type
+        .as_deref()
+        .or(blob_ref.content_type.as_deref());
+    if let Some(mime_type) = declared_content_type.and_then(declared_mime_token) {
+        match safe_preview_image_mime(mime_type) {
+            Some(image_mime_type) if image_mime_type == declared_attachment_mime => {}
+            _ => {
+                return Err(invalid_payload(
+                    "attachment media preview is only available for images".to_owned(),
+                ));
+            }
+        }
+    }
+    let size_bytes = meta.size;
+    if size_bytes > MAX_ATTACHMENT_BYTES {
+        return Err(invalid_payload(
+            "attachment image preview is too large".to_owned(),
+        ));
+    }
+
+    let mut stream = blob_store
+        .get(TenantId::SINGLE, blob_ref)
+        .await
+        .map_err(|_| {
+            runtime_operation_failed("attachment image preview is unavailable".to_owned())
+        })?;
+    let mut bytes = Vec::with_capacity(size_bytes.min(MAX_ATTACHMENT_BYTES) as usize);
+    while let Some(chunk) = stream.next().await {
+        let next_len = bytes.len().saturating_add(chunk.len());
+        if u64::try_from(next_len).unwrap_or(u64::MAX) > MAX_ATTACHMENT_BYTES {
+            return Err(invalid_payload(
+                "attachment image preview is too large".to_owned(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let detected_mime = detect_preview_image_mime(&bytes).ok_or_else(|| {
+        invalid_payload("attachment media preview is only available for images".to_owned())
+    })?;
+    if detected_mime != declared_attachment_mime {
+        return Err(invalid_payload(
+            "attachment media preview is only available for images".to_owned(),
+        ));
+    }
+    let (sanitized_bytes, mime_type) =
+        sanitize_attachment_preview_image(&bytes, detected_mime, attachment_id)?;
+    let size_bytes = sanitized_bytes.len() as u64;
+
+    Ok(GetAttachmentMediaPreviewResponse {
+        data_url: format!(
+            "data:{mime_type};base64,{}",
+            general_purpose::STANDARD.encode(sanitized_bytes)
+        ),
+        mime_type: mime_type.to_owned(),
+        size_bytes,
+    })
+}
+
 fn detect_preview_image_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1A\n") {
         return Some("image/png");
@@ -3814,6 +4131,266 @@ fn safe_preview_image_mime(value: &str) -> Option<&'static str> {
         "image/avif" => Some("image/avif"),
         _ => None,
     }
+}
+
+fn ensure_preview_image_bytes_public(
+    bytes: &[u8],
+    attachment_id: &str,
+) -> Result<(), CommandErrorPayload> {
+    for text in printable_ascii_runs(bytes, 16) {
+        if preview_text_contains_unsafe_payload(&text, attachment_id) {
+            return Err(invalid_payload(
+                "attachment image preview contains unsafe metadata".to_owned(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn sanitize_attachment_preview_image(
+    bytes: &[u8],
+    detected_mime: &str,
+    attachment_id: &str,
+) -> Result<(Vec<u8>, &'static str), CommandErrorPayload> {
+    match detected_mime {
+        "image/png" => Ok((
+            sanitize_attachment_preview_png(bytes, attachment_id)?,
+            "image/png",
+        )),
+        "image/jpeg" | "image/gif" | "image/webp" => Ok((
+            transcode_attachment_preview_to_png(bytes, detected_mime, attachment_id)?,
+            "image/png",
+        )),
+        "image/avif" => Ok((
+            sanitize_attachment_preview_avif(bytes, attachment_id)?,
+            "image/avif",
+        )),
+        _ => Err(invalid_payload(
+            "attachment media preview is only available for images".to_owned(),
+        )),
+    }
+}
+
+fn transcode_attachment_preview_to_png(
+    bytes: &[u8],
+    detected_mime: &str,
+    attachment_id: &str,
+) -> Result<Vec<u8>, CommandErrorPayload> {
+    let format = preview_image_format(detected_mime).ok_or_else(|| {
+        invalid_payload("attachment media preview is only available for images".to_owned())
+    })?;
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    reader.limits(attachment_preview_decode_limits());
+    let image = reader
+        .decode()
+        .map_err(|_| invalid_payload("attachment image preview is malformed".to_owned()))?;
+    let mut encoded = Cursor::new(Vec::new());
+    image
+        .write_to(&mut encoded, ImageFormat::Png)
+        .map_err(|_| invalid_payload("attachment image preview is malformed".to_owned()))?;
+    let sanitized = encoded.into_inner();
+    if sanitized.len() as u64 > MAX_ATTACHMENT_BYTES {
+        return Err(invalid_payload(
+            "attachment image preview is too large".to_owned(),
+        ));
+    }
+    ensure_preview_image_bytes_public(&sanitized, attachment_id)?;
+
+    Ok(sanitized)
+}
+
+fn sanitize_attachment_preview_avif(
+    bytes: &[u8],
+    attachment_id: &str,
+) -> Result<Vec<u8>, CommandErrorPayload> {
+    let info = oxideav_avif::inspect(bytes)
+        .map_err(|_| invalid_payload("attachment image preview is malformed".to_owned()))?;
+    validate_attachment_preview_dimensions(info.width, info.height)?;
+    if info.has_descriptive_metadata() {
+        return Err(invalid_payload(
+            "attachment image preview contains unsafe metadata".to_owned(),
+        ));
+    }
+    // AVIF stays in its original container because this path uses pure Rust
+    // container inspection rather than a system AV1 decoder. Descriptive
+    // metadata and unsafe printable payloads fail closed before bytes return.
+    ensure_preview_image_bytes_public(bytes, attachment_id)?;
+
+    Ok(bytes.to_vec())
+}
+
+fn preview_image_format(mime_type: &str) -> Option<ImageFormat> {
+    match mime_type {
+        "image/jpeg" => Some(ImageFormat::Jpeg),
+        "image/gif" => Some(ImageFormat::Gif),
+        "image/webp" => Some(ImageFormat::WebP),
+        _ => None,
+    }
+}
+
+fn attachment_preview_decode_limits() -> Limits {
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_ATTACHMENT_PREVIEW_DIMENSION);
+    limits.max_image_height = Some(MAX_ATTACHMENT_PREVIEW_DIMENSION);
+    limits.max_alloc = Some(MAX_ATTACHMENT_PREVIEW_DECODED_BYTES);
+    limits
+}
+
+fn sanitize_attachment_preview_png(
+    bytes: &[u8],
+    attachment_id: &str,
+) -> Result<Vec<u8>, CommandErrorPayload> {
+    let Some("image/png") = detect_preview_image_mime(bytes) else {
+        return Err(invalid_payload(
+            "attachment image preview is unavailable for this image type".to_owned(),
+        ));
+    };
+
+    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1A\n";
+    let mut cursor = PNG_SIGNATURE.len();
+    let mut sanitized = Vec::with_capacity(bytes.len());
+    sanitized.extend_from_slice(PNG_SIGNATURE);
+    let mut saw_ihdr = false;
+    let mut saw_idat = false;
+    let mut saw_iend = false;
+
+    while cursor < bytes.len() {
+        let Some(length_bytes) = bytes.get(cursor..cursor + 4) else {
+            return Err(invalid_payload(
+                "attachment image preview is malformed".to_owned(),
+            ));
+        };
+        let length = u32::from_be_bytes([
+            length_bytes[0],
+            length_bytes[1],
+            length_bytes[2],
+            length_bytes[3],
+        ]) as usize;
+        let chunk_start = cursor;
+        let chunk_type_start = cursor + 4;
+        let chunk_data_start = chunk_type_start + 4;
+        let chunk_crc_start = chunk_data_start.saturating_add(length);
+        let chunk_end = chunk_crc_start.saturating_add(4);
+        let Some(chunk_type) = bytes.get(chunk_type_start..chunk_data_start) else {
+            return Err(invalid_payload(
+                "attachment image preview is malformed".to_owned(),
+            ));
+        };
+        let Some(chunk) = bytes.get(chunk_start..chunk_end) else {
+            return Err(invalid_payload(
+                "attachment image preview is malformed".to_owned(),
+            ));
+        };
+
+        match chunk_type {
+            b"IHDR" if !saw_ihdr && cursor == PNG_SIGNATURE.len() && length == 13 => {
+                let Some(dimensions) = bytes.get(chunk_data_start..chunk_data_start + 8) else {
+                    return Err(invalid_payload(
+                        "attachment image preview is malformed".to_owned(),
+                    ));
+                };
+                let width = u32::from_be_bytes([
+                    dimensions[0],
+                    dimensions[1],
+                    dimensions[2],
+                    dimensions[3],
+                ]);
+                let height = u32::from_be_bytes([
+                    dimensions[4],
+                    dimensions[5],
+                    dimensions[6],
+                    dimensions[7],
+                ]);
+                validate_attachment_preview_dimensions(width, height)?;
+                saw_ihdr = true;
+                sanitized.extend_from_slice(chunk);
+            }
+            b"PLTE" if saw_ihdr && !saw_idat => {
+                sanitized.extend_from_slice(chunk);
+            }
+            b"IDAT" if saw_ihdr && !saw_iend => {
+                saw_idat = true;
+                sanitized.extend_from_slice(chunk);
+            }
+            b"IEND" if saw_ihdr && saw_idat && !saw_iend && length == 0 => {
+                saw_iend = true;
+                sanitized.extend_from_slice(chunk);
+                cursor = chunk_end;
+                break;
+            }
+            _ if chunk_type.first().is_some_and(u8::is_ascii_lowercase) => {}
+            _ => {
+                return Err(invalid_payload(
+                    "attachment image preview is malformed".to_owned(),
+                ));
+            }
+        }
+
+        cursor = chunk_end;
+    }
+
+    if !saw_iend || cursor != bytes.len() {
+        return Err(invalid_payload(
+            "attachment image preview is malformed".to_owned(),
+        ));
+    }
+    if sanitized.len() as u64 > MAX_ATTACHMENT_BYTES {
+        return Err(invalid_payload(
+            "attachment image preview is too large".to_owned(),
+        ));
+    }
+    ensure_preview_image_bytes_public(&sanitized, attachment_id)?;
+
+    Ok(sanitized)
+}
+
+fn validate_attachment_preview_dimensions(
+    width: u32,
+    height: u32,
+) -> Result<(), CommandErrorPayload> {
+    if width == 0
+        || height == 0
+        || width > MAX_ATTACHMENT_PREVIEW_DIMENSION
+        || height > MAX_ATTACHMENT_PREVIEW_DIMENSION
+        || u64::from(width)
+            .saturating_mul(u64::from(height))
+            .saturating_mul(4)
+            > MAX_ATTACHMENT_PREVIEW_DECODED_BYTES
+    {
+        return Err(invalid_payload(
+            "attachment image preview is too large".to_owned(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn printable_ascii_runs(bytes: &[u8], min_len: usize) -> Vec<String> {
+    let mut runs = Vec::new();
+    let mut run = Vec::new();
+
+    for byte in bytes {
+        if byte.is_ascii_graphic() || *byte == b' ' || *byte == b'\t' {
+            run.push(*byte);
+            continue;
+        }
+        if run.len() >= min_len {
+            runs.push(String::from_utf8_lossy(&run).into_owned());
+        }
+        run.clear();
+    }
+    if run.len() >= min_len {
+        runs.push(String::from_utf8_lossy(&run).into_owned());
+    }
+
+    runs
+}
+
+fn preview_text_contains_unsafe_payload(value: &str, attachment_id: &str) -> bool {
+    contains_obvious_secret(value)
+        || redact_unsafe_display_text(value) != value
+        || value.contains(attachment_id)
 }
 
 fn declared_mime_token(value: &str) -> Option<&str> {
@@ -4073,7 +4650,9 @@ pub fn get_execution_settings_with_store(
     let record = store.load_record()?;
     Ok(GetExecutionSettingsResponse {
         permission_mode: record.permission_mode,
+        context_compression_trigger_ratio: record.context_compression_trigger_ratio,
         auto_mode_available: auto_mode_available(),
+        agent_capabilities: agent_capabilities_payload(&record),
     })
 }
 
@@ -4083,6 +4662,10 @@ pub fn set_execution_settings_with_store(
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
     ensure_execution_settings_record(&ExecutionSettingsRecord {
         permission_mode: request.permission_mode,
+        context_compression_trigger_ratio: request.context_compression_trigger_ratio,
+        subagents_enabled: request.subagents_enabled,
+        agent_teams_enabled: request.agent_teams_enabled,
+        background_agents_enabled: request.background_agents_enabled,
     })?;
     if request.permission_mode == PermissionMode::Auto && !auto_mode_available() {
         return Err(invalid_payload(
@@ -4091,11 +4674,17 @@ pub fn set_execution_settings_with_store(
     }
     let record = ExecutionSettingsRecord {
         permission_mode: request.permission_mode,
+        context_compression_trigger_ratio: request.context_compression_trigger_ratio,
+        subagents_enabled: request.subagents_enabled,
+        agent_teams_enabled: request.agent_teams_enabled,
+        background_agents_enabled: request.background_agents_enabled,
     };
     store.save_record(&record)?;
     Ok(SetExecutionSettingsResponse {
         permission_mode: record.permission_mode,
+        context_compression_trigger_ratio: record.context_compression_trigger_ratio,
         auto_mode_available: auto_mode_available(),
+        agent_capabilities: agent_capabilities_payload(&record),
     })
 }
 
@@ -10389,12 +10978,22 @@ pub fn get_execution_settings(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn set_execution_settings(
     permission_mode: PermissionMode,
+    context_compression_trigger_ratio: f32,
+    subagents_enabled: bool,
+    agent_teams_enabled: bool,
+    background_agents_enabled: bool,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     let _execution_settings_guard = runtime_state.execution_settings_lock.lock().await;
     set_execution_settings_with_store(
-        SetExecutionSettingsRequest { permission_mode },
+        SetExecutionSettingsRequest {
+            permission_mode,
+            context_compression_trigger_ratio,
+            subagents_enabled,
+            agent_teams_enabled,
+            background_agents_enabled,
+        },
         runtime_state.execution_settings_store.as_ref(),
     )
 }
@@ -10888,6 +11487,23 @@ pub async fn get_artifact_media_preview(
         GetArtifactMediaPreviewRequest {
             conversation_id,
             artifact_id,
+        },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_attachment_media_preview(
+    conversation_id: String,
+    attachment_id: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetAttachmentMediaPreviewResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_attachment_media_preview_with_runtime_state(
+        GetAttachmentMediaPreviewRequest {
+            conversation_id,
+            attachment_id,
         },
         &*runtime_state,
     )

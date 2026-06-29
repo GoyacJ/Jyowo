@@ -170,6 +170,8 @@ fn schema_export_contains_required_surface() {
     assert!(schemas.contains_key("model_protocol"));
     assert!(schemas.contains_key("model_modality"));
     assert!(schemas.contains_key("conversation_model_capability"));
+    assert!(schemas.contains_key("agent_capability_kind"));
+    assert!(schemas.contains_key("agent_capability_unavailable_reason"));
     assert!(schemas.contains_key("provider_service_capability"));
     assert!(schemas.contains_key("provider_runtime_capability"));
 

@@ -481,6 +481,15 @@ get_artifact_media_preview(request: {
   sizeBytes: number
 }
 
+get_attachment_media_preview(request: {
+  conversationId: string
+  attachmentId: string
+}): {
+  dataUrl: string
+  mimeType: string
+  sizeBytes: number
+}
+
 list_eval_cases(): {
   cases: Array<{
     id: string
@@ -545,6 +554,21 @@ save_provider_settings(request: {
 list_provider_settings(): {
   defaultConfigId: string | null
   configs: ProviderConfig[]
+}
+
+get_execution_settings(): {
+  autoModeAvailable: boolean
+  contextCompressionTriggerRatio: number
+  permissionMode: 'default' | 'auto' | 'bypass_permissions'
+}
+
+set_execution_settings(request: {
+  contextCompressionTriggerRatio: number
+  permissionMode: 'default' | 'auto' | 'bypass_permissions'
+}): {
+  autoModeAvailable: boolean
+  contextCompressionTriggerRatio: number
+  permissionMode: 'default' | 'auto' | 'bypass_permissions'
 }
 
 get_provider_config_api_key(request: {
@@ -898,6 +922,15 @@ Conversation timeline:
   accepts only `conversationId` and `artifactId` and returns only an image data
   URL, MIME type, and byte count. It must not expose blob paths, filesystem
   paths, remote URLs, signed URLs, or provider-native payloads to React.
+- Image attachments render from `ConversationTurn.user.attachments` metadata and
+  lazy-load preview bytes through `get_attachment_media_preview`. The preview
+  command accepts only `conversationId` and `attachmentId`; React must not pass
+  `blobRef`. The command returns only an image data URL, MIME type, and byte
+  count. The returned MIME type describes the safe preview, not necessarily the
+  original attachment MIME: JPEG, GIF, and WebP may return PNG preview data, and
+  AVIF may return AVIF preview data after Rust-side validation. It must not
+  expose blob paths, filesystem paths, remote URLs, signed URLs, or
+  provider-native payloads to React.
 
 IPC error shape:
 

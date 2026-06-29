@@ -131,8 +131,10 @@ import {
   exportSupportBundle,
   getAppInfo,
   getArtifactMediaPreview,
+  getAttachmentMediaPreview,
   getContextSnapshot,
   getConversation,
+  getExecutionSettings,
   getHarnessHealthcheck,
   getMcpServerConfig,
   getMemoryItem,
@@ -168,6 +170,7 @@ import {
   runEvalCase,
   saveMcpServer,
   saveProviderSettings,
+  setExecutionSettings,
   setMcpServerEnabled,
   setSkillEnabled,
   startRun,
@@ -210,6 +213,9 @@ const openAiModelDescriptor = {
 } as const
 
 describe('CommandClient', () => {
+  const attachmentPreviewId =
+    'attachment-1111111111111111111111111111111111111111111111111111111111111111'
+
   it('normalizes get_app_info through Zod validation', async () => {
     const invoke = vi.fn().mockResolvedValue({
       name: 'Jyowo',
@@ -244,6 +250,83 @@ describe('CommandClient', () => {
       sdkCrate: 'jyowo_harness_sdk',
     })
     expect(invoke).toHaveBeenCalledWith('harness_healthcheck')
+  })
+
+  it('normalizes execution settings with context compression ratio', async () => {
+    const agentCapabilities = {
+      agentTeamsAvailable: false,
+      agentTeamsEnabled: false,
+      backgroundAgentsAvailable: false,
+      backgroundAgentsEnabled: false,
+      subagentsAvailable: false,
+      subagentsEnabled: false,
+      unavailableReasons: [],
+    }
+    const invoke = vi.fn().mockResolvedValue({
+      agentCapabilities,
+      autoModeAvailable: false,
+      contextCompressionTriggerRatio: 0.8,
+      permissionMode: 'default',
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(getExecutionSettings(client)).resolves.toEqual({
+      agentCapabilities,
+      autoModeAvailable: false,
+      contextCompressionTriggerRatio: 0.8,
+      permissionMode: 'default',
+    })
+    expect(invoke).toHaveBeenCalledWith('get_execution_settings')
+  })
+
+  it('validates execution settings save payload ratio bounds', async () => {
+    const agentCapabilities = {
+      agentTeamsAvailable: false,
+      agentTeamsEnabled: false,
+      backgroundAgentsAvailable: false,
+      backgroundAgentsEnabled: false,
+      subagentsAvailable: false,
+      subagentsEnabled: false,
+      unavailableReasons: [],
+    }
+    const invoke = vi.fn().mockResolvedValue({
+      agentCapabilities,
+      autoModeAvailable: false,
+      contextCompressionTriggerRatio: 0.8,
+      permissionMode: 'default',
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      setExecutionSettings(
+        {
+          agentTeamsEnabled: false,
+          backgroundAgentsEnabled: false,
+          contextCompressionTriggerRatio: 0.49,
+          permissionMode: 'default',
+          subagentsEnabled: false,
+        },
+        client,
+      ),
+    ).rejects.toBeInstanceOf(TauriCommandPayloadError)
+
+    await setExecutionSettings(
+      {
+        agentTeamsEnabled: false,
+        backgroundAgentsEnabled: false,
+        contextCompressionTriggerRatio: 0.8,
+        permissionMode: 'default',
+        subagentsEnabled: false,
+      },
+      client,
+    )
+    expect(invoke).toHaveBeenCalledWith('set_execution_settings', {
+      agentTeamsEnabled: false,
+      backgroundAgentsEnabled: false,
+      contextCompressionTriggerRatio: 0.8,
+      permissionMode: 'default',
+      subagentsEnabled: false,
+    })
   })
 
   it('throws a schema error for invalid IPC payloads', async () => {
@@ -1194,6 +1277,90 @@ describe('CommandClient', () => {
         {
           conversationId: 'conversation-001',
           artifactId: 'artifact-image-001',
+        },
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('models attachment media preview command without exposing blob paths', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+      mimeType: 'image/png',
+      sizeBytes: 67,
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      getAttachmentMediaPreview(
+        {
+          conversationId: 'conversation-001',
+          attachmentId: attachmentPreviewId,
+        },
+        client,
+      ),
+    ).resolves.toEqual({
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+      mimeType: 'image/png',
+      sizeBytes: 67,
+    })
+    expect(invoke).toHaveBeenCalledWith('get_attachment_media_preview', {
+      conversationId: 'conversation-001',
+      attachmentId: attachmentPreviewId,
+    })
+
+    const unsafeClient = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        dataUrl: '/Users/goya/.jyowo/runtime/blobs/private.png',
+        mimeType: 'image/png',
+        sizeBytes: 67,
+      }),
+    )
+    await expect(
+      getAttachmentMediaPreview(
+        {
+          conversationId: 'conversation-001',
+          attachmentId: attachmentPreviewId,
+        },
+        unsafeClient,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects non-image attachment media preview data URLs', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        dataUrl: 'data:text/plain;base64,aGVsbG8=',
+        mimeType: 'image/png',
+        sizeBytes: 5,
+      }),
+    )
+
+    await expect(
+      getAttachmentMediaPreview(
+        {
+          conversationId: 'conversation-001',
+          attachmentId: attachmentPreviewId,
+        },
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects attachment media preview responses with mismatched MIME metadata', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+        mimeType: 'image/avif',
+        sizeBytes: 67,
+      }),
+    )
+
+    await expect(
+      getAttachmentMediaPreview(
+        {
+          conversationId: 'conversation-001',
+          attachmentId: attachmentPreviewId,
         },
         client,
       ),

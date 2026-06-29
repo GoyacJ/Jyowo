@@ -191,6 +191,10 @@ export const zhCN = {
     reviewRequest: '审查请求',
     reviewGeneratedFoundation: '审查生成的基础实现',
     userAuthor: '你',
+    userMessage: {
+      copy: '复制消息',
+      timestampLabel: '消息时间',
+    },
     turnLabel: '对话轮次',
     now: '刚刚',
     messageStatus: {
@@ -231,6 +235,10 @@ export const zhCN = {
       saved: '执行设置已保存。',
       permissionMode: {
         label: '权限模式',
+      },
+      contextCompressionTriggerRatio: {
+        label: '上下文压缩触发比例',
+        description: '当估算上下文达到模型窗口的这个占比时触发压缩。',
       },
       mode: {
         standard: {

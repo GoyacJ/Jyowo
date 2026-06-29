@@ -79,5 +79,12 @@ function displayPermissionSummary(
     return null
   }
 
+  if (
+    (summary === '需要批准后才能继续。' || summary === '需要批准后才可继续。') &&
+    status !== 'pending'
+  ) {
+    return null
+  }
+
   return summary
 }

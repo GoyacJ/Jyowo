@@ -191,6 +191,10 @@ export const enUS = {
     reviewRequest: 'Review request',
     reviewGeneratedFoundation: 'Review generated foundation',
     userAuthor: 'You',
+    userMessage: {
+      copy: 'Copy message',
+      timestampLabel: 'Message timestamp',
+    },
     turnLabel: 'Conversation turn',
     now: 'Now',
     messageStatus: {
@@ -231,6 +235,10 @@ export const enUS = {
       saved: 'Execution settings saved.',
       permissionMode: {
         label: 'Permission mode',
+      },
+      contextCompressionTriggerRatio: {
+        label: 'Context compression trigger ratio',
+        description: 'Compress when the estimated context reaches this share of the model window.',
       },
       mode: {
         standard: {

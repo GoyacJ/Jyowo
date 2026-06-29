@@ -79,6 +79,75 @@ describe('ConversationTimeline', () => {
     })
   })
 
+  it('does not show generic pending permission text after approval', () => {
+    const approvedTurn = turn('Final answer', 'approved-generic-summary')
+    const toolGroup = approvedTurn.assistant?.segments.find(
+      (segment) => segment.kind === 'toolGroup',
+    )
+    if (toolGroup?.kind === 'toolGroup' && toolGroup.attempts[0].permission) {
+      toolGroup.attempts[0].permission = {
+        ...toolGroup.attempts[0].permission,
+        summary: '需要批准后才能继续。',
+      }
+    }
+
+    render(<ConversationTimeline title="Approved permission" turns={[approvedTurn]} />)
+
+    expect(screen.getByText('Permission: approved')).toBeInTheDocument()
+    expect(screen.queryByText('需要批准后才能继续。')).not.toBeInTheDocument()
+  })
+
+  it('renders user timestamp and copies only the user message body', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const originalClipboard = navigator.clipboard
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const messageTurn = {
+      ...turn('Final answer', 'user-copy'),
+      user: {
+        ...turn('Final answer', 'user-copy').user,
+        body: 'Prompt with attachment',
+        attachments: [
+          {
+            id: 'attachment-copy',
+            name: 'reference.png',
+            mimeType: 'image/png',
+            sizeBytes: 2048,
+            blobRef: {
+              id: 'blob-copy',
+              size: 2048,
+              contentHash: new Array(32).fill(1),
+              contentType: 'image/png',
+            },
+          },
+        ],
+      },
+    } satisfies ConversationTurn
+
+    try {
+      renderTimelineWithClient(
+        <ConversationTimeline title="User message actions" turns={[messageTurn]} />,
+        createMockCommandClient(),
+      )
+
+      const time = screen.getByTitle('Message timestamp')
+      expect(time.tagName).toBe('TIME')
+      expect(time).toHaveAttribute('dateTime', timestamp)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Copy message' }))
+
+      expect(writeText).toHaveBeenCalledWith('Prompt with attachment')
+      expect(writeText).not.toHaveBeenCalledWith(expect.stringContaining('reference.png'))
+    } finally {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: originalClipboard,
+      })
+    }
+  })
+
   it('renders a MiniMax-style failed tool flow as one safe assistant work tree', () => {
     render(<ConversationTimeline title="MiniMax flow" turns={[minimaxTurn()]} />)
 
@@ -169,7 +238,10 @@ describe('ConversationTimeline', () => {
   it('renders a Codex-style evidence conversation from the worktree projection', async () => {
     await appI18n.changeLanguage('zh-CN')
     try {
-      render(<ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />)
+      renderTimelineWithClient(
+        <ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />,
+        createMockCommandClient(),
+      )
 
       expect(screen.getByText('已编辑 1 个文件')).toBeInTheDocument()
       expect(screen.getByText('reference.png')).toBeInTheDocument()
@@ -189,7 +261,10 @@ describe('ConversationTimeline', () => {
   })
 
   it('renders Codex evidence blocks with stable DOM shape and disclosure rules', () => {
-    render(<ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />)
+    renderTimelineWithClient(
+      <ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />,
+      createMockCommandClient(),
+    )
 
     const diffScrollRegion = screen.getByTestId('diff-scroll-region')
     expect(diffScrollRegion).toHaveClass('overflow-auto')
@@ -222,7 +297,10 @@ describe('ConversationTimeline', () => {
   })
 
   it('keeps large diff content inside the evidence scroll region', () => {
-    render(<ConversationTimeline title="Large diff" turns={codexLargeDiffTurns} />)
+    renderTimelineWithClient(
+      <ConversationTimeline title="Large diff" turns={codexLargeDiffTurns} />,
+      createMockCommandClient(),
+    )
 
     expect(screen.getByText('ConversationTimeline.test.tsx')).toBeInTheDocument()
     const diffScrollRegion = screen.getByTestId('diff-scroll-region')
@@ -275,6 +353,67 @@ describe('ConversationTimeline', () => {
     )
     expect(screen.getByText('image/png')).toBeInTheDocument()
     expect(getArtifactMediaPreview).not.toHaveBeenCalled()
+  })
+
+  it('keeps image attachments as metadata chips when safe preview fails', async () => {
+    const getAttachmentMediaPreview = vi.fn().mockRejectedValue(new Error('preview unavailable'))
+    const getArtifactMediaPreview = vi.fn()
+    const imageAttachment = codexStyleEvidenceTurns[0].user.attachments?.[0]
+    renderTimelineWithClient(
+      <ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />,
+      {
+        ...createMockCommandClient(),
+        getArtifactMediaPreview,
+        getAttachmentMediaPreview,
+      },
+    )
+
+    await waitFor(() => {
+      expect(getAttachmentMediaPreview).toHaveBeenCalledWith({
+        conversationId: codexStyleEvidenceTurns[0].conversationId,
+        attachmentId: imageAttachment?.id,
+      })
+    })
+    expect(screen.getByText('reference.png')).toBeInTheDocument()
+    expect(screen.getByText('image/png')).toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: 'reference.png' })).not.toBeInTheDocument()
+    expect(getArtifactMediaPreview).not.toHaveBeenCalled()
+  })
+
+  it('renders image attachment thumbnails through safe preview without fetch or artifact preview', async () => {
+    const getAttachmentMediaPreview = vi.fn().mockResolvedValue({
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+      mimeType: 'image/png',
+      sizeBytes: 67,
+    })
+    const getArtifactMediaPreview = vi.fn()
+    const fetchSpy = vi.fn()
+    const imageAttachment = codexStyleEvidenceTurns[0].user.attachments?.[0]
+    vi.stubGlobal('fetch', fetchSpy)
+
+    try {
+      renderTimelineWithClient(
+        <ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />,
+        {
+          ...createMockCommandClient(),
+          getArtifactMediaPreview,
+          getAttachmentMediaPreview,
+        },
+      )
+
+      expect(await screen.findByRole('img', { name: 'reference.png' })).toHaveAttribute(
+        'src',
+        'data:image/png;base64,iVBORw0KGgo=',
+      )
+      expect(getAttachmentMediaPreview).toHaveBeenCalledWith({
+        conversationId: codexStyleEvidenceTurns[0].conversationId,
+        attachmentId: imageAttachment?.id,
+      })
+      expect(getArtifactMediaPreview).not.toHaveBeenCalled()
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('renders attachment chips as a right-aligned metadata strip with internal overflow', () => {

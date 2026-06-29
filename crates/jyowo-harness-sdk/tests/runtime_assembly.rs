@@ -8,7 +8,7 @@ use std::sync::{
 use async_trait::async_trait;
 use futures::{executor::block_on, stream, StreamExt};
 use harness_contracts::{
-    BlobId, BlobRef, ConfigHash, ContextPatchSource, ContextStageId,
+    BlobId, BlobRef, BudgetExceedanceSource, ConfigHash, ContextPatchSource, ContextStageId,
     ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput, Decision,
     DeferPolicy, DeferredToolHint, EndReason, Event, HookEventKind,
     ManifestValidationFailure as ContractManifestValidationFailure, McpServerId, McpServerSource,
@@ -112,6 +112,126 @@ fn conversation_turn_input_ask_mode_preserves_prompt_text() {
 
         let requests = model.requests().await;
         assert_eq!(request_text(&requests[0]), "plain user question");
+    });
+}
+
+#[test]
+fn conversation_turn_request_includes_prior_session_messages() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-turn-context-seed");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![
+                vec![
+                    ModelStreamEvent::ContentBlockDelta {
+                        index: 0,
+                        delta: ContentDelta::Text("first assistant answer".to_owned()),
+                    },
+                    ModelStreamEvent::MessageStop,
+                ],
+                vec![
+                    ModelStreamEvent::ContentBlockDelta {
+                        index: 0,
+                        delta: ContentDelta::Text("second assistant answer".to_owned()),
+                    },
+                    ModelStreamEvent::MessageStop,
+                ],
+            ],
+        ));
+        let harness = Harness::builder()
+            .with_model_arc(model.clone())
+            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+
+        harness
+            .open_or_create_conversation_session(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+            )
+            .await
+            .expect("session should open");
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: SessionOptions::new(&workspace).with_session_id(session_id),
+                input: ConversationTurnInput::ask("first user question"),
+            })
+            .await
+            .expect("first turn should run");
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: SessionOptions::new(&workspace).with_session_id(session_id),
+                input: ConversationTurnInput::ask("second user question"),
+            })
+            .await
+            .expect("second turn should run");
+
+        let requests = model.requests().await;
+        let second_request_text = request_text(&requests[1]);
+        assert!(second_request_text.contains("first user question"));
+        assert!(second_request_text.contains("first assistant answer"));
+        assert!(second_request_text.contains("second user question"));
+        assert_eq!(
+            second_request_text.matches("second user question").count(),
+            1
+        );
+    });
+}
+
+#[test]
+fn conversation_session_budget_uses_model_window_and_trigger_ratio() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-context-budget");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        let model = Arc::new(
+            CapabilityScriptedProvider::new(
+                ConversationModelCapability::default(),
+                vec![vec![ModelStreamEvent::MessageStop]],
+            )
+            .with_context_limits(40, 10),
+        );
+        let harness = Harness::builder()
+            .with_model_arc(model)
+            .with_store_arc(store.clone())
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+        let options = SessionOptions::new(&workspace)
+            .with_session_id(session_id)
+            .with_context_compression_trigger_ratio(0.5);
+
+        harness
+            .open_or_create_conversation_session(options.clone())
+            .await
+            .expect("session should open");
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options,
+                input: ConversationTurnInput::ask(
+                    "this message is intentionally long enough to cross the configured soft budget",
+                ),
+            })
+            .await
+            .expect("turn should run");
+
+        let events: Vec<_> = store
+            .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+            .await
+            .expect("events should be readable")
+            .collect()
+            .await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Event::ContextBudgetExceeded(exceeded)
+                if exceeded.source == BudgetExceedanceSource::LocalEstimate
+                    && exceeded.max == 15
+        )));
     });
 }
 
@@ -4082,6 +4202,8 @@ impl Tool for DeferredDeltaEmitterTool {
 struct CapabilityScriptedProvider {
     protocol: ModelProtocol,
     capabilities: ConversationModelCapability,
+    context_window: u32,
+    max_output_tokens: u32,
     responses: tokio::sync::Mutex<Vec<Vec<ModelStreamEvent>>>,
     requests: tokio::sync::Mutex<Vec<ModelRequest>>,
 }
@@ -4094,6 +4216,8 @@ impl CapabilityScriptedProvider {
         Self {
             protocol: ModelProtocol::Messages,
             capabilities,
+            context_window: 128_000,
+            max_output_tokens: 8_192,
             responses: tokio::sync::Mutex::new(responses),
             requests: tokio::sync::Mutex::new(Vec::new()),
         }
@@ -4101,6 +4225,12 @@ impl CapabilityScriptedProvider {
 
     fn with_protocol(mut self, protocol: ModelProtocol) -> Self {
         self.protocol = protocol;
+        self
+    }
+
+    fn with_context_limits(mut self, context_window: u32, max_output_tokens: u32) -> Self {
+        self.context_window = context_window;
+        self.max_output_tokens = max_output_tokens;
         self
     }
 
@@ -4121,8 +4251,8 @@ impl ModelProvider for CapabilityScriptedProvider {
             model_id: "mock-model".to_owned(),
             display_name: "Mock model".to_owned(),
             protocol: self.protocol,
-            context_window: 128_000,
-            max_output_tokens: 8_192,
+            context_window: self.context_window,
+            max_output_tokens: self.max_output_tokens,
             conversation_capability: self.capabilities.clone(),
             lifecycle: ModelLifecycle::Stable,
             pricing: None,

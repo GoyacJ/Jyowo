@@ -208,6 +208,7 @@ list_artifacts
 list_eval_cases
 get_context_snapshot
 get_artifact_media_preview
+get_attachment_media_preview
 get_app_info
 get_conversation
 get_execution_settings
@@ -286,6 +287,10 @@ get_artifact_media_preview(
   conversation_id: String,
   artifact_id: String
 ) -> Result<GetArtifactMediaPreviewResponse, CommandErrorPayload>
+get_attachment_media_preview(
+  conversation_id: String,
+  attachment_id: String
+) -> Result<GetAttachmentMediaPreviewResponse, CommandErrorPayload>
 list_eval_cases() -> Result<ListEvalCasesResponse, CommandErrorPayload>
 get_context_snapshot(
   conversation_id: Option<String>,
@@ -396,7 +401,8 @@ install_skill_from_catalog(
 // The shell also emits skill_catalog_install_progress while the task runs.
 // Event delivery failure is telemetry-only and must not alter install policy.
 set_execution_settings(
-  permission_mode: PermissionMode
+  permission_mode: PermissionMode,
+  context_compression_trigger_ratio: f32
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload>
 set_conversation_model_config(
   conversation_id: String,
@@ -589,6 +595,19 @@ preview data as a data URL plus MIME type and byte count. Non-image artifacts,
 missing artifacts, oversized previews, private paths, blob paths, remote URLs,
 signed URLs, and provider-native payloads must fail closed and must not cross
 IPC.
+
+`get_attachment_media_preview` must require an explicit conversation id and
+attachment id. It may read an attachment blob through runtime state only after
+finding that attachment in `UserMessageAppended.attachments` for the requested
+conversation. It returns only image preview data as a data URL plus MIME type
+and byte count. PNG previews must strip nonessential PNG chunks. JPEG, GIF, and
+WebP inputs must be decoded and re-encoded as PNG preview data. AVIF inputs
+must pass Rust-side AVIF container validation and unsafe metadata checks before
+returning AVIF preview data; AVIF files with descriptive or unsafe metadata must
+fail closed. Non-image attachments, missing attachments, mismatched MIME
+metadata, oversized previews, private paths, blob paths, remote URLs, signed
+URLs, provider-native payloads, and blobs outside tenant scope or the current
+session scope must fail closed and must not cross IPC.
 
 `get_context_snapshot` must read through the runtime conversation projection and
 workspace root. It may project current files, latest explicit artifact event,

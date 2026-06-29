@@ -16,7 +16,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use futures::StreamExt;
-use harness_context::ContextEngine;
+use harness_context::{ContextEngine, TokenBudget};
 #[cfg(feature = "mcp-server-adapter")]
 use harness_contracts::BlobRef;
 #[cfg(feature = "tool-search")]
@@ -1987,12 +1987,6 @@ impl Harness {
         pending_session_events: Option<Arc<PendingSessionEvents>>,
     ) -> Result<Engine, HarnessError> {
         let mut cap_registry = (*self.inner.cap_registry).clone();
-        if !cap_registry.contains(&ToolCapability::ContextPatchSink) {
-            cap_registry.install::<dyn ContextPatchSinkCap>(
-                ToolCapability::ContextPatchSink,
-                Arc::new(context.clone()),
-            );
-        }
         if let Some(blob_store) = &self.inner.blob_store {
             cap_registry.install::<dyn harness_contracts::BlobReaderCap>(
                 ToolCapability::BlobReader,
@@ -2026,6 +2020,16 @@ impl Harness {
         let model_snapshot = snapshot_for_supported_model(self.inner.model.as_ref(), &model_id)?;
         let protocol = options.protocol.unwrap_or(model_snapshot.protocol);
         self.enforce_provider_allowed(&model_snapshot.provider_id)?;
+        let context = context.clone_with_budget(context_budget_for_model(
+            &model_snapshot,
+            options.context_compression_trigger_ratio,
+        ));
+        if !cap_registry.contains(&ToolCapability::ContextPatchSink) {
+            cap_registry.install::<dyn ContextPatchSinkCap>(
+                ToolCapability::ContextPatchSink,
+                Arc::new(context.clone()),
+            );
+        }
         let model_profile = ToolPoolModelProfile {
             provider: harness_contracts::ModelProvider(model_snapshot.provider_id.clone()),
             max_context_tokens: (model_snapshot.context_window > 0)
@@ -4032,6 +4036,30 @@ fn snapshot_for_supported_model(
     })
 }
 
+fn context_budget_for_model(
+    model_snapshot: &ModelRuntimeSnapshot,
+    context_compression_trigger_ratio: f32,
+) -> TokenBudget {
+    let mut budget = TokenBudget::default();
+    let context_window = u64::from(model_snapshot.context_window);
+    budget.soft_budget_ratio = context_compression_trigger_ratio.clamp(0.5, 0.95);
+    budget.hard_budget_ratio = 0.95;
+
+    if context_window == 0 {
+        return budget;
+    }
+
+    let declared_output_tokens =
+        u64::from(model_snapshot.conversation_capability.max_output_tokens);
+    let reserved_output_tokens = if declared_output_tokens > 0 {
+        declared_output_tokens.min(context_window / 2)
+    } else {
+        4_096_u64.min(context_window / 4)
+    };
+    budget.max_tokens_per_turn = context_window.saturating_sub(reserved_output_tokens).max(1);
+    budget
+}
+
 fn apply_non_default_session_options(options: &mut SessionOptions, defaults: &SessionOptions) {
     if defaults.workspace_root != PathBuf::from(".") {
         options.workspace_root = defaults.workspace_root.clone();
@@ -4068,6 +4096,9 @@ fn apply_non_default_session_options(options: &mut SessionOptions, defaults: &Se
     }
     if defaults.max_iterations > 0 {
         options.max_iterations = defaults.max_iterations;
+    }
+    if defaults.context_compression_trigger_ratio != 0.8 {
+        options.context_compression_trigger_ratio = defaults.context_compression_trigger_ratio;
     }
 }
 
@@ -4264,6 +4295,9 @@ fn apply_explicit_session_options(options: &mut SessionOptions, explicit: &Sessi
     }
     if explicit.max_iterations > 0 {
         options.max_iterations = explicit.max_iterations;
+    }
+    if explicit.context_compression_trigger_ratio != 0.8 {
+        options.context_compression_trigger_ratio = explicit.context_compression_trigger_ratio;
     }
     options.session_id = explicit.session_id;
 }
@@ -5084,7 +5118,8 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
                 ctx.config_snapshot_id,
                 ctx.effective_config_hash,
                 ctx.started_from_scope_set,
-            );
+            )
+            .with_context_seed(ctx.context_seed.clone());
         let engine = self.engine_with_turn_skill_snapshot()?;
         #[cfg(feature = "steering-queue")]
         let mut engine = engine;

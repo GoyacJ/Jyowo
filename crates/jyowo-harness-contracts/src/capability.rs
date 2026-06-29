@@ -19,6 +19,20 @@ use crate::{
     ToolUseId, TranscriptRef, TurnInput, UsageSnapshot,
 };
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentCapabilityKind {
+    Subagents,
+    AgentTeams,
+    BackgroundAgents,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AgentCapabilityUnavailableReason {
+    NotCompiled { capability: AgentCapabilityKind },
+}
+
 pub trait SubagentRunnerCap: Send + Sync + 'static {
     fn spawn(
         &self,
