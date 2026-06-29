@@ -10,7 +10,7 @@ use harness_contracts::{
 };
 use harness_journal::{InMemoryBlobStore, InMemoryEventStore};
 use harness_mcp::{ExposedCapability, HarnessMcpBackend, McpServerRequestContext};
-use harness_model::{ContentDelta, ModelStreamEvent};
+use harness_model::{ContentDelta, ModelProtocol, ModelStreamEvent};
 use harness_permission::PermissionCheck;
 use harness_tool::{Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream, ValidationError};
 use jyowo_harness_sdk::{prelude::*, testing::*};
@@ -50,11 +50,7 @@ fn harness_mcp_backend_exposes_sessions_messages_events_and_channels() {
             .expect("harness should build");
         let session_id = SessionId::new();
         harness
-            .create_session(
-                SessionOptions::new(&workspace)
-                    .with_session_id(session_id)
-                    .with_interactivity(InteractivityLevel::FullyInteractive),
-            )
+            .create_session(SessionOptions::new(&workspace).with_session_id(session_id))
             .await
             .expect("session should be created");
         let context = McpServerRequestContext::default().with_tenant_id(TenantId::SINGLE);
@@ -227,6 +223,65 @@ fn harness_mcp_messages_send_rejects_changed_workspace_bootstrap() {
         assert!(error
             .to_string()
             .contains("session effective config does not match"));
+    });
+}
+
+#[test]
+fn harness_mcp_messages_send_rejects_model_protocol_hash_variants() {
+    tokio_runtime().block_on(async {
+        let root = unique_workspace("sdk-mcp-server-adapter-model-protocol-resume");
+        std::fs::create_dir_all(&root).unwrap();
+        let harness = Harness::builder()
+            .with_workspace_root(&root)
+            .with_model(TestModelProvider::default())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+        let context = McpServerRequestContext::default().with_tenant_id(TenantId::SINGLE);
+
+        let model_session_id = SessionId::new();
+        harness
+            .create_session(
+                SessionOptions::new(&root)
+                    .with_session_id(model_session_id)
+                    .with_model_id("test-model"),
+            )
+            .await
+            .expect("model variant session should be created");
+        let model_error = harness
+            .call_harness_tool(
+                &context,
+                ExposedCapability::MessagesSend,
+                json!({"session_id": model_session_id.to_string(), "message": "resume"}),
+            )
+            .await
+            .expect_err("messages_send should reject model hash variant");
+        assert!(model_error
+            .to_string()
+            .contains("session options do not match a resumable workspace context"));
+
+        let protocol_session_id = SessionId::new();
+        harness
+            .create_session(
+                SessionOptions::new(&root)
+                    .with_session_id(protocol_session_id)
+                    .with_protocol(ModelProtocol::Messages),
+            )
+            .await
+            .expect("protocol variant session should be created");
+        let protocol_error = harness
+            .call_harness_tool(
+                &context,
+                ExposedCapability::MessagesSend,
+                json!({"session_id": protocol_session_id.to_string(), "message": "resume"}),
+            )
+            .await
+            .expect_err("messages_send should reject protocol hash variant");
+        assert!(protocol_error
+            .to_string()
+            .contains("session options do not match a resumable workspace context"));
     });
 }
 
