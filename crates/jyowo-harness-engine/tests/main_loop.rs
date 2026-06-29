@@ -949,6 +949,7 @@ impl TextTool {
                 provider_restriction: ProviderRestriction::All,
                 origin: ToolOrigin::Builtin,
                 search_hint: None,
+                service_binding: None,
             },
             output: output.to_owned(),
         }
@@ -1031,6 +1032,7 @@ impl ImageBlobTool {
                 provider_restriction: ProviderRestriction::All,
                 origin: ToolOrigin::Builtin,
                 search_hint: None,
+                service_binding: None,
             },
             content_type: content_type.to_owned(),
         }
@@ -1413,6 +1415,7 @@ impl TestListDirTool {
                 provider_restriction: ProviderRestriction::All,
                 origin: ToolOrigin::Builtin,
                 search_hint: None,
+                service_binding: None,
             },
         }
     }

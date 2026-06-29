@@ -2149,6 +2149,7 @@ impl FakeTool {
                     trust: TrustLevel::UserControlled,
                 },
                 search_hint: None,
+                service_binding: None,
             },
         }
     }

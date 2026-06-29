@@ -2095,6 +2095,7 @@ mod subagent_tool_tests {
                     provider_restriction: ProviderRestriction::All,
                     origin,
                     search_hint: None,
+                    service_binding: None,
                 },
             }
         }

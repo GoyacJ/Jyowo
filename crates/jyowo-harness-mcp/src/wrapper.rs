@@ -132,6 +132,7 @@ impl McpToolWrapper {
                 server_trust,
             }),
             search_hint: Some(description),
+            service_binding: None,
         };
 
         Self {

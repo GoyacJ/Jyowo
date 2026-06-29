@@ -968,6 +968,7 @@ fn tool_descriptor_is_contract_surface() {
         provider_restriction: ProviderRestriction::All,
         origin: ToolOrigin::Builtin,
         search_hint: Some("read file path".to_owned()),
+        service_binding: None,
     };
 
     let value = serde_json::to_value(&descriptor).unwrap();

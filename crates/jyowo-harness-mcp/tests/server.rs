@@ -232,6 +232,7 @@ fn test_tool(name: &str, behavior: Behavior) -> TestTool {
             provider_restriction: ProviderRestriction::All,
             origin: ToolOrigin::Builtin,
             search_hint: None,
+            service_binding: None,
         },
         behavior,
     }

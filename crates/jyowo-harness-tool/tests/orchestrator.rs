@@ -1058,6 +1058,7 @@ fn test_tool(name: &str, is_concurrency_safe: bool, behavior: Behavior) -> TestT
             provider_restriction: ProviderRestriction::All,
             origin: ToolOrigin::Builtin,
             search_hint: None,
+            service_binding: None,
         },
         behavior,
     }

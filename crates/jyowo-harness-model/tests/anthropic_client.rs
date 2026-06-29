@@ -74,6 +74,7 @@ fn tool_descriptor() -> ToolDescriptor {
         provider_restriction: harness_contracts::ProviderRestriction::All,
         origin: harness_contracts::ToolOrigin::Builtin,
         search_hint: None,
+        service_binding: None,
     }
 }
 

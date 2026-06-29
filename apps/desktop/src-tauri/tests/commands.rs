@@ -8884,6 +8884,7 @@ impl NeedsPermissionTool {
                 provider_restriction: ProviderRestriction::All,
                 origin: jyowo_harness_sdk::ext::ToolOrigin::Builtin,
                 search_hint: None,
+                service_binding: None,
             },
         }
     }

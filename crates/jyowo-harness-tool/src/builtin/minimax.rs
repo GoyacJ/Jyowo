@@ -1179,6 +1179,8 @@ async fn minimax_credential(ctx: &ToolContext) -> Result<ProviderCredential, Too
             session_id: ctx.session_id,
             run_id: ctx.run_id,
             provider_id: MINIMAX_PROVIDER_ID.to_owned(),
+            operation_id: None,
+            route_kind: None,
         })
         .await?;
     if credential.provider_id != MINIMAX_PROVIDER_ID {
