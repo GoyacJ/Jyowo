@@ -220,11 +220,12 @@ pub mod agents_team {
         };
 
         if let Some(addendum) = &request.engine_config.system_prompt_addendum {
+            let rendered_addendum = crate::system_prompt::render_session_addendum(addendum);
             let system_prompt = match base.system_prompt() {
-                Some(base_prompt) if !base_prompt.is_empty() => {
-                    Some(format!("{base_prompt}\n\n{addendum}"))
-                }
-                _ => Some(addendum.clone()),
+                Some(base_prompt) if !base_prompt.is_empty() => rendered_addendum
+                    .map(|section| format!("{base_prompt}\n\n{section}"))
+                    .or_else(|| Some(base_prompt.to_owned())),
+                _ => rendered_addendum,
             };
             builder = builder.with_system_prompt(system_prompt);
         }

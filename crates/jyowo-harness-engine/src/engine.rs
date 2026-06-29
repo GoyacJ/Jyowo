@@ -1355,21 +1355,59 @@ fn validate_bootstrap_filename(filename: &str) -> Result<(), harness_subagent::S
 }
 
 #[cfg(feature = "subagent-tool")]
+fn escape_prompt_section_content(content: &str) -> String {
+    content
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+#[cfg(feature = "subagent-tool")]
+fn escape_prompt_source_attribute(source: &str) -> String {
+    source
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+#[cfg(feature = "subagent-tool")]
+pub(crate) fn wrap_workspace_instruction(filename: &str, content: &str) -> Option<String> {
+    if content.trim().is_empty() {
+        return None;
+    }
+    Some(format!(
+        "<workspace-instructions source=\"{}\">\n{}\n</workspace-instructions>",
+        escape_prompt_source_attribute(filename),
+        escape_prompt_section_content(content)
+    ))
+}
+
+#[cfg(feature = "subagent-tool")]
+pub(crate) fn wrap_subagent_addendum(content: &str) -> Option<String> {
+    if content.trim().is_empty() {
+        return None;
+    }
+    Some(format!(
+        "<subagent-addendum>\n{}\n</subagent-addendum>",
+        escape_prompt_section_content(content)
+    ))
+}
+
+#[cfg(feature = "subagent-tool")]
 fn bootstrap_system_segment(files: &[(String, String)]) -> Option<String> {
     if files.is_empty() {
         return None;
     }
-    Some(
-        files
-            .iter()
-            .map(|(filename, content)| {
-                format!(
-                    "<workspace-bootstrap filename=\"{filename}\">\n{content}\n</workspace-bootstrap>"
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-    )
+    let sections: Vec<_> = files
+        .iter()
+        .filter_map(|(filename, content)| wrap_workspace_instruction(filename, content))
+        .collect();
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n"))
+    }
 }
 
 #[cfg(feature = "subagent-tool")]
@@ -1380,15 +1418,17 @@ fn child_system_prompt(
 ) -> String {
     let mut parts = Vec::new();
     if let Some(base) = base.filter(|base| !base.is_empty()) {
-        parts.push(base);
+        parts.push(base.to_owned());
     }
     if let Some(bootstrap_segment) =
         bootstrap_segment.filter(|bootstrap_segment| !bootstrap_segment.is_empty())
     {
-        parts.push(bootstrap_segment);
+        parts.push(bootstrap_segment.to_owned());
     }
     if let Some(extra) = extra.filter(|extra| !extra.is_empty()) {
-        parts.push(extra);
+        if let Some(wrapped) = wrap_subagent_addendum(extra) {
+            parts.push(wrapped);
+        }
     }
     parts.join("\n\n")
 }
@@ -1809,7 +1849,8 @@ mod subagent_tool_tests {
     use harness_tool::{Tool, ToolContext, ToolEvent, ToolPool, ToolStream, ValidationError};
 
     use super::{
-        announcement_content, child_run_outcome, child_tool_filter, missing_required_mcp_servers,
+        announcement_content, child_run_outcome, child_system_prompt, child_tool_filter,
+        missing_required_mcp_servers, wrap_subagent_addendum, wrap_workspace_instruction,
     };
 
     #[test]
@@ -1993,6 +2034,55 @@ mod subagent_tool_tests {
             outcome.status,
             SubagentStatus::MaxBudget(BudgetKind::Tokens)
         );
+    }
+
+    #[test]
+    fn wrap_workspace_instruction_renders_source_wrapped_bootstrap() {
+        let rendered = wrap_workspace_instruction("AGENTS.md", "Root workspace rule.")
+            .expect("non-empty content renders");
+        assert!(rendered.contains(r#"<workspace-instructions source="AGENTS.md">"#));
+        assert!(rendered.contains("Root workspace rule."));
+        assert!(!rendered.contains("AI 编程伙伴"));
+    }
+
+    #[test]
+    fn wrap_workspace_instruction_escapes_xml_and_quotes_in_source() {
+        let rendered = wrap_workspace_instruction("AGENTS\"<>.md", "rule & value <tag>")
+            .expect("content renders");
+        assert!(rendered.contains(r#"source="AGENTS&quot;&lt;&gt;.md""#));
+        assert!(rendered.contains("rule &amp; value &lt;tag&gt;"));
+    }
+
+    #[test]
+    fn wrap_subagent_addendum_renders_bounded_child_section() {
+        let rendered = wrap_subagent_addendum("Child-only constraint.").unwrap();
+        assert_eq!(
+            rendered,
+            "<subagent-addendum>\nChild-only constraint.\n</subagent-addendum>"
+        );
+    }
+
+    #[test]
+    fn child_system_prompt_preserves_parent_prefix_for_cache_reuse() {
+        let child = child_system_prompt(
+            Some("parent-system"),
+            Some(
+                r#"<workspace-instructions source="AGENTS.md">
+agent rules
+</workspace-instructions>"#,
+            ),
+            Some("child-only-system"),
+        );
+        assert_eq!(&child.as_bytes()[.."parent-system".len()], b"parent-system");
+        assert!(child.contains("<subagent-addendum>"));
+        assert!(child.contains("child-only-system"));
+        assert!(child.contains("<workspace-instructions"));
+    }
+
+    #[test]
+    fn empty_addendum_and_bootstrap_helpers_return_none() {
+        assert!(wrap_workspace_instruction("AGENTS.md", "   ").is_none());
+        assert!(wrap_subagent_addendum("   ").is_none());
     }
 
     #[tokio::test]

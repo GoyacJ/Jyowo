@@ -984,7 +984,10 @@ async fn subagent_system_header_extra_only_scopes_child_prompt() {
         &child_system.as_bytes()[..parent_system.len()],
         parent_system.as_bytes()
     );
-    assert_eq!(child_system, "parent-system\n\nchild-only-system");
+    assert_eq!(
+        child_system,
+        "parent-system\n\n<subagent-addendum>\nchild-only-system\n</subagent-addendum>"
+    );
     assert_eq!(requests[2].system.as_deref(), Some("parent-system"));
 }
 
@@ -1079,7 +1082,7 @@ async fn subagent_bootstrap_allow_inherits_only_named_root_files() {
         .as_deref()
         .expect("child system should include inherited bootstrap");
     assert!(child_system.contains("parent-system"));
-    assert!(child_system.contains("AGENTS.md"));
+    assert!(child_system.contains(r#"<workspace-instructions source="AGENTS.md">"#));
     assert!(child_system.contains("agent rules"));
     assert!(!child_system.contains("CLAUDE.md"));
     assert!(!child_system.contains("claude rules"));
@@ -1140,8 +1143,8 @@ async fn subagent_bootstrap_inherit_all_reads_standard_workspace_bootstrap_files
 
     let requests = model.requests();
     let child_system = requests[1].system.as_deref().unwrap();
-    assert!(child_system.contains("AGENTS.md"));
-    assert!(child_system.contains("IDENTITY.md"));
+    assert!(child_system.contains(r#"<workspace-instructions source="AGENTS.md">"#));
+    assert!(child_system.contains(r#"<workspace-instructions source="IDENTITY.md">"#));
     assert!(!child_system.contains("notes.md"));
     let journal_events: Vec<_> = store
         .read(TenantId::SINGLE, parent_session_id, ReplayCursor::FromStart)
