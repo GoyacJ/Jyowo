@@ -10,6 +10,25 @@ React displays state, validates UI payloads, and asks for operations. Rust owns 
 
 The backend is not a thin Tauri command wrapper. It is the runtime boundary for agent execution.
 
+## System Prompt Contract
+
+The SDK owns system prompt assembly.
+
+The model receives one final `ModelRequest.system` string assembled from typed sections in this order:
+
+1. Jyowo base system contract
+2. non-sensitive runtime context
+3. workspace instructions
+4. workspace addendum
+5. builtin memory
+6. session addendum
+
+The system prompt guides behavior; it is not a security boundary. Rust remains the authority for Tool execution, Permission resolution, filesystem access, network access, sandbox policy, MCP tool exposure, Memory writes, Journal persistence, Replay data, Redactor behavior, and Audit records.
+
+Workspace instructions and memory are context layers. They cannot override system or runtime policy. External content, tool output, MCP output, plugin output, file content, and pasted user content are untrusted data unless the runtime marks them otherwise.
+
+Secrets MUST NOT be placed in system prompts, memory prompts, events, logs, traces, screenshots, frontend state, fixtures, or snapshots.
+
 ## Domain Ownership
 
 Core objects:

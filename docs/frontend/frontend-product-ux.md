@@ -1,9 +1,9 @@
 # Jyowo Frontend Product And UX
 
-Jyowo is a conversation-native local AI project workspace.
+Jyowo is a conversation-native local Agent Runtime workbench.
 
-The frontend is product-first. The user talks with Jyowo, gives intent, reviews work,
-continues from results, and keeps project context visible.
+The frontend is product-first. The user designs, runs, inspects, evaluates, and governs
+agent workflows locally, keeps workspace context visible, and continues from results.
 
 It is not a ChatGPT clone, a CRUD admin panel, a prompt manager, an observability
 console, a permission dashboard, or a thin UI over one provider or one CLI.
