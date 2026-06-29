@@ -390,6 +390,10 @@ impl Session {
         self.config_snapshot.effective_prompt_inputs_hash
     }
 
+    pub(crate) fn runtime_prompt_context_hash(&self) -> Option<[u8; 32]> {
+        self.config_snapshot.runtime_prompt_context_hash
+    }
+
     #[cfg(feature = "steering")]
     pub(crate) fn steering(&self) -> &SteeringQueue {
         &self.steering
@@ -632,21 +636,38 @@ impl Session {
 }
 
 impl SessionConfigSnapshot {
-    pub(crate) fn from_options_and_effective_prompt_inputs_hash(
+    pub(crate) fn from_options_and_effective_hashes(
         options: &SessionOptions,
         effective_prompt_inputs_hash: Option<[u8; 32]>,
+        runtime_prompt_context_hash: Option<[u8; 32]>,
     ) -> Self {
         let options_hash = session_options_hash(options);
-        let effective_config_hash =
-            effective_config_hash(options_hash, effective_prompt_inputs_hash);
+        let effective_config_hash = effective_config_hash(
+            options_hash,
+            effective_prompt_inputs_hash,
+            runtime_prompt_context_hash,
+        );
         Self {
             config_snapshot_id: config_snapshot_id(effective_config_hash),
             effective_config_hash,
             started_from_scope_set: vec!["sdk:session_options".to_owned()],
             options_hash,
             effective_prompt_inputs_hash,
+            runtime_prompt_context_hash,
         }
     }
+}
+
+pub fn session_effective_config_hash(
+    options: &SessionOptions,
+    effective_prompt_inputs_hash: Option<[u8; 32]>,
+    runtime_prompt_context_hash: Option<[u8; 32]>,
+) -> ConfigHash {
+    effective_config_hash(
+        session_options_hash(options),
+        effective_prompt_inputs_hash,
+        runtime_prompt_context_hash,
+    )
 }
 
 pub(crate) fn session_error(error: impl std::fmt::Display) -> SessionError {
@@ -717,11 +738,13 @@ pub fn legacy_session_options_hash_without_runtime_context(options: &SessionOpti
 fn effective_config_hash(
     options_hash: [u8; 32],
     effective_prompt_inputs_hash: Option<[u8; 32]>,
+    runtime_prompt_context_hash: Option<[u8; 32]>,
 ) -> ConfigHash {
     ConfigHash(hash_json(&json!({
         "kind": "sdk_session_effective_config",
         "options_hash": options_hash,
         "effective_prompt_inputs_hash": effective_prompt_inputs_hash,
+        "runtime_prompt_context_hash": runtime_prompt_context_hash,
         "source_refs": [],
         "started_from_scope_set": ["sdk:session_options"],
     })))

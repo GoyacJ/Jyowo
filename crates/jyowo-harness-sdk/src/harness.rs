@@ -21,6 +21,8 @@ use harness_context::{ContextEngine, TokenBudget};
 use harness_contracts::BlobRef;
 #[cfg(feature = "tool-search")]
 use harness_contracts::CacheImpact;
+#[cfg(feature = "mcp-server-adapter")]
+use harness_contracts::ConfigHash;
 #[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
 use harness_contracts::MemdirFileTag;
 #[cfg(not(feature = "observability-redactor"))]
@@ -79,7 +81,7 @@ use harness_mcp::{ExposedCapability, HarnessMcpBackend, McpServerError, McpServe
 #[cfg(feature = "memory-consolidation")]
 use harness_memory::ConsolidationHook;
 use harness_memory::MemoryProvider;
-use harness_model::{provider_catalog_entries, ModelRuntimeSnapshot};
+use harness_model::ModelRuntimeSnapshot;
 use harness_model::{
     AuxModelProvider, ContentDelta, InferContext, InferMiddleware, ModelMetricsSink, ModelProtocol,
     ModelProvider, ModelRequest, ModelStreamEvent,
@@ -98,6 +100,8 @@ use harness_plugin::{
     PluginEventSink,
 };
 use harness_sandbox::SandboxBackend;
+#[cfg(feature = "mcp-server-adapter")]
+use harness_session::session_effective_config_hash;
 use harness_session::{
     legacy_session_options_hash_with_permission_mode,
     legacy_session_options_hash_without_runtime_context, session_options_hash, Session,
@@ -131,8 +135,9 @@ use crate::skill_pack_loader::{
 #[cfg(feature = "memory-builtin")]
 use crate::system_prompt::render_builtin_memory_system_prompt;
 use crate::system_prompt::{
-    build_runtime_prompt_context, effective_prompt_inputs_hash, workspace_instruction_section,
-    EffectiveSystemPromptInputs, RuntimePromptContext, SystemPromptBuilder,
+    build_runtime_prompt_context, effective_prompt_inputs_hash, runtime_prompt_context_hash,
+    workspace_instruction_section, EffectiveSystemPromptInputs, RuntimePromptContext,
+    SystemPromptBuilder,
 };
 
 const PLUGIN_FAILURE_WITHHELD_MESSAGE: &str = "Plugin failure withheld from conversation timeline.";
@@ -606,10 +611,16 @@ struct SdkSessionState {
     projection: SessionProjection,
 }
 
+struct SessionEngine {
+    engine: Engine,
+    runtime_prompt_context_hash: [u8; 32],
+}
+
 #[cfg(feature = "mcp-server-adapter")]
 struct McpSessionReplay {
     projection: SessionProjection,
     created_options_hash: [u8; 32],
+    created_effective_config_hash: ConfigHash,
 }
 
 fn sdk_session_not_found(session_id: SessionId) -> HarnessError {
@@ -1096,7 +1107,7 @@ impl Harness {
         let prompt_inputs = self.load_effective_prompt_inputs(&options)?;
         let prompt_inputs_hash = effective_prompt_inputs_hash(&prompt_inputs);
         #[cfg(feature = "memory-external-slot")]
-        let engine = self
+        let session_engine = self
             .engine_for_session(
                 &options,
                 &prompt_inputs,
@@ -1105,7 +1116,7 @@ impl Harness {
             )
             .await?;
         #[cfg(not(feature = "memory-external-slot"))]
-        let engine = self
+        let session_engine = self
             .engine_for_session(
                 &options,
                 &prompt_inputs,
@@ -1135,9 +1146,10 @@ impl Harness {
         let session = Session::builder()
             .with_options(options)
             .with_effective_prompt_inputs_hash(prompt_inputs_hash)
+            .with_runtime_prompt_context_hash(session_engine.runtime_prompt_context_hash)
             .with_event_store(event_store)
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
-                engine,
+                engine: session_engine.engine,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),
@@ -1805,10 +1817,7 @@ impl Harness {
                 "workspace_root invalid: {error}"
             )))
         })?;
-        if self
-            .matching_session_options_hash_variant(&canonical, created.options_hash)
-            .is_none()
-        {
+        if !self.conversation_session_options_hash_matches(&canonical, created.options_hash) {
             return Err(HarnessError::PermissionDenied(
                 "conversation session options do not match the existing session".to_owned(),
             ));
@@ -1836,6 +1845,31 @@ impl Harness {
         options: &SessionOptions,
         actual: [u8; 32],
     ) -> Option<SessionOptions> {
+        if session_options_hash(options) == actual
+            || legacy_session_options_hash_with_permission_mode(options) == actual
+        {
+            return Some(options.clone());
+        }
+
+        if legacy_session_options_hash_without_runtime_context(options) == actual {
+            return Some(options.clone());
+        }
+
+        None
+    }
+
+    fn conversation_session_options_hash_matches(
+        &self,
+        options: &SessionOptions,
+        actual: [u8; 32],
+    ) -> bool {
+        if self
+            .matching_session_options_hash_variant(options, actual)
+            .is_some()
+        {
+            return true;
+        }
+
         let mut model_ids = vec![None, options.model_id.clone()];
         let mut protocols = vec![
             None,
@@ -1845,31 +1879,9 @@ impl Harness {
             Some(ModelProtocol::Messages),
             Some(ModelProtocol::GenerateContent),
         ];
-        let mut permission_modes = vec![
-            options.permission_mode,
-            PermissionMode::Default,
-            PermissionMode::Auto,
-            PermissionMode::BypassPermissions,
-            PermissionMode::DontAsk,
-            PermissionMode::AcceptEdits,
-            PermissionMode::Plan,
-        ];
-        let mut interactivity_levels = vec![
-            options.interactivity,
-            InteractivityLevel::FullyInteractive,
-            InteractivityLevel::NoInteractive,
-            InteractivityLevel::DeferredInteractive,
-        ];
-
         for descriptor in self.inner.model.supported_models() {
             model_ids.push(Some(descriptor.model_id));
             protocols.push(Some(descriptor.protocol));
-        }
-        for entry in provider_catalog_entries() {
-            for descriptor in entry.models {
-                model_ids.push(Some(descriptor.model_id));
-                protocols.push(Some(descriptor.protocol));
-            }
         }
         model_ids.sort();
         model_ids.dedup();
@@ -1879,37 +1891,22 @@ impl Harness {
                 deduped_protocols.push(protocol);
             }
         }
-        permission_modes.sort_by_key(|mode| format!("{mode:?}"));
-        permission_modes.dedup();
-        interactivity_levels.sort_by_key(|level| format!("{level:?}"));
-        interactivity_levels.dedup();
 
         for model_id in model_ids {
             for protocol in &deduped_protocols {
-                for permission_mode in &permission_modes {
-                    for interactivity in &interactivity_levels {
-                        let mut variant = options.clone();
-                        variant.model_id = model_id.clone();
-                        variant.protocol = *protocol;
-                        variant.permission_mode = *permission_mode;
-                        variant.interactivity = *interactivity;
-                        if session_options_hash(&variant) == actual
-                            || legacy_session_options_hash_with_permission_mode(&variant) == actual
-                        {
-                            return Some(variant);
-                        }
-                        if legacy_session_options_hash_without_runtime_context(&variant) == actual {
-                            variant.permission_mode = options.permission_mode;
-                            variant.context_compression_trigger_ratio =
-                                options.context_compression_trigger_ratio;
-                            return Some(variant);
-                        }
-                    }
+                let mut variant = options.clone();
+                variant.model_id = model_id.clone();
+                variant.protocol = *protocol;
+                if session_options_hash(&variant) == actual
+                    || legacy_session_options_hash_with_permission_mode(&variant) == actual
+                    || legacy_session_options_hash_without_runtime_context(&variant) == actual
+                {
+                    return true;
                 }
             }
         }
 
-        None
+        false
     }
 
     async fn resume_sdk_session_from_projection(
@@ -1923,11 +1920,11 @@ impl Harness {
         #[cfg(feature = "memory-external-slot")]
         let memory_manager = self.memory_manager_for_session(&options).await?;
         #[cfg(feature = "memory-external-slot")]
-        let engine = self
+        let session_engine = self
             .engine_for_session(&options, &prompt_inputs, memory_manager.clone(), None)
             .await?;
         #[cfg(not(feature = "memory-external-slot"))]
-        let engine = self
+        let session_engine = self
             .engine_for_session(&options, &prompt_inputs, None)
             .await?;
         let event_store: Arc<dyn EventStore> = Arc::new(LifecycleHookEventStore {
@@ -1950,9 +1947,10 @@ impl Harness {
         let session = Session::builder()
             .with_options(options)
             .with_effective_prompt_inputs_hash(prompt_inputs_hash)
+            .with_runtime_prompt_context_hash(session_engine.runtime_prompt_context_hash)
             .with_event_store(event_store)
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
-                engine,
+                engine: session_engine.engine,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),
@@ -2046,7 +2044,7 @@ impl Harness {
         prompt_inputs: &EffectiveSystemPromptInputs,
         memory_manager: Option<Arc<harness_memory::MemoryManager>>,
         pending_session_events: Option<Arc<PendingSessionEvents>>,
-    ) -> Result<Engine, HarnessError> {
+    ) -> Result<SessionEngine, HarnessError> {
         self.activate_plugins(options).await?;
         let context = self.context_engine(options, memory_manager).await?;
         self.engine_for_session_with_context(
@@ -2064,7 +2062,7 @@ impl Harness {
         options: &SessionOptions,
         prompt_inputs: &EffectiveSystemPromptInputs,
         pending_session_events: Option<Arc<PendingSessionEvents>>,
-    ) -> Result<Engine, HarnessError> {
+    ) -> Result<SessionEngine, HarnessError> {
         self.activate_plugins(options).await?;
         let context = self.context_engine(options).await?;
         self.engine_for_session_with_context(
@@ -2082,7 +2080,7 @@ impl Harness {
         prompt_inputs: &EffectiveSystemPromptInputs,
         context: ContextEngine,
         pending_session_events: Option<Arc<PendingSessionEvents>>,
-    ) -> Result<Engine, HarnessError> {
+    ) -> Result<SessionEngine, HarnessError> {
         let mut cap_registry = (*self.inner.cap_registry).clone();
         if let Some(blob_store) = &self.inner.blob_store {
             cap_registry.install::<dyn harness_contracts::BlobReaderCap>(
@@ -2179,6 +2177,7 @@ impl Harness {
             false,
             true,
         );
+        let runtime_prompt_context_hash = runtime_prompt_context_hash(&runtime_context);
 
         let mut builder = Engine::builder()
             .with_event_store(self.conversation_deletion_guarded_event_store())
@@ -2219,7 +2218,10 @@ impl Harness {
             builder = builder.with_observer(Arc::clone(observer));
         }
         builder = builder.with_model_middlewares(self.inner.model_middlewares.clone());
-        builder.build().map_err(Into::into)
+        Ok(SessionEngine {
+            engine: builder.build().map_err(HarnessError::from)?,
+            runtime_prompt_context_hash,
+        })
     }
 
     async fn skill_registry_service(
@@ -2944,15 +2946,15 @@ impl Harness {
         #[cfg(feature = "memory-external-slot")]
         let memory_manager = self.memory_manager_for_session(&options).await?;
         #[cfg(feature = "memory-external-slot")]
-        let engine = self
+        let session_engine = self
             .engine_for_session(&options, &prompt_inputs, memory_manager, None)
             .await?;
         #[cfg(not(feature = "memory-external-slot"))]
-        let engine = self
+        let session_engine = self
             .engine_for_session(&options, &prompt_inputs, None)
             .await?;
         Ok(Arc::new(crate::agents_team::EngineTeamMemberRunner::new(
-            Arc::new(engine),
+            Arc::new(session_engine.engine),
         )))
     }
 
@@ -3630,6 +3632,7 @@ impl Harness {
                 session_id,
                 projection,
                 replay.created_options_hash,
+                replay.created_effective_config_hash,
             )
             .await?;
         session
@@ -3936,11 +3939,13 @@ impl Harness {
             )));
         }
         let created_options_hash = created.options_hash;
+        let created_effective_config_hash = created.effective_config_hash;
         let projection = SessionProjection::replay(envelopes)
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         Ok(McpSessionReplay {
             projection,
             created_options_hash,
+            created_effective_config_hash,
         })
     }
 
@@ -3991,6 +3996,7 @@ impl Harness {
         session_id: harness_contracts::SessionId,
         projection: SessionProjection,
         created_options_hash: [u8; 32],
+        created_effective_config_hash: ConfigHash,
     ) -> Result<Session, McpServerError> {
         let options =
             self.mcp_resume_options_for_hash(tenant_id, session_id, created_options_hash)?;
@@ -4011,15 +4017,25 @@ impl Harness {
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         #[cfg(feature = "memory-external-slot")]
-        let engine = self
+        let session_engine = self
             .engine_for_session(&options, &prompt_inputs, memory_manager.clone(), None)
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         #[cfg(not(feature = "memory-external-slot"))]
-        let engine = self
+        let session_engine = self
             .engine_for_session(&options, &prompt_inputs, None)
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
+        let effective_config_hash = session_effective_config_hash(
+            &options,
+            Some(prompt_inputs_hash),
+            Some(session_engine.runtime_prompt_context_hash),
+        );
+        if effective_config_hash != created_effective_config_hash {
+            return Err(McpServerError::InvalidParams(
+                "session effective config does not match the existing session".to_owned(),
+            ));
+        }
         let event_store: Arc<dyn EventStore> = Arc::new(LifecycleHookEventStore {
             inner: Arc::clone(&self.inner.event_store),
             hooks: HookDispatcher::new(self.inner.hook_registry.snapshot()),
@@ -4040,9 +4056,10 @@ impl Harness {
         let session = Session::builder()
             .with_options(options)
             .with_effective_prompt_inputs_hash(prompt_inputs_hash)
+            .with_runtime_prompt_context_hash(session_engine.runtime_prompt_context_hash)
             .with_event_store(event_store)
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
-                engine,
+                engine: session_engine.engine,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),

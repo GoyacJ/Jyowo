@@ -62,6 +62,7 @@ impl Session {
             self.turn_runner(),
             self.skill_reload_cap(),
             self.effective_prompt_inputs_hash(),
+            self.runtime_prompt_context_hash(),
             child_projection,
         )
         .await

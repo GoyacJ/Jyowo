@@ -311,6 +311,14 @@ pub(crate) fn effective_prompt_inputs_hash(inputs: &EffectiveSystemPromptInputs)
     }))
 }
 
+pub(crate) fn runtime_prompt_context_hash(context: &RuntimePromptContext) -> [u8; 32] {
+    use serde_json::json;
+
+    hash_json(&json!({
+        "rendered": render_runtime_context(context),
+    }))
+}
+
 fn hash_json(value: &serde_json::Value) -> [u8; 32] {
     let bytes = serde_json::to_vec(value).unwrap_or_default();
     blake3::hash(&bytes).into()
@@ -589,9 +597,7 @@ pub(crate) use builtin_memory_render::render_builtin_memory_system_prompt;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_model::{
-        ConversationModelCapability, ModelLifecycle, ModelProtocol, ModelRuntimeSnapshot,
-    };
+    use harness_model::{ModelLifecycle, ModelProtocol, ModelRuntimeSnapshot};
 
     fn sample_runtime_context() -> RuntimePromptContext {
         RuntimePromptContext {

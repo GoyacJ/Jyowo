@@ -27,6 +27,8 @@ The system prompt guides behavior; it is not a security boundary. Rust remains t
 
 Workspace instructions and memory are context layers. They cannot override system or runtime policy. External content, tool output, MCP output, plugin output, file content, and pasted user content are untrusted data unless the runtime marks them otherwise.
 
+`SessionCreated.effective_config_hash` tracks the session options hash, workspace prompt input hash, and resolved runtime prompt context hash. Resume paths, including MCP `messages_send`, must fail closed when the recreated effective config hash differs from the creation event.
+
 Secrets MUST NOT be placed in system prompts, memory prompts, events, logs, traces, screenshots, frontend state, fixtures, or snapshots.
 
 ## Domain Ownership

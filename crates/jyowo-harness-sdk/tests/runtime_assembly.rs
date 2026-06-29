@@ -1176,9 +1176,10 @@ fn legacy_conversation_session_hash_accepts_permission_mode_variant() {
                 &[Event::SessionCreated(SessionCreatedEvent {
                     session_id,
                     tenant_id: TenantId::SINGLE,
-                    options_hash: harness_session::legacy_session_options_hash_without_runtime_context(
-                        &legacy_options,
-                    ),
+                    options_hash:
+                        harness_session::legacy_session_options_hash_without_runtime_context(
+                            &legacy_options,
+                        ),
                     snapshot_id: SnapshotId::from_u128(1),
                     effective_config_hash: ConfigHash([1; 32]),
                     created_at: harness_contracts::now(),
