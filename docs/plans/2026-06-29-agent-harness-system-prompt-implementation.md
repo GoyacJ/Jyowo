@@ -73,8 +73,8 @@ Before each task, re-read that task section in this plan.
 Each task must follow this exact order:
 
 1. Task-start analysis.
-2. Write or update failing tests for every task that changes Rust behavior, frontend copy assertions, or prompt rendering; docs-only tasks run the docs gate instead.
-3. Run the targeted failing test and confirm it fails for the intended reason.
+2. Write or update failing tests for every task that changes Rust behavior, frontend copy assertions, or prompt rendering; for docs-only tasks, identify the exact docs gate and diff checks instead.
+3. For Rust, frontend, and prompt-rendering tasks, run the targeted failing test and confirm it fails for the intended reason; for docs-only tasks, record why no behavioral red phase applies and continue to the documented docs gate.
 4. Implement the task.
 5. Run targeted verification.
 6. Task-completion analysis.
@@ -222,7 +222,7 @@ The implementation must keep prompt inputs separated until the final compiler re
 pub(crate) struct EffectiveSystemPromptInputs {
     pub workspace_sections: Vec<SystemPromptSection>,
     pub workspace_addendum: Option<String>,
-    pub builtin_memory: Option<String>,
+    pub builtin_memory_inner: Option<String>,
     pub session_addendum: Option<String>,
 }
 ```
@@ -232,7 +232,7 @@ Ownership rules:
 ```text
 Workspace bootstrap files -> EffectiveSystemPromptInputs.workspace_sections
 WorkspaceBootstrap.system_prompt_addendum -> EffectiveSystemPromptInputs.workspace_addendum
-Builtin memory prompt -> EffectiveSystemPromptInputs.builtin_memory
+Builtin memory inner MEMORY.md and USER.md block without outer <builtin-memory> -> EffectiveSystemPromptInputs.builtin_memory_inner
 SessionOptions.system_prompt_addendum -> EffectiveSystemPromptInputs.session_addendum
 ```
 
@@ -447,6 +447,7 @@ preserves_fixed_section_order
 wraps_workspace_instruction_source
 wraps_session_addendum
 runtime_context_excludes_sensitive_fields
+escapes_untrusted_section_content
 ```
 
 The tests must assert:
@@ -525,10 +526,10 @@ pub(crate) struct RuntimePromptContext {
     pub model_provider: String,
     pub model_id: String,
     pub model_protocol: String,
-    pub tool_calling: bool,
-    pub builtin_memory: bool,
+    pub tool_calling: String,
+    pub builtin_memory: String,
     pub sandbox: String,
-    pub subagent_tool: bool,
+    pub subagent_tool: String,
 }
 
 pub(crate) struct SystemPromptBuilder {
@@ -539,7 +540,7 @@ pub(crate) struct SystemPromptBuilder {
 pub(crate) struct EffectiveSystemPromptInputs {
     pub workspace_sections: Vec<SystemPromptSection>,
     pub workspace_addendum: Option<String>,
-    pub builtin_memory: Option<String>,
+    pub builtin_memory_inner: Option<String>,
     pub session_addendum: Option<String>,
 }
 ```
@@ -556,6 +557,7 @@ workspace_instruction_section(source, content)
 workspace_addendum_section(content)
 session_addendum_section(content)
 builtin_memory_section(content)
+escape_section_content(content)
 ```
 
 Rendering rules:
@@ -566,11 +568,12 @@ Always includes exact base prompt text.
 Runtime context renders as <runtime-context>.
 Workspace files render as source-specific tags such as <workspace-instructions source="AGENTS.md">.
 Workspace bootstrap addendum renders as <workspace-addendum source="workspace-bootstrap">.
-Builtin memory renders as its existing <builtin-memory> block.
+Builtin memory inner content renders inside exactly one <builtin-memory> block.
 Session addendum renders as <session-addendum>.
 Empty trimmed content is omitted.
 Source attribute must be escaped for &, ", <, and >.
-Content is not HTML-escaped; it is fenced by tags so the model sees original instructions.
+Untrusted section content from workspace files, workspace addendum, builtin memory, session addendum, team addendum, and subagent addendum must be XML-escaped for &, <, and > before rendering inside section tags. The exact base prompt text remains unescaped because it is trusted Rust source.
+Escaping must prevent input such as </workspace-instructions><runtime-context> from closing the current section or opening a fake section.
 ```
 
 - [ ] **Step 5: Export module internally**
@@ -631,6 +634,7 @@ workspace_bootstrap_addendum_renders_as_workspace_addendum
 session_addendum_renders_after_workspace_sections
 missing_optional_bootstrap_file_is_omitted
 required_missing_bootstrap_file_fails_session_creation
+workspace_bootstrap_content_changes_session_hash_input
 ```
 
 Test setup must use real temporary files in the test workspace:
@@ -657,6 +661,8 @@ Workspace bootstrap constraint.
 Session-level constraint.
 ```
 
+The hash test must create two otherwise identical session configurations where only `AGENTS.md` content changes from `Root workspace rule v1.` to `Root workspace rule v2.`. It must assert the session creation hash input, persisted options hash, or effective config hash changes because of the bootstrap content, not merely because the bootstrap file path changed.
+
 - [ ] **Step 3: Run failing tests**
 
 ```bash
@@ -682,7 +688,7 @@ WorkspaceBootstrap.system_prompt_addendum -> <workspace-addendum source="workspa
 existing SessionOptions.system_prompt_addendum -> remains separate and becomes <session-addendum> later
 ```
 
-Do not lose current session hash behavior. Preserve that effect by including a deterministic representation of `EffectiveSystemPromptInputs.workspace_sections` and `EffectiveSystemPromptInputs.workspace_addendum` in the SDK session hash input before session state is created. Do not store these rendered workspace sections in `SessionOptions.system_prompt_addendum`.
+Do not lose current session hash behavior. Preserve that effect by including a deterministic representation of `EffectiveSystemPromptInputs.workspace_sections` and `EffectiveSystemPromptInputs.workspace_addendum` in the SDK session hash input before session state is created. The deterministic representation must include section kind, escaped source, and escaped content. Do not store these rendered workspace sections in `SessionOptions.system_prompt_addendum`.
 
 - [ ] **Step 5: Run targeted tests**
 
@@ -747,6 +753,9 @@ contains "model_protocol:"
 contains "tool_calling:"
 contains "builtin_memory:"
 contains "sandbox:"
+contains "tool_calling: enabled" or "tool_calling: disabled"
+contains "builtin_memory: enabled" or "builtin_memory: disabled"
+contains "subagent_tool: enabled" or "subagent_tool: disabled"
 does not contain "sk-"
 does not contain "api_key"
 does not contain "credential"
@@ -774,7 +783,7 @@ The final call site must be:
 .with_system_prompt(self.session_system_prompt(options, runtime_context, prompt_inputs).await?)
 ```
 
-`prompt_inputs` must be an `EffectiveSystemPromptInputs` value. It must carry workspace sections, workspace addendum, builtin memory, and session addendum as separate fields.
+`prompt_inputs` must be an `EffectiveSystemPromptInputs` value. It must carry workspace sections, workspace addendum, builtin memory inner content, and session addendum as separate fields.
 
 The final model request path must still be:
 
@@ -811,10 +820,10 @@ model_protocol:
   ModelProtocol::Responses -> "responses"
   ModelProtocol::Messages -> "messages"
   ModelProtocol::GenerateContent -> "generate_content"
-tool_calling: model_snapshot.conversation_capability.tool_calling
-builtin_memory: true only when memory-builtin feature is enabled and configured
+tool_calling: "enabled" when model_snapshot.conversation_capability.tool_calling is true, otherwise "disabled"
+builtin_memory: "enabled" only when memory-builtin feature is enabled and configured, otherwise "disabled"
 sandbox: "available" if SDK has sandbox backend, otherwise "unavailable"
-subagent_tool: true only when subagent capability is present and enabled
+subagent_tool: "enabled" only when subagent capability is present and enabled, otherwise "disabled"
 ```
 
 Do not invent new provider capability data.
@@ -869,6 +878,7 @@ USER.md content remains wrapped in <USER.md>
 Both remain inside <builtin-memory>
 <builtin-memory> appears after workspace sections and before session addendum
 Memory overflow events are still emitted when truncation thresholds are exceeded
+The rendered prompt contains exactly one opening <builtin-memory> tag and exactly one closing </builtin-memory> tag
 ```
 
 Use real generated strings in tests. Do not use fake product data.
@@ -876,8 +886,8 @@ Use real generated strings in tests. Do not use fake product data.
 - [ ] **Step 3: Run failing tests**
 
 ```bash
-cargo test -p jyowo-harness-sdk builtin_memory --test runtime_assembly -- --nocapture
-cargo test -p jyowo-harness-sdk system_prompt --lib -- --nocapture
+cargo test -p jyowo-harness-sdk --features testing,memory-builtin builtin_memory --test runtime_assembly -- --nocapture
+cargo test -p jyowo-harness-sdk --features testing,memory-builtin system_prompt --lib -- --nocapture
 ```
 
 Expected before implementation:
@@ -889,6 +899,15 @@ tests fail where memory rendering is still owned by harness.rs or ordering is no
 - [ ] **Step 4: Move rendering ownership**
 
 Move the existing behavior of `render_builtin_memory_system_prompt` from `harness.rs` into `system_prompt.rs`.
+
+The compiler must keep builtin memory ownership unambiguous:
+
+```text
+RenderedBuiltinMemory.inner contains MEMORY.md and USER.md blocks only.
+EffectiveSystemPromptInputs.builtin_memory_inner stores that inner content only.
+SystemPromptBuilder::push_inputs wraps builtin_memory_inner with builtin_memory_section once.
+builtin_memory_section is the only function that emits the outer <builtin-memory> tag.
+```
 
 Preserve:
 
@@ -913,8 +932,8 @@ No memory-builtin-only type may be imported unconditionally in system_prompt.rs 
 - [ ] **Step 5: Run targeted tests**
 
 ```bash
-cargo test -p jyowo-harness-sdk builtin_memory --test runtime_assembly -- --nocapture
-cargo test -p jyowo-harness-sdk system_prompt --lib -- --nocapture
+cargo test -p jyowo-harness-sdk --features testing,memory-builtin builtin_memory --test runtime_assembly -- --nocapture
+cargo test -p jyowo-harness-sdk --features testing,memory-builtin system_prompt --lib -- --nocapture
 ```
 
 Expected:
@@ -969,7 +988,7 @@ Place SDK-facing assertions in `crates/jyowo-harness-sdk/tests/runtime_assembly.
 Use the narrowest existing test command after locating exact test names:
 
 ```bash
-cargo test -p jyowo-harness-sdk --features testing,agents-team team --lib -- --nocapture
+cargo test -p jyowo-harness-sdk --features testing,agents-team team --test runtime_assembly -- --nocapture
 cargo test -p jyowo-harness-engine --features subagent-tool --lib subagent -- --nocapture
 ```
 
@@ -1009,7 +1028,7 @@ Do not move the full SDK prompt compiler into jyowo-harness-engine.
 In engine.rs, duplicate exactly these two small helpers:
   wrap_subagent_addendum(content: &str) -> Option<String>
   wrap_workspace_instruction(filename: &str, content: &str) -> Option<String>
-Both helpers must trim empty content, escape source attributes for &, ", <, and >, and preserve original content inside the tags.
+Both helpers must trim empty content, escape source attributes for &, ", <, and >, and XML-escape content for &, <, and > before placing it inside tags.
 Add tests for both helpers in the existing engine inline subagent test module.
 ```
 
@@ -1164,7 +1183,24 @@ all commands exit 0
 
 For every non-zero command exit, fix failures caused by this branch and re-run the failed command. Do not repair unrelated historical failures without a separate task; document unrelated failures with command output and exact failing target.
 
-- [ ] **Step 3: Run final language and prompt search**
+- [ ] **Step 3: Run final feature-specific prompt test matrix**
+
+Run the feature-specific tests that are not fully covered by the default workspace gate:
+
+```bash
+cargo test -p jyowo-harness-sdk --features testing,memory-builtin builtin_memory --test runtime_assembly -- --nocapture
+cargo test -p jyowo-harness-sdk --features testing,agents-team team --test runtime_assembly -- --nocapture
+cargo test -p jyowo-harness-engine --features subagent-tool --lib subagent -- --nocapture
+```
+
+Expected:
+
+```text
+all feature-specific prompt tests pass
+no test is skipped because the required feature is missing
+```
+
+- [ ] **Step 4: Run final language and prompt search**
 
 ```bash
 rg -n "AI 编程伙伴|编程伙伴|work with your code|local AI project workspace|本地项目工作空间|code in one place|coding partner|编程助手|Local AI workspace|本地 AI 工作区" apps docs/frontend docs/backend crates
@@ -1177,7 +1213,7 @@ No active system prompt, product copy, active frontend doc, or active backend do
 Historical docs/plans may contain old terms only when they are explicitly describing previous behavior.
 ```
 
-- [ ] **Step 4: Review final diff**
+- [ ] **Step 5: Review final diff**
 
 ```bash
 BASE_COMMIT=$(git merge-base main HEAD)
@@ -1199,15 +1235,15 @@ No fake runtime behavior.
 No frontend authority over backend policy.
 ```
 
-- [ ] **Step 5: Task-completion analysis**
+- [ ] **Step 6: Task-completion analysis**
 
 Write the required Task 8 completion analysis.
 
-- [ ] **Step 6: Subagent audit**
+- [ ] **Step 7: Subagent audit**
 
 Run the mandatory subagent audit for Task 8. The audit must review the full branch, not only Task 8 commands.
 
-- [ ] **Step 7: Final commit for gate fixes**
+- [ ] **Step 8: Final commit for gate fixes**
 
 When Task 8 changes files:
 
@@ -1226,7 +1262,7 @@ git commit -m "test: verify agent harness system prompt implementation"
 
 When no files changed, do not create an empty commit.
 
-- [ ] **Step 8: Land on main**
+- [ ] **Step 9: Land on main**
 
 From the original repository path:
 
@@ -1275,5 +1311,6 @@ Every task has task-start analysis, task-completion analysis, subagent audit, an
 pnpm check:docs passes.
 pnpm check:desktop passes.
 pnpm check:rust passes.
+Feature-specific memory-builtin, agents-team, and subagent-tool prompt tests pass.
 Implementation branch is landed on main.
 ```
