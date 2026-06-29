@@ -33,6 +33,104 @@ export const Ready: Story = {
   decorators: [withClient(createTestCommandClient())],
 }
 
+export const WithCapabilityRoutes: Story = {
+  decorators: [
+    withClient(
+      createTestCommandClient({
+        providerCapabilityRouteOptions: {
+          options: [
+            {
+              kind: 'image_generation',
+              configId: 'minimax',
+              providerId: 'minimax',
+              operationId: 'minimax.image_generation',
+              outputArtifact: 'image',
+              execution: 'sync',
+              costRisk: 'high',
+              runtimeSupported: true,
+            },
+            {
+              kind: 'video_generation',
+              configId: 'minimax',
+              providerId: 'minimax',
+              operationId: 'minimax.video_generation',
+              outputArtifact: 'video',
+              execution: 'async_job',
+              costRisk: 'high',
+              runtimeSupported: true,
+            },
+          ],
+        },
+        providerSettingsList: {
+          defaultConfigId: 'openai',
+          configs: [
+            {
+              protocol: 'responses',
+              baseUrl: 'https://api.openai.com',
+              displayName: 'OpenAI',
+              hasApiKey: true,
+              id: 'openai',
+              isDefault: true,
+              modelDescriptor: {
+                protocol: 'responses',
+                conversationCapability: {
+                  inputModalities: ['text', 'image'],
+                  outputModalities: ['text'],
+                  contextWindow: 128000,
+                  maxOutputTokens: 16384,
+                  streaming: true,
+                  toolCalling: true,
+                  reasoning: false,
+                  promptCache: false,
+                  structuredOutput: true,
+                },
+                contextWindow: 128000,
+                displayName: 'GPT-5.4 mini',
+                lifecycle: { kind: 'stable' },
+                maxOutputTokens: 16384,
+                modelId: 'gpt-5.4-mini',
+                runtimeStatus: { kind: 'runnable' },
+              },
+              modelId: 'gpt-5.4-mini',
+              providerId: 'openai',
+            },
+            {
+              protocol: 'chat_completions',
+              baseUrl: 'https://api.minimax.io',
+              displayName: 'Minimax',
+              hasApiKey: true,
+              id: 'minimax',
+              isDefault: false,
+              modelDescriptor: {
+                protocol: 'chat_completions',
+                conversationCapability: {
+                  inputModalities: ['text'],
+                  outputModalities: ['text'],
+                  contextWindow: 1000000,
+                  maxOutputTokens: 8192,
+                  streaming: true,
+                  toolCalling: true,
+                  reasoning: true,
+                  promptCache: false,
+                  structuredOutput: false,
+                },
+                contextWindow: 1000000,
+                displayName: 'MiniMax M3',
+                lifecycle: { kind: 'stable' },
+                maxOutputTokens: 8192,
+                modelId: 'MiniMax-M3',
+                runtimeStatus: { kind: 'runnable' },
+              },
+              modelId: 'MiniMax-M3',
+              providerId: 'minimax',
+            },
+          ],
+        },
+      }),
+    ),
+  ],
+}
+
 function StoryFrame({ children }: { children: ReactNode }) {
   return <main className="w-[760px] bg-background p-6 text-foreground">{children}</main>
 }

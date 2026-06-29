@@ -7,6 +7,8 @@ import { onProjectWorkspaceChanged } from '@/features/workspace/reset-workspace-
 import type {
   CommandClient,
   ConversationModelCapability,
+  ListProviderCapabilityRouteOptionsResponse,
+  ListProviderCapabilityRoutesResponse,
   ListProviderSettingsResponse,
   ModelProviderCatalogResponse,
 } from '@/shared/tauri/commands'
@@ -127,6 +129,400 @@ const localModelDescriptor: ModelCatalogEntry = {
   modelId: 'llama3.1',
   runtimeStatus: { kind: 'runnable' },
 }
+
+async function findCapabilityRoutingSection() {
+  return screen.findByRole('region', { name: 'Capability routing' })
+}
+
+async function waitForCapabilityRoutingLoaded(section: HTMLElement) {
+  await waitFor(() => {
+    expect(within(section).queryByText('Loading capability routes...')).not.toBeInTheDocument()
+  })
+}
+
+const minimaxImageRouteOption = {
+  kind: 'image_generation',
+  configId: 'minimax',
+  providerId: 'minimax',
+  operationId: 'minimax.image_generation',
+  outputArtifact: 'image',
+  execution: 'sync',
+  costRisk: 'high',
+  runtimeSupported: true,
+} as const satisfies ListProviderCapabilityRouteOptionsResponse['options'][number]
+
+const minimaxVideoRouteOption = {
+  kind: 'video_generation',
+  configId: 'minimax',
+  providerId: 'minimax',
+  operationId: 'minimax.video_generation',
+  outputArtifact: 'video',
+  execution: 'async_job',
+  costRisk: 'high',
+  runtimeSupported: true,
+} as const satisfies ListProviderCapabilityRouteOptionsResponse['options'][number]
+
+const minimaxTtsRouteOption = {
+  kind: 'text_to_speech',
+  configId: 'minimax',
+  providerId: 'minimax',
+  operationId: 'minimax.text_to_speech.sync',
+  outputArtifact: 'audio',
+  execution: 'sync',
+  costRisk: 'medium',
+  runtimeSupported: true,
+} as const satisfies ListProviderCapabilityRouteOptionsResponse['options'][number]
+
+const minimaxMusicRouteOption = {
+  kind: 'music_generation',
+  configId: 'minimax',
+  providerId: 'minimax',
+  operationId: 'minimax.music_generation',
+  outputArtifact: 'audio',
+  execution: 'async_job',
+  costRisk: 'high',
+  runtimeSupported: true,
+} as const satisfies ListProviderCapabilityRouteOptionsResponse['options'][number]
+
+const unsupportedImageRouteOption = {
+  ...minimaxImageRouteOption,
+  operationId: 'minimax.image_generation.unsupported',
+  runtimeSupported: false,
+  unavailableReason: 'runtime adapter unavailable',
+} as const satisfies ListProviderCapabilityRouteOptionsResponse['options'][number]
+
+function createCapabilityRoutingClient(
+  overrides: Partial<CommandClient> & {
+    providerCapabilityRouteOptions?: ListProviderCapabilityRouteOptionsResponse
+    providerCapabilityRoutes?: ListProviderCapabilityRoutesResponse
+    providerSettingsList?: ListProviderSettingsResponse
+  } = {},
+) {
+  const {
+    providerCapabilityRouteOptions,
+    providerCapabilityRoutes,
+    providerSettingsList,
+    ...commandOverrides
+  } = overrides
+
+  return {
+    ...createTestCommandClient({
+      providerCapabilityRouteOptions,
+      providerCapabilityRoutes,
+      providerSettingsList,
+    }),
+    ...commandOverrides,
+  }
+}
+
+describe('ProviderSettingsForm capability routing', () => {
+  it('shows capability routing section', async () => {
+    renderProviderSettingsForm(createCapabilityRoutingClient())
+
+    const section = await findCapabilityRoutingSection()
+    await waitForCapabilityRoutingLoaded(section)
+    expect(section).toBeInTheDocument()
+    expect(within(section).getByText('Capability routing')).toBeInTheDocument()
+  })
+
+  it('shows empty state when backend returns no eligible route options', async () => {
+    renderProviderSettingsForm(
+      createCapabilityRoutingClient({
+        providerCapabilityRouteOptions: { options: [] },
+      }),
+    )
+
+    const section = await findCapabilityRoutingSection()
+    await waitForCapabilityRoutingLoaded(section)
+    expect(
+      within(section).getByText(
+        'No eligible capability routes are available for saved provider profiles.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('shows image, video, TTS, and music options returned by listProviderCapabilityRouteOptions', async () => {
+    renderProviderSettingsForm(
+      createCapabilityRoutingClient({
+        providerCapabilityRouteOptions: {
+          options: [
+            minimaxImageRouteOption,
+            minimaxVideoRouteOption,
+            minimaxTtsRouteOption,
+            minimaxMusicRouteOption,
+          ],
+        },
+      }),
+    )
+
+    const section = await findCapabilityRoutingSection()
+    await waitForCapabilityRoutingLoaded(section)
+    expect(within(section).getByText('Image generation')).toBeInTheDocument()
+    expect(within(section).getByText('Video generation')).toBeInTheDocument()
+    expect(within(section).getByText('Text to speech')).toBeInTheDocument()
+    expect(within(section).getByText('Music generation')).toBeInTheDocument()
+    expect(within(section).getByText('minimax.image_generation')).toBeInTheDocument()
+    expect(within(section).getByText('minimax.video_generation')).toBeInTheDocument()
+    expect(within(section).getByText('minimax.text_to_speech.sync')).toBeInTheDocument()
+    expect(within(section).getByText('minimax.music_generation')).toBeInTheDocument()
+  })
+
+  it('does not show backend options with runtimeSupported = false as selectable routes', async () => {
+    renderProviderSettingsForm(
+      createCapabilityRoutingClient({
+        providerCapabilityRouteOptions: {
+          options: [minimaxImageRouteOption, unsupportedImageRouteOption],
+        },
+      }),
+    )
+
+    const section = await findCapabilityRoutingSection()
+    await waitForCapabilityRoutingLoaded(section)
+    expect(within(section).getByText('minimax.image_generation')).toBeInTheDocument()
+    expect(
+      within(section).queryByText('minimax.image_generation.unsupported'),
+    ).not.toBeInTheDocument()
+    expect(within(section).getAllByRole('button', { name: 'Enable route' })).toHaveLength(1)
+  })
+
+  it('does not derive runtime adapter support from provider catalog on the frontend', async () => {
+    const client = createCapabilityRoutingClient({
+      providerCapabilityRouteOptions: { options: [] },
+      listModelProviderCatalog: vi.fn().mockResolvedValue({
+        providers: [
+          {
+            defaultBaseUrl: 'https://api.minimax.io',
+            displayName: 'Minimax',
+            models: [],
+            providerId: 'minimax',
+            runtimeCapability: providerRuntimeCapability,
+            serviceCapabilities: [
+              {
+                operationId: 'minimax.image_generation',
+                category: 'image',
+                inputModalities: ['text'],
+                outputArtifact: 'image',
+                execution: 'sync',
+                requiresPolling: false,
+                permissionSubject: 'network:minimax',
+                costRisk: 'high',
+              },
+            ],
+            sourceUrl: 'https://api.minimax.io',
+            verifiedDate: '2026-06-21',
+          },
+        ],
+      }),
+    })
+
+    renderProviderSettingsForm(client)
+
+    const section = await findCapabilityRoutingSection()
+    await waitForCapabilityRoutingLoaded(section)
+    expect(
+      within(section).getByText(
+        'No eligible capability routes are available for saved provider profiles.',
+      ),
+    ).toBeInTheDocument()
+    expect(within(section).queryByText('minimax.image_generation')).not.toBeInTheDocument()
+  })
+
+  it('does not show speech_to_text unless the backend returns an eligible option for it', async () => {
+    renderProviderSettingsForm(
+      createCapabilityRoutingClient({
+        providerCapabilityRouteOptions: {
+          options: [minimaxImageRouteOption],
+        },
+      }),
+    )
+
+    const section = await findCapabilityRoutingSection()
+    await waitForCapabilityRoutingLoaded(section)
+    expect(within(section).queryByText('Speech to text')).not.toBeInTheDocument()
+  })
+
+  it('saves a route through saveProviderCapabilityRoute', async () => {
+    const saveProviderCapabilityRoute = vi.fn().mockResolvedValue({
+      version: 1,
+      routes: [
+        {
+          kind: 'image_generation',
+          configId: 'minimax',
+          providerId: 'minimax',
+          operationIds: ['minimax.image_generation'],
+          enabled: true,
+        },
+      ],
+      status: 'saved',
+    })
+    renderProviderSettingsForm(
+      createCapabilityRoutingClient({
+        providerCapabilityRouteOptions: { options: [minimaxImageRouteOption] },
+        saveProviderCapabilityRoute,
+      }),
+    )
+
+    const section = await findCapabilityRoutingSection()
+    await waitForCapabilityRoutingLoaded(section)
+    fireEvent.click(within(section).getByRole('button', { name: 'Enable route' }))
+
+    await waitFor(() => expect(saveProviderCapabilityRoute).toHaveBeenCalledTimes(1))
+    expect(saveProviderCapabilityRoute).toHaveBeenCalledWith({
+      route: {
+        kind: 'image_generation',
+        configId: 'minimax',
+        providerId: 'minimax',
+        operationIds: ['minimax.image_generation'],
+        enabled: true,
+      },
+    })
+    expect(await within(section).findByText('Enabled')).toBeInTheDocument()
+  })
+
+  it('deletes a route through deleteProviderCapabilityRoute', async () => {
+    const deleteProviderCapabilityRoute = vi.fn().mockResolvedValue({
+      version: 1,
+      routes: [],
+      status: 'deleted',
+    })
+    renderProviderSettingsForm(
+      createCapabilityRoutingClient({
+        providerCapabilityRouteOptions: { options: [minimaxImageRouteOption] },
+        providerCapabilityRoutes: {
+          version: 1,
+          routes: [
+            {
+              kind: 'image_generation',
+              configId: 'minimax',
+              providerId: 'minimax',
+              operationIds: ['minimax.image_generation'],
+              enabled: true,
+            },
+          ],
+        },
+        deleteProviderCapabilityRoute,
+      }),
+    )
+
+    const section = await findCapabilityRoutingSection()
+    await waitForCapabilityRoutingLoaded(section)
+    fireEvent.click(within(section).getByRole('button', { name: 'Disable route' }))
+
+    await waitFor(() => expect(deleteProviderCapabilityRoute).toHaveBeenCalledTimes(1))
+    expect(deleteProviderCapabilityRoute).toHaveBeenCalledWith({
+      kind: 'image_generation',
+      configId: 'minimax',
+      providerId: 'minimax',
+    })
+  })
+
+  it('shows warning when the default main model lacks tool calling', async () => {
+    const noToolModelDescriptor: ModelCatalogEntry = {
+      ...openAiModelDescriptor,
+      conversationCapability: {
+        ...textConversationCapability,
+        toolCalling: false,
+      },
+    }
+    renderProviderSettingsForm(
+      createCapabilityRoutingClient({
+        providerCapabilityRouteOptions: { options: [minimaxImageRouteOption] },
+        providerSettingsList: {
+          defaultConfigId: 'openai',
+          configs: [
+            {
+              protocol: 'responses',
+              baseUrl: 'https://api.openai.com',
+              displayName: 'OpenAI',
+              hasApiKey: true,
+              id: 'openai',
+              isDefault: true,
+              modelDescriptor: noToolModelDescriptor,
+              modelId: 'gpt-5.4-mini',
+              providerId: 'openai',
+            },
+          ],
+        },
+      }),
+    )
+
+    const section = await findCapabilityRoutingSection()
+    await waitForCapabilityRoutingLoaded(section)
+    expect(
+      within(section).getByText(
+        'The default conversation model does not support tool calling. Service routes stay hidden during conversations until you choose a model that supports tools.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('distinguishes image input from image generation in labels', async () => {
+    renderProviderSettingsForm(
+      createCapabilityRoutingClient({
+        providerCapabilityRouteOptions: { options: [minimaxImageRouteOption] },
+        providerSettingsList: {
+          defaultConfigId: 'openai',
+          configs: [
+            {
+              protocol: 'responses',
+              baseUrl: 'https://api.openai.com',
+              displayName: 'OpenAI',
+              hasApiKey: true,
+              id: 'openai',
+              isDefault: true,
+              modelDescriptor: openAiModelDescriptor,
+              modelId: 'gpt-5.4-mini',
+              providerId: 'openai',
+            },
+          ],
+        },
+      }),
+    )
+
+    const detail = await findProfileDetails('OpenAI')
+    const section = await findCapabilityRoutingSection()
+    await waitForCapabilityRoutingLoaded(section)
+
+    expect(within(detail).getByText('Image input')).toBeInTheDocument()
+    expect(within(section).getByText('Image generation')).toBeInTheDocument()
+  })
+
+  it('handles loading, empty, error, and ready states', async () => {
+    const routeOptionsDeferred = createDeferred<ListProviderCapabilityRouteOptionsResponse>()
+    const routesDeferred = createDeferred<ListProviderCapabilityRoutesResponse>()
+    const client = createCapabilityRoutingClient({
+      listProviderCapabilityRouteOptions: vi.fn(() => routeOptionsDeferred.promise),
+      listProviderCapabilityRoutes: vi.fn(() => routesDeferred.promise),
+    })
+
+    renderProviderSettingsForm(client)
+
+    const section = await findCapabilityRoutingSection()
+    expect(within(section).getByText('Loading capability routes...')).toBeInTheDocument()
+
+    routeOptionsDeferred.resolve({ options: [minimaxImageRouteOption] })
+    routesDeferred.resolve({ version: 1, routes: [] })
+
+    expect(await within(section).findByText('Image generation')).toBeInTheDocument()
+    expect(within(section).queryByText('Loading capability routes...')).not.toBeInTheDocument()
+
+    const errorClient = createCapabilityRoutingClient({
+      listProviderCapabilityRouteOptions: vi.fn().mockRejectedValue({
+        code: 'RUNTIME_OPERATION_FAILED',
+        message: 'route options unavailable',
+      }),
+      listProviderCapabilityRoutes: vi.fn().mockResolvedValue({
+        version: 1,
+        routes: [],
+      }),
+    })
+    renderProviderSettingsForm(errorClient)
+
+    const errorSection = (await screen.findAllByRole('region', { name: 'Capability routing' })).at(
+      -1,
+    )!
+    expect(await within(errorSection).findByText('route options unavailable')).toBeInTheDocument()
+  })
+})
 
 describe('ProviderSettingsForm', () => {
   it('lets Minimax choose domestic or international base URL presets', async () => {
@@ -616,7 +1012,7 @@ describe('ProviderSettingsForm', () => {
 
     expect(within(detail).getByText('Capabilities')).toBeInTheDocument()
     expect(within(detail).getByText('Tools')).toBeInTheDocument()
-    expect(within(detail).getByText('Vision')).toBeInTheDocument()
+    expect(within(detail).getByText('Image input')).toBeInTheDocument()
     expect(within(detail).getByText('Thinking')).toBeInTheDocument()
     expect(within(detail).getByText('Video input')).toBeInTheDocument()
     expect(within(detail).getByText('Prompt cache')).toBeInTheDocument()
