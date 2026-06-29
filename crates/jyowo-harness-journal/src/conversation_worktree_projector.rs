@@ -643,13 +643,22 @@ impl ProjectionState<'_> {
         };
         self.request_tools
             .insert(request_id.clone(), tool_use_id.clone());
+        let auto_resolved = bool_field(&event.payload, "autoResolved").unwrap_or(false);
         if let Some(attempt) = self.tool_attempt_mut(&event.run_id, &tool_use_id) {
-            attempt.status = ToolAttemptStatus::WaitingPermission;
+            attempt.status = if auto_resolved {
+                ToolAttemptStatus::Running
+            } else {
+                ToolAttemptStatus::WaitingPermission
+            };
             attempt.permission = Some(ToolPermissionState {
                 id: format!("permission:{request_id}"),
                 request_id,
                 tool_use_id,
-                status: ToolPermissionStatus::Pending,
+                status: if auto_resolved {
+                    ToolPermissionStatus::Approved
+                } else {
+                    ToolPermissionStatus::Pending
+                },
                 summary: string_field(&event.payload, "reason").map(ui_text),
                 event_refs: vec![event_ref],
             });
@@ -1631,6 +1640,10 @@ fn string_field(value: &Value, field: &str) -> Option<String> {
         .get(field)
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
+}
+
+fn bool_field(value: &Value, field: &str) -> Option<bool> {
+    value.get(field).and_then(Value::as_bool)
 }
 
 fn notice_code_field(value: &Value, field: &str) -> Option<AssistantNoticeCode> {

@@ -23,14 +23,15 @@ use jyowo_desktop_shell::commands::{
     export_support_bundle_with_runtime_state, get_app_info_payload,
     get_artifact_media_preview_with_runtime_state, get_attachment_media_preview_with_runtime_state,
     get_context_snapshot_with_runtime_state, get_conversation_with_runtime_state,
-    get_execution_settings_with_store, get_mcp_server_config_with_runtime_state,
-    get_mcp_server_config_with_store, get_memory_item_with_runtime_state,
-    get_provider_config_api_key_with_runtime_state, get_provider_config_api_key_with_store,
-    get_replay_timeline_with_runtime_state, get_skill_detail_with_runtime_state,
-    get_skill_file_with_runtime_state, harness_healthcheck_payload,
-    import_skill_with_runtime_state, list_activity_payload, list_activity_with_runtime_state,
-    list_artifacts_with_runtime_state, list_conversations_with_runtime_state,
-    list_eval_cases_payload, list_eval_cases_with_runtime_state, list_mcp_diagnostics_with_store,
+    get_execution_settings_for_request, get_execution_settings_with_store,
+    get_mcp_server_config_with_runtime_state, get_mcp_server_config_with_store,
+    get_memory_item_with_runtime_state, get_provider_config_api_key_with_runtime_state,
+    get_provider_config_api_key_with_store, get_replay_timeline_with_runtime_state,
+    get_skill_detail_with_runtime_state, get_skill_file_with_runtime_state,
+    harness_healthcheck_payload, import_skill_with_runtime_state, list_activity_payload,
+    list_activity_with_runtime_state, list_artifacts_with_runtime_state,
+    list_conversations_with_runtime_state, list_eval_cases_payload,
+    list_eval_cases_with_runtime_state, list_mcp_diagnostics_with_store,
     list_mcp_servers_with_runtime_state, list_memory_items_with_runtime_state,
     list_model_provider_catalog_payload, list_provider_settings_with_store,
     list_reference_candidates_with_runtime_state, list_skills_with_runtime_state,
@@ -56,9 +57,9 @@ use jyowo_desktop_shell::commands::{
     DesktopMcpDiagnosticStore, DesktopProviderSettingsStore, DesktopRuntimeState,
     DesktopSkillStore, ExportSupportBundleRequest, GetArtifactMediaPreviewRequest,
     GetAttachmentMediaPreviewRequest, GetContextSnapshotRequest, GetConversationRequest,
-    GetMcpServerConfigRequest, GetMemoryItemRequest, GetProviderConfigApiKeyRequest,
-    GetSkillDetailRequest, GetSkillFileRequest, ImportSkillRequest, ListActivityRequest,
-    ListArtifactsRequest, ListReferenceCandidatesRequest, McpDiagnosticRecord,
+    GetExecutionSettingsRequest, GetMcpServerConfigRequest, GetMemoryItemRequest,
+    GetProviderConfigApiKeyRequest, GetSkillDetailRequest, GetSkillFileRequest, ImportSkillRequest,
+    ListActivityRequest, ListArtifactsRequest, ListReferenceCandidatesRequest, McpDiagnosticRecord,
     McpDiagnosticSeverity, McpDiagnosticStore, McpHeaderEnvRecord, McpNameValueRecord,
     McpServerConfigRecord, McpServerStore, McpServerTransportConfig,
     PageConversationTimelineRequest, PageConversationWorktreeDirection,
@@ -71,6 +72,7 @@ use jyowo_desktop_shell::commands::{
     SkillStoreRecord, StartRunRequest, SubscribeConversationEventsRequest,
     UnsubscribeConversationEventsRequest, UpdateMemoryItemRequest, ValidateProviderSettingsRequest,
 };
+use jyowo_desktop_shell::project_registry::ProjectRegistry;
 use jyowo_harness_sdk::builtin::{DefaultRedactor, FileBlobStore};
 use jyowo_harness_sdk::ext::{
     now, ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, ArtifactUpdatedEvent, BlobMeta,
@@ -101,7 +103,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 static WORKSPACE_ROOT_ENV_LOCK: Mutex<()> = Mutex::new(());
+static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
 const WORKSPACE_ROOT_ENV: &str = "JYOWO_WORKSPACE_ROOT";
+const HOME_ENV: &str = "HOME";
 
 #[test]
 fn get_app_info_payload_returns_jyowo_identity() {
@@ -2527,6 +2531,7 @@ async fn list_conversations_with_runtime_state_returns_startable_conversation_id
             attachments: None,
             context_references: None,
             conversation_id,
+            permission_mode: None,
             prompt: "Continue implementation".to_owned(),
         },
         &state,
@@ -2767,6 +2772,7 @@ async fn delete_conversation_with_runtime_state_removes_session_from_runtime_lis
             attachments: None,
             context_references: None,
             conversation_id: conversation_id.clone(),
+            permission_mode: None,
             prompt: "Create a conversation".to_owned(),
         },
         &state,
@@ -2808,6 +2814,7 @@ async fn delete_conversation_with_runtime_state_removes_session_from_runtime_lis
             attachments: None,
             context_references: None,
             conversation_id,
+            permission_mode: None,
             prompt: "Do not recreate a deleted conversation".to_owned(),
         },
         &state,
@@ -2835,6 +2842,7 @@ async fn get_and_delete_conversation_with_runtime_state_survive_runtime_option_c
             attachments: None,
             context_references: None,
             conversation_id: conversation_id.clone(),
+            permission_mode: None,
             prompt: "Create a conversation before changing runtime options".to_owned(),
         },
         &state,
@@ -2927,6 +2935,7 @@ async fn get_conversation_with_runtime_state_returns_runtime_messages() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Tell me status".to_owned(),
         },
         &state,
@@ -2980,6 +2989,7 @@ async fn list_conversations_with_runtime_state_projects_runtime_summary() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Tell me status\nwith details".to_owned(),
         },
         &state,
@@ -3035,6 +3045,7 @@ async fn conversation_payloads_with_runtime_state_redact_private_paths() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Read /Users/goya/.ssh/config".to_owned(),
         },
         &state,
@@ -3105,6 +3116,7 @@ async fn list_artifacts_with_runtime_state_ignores_assistant_outputs() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Create an artifact".to_owned(),
         },
         &state,
@@ -3168,6 +3180,7 @@ async fn list_artifacts_with_runtime_state_projects_artifact_events() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Create an artifact".to_owned(),
         },
         &state,
@@ -4827,6 +4840,7 @@ fn start_run_payload_validates_prompt_and_requires_runtime() {
             path: "apps/desktop".to_owned(),
         }]),
         conversation_id: SessionId::new().to_string(),
+        permission_mode: None,
         prompt: "Continue implementation".to_owned(),
     })
     .unwrap_err();
@@ -4838,6 +4852,7 @@ fn start_run_payload_validates_prompt_and_requires_runtime() {
         attachments: None,
         context_references: None,
         conversation_id: SessionId::new().to_string(),
+        permission_mode: None,
         prompt: String::new(),
     })
     .unwrap_err();
@@ -4849,6 +4864,7 @@ fn start_run_payload_validates_prompt_and_requires_runtime() {
         attachments: None,
         context_references: None,
         conversation_id: SessionId::new().to_string(),
+        permission_mode: None,
         prompt: "Continue implementation".to_owned(),
     })
     .unwrap_err();
@@ -4989,6 +5005,7 @@ async fn start_run_with_runtime_state_rejects_untrusted_attachment_id_before_rec
             }]),
             context_references: None,
             conversation_id: SessionId::new().to_string(),
+            permission_mode: None,
             prompt: "Use this attachment".to_owned(),
         },
         &state,
@@ -5110,6 +5127,7 @@ async fn start_run_with_runtime_state_accepts_structured_context_and_attachments
                 path: "docs/notes.txt".to_owned(),
             }]),
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Run the relevant checks".to_owned(),
         },
         &state,
@@ -5140,6 +5158,7 @@ async fn start_run_with_runtime_state_rejects_workspace_file_reference_outside_w
                 path: external_file.to_string_lossy().to_string(),
             }]),
             conversation_id: SessionId::new().to_string(),
+            permission_mode: None,
             prompt: "Use this file".to_owned(),
         },
         &state,
@@ -5172,6 +5191,7 @@ async fn start_run_with_runtime_state_returns_real_run_id_for_conversation() {
                 path: "apps/desktop/src/main.tsx".to_owned(),
             }]),
             conversation_id: conversation_id.clone(),
+            permission_mode: None,
             prompt: "Continue implementation".to_owned(),
         },
         &state,
@@ -5236,6 +5256,7 @@ async fn subscribe_conversation_events_emits_live_batches_and_unsubscribes() {
             client_message_id: Some("00000000-0000-4000-8000-000000000001".to_owned()),
             context_references: None,
             conversation_id: conversation_id.clone(),
+            permission_mode: None,
             prompt: "Continue implementation".to_owned(),
         },
         &state,
@@ -5363,6 +5384,7 @@ async fn subscribe_conversation_events_accepts_cursor_after_replayed_permission_
             client_message_id: Some("00000000-0000-4000-8000-000000000001".to_owned()),
             context_references: None,
             conversation_id: conversation_id.clone(),
+            permission_mode: None,
             prompt: "Run a command".to_owned(),
         },
         &state,
@@ -5458,6 +5480,7 @@ async fn start_run_with_runtime_state_exposes_runtime_permission_request_to_acti
                 attachments: None,
                 context_references: None,
                 conversation_id: conversation_id.clone(),
+                permission_mode: None,
                 prompt: "Run a command".to_owned(),
             },
             &state,
@@ -5601,6 +5624,7 @@ async fn cancel_run_with_runtime_state_cancels_active_run_through_sdk() {
                 attachments: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
+                permission_mode: None,
                 prompt: "Run a cancellable command".to_owned(),
             },
             &state,
@@ -5722,7 +5746,24 @@ async fn runtime_state_async_uses_explicit_workspace_root() {
 }
 
 #[test]
-fn execution_settings_persist_permission_mode_for_session_options() {
+fn start_run_request_deserializes_permission_mode_override() {
+    let conversation_id = SessionId::new().to_string();
+    let request: StartRunRequest = serde_json::from_value(json!({
+        "conversationId": conversation_id,
+        "prompt": "Run checks",
+        "permissionMode": "bypass_permissions",
+    }))
+    .expect("start_run request should deserialize");
+
+    assert_eq!(
+        request.permission_mode,
+        Some(PermissionMode::BypassPermissions)
+    );
+    assert_eq!(request.conversation_id, conversation_id);
+}
+
+#[test]
+fn execution_settings_save_default_without_changing_session_options() {
     let workspace = unique_workspace("execution-settings-session-options");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
     let state = DesktopRuntimeState::with_workspace_for_test(workspace)
@@ -5741,7 +5782,7 @@ fn execution_settings_persist_permission_mode_for_session_options() {
 
     let options = state.conversation_session_options(SessionId::new());
 
-    assert_eq!(options.permission_mode, PermissionMode::BypassPermissions);
+    assert_eq!(options.permission_mode, PermissionMode::Default);
     assert_eq!(options.context_compression_trigger_ratio, 0.72);
 }
 
@@ -5789,10 +5830,117 @@ fn get_execution_settings_reads_legacy_permission_only_record() {
     ))
     .expect("legacy execution settings should load");
 
-    assert_eq!(settings.permission_mode, PermissionMode::Auto);
+    let expected_permission_mode = if cfg!(feature = "auto-mode") {
+        PermissionMode::Auto
+    } else {
+        PermissionMode::Default
+    };
+    assert_eq!(settings.permission_mode, expected_permission_mode);
     assert!(!settings.agent_capabilities.subagents_enabled);
     assert!(!settings.agent_capabilities.agent_teams_enabled);
     assert!(!settings.agent_capabilities.background_agents_enabled);
+}
+
+#[test]
+fn get_execution_settings_normalizes_unavailable_auto_default() {
+    let workspace = unique_workspace("execution-settings-stale-auto");
+    let settings_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&settings_dir).expect("settings directory should exist");
+    std::fs::write(
+        settings_dir.join("execution-settings.json"),
+        br#"{"permission_mode":"auto"}"#,
+    )
+    .expect("stale settings file should be written");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+
+    let settings = get_execution_settings_with_store(&DesktopExecutionSettingsStore::new(
+        state.workspace_root().to_path_buf(),
+    ))
+    .expect("execution settings should load");
+
+    let expected_permission_mode = if cfg!(feature = "auto-mode") {
+        PermissionMode::Auto
+    } else {
+        PermissionMode::Default
+    };
+    assert_eq!(settings.permission_mode, expected_permission_mode);
+    assert_eq!(settings.auto_mode_available, cfg!(feature = "auto-mode"));
+}
+
+#[test]
+fn get_execution_settings_for_request_reads_registered_workspace_instead_of_active_store() {
+    let _lock = HOME_ENV_LOCK.lock().unwrap();
+    let home = unique_workspace("execution-settings-project-registry-home");
+    let active_workspace = unique_workspace("execution-settings-active-workspace");
+    let requested_workspace = unique_workspace("execution-settings-requested-workspace");
+    let unregistered_workspace = unique_workspace("execution-settings-unregistered-workspace");
+    std::fs::create_dir_all(&home).expect("home directory should exist");
+    std::fs::create_dir_all(&active_workspace).expect("active workspace should exist");
+    std::fs::create_dir_all(&requested_workspace).expect("requested workspace should exist");
+    std::fs::create_dir_all(&unregistered_workspace).expect("unregistered workspace should exist");
+    let _home = EnvVarGuard::set(HOME_ENV, home.as_os_str());
+    let active_workspace = active_workspace.canonicalize().unwrap();
+    let requested_workspace = requested_workspace.canonicalize().unwrap();
+    let unregistered_workspace = unregistered_workspace.canonicalize().unwrap();
+    let registry = ProjectRegistry::load().expect("project registry should load from test HOME");
+    registry
+        .upsert_and_activate(&requested_workspace)
+        .expect("requested workspace should be registered");
+    registry
+        .upsert_and_activate(&active_workspace)
+        .expect("active workspace should be registered");
+    let active_store = DesktopExecutionSettingsStore::new(active_workspace);
+    set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::BypassPermissions,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        },
+        &active_store,
+    )
+    .expect("active workspace settings should save");
+
+    let active_settings = get_execution_settings_for_request(
+        GetExecutionSettingsRequest {
+            workspace_path: None,
+        },
+        &active_store,
+        &registry,
+    )
+    .expect("active workspace settings should load");
+    let requested_settings = get_execution_settings_for_request(
+        GetExecutionSettingsRequest {
+            workspace_path: Some(requested_workspace.to_string_lossy().into_owned()),
+        },
+        &active_store,
+        &registry,
+    )
+    .expect("requested workspace settings should load");
+    let unregistered_error = get_execution_settings_for_request(
+        GetExecutionSettingsRequest {
+            workspace_path: Some(unregistered_workspace.to_string_lossy().into_owned()),
+        },
+        &active_store,
+        &registry,
+    )
+    .expect_err("unregistered workspace should be rejected");
+
+    assert_eq!(
+        active_settings.permission_mode,
+        PermissionMode::BypassPermissions
+    );
+    assert_eq!(requested_settings.permission_mode, PermissionMode::Default);
+    assert_eq!(unregistered_error.code, "INVALID_PAYLOAD");
+    assert!(unregistered_error.message.contains("not registered"));
+    assert!(
+        !unregistered_error
+            .message
+            .contains(&unregistered_workspace.to_string_lossy().to_string()),
+        "unregistered workspace errors must not echo local paths"
+    );
 }
 
 #[test]
@@ -5871,6 +6019,39 @@ fn set_execution_settings_serializes_agent_capability_fields() {
 }
 
 #[test]
+fn set_execution_settings_rejects_invalid_context_compression_trigger_ratio() {
+    let workspace = unique_workspace("execution-settings-invalid-context-ratio");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let store = DesktopExecutionSettingsStore::new(workspace);
+
+    let low_error = set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            context_compression_trigger_ratio: 0.49,
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        },
+        &store,
+    )
+    .unwrap_err();
+    assert_eq!(low_error.code, "INVALID_PAYLOAD");
+
+    let high_error = set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            context_compression_trigger_ratio: 0.96,
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        },
+        &store,
+    )
+    .unwrap_err();
+    assert_eq!(high_error.code, "INVALID_PAYLOAD");
+}
+
+#[test]
 fn invalid_execution_settings_file_resets_agent_capabilities() {
     let workspace = unique_workspace("execution-settings-invalid-reset");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
@@ -5905,36 +6086,26 @@ fn invalid_execution_settings_file_resets_agent_capabilities() {
 }
 
 #[test]
-fn set_execution_settings_rejects_invalid_context_compression_trigger_ratio() {
-    let workspace = unique_workspace("execution-settings-invalid-context-ratio");
+fn set_execution_settings_rejects_auto_without_runtime_support() {
+    let workspace = unique_workspace("execution-settings-auto-unavailable");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
-    let store = DesktopExecutionSettingsStore::new(workspace);
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
 
-    let low_error = set_execution_settings_with_store(
+    let error = set_execution_settings_with_store(
         SetExecutionSettingsRequest {
-            permission_mode: PermissionMode::Default,
-            context_compression_trigger_ratio: 0.49,
+            permission_mode: PermissionMode::Auto,
+            context_compression_trigger_ratio: 0.8,
             subagents_enabled: false,
             agent_teams_enabled: false,
             background_agents_enabled: false,
         },
-        &store,
+        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
     )
-    .unwrap_err();
-    assert_eq!(low_error.code, "INVALID_PAYLOAD");
+    .expect_err("auto mode should be rejected without runtime support");
 
-    let high_error = set_execution_settings_with_store(
-        SetExecutionSettingsRequest {
-            permission_mode: PermissionMode::Default,
-            context_compression_trigger_ratio: 0.96,
-            subagents_enabled: false,
-            agent_teams_enabled: false,
-            background_agents_enabled: false,
-        },
-        &store,
-    )
-    .unwrap_err();
-    assert_eq!(high_error.code, "INVALID_PAYLOAD");
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("unavailable"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -6176,6 +6347,7 @@ async fn list_activity_with_runtime_state_reads_journaled_permission_requests_by
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Run a command".to_owned(),
         },
         &state,
@@ -6219,6 +6391,150 @@ async fn list_activity_with_runtime_state_reads_journaled_permission_requests_by
     )
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn start_run_permission_mode_override_wins_over_saved_default() {
+    let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::ToolUseComplete {
+                id: ToolUseId::new(),
+                name: "NeedsPermission".to_owned(),
+                input: json!({ "command": "printf override-default" }),
+            },
+        },
+        ModelStreamEvent::MessageStop,
+    ])])
+    .await;
+    set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::BypassPermissions,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        },
+        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+    )
+    .expect("execution settings should save");
+    let session_id = SessionId::new();
+
+    let started = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            prompt: "Run a command".to_owned(),
+            permission_mode: Some(PermissionMode::Default),
+        },
+        &state,
+    )
+    .await
+    .expect("start_run should start a conversation run");
+    let pending = wait_for_pending_permission_for_session(&state, session_id).await;
+
+    assert_eq!(
+        pending.context.run_id,
+        Some(RunId::parse(&started.run_id).unwrap())
+    );
+    resolve_permission_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id: session_id.to_string(),
+            decision: PermissionDecision::Deny,
+            request_id: pending.request.request_id.to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn start_run_rejects_auto_without_runtime_support() {
+    let state = runtime_state_with_harness().await;
+    let error = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            context_references: None,
+            conversation_id: SessionId::new().to_string(),
+            prompt: "Run a command".to_owned(),
+            permission_mode: Some(PermissionMode::Auto),
+        },
+        &state,
+    )
+    .await
+    .expect_err("auto mode should be rejected without runtime support");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("auto"));
+    assert!(error.message.contains("not available"));
+}
+
+#[tokio::test]
+async fn start_run_bypass_permission_mode_finishes_without_pending_permission() {
+    let state = runtime_state_with_scripted_model(vec![ScriptedResponse::Stream(vec![
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::ToolUseComplete {
+                id: ToolUseId::new(),
+                name: "NeedsPermission".to_owned(),
+                input: json!({ "command": "printf bypass" }),
+            },
+        },
+        ModelStreamEvent::MessageStop,
+    ])])
+    .await;
+    let session_id = SessionId::new();
+
+    let started = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            prompt: "Run a command".to_owned(),
+            permission_mode: Some(PermissionMode::BypassPermissions),
+        },
+        &state,
+    )
+    .await
+    .expect("start_run should start a conversation run");
+    let payload = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let payload = list_activity_with_runtime_state(
+                ListActivityRequest {
+                    conversation_id: Some(session_id.to_string()),
+                    run_id: Some(started.run_id.clone()),
+                },
+                &state,
+            )
+            .await
+            .unwrap();
+            if payload
+                .events
+                .iter()
+                .any(|event| event.event_type == "run.ended")
+            {
+                break payload;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("bypass run should finish instead of waiting for permission");
+
+    assert!(state.pending_permission_requests().is_empty());
+    assert!(payload
+        .events
+        .iter()
+        .any(|event| event.event_type == "permission.requested"));
+    assert!(payload
+        .events
+        .iter()
+        .any(|event| event.event_type == "permission.resolved"));
 }
 
 #[tokio::test]
@@ -6277,6 +6593,7 @@ async fn list_activity_with_runtime_state_reads_durable_run_events() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Complete the task".to_owned(),
         },
         &state,
@@ -6301,10 +6618,12 @@ async fn list_activity_with_runtime_state_reads_durable_run_events() {
             .iter()
             .any(|event| event.event_type == "assistant.completed")
         {
-            assert!(payload
+            let run_started = payload
                 .events
                 .iter()
-                .any(|event| event.event_type == "run.started"));
+                .find(|event| event.event_type == "run.started")
+                .expect("activity should include run started event");
+            assert_eq!(run_started.payload["permissionMode"], json!("default"));
             let run_ended = payload
                 .events
                 .iter()
@@ -6351,6 +6670,7 @@ async fn list_activity_with_runtime_state_does_not_expose_thinking_deltas() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Think privately".to_owned(),
         },
         &state,
@@ -6420,6 +6740,7 @@ async fn get_replay_timeline_with_runtime_state_does_not_expose_raw_thinking_del
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Think privately".to_owned(),
         },
         &state,
@@ -6486,6 +6807,7 @@ async fn list_activity_with_runtime_state_redacts_private_paths_from_assistant_d
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Summarize path".to_owned(),
         },
         &state,
@@ -7167,6 +7489,72 @@ async fn list_activity_with_runtime_state_filters_tool_and_permission_events_by_
 }
 
 #[tokio::test]
+async fn list_activity_with_runtime_state_includes_permission_auto_resolved() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let tool_use_id = ToolUseId::new();
+    let request_id = RequestId::new();
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+                Event::PermissionRequested(PermissionRequestedEvent {
+                    at: now(),
+                    causation_id: EventId::new(),
+                    fingerprint: None,
+                    interactivity: InteractivityLevel::FullyInteractive,
+                    auto_resolved: true,
+                    presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+                    request_id,
+                    run_id,
+                    scope_hint: DecisionScope::ToolName("shell".to_owned()),
+                    session_id,
+                    severity: Severity::Low,
+                    subject: PermissionSubject::CommandExec {
+                        argv: vec!["pwd".to_owned()],
+                        command: "pwd".to_owned(),
+                        cwd: None,
+                        fingerprint: None,
+                    },
+                    tenant_id: TenantId::SINGLE,
+                    tool_name: "shell".to_owned(),
+                    tool_use_id,
+                }),
+            ],
+        )
+        .await
+        .expect("activity events should append");
+
+    let payload = list_activity_with_runtime_state(
+        ListActivityRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: None,
+        },
+        &state,
+    )
+    .await
+    .expect("activity should load");
+    let permission_event = payload
+        .events
+        .iter()
+        .find(|event| event.event_type == "permission.requested")
+        .expect("permission request should be projected");
+
+    assert_eq!(permission_event.payload["autoResolved"], true);
+    assert_eq!(
+        permission_event.payload["reason"],
+        "已按本次授权模式自动允许。"
+    );
+}
+
+#[tokio::test]
 async fn list_activity_with_runtime_state_redacts_permission_decision_scope_values() {
     let state = runtime_state_with_harness().await;
     let session_id = SessionId::new();
@@ -7189,6 +7577,7 @@ async fn list_activity_with_runtime_state_redacts_permission_decision_scope_valu
                     causation_id: EventId::new(),
                     fingerprint: None,
                     interactivity: InteractivityLevel::FullyInteractive,
+                    auto_resolved: false,
                     presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                     request_id,
                     run_id,
@@ -7243,6 +7632,7 @@ async fn list_activity_with_runtime_state_redacts_file_permission_targets() {
                 causation_id: EventId::new(),
                 fingerprint: None,
                 interactivity: InteractivityLevel::FullyInteractive,
+                auto_resolved: false,
                 presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                 request_id,
                 run_id,
@@ -7335,6 +7725,7 @@ async fn get_conversation_with_runtime_state_includes_safe_client_message_id() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Complete the task".to_owned(),
         },
         &state,
@@ -7474,6 +7865,7 @@ async fn public_runtime_event_views_redact_unsafe_tool_display_labels() {
                     fingerprint: None,
                     presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                     interactivity: InteractivityLevel::FullyInteractive,
+                    auto_resolved: false,
                     causation_id: EventId::new(),
                     at: now(),
                 }),
@@ -7601,6 +7993,7 @@ async fn page_conversation_worktree_with_runtime_state_returns_safe_turn_tree() 
                     fingerprint: None,
                     presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                     interactivity: InteractivityLevel::FullyInteractive,
+                    auto_resolved: false,
                     causation_id: EventId::new(),
                     at: now(),
                 }),
@@ -7764,6 +8157,7 @@ async fn list_activity_with_runtime_state_withholds_failed_run_end_reason() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Trigger a provider failure".to_owned(),
         },
         &state,
@@ -7928,6 +8322,7 @@ async fn list_activity_with_runtime_state_redacts_pending_permission_display_tex
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Run a command".to_owned(),
         },
         &state,
@@ -7988,6 +8383,7 @@ async fn get_replay_timeline_with_runtime_state_reads_redacted_journal_events_wi
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Run a command".to_owned(),
         },
         &state,
@@ -8009,10 +8405,12 @@ async fn get_replay_timeline_with_runtime_state_reads_redacted_journal_events_wi
     let serialized = serde_json::to_string(&payload).unwrap();
 
     assert!(payload.replayed);
-    assert!(payload
+    let run_started = payload
         .events
         .iter()
-        .any(|event| event.event_type == "run.started"));
+        .find(|event| event.event_type == "run.started")
+        .expect("replay should include run started event");
+    assert_eq!(run_started.payload["permissionMode"], json!("default"));
     assert!(payload
         .events
         .iter()
@@ -8056,6 +8454,7 @@ async fn get_replay_timeline_with_runtime_state_reads_beyond_first_event_page() 
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Write many deltas".to_owned(),
         },
         &state,
@@ -8141,6 +8540,7 @@ async fn export_support_bundle_with_runtime_state_writes_redacted_files_under_wo
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Run a command".to_owned(),
         },
         &state,
@@ -8650,6 +9050,7 @@ fn test_run_started_event(session_id: SessionId, run_id: RunId) -> RunStartedEve
             metadata: json!({}),
         },
         parent_run_id: None,
+        permission_mode: PermissionMode::Default,
         run_id,
         session_id,
         snapshot_id: SnapshotId::new(),
@@ -8692,6 +9093,7 @@ fn test_permission_requested_event(
         causation_id: EventId::new(),
         fingerprint: None,
         interactivity: InteractivityLevel::FullyInteractive,
+        auto_resolved: false,
         presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
         request_id,
         run_id,
@@ -9158,6 +9560,7 @@ async fn get_context_snapshot_with_runtime_state_does_not_project_assistant_repl
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Create a context artifact".to_owned(),
         },
         &state,
@@ -9238,6 +9641,7 @@ async fn get_context_snapshot_with_runtime_state_exposes_pending_decisions() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            permission_mode: None,
             prompt: "Run a command".to_owned(),
         },
         &state,

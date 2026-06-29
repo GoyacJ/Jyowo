@@ -129,7 +129,7 @@ const mockListActivity: ListActivityResponse = {
     {
       id: 'evt-001',
       conversationSequence: 1,
-      payload: { sessionId: 'conversation-001' },
+      payload: { permissionMode: 'default', sessionId: 'conversation-001' },
       runId: 'run-001',
       sequence: 1,
       source: 'engine',
@@ -1151,7 +1151,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       return options.contextSnapshot ?? mockContextSnapshot
     },
-    async getExecutionSettings() {
+    async getExecutionSettings(_request) {
       await wait(options.delayMs)
       return options.executionSettings ?? mockExecutionSettings
     },
@@ -1597,7 +1597,10 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       emitMockConversationBatch(mockEventState, activeSubscription, [
         mockTimelineEvent(
           'run.started',
-          { sessionId: request.conversationId },
+          {
+            permissionMode: request.permissionMode ?? 'default',
+            sessionId: request.conversationId,
+          },
           { conversationSequence: 1, id: 'evt-mock-run-started', sequence: 1 },
         ),
         mockTimelineEvent(
@@ -1658,6 +1661,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
         mockTimelineEvent(
           'permission.requested',
           {
+            autoResolved: false,
             decisionScope: 'this run',
             exposure: 'workspace',
             operation: 'Run local verification',

@@ -126,6 +126,14 @@ const uuidV4Schema = z
 const toolInputWithheldMessage = 'Input withheld from conversation timeline.'
 const toolErrorWithheldMessage = 'Tool error withheld from conversation timeline.'
 const toolDisplayTextSchema = permissionDisplayTextSchema
+const permissionModeSchema = z.enum([
+  'default',
+  'plan',
+  'accept_edits',
+  'bypass_permissions',
+  'dont_ask',
+  'auto',
+])
 const mimeTypeMetadataSchema = z
   .string()
   .trim()
@@ -154,6 +162,7 @@ const toolDiffSchema = z
   .strict()
 const runStartedPayloadSchema = z
   .object({
+    permissionMode: permissionModeSchema.optional(),
     sessionId: z.string().min(1),
   })
   .strict()
@@ -254,6 +263,7 @@ const toolFailedPayloadSchema = z
   .strict()
 const permissionRequestedPayloadSchema = z
   .object({
+    autoResolved: z.boolean().optional().default(false),
     decisionScope: permissionDisplayTextSchema,
     diffSummary: permissionDisplayTextSchema.optional(),
     exposure: permissionDisplayTextSchema,

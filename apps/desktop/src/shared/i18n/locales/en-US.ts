@@ -149,6 +149,23 @@ export const enUS = {
       placeholder: 'Ask Jyowo anything about this project...',
       attachFile: 'Attach file',
       referenceObject: 'Reference project object',
+      permissionMode: {
+        ariaLabel: 'Permission mode: {{mode}}',
+        tooltip: 'Permission mode',
+        default: {
+          label: 'Request approval',
+          description: 'Ask before actions that require risk confirmation.',
+        },
+        auto: {
+          label: 'Auto approve',
+          description: 'Automatically approve low-risk requests when desktop support is available.',
+          unavailable: 'Auto approval is unavailable in this desktop build.',
+        },
+        bypass: {
+          label: 'Full access',
+          description: 'Do not ask for permission confirmation for this run.',
+        },
+      },
       removeReference: 'Remove reference {{label}}',
       removeAttachment: 'Remove attachment {{label}}',
       searchReferences: 'Search references',
@@ -227,12 +244,12 @@ export const enUS = {
       enUS: 'English',
     },
     execution: {
-      title: 'Execution',
-      description: 'Control how permission prompts are handled for local runs.',
-      loading: 'Loading execution settings...',
+      title: 'Default Permission Mode',
+      description: 'Choose the default authorization mode used by new composer runs.',
+      loading: 'Loading default permission mode...',
       saving: 'Saving...',
-      save: 'Save execution settings',
-      saved: 'Execution settings saved.',
+      save: 'Save default mode',
+      saved: 'Default permission mode saved.',
       permissionMode: {
         label: 'Permission mode',
       },

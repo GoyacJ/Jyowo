@@ -8,8 +8,8 @@ use harness_contracts::{Decision, ExecFingerprint, PermissionError, PermissionSu
 use parking_lot::Mutex;
 
 use crate::{
-    canonical_permission_fingerprint, PermissionBroker, PermissionContext, PermissionRequest,
-    PersistedDecision,
+    canonical_permission_fingerprint, hard_policy_denies_from_context, PermissionBroker,
+    PermissionContext, PermissionRequest, PersistedDecision,
 };
 
 const DEFAULT_DEDUP_WINDOW: Duration = Duration::from_secs(30);
@@ -90,6 +90,10 @@ impl Default for DedupGateConfig {
 #[async_trait]
 impl PermissionBroker for DedupGate {
     async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
+        if self.hard_policy_denies(&request, &ctx).await {
+            return Decision::DenyOnce;
+        }
+
         if let Some(hit) = self.lookup(&request) {
             return hit.decision;
         }
@@ -110,6 +114,15 @@ impl PermissionBroker for DedupGate {
         }
 
         decision
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        request: &PermissionRequest,
+        ctx: &PermissionContext,
+    ) -> bool {
+        self.inner.hard_policy_denies(request, ctx).await
+            || hard_policy_denies_from_context(request, ctx)
     }
 
     async fn persist(&self, decision: PersistedDecision) -> Result<(), PermissionError> {

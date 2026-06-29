@@ -6,11 +6,11 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_contracts::{
     Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionError, PermissionMode,
-    PermissionSubject, RequestId, SessionId, Severity, TenantId, ToolUseId,
+    PermissionSubject, RequestId, RuleSource, SessionId, Severity, TenantId, ToolUseId,
 };
 use harness_permission::{
     DedupGate, DedupGateConfig, PermissionBroker, PermissionContext, PermissionRequest,
-    PersistedDecision, RuleSnapshot,
+    PermissionRule, PersistedDecision, RuleAction, RuleSnapshot,
 };
 use serde_json::json;
 
@@ -45,6 +45,68 @@ async fn dedup_gate_reuses_safe_prior_decision_inside_window() {
         .lookup(&second)
         .expect("second request should be cached");
     assert_eq!(hit.original_request_id, first.request_id);
+}
+
+#[tokio::test]
+async fn dedup_gate_checks_hard_policy_before_reusing_prior_allow() {
+    let inner = Arc::new(HardPolicyAfterFirstAllowBroker::default());
+    let gate = DedupGate::new(inner.clone());
+
+    let first = tool_request();
+    let second = PermissionRequest {
+        request_id: RequestId::new(),
+        tool_use_id: ToolUseId::new(),
+        ..first.clone()
+    };
+
+    assert_eq!(
+        gate.decide(first, permission_context()).await,
+        Decision::AllowOnce
+    );
+    assert_eq!(
+        gate.decide(second, permission_context()).await,
+        Decision::DenyOnce
+    );
+    assert_eq!(inner.calls(), 1);
+}
+
+#[tokio::test]
+async fn dedup_gate_checks_hard_policy_before_first_decide() {
+    let inner = Arc::new(AlwaysHardPolicyBroker::default());
+    let gate = DedupGate::new(inner.clone());
+    let request = tool_request();
+
+    assert_eq!(
+        gate.decide(request.clone(), permission_context()).await,
+        Decision::DenyOnce
+    );
+    assert_eq!(inner.calls(), 0);
+    assert!(
+        gate.lookup(&request).is_none(),
+        "hard policy denies should not be cached as reusable decisions"
+    );
+}
+
+#[tokio::test]
+async fn dedup_gate_checks_context_policy_deny_before_inner_decide() {
+    let inner = Arc::new(CountingBroker::new(Decision::AllowOnce));
+    let gate = DedupGate::new(inner.clone());
+    let request = tool_request();
+    let mut ctx = permission_context();
+    ctx.rule_snapshot = Arc::new(RuleSnapshot {
+        rules: vec![PermissionRule {
+            id: "policy-deny-read-blob".to_owned(),
+            priority: 0,
+            scope: request.scope_hint.clone(),
+            action: RuleAction::Deny,
+            source: RuleSource::Policy,
+        }],
+        generation: 1,
+        built_at: Utc::now(),
+    });
+
+    assert_eq!(gate.decide(request, ctx).await, Decision::DenyOnce);
+    assert_eq!(inner.calls(), 0);
 }
 
 #[tokio::test]
@@ -118,6 +180,68 @@ impl PermissionBroker for CountingBroker {
     async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.decision.clone()
+    }
+
+    async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct HardPolicyAfterFirstAllowBroker {
+    calls: AtomicUsize,
+}
+
+impl HardPolicyAfterFirstAllowBroker {
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl PermissionBroker for HardPolicyAfterFirstAllowBroker {
+    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Decision::AllowOnce
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        _request: &PermissionRequest,
+        _ctx: &PermissionContext,
+    ) -> bool {
+        self.calls.load(Ordering::SeqCst) > 0
+    }
+
+    async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct AlwaysHardPolicyBroker {
+    calls: AtomicUsize,
+}
+
+impl AlwaysHardPolicyBroker {
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl PermissionBroker for AlwaysHardPolicyBroker {
+    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Decision::AllowOnce
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        _request: &PermissionRequest,
+        _ctx: &PermissionContext,
+    ) -> bool {
+        true
     }
 
     async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {

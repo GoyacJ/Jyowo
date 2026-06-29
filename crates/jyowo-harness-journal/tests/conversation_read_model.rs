@@ -1834,6 +1834,7 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
                 effective_config_hash: ConfigHash([0; 32]),
                 started_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
                 correlation_id: CorrelationId::new(),
+                permission_mode: PermissionMode::BypassPermissions,
             }),
         ),
         envelope(
@@ -1884,6 +1885,7 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
                 fingerprint: None,
                 presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                 interactivity: InteractivityLevel::FullyInteractive,
+                auto_resolved: false,
                 causation_id: EventId::new(),
                 at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(3),
             }),
@@ -1997,6 +1999,10 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
         ]
     );
     assert_eq!(
+        page.events[0].payload["permissionMode"],
+        "bypass_permissions"
+    );
+    assert_eq!(
         page.events[1].payload["argumentsSummary"],
         "Input withheld from conversation timeline."
     );
@@ -2074,6 +2080,7 @@ async fn sqlite_conversation_read_model_omits_empty_assistant_review_body() {
                 effective_config_hash: ConfigHash([0; 32]),
                 started_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
                 correlation_id: CorrelationId::new(),
+                permission_mode: PermissionMode::Default,
             }),
         ),
         envelope(

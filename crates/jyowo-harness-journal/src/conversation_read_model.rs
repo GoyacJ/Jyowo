@@ -628,7 +628,10 @@ fn project_envelope(
             "run.started",
             "engine",
             "public",
-            json!({ "sessionId": event.session_id.to_string() }),
+            json!({
+                "sessionId": event.session_id.to_string(),
+                "permissionMode": event.permission_mode,
+            }),
             None,
             event.started_at,
         ),
@@ -919,15 +922,21 @@ fn project_envelope(
         Event::PermissionRequested(event) => {
             permission_context = Some((event.request_id, event.run_id));
             let subject = permission_subject_display(&event.subject);
+            let reason = if event.auto_resolved {
+                "已按本次授权模式自动允许。"
+            } else {
+                "需要批准后才能继续。"
+            };
             (
                 "permission.requested",
                 "policy",
                 "public",
                 json!({
+                    "autoResolved": event.auto_resolved,
                     "decisionScope": decision_scope_display(&event.scope_hint),
                     "exposure": subject.exposure,
                     "operation": subject.operation,
-                    "reason": "需要批准后才能继续。",
+                    "reason": reason,
                     "requestId": event.request_id.to_string(),
                     "severity": severity_label(event.severity),
                     "target": subject.target,

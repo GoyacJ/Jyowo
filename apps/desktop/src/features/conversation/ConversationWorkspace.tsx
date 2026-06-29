@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import type { PermissionMode } from '@/shared/tauri/commands'
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { pickAttachmentPath } from '@/shared/tauri/file-dialog'
 import { useCommandClient } from '@/shared/tauri/react'
@@ -20,9 +22,22 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
   const commandClient = useCommandClient()
   const queryClient = useQueryClient()
   const timeline = useConversationTimeline({ conversationId })
+  const workspaceKey = timeline.workspacePath ?? 'none'
+  const [composerPermissionMode, setComposerPermissionMode] = useState<PermissionMode>('default')
+  const composerPermissionModeDirtyRef = useRef(false)
   const providerSettingsQuery = useQuery({
     queryFn: () => commandClient.listProviderSettings(),
     queryKey: ['conversation-model-configs'],
+  })
+  const executionSettingsQuery = useQuery({
+    enabled: Boolean(timeline.workspacePath),
+    queryFn: () => {
+      if (!timeline.workspacePath) {
+        throw new Error('Workspace path is required')
+      }
+      return commandClient.getExecutionSettings({ workspacePath: timeline.workspacePath })
+    },
+    queryKey: ['conversation-execution-settings', workspaceKey],
   })
   const setModelConfigMutation = useMutation({
     mutationFn: (modelConfigId: string) => {
@@ -35,15 +50,25 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
     onSuccess: async () => {
       if (timeline.conversation) {
         await queryClient.invalidateQueries({
-          queryKey: conversationQueryKeys.detail(
-            timeline.workspacePath ?? 'none',
-            timeline.conversation.id,
-          ),
+          queryKey: conversationQueryKeys.detail(workspaceKey, timeline.conversation.id),
         })
       }
       await queryClient.invalidateQueries({ queryKey: ['conversation-model-configs'] })
     },
   })
+
+  useEffect(() => {
+    composerPermissionModeDirtyRef.current = false
+    setComposerPermissionMode('default')
+  }, [workspaceKey])
+
+  useEffect(() => {
+    if (!executionSettingsQuery.data || composerPermissionModeDirtyRef.current) {
+      return
+    }
+
+    setComposerPermissionMode(executionSettingsQuery.data.permissionMode)
+  }, [executionSettingsQuery.data, workspaceKey])
 
   if (timeline.isLoading) {
     return (
@@ -91,10 +116,20 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
       profile.id === providerSettingsQuery.data?.defaultConfigId ? ' (default)' : ''
     }`,
   }))
-  const composerDisabled = timeline.composerMode.kind === 'running-disabled'
+  const executionSettings = executionSettingsQuery.data
+  const composerPermissionModeReady =
+    Boolean(executionSettings) &&
+    (composerPermissionModeDirtyRef.current ||
+      composerPermissionMode === executionSettings?.permissionMode)
+  const composerDisabled =
+    timeline.composerMode.kind === 'running-disabled' || !composerPermissionModeReady
 
   function submitReviewContinue(prompt: string) {
-    void timeline.submitPrompt(emptySubmit(prompt))
+    if (!composerPermissionModeReady) {
+      return
+    }
+
+    void timeline.submitPrompt(emptySubmit(prompt, composerPermissionMode))
   }
 
   function submitMessage(draft: ComposerSubmitPayload) {
@@ -119,7 +154,9 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
               ? getCommandErrorMessage(timeline.cancelError)
               : timeline.submitError
                 ? getCommandErrorMessage(timeline.submitError)
-                : undefined
+                : executionSettingsQuery.error
+                  ? getCommandErrorMessage(executionSettingsQuery.error)
+                  : undefined
           }
           cancelPending={timeline.isCancelling}
           modelCapability={currentModelProfile?.modelDescriptor?.conversationCapability ?? null}
@@ -135,6 +172,12 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
             commandClient.listReferenceCandidates({ conversationId: activeConversation.id })
           }
           onModelConfigChange={(modelConfigId) => setModelConfigMutation.mutate(modelConfigId)}
+          permissionMode={composerPermissionMode}
+          autoModeAvailable={executionSettings?.autoModeAvailable ?? false}
+          onPermissionModeChange={(nextMode) => {
+            composerPermissionModeDirtyRef.current = true
+            setComposerPermissionMode(nextMode)
+          }}
           onPickAttachmentPath={pickAttachmentPath}
           onSubmit={submitMessage}
         />
@@ -143,10 +186,11 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
   )
 }
 
-function emptySubmit(prompt: string): ComposerSubmitPayload {
+function emptySubmit(prompt: string, permissionMode: PermissionMode): ComposerSubmitPayload {
   return {
     attachments: [],
     contextReferences: [],
+    permissionMode,
     prompt,
   }
 }

@@ -62,6 +62,7 @@ describe('Composer', () => {
       expect(onSubmit).toHaveBeenCalledWith({
         attachments: [],
         contextReferences: [],
+        permissionMode: 'default',
         prompt: 'Continue the setup',
       }),
     )
@@ -86,8 +87,42 @@ describe('Composer', () => {
       expect(onSubmit).toHaveBeenCalledWith({
         attachments: [],
         contextReferences: [],
+        permissionMode: 'default',
         prompt: 'First line\nSecond line',
       }),
+    )
+  })
+
+  it('submits the selected permission mode from the toolbar', async () => {
+    const onSubmit = vi.fn()
+
+    render(<Composer autoModeAvailable={false} onSubmit={onSubmit} />)
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Permission mode: Request approval' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Full access/i }))
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+      target: { value: 'Run without prompts' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({
+        attachments: [],
+        contextReferences: [],
+        permissionMode: 'bypass_permissions',
+        prompt: 'Run without prompts',
+      }),
+    )
+  })
+
+  it('disables auto approval in the composer when the desktop build does not support it', async () => {
+    render(<Composer autoModeAvailable={false} onSubmit={vi.fn()} />)
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Permission mode: Request approval' }))
+
+    expect(await screen.findByRole('menuitem', { name: /Auto approve/i })).toHaveAttribute(
+      'aria-disabled',
+      'true',
     )
   })
 

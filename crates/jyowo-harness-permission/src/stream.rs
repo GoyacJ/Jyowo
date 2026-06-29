@@ -5,14 +5,15 @@ use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 use harness_contracts::{
-    Decision, InteractivityLevel, PermissionAwaitingHeartbeatEvent, PermissionError, RequestId,
+    Decision, InteractivityLevel, PermissionAwaitingHeartbeatEvent, PermissionError,
+    PermissionMode, RequestId,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::{
-    DecisionPersistence, NoopDecisionPersistence, PermissionBroker, PermissionContext,
-    PermissionRequest, PersistedDecision,
+    hard_policy_denies_from_context, DecisionPersistence, NoopDecisionPersistence,
+    PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
 };
 use parking_lot::Mutex;
 
@@ -207,6 +208,17 @@ impl ResolverHandle {
 #[async_trait]
 impl PermissionBroker for StreamBasedBroker {
     async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
+        if hard_policy_denies_from_context(&request, &ctx) {
+            return Decision::DenyOnce;
+        }
+
+        if matches!(
+            ctx.permission_mode,
+            PermissionMode::BypassPermissions | PermissionMode::DontAsk
+        ) {
+            return Decision::AllowOnce;
+        }
+
         if matches!(ctx.interactivity, InteractivityLevel::NoInteractive) {
             return Decision::DenyOnce;
         }
@@ -246,6 +258,14 @@ impl PermissionBroker for StreamBasedBroker {
                 default_on_timeout
             }
         }
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        request: &PermissionRequest,
+        ctx: &PermissionContext,
+    ) -> bool {
+        hard_policy_denies_from_context(request, ctx)
     }
 
     async fn persist(&self, decision: PersistedDecision) -> Result<(), PermissionError> {

@@ -6,7 +6,7 @@ use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
     BudgetMetric, CapabilityRegistry, Decision, DecisionScope, DeferPolicy, Event, Message,
-    MessageId, MessagePart, MessageRole, ModelError, NoopRedactor, OverflowAction,
+    MessageId, MessagePart, MessageRole, ModelError, NoopRedactor, OverflowAction, PermissionMode,
     PermissionRequestSuppressedEvent, PermissionSubject, ProviderRestriction, ResultBudget, RunId,
     SessionId, StopReason, TenantId, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
     ToolProperties, ToolResult, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
@@ -108,6 +108,96 @@ async fn permission_suppression_emits_event() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn bypass_permission_mode_journals_request_context_for_audit() {
+    let workspace = tempfile::tempdir().unwrap();
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let broker = Arc::new(CountingBroker::default());
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(harness_tool::BuiltinToolset::Custom(vec![Box::new(
+            EchoTool::new(),
+        )]))
+        .build()
+        .unwrap();
+    let tools = ToolPool::assemble(
+        &registry.snapshot(),
+        &ToolPoolFilter::default(),
+        &harness_contracts::ToolSearchMode::Disabled,
+        &ToolPoolModelProfile {
+            provider: harness_contracts::ModelProvider("mock".to_owned()),
+            max_context_tokens: Some(8_000),
+        },
+        &SchemaResolverContext {
+            run_id,
+            session_id,
+            tenant_id,
+        },
+    )
+    .await
+    .unwrap();
+    let engine = Engine::builder()
+        .with_event_store(store.clone())
+        .with_context(ContextEngine::builder().build().unwrap())
+        .with_hooks(HookDispatcher::new(
+            HookRegistry::builder().build().unwrap().snapshot(),
+        ))
+        .with_model(Arc::new(TwoStepModel::new()))
+        .with_tools(tools)
+        .with_permission_broker(broker.clone())
+        .with_workspace_root(workspace.path())
+        .with_model_id("mock-model")
+        .with_protocol(ModelProtocol::Messages)
+        .with_cap_registry(Arc::new(CapabilityRegistry::default()))
+        .build()
+        .unwrap();
+
+    engine
+        .run(
+            SessionHandle {
+                tenant_id,
+                session_id,
+            },
+            turn_input("bypass audit"),
+            RunContext::new(tenant_id, session_id, run_id)
+                .with_permission_mode(PermissionMode::BypassPermissions),
+        )
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+
+    let events = store
+        .read(tenant_id, session_id, ReplayCursor::FromStart)
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    let requested = events
+        .iter()
+        .find_map(|event| match event {
+            Event::PermissionRequested(requested) => Some(requested),
+            _ => None,
+        })
+        .expect("bypass mode should still journal permission request context");
+    let resolved = events
+        .iter()
+        .find_map(|event| match event {
+            Event::PermissionResolved(resolved) if resolved.request_id == requested.request_id => {
+                Some(resolved)
+            }
+            _ => None,
+        })
+        .expect("bypass mode should resolve the journaled permission request");
+
+    assert_eq!(requested.run_id, run_id);
+    assert_eq!(requested.session_id, session_id);
+    assert_eq!(requested.tenant_id, tenant_id);
+    assert!(matches!(resolved.decision, Decision::AllowOnce));
 }
 
 #[derive(Default)]

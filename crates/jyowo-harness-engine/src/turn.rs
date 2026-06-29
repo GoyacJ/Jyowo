@@ -36,8 +36,8 @@ use harness_model::{
 };
 use harness_observability::{DefaultRedactor, Span, SpanAttributes};
 use harness_permission::{
-    canonical_permission_fingerprint, PermissionBroker, PermissionContext, PermissionRequest,
-    PersistedDecision, RuleSnapshot,
+    canonical_permission_fingerprint, hard_policy_denies_from_context, PermissionBroker,
+    PermissionContext, PermissionRequest, PersistedDecision, RuleSnapshot,
 };
 use harness_tool::{
     InterruptToken, OrchestratorContext, ToolCall, ToolEventEmitter, ToolOrchestrator,
@@ -81,6 +81,7 @@ pub(crate) async fn run_turn(
         effective_config_hash: ctx.effective_config_hash,
         started_at: harness_contracts::now(),
         correlation_id,
+        permission_mode: ctx.permission_mode,
     });
     append(
         engine,
@@ -2328,6 +2329,20 @@ impl PermissionBroker for RecordingPermissionBroker {
         }
 
         if let Some(previous) = self.reusable_previous_decision(fingerprint).await {
+            if self.hard_policy_denies(&request, &ctx).await {
+                self.records.lock().await.push(PermissionDecisionRecord {
+                    request,
+                    decision: Decision::DenyOnce,
+                    decided_by: DecidedBy::Broker {
+                        broker_id: "engine-turn-runtime".to_owned(),
+                    },
+                    hook_conflict: None,
+                    fingerprint,
+                    suppressed: None,
+                });
+                return Decision::DenyOnce;
+            }
+
             let decision = previous.decision.clone();
             self.records.lock().await.push(PermissionDecisionRecord {
                 request,
@@ -2345,23 +2360,123 @@ impl PermissionBroker for RecordingPermissionBroker {
             return decision;
         }
 
-        let requested_event = permission_requested_event(
-            self.run_id,
-            &request,
-            fingerprint,
-            self.interactivity,
-            ctx.tenant_id,
-            ctx.session_id,
-        );
-        if self
-            .event_store
-            .append(
-                ctx.tenant_id,
-                ctx.session_id,
-                std::slice::from_ref(&requested_event),
-            )
+        if matches!(
+            ctx.permission_mode,
+            PermissionMode::BypassPermissions | PermissionMode::DontAsk
+        ) {
+            if self.hard_policy_denies(&request, &ctx).await {
+                if !self
+                    .record_requested_event(&request, fingerprint, &ctx, false)
+                    .await
+                {
+                    self.records.lock().await.push(PermissionDecisionRecord {
+                        request,
+                        decision: Decision::DenyOnce,
+                        decided_by: DecidedBy::Broker {
+                            broker_id: "permission-event-store".to_owned(),
+                        },
+                        hook_conflict: None,
+                        fingerprint,
+                        suppressed: None,
+                    });
+                    return Decision::DenyOnce;
+                }
+                self.records.lock().await.push(PermissionDecisionRecord {
+                    request,
+                    decision: Decision::DenyOnce,
+                    decided_by: DecidedBy::Broker {
+                        broker_id: "engine-turn-runtime".to_owned(),
+                    },
+                    hook_conflict: None,
+                    fingerprint,
+                    suppressed: None,
+                });
+                return Decision::DenyOnce;
+            }
+            let inner_decision = self.inner.decide(request.clone(), ctx.clone()).await;
+            if is_permission_deny(&inner_decision) {
+                if !self
+                    .record_requested_event(&request, fingerprint, &ctx, false)
+                    .await
+                {
+                    self.records.lock().await.push(PermissionDecisionRecord {
+                        request,
+                        decision: Decision::DenyOnce,
+                        decided_by: DecidedBy::Broker {
+                            broker_id: "permission-event-store".to_owned(),
+                        },
+                        hook_conflict: None,
+                        fingerprint,
+                        suppressed: None,
+                    });
+                    return Decision::DenyOnce;
+                }
+                self.records.lock().await.push(PermissionDecisionRecord {
+                    request,
+                    decision: inner_decision.clone(),
+                    decided_by: DecidedBy::Broker {
+                        broker_id: "engine-turn-runtime".to_owned(),
+                    },
+                    hook_conflict: None,
+                    fingerprint,
+                    suppressed: None,
+                });
+                return inner_decision;
+            }
+
+            let (decision, decided_by, hook_conflict) = if let Some(override_decision) = self
+                .overrides
+                .iter()
+                .find(|override_decision| override_decision.tool_use_id == request.tool_use_id)
+            {
+                (
+                    normalize_bypass_override_decision(
+                        override_decision.override_decision.decision.clone(),
+                    ),
+                    DecidedBy::Hook {
+                        handler_id: override_decision.override_decision.handler_id.clone(),
+                    },
+                    override_decision.conflict.clone(),
+                )
+            } else {
+                (
+                    Decision::AllowOnce,
+                    DecidedBy::Broker {
+                        broker_id: "engine-turn-runtime".to_owned(),
+                    },
+                    None,
+                )
+            };
+            if !self
+                .record_requested_event(&request, fingerprint, &ctx, decision_allows(&decision))
+                .await
+            {
+                self.records.lock().await.push(PermissionDecisionRecord {
+                    request,
+                    decision: Decision::DenyOnce,
+                    decided_by: DecidedBy::Broker {
+                        broker_id: "permission-event-store".to_owned(),
+                    },
+                    hook_conflict: None,
+                    fingerprint,
+                    suppressed: None,
+                });
+                return Decision::DenyOnce;
+            }
+            self.records.lock().await.push(PermissionDecisionRecord {
+                request,
+                decision: decision.clone(),
+                decided_by,
+                hook_conflict,
+                fingerprint,
+                suppressed: None,
+            });
+            return decision;
+        }
+
+        if !self
+            .record_requested_event(&request, fingerprint, &ctx, false)
             .await
-            .is_err()
         {
             self.records.lock().await.push(PermissionDecisionRecord {
                 request,
@@ -2375,7 +2490,20 @@ impl PermissionBroker for RecordingPermissionBroker {
             });
             return Decision::DenyOnce;
         }
-        self.requested_events.lock().await.push(requested_event);
+
+        if self.hard_policy_denies(&request, &ctx).await {
+            self.records.lock().await.push(PermissionDecisionRecord {
+                request,
+                decision: Decision::DenyOnce,
+                decided_by: DecidedBy::Broker {
+                    broker_id: "engine-turn-runtime".to_owned(),
+                },
+                hook_conflict: None,
+                fingerprint,
+                suppressed: None,
+            });
+            return Decision::DenyOnce;
+        }
 
         let (decision, decided_by, hook_conflict) = if let Some(override_decision) = self
             .overrides
@@ -2409,12 +2537,33 @@ impl PermissionBroker for RecordingPermissionBroker {
         decision
     }
 
+    async fn hard_policy_denies(
+        &self,
+        request: &PermissionRequest,
+        ctx: &PermissionContext,
+    ) -> bool {
+        self.inner.hard_policy_denies(request, ctx).await
+            || hard_policy_denies_from_context(request, ctx)
+    }
+
     async fn persist(
         &self,
         decision: PersistedDecision,
     ) -> Result<(), harness_contracts::PermissionError> {
         self.inner.persist(decision).await
     }
+}
+
+fn is_permission_deny(decision: &Decision) -> bool {
+    matches!(decision, Decision::DenyOnce | Decision::DenyPermanent)
+}
+
+fn normalize_bypass_override_decision(decision: Decision) -> Decision {
+    if decision_allows(&decision) || is_permission_deny(&decision) {
+        return decision;
+    }
+
+    Decision::AllowOnce
 }
 
 impl RecordingPermissionBroker {
@@ -2438,6 +2587,38 @@ impl RecordingPermissionBroker {
                     )
             })
             .cloned()
+    }
+
+    async fn record_requested_event(
+        &self,
+        request: &PermissionRequest,
+        fingerprint: ExecFingerprint,
+        ctx: &PermissionContext,
+        auto_resolved: bool,
+    ) -> bool {
+        let requested_event = permission_requested_event(
+            self.run_id,
+            request,
+            fingerprint,
+            self.interactivity,
+            ctx.tenant_id,
+            ctx.session_id,
+            auto_resolved,
+        );
+        if self
+            .event_store
+            .append(
+                ctx.tenant_id,
+                ctx.session_id,
+                std::slice::from_ref(&requested_event),
+            )
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        self.requested_events.lock().await.push(requested_event);
+        true
     }
 }
 
@@ -2495,6 +2676,7 @@ fn permission_requested_event(
     interactivity: InteractivityLevel,
     tenant_id: TenantId,
     session_id: SessionId,
+    auto_resolved: bool,
 ) -> Event {
     Event::PermissionRequested(PermissionRequestedEvent {
         request_id: request.request_id,
@@ -2509,6 +2691,7 @@ fn permission_requested_event(
         fingerprint: Some(fingerprint),
         presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
         interactivity,
+        auto_resolved,
         causation_id: EventId::new(),
         at: harness_contracts::now(),
     })
@@ -3031,4 +3214,88 @@ fn tool_error_payload(error: &ToolError) -> ToolErrorPayload {
 
 fn engine_error(error: impl std::fmt::Display) -> EngineError {
     EngineError::Message(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harness_contracts::{
+        DecisionScope, NoopRedactor, PermissionSubject, RequestId, Severity, ToolUseId,
+    };
+    use harness_journal::InMemoryEventStore;
+
+    struct HardPolicyBroker;
+
+    #[async_trait]
+    impl PermissionBroker for HardPolicyBroker {
+        async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+            Decision::AllowOnce
+        }
+
+        async fn hard_policy_denies(
+            &self,
+            _request: &PermissionRequest,
+            _ctx: &PermissionContext,
+        ) -> bool {
+            true
+        }
+
+        async fn persist(
+            &self,
+            _decision: PersistedDecision,
+        ) -> Result<(), harness_contracts::PermissionError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn recording_permission_broker_forwards_hard_policy_probe() {
+        let broker = RecordingPermissionBroker::new(
+            Arc::new(HardPolicyBroker),
+            Vec::new(),
+            Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))),
+            RunId::new(),
+            InteractivityLevel::FullyInteractive,
+        );
+        let request = permission_request();
+        let ctx = permission_context_for(&request);
+
+        assert!(broker.hard_policy_denies(&request, &ctx).await);
+    }
+
+    fn permission_request() -> PermissionRequest {
+        PermissionRequest {
+            request_id: RequestId::new(),
+            tenant_id: TenantId::SINGLE,
+            session_id: SessionId::new(),
+            tool_use_id: ToolUseId::new(),
+            tool_name: "FileWrite".to_owned(),
+            subject: PermissionSubject::ToolInvocation {
+                tool: "FileWrite".to_owned(),
+                input: json!({ "path": "README.md" }),
+            },
+            severity: Severity::High,
+            scope_hint: DecisionScope::Any,
+            created_at: harness_contracts::now(),
+        }
+    }
+
+    fn permission_context_for(request: &PermissionRequest) -> PermissionContext {
+        PermissionContext {
+            permission_mode: PermissionMode::Default,
+            previous_mode: None,
+            session_id: request.session_id,
+            tenant_id: request.tenant_id,
+            run_id: Some(RunId::new()),
+            interactivity: InteractivityLevel::FullyInteractive,
+            timeout_policy: None,
+            fallback_policy: FallbackPolicy::DenyAll,
+            rule_snapshot: Arc::new(RuleSnapshot {
+                rules: Vec::new(),
+                generation: 0,
+                built_at: harness_contracts::now(),
+            }),
+            hook_overrides: Vec::new(),
+        }
+    }
 }

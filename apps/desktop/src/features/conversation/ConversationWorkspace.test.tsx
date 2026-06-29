@@ -11,6 +11,7 @@ import type {
   CommandClient,
   ConversationEventBatchPayload,
   ConversationTurn,
+  ListProjectsResponse,
   ModelProviderCatalogResponse,
   PageConversationWorktreeResponse,
   StartRunResponse,
@@ -23,6 +24,15 @@ import { ConversationWorkspace } from './ConversationWorkspace'
 type ModelCatalogEntry = ModelProviderCatalogResponse['providers'][number]['models'][number]
 
 const timestamp = '2026-06-17T00:00:00.000Z'
+const agentCapabilities = {
+  agentTeamsAvailable: false,
+  agentTeamsEnabled: false,
+  backgroundAgentsAvailable: false,
+  backgroundAgentsEnabled: false,
+  subagentsAvailable: false,
+  subagentsEnabled: false,
+  unavailableReasons: [],
+}
 
 function cursor(conversationSequence = 1) {
   return { eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV', conversationSequence }
@@ -47,9 +57,11 @@ function renderConversationWorkspace(
     )
   }
 
-  return render(<ConversationWorkspace conversationId={conversationId} />, {
+  const view = render(<ConversationWorkspace conversationId={conversationId} />, {
     wrapper: Wrapper,
   })
+
+  return { ...view, queryClient }
 }
 
 const openAiModelDescriptor: ModelCatalogEntry = {
@@ -293,6 +305,7 @@ describe('ConversationWorkspace', () => {
           attachments: [],
           conversationId: 'conversation-001',
           contextReferences: [],
+          permissionMode: 'default',
           prompt: 'Continue the Tauri setup',
           clientMessageId: expect.any(String),
         }),
@@ -340,10 +353,137 @@ describe('ConversationWorkspace', () => {
       expect(startRunCalls).toEqual([
         expect.objectContaining({
           prompt,
+          permissionMode: 'default',
           clientMessageId: expect.any(String),
         }),
       ])
     })
+  })
+
+  it('initializes composer permission mode from execution settings', async () => {
+    const commandClient = createMockCommandClient({
+      conversationWorktreePage: pageWithTurn('complete'),
+      executionSettings: {
+        agentCapabilities,
+        autoModeAvailable: false,
+        contextCompressionTriggerRatio: 0.8,
+        permissionMode: 'bypass_permissions',
+      },
+    })
+    const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
+    const trackedClient = {
+      ...commandClient,
+      startRun: (request: Parameters<CommandClient['startRun']>[0]) => {
+        startRunCalls.push(request)
+        return Promise.resolve({ runId: 'run-001', status: 'started' })
+      },
+    } satisfies CommandClient
+
+    renderConversationWorkspace(trackedClient)
+
+    expect(
+      await screen.findByRole('button', { name: 'Permission mode: Full access' }),
+    ).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+      target: { value: 'Use the saved default mode' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => {
+      expect(startRunCalls).toEqual([
+        expect.objectContaining({
+          permissionMode: 'bypass_permissions',
+          prompt: 'Use the saved default mode',
+        }),
+      ])
+    })
+  })
+
+  it('resets composer permission mode from the next workspace execution settings', async () => {
+    const baseClient = createMockCommandClient({
+      conversationWorktreePage: pageWithTurn('complete'),
+    })
+    const listProjects = vi
+      .fn()
+      .mockResolvedValueOnce(projectListResponse('/workspace-a'))
+      .mockResolvedValue(projectListResponse('/workspace-b'))
+    const getExecutionSettings = vi
+      .fn()
+      .mockResolvedValueOnce({ autoModeAvailable: false, permissionMode: 'default' })
+      .mockResolvedValue({ autoModeAvailable: false, permissionMode: 'default' })
+    const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
+    const trackedClient = {
+      ...baseClient,
+      getExecutionSettings,
+      listProjects,
+      startRun: (request: Parameters<CommandClient['startRun']>[0]) => {
+        startRunCalls.push(request)
+        return Promise.resolve({ runId: 'run-001', status: 'started' })
+      },
+    } satisfies CommandClient
+
+    const { queryClient } = renderConversationWorkspace(trackedClient)
+
+    fireEvent.pointerDown(
+      await screen.findByRole('button', { name: 'Permission mode: Request approval' }),
+    )
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Full access/i }))
+    expect(
+      await screen.findByRole('button', { name: 'Permission mode: Full access' }),
+    ).toBeInTheDocument()
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['projects', 'list'] })
+    })
+
+    await waitFor(() => {
+      expect(getExecutionSettings).toHaveBeenCalledTimes(2)
+    })
+    expect(getExecutionSettings).toHaveBeenNthCalledWith(1, { workspacePath: '/workspace-a' })
+    expect(getExecutionSettings).toHaveBeenNthCalledWith(2, { workspacePath: '/workspace-b' })
+    expect(
+      await screen.findByRole('button', { name: 'Permission mode: Request approval' }),
+    ).toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+      target: { value: 'Use workspace B defaults' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => {
+      expect(startRunCalls).toEqual([
+        expect.objectContaining({
+          permissionMode: 'default',
+          prompt: 'Use workspace B defaults',
+        }),
+      ])
+    })
+  })
+
+  it('does not submit before execution settings initialize the composer permission mode', async () => {
+    const commandClient = createMockCommandClient({
+      conversationWorktreePage: pageWithTurn('complete'),
+    })
+    const startRun = vi.fn(commandClient.startRun)
+    const trackedClient = {
+      ...commandClient,
+      getExecutionSettings: () => new Promise<never>(() => undefined),
+      startRun,
+    } satisfies CommandClient
+
+    renderConversationWorkspace(trackedClient)
+
+    fireEvent.change(
+      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
+      {
+        target: { value: 'Do not use default before settings load' },
+      },
+    )
+    const sendButton = screen.getByRole('button', { name: 'Send message' })
+
+    expect(sendButton).toBeDisabled()
+    fireEvent.click(sendButton)
+    expect(startRun).not.toHaveBeenCalled()
   })
 
   it('clears active run state when a terminal event triggers a completed worktree refetch', async () => {
@@ -460,6 +600,19 @@ describe('ConversationWorkspace', () => {
     expect(screen.queryByText('Conversation unavailable')).not.toBeInTheDocument()
   })
 })
+
+function projectListResponse(path: string): ListProjectsResponse {
+  return {
+    activePath: path,
+    projects: [
+      {
+        lastOpenedAt: timestamp,
+        name: path.split('/').filter(Boolean).at(-1) ?? 'Project',
+        path,
+      },
+    ],
+  }
+}
 
 function pageWithTurn(status: 'running' | 'complete'): PageConversationWorktreeResponse {
   return {

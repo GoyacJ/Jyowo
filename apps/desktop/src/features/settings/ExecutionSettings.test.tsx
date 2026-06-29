@@ -95,7 +95,7 @@ describe('ExecutionSettings', () => {
     expect(ratioInput).toHaveValue(80)
 
     fireEvent.change(ratioInput, { target: { value: '75' } })
-    fireEvent.click(screen.getByRole('button', { name: /保存执行设置/i }))
+    fireEvent.click(screen.getByRole('button', { name: /保存默认模式/i }))
 
     await waitFor(() => {
       expect(setExecutionSettings).toHaveBeenCalledWith({
@@ -123,6 +123,26 @@ describe('ExecutionSettings', () => {
     )
 
     expect(await screen.findByText(/Auto approval is unavailable/i)).toBeInTheDocument()
-    expect(screen.getByLabelText(/Auto/i)).toBeDisabled()
+    expect(screen.getByDisplayValue('auto')).toBeDisabled()
+  })
+
+  it('labels settings as the default permission mode without leaking translation keys', async () => {
+    uiStore.getState().setLocale('en-US')
+
+    renderExecutionSettings(
+      createMockCommandClient({
+        executionSettings: {
+          agentCapabilities,
+          autoModeAvailable: false,
+          contextCompressionTriggerRatio: 0.8,
+          permissionMode: 'default',
+        },
+      }),
+    )
+
+    expect(
+      await screen.findByRole('heading', { name: 'Default Permission Mode' }),
+    ).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('execution.mode.default.description')
   })
 })

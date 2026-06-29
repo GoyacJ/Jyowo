@@ -15,8 +15,9 @@ use harness_model::{
     AuxModelProvider, AuxOptions, AuxTask, InferContext, InferMiddleware, ModelRequest,
 };
 use harness_permission::{
-    DecisionPersistence, PermissionContext, PermissionRequest, PermissionRule, PersistedDecision,
-    RuleProvider, RuleSnapshot, StreamBasedBroker, StreamBrokerConfig,
+    DecisionPersistence, PermissionBroker, PermissionContext, PermissionRequest, PermissionRule,
+    PersistedDecision, RuleAction, RuleProvider, RuleSnapshot, StreamBasedBroker,
+    StreamBrokerConfig,
 };
 use jyowo_harness_sdk::{builtin::*, prelude::*, testing::*};
 use parking_lot::Mutex;
@@ -232,6 +233,60 @@ fn harness_builder_installs_integrity_checked_decision_persistence() {
             .expect("persistence should receive learned decision");
 
         assert_eq!(persistence.persisted(), vec![decision]);
+    });
+}
+
+#[test]
+fn harness_builder_applies_policy_deny_gate_to_explicit_permission_broker() {
+    block_on(async {
+        let harness = Harness::builder()
+            .with_model(MockProvider::default())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .with_permission_broker_arc(Arc::new(StaticPermissionBroker(Decision::AllowOnce)))
+            .with_rule_provider(Arc::new(PolicyDenyRuleProvider))
+            .build()
+            .await
+            .expect("harness should build with explicit broker and policy provider");
+
+        let mut ctx = permission_context();
+        ctx.permission_mode = PermissionMode::BypassPermissions;
+        let broker = harness
+            .permission_broker()
+            .expect("permission broker should be configured");
+
+        assert!(broker.hard_policy_denies(&permission_request(), &ctx).await);
+
+        assert_eq!(
+            broker.decide(permission_request(), ctx).await,
+            Decision::DenyOnce
+        );
+    });
+}
+
+#[test]
+fn policy_gated_permission_broker_preserves_explicit_inner_hard_policy_probe() {
+    block_on(async {
+        let harness = Harness::builder()
+            .with_model(MockProvider::default())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .with_permission_broker_arc(Arc::new(HardPolicyPermissionBroker))
+            .with_rule_provider(Arc::new(StaticRuleProvider))
+            .build()
+            .await
+            .expect("harness should build with explicit hard-policy broker and rule provider");
+
+        let broker = harness
+            .permission_broker()
+            .expect("permission broker should be configured");
+        let ctx = permission_context();
+
+        assert!(broker.hard_policy_denies(&permission_request(), &ctx).await);
+        assert_eq!(
+            broker.decide(permission_request(), ctx).await,
+            Decision::DenyOnce
+        );
     });
 }
 
@@ -695,6 +750,78 @@ impl RuleProvider for StaticRuleProvider {
         &self,
     ) -> Option<futures::stream::BoxStream<'static, harness_permission::RulesUpdated>> {
         None
+    }
+}
+
+struct PolicyDenyRuleProvider;
+
+#[async_trait]
+impl RuleProvider for PolicyDenyRuleProvider {
+    fn provider_id(&self) -> &str {
+        "policy-deny"
+    }
+
+    fn source(&self) -> RuleSource {
+        RuleSource::Policy
+    }
+
+    async fn resolve_rules(
+        &self,
+        _tenant: TenantId,
+    ) -> Result<Vec<PermissionRule>, harness_contracts::PermissionError> {
+        Ok(vec![PermissionRule {
+            id: "deny-mock-tool".to_owned(),
+            priority: 0,
+            scope: DecisionScope::ToolName("mock-tool".to_owned()),
+            action: RuleAction::Deny,
+            source: RuleSource::Policy,
+        }])
+    }
+
+    fn watch(
+        &self,
+    ) -> Option<futures::stream::BoxStream<'static, harness_permission::RulesUpdated>> {
+        None
+    }
+}
+
+struct StaticPermissionBroker(Decision);
+
+#[async_trait]
+impl PermissionBroker for StaticPermissionBroker {
+    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+        self.0.clone()
+    }
+
+    async fn persist(
+        &self,
+        _decision: PersistedDecision,
+    ) -> Result<(), harness_contracts::PermissionError> {
+        Ok(())
+    }
+}
+
+struct HardPolicyPermissionBroker;
+
+#[async_trait]
+impl PermissionBroker for HardPolicyPermissionBroker {
+    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+        Decision::AllowOnce
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        _request: &PermissionRequest,
+        _ctx: &PermissionContext,
+    ) -> bool {
+        true
+    }
+
+    async fn persist(
+        &self,
+        _decision: PersistedDecision,
+    ) -> Result<(), harness_contracts::PermissionError> {
+        Ok(())
     }
 }
 

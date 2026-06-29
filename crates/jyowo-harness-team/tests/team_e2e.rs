@@ -1353,6 +1353,7 @@ impl TeamMemberRunner for RecordingMemberRunner {
                         effective_config_hash: harness_contracts::ConfigHash([0; 32]),
                         started_at: harness_contracts::now(),
                         correlation_id: request.correlation_id,
+                        permission_mode: request.engine_config.permission_mode,
                     }),
                     Event::RunEnded(RunEndedEvent {
                         run_id: request.run_id,

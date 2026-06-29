@@ -117,6 +117,31 @@ describe('run-event-view-model', () => {
     ])
   })
 
+  it('maps auto-resolved permission request events to approved activity details', () => {
+    const event = runEventSchema.parse({
+      ...runEventFixtures[9],
+      payload: {
+        autoResolved: true,
+        decisionScope: 'current run',
+        exposure: 'Can inspect workspace metadata.',
+        operation: 'Read workspace metadata',
+        reason: 'Automatically allowed by the run permission mode.',
+        requestId: '01HZ0000000000000000000001',
+        severity: 'medium',
+        target: 'workspace metadata',
+        toolUseId: 'tool-001',
+        workspaceBoundary: 'workspace://local',
+      },
+    })
+    const viewModel = toRunEventViewModel(event)
+
+    expect(viewModel.activityItem.status).toBe('success')
+    expect(viewModel.details?.permissions?.[0]).toMatchObject({
+      id: '01HZ0000000000000000000001',
+      state: 'approved',
+    })
+  })
+
   it('maps permission resolved events to immutable decision details', () => {
     const event = runEventSchema.parse({
       ...runEventFixtures[10],

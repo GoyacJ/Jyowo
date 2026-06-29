@@ -1,16 +1,24 @@
-import { Paperclip, Send, X } from 'lucide-react'
+import { Check, ChevronDown, Paperclip, Send, Shield, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { cn } from '@/shared/lib/utils'
 import type {
   AttachmentInputModality,
   AttachmentReference,
   ContextReference,
   ConversationModelCapability,
   ListReferenceCandidatesResponse,
+  PermissionMode,
   StartRunRequest,
 } from '@/shared/tauri/commands'
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/shared/ui/dropdown-menu'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/ui/popover'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shared/ui/tooltip'
 
@@ -47,6 +55,9 @@ type ComposerProps = {
   modelConfigId?: string
   modelConfigs?: Array<{ id: string; label: string }>
   onModelConfigChange?: (modelConfigId: string) => void
+  permissionMode?: PermissionMode
+  autoModeAvailable?: boolean
+  onPermissionModeChange?: (mode: PermissionMode) => void
 }
 
 const attachmentInputModalities: AttachmentInputModality[] = ['image', 'video', 'file']
@@ -84,13 +95,18 @@ export function Composer({
   modelConfigId,
   modelConfigs = [],
   onModelConfigChange,
+  permissionMode,
+  autoModeAvailable = false,
+  onPermissionModeChange,
 }: ComposerProps) {
   const { t } = useTranslation(['common', 'conversation'])
   const [draft, setDraft] = useState<ComposerDraft>(emptyDraft)
   const [composerError, setComposerError] = useState<string | null>(null)
+  const [localPermissionMode, setLocalPermissionMode] = useState<PermissionMode>('default')
+  const selectedPermissionMode = permissionMode ?? localPermissionMode
   const effectiveMode = mode ?? legacyComposerMode(pending, disabled)
   const isDisabled =
-    effectiveMode.kind === 'submitting' || effectiveMode.kind === 'running-disabled'
+    disabled || effectiveMode.kind === 'submitting' || effectiveMode.kind === 'running-disabled'
   const canSubmit = draft.text.trim().length > 0 && !isDisabled
   const visibleError = composerError ?? errorMessage
   const canCancelRun =
@@ -109,6 +125,7 @@ export function Composer({
     const payload: ComposerSubmitPayload = {
       attachments: draft.attachments,
       contextReferences: draft.contextReferences,
+      permissionMode: selectedPermissionMode,
       prompt: submittedText,
     }
 
@@ -242,6 +259,14 @@ export function Composer({
           modelConfigId={modelConfigId}
           modelConfigs={modelConfigs}
           onModelConfigChange={onModelConfigChange}
+          permissionMode={selectedPermissionMode}
+          autoModeAvailable={autoModeAvailable}
+          onPermissionModeChange={(nextMode) => {
+            if (permissionMode === undefined) {
+              setLocalPermissionMode(nextMode)
+            }
+            onPermissionModeChange?.(nextMode)
+          }}
           onSelectReference={addContextReference}
         />
         <div className="flex items-center gap-2">
@@ -298,23 +323,29 @@ function getAcceptedAttachmentModalities(
 
 function ComposerToolbar({
   disabled,
+  autoModeAvailable,
   modelConfigDisabled,
   modelConfigId,
   modelConfigs,
+  permissionMode,
   supportsAttachments,
   onAttachFile,
   onListReferenceCandidates,
   onModelConfigChange,
+  onPermissionModeChange,
   onSelectReference,
 }: {
   disabled: boolean
+  autoModeAvailable: boolean
   modelConfigDisabled: boolean
   modelConfigId?: string
   modelConfigs: Array<{ id: string; label: string }>
+  permissionMode: PermissionMode
   supportsAttachments: boolean
   onAttachFile: () => void
   onListReferenceCandidates?: () => Promise<ListReferenceCandidatesResponse>
   onModelConfigChange?: (modelConfigId: string) => void
+  onPermissionModeChange: (mode: PermissionMode) => void
   onSelectReference: (reference: ContextReference) => void
 }) {
   const { t } = useTranslation('conversation')
@@ -322,6 +353,12 @@ function ComposerToolbar({
   return (
     <TooltipProvider delayDuration={150}>
       <div className="flex items-center gap-2 text-muted-foreground">
+        <ComposerPermissionModeMenu
+          autoModeAvailable={autoModeAvailable}
+          disabled={disabled}
+          permissionMode={permissionMode}
+          onPermissionModeChange={onPermissionModeChange}
+        />
         <AttachmentPicker disabled={disabled || !supportsAttachments} onAttachFile={onAttachFile} />
         <ReferencePicker
           disabled={disabled}
@@ -346,6 +383,114 @@ function ComposerToolbar({
         ) : null}
       </div>
     </TooltipProvider>
+  )
+}
+
+const composerPermissionModeOptions = [
+  {
+    value: 'default',
+    labelKey: 'composer.permissionMode.default.label',
+    descriptionKey: 'composer.permissionMode.default.description',
+  },
+  {
+    value: 'auto',
+    labelKey: 'composer.permissionMode.auto.label',
+    descriptionKey: 'composer.permissionMode.auto.description',
+    unavailableDescriptionKey: 'composer.permissionMode.auto.unavailable',
+  },
+  {
+    value: 'bypass_permissions',
+    labelKey: 'composer.permissionMode.bypass.label',
+    descriptionKey: 'composer.permissionMode.bypass.description',
+  },
+] as const satisfies ReadonlyArray<{
+  value: PermissionMode
+  labelKey: string
+  descriptionKey: string
+  unavailableDescriptionKey?: string
+}>
+
+function ComposerPermissionModeMenu({
+  autoModeAvailable,
+  disabled,
+  permissionMode,
+  onPermissionModeChange,
+}: {
+  autoModeAvailable: boolean
+  disabled: boolean
+  permissionMode: PermissionMode
+  onPermissionModeChange: (mode: PermissionMode) => void
+}) {
+  const { t } = useTranslation('conversation')
+  const selectedOption =
+    composerPermissionModeOptions.find((option) => option.value === permissionMode) ??
+    composerPermissionModeOptions[0]
+  const selectedLabel = t(selectedOption.labelKey)
+  const isBypassMode = permissionMode === 'bypass_permissions'
+
+  return (
+    <DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <button
+              aria-label={t('composer.permissionMode.ariaLabel', { mode: selectedLabel })}
+              className={cn(
+                'inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2 font-medium text-foreground text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60',
+                isBypassMode && 'border-warning/40 bg-warning/10 text-warning hover:bg-warning/15',
+              )}
+              disabled={disabled}
+              type="button"
+            >
+              <Shield className="size-3.5" />
+              <span className="max-w-[8rem] truncate">{selectedLabel}</span>
+              <ChevronDown className="size-3.5 opacity-70" />
+            </button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{t('composer.permissionMode.tooltip')}</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="start" className="w-72">
+        {composerPermissionModeOptions.map((option) => {
+          const optionDisabled = option.value === 'auto' && !autoModeAvailable
+          const descriptionKey =
+            optionDisabled && option.unavailableDescriptionKey
+              ? option.unavailableDescriptionKey
+              : option.descriptionKey
+
+          return (
+            <DropdownMenuItem
+              className="items-start gap-3 py-2"
+              disabled={optionDisabled}
+              key={option.value}
+              onSelect={() => {
+                if (!optionDisabled) {
+                  onPermissionModeChange(option.value)
+                }
+              }}
+            >
+              <Shield
+                className={cn(
+                  'mt-0.5 size-4 shrink-0 text-muted-foreground',
+                  option.value === 'bypass_permissions' && 'text-warning',
+                )}
+              />
+              <span className="min-w-0 flex-1 space-y-0.5">
+                <span className="block font-medium text-foreground text-sm">
+                  {t(option.labelKey)}
+                </span>
+                <span className="block whitespace-normal text-muted-foreground text-xs leading-5">
+                  {t(descriptionKey)}
+                </span>
+              </span>
+              {permissionMode === option.value ? (
+                <Check className="mt-0.5 size-4 shrink-0 text-primary" />
+              ) : null}
+            </DropdownMenuItem>
+          )
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 

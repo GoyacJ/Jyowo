@@ -76,6 +76,78 @@ fn key_events_serialize_with_type_tag() {
 }
 
 #[test]
+fn run_started_serializes_permission_mode_and_defaults_legacy_events() {
+    let event = RunStartedEvent {
+        run_id: RunId::new(),
+        session_id: SessionId::new(),
+        tenant_id: TenantId::SINGLE,
+        parent_run_id: None,
+        input: TurnInput {
+            message: Message {
+                id: MessageId::new(),
+                role: MessageRole::User,
+                parts: vec![MessagePart::Text("run".to_owned())],
+                created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            },
+            metadata: serde_json::Value::Null,
+        },
+        snapshot_id: SnapshotId::new(),
+        effective_config_hash: ConfigHash([0; 32]),
+        started_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+        correlation_id: CorrelationId::new(),
+        permission_mode: PermissionMode::BypassPermissions,
+    };
+
+    let mut value = serde_json::to_value(&event).expect("run.started serializes");
+    assert_eq!(value["permission_mode"], "bypass_permissions");
+
+    value
+        .as_object_mut()
+        .expect("run.started serializes as object")
+        .remove("permission_mode");
+    let legacy =
+        serde_json::from_value::<RunStartedEvent>(value).expect("legacy run.started loads");
+
+    assert_eq!(legacy.permission_mode, PermissionMode::Default);
+}
+
+#[test]
+fn permission_requested_serializes_auto_resolved_and_defaults_legacy_events() {
+    let event = PermissionRequestedEvent {
+        request_id: RequestId::new(),
+        run_id: RunId::new(),
+        session_id: SessionId::new(),
+        tenant_id: TenantId::SINGLE,
+        tool_use_id: ToolUseId::new(),
+        tool_name: "shell".to_owned(),
+        subject: PermissionSubject::ToolInvocation {
+            tool: "shell".to_owned(),
+            input: json!({ "command": "cargo test" }),
+        },
+        severity: Severity::High,
+        scope_hint: DecisionScope::ToolName("shell".to_owned()),
+        fingerprint: None,
+        presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+        interactivity: InteractivityLevel::FullyInteractive,
+        auto_resolved: true,
+        causation_id: EventId::new(),
+        at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+    };
+
+    let mut value = serde_json::to_value(&event).expect("permission requested serializes");
+    assert_eq!(value["auto_resolved"], true);
+
+    value
+        .as_object_mut()
+        .expect("permission requested serializes as object")
+        .remove("auto_resolved");
+    let legacy = serde_json::from_value::<PermissionRequestedEvent>(value)
+        .expect("legacy permission requested loads");
+
+    assert!(!legacy.auto_resolved);
+}
+
+#[test]
 fn assistant_review_requested_segment_source_events_serialize_with_stable_tags() {
     let run_id = RunId::new();
     let at = chrono::Utc::now();

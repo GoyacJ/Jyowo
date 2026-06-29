@@ -78,6 +78,87 @@ async fn policy_deny_still_wins_before_dangerous_escalation() {
     );
 }
 
+#[tokio::test]
+async fn bypass_permission_mode_allows_dangerous_command_without_prompt() {
+    let broker = RuleEngineBroker::builder()
+        .with_dangerous_library(DangerousPatternLibrary::default_unix())
+        .with_rules(vec![allow_shell_rule()])
+        .build()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        broker
+            .decide(
+                dangerous_request("rm -rf /"),
+                permission_context_with_mode(
+                    InteractivityLevel::FullyInteractive,
+                    PermissionMode::BypassPermissions,
+                ),
+            )
+            .await,
+        Decision::AllowOnce
+    );
+}
+
+#[tokio::test]
+async fn policy_deny_still_wins_in_bypass_permission_mode() {
+    let broker = RuleEngineBroker::builder()
+        .with_dangerous_library(DangerousPatternLibrary::default_unix())
+        .with_rules(vec![PermissionRule {
+            id: "policy-deny-shell".to_owned(),
+            priority: 1,
+            scope: DecisionScope::ToolName("shell".to_owned()),
+            action: RuleAction::Deny,
+            source: RuleSource::Policy,
+        }])
+        .build()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        broker
+            .decide(
+                dangerous_request("rm -rf /"),
+                permission_context_with_mode(
+                    InteractivityLevel::FullyInteractive,
+                    PermissionMode::BypassPermissions,
+                ),
+            )
+            .await,
+        Decision::DenyOnce
+    );
+}
+
+#[tokio::test]
+async fn any_policy_deny_still_wins_in_bypass_permission_mode() {
+    let broker = RuleEngineBroker::builder()
+        .with_dangerous_library(DangerousPatternLibrary::default_unix())
+        .with_rules(vec![PermissionRule {
+            id: "policy-deny-any".to_owned(),
+            priority: 1,
+            scope: DecisionScope::Any,
+            action: RuleAction::Deny,
+            source: RuleSource::Policy,
+        }])
+        .build()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        broker
+            .decide(
+                dangerous_request("rm -rf /"),
+                permission_context_with_mode(
+                    InteractivityLevel::FullyInteractive,
+                    PermissionMode::BypassPermissions,
+                ),
+            )
+            .await,
+        Decision::DenyOnce
+    );
+}
+
 fn allow_shell_rule() -> PermissionRule {
     PermissionRule {
         id: "allow-shell".to_owned(),
@@ -110,8 +191,15 @@ fn dangerous_request(command: &str) -> PermissionRequest {
 }
 
 fn permission_context(interactivity: InteractivityLevel) -> PermissionContext {
+    permission_context_with_mode(interactivity, PermissionMode::Default)
+}
+
+fn permission_context_with_mode(
+    interactivity: InteractivityLevel,
+    permission_mode: PermissionMode,
+) -> PermissionContext {
     PermissionContext {
-        permission_mode: PermissionMode::Default,
+        permission_mode,
         previous_mode: None,
         session_id: SessionId::new(),
         tenant_id: TenantId::SHARED,

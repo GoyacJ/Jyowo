@@ -150,6 +150,10 @@ function getActivityStatus(event: RunEvent): ActivityRailItem['status'] {
     case 'tool.requested':
       return 'queued'
     case 'permission.requested':
+      if (event.payload?.autoResolved) {
+        return 'success'
+      }
+      return 'blocked'
     case 'tool.denied':
     case 'assistant.review.requested':
     case 'assistant.clarification.requested':
@@ -199,7 +203,7 @@ function getDetails(event: RunEvent): RunEventViewModel['details'] {
             operation: event.payload.operation,
             reason: event.payload.reason,
             risk: event.payload.severity,
-            state: 'pending',
+            state: event.payload.autoResolved ? 'approved' : 'pending',
             target: event.payload.target,
             toolUseId: event.payload.toolUseId,
             workspaceBoundary: event.payload.workspaceBoundary,

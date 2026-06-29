@@ -70,8 +70,8 @@ function createDeferredMockCommandClient(): CommandClient {
     async getContextSnapshot(request) {
       return (await getClient()).getContextSnapshot(request)
     },
-    async getExecutionSettings() {
-      return (await getClient()).getExecutionSettings()
+    async getExecutionSettings(request) {
+      return (await getClient()).getExecutionSettings(request)
     },
     async getConversation(conversationId) {
       return (await getClient()).getConversation(conversationId)

@@ -149,6 +149,23 @@ export const zhCN = {
       placeholder: '向 Jyowo 询问这个项目...',
       attachFile: '附加文件',
       referenceObject: '引用项目对象',
+      permissionMode: {
+        ariaLabel: '授权模式：{{mode}}',
+        tooltip: '授权模式',
+        default: {
+          label: '请求批准',
+          description: '需要风险确认时请求批准。',
+        },
+        auto: {
+          label: '替我审批',
+          description: '低风险请求自动审批；桌面支持时可用。',
+          unavailable: '当前桌面版本不支持自动审批。',
+        },
+        bypass: {
+          label: '完全访问权限',
+          description: '本次运行不再请求权限确认。',
+        },
+      },
       removeReference: '移除引用 {{label}}',
       removeAttachment: '移除附件 {{label}}',
       searchReferences: '搜索引用',
@@ -227,12 +244,12 @@ export const zhCN = {
       enUS: '英文',
     },
     execution: {
-      title: '执行',
-      description: '控制本地运行时如何处理权限审批。',
-      loading: '正在加载执行设置…',
+      title: '默认授权模式',
+      description: '选择发送框新运行默认使用的授权模式。',
+      loading: '正在加载默认授权模式…',
       saving: '正在保存…',
-      save: '保存执行设置',
-      saved: '执行设置已保存。',
+      save: '保存默认模式',
+      saved: '默认授权模式已保存。',
       permissionMode: {
         label: '权限模式',
       },

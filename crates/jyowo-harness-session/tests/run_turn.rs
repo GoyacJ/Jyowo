@@ -10,7 +10,7 @@ use harness_context::ContextEngine;
 use harness_contracts::{
     BudgetMetric, CapabilityRegistry, ClarifyAnswer, ClarifyChannelCap, ClarifyPrompt, DecidedBy,
     Decision, DecisionScope, DeferPolicy, Event, HookEventKind, Message, MessagePart, MessageRole,
-    ModelError, NoopRedactor, OverflowAction, PermissionError, PermissionSubject,
+    ModelError, NoopRedactor, OverflowAction, PermissionError, PermissionMode, PermissionSubject,
     ProviderRestriction, RedactRules, Redactor, ResultBudget, RunId, SessionId, StopReason,
     TenantId, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
     ToolResult, ToolUseId, TrustLevel, UsageSnapshot,
@@ -139,6 +139,143 @@ async fn run_turn_hook_payload_and_recent_messages_are_redacted() {
         .recent_messages
         .iter()
         .any(|message| message.contains("secret-token")));
+}
+
+#[tokio::test]
+async fn run_turn_uses_session_permission_mode_for_hooks_and_permissions() {
+    let captured_hooks = Arc::new(Mutex::new(Vec::new()));
+    let captured_permissions = Arc::new(Mutex::new(Vec::new()));
+    let broker = Arc::new(RecordingPermissionBroker {
+        captured: Arc::clone(&captured_permissions),
+    });
+    let harness = TestHarness::new_with_permission_mode_hooks_redactor_and_broker(
+        tool_call_events("ListDir", json!({ "path": "" })),
+        vec![Box::new(CaptureUserPromptHook {
+            captured: Arc::clone(&captured_hooks),
+        })],
+        Arc::new(harness_contracts::NoopRedactor),
+        PermissionMode::BypassPermissions,
+        broker,
+    )
+    .await;
+
+    harness.session.run_turn("list current dir").await.unwrap();
+
+    let captured_hooks = captured_hooks.lock().await.clone();
+    assert_eq!(
+        captured_hooks[0].permission_mode,
+        PermissionMode::BypassPermissions
+    );
+    assert_eq!(
+        captured_hooks[0].view_permission_mode,
+        PermissionMode::BypassPermissions
+    );
+    assert_eq!(
+        captured_permissions.lock().await.as_slice(),
+        &[PermissionMode::BypassPermissions]
+    );
+}
+
+#[tokio::test]
+async fn run_turn_bypass_permission_mode_keeps_permission_audit_context() {
+    let captured_permissions = Arc::new(Mutex::new(Vec::new()));
+    let broker = Arc::new(RecordingPermissionBroker {
+        captured: Arc::clone(&captured_permissions),
+    });
+    let harness = TestHarness::new_with_permission_mode_hooks_redactor_and_broker(
+        tool_call_events("ListDir", json!({ "path": "" })),
+        Vec::new(),
+        Arc::new(harness_contracts::NoopRedactor),
+        PermissionMode::BypassPermissions,
+        broker,
+    )
+    .await;
+
+    harness.session.run_turn("list current dir").await.unwrap();
+
+    let events = harness.events().await;
+    let requested = events
+        .iter()
+        .find_map(|event| match event {
+            Event::PermissionRequested(requested) => Some(requested),
+            _ => None,
+        })
+        .expect("bypass mode should still journal the permission request context");
+    let resolved = events
+        .iter()
+        .find_map(|event| match event {
+            Event::PermissionResolved(resolved) if resolved.request_id == requested.request_id => {
+                Some(resolved)
+            }
+            _ => None,
+        })
+        .expect("bypass mode should resolve the journaled permission request");
+
+    let run_id = events
+        .iter()
+        .find_map(|event| match event {
+            Event::RunStarted(started) => Some(started.run_id),
+            _ => None,
+        })
+        .expect("run should start");
+    let tool_use_id = events
+        .iter()
+        .find_map(|event| match event {
+            Event::ToolUseRequested(requested) => Some(requested.tool_use_id),
+            _ => None,
+        })
+        .expect("tool use should be requested");
+
+    assert_eq!(requested.run_id, run_id);
+    assert_eq!(requested.session_id, harness.session_id);
+    assert_eq!(requested.tenant_id, harness.tenant_id);
+    assert_eq!(requested.tool_use_id, tool_use_id);
+    assert!(matches!(resolved.decision, Decision::AllowOnce));
+}
+
+#[tokio::test]
+async fn run_turn_bypass_permission_mode_converts_escalation_to_auto_resolved_allow() {
+    let harness = TestHarness::new_with_permission_mode_hooks_redactor_and_broker(
+        tool_call_events("ListDir", json!({ "path": "" })),
+        Vec::new(),
+        Arc::new(harness_contracts::NoopRedactor),
+        PermissionMode::BypassPermissions,
+        Arc::new(EscalatingPermissionBroker),
+    )
+    .await;
+    harness
+        .model
+        .replace_events(tool_call_events(
+            "ListDir",
+            json!({ "path": harness.workspace.path() }),
+        ))
+        .await;
+
+    harness.session.run_turn("list current dir").await.unwrap();
+
+    let events = harness.events().await;
+    let requested = events
+        .iter()
+        .find_map(|event| match event {
+            Event::PermissionRequested(requested) => Some(requested),
+            _ => None,
+        })
+        .expect("bypass mode should journal the auto-resolved permission request");
+    let resolved = events
+        .iter()
+        .find_map(|event| match event {
+            Event::PermissionResolved(resolved) if resolved.request_id == requested.request_id => {
+                Some(resolved)
+            }
+            _ => None,
+        })
+        .expect("bypass mode should journal the resolved permission decision");
+
+    assert!(requested.auto_resolved);
+    assert_eq!(resolved.decision, Decision::AllowOnce);
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Event::ToolUseCompleted(_))));
 }
 
 #[tokio::test]
@@ -431,6 +568,23 @@ impl TestHarness {
         hooks: Vec<Box<dyn HookHandler>>,
         redactor: Arc<dyn Redactor>,
     ) -> Self {
+        Self::new_with_permission_mode_hooks_redactor_and_broker(
+            events,
+            hooks,
+            redactor,
+            PermissionMode::Default,
+            Arc::new(AllowBroker),
+        )
+        .await
+    }
+
+    async fn new_with_permission_mode_hooks_redactor_and_broker(
+        events: Vec<ModelStreamEvent>,
+        hooks: Vec<Box<dyn HookHandler>>,
+        redactor: Arc<dyn Redactor>,
+        permission_mode: PermissionMode,
+        permission_broker: Arc<dyn PermissionBroker>,
+    ) -> Self {
         let workspace = tempfile::tempdir().unwrap();
         let tenant_id = TenantId::SINGLE;
         let session_id = SessionId::new();
@@ -469,7 +623,7 @@ impl TestHarness {
             hooks: HookDispatcher::new(hooks.snapshot()),
             model: model.clone(),
             tools,
-            permission_broker: Arc::new(AllowBroker),
+            permission_broker,
             sandbox: None,
             cap_registry: Arc::new(CapabilityRegistry::default()),
             redactor,
@@ -484,7 +638,8 @@ impl TestHarness {
                 .with_options(
                     SessionOptions::new(workspace.path())
                         .with_tenant_id(tenant_id)
-                        .with_session_id(session_id),
+                        .with_session_id(session_id)
+                        .with_permission_mode(permission_mode),
                 )
                 .with_event_store(store.clone())
                 .with_turn_runtime(runtime)
@@ -755,6 +910,41 @@ impl PermissionBroker for AllowBroker {
     }
 }
 
+struct RecordingPermissionBroker {
+    captured: Arc<Mutex<Vec<PermissionMode>>>,
+}
+
+#[async_trait]
+impl PermissionBroker for RecordingPermissionBroker {
+    async fn decide(&self, _request: PermissionRequest, ctx: PermissionContext) -> Decision {
+        self.captured.lock().await.push(ctx.permission_mode);
+        Decision::AllowOnce
+    }
+
+    async fn persist(
+        &self,
+        _decision: harness_permission::PersistedDecision,
+    ) -> Result<(), PermissionError> {
+        Ok(())
+    }
+}
+
+struct EscalatingPermissionBroker;
+
+#[async_trait]
+impl PermissionBroker for EscalatingPermissionBroker {
+    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+        Decision::Escalate
+    }
+
+    async fn persist(
+        &self,
+        _decision: harness_permission::PersistedDecision,
+    ) -> Result<(), PermissionError> {
+        Ok(())
+    }
+}
+
 struct CountingHook {
     calls: Arc<AtomicUsize>,
 }
@@ -783,6 +973,8 @@ impl HookHandler for CountingHook {
 struct CapturedUserPromptHook {
     prompt: String,
     recent_messages: Vec<String>,
+    permission_mode: PermissionMode,
+    view_permission_mode: PermissionMode,
 }
 
 struct CaptureUserPromptHook {
@@ -817,6 +1009,8 @@ impl HookHandler for CaptureUserPromptHook {
         self.captured.lock().await.push(CapturedUserPromptHook {
             prompt,
             recent_messages,
+            permission_mode: ctx.permission_mode,
+            view_permission_mode: ctx.view.permission_mode(),
         });
         Ok(HookOutcome::Continue)
     }

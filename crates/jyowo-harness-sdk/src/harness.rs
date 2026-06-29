@@ -99,8 +99,9 @@ use harness_plugin::{
 };
 use harness_sandbox::SandboxBackend;
 use harness_session::{
-    session_options_hash, Session, SessionOptions, SessionProjection, SessionTurnContext,
-    SessionTurnRunner, SkillReloadCap, Workspace, WorkspaceRegistry, WorkspaceSpec,
+    legacy_session_options_hash_with_permission_mode, session_options_hash, Session,
+    SessionOptions, SessionProjection, SessionTurnContext, SessionTurnRunner, SkillReloadCap,
+    Workspace, WorkspaceRegistry, WorkspaceSpec,
 };
 use harness_skill::{
     parse_skill_markdown, BuiltinHookKind, DirectorySourceKind, Skill, SkillHookBinding,
@@ -284,6 +285,7 @@ pub struct ConversationSessionSummary {
 pub struct ConversationTurnRequest {
     pub options: SessionOptions,
     pub input: ConversationTurnInput,
+    pub permission_mode_override: Option<PermissionMode>,
 }
 
 impl ConversationTurnRequest {
@@ -292,6 +294,7 @@ impl ConversationTurnRequest {
         Self {
             options,
             input: ConversationTurnInput::ask(prompt),
+            permission_mode_override: None,
         }
     }
 }
@@ -917,7 +920,10 @@ impl Harness {
             })?,
         };
         let permission_broker = match extras.permission_broker.take() {
-            Some(broker) => broker,
+            Some(broker) => {
+                policy_gated_permission_broker(&builder.options, broker, &extras.rule_providers)
+                    .await?
+            }
             None => {
                 default_permission_broker(
                     &builder.options,
@@ -1446,6 +1452,7 @@ impl Harness {
         options: SessionOptions,
     ) -> Result<bool, HarnessError> {
         let options = self.effective_sdk_session_options(options)?;
+        #[cfg_attr(not(feature = "sqlite-store"), allow(unused_mut))]
         let mut deleted = self
             .inner
             .event_store
@@ -1520,10 +1527,11 @@ impl Harness {
             .resume_sdk_session_from_projection(options.clone(), projection)
             .await?;
         session
-            .run_turn_parts_with_client_message_id_and_attachments(
+            .run_turn_parts_with_client_message_id_attachments_and_permission_mode(
                 parts,
                 request.input.client_message_id.clone(),
                 request.input.attachments.clone(),
+                request.permission_mode_override,
             )
             .await?;
         let new_events = self
@@ -1800,6 +1808,15 @@ impl Harness {
             Some(ModelProtocol::Messages),
             Some(ModelProtocol::GenerateContent),
         ];
+        let mut permission_modes = vec![
+            options.permission_mode,
+            PermissionMode::Default,
+            PermissionMode::Auto,
+            PermissionMode::BypassPermissions,
+            PermissionMode::DontAsk,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Plan,
+        ];
 
         for descriptor in self.inner.model.supported_models() {
             model_ids.push(Some(descriptor.model_id));
@@ -1819,14 +1836,21 @@ impl Harness {
                 deduped_protocols.push(protocol);
             }
         }
+        permission_modes.sort_by_key(|mode| format!("{mode:?}"));
+        permission_modes.dedup();
 
         for model_id in model_ids {
             for protocol in &deduped_protocols {
-                let mut variant = options.clone();
-                variant.model_id = model_id.clone();
-                variant.protocol = *protocol;
-                if session_options_hash(&variant) == actual {
-                    return true;
+                for permission_mode in &permission_modes {
+                    let mut variant = options.clone();
+                    variant.model_id = model_id.clone();
+                    variant.protocol = *protocol;
+                    variant.permission_mode = *permission_mode;
+                    if session_options_hash(&variant) == actual
+                        || legacy_session_options_hash_with_permission_mode(&variant) == actual
+                    {
+                        return true;
+                    }
                 }
             }
         }
@@ -7360,8 +7384,87 @@ async fn default_permission_broker(
         }
     }
 
+    #[cfg(not(feature = "rule-engine-permission"))]
+    {
+        if !rule_providers.is_empty() {
+            return Err(HarnessError::PermissionDenied(
+                "rule providers require the `rule-engine-permission` feature".to_owned(),
+            ));
+        }
+    }
+
     let _ = (options, rule_providers, decision_persistence);
     Ok(Arc::new(DenyAllPermissionBroker))
+}
+
+async fn policy_gated_permission_broker(
+    options: &HarnessOptions,
+    broker: Arc<dyn PermissionBroker>,
+    rule_providers: &[Arc<dyn RuleProvider>],
+) -> Result<Arc<dyn PermissionBroker>, HarnessError> {
+    #[cfg(feature = "rule-engine-permission")]
+    {
+        if !rule_providers.is_empty() {
+            let mut builder = harness_permission::RuleEngineBroker::builder()
+                .with_tenant(options.tenant_policy.id)
+                .policy_deny_only();
+            for provider in rule_providers {
+                builder = builder.with_rule_provider(Arc::clone(provider));
+            }
+            let policy_gate = builder.build().await.map_err(HarnessError::Permission)?;
+            return Ok(Arc::new(PolicyGatedPermissionBroker {
+                policy_gate: Arc::new(policy_gate),
+                inner: broker,
+            }));
+        }
+    }
+
+    #[cfg(not(feature = "rule-engine-permission"))]
+    {
+        if !rule_providers.is_empty() {
+            return Err(HarnessError::PermissionDenied(
+                "rule providers require the `rule-engine-permission` feature".to_owned(),
+            ));
+        }
+    }
+
+    let _ = (options, rule_providers);
+    Ok(broker)
+}
+
+#[cfg(feature = "rule-engine-permission")]
+struct PolicyGatedPermissionBroker {
+    policy_gate: Arc<dyn PermissionBroker>,
+    inner: Arc<dyn PermissionBroker>,
+}
+
+#[cfg(feature = "rule-engine-permission")]
+#[async_trait]
+impl PermissionBroker for PolicyGatedPermissionBroker {
+    async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
+        if self.hard_policy_denies(&request, &ctx).await {
+            return Decision::DenyOnce;
+        }
+
+        match self.policy_gate.decide(request.clone(), ctx.clone()).await {
+            Decision::Escalate => self.inner.decide(request, ctx).await,
+            decision => decision,
+        }
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        request: &PermissionRequest,
+        ctx: &PermissionContext,
+    ) -> bool {
+        self.policy_gate.hard_policy_denies(request, ctx).await
+            || self.inner.hard_policy_denies(request, ctx).await
+            || harness_permission::hard_policy_denies_from_context(request, ctx)
+    }
+
+    async fn persist(&self, decision: PersistedDecision) -> Result<(), PermissionError> {
+        self.inner.persist(decision).await
+    }
 }
 
 struct DenyAllPermissionBroker;
@@ -7586,5 +7689,77 @@ fn compiled_features() -> Vec<&'static str> {
 fn push_feature(features: &mut Vec<&'static str>, name: &'static str, enabled: bool) {
     if enabled {
         features.push(name);
+    }
+}
+
+#[cfg(all(test, not(feature = "rule-engine-permission")))]
+mod no_rule_engine_permission_tests {
+    use super::*;
+
+    struct NoopRuleProvider;
+
+    #[async_trait]
+    impl RuleProvider for NoopRuleProvider {
+        fn provider_id(&self) -> &str {
+            "noop-rule-provider"
+        }
+
+        fn source(&self) -> harness_contracts::RuleSource {
+            harness_contracts::RuleSource::Workspace
+        }
+
+        async fn resolve_rules(
+            &self,
+            _tenant: TenantId,
+        ) -> Result<Vec<harness_permission::PermissionRule>, PermissionError> {
+            Ok(Vec::new())
+        }
+
+        fn watch(&self) -> Option<BoxStream<'static, harness_permission::RulesUpdated>> {
+            None
+        }
+    }
+
+    struct AllowPermissionBroker;
+
+    #[async_trait]
+    impl PermissionBroker for AllowPermissionBroker {
+        async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+            Decision::AllowOnce
+        }
+
+        async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn default_permission_broker_rejects_rule_providers_without_rule_engine_feature() {
+        let providers: Vec<Arc<dyn RuleProvider>> = vec![Arc::new(NoopRuleProvider)];
+        let result = default_permission_broker(&HarnessOptions::default(), &providers, None).await;
+
+        match result {
+            Err(HarnessError::PermissionDenied(message)) => {
+                assert!(message.contains("rule-engine-permission"));
+            }
+            Err(error) => panic!("expected permission denied, got {error}"),
+            Ok(_) => panic!("rule providers should fail closed without rule-engine-permission"),
+        }
+    }
+
+    #[tokio::test]
+    async fn policy_gated_permission_broker_rejects_rule_providers_without_rule_engine_feature() {
+        let providers: Vec<Arc<dyn RuleProvider>> = vec![Arc::new(NoopRuleProvider)];
+        let broker: Arc<dyn PermissionBroker> = Arc::new(AllowPermissionBroker);
+        let result =
+            policy_gated_permission_broker(&HarnessOptions::default(), broker, &providers).await;
+
+        match result {
+            Err(HarnessError::PermissionDenied(message)) => {
+                assert!(message.contains("rule-engine-permission"));
+            }
+            Err(error) => panic!("expected permission denied, got {error}"),
+            Ok(_) => panic!("rule providers should fail closed without rule-engine-permission"),
+        }
     }
 }
