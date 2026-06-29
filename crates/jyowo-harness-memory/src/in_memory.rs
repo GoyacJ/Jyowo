@@ -7,12 +7,12 @@ use crate::{
     MemoryQuery, MemoryRecord, MemoryStore, MemorySummary, MemoryVisibilityFilter,
 };
 
-pub struct MockMemoryProvider {
+pub struct InMemoryMemoryProvider {
     provider_id: String,
     records: Mutex<Vec<MemoryRecord>>,
 }
 
-impl MockMemoryProvider {
+impl InMemoryMemoryProvider {
     #[must_use]
     pub fn new(provider_id: impl Into<String>) -> Self {
         Self {
@@ -23,7 +23,7 @@ impl MockMemoryProvider {
 }
 
 #[async_trait]
-impl MemoryStore for MockMemoryProvider {
+impl MemoryStore for InMemoryMemoryProvider {
     fn provider_id(&self) -> &str {
         &self.provider_id
     }
@@ -89,7 +89,7 @@ impl MemoryStore for MockMemoryProvider {
     }
 }
 
-impl MemoryLifecycle for MockMemoryProvider {}
+impl MemoryLifecycle for InMemoryMemoryProvider {}
 
 fn kind_matches(record: &MemoryRecord, filter: Option<&MemoryKindFilter>) -> bool {
     match filter {

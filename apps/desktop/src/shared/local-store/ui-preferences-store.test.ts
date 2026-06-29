@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const storeMock = vi.hoisted(() => {
+const storeFixture = vi.hoisted(() => {
   const state = new Map<string, unknown>()
   const get = vi.fn(async (key: string) => state.get(key))
   const set = vi.fn(async (key: string, value: unknown) => {
@@ -19,7 +19,7 @@ const storeMock = vi.hoisted(() => {
 })
 
 vi.mock('@tauri-apps/plugin-store', () => ({
-  load: storeMock.load,
+  load: storeFixture.load,
 }))
 
 async function importUiPreferencesStore() {
@@ -28,10 +28,10 @@ async function importUiPreferencesStore() {
 
 describe('ui-preferences-store', () => {
   beforeEach(() => {
-    storeMock.state.clear()
-    storeMock.get.mockClear()
-    storeMock.set.mockClear()
-    storeMock.load.mockClear()
+    storeFixture.state.clear()
+    storeFixture.get.mockClear()
+    storeFixture.set.mockClear()
+    storeFixture.load.mockClear()
     vi.resetModules()
   })
 
@@ -46,7 +46,7 @@ describe('ui-preferences-store', () => {
       contextPanelWidth: 320,
     })
 
-    expect(storeMock.load).toHaveBeenCalledWith(UI_PREFERENCES_STORE_PATH, {
+    expect(storeFixture.load).toHaveBeenCalledWith(UI_PREFERENCES_STORE_PATH, {
       autoSave: 100,
       defaults: {
         theme: 'light',
@@ -60,11 +60,11 @@ describe('ui-preferences-store', () => {
   })
 
   it('falls back when stored values are invalid', async () => {
-    storeMock.state.set('theme', 'blue')
-    storeMock.state.set('locale', 'pirate')
-    storeMock.state.set('sidebarCollapsed', 'yes')
-    storeMock.state.set('chatComposerHeight', 'tall')
-    storeMock.state.set('contextPanelWidth', 'wide')
+    storeFixture.state.set('theme', 'blue')
+    storeFixture.state.set('locale', 'pirate')
+    storeFixture.state.set('sidebarCollapsed', 'yes')
+    storeFixture.state.set('chatComposerHeight', 'tall')
+    storeFixture.state.set('contextPanelWidth', 'wide')
 
     const { readUiPreferences } = await importUiPreferencesStore()
 
@@ -87,10 +87,10 @@ describe('ui-preferences-store', () => {
       contextPanelWidth: 420,
     })
 
-    expect(storeMock.set).toHaveBeenCalledWith('theme', 'dark')
-    expect(storeMock.set).toHaveBeenCalledWith('locale', 'en-US')
-    expect(storeMock.set).toHaveBeenCalledWith('sidebarCollapsed', true)
-    expect(storeMock.set).toHaveBeenCalledWith('contextPanelWidth', 420)
+    expect(storeFixture.set).toHaveBeenCalledWith('theme', 'dark')
+    expect(storeFixture.set).toHaveBeenCalledWith('locale', 'en-US')
+    expect(storeFixture.set).toHaveBeenCalledWith('sidebarCollapsed', true)
+    expect(storeFixture.set).toHaveBeenCalledWith('contextPanelWidth', 420)
     await expect(readUiPreferences()).resolves.toMatchObject({
       theme: 'dark',
       locale: 'en-US',

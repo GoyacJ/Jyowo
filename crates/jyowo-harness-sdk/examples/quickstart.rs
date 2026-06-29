@@ -3,7 +3,7 @@ use std::sync::Arc;
 use futures::executor::block_on;
 use jyowo_harness_sdk::builtin::*;
 use jyowo_harness_sdk::prelude::*;
-use jyowo_harness_sdk::testing::{InMemoryEventStore, MockProvider, NoopRedactor};
+use jyowo_harness_sdk::testing::{InMemoryEventStore, NoopRedactor, TestModelProvider};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     block_on(async {
@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(&workspace)?;
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .build()

@@ -348,8 +348,8 @@ Rules:
 - Every command payload is validated with Zod at the frontend boundary.
 - Invalid payloads become typed errors.
 - Production uses the Tauri invoke client.
-- Tests, Storybook, and Playwright web mock E2E use mock clients.
-- Mock clients must not be selectable in production builds.
+- Unit and component tests may inject test-only `CommandClient` fixtures.
+- Storybook and Playwright must not replace the command runtime with fixture data.
 - Tauri capabilities remain minimal and explicit.
 - RunEvent schemas must reject raw thinking text. `assistant.delta` carries
   `messageId` and UI-safe `text`; `assistant.thinking.delta` carries only
@@ -978,7 +978,7 @@ TanStack Query:
 - use stable query keys
 - do not store backend data again in Zustand
 - invalidate by domain
-- keep mock clients testable
+- keep test-only command fixtures outside runtime code
 
 Zustand:
 

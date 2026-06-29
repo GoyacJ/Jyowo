@@ -6,8 +6,8 @@ import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { CommandClient, ListMemoryItemsResponse } from '@/shared/tauri/commands'
-import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createTestCommandClient } from '@/testing/command-client'
 
 import { MemoryBrowser } from './MemoryBrowser'
 
@@ -34,7 +34,7 @@ const memoryItems: ListMemoryItemsResponse = {
   ],
 }
 
-function renderMemoryBrowser(commandClient: CommandClient = createMockCommandClient()) {
+function renderMemoryBrowser(commandClient: CommandClient = createTestCommandClient()) {
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -60,7 +60,7 @@ function renderMemoryBrowser(commandClient: CommandClient = createMockCommandCli
 describe('MemoryBrowser', () => {
   it('renders an empty state when no memory items are visible', async () => {
     renderMemoryBrowser(
-      createMockCommandClient({
+      createTestCommandClient({
         memoryExport: {
           exportedAt: '2026-06-17T00:00:00.000Z',
           format: 'json',
@@ -83,7 +83,7 @@ describe('MemoryBrowser', () => {
 
   it('lists visible memory items and inspects the selected item', async () => {
     renderMemoryBrowser(
-      createMockCommandClient({
+      createTestCommandClient({
         memoryItem: {
           item: {
             accessCount: 2,
@@ -130,7 +130,7 @@ describe('MemoryBrowser', () => {
       })),
     }
 
-    renderMemoryBrowser(createMockCommandClient({ memoryItems: longList }))
+    renderMemoryBrowser(createTestCommandClient({ memoryItems: longList }))
 
     expect(await screen.findByText('Memory item 1')).toBeInTheDocument()
     expect(screen.getByText('Memory item 24')).toBeInTheDocument()
@@ -167,7 +167,7 @@ describe('MemoryBrowser', () => {
       },
     })
     const client = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       getMemoryItem,
       listMemoryItems,
       updateMemoryItem,
@@ -198,7 +198,7 @@ describe('MemoryBrowser', () => {
       status: 'deleted',
     })
     const client = {
-      ...createMockCommandClient({ memoryItems }),
+      ...createTestCommandClient({ memoryItems }),
       deleteMemoryItem,
     } satisfies CommandClient
 
@@ -223,7 +223,7 @@ describe('MemoryBrowser', () => {
       path: '.jyowo/runtime/exports/memory-export.json',
     })
     const client = {
-      ...createMockCommandClient({ memoryItems }),
+      ...createTestCommandClient({ memoryItems }),
       exportMemoryItems,
     } satisfies CommandClient
 

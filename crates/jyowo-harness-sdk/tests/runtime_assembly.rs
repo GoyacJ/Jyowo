@@ -310,7 +310,7 @@ fn conversation_session_uses_descriptor_protocol_when_options_omit_protocol() {
 
         let options = SessionOptions::new(&workspace)
             .with_session_id(session_id)
-            .with_model_id("mock-model");
+            .with_model_id("test-model");
         harness
             .open_or_create_conversation_session(options.clone())
             .await
@@ -446,7 +446,7 @@ fn create_session_uses_engine_runtime_path() {
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default().with_events(vec![
+            .with_model(TestModelProvider::default().with_events(vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
                     delta: ContentDelta::Text("engine delta".to_owned()),
@@ -491,7 +491,7 @@ fn create_session_rejects_unknown_model_id_fail_closed() {
         let workspace = unique_workspace("sdk-unknown-model");
         std::fs::create_dir_all(&workspace).unwrap();
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .build()
@@ -516,7 +516,7 @@ fn conversation_facade_opens_submits_and_pages_session_events() {
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default().with_events(vec![
+            .with_model(TestModelProvider::default().with_events(vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
                     delta: ContentDelta::Text("facade answer".to_owned()),
@@ -922,7 +922,7 @@ async fn conversation_facade_hides_and_deletes_malformed_session_streams() {
         .expect("malformed stream should be written for the regression test");
 
     let harness = Harness::builder()
-        .with_model(MockProvider::default())
+        .with_model(TestModelProvider::default())
         .with_store_arc(store.clone())
         .with_sandbox(NoopSandbox::new())
         .build()
@@ -973,7 +973,7 @@ fn conversation_facade_rejects_tenant_policy_bypass_before_reading_events() {
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
         let permissive = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .with_tenant_policy(TenantPolicy {
@@ -993,7 +993,7 @@ fn conversation_facade_rejects_tenant_policy_bypass_before_reading_events() {
             .expect("shared tenant session should be created");
 
         let restricted = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store_arc(store)
             .with_sandbox(NoopSandbox::new())
             .build()
@@ -1042,7 +1042,7 @@ fn conversation_facade_reopens_with_workspace_bound_options() {
         let workspace_root = unique_workspace("sdk-conversation-workspace-bound");
         std::fs::create_dir_all(&workspace_root).unwrap();
         let session_id = SessionId::new();
-        let model = Arc::new(MockProvider::default().with_events(vec![
+        let model = Arc::new(TestModelProvider::default().with_events(vec![
             ModelStreamEvent::ContentBlockDelta {
                 index: 0,
                 delta: ContentDelta::Text("workspace answer".to_owned()),
@@ -1060,7 +1060,7 @@ fn conversation_facade_reopens_with_workspace_bound_options() {
             .create_workspace(
                 WorkspaceSpec::new(&workspace_root, "Conversation Workspace")
                     .with_default_session_options(
-                        SessionOptions::default().with_model_id("mock-model"),
+                        SessionOptions::default().with_model_id("test-model"),
                     ),
             )
             .await
@@ -1083,7 +1083,7 @@ fn conversation_facade_reopens_with_workspace_bound_options() {
             .expect("workspace-bound conversation should submit");
 
         let requests = model.requests().await;
-        assert_eq!(requests[0].model_id, "mock-model");
+        assert_eq!(requests[0].model_id, "test-model");
 
         let mismatched = harness
             .page_conversation_events(ConversationEventsPageRequest {
@@ -1105,7 +1105,7 @@ fn conversation_facade_rejects_duplicate_session_created_with_mismatched_options
         let session_id = SessionId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .build()
@@ -1153,7 +1153,7 @@ fn session_lifecycle_hooks_are_triggered() {
         let session_id = SessionId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let hook_registry = HookRegistry::builder()
-            .with_hook(Box::new(MockHookHandler::new(
+            .with_hook(Box::new(TestHookHandler::new(
                 "session-lifecycle",
                 vec![
                     HookEventKind::Setup,
@@ -1165,7 +1165,7 @@ fn session_lifecycle_hooks_are_triggered() {
             .expect("hook registry should build");
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .with_hook_registry(hook_registry)
@@ -1216,7 +1216,7 @@ fn default_session_uses_config_snapshot_hashes() {
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .build()
@@ -1257,7 +1257,7 @@ fn run_started_uses_non_zero_config_snapshot() {
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default().with_events(vec![
+            .with_model(TestModelProvider::default().with_events(vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
                     delta: ContentDelta::Text("ok".to_owned()),
@@ -1312,7 +1312,7 @@ fn sdk_installs_steering_drain() {
         std::fs::create_dir_all(&workspace).unwrap();
         let session_id = SessionId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
-        let model = Arc::new(MockProvider::default().with_events(vec![
+        let model = Arc::new(TestModelProvider::default().with_events(vec![
             ModelStreamEvent::ContentBlockDelta {
                 index: 0,
                 delta: ContentDelta::Text("ok".to_owned()),
@@ -1467,7 +1467,7 @@ fn sdk_default_profile_matches_architecture() {
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
-            .with_permission_broker(MockBroker::new(vec![Decision::AllowOnce]))
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
             .build()
             .await
             .expect("harness should build");
@@ -1651,7 +1651,7 @@ fn sdk_default_installs_builtin_toolset() {
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
-            .with_permission_broker(MockBroker::new(vec![]))
+            .with_permission_broker(TestBroker::new(vec![]))
             .build()
             .await
             .expect("harness should build");
@@ -1725,7 +1725,7 @@ fn tool_search_uses_conversation_model_capabilities() {
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
-            .with_permission_broker(MockBroker::new(vec![Decision::AllowOnce]))
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
             .with_tool_registry(registry)
             .build()
             .await
@@ -1735,7 +1735,7 @@ fn tool_search_uses_conversation_model_capabilities() {
             .create_session(
                 SessionOptions::new(&workspace)
                     .with_session_id(session_id)
-                    .with_model_id("mock-model")
+                    .with_model_id("test-model")
                     .with_tool_search_mode(ToolSearchMode::Always),
             )
             .await
@@ -1810,7 +1810,7 @@ fn tool_search_inline_reinjection_makes_deferred_schema_visible_to_next_turn_req
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
-            .with_permission_broker(MockBroker::new(vec![Decision::AllowOnce]))
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
             .with_tool_registry(registry)
             .build()
             .await
@@ -1820,7 +1820,7 @@ fn tool_search_inline_reinjection_makes_deferred_schema_visible_to_next_turn_req
             .create_session(
                 SessionOptions::new(&workspace)
                     .with_session_id(session_id)
-                    .with_model_id("mock-model")
+                    .with_model_id("test-model")
                     .with_tool_search_mode(ToolSearchMode::Always),
             )
             .await
@@ -1917,7 +1917,7 @@ fn tool_stream_deferred_pool_change_is_not_injected_into_next_sdk_turn() {
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
-            .with_permission_broker(MockBroker::new(vec![Decision::AllowOnce]))
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
             .with_tool_registry(registry)
             .build()
             .await
@@ -1991,7 +1991,7 @@ fn default_session_installs_tool_search_runtime_cap_when_tool_search_is_enabled(
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
-            .with_permission_broker(MockBroker::new(vec![Decision::AllowOnce]))
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
             .build()
             .await
             .expect("harness should build");
@@ -2077,7 +2077,7 @@ fn default_session_installs_skill_registry_cap_when_skill_loader_is_configured()
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
-            .with_permission_broker(MockBroker::new(vec![Decision::AllowOnce]))
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
             .with_skill_loader(loader)
             .build()
             .await
@@ -2126,7 +2126,7 @@ fn conversation_session_created_event_precedes_skill_loader_events() {
         });
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .with_skill_loader(loader)
@@ -2190,7 +2190,7 @@ unused body
         });
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .with_skill_loader(loader)
@@ -2226,7 +2226,7 @@ async fn reload_rejects_invalid_skill_and_keeps_registry_generation() {
     let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
     let harness = Harness::builder()
-        .with_model(MockProvider::default())
+        .with_model(TestModelProvider::default())
         .with_store_arc(store)
         .with_sandbox(NoopSandbox::new())
         .build()
@@ -2283,7 +2283,7 @@ async fn running_turn_uses_snapshot_captured_before_skill_reload() {
         .with_model_arc(model.clone())
         .with_store_arc(store.clone())
         .with_sandbox(NoopSandbox::new())
-        .with_permission_broker(MockBroker::new(vec![Decision::AllowOnce]))
+        .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
         .with_skill_loader(loader)
         .build()
         .await
@@ -2354,13 +2354,13 @@ fn mcp_tools_are_injected_into_default_session() {
                     McpServerSource::Workspace,
                 ),
                 McpServerScope::Session(session_id),
-                Arc::new(MockMcpConnection {
+                Arc::new(TestMcpConnection {
                     tools: vec![mcp_tool("lookup", false), mcp_tool("always", true)],
                 }),
             )
             .await
             .expect("mcp server registers");
-        let model = Arc::new(MockProvider::default().with_events(vec![
+        let model = Arc::new(TestModelProvider::default().with_events(vec![
             ModelStreamEvent::ContentBlockDelta {
                 index: 0,
                 delta: ContentDelta::Text("done".to_owned()),
@@ -2421,7 +2421,7 @@ fn mcp_metrics_are_forwarded_to_observer() {
                     McpServerSource::Workspace,
                 ),
                 McpServerScope::Session(session_id),
-                Arc::new(MockMcpConnection {
+                Arc::new(TestMcpConnection {
                     tools: vec![mcp_tool("lookup", false)],
                 }),
             )
@@ -2436,7 +2436,7 @@ fn mcp_metrics_are_forwarded_to_observer() {
         );
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_observer(observer)
@@ -2478,7 +2478,7 @@ fn mcp_sampling_provider_invokes_model_without_session_turn() {
         let session_id = SessionId::new();
         let run_id = RunId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
-        let model = Arc::new(MockProvider::default().with_events(vec![
+        let model = Arc::new(TestModelProvider::default().with_events(vec![
             ModelStreamEvent::MessageStart {
                 message_id: "sampling".to_owned(),
                 usage: UsageSnapshot {
@@ -2516,7 +2516,7 @@ fn mcp_sampling_provider_invokes_model_without_session_turn() {
                 run_id: Some(run_id),
                 server_id: McpServerId("github".to_owned()),
                 request_id: RequestId::new(),
-                model_id: Some("mock-model".to_owned()),
+                model_id: Some("test-model".to_owned()),
                 input_tokens: 3,
                 max_output_tokens: 8,
                 tool_rounds: 0,
@@ -2537,7 +2537,7 @@ fn mcp_sampling_provider_invokes_model_without_session_turn() {
         .await
         .expect("sampling should invoke model");
 
-        assert_eq!(response.model_id, "mock-model");
+        assert_eq!(response.model_id, "test-model");
         assert_eq!(
             response.content,
             json!({ "type": "text", "text": "sampled" })
@@ -2586,7 +2586,7 @@ fn tool_search_pending_mcp_servers_reflect_registry_state_and_retains_deferred_d
                         McpServerSource::Workspace,
                     ),
                     McpServerScope::Session(session_id),
-                    Arc::new(MockMcpConnection {
+                    Arc::new(TestMcpConnection {
                         tools: vec![mcp_tool("lookup", false)],
                     }),
                 )
@@ -2630,7 +2630,7 @@ fn tool_search_pending_mcp_servers_reflect_registry_state_and_retains_deferred_d
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
-            .with_permission_broker(MockBroker::new(vec![Decision::AllowOnce]))
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
             .with_mcp_config(McpConfig {
                 registry: mcp_registry,
                 server_ids_to_inject: vec![ready_server_id, pending_server_id],
@@ -2690,7 +2690,7 @@ fn sdk_installs_default_stream_elicitation_handler() {
     tokio_runtime().block_on(async {
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .build()
@@ -2755,7 +2755,7 @@ fn plugins_are_activated_before_session_runtime_assembly() {
         std::fs::create_dir_all(&workspace).unwrap();
         let session_id = SessionId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
-        let model = Arc::new(MockProvider::default().with_events(vec![
+        let model = Arc::new(TestModelProvider::default().with_events(vec![
             ModelStreamEvent::ContentBlockDelta {
                 index: 0,
                 delta: ContentDelta::Text("done".to_owned()),
@@ -2861,7 +2861,7 @@ fn plugin_manifest_validation_records_real_hash() {
             .expect("plugin registry should build");
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .with_plugin_registry(plugin_registry)
@@ -2898,7 +2898,7 @@ fn plugin_manifest_validation_preserves_typed_failure() {
             .expect("plugin registry should build");
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .with_plugin_registry(plugin_registry)
@@ -2936,7 +2936,7 @@ fn default_session_installs_memory_manager_into_context_engine() {
         let workspace = unique_workspace("sdk-memory-context-runtime");
         std::fs::create_dir_all(&workspace).unwrap();
         let session_id = SessionId::new();
-        let memory = Arc::new(MockMemoryProvider::new("memory-runtime"));
+        let memory = Arc::new(InMemoryMemoryProvider::new("memory-runtime"));
         memory
             .upsert(memory_record(
                 session_id,
@@ -3181,7 +3181,7 @@ fn default_session_initializes_memory_provider() {
         let memory = Arc::new(InitializingMemoryProvider::default());
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default())
+            .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_memory_provider_arc(memory.clone())
@@ -3216,7 +3216,7 @@ fn default_session_end_passes_identity_and_real_summary_to_memory_provider() {
         let memory = Arc::new(EndingMemoryProvider::default());
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default().with_events(vec![
+            .with_model(TestModelProvider::default().with_events(vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
                     delta: ContentDelta::Text("final answer".to_owned()),
@@ -3269,7 +3269,9 @@ fn default_session_runs_memory_consolidation_hook_on_session_end() {
         let hook = Arc::new(RecordingConsolidationHook::default());
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default().with_events(vec![ModelStreamEvent::MessageStop]))
+            .with_model(
+                TestModelProvider::default().with_events(vec![ModelStreamEvent::MessageStop]),
+            )
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .with_memory_consolidation_hook_arc(hook.clone())
@@ -3311,7 +3313,7 @@ fn default_session_records_external_memory_metrics_to_observer() {
         let workspace = unique_workspace("sdk-memory-observer-external");
         std::fs::create_dir_all(&workspace).unwrap();
         let session_id = SessionId::new();
-        let memory = Arc::new(MockMemoryProvider::new("memory-observer"));
+        let memory = Arc::new(InMemoryMemoryProvider::new("memory-observer"));
         memory
             .upsert(memory_record(session_id, "observer fact"))
             .await
@@ -3325,7 +3327,7 @@ fn default_session_records_external_memory_metrics_to_observer() {
         );
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default().with_events(vec![
+            .with_model(TestModelProvider::default().with_events(vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
                     delta: ContentDelta::Text("done".to_owned()),
@@ -3395,7 +3397,9 @@ fn default_session_records_memdir_overflow_metric_to_observer() {
         );
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default().with_events(vec![ModelStreamEvent::MessageStop]))
+            .with_model(
+                TestModelProvider::default().with_events(vec![ModelStreamEvent::MessageStop]),
+            )
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_builtin_memory_root(&memdir_root)
@@ -3451,7 +3455,9 @@ fn memory_metric_reason_is_redacted_and_bounded() {
         );
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default().with_events(vec![ModelStreamEvent::MessageStop]))
+            .with_model(
+                TestModelProvider::default().with_events(vec![ModelStreamEvent::MessageStop]),
+            )
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .with_memory_provider(ErrorMemoryProvider)
@@ -3485,7 +3491,7 @@ fn default_session_uses_user_and_team_memory_actor() {
         std::fs::create_dir_all(&workspace).unwrap();
         let session_id = SessionId::new();
         let team_id = TeamId::new();
-        let memory = Arc::new(MockMemoryProvider::new("memory-actor"));
+        let memory = Arc::new(InMemoryMemoryProvider::new("memory-actor"));
         memory
             .upsert(memory_record_with_visibility(
                 MemoryVisibility::User {
@@ -3627,7 +3633,7 @@ fn default_session_exposes_tracer_to_runtime() {
         let tracer = Arc::new(RecordingTracer::default());
 
         let harness = Harness::builder()
-            .with_model(MockProvider::default().with_events(vec![
+            .with_model(TestModelProvider::default().with_events(vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
                     delta: ContentDelta::Text("done".to_owned()),
@@ -3660,7 +3666,7 @@ fn default_session_installs_agent_tool_when_subagent_runner_is_configured() {
     block_on(async {
         let workspace = unique_workspace("sdk-agent-tool-runtime");
         std::fs::create_dir_all(&workspace).unwrap();
-        let model = Arc::new(MockProvider::default().with_events(vec![
+        let model = Arc::new(TestModelProvider::default().with_events(vec![
             ModelStreamEvent::ContentBlockDelta {
                 index: 0,
                 delta: ContentDelta::Text("ready".to_owned()),
@@ -3762,11 +3768,11 @@ impl BlockingSkillListProvider {
 #[async_trait]
 impl ModelProvider for BlockingSkillListProvider {
     fn provider_id(&self) -> &str {
-        "mock"
+        "test"
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        MockProvider::default().supported_models()
+        TestModelProvider::default().supported_models()
     }
 
     async fn infer(
@@ -3842,14 +3848,14 @@ fn mcp_tool(name: &str, always_load: bool) -> McpToolDescriptor {
     }
 }
 
-struct MockMcpConnection {
+struct TestMcpConnection {
     tools: Vec<McpToolDescriptor>,
 }
 
 #[async_trait]
-impl McpConnection for MockMcpConnection {
+impl McpConnection for TestMcpConnection {
     fn connection_id(&self) -> &'static str {
-        "mock-mcp"
+        "test-mcp"
     }
 
     async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
@@ -4372,14 +4378,14 @@ impl CapabilityScriptedProvider {
 #[async_trait]
 impl ModelProvider for CapabilityScriptedProvider {
     fn provider_id(&self) -> &str {
-        "mock"
+        "test"
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
-            provider_id: "mock".to_owned(),
-            model_id: "mock-model".to_owned(),
-            display_name: "Mock model".to_owned(),
+            provider_id: "test".to_owned(),
+            model_id: "test-model".to_owned(),
+            display_name: "Test model".to_owned(),
             protocol: self.protocol,
             context_window: self.context_window,
             max_output_tokens: self.max_output_tokens,
@@ -4416,13 +4422,13 @@ struct TwoModelProvider;
 #[async_trait]
 impl ModelProvider for TwoModelProvider {
     fn provider_id(&self) -> &str {
-        "mock"
+        "test"
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![
             ModelDescriptor {
-                provider_id: "mock".to_owned(),
+                provider_id: "test".to_owned(),
                 model_id: "model-a".to_owned(),
                 display_name: "Model A".to_owned(),
                 protocol: ModelProtocol::Messages,
@@ -4433,7 +4439,7 @@ impl ModelProvider for TwoModelProvider {
                 pricing: None,
             },
             ModelDescriptor {
-                provider_id: "mock".to_owned(),
+                provider_id: "test".to_owned(),
                 model_id: "model-b".to_owned(),
                 display_name: "Model B".to_owned(),
                 protocol: ModelProtocol::Responses,

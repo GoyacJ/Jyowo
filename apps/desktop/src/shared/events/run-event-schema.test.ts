@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-
+import { runEventFixtures } from '@/testing/run-event-fixtures'
 import {
   getRunEventLabel,
   mapRunEventContractType,
@@ -9,7 +9,6 @@ import {
   type RunEventType,
   type RunEventVisibility,
   runEventContractTypeSchema,
-  runEventFixtures,
   runEventSchema,
   runEventSourceSchema,
   runEventsSchema,

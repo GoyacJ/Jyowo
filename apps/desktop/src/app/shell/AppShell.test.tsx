@@ -6,19 +6,19 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
-import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createTestCommandClient } from '@/testing/command-client'
 
 import { AppShell } from './AppShell'
 
-const routerMock = vi.hoisted(() => ({
+const routerSpy = vi.hoisted(() => ({
   navigate: vi.fn(async ({ to }: { to: string }) => {
     window.history.pushState(null, '', to)
   }),
 }))
 
 vi.mock('@tanstack/react-router', async () => ({
-  useNavigate: () => routerMock.navigate,
+  useNavigate: () => routerSpy.navigate,
   useRouterState: ({
     select,
   }: {
@@ -32,7 +32,7 @@ vi.mock('@tanstack/react-router', async () => ({
     }),
 }))
 
-function renderAppShell(commandClient: CommandClient = createMockCommandClient()) {
+function renderAppShell(commandClient: CommandClient = createTestCommandClient()) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -55,7 +55,7 @@ function renderAppShell(commandClient: CommandClient = createMockCommandClient()
   )
 }
 
-function mockCompactViewport(matches: boolean) {
+function setCompactViewportFixture(matches: boolean) {
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
     value: vi.fn().mockImplementation((query: string) => ({
@@ -73,7 +73,7 @@ function mockCompactViewport(matches: boolean) {
 
 describe('AppShell', () => {
   beforeEach(() => {
-    mockCompactViewport(false)
+    setCompactViewportFixture(false)
     window.history.pushState(null, '', '/')
   })
 
@@ -135,11 +135,11 @@ describe('AppShell', () => {
       }),
     )
 
-    expect(routerMock.navigate).toHaveBeenCalledWith({ to: '/settings' })
+    expect(routerSpy.navigate).toHaveBeenCalledWith({ to: '/settings' })
   })
 
   it('uses the icon sidebar on narrow viewports', () => {
-    mockCompactViewport(true)
+    setCompactViewportFixture(true)
 
     renderAppShell()
 
@@ -162,12 +162,12 @@ describe('AppShell', () => {
     fireEvent.click(screen.getByRole('option', { name: 'Open evals' }))
 
     await waitFor(() => {
-      expect(routerMock.navigate).toHaveBeenCalledWith({ to: '/evals' })
+      expect(routerSpy.navigate).toHaveBeenCalledWith({ to: '/evals' })
     })
   })
 
   it('does not request hidden context while idle', async () => {
-    const commandClient = createMockCommandClient()
+    const commandClient = createTestCommandClient()
     const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
     const trackedClient = {
       ...commandClient,
@@ -187,7 +187,7 @@ describe('AppShell', () => {
 
   it('keeps active conversation context collapsed until the user opens it', async () => {
     window.history.pushState(null, '', '/?conversationId=conversation-002')
-    const commandClient = createMockCommandClient({
+    const commandClient = createTestCommandClient({
       conversations: {
         conversations: [
           {
@@ -237,7 +237,7 @@ describe('AppShell', () => {
 
   it('opens selected idle conversation context as a fixed right column', async () => {
     window.history.pushState(null, '', '/?conversationId=conversation-002')
-    const commandClient = createMockCommandClient()
+    const commandClient = createTestCommandClient()
     const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
     const trackedClient = {
       ...commandClient,
@@ -261,7 +261,7 @@ describe('AppShell', () => {
 
   it('uses the selected conversation run when multiple conversations are active', async () => {
     window.history.pushState(null, '', '/?conversationId=conversation-001')
-    const commandClient = createMockCommandClient()
+    const commandClient = createTestCommandClient()
     const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
     const trackedClient = {
       ...commandClient,
@@ -295,7 +295,7 @@ describe('AppShell', () => {
 
   it('does not show another conversation run while the selected conversation is idle', async () => {
     window.history.pushState(null, '', '/?conversationId=conversation-001')
-    const commandClient = createMockCommandClient()
+    const commandClient = createTestCommandClient()
     const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
     const trackedClient = {
       ...commandClient,
@@ -329,7 +329,7 @@ describe('AppShell', () => {
 
   it('keeps active run context off standalone pages', async () => {
     window.history.pushState(null, '', '/settings')
-    const commandClient = createMockCommandClient()
+    const commandClient = createTestCommandClient()
     const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
     const trackedClient = {
       ...commandClient,
@@ -397,7 +397,7 @@ describe('AppShell', () => {
   })
 
   it('does not render shell permission controls; context decisions scroll the timeline', async () => {
-    const commandClient = createMockCommandClient({
+    const commandClient = createTestCommandClient({
       contextSnapshot: {
         activeArtifact: 'App shell (WIP)',
         decisions: [

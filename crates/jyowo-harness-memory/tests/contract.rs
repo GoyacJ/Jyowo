@@ -19,17 +19,17 @@ use harness_memory::{
     MemoryVisibilityFilter,
 };
 
+#[cfg(feature = "external-slot")]
+use harness_memory::InMemoryMemoryProvider;
 #[cfg(all(feature = "builtin", feature = "external-slot"))]
 use harness_memory::MemoryManager;
-#[cfg(feature = "external-slot")]
-use harness_memory::MockMemoryProvider;
 #[cfg(all(feature = "builtin", feature = "external-slot"))]
 use harness_memory::{BuiltinMemory, MemdirFile};
 
 #[cfg(feature = "external-slot")]
 #[tokio::test]
-async fn mock_provider_contract_upserts_lists_and_forgets() {
-    let provider = MockMemoryProvider::new("mock-contract");
+async fn in_memory_provider_contract_upserts_lists_and_forgets() {
+    let provider = InMemoryMemoryProvider::new("test-contract");
     let session_id = SessionId::new();
     let kept = record(
         TenantId::SINGLE,
@@ -67,8 +67,8 @@ async fn mock_provider_contract_upserts_lists_and_forgets() {
 
 #[cfg(feature = "external-slot")]
 #[tokio::test]
-async fn mock_provider_contract_enforces_tenant_isolation() {
-    let provider = MockMemoryProvider::new("mock-contract");
+async fn in_memory_provider_contract_enforces_tenant_isolation() {
+    let provider = InMemoryMemoryProvider::new("test-contract");
     let session_id = SessionId::new();
     let kept = record(TenantId::SINGLE, MemoryVisibility::Tenant, "single tenant");
     let leaked = record(TenantId::SHARED, MemoryVisibility::Tenant, "shared tenant");
@@ -86,8 +86,8 @@ async fn mock_provider_contract_enforces_tenant_isolation() {
 
 #[cfg(feature = "external-slot")]
 #[tokio::test]
-async fn mock_provider_contract_enforces_private_visibility() {
-    let provider = MockMemoryProvider::new("mock-contract");
+async fn in_memory_provider_contract_enforces_private_visibility() {
+    let provider = InMemoryMemoryProvider::new("test-contract");
     let session_id = SessionId::new();
     let visible = record(
         TenantId::SINGLE,
@@ -115,8 +115,8 @@ async fn mock_provider_contract_enforces_private_visibility() {
 
 #[cfg(feature = "external-slot")]
 #[tokio::test]
-async fn mock_provider_recall_updates_access_metadata_internally() {
-    let provider = MockMemoryProvider::new("mock-contract");
+async fn in_memory_provider_recall_updates_access_metadata_internally() {
+    let provider = InMemoryMemoryProvider::new("test-contract");
     let session_id = SessionId::new();
     let kept = record(
         TenantId::SINGLE,
@@ -147,8 +147,8 @@ async fn mock_provider_recall_updates_access_metadata_internally() {
 
 #[cfg(feature = "external-slot")]
 #[tokio::test]
-async fn mock_provider_list_returns_bounded_content_preview() {
-    let provider = MockMemoryProvider::new("mock-contract");
+async fn in_memory_provider_list_returns_bounded_content_preview() {
+    let provider = InMemoryMemoryProvider::new("test-contract");
     let session_id = SessionId::new();
     let long = record(
         TenantId::SINGLE,
@@ -189,7 +189,7 @@ async fn builtin_memdir_does_not_participate_in_external_recall() {
         .unwrap()
         .is_empty());
 
-    let external = Arc::new(MockMemoryProvider::new("mock-contract"));
+    let external = Arc::new(InMemoryMemoryProvider::new("test-contract"));
     external
         .upsert(record(
             TenantId::SINGLE,

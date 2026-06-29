@@ -53,15 +53,15 @@ fn jsonrpc_request_response_round_trips() {
 #[tokio::test]
 async fn transport_and_connection_traits_are_object_safe() {
     let transport: Arc<dyn harness_mcp::McpTransport> =
-        Arc::new(MockTransport::new(MockConnection::default()));
+        Arc::new(TestTransport::new(TestConnection::default()));
     let spec = server_spec("slack", McpServerSource::Workspace);
 
     let connection = McpClient::new(transport)
         .connect(spec)
         .await
-        .expect("mock transport connects");
+        .expect("test transport connects");
 
-    assert_eq!(connection.connection_id(), "mock");
+    assert_eq!(connection.connection_id(), "test");
 }
 
 #[test]
@@ -157,8 +157,8 @@ fn tool_filter_applies_allow_deny_and_conflict_policy() {
 }
 
 #[tokio::test]
-async fn registry_injects_mcp_tool_wrapper_and_executes_mock_connection() {
-    let connection = MockConnection {
+async fn registry_injects_mcp_tool_wrapper_and_executes_test_connection() {
+    let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
             description: Some("Post a message".into()),
@@ -229,7 +229,7 @@ async fn registry_injects_mcp_tool_wrapper_and_executes_mock_connection() {
 
 #[tokio::test]
 async fn registry_records_metric_when_tool_filter_skips_tool() {
-    let connection = MockConnection {
+    let connection = TestConnection {
         tools: vec![
             McpToolDescriptor {
                 name: "lookup".into(),
@@ -286,7 +286,7 @@ async fn registry_records_metric_when_tool_filter_skips_tool() {
 
 #[tokio::test]
 async fn mcp_tool_wrapper_validates_input_schema_before_upstream_call() {
-    let connection = MockConnection {
+    let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
             description: Some("Post a message".into()),
@@ -336,7 +336,7 @@ async fn mcp_tool_wrapper_validates_input_schema_before_upstream_call() {
 
 #[tokio::test]
 async fn mcp_tool_wrapper_maps_trusted_mcp_annotations_to_tool_properties() {
-    let connection = MockConnection {
+    let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "lookup".into(),
             description: Some("Lookup".into()),
@@ -387,7 +387,7 @@ async fn mcp_tool_wrapper_maps_trusted_mcp_annotations_to_tool_properties() {
 
 #[tokio::test]
 async fn mcp_tool_wrapper_keeps_untrusted_annotations_fail_closed() {
-    let connection = MockConnection {
+    let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "lookup".into(),
             description: Some("Lookup".into()),
@@ -434,7 +434,7 @@ async fn mcp_tool_wrapper_keeps_untrusted_annotations_fail_closed() {
 
 #[tokio::test]
 async fn mcp_tool_wrapper_maps_mcp_progress_to_progress_and_heartbeat_events() {
-    let connection = MockConnection {
+    let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
             description: Some("Post a message".into()),
@@ -510,7 +510,7 @@ async fn mcp_tool_wrapper_maps_mcp_progress_to_progress_and_heartbeat_events() {
 
 #[tokio::test]
 async fn mcp_tool_wrapper_maps_mcp_cancelled_to_interrupted_error() {
-    let connection = MockConnection {
+    let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
             description: Some("Post a message".into()),
@@ -565,7 +565,7 @@ async fn mcp_tool_wrapper_maps_mcp_cancelled_to_interrupted_error() {
 
 #[tokio::test]
 async fn mcp_tool_wrapper_sends_cancel_and_times_out_when_upstream_ignores_ack() {
-    let connection = Arc::new(MockConnection {
+    let connection = Arc::new(TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
             description: Some("Post a message".into()),
@@ -666,7 +666,7 @@ fn tool_context() -> ToolContext {
 }
 
 #[derive(Default)]
-struct MockConnection {
+struct TestConnection {
     tools: Vec<McpToolDescriptor>,
     results: Mutex<VecDeque<McpToolResult>>,
     streams: Mutex<VecDeque<Vec<McpToolCallEvent>>>,
@@ -674,16 +674,16 @@ struct MockConnection {
     cancelled: Mutex<Vec<String>>,
 }
 
-impl MockConnection {
+impl TestConnection {
     fn cancelled_count(&self) -> usize {
         self.cancelled.lock().len()
     }
 }
 
 #[async_trait]
-impl McpConnection for MockConnection {
+impl McpConnection for TestConnection {
     fn connection_id(&self) -> &'static str {
-        "mock"
+        "test"
     }
 
     async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, harness_mcp::McpError> {
@@ -698,7 +698,7 @@ impl McpConnection for MockConnection {
         self.results
             .lock()
             .pop_front()
-            .ok_or_else(|| harness_mcp::McpError::Protocol("missing mock result".into()))
+            .ok_or_else(|| harness_mcp::McpError::Protocol("missing test result".into()))
     }
 
     async fn call_tool_events(
@@ -717,7 +717,7 @@ impl McpConnection for MockConnection {
                 self.results
                     .lock()
                     .pop_front()
-                    .ok_or_else(|| harness_mcp::McpError::Protocol("missing mock result".into()))?,
+                    .ok_or_else(|| harness_mcp::McpError::Protocol("missing test result".into()))?,
             )]
         };
         Ok(Box::pin(futures::stream::iter(events)))
@@ -769,12 +769,12 @@ impl McpMetricsSink for CollectingMetrics {
     }
 }
 
-struct MockTransport {
+struct TestTransport {
     connection: Arc<dyn McpConnection>,
 }
 
-impl MockTransport {
-    fn new(connection: MockConnection) -> Self {
+impl TestTransport {
+    fn new(connection: TestConnection) -> Self {
         Self {
             connection: Arc::new(connection),
         }
@@ -782,9 +782,9 @@ impl MockTransport {
 }
 
 #[async_trait]
-impl harness_mcp::McpTransport for MockTransport {
+impl harness_mcp::McpTransport for TestTransport {
     fn transport_id(&self) -> &'static str {
-        "mock"
+        "test"
     }
 
     async fn connect(

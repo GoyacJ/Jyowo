@@ -91,7 +91,7 @@ impl McpMetricsSink for CollectingMetrics {
 #[tokio::test]
 #[cfg(feature = "in-process")]
 async fn in_process_transport_satisfies_client_contract() {
-    let connection = MockConnection {
+    let connection = TestConnection {
         tools: vec![tool("contract_tool")],
         results: Mutex::new(VecDeque::from([McpToolResult::text("contract-ok")])),
     };
@@ -382,14 +382,14 @@ async fn wait_for_http_uri(uri: &str) {
 }
 
 #[cfg(feature = "in-process")]
-struct MockConnection {
+struct TestConnection {
     tools: Vec<McpToolDescriptor>,
     results: Mutex<VecDeque<McpToolResult>>,
 }
 
 #[cfg(feature = "in-process")]
 #[async_trait]
-impl McpConnection for MockConnection {
+impl McpConnection for TestConnection {
     fn connection_id(&self) -> &'static str {
         "contract-in-process"
     }

@@ -13,7 +13,7 @@ use crate::{
     ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 
-pub struct MockProvider {
+pub struct TestModelProvider {
     provider_id: String,
     descriptors: Vec<ModelDescriptor>,
     events: Vec<ModelStreamEvent>,
@@ -21,11 +21,11 @@ pub struct MockProvider {
     health: HealthStatus,
 }
 
-impl Default for MockProvider {
+impl Default for TestModelProvider {
     fn default() -> Self {
         Self {
-            provider_id: "mock".to_owned(),
-            descriptors: vec![mock_descriptor()],
+            provider_id: "test".to_owned(),
+            descriptors: vec![test_descriptor()],
             events: vec![ModelStreamEvent::MessageStop],
             requests: Mutex::new(Vec::new()),
             health: HealthStatus::Healthy,
@@ -33,7 +33,7 @@ impl Default for MockProvider {
     }
 }
 
-impl MockProvider {
+impl TestModelProvider {
     #[must_use]
     pub fn with_events(mut self, events: Vec<ModelStreamEvent>) -> Self {
         self.events = events;
@@ -52,7 +52,7 @@ impl MockProvider {
 }
 
 #[async_trait]
-impl ModelProvider for MockProvider {
+impl ModelProvider for TestModelProvider {
     fn provider_id(&self) -> &str {
         &self.provider_id
     }
@@ -97,8 +97,8 @@ pub struct ScriptedProvider {
 impl ScriptedProvider {
     pub fn new(responses: Vec<ScriptedResponse>) -> Self {
         Self {
-            provider_id: "mock".to_owned(),
-            descriptors: vec![mock_descriptor()],
+            provider_id: "test".to_owned(),
+            descriptors: vec![test_descriptor()],
             responses: Mutex::new(responses.into()),
             requests: Mutex::new(Vec::new()),
             health: HealthStatus::Healthy,
@@ -144,12 +144,12 @@ impl ModelProvider for ScriptedProvider {
 }
 
 #[derive(Default)]
-pub struct MockCredentialSource {
+pub struct TestCredentialSource {
     values: Mutex<HashMap<CredentialKey, CredentialValue>>,
     rotated: Mutex<Vec<CredentialKey>>,
 }
 
-impl MockCredentialSource {
+impl TestCredentialSource {
     pub async fn insert(&self, key: CredentialKey, value: CredentialValue) {
         self.values.lock().await.insert(key, value);
     }
@@ -171,7 +171,7 @@ impl MockCredentialSource {
 }
 
 #[async_trait]
-impl CredentialSource for MockCredentialSource {
+impl CredentialSource for TestCredentialSource {
     async fn fetch(&self, key: CredentialKey) -> Result<CredentialValue, CredentialError> {
         self.values
             .lock()
@@ -191,11 +191,11 @@ impl CredentialSource for MockCredentialSource {
     }
 }
 
-fn mock_descriptor() -> ModelDescriptor {
+fn test_descriptor() -> ModelDescriptor {
     ModelDescriptor {
-        provider_id: "mock".to_owned(),
-        model_id: "mock-model".to_owned(),
-        display_name: "Mock model".to_owned(),
+        provider_id: "test".to_owned(),
+        model_id: "test-model".to_owned(),
+        display_name: "Test model".to_owned(),
         protocol: ModelProtocol::Messages,
         context_window: 128_000,
         max_output_tokens: 8192,

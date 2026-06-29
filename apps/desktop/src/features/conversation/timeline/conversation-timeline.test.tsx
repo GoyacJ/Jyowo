@@ -7,13 +7,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { appI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient, ConversationTurn } from '@/shared/tauri/commands'
-import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createTestCommandClient } from '@/testing/command-client'
 import {
   codexAttachmentStressTurns,
   codexLargeDiffTurns,
   codexStyleEvidenceTurns,
-} from './conversation-evidence-fixtures'
+} from '@/testing/conversation-evidence-fixtures'
 import { ConversationTimeline } from './conversation-timeline'
 import { parseDiffEvidenceLines } from './diff-evidence-block'
 
@@ -129,7 +129,7 @@ describe('ConversationTimeline', () => {
     try {
       renderTimelineWithClient(
         <ConversationTimeline title="User message actions" turns={[messageTurn]} />,
-        createMockCommandClient(),
+        createTestCommandClient(),
       )
 
       const time = screen.getByTitle('Message timestamp')
@@ -195,7 +195,7 @@ describe('ConversationTimeline', () => {
     const dataUrl =
       'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII='
     const commandClient = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       getArtifactMediaPreview: async (
         request: Parameters<CommandClient['getArtifactMediaPreview']>[0],
       ) => {
@@ -240,7 +240,7 @@ describe('ConversationTimeline', () => {
     try {
       renderTimelineWithClient(
         <ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />,
-        createMockCommandClient(),
+        createTestCommandClient(),
       )
 
       expect(screen.getByText('已编辑 1 个文件')).toBeInTheDocument()
@@ -263,7 +263,7 @@ describe('ConversationTimeline', () => {
   it('renders Codex evidence blocks with stable DOM shape and disclosure rules', () => {
     renderTimelineWithClient(
       <ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />,
-      createMockCommandClient(),
+      createTestCommandClient(),
     )
 
     const diffScrollRegion = screen.getByTestId('diff-scroll-region')
@@ -299,7 +299,7 @@ describe('ConversationTimeline', () => {
   it('keeps large diff content inside the evidence scroll region', () => {
     renderTimelineWithClient(
       <ConversationTimeline title="Large diff" turns={codexLargeDiffTurns} />,
-      createMockCommandClient(),
+      createTestCommandClient(),
     )
 
     expect(screen.getByText('ConversationTimeline.test.tsx')).toBeInTheDocument()
@@ -334,7 +334,7 @@ describe('ConversationTimeline', () => {
     renderTimelineWithClient(
       <ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />,
       {
-        ...createMockCommandClient(),
+        ...createTestCommandClient(),
         getArtifactMediaPreview,
       },
     )
@@ -362,7 +362,7 @@ describe('ConversationTimeline', () => {
     renderTimelineWithClient(
       <ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />,
       {
-        ...createMockCommandClient(),
+        ...createTestCommandClient(),
         getArtifactMediaPreview,
         getAttachmentMediaPreview,
       },
@@ -395,7 +395,7 @@ describe('ConversationTimeline', () => {
       renderTimelineWithClient(
         <ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />,
         {
-          ...createMockCommandClient(),
+          ...createTestCommandClient(),
           getArtifactMediaPreview,
           getAttachmentMediaPreview,
         },
@@ -425,7 +425,7 @@ describe('ConversationTimeline', () => {
       renderTimelineWithClient(
         <ConversationTimeline title="Attachment evidence" turns={codexAttachmentStressTurns} />,
         {
-          ...createMockCommandClient(),
+          ...createTestCommandClient(),
           getArtifactMediaPreview,
         },
       )
@@ -544,7 +544,7 @@ describe('ConversationTimeline', () => {
 
   it('shows a safe placeholder when a process image artifact preview is loading or unavailable', async () => {
     const commandClient = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       getArtifactMediaPreview: () => Promise.reject(new Error('preview unavailable')),
     } satisfies CommandClient
 

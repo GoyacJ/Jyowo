@@ -6,7 +6,7 @@ use jyowo_harness_sdk::{ConfigSource, HarnessOptions, LastKnownGoodConfig, Optio
 fn strict_options_reject_unknown_fields() {
     let input = r#"{
         "workspace_root": "/tmp/jyowo-options",
-        "model_id": "mock",
+        "model_id": "test",
         "unknown": true
     }"#;
 
@@ -68,7 +68,7 @@ fn load_with_fallback_uses_last_known_good() {
 fn plaintext_secret_warning_is_observable() {
     let input = r#"{
         "workspace_root": "/tmp/jyowo-options",
-        "model_id": "mock",
+        "model_id": "test",
         "default_session_options": {
             "workspace_root": "/tmp/jyowo-options",
             "model_extra": {

@@ -65,7 +65,7 @@ async fn engine_records_stream_usage_into_observer_and_usage_events() {
         .await;
 
     let snapshot = PricingSnapshotId {
-        pricing_id: "mock-pricing".to_owned(),
+        pricing_id: "test-pricing".to_owned(),
         version: 3,
     };
     assert!(events.iter().any(|event| matches!(
@@ -112,7 +112,7 @@ async fn engine_records_stream_usage_into_observer_and_usage_events() {
     assert_eq!(
         observer
             .usage
-            .snapshot(UsageScope::Model("mock/usage-model".to_owned()))
+            .snapshot(UsageScope::Model("test/usage-model".to_owned()))
             .output_tokens,
         7
     );
@@ -120,7 +120,7 @@ async fn engine_records_stream_usage_into_observer_and_usage_events() {
     assert_eq!(observer.usage.snapshot(UsageScope::Global).cost_micros, 260);
 
     let metrics = observer.model_metrics.report();
-    let model_metrics = metrics.models.get("mock/usage-model").unwrap();
+    let model_metrics = metrics.models.get("test/usage-model").unwrap();
     assert_eq!(model_metrics.infer_total, 1);
     assert_eq!(model_metrics.input_tokens, 11);
     assert_eq!(model_metrics.output_tokens, 7);
@@ -314,7 +314,7 @@ impl MutablePricingModel {
 #[async_trait]
 impl ModelProvider for MutablePricingModel {
     fn provider_id(&self) -> &'static str {
-        "mock"
+        "test"
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
@@ -322,7 +322,7 @@ impl ModelProvider for MutablePricingModel {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
             lifecycle: harness_model::ModelLifecycle::Stable,
-            provider_id: "mock".to_owned(),
+            provider_id: "test".to_owned(),
             model_id: "usage-model".to_owned(),
             display_name: "Usage model".to_owned(),
             context_window: 8_000,
@@ -350,20 +350,20 @@ struct UsageModel;
 #[async_trait]
 impl ModelProvider for UsageModel {
     fn provider_id(&self) -> &'static str {
-        "mock"
+        "test"
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
             lifecycle: harness_model::ModelLifecycle::Stable,
-            provider_id: "mock".to_owned(),
+            provider_id: "test".to_owned(),
             model_id: "usage-model".to_owned(),
             display_name: "Usage model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
             conversation_capability: ConversationModelCapability::default(),
-            pricing: Some(model_pricing("mock-pricing", 3)),
+            pricing: Some(model_pricing("test-pricing", 3)),
         }]
     }
 

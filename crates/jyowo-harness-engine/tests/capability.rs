@@ -154,7 +154,7 @@ impl Harness {
             &ToolPoolFilter::default(),
             &ToolSearchMode::Disabled,
             &ToolPoolModelProfile {
-                provider: harness_contracts::ModelProvider("mock".to_owned()),
+                provider: harness_contracts::ModelProvider("test".to_owned()),
                 max_context_tokens: Some(8_000),
             },
             &SchemaResolverContext {
@@ -175,7 +175,7 @@ impl Harness {
             .with_tools(tool_pool)
             .with_permission_broker(Arc::new(AllowBroker))
             .with_workspace_root(workspace.path())
-            .with_model_id("mock-model")
+            .with_model_id("test-model")
             .with_protocol(ModelProtocol::Messages);
         if let Some(blob_store) = blob_store {
             builder = builder.with_blob_store(blob_store);
@@ -235,16 +235,16 @@ impl SequenceModel {
 #[async_trait]
 impl ModelProvider for SequenceModel {
     fn provider_id(&self) -> &'static str {
-        "mock"
+        "test"
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
             lifecycle: harness_model::ModelLifecycle::Stable,
-            provider_id: "mock".to_owned(),
-            model_id: "mock-model".to_owned(),
-            display_name: "Mock model".to_owned(),
+            provider_id: "test".to_owned(),
+            model_id: "test-model".to_owned(),
+            display_name: "Test model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
             conversation_capability: ConversationModelCapability::default(),

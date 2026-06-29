@@ -1,4 +1,4 @@
-#![cfg(feature = "mock")]
+#![cfg(feature = "testing")]
 
 use chrono::Utc;
 use futures::StreamExt;
@@ -18,7 +18,7 @@ fn message(text: &str) -> Message {
 
 fn request(text: &str) -> ModelRequest {
     ModelRequest {
-        model_id: "mock-model".to_owned(),
+        model_id: "test-model".to_owned(),
         messages: vec![message(text)],
         tools: None,
         system: None,
@@ -34,18 +34,18 @@ fn request(text: &str) -> ModelRequest {
 fn credential_key(label: &str) -> CredentialKey {
     CredentialKey {
         tenant_id: TenantId::SINGLE,
-        provider_id: "mock".to_owned(),
+        provider_id: "test".to_owned(),
         key_label: label.to_owned(),
     }
 }
 
 #[tokio::test]
-async fn mock_provider_defaults_are_contract_friendly() {
-    let provider = MockProvider::default();
+async fn test_provider_defaults_are_contract_friendly() {
+    let provider = TestModelProvider::default();
 
-    assert_eq!(provider.provider_id(), "mock");
+    assert_eq!(provider.provider_id(), "test");
     assert_eq!(provider.supported_models().len(), 1);
-    assert_eq!(provider.supported_models()[0].model_id, "mock-model");
+    assert_eq!(provider.supported_models()[0].model_id, "test-model");
     assert_eq!(provider.health().await, HealthStatus::Healthy);
 
     let events = provider
@@ -59,8 +59,8 @@ async fn mock_provider_defaults_are_contract_friendly() {
 }
 
 #[tokio::test]
-async fn mock_provider_replays_events_and_records_requests() {
-    let provider = MockProvider::default().with_events(vec![
+async fn test_provider_replays_events_and_records_requests() {
+    let provider = TestModelProvider::default().with_events(vec![
         ModelStreamEvent::ContentBlockDelta {
             index: 0,
             delta: ContentDelta::Text("hello".to_owned()),
@@ -141,8 +141,8 @@ async fn scripted_provider_waits_for_cancel() {
 }
 
 #[tokio::test]
-async fn mock_credential_source_is_memory_only_and_records_rotation() {
-    let source = MockCredentialSource::default();
+async fn test_credential_source_is_memory_only_and_records_rotation() {
+    let source = TestCredentialSource::default();
     let key = credential_key("primary");
     source.insert_secret(key.clone(), "secret-value").await;
 

@@ -3,19 +3,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { pickAttachmentPath } from './file-dialog'
 
-const openMock = vi.hoisted(() => vi.fn())
+const openDialogSpy = vi.hoisted(() => vi.fn())
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
-  open: openMock,
+  open: openDialogSpy,
 }))
 
 describe('file-dialog', () => {
   beforeEach(() => {
-    openMock.mockReset()
+    openDialogSpy.mockReset()
   })
 
   it('filters attachment selection by accepted model modalities', async () => {
-    openMock.mockResolvedValue('/tmp/photo.png')
+    openDialogSpy.mockResolvedValue('/tmp/photo.png')
 
     await expect(pickAttachmentPath(['image', 'video'])).resolves.toBe('/tmp/photo.png')
 
@@ -36,7 +36,7 @@ describe('file-dialog', () => {
   })
 
   it('does not add a broad document filter unless file input is accepted', async () => {
-    openMock.mockResolvedValue('/tmp/movie.mp4')
+    openDialogSpy.mockResolvedValue('/tmp/movie.mp4')
 
     await pickAttachmentPath(['video'])
 

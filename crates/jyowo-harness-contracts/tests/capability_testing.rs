@@ -5,13 +5,13 @@ use std::sync::Arc;
 use bytes::Bytes;
 use futures::{future::BoxFuture, stream::BoxStream};
 use harness_contracts::{
-    BlobReaderCap, BlobRef, MockCapabilityRegistry, TenantId, ToolCapability, ToolError,
+    BlobReaderCap, BlobRef, TenantId, TestCapabilityRegistry, ToolCapability, ToolError,
 };
 
 #[test]
-fn mock_capability_registry_is_testing_only_and_converts_to_runtime_registry() {
+fn test_capability_registry_is_testing_only_and_converts_to_runtime_registry() {
     let blob_reader: Arc<dyn BlobReaderCap> = Arc::new(FakeBlobReader);
-    let registry = MockCapabilityRegistry::new()
+    let registry = TestCapabilityRegistry::new()
         .with_capability(ToolCapability::BlobReader, blob_reader.clone())
         .into_registry();
 

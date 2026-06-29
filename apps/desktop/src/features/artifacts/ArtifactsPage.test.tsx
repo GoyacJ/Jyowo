@@ -6,8 +6,8 @@ import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CommandClient, ListArtifactsResponse } from '@/shared/tauri/commands'
-import { createMockCommandClient, createRejectedCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createRejectedTestCommandClient, createTestCommandClient } from '@/testing/command-client'
 
 import { ArtifactsPage } from './ArtifactsPage'
 
@@ -49,7 +49,7 @@ const artifacts: ListArtifactsResponse = {
   ],
 }
 
-function renderArtifactsPage(commandClient: CommandClient = createMockCommandClient()) {
+function renderArtifactsPage(commandClient: CommandClient = createTestCommandClient()) {
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -77,7 +77,7 @@ describe('ArtifactsPage', () => {
   })
 
   it('loads artifact history from the command client and switches previews', async () => {
-    const commandClient = createMockCommandClient({ artifacts })
+    const commandClient = createTestCommandClient({ artifacts })
     const listArtifacts = vi.fn(commandClient.listArtifacts)
     const trackedClient = {
       ...commandClient,
@@ -109,7 +109,7 @@ describe('ArtifactsPage', () => {
   })
 
   it('renders empty, loading, and error states without raw backend details', async () => {
-    const { unmount } = renderArtifactsPage(createMockCommandClient({ delayMs: 10 }))
+    const { unmount } = renderArtifactsPage(createTestCommandClient({ delayMs: 10 }))
 
     expect(screen.getByText('Loading artifacts')).toBeInTheDocument()
     expect(
@@ -119,7 +119,7 @@ describe('ArtifactsPage', () => {
     unmount()
 
     const { unmount: unmountEmpty } = renderArtifactsPage(
-      createMockCommandClient({ artifacts: { artifacts: [] } }),
+      createTestCommandClient({ artifacts: { artifacts: [] } }),
     )
 
     expect(await screen.findByText('No artifacts for this conversation.')).toBeInTheDocument()
@@ -128,7 +128,9 @@ describe('ArtifactsPage', () => {
     unmountEmpty()
 
     renderArtifactsPage(
-      createRejectedCommandClient(new Error('artifact failed with Authorization Bearer secret')),
+      createRejectedTestCommandClient(
+        new Error('artifact failed with Authorization Bearer secret'),
+      ),
     )
 
     expect(await screen.findByText('Artifact history could not be loaded.')).toBeInTheDocument()
@@ -142,7 +144,7 @@ describe('ArtifactsPage', () => {
       .mockResolvedValueOnce(artifacts)
       .mockRejectedValueOnce(new Error('artifact failed with Authorization Bearer secret'))
     const commandClient = {
-      ...createMockCommandClient(),
+      ...createTestCommandClient(),
       listArtifacts,
     } satisfies CommandClient
     const { queryClient } = renderArtifactsPage(commandClient)

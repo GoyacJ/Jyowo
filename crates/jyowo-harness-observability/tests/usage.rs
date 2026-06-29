@@ -98,7 +98,7 @@ fn usage_accumulator_uses_pricing_snapshot_for_cost_calculation() {
 fn default_usage_accumulator_uses_registered_pricing_table() {
     let usage = UsageAccumulator::default();
     let snapshot = PricingSnapshotId {
-        pricing_id: "mock-pricing".to_owned(),
+        pricing_id: "test-pricing".to_owned(),
         version: 3,
     };
     usage.register_pricing(PricingTableEntry {
@@ -116,7 +116,7 @@ fn default_usage_accumulator_uses_registered_pricing_table() {
     usage.record_with_pricing(
         UsageScope::Global,
         Some(ModelRef {
-            provider_id: "mock".to_owned(),
+            provider_id: "test".to_owned(),
             model_id: "usage-model".to_owned(),
         }),
         Some(snapshot),
@@ -139,7 +139,7 @@ fn default_pricing_table_keeps_missing_pricing_as_none() {
     usage.record_with_pricing(
         UsageScope::Global,
         Some(ModelRef {
-            provider_id: "mock".to_owned(),
+            provider_id: "test".to_owned(),
             model_id: "missing-pricing-model".to_owned(),
         }),
         None,

@@ -662,7 +662,7 @@ Backend code MUST NOT bypass:
 - tenant and workspace scope checks for Memory, Replay, and Audit reads.
 - result budget handling for large Tool output.
 
-Bypass code is allowed only for tests that explicitly use mock or noop adapters.
+Bypass code is allowed only for tests that explicitly use test adapters.
 
 ## Naming
 

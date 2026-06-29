@@ -16,7 +16,7 @@ use harness_contracts::{
 use harness_contracts::{Severity, ThreatAction, ThreatCategory};
 #[cfg(feature = "external-slot")]
 use harness_memory::{
-    MemoryEventSink, MemoryManager, MemoryMetadata, MemoryRecord, MockMemoryProvider,
+    InMemoryMemoryProvider, MemoryEventSink, MemoryManager, MemoryMetadata, MemoryRecord,
 };
 use harness_memory::{MemoryThreatScanner, ThreatPattern};
 #[cfg(feature = "external-slot")]
@@ -131,7 +131,7 @@ fn scanner_redacts_overlapping_ranges_stably() {
 async fn threat_scan_emits_event() {
     let session_id = SessionId::new();
     let sink = Arc::new(RecordingSink::default());
-    let provider = Arc::new(MockMemoryProvider::new("mock"));
+    let provider = Arc::new(InMemoryMemoryProvider::new("test"));
     let manager = MemoryManager::new()
         .with_event_sink(sink.clone())
         .with_threat_scanner(Arc::new(MemoryThreatScanner::default()));
@@ -159,7 +159,7 @@ async fn threat_scan_emits_event() {
     assert!(sink.events.lock().iter().any(|event| {
         matches!(event, Event::MemoryThreatDetected(detected)
             if detected.session_id == session_id
-                && detected.provider_id.as_deref() == Some("mock")
+                && detected.provider_id.as_deref() == Some("test")
                 && detected.direction == ThreatDirection::OnWrite
                 && detected.action == ThreatAction::Block
                 && detected.content_hash.0 != [0; 32])

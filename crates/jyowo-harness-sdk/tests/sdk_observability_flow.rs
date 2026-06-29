@@ -27,7 +27,7 @@ async fn sdk_observability_flow_redacts_stream_and_replays_stored_events_determi
         .expect("raw event should be stored");
 
     let harness = Harness::builder()
-        .with_model(testing::MockProvider::default())
+        .with_model(testing::TestModelProvider::default())
         .with_store_arc(store.clone())
         .with_sandbox(testing::NoopSandbox::new())
         .build()

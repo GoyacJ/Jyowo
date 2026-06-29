@@ -54,7 +54,7 @@ async fn hook_context_uses_runtime_permission_interactivity_and_redactor() {
         .with_tools(ToolPool::default())
         .with_permission_broker(Arc::new(AllowBroker))
         .with_workspace_root(workspace.path())
-        .with_model_id("mock-model")
+        .with_model_id("test-model")
         .with_protocol(ModelProtocol::Messages)
         .with_observer(observer)
         .build()
@@ -139,16 +139,16 @@ struct OneShotModel;
 #[async_trait]
 impl ModelProvider for OneShotModel {
     fn provider_id(&self) -> &str {
-        "mock"
+        "test"
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
             lifecycle: harness_model::ModelLifecycle::Stable,
-            provider_id: "mock".to_owned(),
-            model_id: "mock-model".to_owned(),
-            display_name: "Mock model".to_owned(),
+            provider_id: "test".to_owned(),
+            model_id: "test-model".to_owned(),
+            display_name: "Test model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
             conversation_capability: ConversationModelCapability::default(),

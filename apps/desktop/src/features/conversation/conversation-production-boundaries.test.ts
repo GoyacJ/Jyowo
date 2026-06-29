@@ -8,7 +8,6 @@ describe('conversation production boundaries', () => {
       join(process.cwd(), 'src/features/conversation/ConversationWorkspace.tsx'),
       'utf8',
     )
-    const retiredRuntimeModule = ['mock', 'conversation', 'runtime'].join('-')
     const retiredFixtureModule = ['prototype', 'data'].join('-')
     const artifactsFeatureAlias = ['@/features', 'artifacts'].join('/')
     const oldRenderSources = [
@@ -17,13 +16,24 @@ describe('conversation production boundaries', () => {
       ['Artifact', 'Summary'].join(''),
     ]
 
-    expect(source).not.toContain(retiredRuntimeModule)
-    expect(source).not.toContain('mockConversationRuntime')
-    expect(source).not.toContain('createMockConversationState')
     expect(source).not.toContain(retiredFixtureModule)
     expect(source).not.toContain(artifactsFeatureAlias)
     for (const oldRenderSource of oldRenderSources) {
       expect(source).not.toContain(oldRenderSource)
+    }
+  })
+
+  it('keeps retired mock runtime names out of production conversation sources', () => {
+    const files = [
+      'src/features/conversation/ConversationWorkspace.tsx',
+      'src/features/conversation/use-conversation.ts',
+      'src/shared/tauri/default-client.ts',
+    ]
+    const source = files.map((file) => readFileSync(join(process.cwd(), file), 'utf8')).join('\n')
+    const retiredNames = ['mockConversationRuntime', 'mock-conversation-runtime', 'mock-client']
+
+    for (const retiredName of retiredNames) {
+      expect(source).not.toContain(retiredName)
     }
   })
 

@@ -45,7 +45,7 @@ async fn permission_suppression_emits_event() {
         &ToolPoolFilter::default(),
         &harness_contracts::ToolSearchMode::Disabled,
         &ToolPoolModelProfile {
-            provider: harness_contracts::ModelProvider("mock".to_owned()),
+            provider: harness_contracts::ModelProvider("test".to_owned()),
             max_context_tokens: Some(8_000),
         },
         &SchemaResolverContext {
@@ -66,7 +66,7 @@ async fn permission_suppression_emits_event() {
         .with_tools(tools)
         .with_permission_broker(broker.clone())
         .with_workspace_root(workspace.path())
-        .with_model_id("mock-model")
+        .with_model_id("test-model")
         .with_protocol(ModelProtocol::Messages)
         .with_cap_registry(Arc::new(CapabilityRegistry::default()))
         .build()
@@ -129,7 +129,7 @@ async fn bypass_permission_mode_journals_request_context_for_audit() {
         &ToolPoolFilter::default(),
         &harness_contracts::ToolSearchMode::Disabled,
         &ToolPoolModelProfile {
-            provider: harness_contracts::ModelProvider("mock".to_owned()),
+            provider: harness_contracts::ModelProvider("test".to_owned()),
             max_context_tokens: Some(8_000),
         },
         &SchemaResolverContext {
@@ -150,7 +150,7 @@ async fn bypass_permission_mode_journals_request_context_for_audit() {
         .with_tools(tools)
         .with_permission_broker(broker.clone())
         .with_workspace_root(workspace.path())
-        .with_model_id("mock-model")
+        .with_model_id("test-model")
         .with_protocol(ModelProtocol::Messages)
         .with_cap_registry(Arc::new(CapabilityRegistry::default()))
         .build()
@@ -235,16 +235,16 @@ impl TwoStepModel {
 #[async_trait]
 impl ModelProvider for TwoStepModel {
     fn provider_id(&self) -> &str {
-        "mock"
+        "test"
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
             lifecycle: harness_model::ModelLifecycle::Stable,
-            provider_id: "mock".to_owned(),
-            model_id: "mock-model".to_owned(),
-            display_name: "Mock model".to_owned(),
+            provider_id: "test".to_owned(),
+            model_id: "test-model".to_owned(),
+            display_name: "Test model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
             conversation_capability: ConversationModelCapability::default(),

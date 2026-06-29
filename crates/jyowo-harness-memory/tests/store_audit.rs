@@ -12,9 +12,9 @@ use harness_contracts::{
 #[cfg(feature = "threat-scanner")]
 use harness_contracts::{Severity, ThreatAction, ThreatCategory};
 use harness_memory::{
-    content_preview, MemoryEventSink, MemoryKindFilter, MemoryLifecycle, MemoryListScope,
-    MemoryManager, MemoryMetadata, MemoryQuery, MemoryRecord, MemoryStore, MemorySummary,
-    MemoryVisibilityFilter, MockMemoryProvider,
+    content_preview, InMemoryMemoryProvider, MemoryEventSink, MemoryKindFilter, MemoryLifecycle,
+    MemoryListScope, MemoryManager, MemoryMetadata, MemoryQuery, MemoryRecord, MemoryStore,
+    MemorySummary, MemoryVisibilityFilter,
 };
 #[cfg(feature = "threat-scanner")]
 use harness_memory::{MemoryThreatScanner, ThreatPattern};
@@ -24,7 +24,7 @@ use parking_lot::Mutex;
 async fn memory_manager_emits_upsert_and_updates_access_metadata() {
     let session_id = SessionId::new();
     let sink = Arc::new(RecordingSink::default());
-    let provider = Arc::new(MockMemoryProvider::new("mock"));
+    let provider = Arc::new(InMemoryMemoryProvider::new("test"));
     let manager = MemoryManager::new().with_event_sink(sink.clone());
     manager.set_external(provider.clone()).unwrap();
     let record = memory_record(session_id, "prefers concise answers");
@@ -35,7 +35,7 @@ async fn memory_manager_emits_upsert_and_updates_access_metadata() {
     assert!(sink.events.lock().iter().any(|event| {
         matches!(event, Event::MemoryUpserted(upserted)
             if upserted.memory_id == record.id
-                && upserted.provider_id == "mock"
+                && upserted.provider_id == "test"
                 && upserted.content_hash.0 != [0; 32])
     }));
 
@@ -59,7 +59,7 @@ async fn memory_manager_emits_upsert_and_updates_access_metadata() {
 async fn memory_manager_browser_api_enforces_actor_visibility_and_edits_visible_items() {
     let session_id = SessionId::new();
     let other_session_id = SessionId::new();
-    let provider = Arc::new(MockMemoryProvider::new("mock"));
+    let provider = Arc::new(InMemoryMemoryProvider::new("test"));
     let manager = MemoryManager::new();
     manager.set_external(provider.clone()).unwrap();
     let visible = memory_record(session_id, "prefers concise answers");
@@ -118,7 +118,7 @@ async fn memory_manager_list_does_not_trust_provider_visibility_filtering() {
 async fn memory_manager_delete_and_export_emit_audit_events_without_raw_content() {
     let session_id = SessionId::new();
     let sink = Arc::new(RecordingSink::default());
-    let provider = Arc::new(MockMemoryProvider::new("mock"));
+    let provider = Arc::new(InMemoryMemoryProvider::new("test"));
     let manager = MemoryManager::new().with_event_sink(sink.clone());
     manager.set_external(provider).unwrap();
     let record = memory_record(session_id, "secret export fact");
@@ -131,7 +131,7 @@ async fn memory_manager_delete_and_export_emit_audit_events_without_raw_content(
     assert_eq!(exported[0].content, "secret export fact");
     assert!(sink.events.lock().iter().any(|event| {
         matches!(event, Event::MemoryExported(exported)
-            if exported.provider_id == "mock"
+            if exported.provider_id == "test"
                 && exported.item_count == 1
                 && exported.content_hashes.len() == 1)
     }));
@@ -153,7 +153,7 @@ async fn memory_manager_delete_and_export_emit_audit_events_without_raw_content(
 #[tokio::test]
 async fn memory_manager_delete_and_export_fail_when_required_audit_fails() {
     let session_id = SessionId::new();
-    let provider = Arc::new(MockMemoryProvider::new("mock"));
+    let provider = Arc::new(InMemoryMemoryProvider::new("test"));
     let manager = MemoryManager::new().with_event_sink(Arc::new(FailingRequiredSink));
     manager.set_external(provider.clone()).unwrap();
     let record = memory_record(session_id, "audited delete fact");
@@ -217,7 +217,7 @@ async fn memory_manager_browser_read_paths_scan_and_redact_visible_content() {
         ThreatAction::Redact,
     )
     .unwrap()]);
-    let provider = Arc::new(MockMemoryProvider::new("mock"));
+    let provider = Arc::new(InMemoryMemoryProvider::new("test"));
     let manager = MemoryManager::new()
         .with_event_sink(Arc::new(RecordingSink::default()))
         .with_threat_scanner(Arc::new(scanner));

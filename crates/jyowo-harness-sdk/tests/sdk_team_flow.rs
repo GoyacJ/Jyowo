@@ -24,7 +24,7 @@ use jyowo_harness_sdk::{prelude::*, testing::*};
 #[tokio::test]
 async fn sdk_team_flow_dispatches_controls_members_and_terminates() {
     let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
-    let model = Arc::new(MockProvider::default());
+    let model = Arc::new(TestModelProvider::default());
     let model_provider: Arc<dyn ModelProvider> = model.clone();
     let owner = AgentId::new();
     let worker = AgentId::new();

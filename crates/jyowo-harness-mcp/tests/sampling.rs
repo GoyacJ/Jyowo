@@ -340,7 +340,7 @@ async fn jsonrpc_sampling_create_message_invokes_provider_and_records_token_metr
     assert_eq!(
         response.result,
         Some(json!({
-            "model": "mock",
+            "model": "test",
             "role": "assistant",
             "content": { "type": "text", "text": "ok" },
             "stopReason": "endTurn"
@@ -350,7 +350,7 @@ async fn jsonrpc_sampling_create_message_invokes_provider_and_records_token_metr
         sink.events().first(),
         Some(Event::McpSamplingRequested(event))
             if event.server_id == McpServerId("github".to_owned())
-                && event.model_id == Some("mock".to_owned())
+                && event.model_id == Some("test".to_owned())
                 && event.input_tokens == 1
                 && event.output_tokens == 1
                 && event.outcome == SamplingOutcome::Completed
@@ -515,7 +515,7 @@ impl SamplingProvider for EchoSamplingProvider {
         _request: SamplingRequest,
     ) -> Result<SamplingResponse, harness_mcp::McpError> {
         Ok(SamplingResponse {
-            model_id: "mock".to_owned(),
+            model_id: "test".to_owned(),
             content: json!({ "type": "text", "text": "ok" }),
             input_tokens: 1,
             output_tokens: 1,
@@ -542,7 +542,7 @@ impl SamplingProvider for RecordingSamplingProvider {
     ) -> Result<SamplingResponse, harness_mcp::McpError> {
         *self.last_request.lock() = Some(request);
         Ok(SamplingResponse {
-            model_id: "mock".to_owned(),
+            model_id: "test".to_owned(),
             content: json!({ "type": "text", "text": "ok" }),
             input_tokens: 1,
             output_tokens: 1,

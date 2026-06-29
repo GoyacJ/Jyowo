@@ -70,7 +70,7 @@ fn read_live_anthropic_api_key_from_file(path: &Path) -> std::io::Result<Option<
 }
 
 #[tokio::test]
-async fn spike_mock_prompt_cache_injection_and_usage_mapping() {
+async fn spike_test_prompt_cache_injection_and_usage_mapping() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -113,7 +113,7 @@ async fn spike_mock_prompt_cache_injection_and_usage_mapping() {
         .with_base_url(server.uri())
         .infer(req, InferContext::for_test())
         .await
-        .expect("mock spike request should start")
+        .expect("test spike request should start")
         .collect::<Vec<_>>()
         .await;
 

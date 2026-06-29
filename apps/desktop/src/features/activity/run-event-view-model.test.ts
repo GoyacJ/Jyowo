@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  type RunEvent,
-  runEventFixtures,
-  runEventSchema,
-  runEventsSchema,
-} from '@/shared/events/run-event-schema'
+import { type RunEvent, runEventSchema, runEventsSchema } from '@/shared/events/run-event-schema'
+import { runEventFixtures } from '@/testing/run-event-fixtures'
 
 import { toRunEventViewModel, toRunEventViewModels } from './run-event-view-model'
 

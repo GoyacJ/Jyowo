@@ -50,7 +50,7 @@ all-providers = [
   "km",
 ]
 cassette = []
-mock = []
+testing = []
 
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }

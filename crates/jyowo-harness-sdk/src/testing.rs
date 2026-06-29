@@ -11,19 +11,21 @@ use serde_json::{json, Value};
 
 pub use harness_contracts::NoopRedactor;
 pub use harness_journal::{
-    mock_event_store, InMemoryBlobStore, InMemoryEventStore, MockEventStore,
+    test_event_store, InMemoryBlobStore, InMemoryEventStore, TestEventStore,
 };
-pub use harness_memory::MockMemoryProvider;
-pub use harness_model::{MockCredentialSource, MockProvider, ScriptedProvider, ScriptedResponse};
-pub use harness_permission::{MockBroker, MockBrokerCall};
+pub use harness_memory::InMemoryMemoryProvider;
+pub use harness_model::{
+    ScriptedProvider, ScriptedResponse, TestCredentialSource, TestModelProvider,
+};
+pub use harness_permission::{TestBroker, TestBrokerCall};
 pub use harness_sandbox::NoopSandbox;
 
 #[derive(Debug, Clone)]
-pub struct MockTool {
+pub struct TestTool {
     descriptor: ToolDescriptor,
 }
 
-impl MockTool {
+impl TestTool {
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         let name = name.into();
@@ -63,7 +65,7 @@ impl MockTool {
 }
 
 #[async_trait]
-impl Tool for MockTool {
+impl Tool for TestTool {
     fn descriptor(&self) -> &ToolDescriptor {
         &self.descriptor
     }
@@ -82,18 +84,18 @@ impl Tool for MockTool {
         _ctx: ToolContext,
     ) -> Result<ToolStream, harness_contracts::ToolError> {
         Ok(Box::pin(stream::iter([ToolEvent::Final(
-            ToolResult::Text("mock tool result".to_owned()),
+            ToolResult::Text("test tool result".to_owned()),
         )])))
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct MockHookHandler {
+pub struct TestHookHandler {
     id: String,
     interested_events: Vec<HookEventKind>,
 }
 
-impl MockHookHandler {
+impl TestHookHandler {
     #[must_use]
     pub fn new(id: impl Into<String>, interested_events: Vec<HookEventKind>) -> Self {
         Self {
@@ -104,7 +106,7 @@ impl MockHookHandler {
 }
 
 #[async_trait]
-impl HookHandler for MockHookHandler {
+impl HookHandler for TestHookHandler {
     fn handler_id(&self) -> &str {
         &self.id
     }

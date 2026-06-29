@@ -10,8 +10,8 @@ use harness_contracts::{
     TenantId,
 };
 use harness_memory::{
-    MemoryKindFilter, MemoryListScope, MemoryManager, MemoryMetadata, MemoryQuery, MemoryRecord,
-    MemoryStore, MemoryVisibilityFilter, MockMemoryProvider,
+    InMemoryMemoryProvider, MemoryKindFilter, MemoryListScope, MemoryManager, MemoryMetadata,
+    MemoryQuery, MemoryRecord, MemoryStore, MemoryVisibilityFilter,
 };
 use tokio::sync::Barrier;
 
@@ -21,22 +21,22 @@ fn memory_manager_accepts_only_one_external_provider() {
 
     assert!(!manager.has_external());
     manager
-        .set_external(Arc::new(MockMemoryProvider::new("first")))
+        .set_external(Arc::new(InMemoryMemoryProvider::new("first")))
         .unwrap();
 
     assert!(manager.has_external());
     assert_eq!(manager.external().unwrap().provider_id(), "first");
 
     let error = manager
-        .set_external(Arc::new(MockMemoryProvider::new("second")))
+        .set_external(Arc::new(InMemoryMemoryProvider::new("second")))
         .unwrap_err();
     assert!(matches!(error, MemoryError::ExternalSlotOccupied));
     assert_eq!(manager.external().unwrap().provider_id(), "first");
 }
 
 #[tokio::test]
-async fn mock_memory_provider_is_tenant_scoped_and_supports_forget() {
-    let provider = MockMemoryProvider::new("mock");
+async fn test_memory_provider_is_tenant_scoped_and_supports_forget() {
+    let provider = InMemoryMemoryProvider::new("test");
     let session_id = SessionId::new();
     let kept = record(
         TenantId::SINGLE,
@@ -82,8 +82,8 @@ async fn mock_memory_provider_is_tenant_scoped_and_supports_forget() {
 }
 
 #[tokio::test]
-async fn mock_memory_provider_applies_query_limits_and_filters() {
-    let provider = MockMemoryProvider::new("mock");
+async fn test_memory_provider_applies_query_limits_and_filters() {
+    let provider = InMemoryMemoryProvider::new("test");
     let session_id = SessionId::new();
     let private = record(
         TenantId::SINGLE,
@@ -118,8 +118,8 @@ async fn mock_memory_provider_applies_query_limits_and_filters() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn mock_provider_handles_1000_concurrent_recall_and_1000_concurrent_upsert() {
-    let provider = Arc::new(MockMemoryProvider::new("mock"));
+async fn in_memory_provider_handles_1000_concurrent_recall_and_1000_concurrent_upsert() {
+    let provider = Arc::new(InMemoryMemoryProvider::new("test"));
     let session_id = SessionId::new();
 
     for index in 0..10 {

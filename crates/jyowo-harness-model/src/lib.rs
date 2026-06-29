@@ -32,8 +32,6 @@ pub mod metrics;
 pub mod middleware;
 #[cfg(feature = "minimax")]
 pub mod minimax;
-#[cfg(any(test, feature = "mock"))]
-pub mod mock;
 #[cfg(feature = "openai")]
 pub mod openai;
 #[cfg(feature = "openai-compatible")]
@@ -45,6 +43,8 @@ pub mod provider;
 pub mod qwen;
 pub mod registry;
 pub mod stream_aggregator;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod thinking_tag_normalizer;
 pub mod token_counter;
 #[cfg(feature = "zhipu")]
@@ -80,8 +80,6 @@ pub use metrics::*;
 pub use middleware::*;
 #[cfg(feature = "minimax")]
 pub use minimax::*;
-#[cfg(any(test, feature = "mock"))]
-pub use mock::*;
 #[cfg(feature = "openai")]
 pub use openai::*;
 #[cfg(feature = "openrouter")]
@@ -91,6 +89,8 @@ pub use provider::*;
 pub use qwen::*;
 pub use registry::*;
 pub use stream_aggregator::*;
+#[cfg(any(test, feature = "testing"))]
+pub use testing::*;
 pub use token_counter::*;
 #[cfg(feature = "zhipu")]
 pub use zhipu::*;

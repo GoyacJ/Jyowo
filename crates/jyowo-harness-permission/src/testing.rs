@@ -11,19 +11,19 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct MockBrokerCall {
+pub struct TestBrokerCall {
     pub request: PermissionRequest,
     pub ctx: PermissionContext,
 }
 
 #[derive(Clone)]
-pub struct MockBroker {
+pub struct TestBroker {
     decisions: Arc<Mutex<VecDeque<Decision>>>,
-    calls: Arc<Mutex<Vec<MockBrokerCall>>>,
+    calls: Arc<Mutex<Vec<TestBrokerCall>>>,
     persistence: Arc<dyn DecisionPersistence>,
 }
 
-impl MockBroker {
+impl TestBroker {
     pub fn new(decisions: Vec<Decision>) -> Self {
         Self {
             decisions: Arc::new(Mutex::new(decisions.into())),
@@ -38,21 +38,21 @@ impl MockBroker {
         self
     }
 
-    pub fn calls(&self) -> Vec<MockBrokerCall> {
+    pub fn calls(&self) -> Vec<TestBrokerCall> {
         self.calls.lock().clone()
     }
 }
 
-impl Default for MockBroker {
+impl Default for TestBroker {
     fn default() -> Self {
         Self::new(Vec::new())
     }
 }
 
 #[async_trait]
-impl PermissionBroker for MockBroker {
+impl PermissionBroker for TestBroker {
     async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
-        self.calls.lock().push(MockBrokerCall { request, ctx });
+        self.calls.lock().push(TestBrokerCall { request, ctx });
         self.decisions
             .lock()
             .pop_front()

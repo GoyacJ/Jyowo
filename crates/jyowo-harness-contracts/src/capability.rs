@@ -529,12 +529,12 @@ impl CapabilityRegistry {
 
 #[cfg(feature = "testing")]
 #[derive(Clone, Default)]
-pub struct MockCapabilityRegistry {
+pub struct TestCapabilityRegistry {
     inner: CapabilityRegistry,
 }
 
 #[cfg(feature = "testing")]
-impl MockCapabilityRegistry {
+impl TestCapabilityRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()

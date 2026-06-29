@@ -5,10 +5,10 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppProviders } from '@/app/providers'
 import { uiStore, useUiStore } from '@/shared/state/ui-store'
-import { createMockCommandClient, mockJyowoProject } from '@/shared/tauri/mock-client'
+import { createTestCommandClient, testJyowoProject } from '@/testing/command-client'
 import App from './App'
 
-const uiPreferencesStoreMock = vi.hoisted(() => ({
+const uiPreferencesStoreFixture = vi.hoisted(() => ({
   readUiPreferences: vi.fn<
     () => Promise<{
       theme: 'light' | 'dark' | 'system'
@@ -27,9 +27,9 @@ const uiPreferencesStoreMock = vi.hoisted(() => ({
   writeUiPreferences: vi.fn(async () => undefined),
 }))
 
-vi.mock('@/shared/local-store/ui-preferences-store', () => uiPreferencesStoreMock)
+vi.mock('@/shared/local-store/ui-preferences-store', () => uiPreferencesStoreFixture)
 
-function mockSystemColorScheme(matches: boolean) {
+function setSystemColorSchemeFixture(matches: boolean) {
   const listeners = new Set<EventListenerOrEventListenerObject>()
   const mediaQueryList = {
     matches,
@@ -78,16 +78,16 @@ function ThemeSetter({ theme }: { theme: 'light' | 'dark' | 'system' }) {
 
 describe('App', () => {
   beforeEach(() => {
-    uiPreferencesStoreMock.readUiPreferences.mockReset()
-    uiPreferencesStoreMock.readUiPreferences.mockResolvedValue({
+    uiPreferencesStoreFixture.readUiPreferences.mockReset()
+    uiPreferencesStoreFixture.readUiPreferences.mockResolvedValue({
       theme: 'light',
       locale: 'en-US',
       sidebarCollapsed: false,
       chatComposerHeight: 160,
       contextPanelWidth: 320,
     })
-    uiPreferencesStoreMock.writeUiPreferences.mockReset()
-    uiPreferencesStoreMock.writeUiPreferences.mockResolvedValue(undefined)
+    uiPreferencesStoreFixture.writeUiPreferences.mockReset()
+    uiPreferencesStoreFixture.writeUiPreferences.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -112,7 +112,7 @@ describe('App', () => {
 
     render(
       <App
-        commandClient={createMockCommandClient({ projects: mockJyowoProject })}
+        commandClient={createTestCommandClient({ projects: testJyowoProject })}
         queryClient={queryClient}
       />,
     )
@@ -138,7 +138,7 @@ describe('App', () => {
       },
     })
 
-    render(<App commandClient={createMockCommandClient()} queryClient={queryClient} />)
+    render(<App commandClient={createTestCommandClient()} queryClient={queryClient} />)
 
     expect(await screen.findByRole('heading', { name: 'Welcome to Jyowo' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Open project' })).toBeInTheDocument()
@@ -154,7 +154,7 @@ describe('App', () => {
       },
     })
 
-    render(<App commandClient={createMockCommandClient()} queryClient={queryClient} />)
+    render(<App commandClient={createTestCommandClient()} queryClient={queryClient} />)
 
     expect(await screen.findByRole('heading', { name: 'Memory' })).toBeInTheDocument()
     expect(await screen.findByText('Prefers concise Chinese responses')).toBeInTheDocument()
@@ -169,7 +169,7 @@ describe('App', () => {
         },
       },
     })
-    const commandClient = createMockCommandClient()
+    const commandClient = createTestCommandClient()
 
     window.history.pushState(null, '', '/skills')
     const { rerender } = render(<App commandClient={commandClient} queryClient={queryClient} />)
@@ -223,10 +223,10 @@ describe('App', () => {
   })
 
   it('resolves system theme from the operating system preference', () => {
-    const systemColorScheme = mockSystemColorScheme(true)
+    const systemColorScheme = setSystemColorSchemeFixture(true)
 
     render(
-      <AppProviders commandClient={createMockCommandClient()}>
+      <AppProviders commandClient={createTestCommandClient()}>
         <ThemeSetter theme="system" />
       </AppProviders>,
     )
@@ -247,7 +247,7 @@ describe('App', () => {
   })
 
   it('hydrates and persists local UI preferences', async () => {
-    uiPreferencesStoreMock.readUiPreferences.mockResolvedValueOnce({
+    uiPreferencesStoreFixture.readUiPreferences.mockResolvedValueOnce({
       theme: 'dark',
       locale: 'en-US',
       sidebarCollapsed: true,
@@ -256,7 +256,7 @@ describe('App', () => {
     })
 
     render(
-      <AppProviders commandClient={createMockCommandClient()}>
+      <AppProviders commandClient={createTestCommandClient()}>
         <ThemeSetter theme="system" />
       </AppProviders>,
     )
@@ -271,7 +271,7 @@ describe('App', () => {
       screen.getByRole('button', { name: 'Set theme' }).click()
     })
 
-    expect(uiPreferencesStoreMock.writeUiPreferences).toHaveBeenCalledWith({
+    expect(uiPreferencesStoreFixture.writeUiPreferences).toHaveBeenCalledWith({
       locale: 'en-US',
       theme: 'system',
       sidebarCollapsed: true,

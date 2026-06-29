@@ -16,8 +16,8 @@ import type {
   PageConversationWorktreeResponse,
   StartRunResponse,
 } from '@/shared/tauri/commands'
-import { createMockCommandClient, createRejectedCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import { createRejectedTestCommandClient, createTestCommandClient } from '@/testing/command-client'
 
 import { ConversationWorkspace } from './ConversationWorkspace'
 
@@ -39,7 +39,7 @@ function cursor(conversationSequence = 1) {
 }
 
 function renderConversationWorkspace(
-  commandClient: CommandClient = createMockCommandClient(),
+  commandClient: CommandClient = createTestCommandClient(),
   conversationId?: string,
 ) {
   const queryClient = new QueryClient({
@@ -122,7 +122,7 @@ describe('ConversationWorkspace', () => {
 
   it('renders a MiniMax-style worktree page without raw tool or artifact internals', async () => {
     renderConversationWorkspace(
-      createMockCommandClient({
+      createTestCommandClient({
         conversationWorktreePage: {
           turns: [minimaxTurn()],
           pageCursor: { turnId: 'turn:user-minimax', position: 0 },
@@ -158,7 +158,7 @@ describe('ConversationWorkspace', () => {
   })
 
   it('loads reference candidates for the selected conversation', async () => {
-    const commandClient = createMockCommandClient({
+    const commandClient = createTestCommandClient({
       conversationWorktreePage: pageWithTurn('complete'),
     })
     const listReferenceCandidates = vi.fn(commandClient.listReferenceCandidates)
@@ -177,7 +177,7 @@ describe('ConversationWorkspace', () => {
   })
 
   it('shows loading, empty, and command error states', async () => {
-    const { unmount } = renderConversationWorkspace(createMockCommandClient({ delayMs: 10 }))
+    const { unmount } = renderConversationWorkspace(createTestCommandClient({ delayMs: 10 }))
 
     expect(screen.getByText('Loading conversation...')).toBeInTheDocument()
     expect(
@@ -187,20 +187,20 @@ describe('ConversationWorkspace', () => {
     unmount()
 
     renderConversationWorkspace(
-      createMockCommandClient({ conversations: { conversations: [] } }),
+      createTestCommandClient({ conversations: { conversations: [] } }),
       'missing-conversation',
     )
     expect(await screen.findByRole('heading', { name: 'New conversation' })).toBeInTheDocument()
 
     unmount()
 
-    renderConversationWorkspace(createRejectedCommandClient(new Error('IPC unavailable')))
+    renderConversationWorkspace(createRejectedTestCommandClient(new Error('IPC unavailable')))
     expect(await screen.findByText('IPC unavailable')).toBeInTheDocument()
   })
 
   it('leaves the model selector empty when no model is selected and no default exists', async () => {
     renderConversationWorkspace(
-      createMockCommandClient({
+      createTestCommandClient({
         conversation: {
           conversation: {
             id: 'conversation-001',
@@ -234,7 +234,7 @@ describe('ConversationWorkspace', () => {
   })
 
   it('renders nested permission state and sends decisions through commands', async () => {
-    const commandClient = createMockCommandClient()
+    const commandClient = createTestCommandClient()
     const resolvePermission = vi.fn(commandClient.resolvePermission)
     const trackedClient = {
       ...commandClient,
@@ -257,7 +257,7 @@ describe('ConversationWorkspace', () => {
   it('does not leak English timeline fallback labels in Chinese', async () => {
     await appI18n.changeLanguage('zh-CN')
     try {
-      renderConversationWorkspace(createMockCommandClient(), 'conversation-001')
+      renderConversationWorkspace(createTestCommandClient(), 'conversation-001')
 
       expect(
         await screen.findByRole('heading', { name: 'Build the desktop foundation' }),
@@ -273,7 +273,7 @@ describe('ConversationWorkspace', () => {
   })
 
   it('submits an optimistic user turn and passes clientMessageId into startRun', async () => {
-    const commandClient = createMockCommandClient({
+    const commandClient = createTestCommandClient({
       conversationWorktreePage: pageWithTurn('complete'),
     })
     const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
@@ -316,7 +316,7 @@ describe('ConversationWorkspace', () => {
   })
 
   it('redacts unsafe optimistic user text while sending the raw prompt to Rust', async () => {
-    const commandClient = createMockCommandClient({
+    const commandClient = createTestCommandClient({
       conversationWorktreePage: pageWithTurn('complete'),
     })
     const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
@@ -361,7 +361,7 @@ describe('ConversationWorkspace', () => {
   })
 
   it('initializes composer permission mode from execution settings', async () => {
-    const commandClient = createMockCommandClient({
+    const commandClient = createTestCommandClient({
       conversationWorktreePage: pageWithTurn('complete'),
       executionSettings: {
         agentCapabilities,
@@ -400,7 +400,7 @@ describe('ConversationWorkspace', () => {
   })
 
   it('resets composer permission mode from the next workspace execution settings', async () => {
-    const baseClient = createMockCommandClient({
+    const baseClient = createTestCommandClient({
       conversationWorktreePage: pageWithTurn('complete'),
     })
     const listProjects = vi
@@ -461,7 +461,7 @@ describe('ConversationWorkspace', () => {
   })
 
   it('does not submit before execution settings initialize the composer permission mode', async () => {
-    const commandClient = createMockCommandClient({
+    const commandClient = createTestCommandClient({
       conversationWorktreePage: pageWithTurn('complete'),
     })
     const startRun = vi.fn(commandClient.startRun)
@@ -492,7 +492,7 @@ describe('ConversationWorkspace', () => {
     const pageConversationWorktree = vi.fn(async () => {
       return pageWithTurn(terminalEventReceived ? 'complete' : 'running')
     })
-    const commandClient = createMockCommandClient()
+    const commandClient = createTestCommandClient()
     const trackedClient = {
       ...commandClient,
       listenConversationEventBatches: async (callback) => {
@@ -556,7 +556,7 @@ describe('ConversationWorkspace', () => {
   })
 
   it('cancels the current active run from the composer', async () => {
-    const commandClient = createMockCommandClient({
+    const commandClient = createTestCommandClient({
       conversationWorktreePage: pageWithTurn('running'),
     })
     const cancelRun = vi.fn(commandClient.cancelRun)
@@ -574,7 +574,7 @@ describe('ConversationWorkspace', () => {
   })
 
   it('keeps the loaded conversation visible and recoverable when startRun fails', async () => {
-    const commandClient = createMockCommandClient({
+    const commandClient = createTestCommandClient({
       conversationWorktreePage: pageWithTurn('complete'),
     })
     const failingClient = {

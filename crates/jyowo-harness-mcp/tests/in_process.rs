@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 
 #[tokio::test]
 async fn in_process_transport_returns_supplied_connection() {
-    let connection = MockConnection {
+    let connection = TestConnection {
         tools: vec![tool("local")],
         results: Mutex::new(VecDeque::from([McpToolResult::text("ran")])),
     };
@@ -61,7 +61,7 @@ async fn in_process_transport_rejects_wrong_transport_choice() {
     );
 
     let result = McpClient::new(Arc::new(InProcessTransport::from_connection(Arc::new(
-        MockConnection::default(),
+        TestConnection::default(),
     ))))
     .connect(spec)
     .await;
@@ -81,15 +81,15 @@ fn tool(name: &str) -> McpToolDescriptor {
 }
 
 #[derive(Default)]
-struct MockConnection {
+struct TestConnection {
     tools: Vec<McpToolDescriptor>,
     results: Mutex<VecDeque<McpToolResult>>,
 }
 
 #[async_trait]
-impl McpConnection for MockConnection {
+impl McpConnection for TestConnection {
     fn connection_id(&self) -> &'static str {
-        "mock-in-process"
+        "test-in-process"
     }
 
     async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {

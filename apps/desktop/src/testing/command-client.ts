@@ -63,9 +63,9 @@ import type {
   UnsubscribeMcpDiagnosticsResponse,
   UpdateMemoryItemResponse,
   ValidateProviderSettingsResponse,
-} from './commands'
+} from '@/shared/tauri/commands'
 
-const mockAppInfo: AppInfo = {
+const fixtureAppInfo: AppInfo = {
   name: 'Jyowo',
   version: '0.1.0',
   shell: 'tauri2-react',
@@ -75,14 +75,14 @@ const mockAppInfo: AppInfo = {
   },
 }
 
-const mockHarnessHealthcheck: HarnessHealthcheck = {
+const fixtureHarnessHealthcheck: HarnessHealthcheck = {
   status: 'available',
   sdkCrate: 'jyowo_harness_sdk',
 }
 
 const timestamp = '2026-06-17T02:22:00.000Z'
 
-const mockListConversations: ListConversationsResponse = {
+const fixtureListConversations: ListConversationsResponse = {
   conversations: [
     {
       id: 'conversation-001',
@@ -94,7 +94,7 @@ const mockListConversations: ListConversationsResponse = {
   ],
 }
 
-const mockConversation: GetConversationResponse = {
+const fixtureConversation: GetConversationResponse = {
   conversation: {
     id: 'conversation-001',
     messages: [
@@ -124,7 +124,7 @@ const mockConversation: GetConversationResponse = {
   },
 }
 
-const mockListActivity: ListActivityResponse = {
+const fixtureListActivity: ListActivityResponse = {
   events: [
     {
       id: 'evt-001',
@@ -151,7 +151,7 @@ const mockListActivity: ListActivityResponse = {
   ],
 }
 
-const mockListArtifacts: ListArtifactsResponse = {
+const fixtureListArtifacts: ListArtifactsResponse = {
   artifacts: [
     {
       actionLabel: 'Run app',
@@ -199,7 +199,7 @@ const mockListArtifacts: ListArtifactsResponse = {
   ],
 }
 
-const mockAttachment: CreateAttachmentFromPathResponse = {
+const fixtureAttachment: CreateAttachmentFromPathResponse = {
   attachment: {
     blobRef: {
       contentHash: Array.from({ length: 32 }, () => 1),
@@ -214,14 +214,14 @@ const mockAttachment: CreateAttachmentFromPathResponse = {
   },
 }
 
-const mockArtifactMediaPreview: GetArtifactMediaPreviewResponse = {
+const fixtureArtifactMediaPreview: GetArtifactMediaPreviewResponse = {
   dataUrl:
     'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
   mimeType: 'image/png',
   sizeBytes: 68,
 }
 
-const mockReferenceCandidates: ListReferenceCandidatesResponse = {
+const fixtureReferenceCandidates: ListReferenceCandidatesResponse = {
   artifacts: [{ id: 'artifact-desktop-foundation', label: 'Desktop foundation created' }],
   conversations: [{ id: 'conversation-001', label: 'Build the desktop foundation' }],
   files: [
@@ -236,7 +236,7 @@ const mockReferenceCandidates: ListReferenceCandidatesResponse = {
   tools: [{ id: 'list_dir', label: 'List directory' }],
 }
 
-const mockContextSnapshot: GetContextSnapshotResponse = {
+const fixtureContextSnapshot: GetContextSnapshotResponse = {
   activeArtifact: 'App shell (WIP)',
   decisions: [{ detail: 'When: Before adding AI features', title: 'Choose IPC pattern' }],
   files: [
@@ -252,7 +252,7 @@ const mockContextSnapshot: GetContextSnapshotResponse = {
   project: 'Desktop App',
 }
 
-const mockValidateProviderSettings: ValidateProviderSettingsResponse = {
+const fixtureValidateProviderSettings: ValidateProviderSettingsResponse = {
   modelId: 'gpt-4o-mini',
   providerId: 'openai',
   status: 'accepted',
@@ -270,7 +270,7 @@ const textCapability: ConversationModelCapability = {
   structuredOutput: false,
 }
 
-const mockModelProviderCatalog: ModelProviderCatalogResponse = {
+const fixtureModelProviderCatalog: ModelProviderCatalogResponse = {
   providers: [
     {
       defaultBaseUrl: 'https://api.openai.com',
@@ -335,12 +335,12 @@ const mockModelProviderCatalog: ModelProviderCatalogResponse = {
   ],
 }
 
-const mockProviderSettingsList: ListProviderSettingsResponse = {
+const fixtureProviderSettingsList: ListProviderSettingsResponse = {
   defaultConfigId: null,
   configs: [],
 }
 
-const mockAgentCapabilities = {
+const fixtureAgentCapabilities = {
   agentTeamsAvailable: false,
   agentTeamsEnabled: false,
   backgroundAgentsAvailable: false,
@@ -350,21 +350,21 @@ const mockAgentCapabilities = {
   unavailableReasons: [],
 }
 
-const mockExecutionSettings: GetExecutionSettingsResponse = {
-  agentCapabilities: mockAgentCapabilities,
+const fixtureExecutionSettings: GetExecutionSettingsResponse = {
+  agentCapabilities: fixtureAgentCapabilities,
   autoModeAvailable: false,
   contextCompressionTriggerRatio: 0.8,
   permissionMode: 'default',
 }
 
-const mockSetExecutionSettings: SetExecutionSettingsResponse = {
-  agentCapabilities: mockAgentCapabilities,
+const fixtureSetExecutionSettings: SetExecutionSettingsResponse = {
+  agentCapabilities: fixtureAgentCapabilities,
   autoModeAvailable: false,
   contextCompressionTriggerRatio: 0.8,
   permissionMode: 'default',
 }
 
-const mockSaveProviderSettings: SaveProviderSettingsResponse = {
+const fixtureSaveProviderSettings: SaveProviderSettingsResponse = {
   config: {
     protocol: 'responses',
     baseUrl: 'https://api.openai.com',
@@ -394,7 +394,7 @@ const mockSaveProviderSettings: SaveProviderSettingsResponse = {
   status: 'saved',
 }
 
-const mockListMcpServers: ListMcpServersResponse = {
+const fixtureListMcpServers: ListMcpServersResponse = {
   servers: [
     {
       displayName: 'Workspace GitHub',
@@ -410,7 +410,7 @@ const mockListMcpServers: ListMcpServersResponse = {
   ],
 }
 
-const mockMcpServerConfig: GetMcpServerConfigResponse = {
+const fixtureMcpServerConfig: GetMcpServerConfigResponse = {
   server: {
     displayName: 'Workspace GitHub',
     enabled: true,
@@ -426,7 +426,7 @@ const mockMcpServerConfig: GetMcpServerConfigResponse = {
   },
 }
 
-const mockWorkspaceSkill: SkillSummary = {
+const fixtureWorkspaceSkill: SkillSummary = {
   description: 'Creates release notes from recent changes.',
   enabled: true,
   id: 'skill-001',
@@ -439,7 +439,7 @@ const mockWorkspaceSkill: SkillSummary = {
   updatedAt: '2026-06-21T00:00:00.000Z',
 }
 
-const mockBundledSkill: SkillSummary = {
+const fixtureBundledSkill: SkillSummary = {
   description: 'Inspects source changes and returns risks.',
   enabled: true,
   id: 'code-review',
@@ -450,11 +450,11 @@ const mockBundledSkill: SkillSummary = {
   tags: ['review'],
 }
 
-const mockListSkills: ListSkillsResponse = {
-  skills: [mockWorkspaceSkill, mockBundledSkill],
+const fixtureListSkills: ListSkillsResponse = {
+  skills: [fixtureWorkspaceSkill, fixtureBundledSkill],
 }
 
-const mockSkillCatalogSources: ListSkillCatalogSourcesResponse = {
+const fixtureSkillCatalogSources: ListSkillCatalogSourcesResponse = {
   sources: [
     {
       description: 'Official Anthropic skills repository.',
@@ -487,7 +487,7 @@ const mockSkillCatalogSources: ListSkillCatalogSourcesResponse = {
   ],
 }
 
-const mockSkillCatalogEntries: ListSkillCatalogEntriesResponse = {
+const fixtureSkillCatalogEntries: ListSkillCatalogEntriesResponse = {
   entries: [
     {
       description: 'Create distinctive frontend interfaces.',
@@ -505,8 +505,8 @@ const mockSkillCatalogEntries: ListSkillCatalogEntriesResponse = {
   ],
 }
 
-const mockSkillCatalogEntry: GetSkillCatalogEntryResponse = {
-  entry: mockSkillCatalogEntries.entries[0],
+const fixtureSkillCatalogEntry: GetSkillCatalogEntryResponse = {
+  entry: fixtureSkillCatalogEntries.entries[0],
   files: [{ kind: 'file', path: 'SKILL.md', sizeBytes: 512 }],
   readmePreview: 'Create distinctive frontend interfaces.',
   validation: {
@@ -515,7 +515,7 @@ const mockSkillCatalogEntry: GetSkillCatalogEntryResponse = {
   },
 }
 
-const mockSkillDetail: GetSkillDetailResponse = {
+const fixtureSkillDetail: GetSkillDetailResponse = {
   skill: {
     bodyPreview: 'Write concise release notes from the current workspace diff.',
     configKeys: ['CHANGELOG_TOKEN'],
@@ -549,18 +549,18 @@ const mockSkillDetail: GetSkillDetailResponse = {
         required: true,
       },
     ],
-    summary: mockWorkspaceSkill,
+    summary: fixtureWorkspaceSkill,
   },
 }
 
-const mockSkillEntryFile: GetSkillFileResponse = {
+const fixtureSkillEntryFile: GetSkillFileResponse = {
   file: {
     content: 'Write concise release notes from the current workspace diff.',
     path: 'SKILL.md',
   },
 }
 
-const mockSkillCatalogFile: GetSkillCatalogFileResponse = {
+const fixtureSkillCatalogFile: GetSkillCatalogFileResponse = {
   file: {
     content: 'Write concise release notes from the current workspace diff.',
     path: 'SKILL.md',
@@ -568,11 +568,11 @@ const mockSkillCatalogFile: GetSkillCatalogFileResponse = {
   },
 }
 
-const mockSkillCatalogInstallTasks: ListSkillCatalogInstallTasksResponse = {
+const fixtureSkillCatalogInstallTasks: ListSkillCatalogInstallTasksResponse = {
   tasks: [],
 }
 
-const mockSaveMcpServer: SaveMcpServerResponse = {
+const fixtureSaveMcpServer: SaveMcpServerResponse = {
   server: {
     displayName: 'Workspace GitHub',
     enabled: true,
@@ -586,7 +586,7 @@ const mockSaveMcpServer: SaveMcpServerResponse = {
   },
 }
 
-const mockListMcpDiagnostics: ListMcpDiagnosticsResponse = {
+const fixtureListMcpDiagnostics: ListMcpDiagnosticsResponse = {
   events: [
     {
       eventType: 'connection_recovered',
@@ -599,7 +599,7 @@ const mockListMcpDiagnostics: ListMcpDiagnosticsResponse = {
   ],
 }
 
-const mockMemoryItems: ListMemoryItemsResponse = {
+const fixtureMemoryItems: ListMemoryItemsResponse = {
   items: [
     {
       contentPreview: 'Prefers concise Chinese responses',
@@ -613,7 +613,7 @@ const mockMemoryItems: ListMemoryItemsResponse = {
   ],
 }
 
-const mockMemoryItem: GetMemoryItemResponse = {
+const fixtureMemoryItem: GetMemoryItemResponse = {
   item: {
     accessCount: 0,
     confidence: 1,
@@ -628,12 +628,7 @@ const mockMemoryItem: GetMemoryItemResponse = {
   },
 }
 
-export const mockEmptyProjects: ListProjectsResponse = {
-  activePath: null,
-  projects: [],
-}
-
-export const mockJyowoProject: ListProjectsResponse = {
+export const testJyowoProject: ListProjectsResponse = {
   activePath: '/Users/goya/Repo/Git/Jyowo',
   projects: [
     {
@@ -644,14 +639,14 @@ export const mockJyowoProject: ListProjectsResponse = {
   ],
 }
 
-const mockMemoryExport: ExportMemoryItemsResponse = {
+const fixtureMemoryExport: ExportMemoryItemsResponse = {
   exportedAt: timestamp,
   format: 'json',
   itemCount: 1,
   path: '.jyowo/runtime/exports/memory-20260617T000000.000Z.json',
 }
 
-const mockListEvalCases: ListEvalCasesResponse = {
+const fixtureListEvalCases: ListEvalCasesResponse = {
   cases: [
     {
       id: 'regression-smoke',
@@ -666,12 +661,12 @@ const mockListEvalCases: ListEvalCasesResponse = {
   ],
 }
 
-const mockReplayTimeline: ReplayTimelineResponse = {
-  events: mockListActivity.events,
+const fixtureReplayTimeline: ReplayTimelineResponse = {
+  events: fixtureListActivity.events,
   replayed: true,
 }
 
-const mockConversationWorktreePage: PageConversationWorktreeResponse = {
+const fixtureConversationWorktreePage: PageConversationWorktreeResponse = {
   turns: [
     {
       id: 'turn:message-001',
@@ -726,33 +721,33 @@ const mockConversationWorktreePage: PageConversationWorktreeResponse = {
           },
           {
             kind: 'toolGroup',
-            id: 'segment:tools:tool-mock-read',
+            id: 'segment:tools:tool-fixture-read',
             order: 2,
             attempts: [
               {
-                id: 'tool:tool-mock-read',
+                id: 'tool:tool-fixture-read',
                 order: 0,
-                toolUseId: 'tool-mock-read',
+                toolUseId: 'tool-fixture-read',
                 toolName: 'read_file',
                 status: 'completed',
                 permission: {
                   id: 'permission:01HZ0000000000000000000001',
                   requestId: '01HZ0000000000000000000001',
-                  toolUseId: 'tool-mock-read',
+                  toolUseId: 'tool-fixture-read',
                   status: 'approved',
                   summary: 'Approved once',
                 },
               },
               {
-                id: 'tool:tool-mock-verify',
+                id: 'tool:tool-fixture-verify',
                 order: 1,
-                toolUseId: 'tool-mock-verify',
+                toolUseId: 'tool-fixture-verify',
                 toolName: 'local_verification',
                 status: 'waitingPermission',
                 permission: {
                   id: 'permission:01HZ0000000000000000000002',
                   requestId: '01HZ0000000000000000000002',
-                  toolUseId: 'tool-mock-verify',
+                  toolUseId: 'tool-fixture-verify',
                   status: 'pending',
                   summary: 'Awaiting approval',
                 },
@@ -779,13 +774,13 @@ const mockConversationWorktreePage: PageConversationWorktreeResponse = {
         segments: [
           {
             kind: 'toolGroup',
-            id: 'segment:tools:tool-mock-test',
+            id: 'segment:tools:tool-fixture-test',
             order: 0,
             attempts: [
               {
-                id: 'tool:tool-mock-test',
+                id: 'tool:tool-fixture-test',
                 order: 0,
-                toolUseId: 'tool-mock-test',
+                toolUseId: 'tool-fixture-test',
                 toolName: 'pnpm test',
                 status: 'failed',
                 failureSummary: '工具执行失败。可在详情中查看。',
@@ -831,19 +826,19 @@ function emptyWorktreePage(): PageConversationWorktreeResponse {
   }
 }
 
-function worktreePageForMockRun(
+function worktreePageForFixtureRun(
   conversationId: string,
   prompt: string,
   clientMessageId: string | undefined,
   status: 'running' | 'complete',
 ): PageConversationWorktreeResponse {
   const turn: PageConversationWorktreeResponse['turns'][number] = {
-    id: 'turn:message-mock-user',
+    id: 'turn:message-fixture-user',
     conversationId,
     position: 0,
     user: {
-      id: 'user:message-mock-user',
-      messageId: 'message-mock-user',
+      id: 'user:message-fixture-user',
+      messageId: 'message-fixture-user',
       clientMessageId,
       body: prompt,
       timestamp,
@@ -861,7 +856,7 @@ function worktreePageForMockRun(
           summary: status === 'running' ? '正在处理请求' : '已完成工作过程',
           steps: [
             {
-              id: 'process-step:mock-reasoning',
+              id: 'process-step:fixture-reasoning',
               order: 0,
               kind: 'reasoning',
               status,
@@ -869,7 +864,7 @@ function worktreePageForMockRun(
               body: 'Drafting the implementation plan.',
             },
             {
-              id: 'process-step:mock-read',
+              id: 'process-step:fixture-read',
               order: 1,
               kind: 'fileRead',
               status: 'complete',
@@ -884,26 +879,26 @@ function worktreePageForMockRun(
         },
         {
           kind: 'toolGroup',
-          id: 'segment:tools:tool-mock-read',
+          id: 'segment:tools:tool-fixture-read',
           order: 1,
           attempts: [
             {
-              id: 'tool:tool-mock-read',
+              id: 'tool:tool-fixture-read',
               order: 0,
-              toolUseId: 'tool-mock-read',
+              toolUseId: 'tool-fixture-read',
               toolName: 'Reading files',
               status: 'completed',
             },
             {
-              id: 'tool:tool-mock-verify',
+              id: 'tool:tool-fixture-verify',
               order: 1,
-              toolUseId: 'tool-mock-verify',
+              toolUseId: 'tool-fixture-verify',
               toolName: 'Run local verification',
               status: status === 'running' ? 'waitingPermission' : 'completed',
               permission: {
                 id: 'permission:01HZ0000000000000000000001',
                 requestId: '01HZ0000000000000000000001',
-                toolUseId: 'tool-mock-verify',
+                toolUseId: 'tool-fixture-verify',
                 status: status === 'running' ? 'pending' : 'approved',
                 summary:
                   status === 'running' ? 'Awaiting approval' : 'Approved for this verification run',
@@ -920,9 +915,9 @@ function worktreePageForMockRun(
         },
         {
           kind: 'text',
-          id: 'segment:text:message-mock-assistant',
+          id: 'segment:text:message-fixture-assistant',
           order: 3,
-          messageId: 'message-mock-assistant',
+          messageId: 'message-fixture-assistant',
           body: 'The setup is ready for review.',
         },
       ],
@@ -945,7 +940,7 @@ function worktreePageForMockRun(
   }
 }
 
-const mockSupportBundleExport: ExportSupportBundleResponse = {
+const fixtureSupportBundleExport: ExportSupportBundleResponse = {
   bundlePath: '.jyowo/runtime/exports/support-bundle-20260617T000000.000Z.json',
   eventCount: 1,
   exportedAt: timestamp,
@@ -954,7 +949,7 @@ const mockSupportBundleExport: ExportSupportBundleResponse = {
   redacted: true,
 }
 
-export interface MockCommandClientOptions {
+export interface TestCommandClientOptions {
   appInfo?: AppInfo
   attachmentFromPath?: CreateAttachmentFromPathResponse
   contextSnapshot?: GetContextSnapshotResponse
@@ -1011,36 +1006,36 @@ function wait(delayMs: number | undefined) {
   })
 }
 
-function mockProviderApiKeyForConfig(configId: string) {
-  return ['mock', 'provider', 'revealed', configId].join(':')
+function fixtureProviderApiKeyForConfig(configId: string) {
+  return ['fixture', 'provider', 'revealed', configId].join(':')
 }
 
-export function createMockCommandClient(options: MockCommandClientOptions = {}): CommandClient {
+export function createTestCommandClient(options: TestCommandClientOptions = {}): CommandClient {
   let batchListener: ((batch: ConversationEventBatchPayload) => void) | null = null
   let activeSubscription: SubscribeConversationEventsResponse | null = null
   let subscriptionCounter = 0
   let providerRevealCounter = 0
   let completionBatchFlushed: Promise<void> = Promise.resolve()
-  let projects = options.projects ?? mockJyowoProject
-  let providerSettings = cloneResponse(options.providerSettingsList ?? mockProviderSettingsList)
+  let projects = options.projects ?? testJyowoProject
+  let providerSettings = cloneResponse(options.providerSettingsList ?? fixtureProviderSettingsList)
   let createdConversationCounter = 0
-  let conversations = cloneResponse(options.conversations ?? mockListConversations)
+  let conversations = cloneResponse(options.conversations ?? fixtureListConversations)
   const providerRevealConfigIdsByToken = new Map<string, string>()
   const conversationDetailsById = new Map<string, GetConversationResponse>()
   conversationDetailsById.set(
     'conversation-001',
-    cloneResponse(options.conversation ?? mockConversation),
+    cloneResponse(options.conversation ?? fixtureConversation),
   )
   const worktreePagesByConversation = new Map<string, PageConversationWorktreeResponse>()
   worktreePagesByConversation.set(
     'conversation-001',
-    cloneResponse(options.conversationWorktreePage ?? mockConversationWorktreePage),
+    cloneResponse(options.conversationWorktreePage ?? fixtureConversationWorktreePage),
   )
   const pendingBatchTimeouts = new Map<number, () => void>()
   const catalogInstallProgressListeners = new Set<
     (progress: SkillCatalogInstallProgressPayload) => void
   >()
-  const mockEventState: MockConversationEventState = {
+  const fixtureEventState: FixtureConversationEventState = {
     getListener: () => batchListener,
     getSubscription: () => activeSubscription,
     trackTimeout: (timeoutId, resolve) => {
@@ -1086,7 +1081,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async createAttachmentFromPath() {
       await wait(options.delayMs)
-      return options.attachmentFromPath ?? mockAttachment
+      return options.attachmentFromPath ?? fixtureAttachment
     },
     async createConversation() {
       await wait(options.delayMs)
@@ -1141,27 +1136,29 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async exportMemoryItems() {
       await wait(options.delayMs)
-      return options.memoryExport ?? mockMemoryExport
+      return options.memoryExport ?? fixtureMemoryExport
     },
     async exportSupportBundle() {
       await wait(options.delayMs)
-      return options.supportBundleExport ?? mockSupportBundleExport
+      return options.supportBundleExport ?? fixtureSupportBundleExport
     },
     async getContextSnapshot() {
       await wait(options.delayMs)
-      return options.contextSnapshot ?? mockContextSnapshot
+      return options.contextSnapshot ?? fixtureContextSnapshot
     },
     async getExecutionSettings(_request) {
       await wait(options.delayMs)
-      return options.executionSettings ?? mockExecutionSettings
+      return options.executionSettings ?? fixtureExecutionSettings
     },
     async getConversation(conversationId) {
       await wait(options.delayMs)
-      return options.conversation ?? conversationDetailsById.get(conversationId) ?? mockConversation
+      return (
+        options.conversation ?? conversationDetailsById.get(conversationId) ?? fixtureConversation
+      )
     },
     async getArtifactMediaPreview() {
       await wait(options.delayMs)
-      return options.artifactMediaPreview ?? mockArtifactMediaPreview
+      return options.artifactMediaPreview ?? fixtureArtifactMediaPreview
     },
     async getAttachmentMediaPreview() {
       await wait(options.delayMs)
@@ -1172,15 +1169,15 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async getAppInfo() {
       await wait(options.delayMs)
-      return options.appInfo ?? mockAppInfo
+      return options.appInfo ?? fixtureAppInfo
     },
     async getHarnessHealthcheck() {
       await wait(options.delayMs)
-      return options.healthcheck ?? mockHarnessHealthcheck
+      return options.healthcheck ?? fixtureHarnessHealthcheck
     },
     async getMemoryItem() {
       await wait(options.delayMs)
-      return options.memoryItem ?? mockMemoryItem
+      return options.memoryItem ?? fixtureMemoryItem
     },
     async getProviderConfigApiKey(configId, revealToken) {
       await wait(options.delayMs)
@@ -1196,21 +1193,21 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
         }
       }
       return {
-        apiKey: mockProviderApiKeyForConfig(configId),
+        apiKey: fixtureProviderApiKeyForConfig(configId),
         configId,
       }
     },
     async getReplayTimeline() {
       await wait(options.delayMs)
-      return options.replayTimeline ?? mockReplayTimeline
+      return options.replayTimeline ?? fixtureReplayTimeline
     },
     async getSkillCatalogEntry() {
       await wait(options.delayMs)
-      return options.skillCatalogEntry ?? mockSkillCatalogEntry
+      return options.skillCatalogEntry ?? fixtureSkillCatalogEntry
     },
     async getSkillCatalogFile() {
       await wait(options.delayMs)
-      return options.skillCatalogFile ?? mockSkillCatalogFile
+      return options.skillCatalogFile ?? fixtureSkillCatalogFile
     },
     async pageConversationTimeline(request) {
       await wait(options.delayMs)
@@ -1256,12 +1253,12 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       }
 
       const summary =
-        (options.skills ?? mockListSkills).skills.find((skill) => skill.id === id) ??
-        mockWorkspaceSkill
+        (options.skills ?? fixtureListSkills).skills.find((skill) => skill.id === id) ??
+        fixtureWorkspaceSkill
 
       return {
         skill: {
-          ...mockSkillDetail.skill,
+          ...fixtureSkillDetail.skill,
           summary,
         },
       } satisfies GetSkillDetailResponse
@@ -1272,18 +1269,18 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
         return options.skillFile
       }
 
-      return path === mockSkillEntryFile.file.path
-        ? mockSkillEntryFile
+      return path === fixtureSkillEntryFile.file.path
+        ? fixtureSkillEntryFile
         : {
             file: {
-              content: `Mock content for ${path}`,
+              content: `Fixture content for ${path}`,
               path,
             },
           }
     },
     async importSkill() {
       await wait(options.delayMs)
-      return { skill: mockWorkspaceSkill }
+      return { skill: fixtureWorkspaceSkill }
     },
     async installSkillFromCatalog(request) {
       emitCatalogInstallProgress(request, 'preparing', 5)
@@ -1293,7 +1290,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
         options.skillCatalogInstall ?? {
           task: {
             entryId: request.entryId,
-            operationId: request.operationId ?? 'catalog-install-mock',
+            operationId: request.operationId ?? 'catalog-install-fixture',
             percent: 5,
             sourceId: request.sourceId,
             stage: 'preparing',
@@ -1307,7 +1304,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async listSkillCatalogInstallTasks() {
       await wait(options.delayMs)
-      return options.skillCatalogInstallTasks ?? mockSkillCatalogInstallTasks
+      return options.skillCatalogInstallTasks ?? fixtureSkillCatalogInstallTasks
     },
     async listenSkillCatalogInstallProgress(onProgress) {
       catalogInstallProgressListeners.add(onProgress)
@@ -1317,11 +1314,11 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async listActivity() {
       await wait(options.delayMs)
-      return options.listActivity ?? mockListActivity
+      return options.listActivity ?? fixtureListActivity
     },
     async listArtifacts(_request) {
       await wait(options.delayMs)
-      return options.artifacts ?? mockListArtifacts
+      return options.artifacts ?? fixtureListArtifacts
     },
     async listConversations() {
       await wait(options.delayMs)
@@ -1329,33 +1326,33 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async listEvalCases() {
       await wait(options.delayMs)
-      return options.evalCases ?? mockListEvalCases
+      return options.evalCases ?? fixtureListEvalCases
     },
     async listModelProviderCatalog() {
       await wait(options.delayMs)
-      return options.modelProviderCatalog ?? mockModelProviderCatalog
+      return options.modelProviderCatalog ?? fixtureModelProviderCatalog
     },
     async listMcpDiagnostics() {
       await wait(options.delayMs)
-      return options.mcpDiagnostics ?? mockListMcpDiagnostics
+      return options.mcpDiagnostics ?? fixtureListMcpDiagnostics
     },
     async listMcpServers() {
       await wait(options.delayMs)
-      return options.mcpServers ?? mockListMcpServers
+      return options.mcpServers ?? fixtureListMcpServers
     },
     async getMcpServerConfig(id) {
       await wait(options.delayMs)
       if (options.mcpServerConfig?.server.id === id) {
         return options.mcpServerConfig
       }
-      if (mockMcpServerConfig.server.id === id) {
-        return mockMcpServerConfig
+      if (fixtureMcpServerConfig.server.id === id) {
+        return fixtureMcpServerConfig
       }
       throw new Error(`MCP server not found: ${id}`)
     },
     async listMemoryItems() {
       await wait(options.delayMs)
-      return options.memoryItems ?? mockMemoryItems
+      return options.memoryItems ?? fixtureMemoryItems
     },
     async listProviderSettings() {
       await wait(options.delayMs)
@@ -1410,28 +1407,28 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async listReferenceCandidates(_request) {
       await wait(options.delayMs)
-      return options.referenceCandidates ?? mockReferenceCandidates
+      return options.referenceCandidates ?? fixtureReferenceCandidates
     },
     async listSkillCatalogEntries() {
       await wait(options.delayMs)
-      return options.skillCatalogEntries ?? mockSkillCatalogEntries
+      return options.skillCatalogEntries ?? fixtureSkillCatalogEntries
     },
     async listSkillCatalogSources() {
       await wait(options.delayMs)
-      return options.skillCatalogSources ?? mockSkillCatalogSources
+      return options.skillCatalogSources ?? fixtureSkillCatalogSources
     },
     async listSkills() {
       await wait(options.delayMs)
-      return options.skills ?? mockListSkills
+      return options.skills ?? fixtureListSkills
     },
     async resolvePermission(request) {
       await wait(options.delayMs)
       await completionBatchFlushed
-      emitMockConversationBatch(
-        mockEventState,
+      emitFixtureConversationBatch(
+        fixtureEventState,
         activeSubscription,
         [
-          mockTimelineEvent(
+          fixtureTimelineEvent(
             'permission.resolved',
             {
               decision: request.decision,
@@ -1439,7 +1436,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
             },
             {
               conversationSequence: 10,
-              id: 'evt-mock-permission-resolved',
+              id: 'evt-fixture-permission-resolved',
               sequence: 10,
               source: 'policy',
             },
@@ -1463,7 +1460,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
         options.providerConfigApiKeyReveal ?? {
           configId,
           expiresInSeconds: 60,
-          revealToken: `mock-reveal-token-${providerRevealCounter}`,
+          revealToken: `fixture-reveal-token-${providerRevealCounter}`,
           status: 'ready',
         }
       providerRevealConfigIdsByToken.set(response.revealToken, configId)
@@ -1475,9 +1472,9 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     async runEvalCase(caseId) {
       await wait(options.delayMs)
       const evalCase =
-        (options.evalCases ?? mockListEvalCases).cases.find(
+        (options.evalCases ?? fixtureListEvalCases).cases.find(
           (currentCase) => currentCase.id === caseId,
-        ) ?? mockListEvalCases.cases[0]
+        ) ?? fixtureListEvalCases.cases[0]
 
       return {
         case: {
@@ -1494,7 +1491,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async saveProviderSettings() {
       await wait(options.delayMs)
-      const response = options.providerSettings ?? mockSaveProviderSettings
+      const response = options.providerSettings ?? fixtureSaveProviderSettings
       providerSettings = {
         defaultConfigId: response.config.isDefault
           ? response.config.id
@@ -1519,9 +1516,9 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       return (
         options.setExecutionSettings ?? {
-          ...mockSetExecutionSettings,
+          ...fixtureSetExecutionSettings,
           agentCapabilities: {
-            ...mockSetExecutionSettings.agentCapabilities,
+            ...fixtureSetExecutionSettings.agentCapabilities,
             agentTeamsEnabled: request.agentTeamsEnabled,
             backgroundAgentsEnabled: request.backgroundAgentsEnabled,
             subagentsEnabled: request.subagentsEnabled,
@@ -1533,13 +1530,13 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async saveMcpServer() {
       await wait(options.delayMs)
-      return options.mcpServer ?? mockSaveMcpServer
+      return options.mcpServer ?? fixtureSaveMcpServer
     },
     async setMcpServerEnabled(id, enabled) {
       await wait(options.delayMs)
       const server =
-        (options.mcpServers ?? mockListMcpServers).servers.find((server) => server.id === id) ??
-        mockSaveMcpServer.server
+        (options.mcpServers ?? fixtureListMcpServers).servers.find((server) => server.id === id) ??
+        fixtureSaveMcpServer.server
       return {
         server: {
           ...server,
@@ -1551,8 +1548,8 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     async restartMcpServer(id) {
       await wait(options.delayMs)
       const server =
-        (options.mcpServers ?? mockListMcpServers).servers.find((server) => server.id === id) ??
-        mockSaveMcpServer.server
+        (options.mcpServers ?? fixtureListMcpServers).servers.find((server) => server.id === id) ??
+        fixtureSaveMcpServer.server
       return {
         server,
       }
@@ -1572,8 +1569,9 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     async setSkillEnabled(id, enabled) {
       await wait(options.delayMs)
       const skill =
-        (options.skills ?? mockListSkills).skills.find((currentSkill) => currentSkill.id === id) ??
-        mockWorkspaceSkill
+        (options.skills ?? fixtureListSkills).skills.find(
+          (currentSkill) => currentSkill.id === id,
+        ) ?? fixtureWorkspaceSkill
 
       return {
         skill: {
@@ -1587,78 +1585,78 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       worktreePagesByConversation.set(
         request.conversationId,
-        worktreePageForMockRun(
+        worktreePageForFixtureRun(
           request.conversationId,
           request.prompt,
           request.clientMessageId,
           'running',
         ),
       )
-      emitMockConversationBatch(mockEventState, activeSubscription, [
-        mockTimelineEvent(
+      emitFixtureConversationBatch(fixtureEventState, activeSubscription, [
+        fixtureTimelineEvent(
           'run.started',
           {
             permissionMode: request.permissionMode ?? 'default',
             sessionId: request.conversationId,
           },
-          { conversationSequence: 1, id: 'evt-mock-run-started', sequence: 1 },
+          { conversationSequence: 1, id: 'evt-fixture-run-started', sequence: 1 },
         ),
-        mockTimelineEvent(
+        fixtureTimelineEvent(
           'user.message.appended',
           {
             body: request.prompt,
             clientMessageId: request.clientMessageId,
-            messageId: 'message-mock-user',
+            messageId: 'message-fixture-user',
           },
           {
             conversationSequence: 2,
-            id: 'evt-mock-user-message',
+            id: 'evt-fixture-user-message',
             sequence: 2,
             source: 'user',
           },
         ),
-        mockTimelineEvent(
+        fixtureTimelineEvent(
           'assistant.delta',
           {
-            messageId: 'message-mock-delta',
+            messageId: 'message-fixture-delta',
             text: 'Drafting the implementation plan.',
           },
           {
             conversationSequence: 3,
-            id: 'evt-mock-assistant-delta',
+            id: 'evt-fixture-assistant-delta',
             sequence: 3,
             source: 'assistant',
           },
         ),
-        mockTimelineEvent(
+        fixtureTimelineEvent(
           'tool.requested',
           {
             argumentsSummary: 'Input withheld from conversation timeline.',
             toolName: 'read_file',
-            toolUseId: 'tool-mock-read',
+            toolUseId: 'tool-fixture-read',
           },
           {
             conversationSequence: 4,
-            id: 'evt-mock-tool-requested',
+            id: 'evt-fixture-tool-requested',
             sequence: 4,
             source: 'tool',
           },
         ),
-        mockTimelineEvent(
+        fixtureTimelineEvent(
           'tool.completed',
           {
             durationMs: 42,
             outputSummary: 'Output withheld from conversation timeline.',
-            toolUseId: 'tool-mock-read',
+            toolUseId: 'tool-fixture-read',
           },
           {
             conversationSequence: 5,
-            id: 'evt-mock-tool-completed',
+            id: 'evt-fixture-tool-completed',
             sequence: 5,
             source: 'tool',
           },
         ),
-        mockTimelineEvent(
+        fixtureTimelineEvent(
           'permission.requested',
           {
             autoResolved: false,
@@ -1669,22 +1667,22 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
             requestId: '01HZ0000000000000000000001',
             severity: 'medium',
             target: 'local verification task',
-            toolUseId: 'tool-mock-read',
+            toolUseId: 'tool-fixture-read',
             workspaceBoundary: 'workspace',
           },
           {
             conversationSequence: 6,
-            id: 'evt-mock-permission-requested',
+            id: 'evt-fixture-permission-requested',
             sequence: 6,
             source: 'policy',
           },
         ),
-        mockTimelineEvent(
+        fixtureTimelineEvent(
           'artifact.created',
           { artifactId: 'artifact-desktop-foundation', status: 'ready' },
           {
             conversationSequence: 7,
-            id: 'evt-mock-artifact-created',
+            id: 'evt-fixture-artifact-created',
             sequence: 7,
             source: 'engine',
           },
@@ -1692,36 +1690,36 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       ])
       worktreePagesByConversation.set(
         request.conversationId,
-        worktreePageForMockRun(
+        worktreePageForFixtureRun(
           request.conversationId,
           request.prompt,
           request.clientMessageId,
           'complete',
         ),
       )
-      completionBatchFlushed = emitMockConversationBatch(
-        mockEventState,
+      completionBatchFlushed = emitFixtureConversationBatch(
+        fixtureEventState,
         activeSubscription,
         [
-          mockTimelineEvent(
+          fixtureTimelineEvent(
             'assistant.completed',
             {
               body: 'The setup is ready for review.',
-              messageId: 'message-mock-assistant',
+              messageId: 'message-fixture-assistant',
             },
             {
               conversationSequence: 8,
-              id: 'evt-mock-assistant-completed',
+              id: 'evt-fixture-assistant-completed',
               sequence: 8,
               source: 'assistant',
             },
           ),
-          mockTimelineEvent(
+          fixtureTimelineEvent(
             'run.ended',
             { reason: 'completed' },
             {
               conversationSequence: 9,
-              id: 'evt-mock-run-ended',
+              id: 'evt-fixture-run-ended',
               sequence: 9,
             },
           ),
@@ -1734,7 +1732,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       subscriptionCounter += 1
       activeSubscription = options.subscribeConversationEvents ?? {
-        subscriptionId: `subscription-mock-${subscriptionCounter}`,
+        subscriptionId: `subscription-fixture-${subscriptionCounter}`,
         conversationId: request.conversationId,
         replayEvents: [],
         gap: false,
@@ -1754,7 +1752,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     async subscribeMcpDiagnostics() {
       await wait(options.delayMs)
       return (options.subscribeMcpDiagnostics ?? {
-        replayEvents: (options.mcpDiagnostics ?? mockListMcpDiagnostics).events,
+        replayEvents: (options.mcpDiagnostics ?? fixtureListMcpDiagnostics).events,
         subscriptionId: 'mcp-diagnostic-subscription-001',
       }) satisfies SubscribeMcpDiagnosticsResponse
     },
@@ -1784,7 +1782,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       return {
         item: {
-          ...(options.memoryItem ?? mockMemoryItem).item,
+          ...(options.memoryItem ?? fixtureMemoryItem).item,
           content: request.content,
           id: request.id,
         },
@@ -1792,18 +1790,18 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async validateProviderSettings() {
       await wait(options.delayMs)
-      return options.providerValidation ?? mockValidateProviderSettings
+      return options.providerValidation ?? fixtureValidateProviderSettings
     },
   }
 }
 
-function mockTimelineEvent<TType extends RunEvent['type']>(
+function fixtureTimelineEvent<TType extends RunEvent['type']>(
   type: TType,
   payload: Extract<RunEvent, { type: TType }>['payload'],
   options: Partial<RunEvent> = {},
 ): RunEvent {
   return {
-    id: options.id ?? `evt-mock-${type}`,
+    id: options.id ?? `evt-fixture-${type}`,
     conversationSequence: options.conversationSequence ?? 1,
     runId: options.runId ?? 'run-001',
     sequence: options.sequence ?? 1,
@@ -1815,15 +1813,15 @@ function mockTimelineEvent<TType extends RunEvent['type']>(
   } as RunEvent
 }
 
-type MockConversationEventState = {
+type FixtureConversationEventState = {
   getListener: () => ((batch: ConversationEventBatchPayload) => void) | null
   getSubscription: () => SubscribeConversationEventsResponse | null
   trackTimeout: (timeoutId: number, resolve: () => void) => void
   untrackTimeout: (timeoutId: number) => void
 }
 
-function emitMockConversationBatch(
-  state: MockConversationEventState,
+function emitFixtureConversationBatch(
+  state: FixtureConversationEventState,
   subscription: SubscribeConversationEventsResponse | null,
   events: RunEvent[],
   delayMs = 0,
@@ -1867,7 +1865,7 @@ function emitMockConversationBatch(
   })
 }
 
-export function createRejectedCommandClient(error: unknown): CommandClient {
+export function createRejectedTestCommandClient(error: unknown): CommandClient {
   return {
     cancelRun: () => Promise.reject(error),
     createAttachmentFromPath: () => Promise.reject(error),

@@ -11,7 +11,7 @@ Test layers:
 | Unit | Vitest | schemas, reducers, utilities |
 | Component | Testing Library | UI behavior and states |
 | Story | Storybook | complex UI state matrices |
-| E2E | Playwright | user flows in web mock runtime |
+| E2E | Playwright | browser smoke coverage without fixture command runtime |
 | Contract | Zod/schema tests | IPC payloads, ConversationWorktreePage, RunEvent schema |
 
 Must test:
@@ -21,7 +21,7 @@ Must test:
   review, clarification, withheld, and error states
 - `ProcessPanel` reasoning, activity, command, diff, tool, artifact, withheld,
   and failed steps
-- Codex-style evidence conversation fixture, dark-theme evidence screenshot target,
+- Codex-style evidence test conversation, dark-theme evidence screenshot target,
   large diff, failed command, historical attachments, and collapsed completed history
 - worktree projection store behavior, `clientMessageId` optimistic confirmation,
   turn ordering, throttled live invalidation, gap recovery, and refetch
@@ -37,7 +37,7 @@ Must test:
   subscription filtering, and listener cleanup
 - event renderer exhaustiveness
 - `shared/tauri` schema validation and error normalization
-- mock `CommandClient`
+- test-only `CommandClient` fixtures
 - `shared/text-layout` fallback path and measured path
 - Zustand stores as UI-only state
 - system status page loading, ready, and error
@@ -84,14 +84,13 @@ Component acceptance matrix:
 
 Playwright:
 
-- use web mock runtime
+- do not use a fixture command runtime
 - open `/`
-- verify `Jyowo`, version, shell, SDK crate, and healthcheck status
-- verify the conversation product path: ask, plan, activity update, review, and
-  continue
+- verify the browser shell renders without seeded conversations
+- keep runtime-backed conversation flows in native Tauri E2E
 - verify the composer remains the primary action entry
 - verify Context and Activity surfaces do not replace the conversation canvas
-- no dependency on real Tauri runtime
+- no dependency on fixture command payloads
 
 Native Tauri E2E belongs in the desktop build gate when Tauri runtime coverage is required.
 
@@ -325,7 +324,7 @@ Security:
 [ ] final policy decision remains in Rust
 [ ] destructive actions require explicit approval
 [ ] API keys do not enter trace/log/prompt
-[ ] mock runtime cannot be selected in production
+[ ] command runtime cannot be replaced by fixture data
 [ ] capabilities remain minimal
 ```
 

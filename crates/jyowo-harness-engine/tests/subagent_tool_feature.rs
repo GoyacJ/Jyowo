@@ -64,7 +64,7 @@ fn subagent_tool_feature_appends_agent_tool_when_enabled() {
         .with_tools(ToolPool::default())
         .with_permission_broker(Arc::new(AllowBroker))
         .with_workspace_root(workspace.path())
-        .with_model_id("mock-model")
+        .with_model_id("test-model")
         .with_cap_registry(Arc::new(registry))
         .with_subagent_tool()
         .build()
@@ -92,7 +92,7 @@ fn subagent_tool_feature_installs_default_runner_when_cap_missing() {
         .with_tools(ToolPool::default())
         .with_permission_broker(Arc::new(AllowBroker))
         .with_workspace_root(workspace.path())
-        .with_model_id("mock-model")
+        .with_model_id("test-model")
         .with_subagent_tool()
         .build()
         .unwrap();
@@ -128,7 +128,7 @@ async fn default_runner_scopes_child_tools_and_announces_child_output() {
         .with_tools(tools)
         .with_permission_broker(Arc::new(AllowBroker))
         .with_workspace_root(workspace.path())
-        .with_model_id("mock-model")
+        .with_model_id("test-model")
         .with_subagent_tool()
         .build()
         .unwrap();
@@ -1538,7 +1538,7 @@ async fn required_sandbox_capabilities_fail_closed_when_parent_backend_is_missin
         .with_tools(ToolPool::default())
         .with_permission_broker(Arc::new(AllowBroker))
         .with_workspace_root(workspace.path())
-        .with_model_id("mock-model")
+        .with_model_id("test-model")
         .with_sandbox(Arc::new(MissingFeatureSandbox))
         .with_subagent_tool()
         .build()
@@ -1698,7 +1698,7 @@ fn test_engine_with_blob_store(
         .with_tools(tools)
         .with_permission_broker(Arc::new(AllowBroker))
         .with_workspace_root(workspace_root)
-        .with_model_id("mock-model")
+        .with_model_id("test-model")
         .with_blob_store(blob_store)
         .with_subagent_tool()
         .build()
@@ -1728,7 +1728,7 @@ fn test_engine_with_sandbox(
         .with_tools(tools)
         .with_permission_broker(Arc::new(AllowBroker))
         .with_workspace_root(workspace_root)
-        .with_model_id("mock-model")
+        .with_model_id("test-model")
         .with_subagent_tool();
     if let Some(system_prompt) = system_prompt {
         builder = builder.with_system_prompt(Some(system_prompt));
@@ -1779,7 +1779,7 @@ impl ModelProvider for DelegatingModel {
             protocol: harness_model::ModelProtocol::Messages,
             lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "delegating".to_owned(),
-            model_id: "mock-model".to_owned(),
+            model_id: "test-model".to_owned(),
             display_name: "Delegating Model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_024,

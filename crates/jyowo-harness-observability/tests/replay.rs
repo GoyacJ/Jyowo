@@ -75,8 +75,8 @@ async fn reconstruct_usage_report_prices_each_event_by_historical_snapshot_id() 
     let model = model_ref();
     let first_run = RunId::new();
     let second_run = RunId::new();
-    let first_snapshot = pricing_snapshot("mock-pricing", 1);
-    let second_snapshot = pricing_snapshot("mock-pricing", 2);
+    let first_snapshot = pricing_snapshot("test-pricing", 1);
+    let second_snapshot = pricing_snapshot("test-pricing", 2);
     let store = event_store();
     store
         .append(
@@ -120,7 +120,7 @@ async fn reconstruct_usage_report_prices_each_event_by_historical_snapshot_id() 
     assert_eq!(report.global.output_tokens, 2);
     assert_eq!(report.global.cost_micros, 132);
     assert_eq!(
-        report.models["mock/usage-model"].cost_micros,
+        report.models["test/usage-model"].cost_micros,
         report.global.cost_micros
     );
     assert_eq!(report.runs[&first_run].cost_micros, 12);
@@ -134,8 +134,8 @@ async fn reconstruct_usage_report_does_not_replace_event_snapshot_with_latest_pr
     let tenant = TenantId::SINGLE;
     let session = SessionId::new();
     let run = RunId::new();
-    let historical_snapshot = pricing_snapshot("mock-pricing", 1);
-    let latest_snapshot = pricing_snapshot("mock-pricing", 2);
+    let historical_snapshot = pricing_snapshot("test-pricing", 1);
+    let latest_snapshot = pricing_snapshot("test-pricing", 2);
     let store = event_store();
     store
         .append(
@@ -175,7 +175,7 @@ async fn reconstruct_usage_report_keeps_missing_pricing_cost_zero() {
     let tenant = TenantId::SINGLE;
     let session = SessionId::new();
     let run = RunId::new();
-    let missing_snapshot = pricing_snapshot("mock-pricing", 99);
+    let missing_snapshot = pricing_snapshot("test-pricing", 99);
     let store = event_store();
     store
         .append(
@@ -199,7 +199,7 @@ async fn reconstruct_usage_report_keeps_missing_pricing_cost_zero() {
             session,
             ReplayCursor::FromStart,
             vec![pricing_entry(
-                &pricing_snapshot("mock-pricing", 100),
+                &pricing_snapshot("test-pricing", 100),
                 1_000,
                 1_000,
             )],
@@ -531,7 +531,7 @@ fn usage(input_tokens: u64, output_tokens: u64) -> UsageSnapshot {
 
 fn model_ref() -> ModelRef {
     ModelRef {
-        provider_id: "mock".to_owned(),
+        provider_id: "test".to_owned(),
         model_id: "usage-model".to_owned(),
     }
 }

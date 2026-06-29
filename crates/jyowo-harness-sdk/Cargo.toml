@@ -119,9 +119,9 @@ testing = [
   "stream-permission",
   "skill-tools",
   "jyowo-harness-session/hot-reload-fork",
-  "jyowo-harness-journal/mock",
-  "jyowo-harness-permission/mock",
-  "jyowo-harness-model/mock",
+  "jyowo-harness-journal/testing",
+  "jyowo-harness-permission/testing",
+  "jyowo-harness-model/testing",
 ]
 
 [dependencies]

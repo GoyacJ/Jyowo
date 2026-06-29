@@ -50,7 +50,7 @@ Required test groups:
 | Replay | cursor behavior, redacted output, snapshot reads, conversation event ordering |
 | Conversation worktree | complete turn paging, event cursor reporting, stable node ids, nested tool permissions, safe process steps, artifact media metadata, and tool failure summaries |
 | Tauri command | command payload identity, shell metadata, SDK availability, replay-before-live conversation subscription, artifact media preview ownership checks, window-scoped event batches, unsubscribe cleanup |
-| SDK | builder requirements, runtime assembly, mock/testing adapters |
+| SDK | builder requirements, runtime assembly, test adapters |
 | Budget | quota serialization and token budget defaults |
 | Search | SQLite FTS5 indexing, query behavior, deleted item removal, visibility filtering |
 | Secret | explicit reveal handling, missing secret behavior, no raw Secret serialization |

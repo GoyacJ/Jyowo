@@ -20,7 +20,7 @@ integrity = ["dep:bytes", "dep:ring", "dep:serde_json", "dep:zeroize"]
 interactive = []
 stream = ["dep:dashmap"]
 rule-engine = ["dangerous", "dep:arc-swap", "dep:notify", "dep:serde_json", "dep:tokio-stream", "dep:toml"]
-mock = []
+testing = []
 auto-mode = ["dep:jyowo-harness-model", "dep:serde_json"]
 
 [dependencies]

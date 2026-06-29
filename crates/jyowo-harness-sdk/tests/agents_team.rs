@@ -99,7 +99,7 @@ async fn sdk_create_team_exposes_runtime_facade_and_journals_lifecycle() {
     let worker = AgentId::new();
     let late = AgentId::new();
     let harness = Harness::builder()
-        .with_model(testing::MockProvider::default())
+        .with_model(testing::TestModelProvider::default())
         .with_store_arc(event_store)
         .with_sandbox(testing::NoopSandbox::new())
         .build()

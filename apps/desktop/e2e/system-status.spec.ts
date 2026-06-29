@@ -1,37 +1,38 @@
 import { expect, type Page, test } from '@playwright/test'
 
-async function openDefaultConversation(page: Page) {
+test('runs the browser E2E conversation flow through the fixture client', async ({ page }) => {
   await page.goto('/')
 
   const workspaceNav = page.getByRole('navigation', { name: '工作区' })
   await expect(workspaceNav).toBeVisible()
 
-  await workspaceNav
-    .getByRole('button', { name: 'Build the desktop foundation Restore the product shell' })
-    .click()
-}
-
-test('renders the conversation workspace in the web mock runtime', async ({ page }) => {
-  await openDefaultConversation(page)
-
+  const existingConversation = workspaceNav.getByRole('button', {
+    name: 'Build the desktop foundation Restore the product shell',
+  })
+  await expect(existingConversation).toBeVisible()
+  await existingConversation.click()
   await expect(page.getByRole('heading', { name: 'Build the desktop foundation' })).toBeVisible()
-  await expect(page.getByPlaceholder('向 Jyowo 询问这个项目...')).toBeVisible()
-})
 
-test('supports the main conversation work path in the web mock runtime', async ({ page }) => {
-  await page.goto('/')
-  await page.getByRole('button', { name: '新建对话' }).click()
+  const permissionPanel = page.locator('[data-permission-request-id]').first()
+  await expect(permissionPanel).toBeVisible()
+  await approveFirstPermission(page)
+  await expect(page.getByText(/权限：提交中|Awaiting approval/).first()).toBeVisible()
+  await expect(page.getByRole('button', { name: /Approve|批准/ }).first()).toBeDisabled()
 
-  await page.getByPlaceholder('向 Jyowo 询问这个项目...').fill('Continue the setup')
-  await page.getByRole('button', { name: '发送消息' }).click()
+  await workspaceNav.getByRole('button', { name: '新建对话' }).click()
+  await expect(page.getByRole('heading', { name: '新建对话' })).toBeVisible()
 
-  await expect(page.getByText('Continue the setup')).toBeVisible()
+  await page.getByRole('textbox').fill('Verify the conversation runtime path')
+  await page.getByRole('button', { name: /Send message|发送消息/ }).click()
+
   await expect(page.getByText('Drafting the implementation plan.')).toBeVisible()
-  await expect(page.getByText('Reading files')).toBeVisible()
-  await expect(page.getByText('Run local verification')).toBeVisible()
-  await expect(page.getByText('权限：已批准')).toBeVisible()
+  await expect(page.getByRole('button', { name: /工具 已运行 2 条工具|Ran 2 tools/ })).toBeVisible()
   await expect(page.getByText('Desktop foundation created')).toBeVisible()
   await expect(page.getByText('The setup is ready for review.')).toBeVisible()
-
-  await expect(page.getByRole('region', { name: '状态' })).toBeVisible()
 })
+
+async function approveFirstPermission(page: Page) {
+  const approveButton = page.getByRole('button', { name: /Approve|批准/ }).first()
+  await expect(approveButton).toBeVisible()
+  await approveButton.click()
+}
