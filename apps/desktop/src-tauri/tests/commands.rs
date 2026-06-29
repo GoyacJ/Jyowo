@@ -5485,6 +5485,9 @@ fn execution_settings_persist_permission_mode_for_session_options() {
     set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::BypassPermissions,
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
         },
         &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
     )
@@ -5508,6 +5511,133 @@ fn get_execution_settings_defaults_to_standard_mode() {
 
     assert_eq!(settings.permission_mode, PermissionMode::Default);
     assert_eq!(settings.auto_mode_available, cfg!(feature = "auto-mode"));
+    assert!(!settings.agent_capabilities.subagents_enabled);
+    assert!(!settings.agent_capabilities.agent_teams_enabled);
+    assert!(!settings.agent_capabilities.background_agents_enabled);
+    assert!(!settings.agent_capabilities.subagents_available);
+    assert!(!settings.agent_capabilities.agent_teams_available);
+    assert!(!settings.agent_capabilities.background_agents_available);
+    assert_eq!(settings.agent_capabilities.unavailable_reasons.len(), 3);
+}
+
+#[test]
+fn get_execution_settings_reads_legacy_permission_only_record() {
+    let workspace = unique_workspace("execution-settings-legacy-record");
+    let settings_path = workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("execution-settings.json");
+    std::fs::create_dir_all(settings_path.parent().unwrap())
+        .expect("settings directory should exist");
+    std::fs::write(&settings_path, r#"{"permission_mode":"auto"}"#)
+        .expect("legacy execution settings should write");
+
+    let settings = get_execution_settings_with_store(&DesktopExecutionSettingsStore::new(
+        workspace.to_path_buf(),
+    ))
+    .expect("legacy execution settings should load");
+
+    assert_eq!(settings.permission_mode, PermissionMode::Auto);
+    assert!(!settings.agent_capabilities.subagents_enabled);
+    assert!(!settings.agent_capabilities.agent_teams_enabled);
+    assert!(!settings.agent_capabilities.background_agents_enabled);
+}
+
+#[test]
+fn set_execution_settings_rejects_unavailable_agent_capabilities() {
+    let workspace = unique_workspace("execution-settings-unavailable-agent-capabilities");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let store = DesktopExecutionSettingsStore::new(workspace);
+
+    for request in [
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            subagents_enabled: true,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        },
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            subagents_enabled: false,
+            agent_teams_enabled: true,
+            background_agents_enabled: false,
+        },
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: true,
+        },
+    ] {
+        let error = set_execution_settings_with_store(request, &store)
+            .expect_err("unavailable capability should be rejected");
+        assert_eq!(error.code, "INVALID_PAYLOAD");
+    }
+}
+
+#[test]
+fn set_execution_settings_serializes_agent_capability_fields() {
+    let workspace = unique_workspace("execution-settings-agent-capability-serialization");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let store = DesktopExecutionSettingsStore::new(workspace.clone());
+
+    let response = set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        },
+        &store,
+    )
+    .expect("disabled execution settings should save");
+
+    assert!(!response.agent_capabilities.subagents_enabled);
+    let settings_path = workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("execution-settings.json");
+    let saved = std::fs::read_to_string(settings_path).expect("settings file should exist");
+    let saved: Value = serde_json::from_str(&saved).expect("settings file should be json");
+    assert_eq!(
+        saved,
+        json!({
+            "permission_mode": "default",
+            "subagents_enabled": false,
+            "agent_teams_enabled": false,
+            "background_agents_enabled": false
+        })
+    );
+}
+
+#[test]
+fn invalid_execution_settings_file_resets_agent_capabilities() {
+    let workspace = unique_workspace("execution-settings-invalid-reset");
+    let settings_path = workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("execution-settings.json");
+    std::fs::create_dir_all(settings_path.parent().unwrap())
+        .expect("settings directory should exist");
+    std::fs::write(
+        &settings_path,
+        r#"{"permission_mode":"invalid","subagents_enabled":true}"#,
+    )
+    .expect("invalid execution settings should write");
+
+    let settings = get_execution_settings_with_store(&DesktopExecutionSettingsStore::new(
+        workspace.to_path_buf(),
+    ))
+    .expect("invalid execution settings should reset");
+
+    assert_eq!(settings.permission_mode, PermissionMode::Default);
+    assert!(!settings.agent_capabilities.subagents_enabled);
+    assert!(!settings.agent_capabilities.agent_teams_enabled);
+    assert!(!settings.agent_capabilities.background_agents_enabled);
+    assert!(
+        !settings_path.exists(),
+        "invalid execution settings file should be removed"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

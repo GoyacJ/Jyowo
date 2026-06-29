@@ -12,7 +12,8 @@ use bytes::Bytes;
 use chrono::{NaiveDate, Utc};
 use futures::StreamExt;
 use harness_contracts::{
-    ConversationCursor, ConversationMessageAuthor, ConversationTurnCursor,
+    AgentCapabilityKind, AgentCapabilityUnavailableReason, ConversationCursor,
+    ConversationMessageAuthor, ConversationTurnCursor,
     ConversationWorktreePage, UiSafeText,
 };
 use image::{ImageFormat, ImageReader, Limits};
@@ -1163,10 +1164,27 @@ impl ProviderSettingsStore for DesktopProviderSettingsStore {
 pub struct ExecutionSettingsRecord {
     #[serde(default = "default_permission_mode")]
     pub permission_mode: PermissionMode,
+    #[serde(default)]
+    pub subagents_enabled: bool,
+    #[serde(default)]
+    pub agent_teams_enabled: bool,
+    #[serde(default)]
+    pub background_agents_enabled: bool,
 }
 
 fn default_permission_mode() -> PermissionMode {
     PermissionMode::Default
+}
+
+impl Default for ExecutionSettingsRecord {
+    fn default() -> Self {
+        Self {
+            permission_mode: PermissionMode::Default,
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1192,20 +1210,20 @@ impl DesktopExecutionSettingsStore {
         match std::fs::read(&settings_path) {
             Ok(bytes) => match serde_json::from_slice(&bytes) {
                 Ok(record) => {
-                    ensure_execution_settings_record(&record)?;
-                    Ok(record)
+                    if ensure_execution_settings_record(&record).is_ok() {
+                        Ok(record)
+                    } else {
+                        remove_invalid_execution_settings_file(&settings_path)?;
+                        Ok(ExecutionSettingsRecord::default())
+                    }
                 }
                 Err(_) => {
                     remove_invalid_execution_settings_file(&settings_path)?;
-                    Ok(ExecutionSettingsRecord {
-                        permission_mode: PermissionMode::Default,
-                    })
+                    Ok(ExecutionSettingsRecord::default())
                 }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(ExecutionSettingsRecord {
-                    permission_mode: PermissionMode::Default,
-                })
+                Ok(ExecutionSettingsRecord::default())
             }
             Err(error) => Err(runtime_operation_failed(format!(
                 "execution settings read failed: {error}"
@@ -1284,11 +1302,96 @@ fn ensure_execution_settings_record(
         _ => Err(invalid_payload(
             "permissionMode must be default, auto, or bypass_permissions".to_owned(),
         )),
+    }?;
+
+    ensure_agent_capability_setting_available(
+        record.subagents_enabled,
+        agent_capabilities_available().subagents_available,
+        "subagents",
+    )?;
+    ensure_agent_capability_setting_available(
+        record.agent_teams_enabled,
+        agent_capabilities_available().agent_teams_available,
+        "agentTeams",
+    )?;
+    ensure_agent_capability_setting_available(
+        record.background_agents_enabled,
+        agent_capabilities_available().background_agents_available,
+        "backgroundAgents",
+    )
+}
+
+fn ensure_agent_capability_setting_available(
+    enabled: bool,
+    available: bool,
+    capability: &str,
+) -> Result<(), CommandErrorPayload> {
+    if enabled && !available {
+        return Err(invalid_payload(format!(
+            "{capability} cannot be enabled in this desktop build"
+        )));
     }
 }
 
 fn auto_mode_available() -> bool {
     cfg!(feature = "auto-mode")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCapabilitiesPayload {
+    pub subagents_enabled: bool,
+    pub agent_teams_enabled: bool,
+    pub background_agents_enabled: bool,
+    pub subagents_available: bool,
+    pub agent_teams_available: bool,
+    pub background_agents_available: bool,
+    pub unavailable_reasons: Vec<AgentCapabilityUnavailableReason>,
+}
+
+fn agent_capabilities_payload(record: &ExecutionSettingsRecord) -> AgentCapabilitiesPayload {
+    let availability = agent_capabilities_available();
+    AgentCapabilitiesPayload {
+        subagents_enabled: record.subagents_enabled,
+        agent_teams_enabled: record.agent_teams_enabled,
+        background_agents_enabled: record.background_agents_enabled,
+        subagents_available: availability.subagents_available,
+        agent_teams_available: availability.agent_teams_available,
+        background_agents_available: availability.background_agents_available,
+        unavailable_reasons: availability.unavailable_reasons,
+    }
+}
+
+fn agent_capabilities_available() -> AgentCapabilitiesPayload {
+    let subagents_available = false;
+    let agent_teams_available = false;
+    let background_agents_available = false;
+    let mut unavailable_reasons = Vec::new();
+    if !subagents_available {
+        unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
+            capability: AgentCapabilityKind::Subagents,
+        });
+    }
+    if !agent_teams_available {
+        unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
+            capability: AgentCapabilityKind::AgentTeams,
+        });
+    }
+    if !background_agents_available {
+        unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
+            capability: AgentCapabilityKind::BackgroundAgents,
+        });
+    }
+
+    AgentCapabilitiesPayload {
+        subagents_enabled: false,
+        agent_teams_enabled: false,
+        background_agents_enabled: false,
+        subagents_available,
+        agent_teams_available,
+        background_agents_available,
+        unavailable_reasons,
+    }
 }
 
 fn remove_invalid_provider_settings_file(settings_path: &Path) -> Result<(), CommandErrorPayload> {
@@ -3265,24 +3368,29 @@ pub struct GetContextSnapshotResponse {
     pub project: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetExecutionSettingsResponse {
     pub permission_mode: PermissionMode,
     pub auto_mode_available: bool,
+    pub agent_capabilities: AgentCapabilitiesPayload,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetExecutionSettingsRequest {
     pub permission_mode: PermissionMode,
+    pub subagents_enabled: bool,
+    pub agent_teams_enabled: bool,
+    pub background_agents_enabled: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetExecutionSettingsResponse {
     pub permission_mode: PermissionMode,
     pub auto_mode_available: bool,
+    pub agent_capabilities: AgentCapabilitiesPayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -4501,6 +4609,7 @@ pub fn get_execution_settings_with_store(
     Ok(GetExecutionSettingsResponse {
         permission_mode: record.permission_mode,
         auto_mode_available: auto_mode_available(),
+        agent_capabilities: agent_capabilities_payload(&record),
     })
 }
 
@@ -4510,6 +4619,9 @@ pub fn set_execution_settings_with_store(
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
     ensure_execution_settings_record(&ExecutionSettingsRecord {
         permission_mode: request.permission_mode,
+        subagents_enabled: request.subagents_enabled,
+        agent_teams_enabled: request.agent_teams_enabled,
+        background_agents_enabled: request.background_agents_enabled,
     })?;
     if request.permission_mode == PermissionMode::Auto && !auto_mode_available() {
         return Err(invalid_payload(
@@ -4518,11 +4630,15 @@ pub fn set_execution_settings_with_store(
     }
     let record = ExecutionSettingsRecord {
         permission_mode: request.permission_mode,
+        subagents_enabled: request.subagents_enabled,
+        agent_teams_enabled: request.agent_teams_enabled,
+        background_agents_enabled: request.background_agents_enabled,
     };
     store.save_record(&record)?;
     Ok(SetExecutionSettingsResponse {
         permission_mode: record.permission_mode,
         auto_mode_available: auto_mode_available(),
+        agent_capabilities: agent_capabilities_payload(&record),
     })
 }
 
@@ -10718,12 +10834,20 @@ pub fn get_execution_settings(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn set_execution_settings(
     permission_mode: PermissionMode,
+    subagents_enabled: bool,
+    agent_teams_enabled: bool,
+    background_agents_enabled: bool,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     let _execution_settings_guard = runtime_state.execution_settings_lock.lock().await;
     set_execution_settings_with_store(
-        SetExecutionSettingsRequest { permission_mode },
+        SetExecutionSettingsRequest {
+            permission_mode,
+            subagents_enabled,
+            agent_teams_enabled,
+            background_agents_enabled,
+        },
         runtime_state.execution_settings_store.as_ref(),
     )
 }
