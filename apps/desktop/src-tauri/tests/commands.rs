@@ -21,7 +21,7 @@ use jyowo_desktop_shell::commands::{
     delete_conversation_with_runtime_state, delete_mcp_server_with_runtime_state,
     delete_mcp_server_with_store, delete_memory_item_with_runtime_state,
     delete_provider_capability_route_with_store, delete_skill_with_runtime_state,
-    export_memory_items_with_runtime_state, export_support_bundle_with_runtime_state,
+    desktop_provider_credential_resolver_with_stores, export_memory_items_with_runtime_state, export_support_bundle_with_runtime_state,
     get_app_info_payload, get_artifact_media_preview_with_runtime_state,
     get_attachment_media_preview_with_runtime_state, get_context_snapshot_with_runtime_state,
     get_conversation_with_runtime_state, get_execution_settings_for_request,
@@ -58,7 +58,8 @@ use jyowo_desktop_shell::commands::{
     CreateAttachmentFromPathRequest, DeleteConversationRequest, DeleteMcpServerRequest,
     DeleteMemoryItemRequest, DeleteProviderCapabilityRouteRequest, DeleteSkillRequest,
     DesktopExecutionSettingsStore, DesktopMcpDiagnosticStore, DesktopProviderCapabilityRouteStore,
-    DesktopProviderSettingsStore, DesktopRuntimeState, DesktopSkillStore,
+    DesktopConversationModelConfigStore, DesktopProviderSettingsStore, DesktopRuntimeState,
+    DesktopSkillStore,
     ExportSupportBundleRequest, GetArtifactMediaPreviewRequest, GetAttachmentMediaPreviewRequest,
     GetContextSnapshotRequest, GetConversationRequest, GetExecutionSettingsRequest,
     GetMcpServerConfigRequest, GetMemoryItemRequest, GetProviderConfigApiKeyRequest,
@@ -87,8 +88,9 @@ use jyowo_harness_sdk::ext::{
     MemoryId, MemoryKind, MemoryMetadata, MemoryRecord, MemorySource, MemoryStore,
     MemoryVisibility, Message, MessagePart, MessageRole, ModelError, ModelProtocol, OverflowAction,
     PermissionCheck, PermissionContext, PermissionMode, PermissionRequest, PermissionSubject,
-    ProviderRestriction, RedactPatternSet, RedactRules, RedactScope, Redactor, RequestId,
-    ResultBudget, RuleSnapshot, RunId, SessionId, Severity, StreamBrokerConfig, TenantId,
+    ProviderCredentialResolveContext, ProviderCredentialResolverCap, ProviderRestriction,
+    RedactPatternSet, RedactRules, RedactScope, Redactor, RequestId, ResultBudget, RuleSnapshot,
+    RunId, SessionId, Severity, StreamBrokerConfig, TenantId,
     ThinkingDelta, Tool, ToolContext, ToolDescriptor, ToolError, ToolEvent, ToolGroup,
     ToolProperties, ToolRegistry, ToolResult, ToolStream, ToolUseId, TransportChoice, TrustLevel,
     UsageSnapshot, ValidationError,
@@ -1927,6 +1929,68 @@ fn canonical_unique_workspace(name: &str) -> PathBuf {
 
 fn provider_capability_route_store(name: &str) -> DesktopProviderCapabilityRouteStore {
     DesktopProviderCapabilityRouteStore::new(canonical_unique_workspace(name))
+}
+
+#[tokio::test]
+async fn provider_credential_route_provider_only_resolution_still_works() {
+    let workspace = canonical_unique_workspace("provider-credential-route-provider-only");
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-main", true);
+    let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
+    provider_store
+        .save_record(&provider_settings)
+        .expect("provider settings should save");
+    let conversation_store = DesktopConversationModelConfigStore::new(workspace);
+    let resolver = desktop_provider_credential_resolver_with_stores(
+        Arc::new(conversation_store),
+        Arc::new(provider_store),
+    );
+    let session_id = SessionId::new();
+
+    let credential = resolver
+        .resolve_provider_credential(ProviderCredentialResolveContext {
+            tenant_id: TenantId::SINGLE,
+            session_id,
+            run_id: RunId::new(),
+            provider_id: "minimax".to_owned(),
+            operation_id: None,
+            route_kind: None,
+        })
+        .await
+        .expect("provider-only credential resolution should succeed");
+
+    assert_eq!(credential.provider_id, "minimax");
+    assert_eq!(credential.config_id, "minimax-main");
+    assert!(!credential.api_key.is_empty());
+}
+
+#[tokio::test]
+async fn provider_credential_route_routed_service_context_fails_closed() {
+    let workspace = canonical_unique_workspace("provider-credential-route-routed-fail-closed");
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-main", true);
+    let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
+    provider_store
+        .save_record(&provider_settings)
+        .expect("provider settings should save");
+    let conversation_store = DesktopConversationModelConfigStore::new(workspace);
+    let resolver = desktop_provider_credential_resolver_with_stores(
+        Arc::new(conversation_store),
+        Arc::new(provider_store),
+    );
+
+    let error = resolver
+        .resolve_provider_credential(ProviderCredentialResolveContext {
+            tenant_id: TenantId::SINGLE,
+            session_id: SessionId::new(),
+            run_id: RunId::new(),
+            provider_id: "minimax".to_owned(),
+            operation_id: Some("minimax.image_generation".to_owned()),
+            route_kind: Some(CapabilityRouteKind::ImageGeneration),
+        })
+        .await
+        .expect_err("routed service credential resolution should fail closed");
+
+    assert!(matches!(error, ToolError::PermissionDenied(_)));
+    assert!(!error.to_string().contains("provider-test-token"));
 }
 
 #[test]

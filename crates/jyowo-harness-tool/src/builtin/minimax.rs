@@ -61,7 +61,7 @@ macro_rules! minimax_tool {
             }
 
             async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx).await
+                minimax_network_permission(ctx, &self.descriptor).await
             }
 
             async fn execute(
@@ -69,7 +69,7 @@ macro_rules! minimax_tool {
                 input: Value,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
-                Ok(execute_request(input, ctx, |client, request| async move {
+                Ok(execute_request(input, ctx, &self.descriptor, |client, request| async move {
                     client.$operation(request).await.map_err(model_error)
                 }))
             }
@@ -111,7 +111,7 @@ macro_rules! minimax_image_tool {
             }
 
             async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx).await
+                minimax_network_permission(ctx, &self.descriptor).await
             }
 
             async fn execute(
@@ -119,7 +119,7 @@ macro_rules! minimax_image_tool {
                 input: Value,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
-                Ok(execute_image_request(input, ctx))
+                Ok(execute_image_request(input, ctx, &self.descriptor))
             }
         }
     };
@@ -167,7 +167,7 @@ macro_rules! minimax_task_query_tool {
             }
 
             async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx).await
+                minimax_network_permission(ctx, &self.descriptor).await
             }
 
             async fn execute(
@@ -175,7 +175,7 @@ macro_rules! minimax_task_query_tool {
                 input: Value,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
-                Ok(execute_request(input, ctx, |client, request| async move {
+                Ok(execute_request(input, ctx, &self.descriptor, |client, request| async move {
                     let task_id = required_string(&request, "task_id").map_err(validation_error)?;
                     client.$operation(&task_id).await.map_err(model_error)
                 }))
@@ -216,7 +216,7 @@ macro_rules! minimax_string_arg_tool {
             }
 
             async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx).await
+                minimax_network_permission(ctx, &self.descriptor).await
             }
 
             async fn execute(
@@ -224,7 +224,7 @@ macro_rules! minimax_string_arg_tool {
                 input: Value,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
-                Ok(execute_request(input, ctx, |client, request| async move {
+                Ok(execute_request(input, ctx, &self.descriptor, |client, request| async move {
                     let value = required_string(&request, $field).map_err(validation_error)?;
                     client.$operation(&value).await.map_err(model_error)
                 }))
@@ -519,11 +519,11 @@ impl Tool for MiniMaxFileUploadTool {
     }
 
     async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        minimax_network_permission(ctx).await
+        minimax_network_permission(ctx, &self.descriptor).await
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        Ok(execute_request(input, ctx, |client, request| async move {
+        Ok(execute_request(input, ctx, &self.descriptor, |client, request| async move {
             let upload = file_upload_request(&request).map_err(validation_error)?;
             client
                 .file_upload_with_group_id(
@@ -601,11 +601,11 @@ impl Tool for MiniMaxFileListTool {
     }
 
     async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        minimax_network_permission(ctx).await
+        minimax_network_permission(ctx, &self.descriptor).await
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        Ok(execute_request(input, ctx, |client, request| async move {
+        Ok(execute_request(input, ctx, &self.descriptor, |client, request| async move {
             let purpose = optional_string(&request, "purpose").map_err(validation_error)?;
             client
                 .file_list(purpose.as_deref())
@@ -645,11 +645,11 @@ impl Tool for MiniMaxModelsListTool {
     }
 
     async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        minimax_network_permission(ctx).await
+        minimax_network_permission(ctx, &self.descriptor).await
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        Ok(execute_request(input, ctx, |client, _request| async move {
+        Ok(execute_request(input, ctx, &self.descriptor, |client, _request| async move {
             client.list_models().await.map_err(model_error)
         }))
     }
@@ -685,11 +685,11 @@ impl Tool for MiniMaxAnthropicModelsListTool {
     }
 
     async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        minimax_network_permission(ctx).await
+        minimax_network_permission(ctx, &self.descriptor).await
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        Ok(execute_request(input, ctx, |client, request| async move {
+        Ok(execute_request(input, ctx, &self.descriptor, |client, request| async move {
             let limit = optional_u32(&request, "limit").map_err(validation_error)?;
             let after_id = optional_string(&request, "after_id").map_err(validation_error)?;
             let before_id = optional_string(&request, "before_id").map_err(validation_error)?;
@@ -701,14 +701,20 @@ impl Tool for MiniMaxAnthropicModelsListTool {
     }
 }
 
-fn execute_request<F, Fut>(input: Value, ctx: ToolContext, call: F) -> ToolStream
+fn execute_request<F, Fut>(
+    input: Value,
+    ctx: ToolContext,
+    descriptor: &ToolDescriptor,
+    call: F,
+) -> ToolStream
 where
     F: FnOnce(MinimaxApiClient, Value) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<Value, ToolError>> + Send + 'static,
 {
+    let (operation_id, route_kind) = service_credential_context(descriptor);
     Box::pin(stream::once(async move {
         let result = async {
-            let credential = minimax_credential(&ctx).await?;
+            let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
             let request = request(&input).map_err(validation_error)?;
             let mut client = MinimaxApiClient::from_api_key(credential.api_key);
             if let Some(base_url) = credential.base_url {
@@ -724,10 +730,11 @@ where
     }))
 }
 
-fn execute_image_request(input: Value, ctx: ToolContext) -> ToolStream {
+fn execute_image_request(input: Value, ctx: ToolContext, descriptor: &ToolDescriptor) -> ToolStream {
+    let (operation_id, route_kind) = service_credential_context(descriptor);
     Box::pin(stream::once(async move {
         let result = async {
-            let credential = minimax_credential(&ctx).await?;
+            let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
             let base_url = credential.base_url.clone();
             let request = request(&input).map_err(validation_error)?;
             let mut client = MinimaxApiClient::from_api_key(credential.api_key);
@@ -1125,8 +1132,12 @@ fn validate_image_bytes(bytes: &[u8], declared_mime: Option<&str>) -> Result<Str
     Ok(detected_mime.to_owned())
 }
 
-async fn minimax_network_permission(ctx: &ToolContext) -> PermissionCheck {
-    let credential = match minimax_credential(ctx).await {
+async fn minimax_network_permission(
+    ctx: &ToolContext,
+    descriptor: &ToolDescriptor,
+) -> PermissionCheck {
+    let (operation_id, route_kind) = service_credential_context(descriptor);
+    let credential = match minimax_credential(ctx, operation_id, route_kind).await {
         Ok(credential) => credential,
         Err(error) => return minimax_permission_denied(error),
     };
@@ -1317,7 +1328,26 @@ fn validation_error(error: ValidationError) -> ToolError {
     ToolError::Validation(error.to_string())
 }
 
-async fn minimax_credential(ctx: &ToolContext) -> Result<ProviderCredential, ToolError> {
+fn service_credential_context(
+    descriptor: &ToolDescriptor,
+) -> (Option<String>, Option<CapabilityRouteKind>) {
+    descriptor
+        .service_binding
+        .as_ref()
+        .map(|binding| (Some(binding.operation_id.clone()), Some(binding.route_kind)))
+        .unwrap_or((None, None))
+}
+
+async fn minimax_credential(
+    ctx: &ToolContext,
+    operation_id: Option<String>,
+    route_kind: Option<CapabilityRouteKind>,
+) -> Result<ProviderCredential, ToolError> {
+    if operation_id.is_some() != route_kind.is_some() {
+        return Err(ToolError::PermissionDenied(
+            "MiniMax service operation credential context is incomplete".to_owned(),
+        ));
+    }
     let resolver = ctx.capability::<dyn ProviderCredentialResolverCap>(
         ToolCapability::ProviderCredentialResolver,
     )?;
@@ -1327,8 +1357,8 @@ async fn minimax_credential(ctx: &ToolContext) -> Result<ProviderCredential, Too
             session_id: ctx.session_id,
             run_id: ctx.run_id,
             provider_id: MINIMAX_PROVIDER_ID.to_owned(),
-            operation_id: None,
-            route_kind: None,
+            operation_id: operation_id.clone(),
+            route_kind,
         })
         .await?;
     if credential.provider_id != MINIMAX_PROVIDER_ID {
@@ -1367,6 +1397,25 @@ mod tests {
 
     const PNG_1X1_BASE64: &str =
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+
+    #[tokio::test]
+    async fn minimax_credential_rejects_incomplete_service_context_before_resolver() {
+        let resolver = Arc::new(PanickingResolver);
+        let mut caps = CapabilityRegistry::default();
+        caps.install(ToolCapability::ProviderCredentialResolver, resolver);
+        let ctx = test_context(Arc::new(CapturingBlobWriter));
+
+        let error = minimax_credential(
+            &ctx,
+            Some("minimax.image_generation".to_owned()),
+            None,
+        )
+        .await
+        .expect_err("partial service context should fail closed");
+
+        assert!(matches!(error, ToolError::PermissionDenied(_)));
+        assert!(error.to_string().contains("incomplete"));
+    }
 
     #[tokio::test]
     async fn image_response_base64_is_stored_as_blob_result() {
@@ -1588,6 +1637,17 @@ mod tests {
     }
 
     struct CapturingBlobWriter;
+
+    struct PanickingResolver;
+
+    impl ProviderCredentialResolverCap for PanickingResolver {
+        fn resolve_provider_credential(
+            &self,
+            _context: ProviderCredentialResolveContext,
+        ) -> BoxFuture<'_, Result<ProviderCredential, ToolError>> {
+            panic!("credential resolver must not be called for incomplete service context");
+        }
+    }
 
     impl BlobWriterCap for CapturingBlobWriter {
         fn write_blob(

@@ -2,18 +2,20 @@
 
 use futures::{future::BoxFuture, StreamExt};
 use harness_contracts::{
-    CapabilityRegistry, Decision, PermissionError, PermissionSubject, ProviderCredential,
-    ProviderCredentialResolveContext, ProviderCredentialResolverCap, ToolCapability, ToolError,
+    CapabilityRegistry, CapabilityRouteKind, Decision, PermissionError, PermissionSubject,
+    ProviderCredential, ProviderCredentialResolveContext, ProviderCredentialResolverCap,
+    ToolCapability, ToolError,
 };
 use harness_permission::{
     PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest, PersistedDecision,
 };
 use harness_tool::{
-    BuiltinToolset, InterruptToken, MiniMaxTextToImageTool, Tool, ToolContext, ToolEvent,
+    BuiltinToolset, InterruptToken, MiniMaxResponsesTool, MiniMaxTextToImageTool,
+    MiniMaxTextToSpeechTool, MiniMaxTextToVideoTool, Tool, ToolContext, ToolEvent,
     ToolRegistryBuilder,
 };
 use serde_json::json;
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::{Arc, Mutex}};
 
 #[tokio::test]
 async fn minimax_tools_register_with_default_builtin_toolset() {
@@ -132,6 +134,81 @@ async fn minimax_permission_denies_invalid_credential_base_url() {
     }
 }
 
+#[tokio::test]
+async fn credential_route_image_tool_passes_image_generation_operation_id() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let tool = MiniMaxTextToImageTool::default();
+    let _ = tool
+        .check_permission(
+            &json!({"request": {"prompt": "x"}}),
+            &ctx_with_resolver(Arc::new(ContextCapturingResolver {
+                captured: Arc::clone(&captured),
+            })),
+        )
+        .await;
+
+    let context = captured.lock().unwrap().pop().expect("credential context captured");
+    assert_eq!(context.operation_id.as_deref(), Some("minimax.image_generation"));
+    assert_eq!(context.route_kind, Some(CapabilityRouteKind::ImageGeneration));
+}
+
+#[tokio::test]
+async fn credential_route_video_tool_passes_video_generation_operation_id() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let tool = MiniMaxTextToVideoTool::default();
+    let _ = tool
+        .check_permission(
+            &json!({"request": {}}),
+            &ctx_with_resolver(Arc::new(ContextCapturingResolver {
+                captured: Arc::clone(&captured),
+            })),
+        )
+        .await;
+
+    let context = captured.lock().unwrap().pop().expect("credential context captured");
+    assert_eq!(context.operation_id.as_deref(), Some("minimax.video_generation"));
+    assert_eq!(context.route_kind, Some(CapabilityRouteKind::VideoGeneration));
+}
+
+#[tokio::test]
+async fn credential_route_tts_tool_passes_text_to_speech_operation_id() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let tool = MiniMaxTextToSpeechTool::default();
+    let _ = tool
+        .check_permission(
+            &json!({"request": {}}),
+            &ctx_with_resolver(Arc::new(ContextCapturingResolver {
+                captured: Arc::clone(&captured),
+            })),
+        )
+        .await;
+
+    let context = captured.lock().unwrap().pop().expect("credential context captured");
+    assert_eq!(
+        context.operation_id.as_deref(),
+        Some("minimax.text_to_speech.sync")
+    );
+    assert_eq!(context.route_kind, Some(CapabilityRouteKind::TextToSpeech));
+}
+
+#[tokio::test]
+async fn credential_route_non_service_tool_uses_provider_only_context() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let tool = MiniMaxResponsesTool::default();
+    let _ = tool
+        .check_permission(
+            &json!({"request": {}}),
+            &ctx_with_resolver(Arc::new(ContextCapturingResolver {
+                captured: Arc::clone(&captured),
+            })),
+        )
+        .await;
+
+    let context = captured.lock().unwrap().pop().expect("credential context captured");
+    assert!(context.operation_id.is_none());
+    assert!(context.route_kind.is_none());
+}
+
 async fn execute_error(tool: &dyn Tool, input: serde_json::Value, ctx: ToolContext) -> ToolError {
     tool.validate(&input, &ctx).await.unwrap();
     let stream = tool.execute(input, ctx).await.unwrap();
@@ -195,6 +272,27 @@ impl ProviderCredentialResolverCap for WrongProviderResolver {
 struct MiniMaxResolver {
     api_key: String,
     base_url: Option<String>,
+}
+
+struct ContextCapturingResolver {
+    captured: Arc<Mutex<Vec<ProviderCredentialResolveContext>>>,
+}
+
+impl ProviderCredentialResolverCap for ContextCapturingResolver {
+    fn resolve_provider_credential(
+        &self,
+        context: ProviderCredentialResolveContext,
+    ) -> BoxFuture<'_, Result<ProviderCredential, ToolError>> {
+        self.captured.lock().unwrap().push(context);
+        Box::pin(async {
+            Ok(ProviderCredential {
+                provider_id: "minimax".to_owned(),
+                config_id: "minimax-test".to_owned(),
+                api_key: "provider-test-token".to_owned(),
+                base_url: None,
+            })
+        })
+    }
 }
 
 impl ProviderCredentialResolverCap for MiniMaxResolver {

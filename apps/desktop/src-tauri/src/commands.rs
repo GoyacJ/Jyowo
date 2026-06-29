@@ -1083,6 +1083,11 @@ impl ProviderCredentialResolverCap for DesktopProviderCredentialResolver {
         context: ProviderCredentialResolveContext,
     ) -> futures::future::BoxFuture<'_, Result<ProviderCredential, ToolError>> {
         Box::pin(async move {
+            if context.operation_id.is_some() && context.route_kind.is_some() {
+                return Err(ToolError::PermissionDenied(
+                    "provider service credential resolution is unavailable".to_owned(),
+                ));
+            }
             let record = self
                 .provider_settings_store
                 .load_record()
@@ -1130,6 +1135,16 @@ impl ProviderCredentialResolverCap for DesktopProviderCredentialResolver {
             })
         })
     }
+}
+
+pub fn desktop_provider_credential_resolver_with_stores(
+    conversation_model_config_store: Arc<dyn ConversationModelConfigStore>,
+    provider_settings_store: Arc<dyn ProviderSettingsStore>,
+) -> Arc<dyn ProviderCredentialResolverCap> {
+    Arc::new(DesktopProviderCredentialResolver::new(
+        conversation_model_config_store,
+        provider_settings_store,
+    ))
 }
 
 #[derive(Clone)]
