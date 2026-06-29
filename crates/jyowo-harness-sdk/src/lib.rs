@@ -23,6 +23,7 @@ pub mod prelude;
 pub mod session;
 pub mod skill_config;
 pub mod skill_pack_loader;
+mod system_prompt;
 pub mod team;
 #[cfg(feature = "testing")]
 pub mod testing;
