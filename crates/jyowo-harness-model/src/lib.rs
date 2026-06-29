@@ -22,6 +22,8 @@ pub mod credential_pool;
 pub mod deepseek;
 #[cfg(feature = "doubao")]
 pub mod doubao;
+#[cfg(feature = "doubao")]
+pub mod seedance;
 #[cfg(feature = "gemini")]
 pub mod gemini;
 #[cfg(feature = "km")]
@@ -65,6 +67,8 @@ pub use credential_pool::*;
 pub use deepseek::*;
 #[cfg(feature = "doubao")]
 pub use doubao::*;
+#[cfg(feature = "doubao")]
+pub use seedance::*;
 #[cfg(feature = "gemini")]
 pub use gemini::*;
 pub use harness_contracts::{

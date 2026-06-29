@@ -4776,3 +4776,20 @@ mod capability_route_filter {
         assert!(!capability.tool_calling);
     }
 }
+
+#[cfg(feature = "seedance-tools")]
+mod seedance_runtime {
+    use harness_tool::{BuiltinToolset, ToolRegistryBuilder};
+
+    #[test]
+    fn seedance_tools_register_with_default_builtin_toolset() {
+        let registry = ToolRegistryBuilder::new()
+            .with_builtin_toolset(BuiltinToolset::Default)
+            .build()
+            .expect("registry should build");
+
+        assert!(registry.get("SeedanceTextToVideo").is_some());
+        assert!(registry.get("SeedanceImageToVideo").is_some());
+        assert!(registry.get("SeedanceVideoGenerationQuery").is_some());
+    }
+}

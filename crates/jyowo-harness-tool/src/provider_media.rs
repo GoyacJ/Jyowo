@@ -56,8 +56,22 @@ pub fn is_allowed_minimax_media_host(url: &Url) -> bool {
 pub fn is_allowed_provider_media_host(provider_id: &str, url: &Url) -> bool {
     match provider_id {
         "minimax" => is_allowed_minimax_media_host(url),
+        "doubao" => is_allowed_doubao_media_host(url),
         _ => false,
     }
+}
+
+pub fn is_allowed_doubao_media_host(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    #[cfg(debug_assertions)]
+    if matches!(host, "127.0.0.1" | "localhost" | "[::1]") {
+        return true;
+    }
+    matches!(host, "ark.cn-beijing.volces.com")
+        || host.ends_with(".volces.com")
+        || host.ends_with(".volccdn.com")
 }
 
 pub fn safe_image_mime(value: &str) -> Option<&'static str> {
@@ -219,10 +233,10 @@ pub trait ProviderMediaDownloader: Send + Sync {
     ) -> Result<ProviderMediaBytes, ToolError>;
 }
 
-#[cfg(feature = "minimax-tools")]
+#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
 pub struct ReqwestProviderMediaDownloader;
 
-#[cfg(feature = "minimax-tools")]
+#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
 #[async_trait::async_trait]
 impl ProviderMediaDownloader for ReqwestProviderMediaDownloader {
     async fn download(
@@ -304,7 +318,7 @@ impl ProviderMediaDownloader for ReqwestProviderMediaDownloader {
     }
 }
 
-#[cfg(feature = "minimax-tools")]
+#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
 pub async fn download_provider_https_media(
     provider_id: &str,
     url_str: &str,

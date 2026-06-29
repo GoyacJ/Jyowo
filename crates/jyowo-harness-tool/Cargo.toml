@@ -25,6 +25,13 @@ minimax-tools = [
   "dep:reqwest",
   "jyowo-harness-model/minimax",
 ]
+seedance-tools = [
+  "builtin-toolset",
+  "dep:base64",
+  "dep:jyowo-harness-model",
+  "dep:reqwest",
+  "jyowo-harness-model/doubao",
+]
 
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }

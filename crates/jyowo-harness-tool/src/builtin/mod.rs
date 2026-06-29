@@ -14,6 +14,8 @@ mod grep;
 mod list_dir;
 #[cfg(feature = "minimax-tools")]
 mod minimax;
+#[cfg(feature = "seedance-tools")]
+mod seedance;
 #[cfg(feature = "builtin-toolset")]
 mod read;
 #[cfg(feature = "builtin-toolset")]
@@ -61,6 +63,10 @@ pub use minimax::{
     MiniMaxTextToSpeechTool, MiniMaxTextToVideoTool, MiniMaxVideoGenerationQueryTool,
     MiniMaxVideoTemplateQueryTool, MiniMaxVideoTemplateTool, MiniMaxVoiceCloneTool,
     MiniMaxVoiceDesignTool,
+};
+#[cfg(feature = "seedance-tools")]
+pub use seedance::{
+    SeedanceImageToVideo, SeedanceTextToVideo, SeedanceVideoGenerationQueryTool,
 };
 #[cfg(feature = "builtin-toolset")]
 pub use read::FileReadTool;
