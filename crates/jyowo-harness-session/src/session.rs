@@ -52,6 +52,8 @@ pub struct SessionConfigSnapshot {
     pub effective_config_hash: ConfigHash,
     pub started_from_scope_set: Vec<String>,
     options_hash: [u8; 32],
+    effective_prompt_inputs_hash: Option<[u8; 32]>,
+    runtime_prompt_context_hash: Option<[u8; 32]>,
 }
 
 #[async_trait]
@@ -273,11 +275,17 @@ impl Session {
         turn_runtime: Option<SessionTurnRuntime>,
         turn_runner: Option<Arc<dyn SessionTurnRunner>>,
         skill_reload_cap: Option<Arc<dyn SkillReloadCap>>,
+        effective_prompt_inputs_hash: Option<[u8; 32]>,
+        runtime_prompt_context_hash: Option<[u8; 32]>,
         #[cfg(feature = "steering")] steering_policy: harness_contracts::SteeringPolicy,
     ) -> Result<Self, SessionError> {
         let projection = SessionProjection::empty(options.tenant_id, options.session_id);
         let (snapshot_tx, snapshot_rx) = watch::channel(projection.snapshot_id);
-        let config_snapshot = SessionConfigSnapshot::from_options(&options);
+        let config_snapshot = SessionConfigSnapshot::from_options_and_effective_hashes(
+            &options,
+            effective_prompt_inputs_hash,
+            runtime_prompt_context_hash,
+        );
         let session = Self {
             options,
             paths,
@@ -306,11 +314,17 @@ impl Session {
         turn_runtime: Option<SessionTurnRuntime>,
         turn_runner: Option<Arc<dyn SessionTurnRunner>>,
         skill_reload_cap: Option<Arc<dyn SkillReloadCap>>,
+        effective_prompt_inputs_hash: Option<[u8; 32]>,
+        runtime_prompt_context_hash: Option<[u8; 32]>,
         projection: SessionProjection,
     ) -> Result<Self, SessionError> {
         let (snapshot_tx, snapshot_rx) = watch::channel(projection.snapshot_id);
         Ok(Self {
-            config_snapshot: SessionConfigSnapshot::from_options(&options),
+            config_snapshot: SessionConfigSnapshot::from_options_and_effective_hashes(
+                &options,
+                effective_prompt_inputs_hash,
+                runtime_prompt_context_hash,
+            ),
             options,
             paths,
             event_store,
@@ -370,6 +384,10 @@ impl Session {
 
     pub(crate) fn started_from_scope_set(&self) -> Vec<String> {
         self.config_snapshot.started_from_scope_set.clone()
+    }
+
+    pub(crate) fn effective_prompt_inputs_hash(&self) -> Option<[u8; 32]> {
+        self.config_snapshot.effective_prompt_inputs_hash
     }
 
     #[cfg(feature = "steering")]
@@ -614,14 +632,19 @@ impl Session {
 }
 
 impl SessionConfigSnapshot {
-    fn from_options(options: &SessionOptions) -> Self {
+    pub(crate) fn from_options_and_effective_prompt_inputs_hash(
+        options: &SessionOptions,
+        effective_prompt_inputs_hash: Option<[u8; 32]>,
+    ) -> Self {
         let options_hash = session_options_hash(options);
-        let effective_config_hash = effective_config_hash(options_hash);
+        let effective_config_hash =
+            effective_config_hash(options_hash, effective_prompt_inputs_hash);
         Self {
             config_snapshot_id: config_snapshot_id(effective_config_hash),
             effective_config_hash,
             started_from_scope_set: vec!["sdk:session_options".to_owned()],
             options_hash,
+            effective_prompt_inputs_hash,
         }
     }
 }
@@ -646,6 +669,8 @@ pub fn session_options_hash(options: &SessionOptions) -> [u8; 32] {
         "team_id": options.team_id,
         "system_prompt_addendum": options.system_prompt_addendum,
         "max_iterations": options.max_iterations,
+        "permission_mode": options.permission_mode,
+        "context_compression_trigger_ratio": options.context_compression_trigger_ratio,
     }))
 }
 
@@ -670,10 +695,33 @@ pub fn legacy_session_options_hash_with_permission_mode(options: &SessionOptions
     }))
 }
 
-fn effective_config_hash(options_hash: [u8; 32]) -> ConfigHash {
+pub fn legacy_session_options_hash_without_runtime_context(options: &SessionOptions) -> [u8; 32] {
+    hash_json(&json!({
+        "workspace_ref": options.workspace_ref,
+        "workspace_root": options.workspace_root,
+        "workspace_bootstrap": options.workspace_bootstrap,
+        "tenant_id": options.tenant_id,
+        "session_id": options.session_id,
+        "tool_search": options.tool_search,
+        "model_id": options.model_id,
+        "protocol": options.protocol.map(protocol_name),
+        "model_extra": options.model_extra,
+        "interactivity": options.interactivity,
+        "user_id": options.user_id,
+        "team_id": options.team_id,
+        "system_prompt_addendum": options.system_prompt_addendum,
+        "max_iterations": options.max_iterations,
+    }))
+}
+
+fn effective_config_hash(
+    options_hash: [u8; 32],
+    effective_prompt_inputs_hash: Option<[u8; 32]>,
+) -> ConfigHash {
     ConfigHash(hash_json(&json!({
         "kind": "sdk_session_effective_config",
         "options_hash": options_hash,
+        "effective_prompt_inputs_hash": effective_prompt_inputs_hash,
         "source_refs": [],
         "started_from_scope_set": ["sdk:session_options"],
     })))

@@ -184,7 +184,8 @@ fn default_session_options_apply_to_normal_create_session() {
             .is_some_and(|value| value.starts_with("engine_turn:")));
         let system = requests[0].system.as_deref().unwrap_or_default();
         assert!(system.contains("Jyowo"));
-        assert!(system.contains("不能以底层 provider 身份自称"));
+        assert!(system.contains("不能以底层 model provider 身份自称"));
+        assert!(system.contains("<session-addendum>"));
         assert!(system.contains("default addendum"));
     });
 }

@@ -40,6 +40,7 @@ fn harness_mcp_backend_exposes_sessions_messages_events_and_channels() {
             .await
             .expect("blob should be stored");
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model_provider)
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -131,6 +132,101 @@ fn harness_mcp_backend_exposes_sessions_messages_events_and_channels() {
             .await
             .expect("channels_list should succeed");
         assert_eq!(channels, json!({"count": 0, "channels": []}));
+    });
+}
+
+#[test]
+fn harness_mcp_messages_send_resumes_workspace_bootstrap() {
+    tokio_runtime().block_on(async {
+        let root = unique_workspace("sdk-mcp-server-adapter-workspace-resume");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("AGENTS.md"), "workspace MCP resume rule").unwrap();
+        let model = Arc::new(TestModelProvider::default());
+        let model_provider: Arc<dyn ModelProvider> = model.clone();
+        let harness = Harness::builder()
+            .with_model_arc(model_provider)
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+        let workspace = harness
+            .create_workspace(
+                WorkspaceSpec::new(&root, "MCP Resume Workspace")
+                    .with_bootstrap_files(vec![BootstrapFileSpec::required("AGENTS.md")]),
+            )
+            .await
+            .expect("workspace should be registered");
+        let session_id = SessionId::new();
+        harness
+            .create_session(
+                SessionOptions::default()
+                    .with_workspace(workspace.id)
+                    .with_session_id(session_id),
+            )
+            .await
+            .expect("workspace session should be created");
+
+        harness
+            .call_harness_tool(
+                &McpServerRequestContext::default().with_tenant_id(TenantId::SINGLE),
+                ExposedCapability::MessagesSend,
+                json!({"session_id": session_id.to_string(), "message": "use workspace"}),
+            )
+            .await
+            .expect("messages_send should resume session");
+
+        let requests = model.requests().await;
+        let system = requests[0].system.as_deref().unwrap_or_default();
+        assert!(system.contains("workspace MCP resume rule"));
+    });
+}
+
+#[test]
+fn harness_mcp_messages_send_rejects_changed_workspace_bootstrap() {
+    tokio_runtime().block_on(async {
+        let root = unique_workspace("sdk-mcp-server-adapter-workspace-resume-changed");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("AGENTS.md"), "workspace MCP resume rule v1").unwrap();
+        let model = Arc::new(TestModelProvider::default());
+        let model_provider: Arc<dyn ModelProvider> = model.clone();
+        let harness = Harness::builder()
+            .with_model_arc(model_provider)
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+        let workspace = harness
+            .create_workspace(
+                WorkspaceSpec::new(&root, "MCP Resume Changed Workspace")
+                    .with_bootstrap_files(vec![BootstrapFileSpec::required("AGENTS.md")]),
+            )
+            .await
+            .expect("workspace should be registered");
+        let session_id = SessionId::new();
+        harness
+            .create_session(
+                SessionOptions::default()
+                    .with_workspace(workspace.id)
+                    .with_session_id(session_id),
+            )
+            .await
+            .expect("workspace session should be created");
+        std::fs::write(root.join("AGENTS.md"), "workspace MCP resume rule v2").unwrap();
+
+        let error = harness
+            .call_harness_tool(
+                &McpServerRequestContext::default().with_tenant_id(TenantId::SINGLE),
+                ExposedCapability::MessagesSend,
+                json!({"session_id": session_id.to_string(), "message": "use workspace"}),
+            )
+            .await
+            .expect_err("messages_send should reject changed workspace prompt inputs");
+
+        assert!(error
+            .to_string()
+            .contains("session effective config does not match"));
     });
 }
 
@@ -430,6 +526,7 @@ fn permission_context() -> harness_permission::PermissionContext {
         previous_mode: None,
         tenant_id: TenantId::SINGLE,
         session_id: SessionId::new(),
+        run_id: None,
         interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: harness_contracts::FallbackPolicy::DenyAll,

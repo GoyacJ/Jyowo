@@ -18,6 +18,8 @@ pub struct SessionBuilder {
     turn_runner: Option<Arc<dyn SessionTurnRunner>>,
     skill_reload_cap: Option<Arc<dyn SkillReloadCap>>,
     projection: Option<SessionProjection>,
+    effective_prompt_inputs_hash: Option<[u8; 32]>,
+    runtime_prompt_context_hash: Option<[u8; 32]>,
     #[cfg(feature = "steering")]
     steering_policy: Option<SteeringPolicy>,
 }
@@ -56,6 +58,18 @@ impl SessionBuilder {
     #[must_use]
     pub fn with_projection(mut self, projection: SessionProjection) -> Self {
         self.projection = Some(projection);
+        self
+    }
+
+    #[must_use]
+    pub fn with_effective_prompt_inputs_hash(mut self, hash: [u8; 32]) -> Self {
+        self.effective_prompt_inputs_hash = Some(hash);
+        self
+    }
+
+    #[must_use]
+    pub fn with_runtime_prompt_context_hash(mut self, hash: [u8; 32]) -> Self {
+        self.runtime_prompt_context_hash = Some(hash);
         self
     }
 
@@ -103,6 +117,8 @@ impl SessionBuilder {
                 self.turn_runtime,
                 self.turn_runner,
                 self.skill_reload_cap,
+                self.effective_prompt_inputs_hash,
+                self.runtime_prompt_context_hash,
                 projection,
             )
             .await;
@@ -117,6 +133,8 @@ impl SessionBuilder {
                 self.turn_runtime,
                 self.turn_runner,
                 self.skill_reload_cap,
+                self.effective_prompt_inputs_hash,
+                self.runtime_prompt_context_hash,
                 self.steering_policy.unwrap_or_default(),
             )
             .await
@@ -130,6 +148,8 @@ impl SessionBuilder {
                 self.turn_runtime,
                 self.turn_runner,
                 self.skill_reload_cap,
+                self.effective_prompt_inputs_hash,
+                self.runtime_prompt_context_hash,
             )
             .await
         }
