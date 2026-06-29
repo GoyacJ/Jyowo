@@ -1252,6 +1252,81 @@ const setConversationModelConfigResponseSchema = z
   })
   .strict()
 
+const capabilityRouteKindSchema = z.enum([
+  'image_generation',
+  'video_generation',
+  'text_to_speech',
+  'speech_to_text',
+  'music_generation',
+])
+
+const providerCapabilityRouteSchema = z
+  .object({
+    kind: capabilityRouteKindSchema,
+    configId: z.string().min(1),
+    providerId: providerIdSchema,
+    operationIds: z.array(z.string().min(1)).min(1),
+    enabled: z.boolean(),
+  })
+  .strict()
+
+const listProviderCapabilityRoutesResponseSchema = z
+  .object({
+    version: z.number().int().nonnegative(),
+    routes: z.array(providerCapabilityRouteSchema),
+  })
+  .strict()
+
+const providerCapabilityRouteOptionSchema = z
+  .object({
+    kind: capabilityRouteKindSchema,
+    configId: z.string().min(1),
+    providerId: providerIdSchema,
+    operationId: z.string().min(1),
+    outputArtifact: modelModalitySchema,
+    execution: z.enum(['sync', 'async_job', 'websocket']),
+    costRisk: z.enum(['low', 'medium', 'high']),
+    runtimeSupported: z.boolean(),
+    unavailableReason: z.string().min(1).optional(),
+  })
+  .strict()
+
+const listProviderCapabilityRouteOptionsResponseSchema = z
+  .object({
+    options: z.array(providerCapabilityRouteOptionSchema),
+  })
+  .strict()
+
+const saveProviderCapabilityRouteRequestSchema = z
+  .object({
+    route: providerCapabilityRouteSchema,
+  })
+  .strict()
+
+const saveProviderCapabilityRouteResponseSchema = z
+  .object({
+    version: z.number().int().nonnegative(),
+    routes: z.array(providerCapabilityRouteSchema),
+    status: z.literal('saved'),
+  })
+  .strict()
+
+const deleteProviderCapabilityRouteRequestSchema = z
+  .object({
+    kind: capabilityRouteKindSchema,
+    configId: z.string().min(1),
+    providerId: providerIdSchema,
+  })
+  .strict()
+
+const deleteProviderCapabilityRouteResponseSchema = z
+  .object({
+    version: z.number().int().nonnegative(),
+    routes: z.array(providerCapabilityRouteSchema),
+    status: z.literal('deleted'),
+  })
+  .strict()
+
 const mcpServerIdSchema = z
   .string()
   .trim()
@@ -2131,6 +2206,24 @@ export type ModelProviderCatalogResponse = z.infer<typeof modelProviderCatalogRe
 export type ProviderConfig = z.infer<typeof providerConfigSchema>
 export type ListProviderSettingsResponse = z.infer<typeof listProviderSettingsResponseSchema>
 export type SaveProviderSettingsResponse = z.infer<typeof saveProviderSettingsResponseSchema>
+export type ListProviderCapabilityRoutesResponse = z.infer<
+  typeof listProviderCapabilityRoutesResponseSchema
+>
+export type ListProviderCapabilityRouteOptionsResponse = z.infer<
+  typeof listProviderCapabilityRouteOptionsResponseSchema
+>
+export type SaveProviderCapabilityRouteRequest = z.infer<
+  typeof saveProviderCapabilityRouteRequestSchema
+>
+export type SaveProviderCapabilityRouteResponse = z.infer<
+  typeof saveProviderCapabilityRouteResponseSchema
+>
+export type DeleteProviderCapabilityRouteRequest = z.infer<
+  typeof deleteProviderCapabilityRouteRequestSchema
+>
+export type DeleteProviderCapabilityRouteResponse = z.infer<
+  typeof deleteProviderCapabilityRouteResponseSchema
+>
 export type PermissionMode = z.infer<typeof permissionModeSchema>
 export type GetExecutionSettingsResponse = z.infer<typeof getExecutionSettingsResponseSchema>
 export type GetExecutionSettingsRequest = z.infer<typeof getExecutionSettingsRequestSchema>
@@ -2252,6 +2345,8 @@ export interface CommandClient {
   listMcpServers: () => Promise<ListMcpServersResponse>
   listMemoryItems: () => Promise<ListMemoryItemsResponse>
   listProviderSettings: () => Promise<ListProviderSettingsResponse>
+  listProviderCapabilityRoutes: () => Promise<ListProviderCapabilityRoutesResponse>
+  listProviderCapabilityRouteOptions: () => Promise<ListProviderCapabilityRouteOptionsResponse>
   listProjects: () => Promise<ListProjectsResponse>
   addProject: (path: string) => Promise<SwitchProjectResponse>
   switchProject: (path: string) => Promise<SwitchProjectResponse>
@@ -2280,6 +2375,12 @@ export interface CommandClient {
   restartMcpServer: (id: string) => Promise<RestartMcpServerResponse>
   clearMcpDiagnostics: (serverId?: string) => Promise<ClearMcpDiagnosticsResponse>
   saveProviderSettings: (request: ProviderSettingsRequest) => Promise<SaveProviderSettingsResponse>
+  saveProviderCapabilityRoute: (
+    request: SaveProviderCapabilityRouteRequest,
+  ) => Promise<SaveProviderCapabilityRouteResponse>
+  deleteProviderCapabilityRoute: (
+    request: DeleteProviderCapabilityRouteRequest,
+  ) => Promise<DeleteProviderCapabilityRouteResponse>
   setExecutionSettings: (
     request: SetExecutionSettingsRequest,
   ) => Promise<SetExecutionSettingsResponse>
@@ -2606,6 +2707,22 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'list_provider_settings'
       return parsePayload(command, listProviderSettingsResponseSchema, await invoke(command))
     },
+    async listProviderCapabilityRoutes() {
+      const command = 'list_provider_capability_routes'
+      return parsePayload(
+        command,
+        listProviderCapabilityRoutesResponseSchema,
+        await invoke(command),
+      )
+    },
+    async listProviderCapabilityRouteOptions() {
+      const command = 'list_provider_capability_route_options'
+      return parsePayload(
+        command,
+        listProviderCapabilityRouteOptionsResponseSchema,
+        await invoke(command),
+      )
+    },
     async listProjects() {
       const command = 'list_projects'
       return parsePayload(command, listProjectsResponseSchema, await invoke(command))
@@ -2654,6 +2771,24 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'save_provider_settings'
       const args = parseArgs(command, providerSettingsRequestSchema, request)
       return parsePayload(command, saveProviderSettingsResponseSchema, await invoke(command, args))
+    },
+    async saveProviderCapabilityRoute(request) {
+      const command = 'save_provider_capability_route'
+      const args = parseArgs(command, saveProviderCapabilityRouteRequestSchema, request)
+      return parsePayload(
+        command,
+        saveProviderCapabilityRouteResponseSchema,
+        await invoke(command, args),
+      )
+    },
+    async deleteProviderCapabilityRoute(request) {
+      const command = 'delete_provider_capability_route'
+      const args = parseArgs(command, deleteProviderCapabilityRouteRequestSchema, request)
+      return parsePayload(
+        command,
+        deleteProviderCapabilityRouteResponseSchema,
+        await invoke(command, args),
+      )
     },
     async setExecutionSettings(request) {
       const command = 'set_execution_settings'
@@ -3115,6 +3250,32 @@ export function listProviderSettings(
   client: CommandClient = tauriCommandClient,
 ): Promise<ListProviderSettingsResponse> {
   return client.listProviderSettings()
+}
+
+export function listProviderCapabilityRoutes(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListProviderCapabilityRoutesResponse> {
+  return client.listProviderCapabilityRoutes()
+}
+
+export function listProviderCapabilityRouteOptions(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListProviderCapabilityRouteOptionsResponse> {
+  return client.listProviderCapabilityRouteOptions()
+}
+
+export function saveProviderCapabilityRoute(
+  request: SaveProviderCapabilityRouteRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<SaveProviderCapabilityRouteResponse> {
+  return client.saveProviderCapabilityRoute(request)
+}
+
+export function deleteProviderCapabilityRoute(
+  request: DeleteProviderCapabilityRouteRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<DeleteProviderCapabilityRouteResponse> {
+  return client.deleteProviderCapabilityRoute(request)
 }
 
 export function listProjects(

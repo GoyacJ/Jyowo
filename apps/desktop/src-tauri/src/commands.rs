@@ -5084,6 +5084,26 @@ pub fn list_provider_capability_route_options_from_inputs(
     Ok(ListProviderCapabilityRouteOptionsResponse { options })
 }
 
+async fn provider_capability_route_runtime_context(
+    runtime_state: &DesktopRuntimeState,
+) -> Result<
+    (
+        DesktopProviderCapabilityRouteStore,
+        ProviderSettingsRecord,
+        ModelProviderCatalogResponse,
+    ),
+    CommandErrorPayload,
+> {
+    Ok((
+        DesktopProviderCapabilityRouteStore::new(runtime_state.workspace_root.clone()),
+        runtime_state
+            .provider_settings_store
+            .load_record()?
+            .unwrap_or_default(),
+        list_model_provider_catalog_payload_with_remote().await,
+    ))
+}
+
 fn ensure_provider_capability_route_settings(
     routes: &ProviderCapabilityRouteSettings,
     provider_settings: &ProviderSettingsRecord,
@@ -11608,6 +11628,79 @@ pub async fn list_provider_settings(
 ) -> Result<ListProviderSettingsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     list_provider_settings_with_store(runtime_state.provider_settings_store.as_ref()).await
+}
+
+#[tauri::command]
+pub async fn list_provider_capability_routes(
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListProviderCapabilityRoutesResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let (store, provider_settings, provider_catalog) =
+        provider_capability_route_runtime_context(&runtime_state).await?;
+    list_provider_capability_routes_with_store(
+        &store,
+        &provider_settings,
+        &provider_catalog,
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn list_provider_capability_route_options(
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListProviderCapabilityRouteOptionsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let (store, provider_settings, provider_catalog) =
+        provider_capability_route_runtime_context(&runtime_state).await?;
+    list_provider_capability_route_options_from_inputs(
+        &store,
+        &provider_settings,
+        &provider_catalog,
+        &ProviderServiceAdapterAvailability::default(),
+    )
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn save_provider_capability_route(
+    route: ProviderCapabilityRoute,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<SaveProviderCapabilityRouteResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let (store, provider_settings, provider_catalog) =
+        provider_capability_route_runtime_context(&runtime_state).await?;
+    save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest { route },
+        &store,
+        &provider_settings,
+        &provider_catalog,
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn delete_provider_capability_route(
+    kind: CapabilityRouteKind,
+    config_id: String,
+    provider_id: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<DeleteProviderCapabilityRouteResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let (store, provider_settings, provider_catalog) =
+        provider_capability_route_runtime_context(&runtime_state).await?;
+    delete_provider_capability_route_with_store(
+        DeleteProviderCapabilityRouteRequest {
+            kind,
+            config_id,
+            provider_id,
+        },
+        &store,
+        &provider_settings,
+        &provider_catalog,
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]

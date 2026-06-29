@@ -10,6 +10,7 @@ import type {
   CreateConversationResponse,
   DeleteConversationResponse,
   DeleteProjectResponse,
+  DeleteProviderCapabilityRouteResponse,
   ExportMemoryItemsResponse,
   ExportSupportBundleResponse,
   GetArtifactMediaPreviewResponse,
@@ -35,6 +36,8 @@ import type {
   ListMcpServersResponse,
   ListMemoryItemsResponse,
   ListProjectsResponse,
+  ListProviderCapabilityRouteOptionsResponse,
+  ListProviderCapabilityRoutesResponse,
   ListProviderSettingsResponse,
   ListReferenceCandidatesResponse,
   ListSkillCatalogEntriesResponse,
@@ -49,6 +52,7 @@ import type {
   ResolvePermissionResponse,
   RunEvalCaseResponse,
   SaveMcpServerResponse,
+  SaveProviderCapabilityRouteResponse,
   SaveProviderSettingsResponse,
   SetConversationModelConfigResponse,
   SetExecutionSettingsResponse,
@@ -1358,6 +1362,19 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
       await wait(options.delayMs)
       return cloneResponse(providerSettings)
     },
+    async listProviderCapabilityRoutes() {
+      await wait(options.delayMs)
+      return {
+        version: 1,
+        routes: [],
+      } satisfies ListProviderCapabilityRoutesResponse
+    },
+    async listProviderCapabilityRouteOptions() {
+      await wait(options.delayMs)
+      return {
+        options: [],
+      } satisfies ListProviderCapabilityRouteOptionsResponse
+    },
     async listProjects() {
       await wait(options.delayMs)
       return projects
@@ -1511,6 +1528,22 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
           .sort((left, right) => left.id.localeCompare(right.id)),
       }
       return response
+    },
+    async saveProviderCapabilityRoute(request) {
+      await wait(options.delayMs)
+      return {
+        version: 1,
+        routes: [request.route],
+        status: 'saved',
+      } satisfies SaveProviderCapabilityRouteResponse
+    },
+    async deleteProviderCapabilityRoute() {
+      await wait(options.delayMs)
+      return {
+        version: 1,
+        routes: [],
+        status: 'deleted',
+      } satisfies DeleteProviderCapabilityRouteResponse
     },
     async setExecutionSettings(request) {
       await wait(options.delayMs)
@@ -1906,6 +1939,8 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     listMcpServers: () => Promise.reject(error),
     listMemoryItems: () => Promise.reject(error),
     listProviderSettings: () => Promise.reject(error),
+    listProviderCapabilityRoutes: () => Promise.reject(error),
+    listProviderCapabilityRouteOptions: () => Promise.reject(error),
     listProjects: () => Promise.reject(error),
     addProject: () => Promise.reject(error),
     switchProject: () => Promise.reject(error),
@@ -1922,6 +1957,8 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     restartMcpServer: () => Promise.reject(error),
     clearMcpDiagnostics: () => Promise.reject(error),
     saveProviderSettings: () => Promise.reject(error),
+    saveProviderCapabilityRoute: () => Promise.reject(error),
+    deleteProviderCapabilityRoute: () => Promise.reject(error),
     setExecutionSettings: () => Promise.reject(error),
     setConversationModelConfig: () => Promise.reject(error),
     setSkillEnabled: () => Promise.reject(error),
