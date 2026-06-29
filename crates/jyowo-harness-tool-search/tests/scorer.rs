@@ -115,6 +115,7 @@ fn descriptor(name: &str, description: &str, search_hint: Option<&str>) -> ToolD
         provider_restriction: ProviderRestriction::All,
         origin: ToolOrigin::Builtin,
         search_hint: search_hint.map(str::to_owned),
+        service_binding: None,
     }
 }
 

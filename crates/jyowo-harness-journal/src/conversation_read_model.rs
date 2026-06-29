@@ -1431,6 +1431,11 @@ fn safe_tool_result_output_summary(result: &ToolResult) -> Option<String> {
                 .and_then(safe_process_preview_text)
                 .or_else(|| Some(format!("{} rows", rows.len()))),
             ToolResultPart::Error { code, .. } => safe_process_preview_text(code),
+            ToolResultPart::Artifact { preview, title, .. } => preview
+                .as_deref()
+                .filter(|text| !text.is_empty())
+                .and_then(safe_process_preview_text)
+                .or_else(|| safe_process_preview_text(title)),
             ToolResultPart::Blob { .. }
             | ToolResultPart::Code { .. }
             | ToolResultPart::Progress { .. } => None,

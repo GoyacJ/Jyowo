@@ -1,12 +1,17 @@
+use crate::provider_media::{
+    download_provider_https_media, validate_media_bytes, ProviderMediaBytes,
+    ProviderMediaDownloader, ReqwestProviderMediaDownloader, MAX_MINIMAX_MEDIA_BYTES,
+};
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 use chrono::Utc;
-use futures::{stream, StreamExt as _};
+use futures::stream;
 use harness_contracts::{
-    BlobMeta, BlobRetention, BlobWriterCap, BudgetMetric, DecisionScope, PermissionSubject,
-    ProviderCredential, ProviderCredentialResolveContext, ProviderCredentialResolverCap,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult, ToolResultPart,
+    BlobMeta, BlobRetention, BlobWriterCap, BudgetMetric, CapabilityRouteKind, DecisionScope,
+    ModelModality, PermissionSubject, ProviderCredential, ProviderCredentialResolveContext,
+    ProviderCredentialResolverCap, ToolCapability, ToolDescriptor, ToolError, ToolGroup,
+    ToolResult, ToolResultPart, ToolServiceBinding,
 };
 use harness_model::MinimaxApiClient;
 use harness_permission::PermissionCheck;
@@ -17,10 +22,19 @@ use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 
 const DEFAULT_BASE_URL: &str = "https://api.minimaxi.com";
 const MINIMAX_PROVIDER_ID: &str = "minimax";
-const MAX_MINIMAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 
 macro_rules! minimax_tool {
     ($type_name:ident, $name:literal, $display_name:literal, $description:literal, $operation:ident) => {
+        minimax_tool!(
+            $type_name,
+            $name,
+            $display_name,
+            $description,
+            $operation,
+            None
+        );
+    };
+    ($type_name:ident, $name:literal, $display_name:literal, $description:literal, $operation:ident, $binding:expr) => {
         #[derive(Clone)]
         pub struct $type_name {
             descriptor: ToolDescriptor,
@@ -29,7 +43,7 @@ macro_rules! minimax_tool {
         impl Default for $type_name {
             fn default() -> Self {
                 Self {
-                    descriptor: descriptor($name, $display_name, $description),
+                    descriptor: descriptor($name, $display_name, $description, $binding),
                 }
             }
         }
@@ -50,7 +64,7 @@ macro_rules! minimax_tool {
             }
 
             async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx).await
+                minimax_network_permission(ctx, &self.descriptor).await
             }
 
             async fn execute(
@@ -58,9 +72,14 @@ macro_rules! minimax_tool {
                 input: Value,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
-                Ok(execute_request(input, ctx, |client, request| async move {
-                    client.$operation(request).await.map_err(model_error)
-                }))
+                Ok(execute_request(
+                    input,
+                    ctx,
+                    &self.descriptor,
+                    |client, request| async move {
+                        client.$operation(request).await.map_err(model_error)
+                    },
+                ))
             }
         }
     };
@@ -68,6 +87,9 @@ macro_rules! minimax_tool {
 
 macro_rules! minimax_image_tool {
     ($type_name:ident, $name:literal, $display_name:literal, $description:literal) => {
+        minimax_image_tool!($type_name, $name, $display_name, $description, None);
+    };
+    ($type_name:ident, $name:literal, $display_name:literal, $description:literal, $binding:expr) => {
         #[derive(Clone)]
         pub struct $type_name {
             descriptor: ToolDescriptor,
@@ -76,7 +98,7 @@ macro_rules! minimax_image_tool {
         impl Default for $type_name {
             fn default() -> Self {
                 Self {
-                    descriptor: image_descriptor($name, $display_name, $description),
+                    descriptor: image_descriptor($name, $display_name, $description, $binding),
                 }
             }
         }
@@ -97,7 +119,7 @@ macro_rules! minimax_image_tool {
             }
 
             async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx).await
+                minimax_network_permission(ctx, &self.descriptor).await
             }
 
             async fn execute(
@@ -105,14 +127,14 @@ macro_rules! minimax_image_tool {
                 input: Value,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
-                Ok(execute_image_request(input, ctx))
+                Ok(execute_image_request(input, ctx, &self.descriptor))
             }
         }
     };
 }
 
-macro_rules! minimax_task_query_tool {
-    ($type_name:ident, $name:literal, $display_name:literal, $description:literal, $operation:ident) => {
+macro_rules! minimax_async_create_tool {
+    ($type_name:ident, $name:literal, $display_name:literal, $description:literal, $operation:ident, $poll_operation_id:literal, $binding:expr) => {
         #[derive(Clone)]
         pub struct $type_name {
             descriptor: ToolDescriptor,
@@ -121,7 +143,129 @@ macro_rules! minimax_task_query_tool {
         impl Default for $type_name {
             fn default() -> Self {
                 Self {
-                    descriptor: descriptor($name, $display_name, $description),
+                    descriptor: descriptor($name, $display_name, $description, $binding),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl Tool for $type_name {
+            fn descriptor(&self) -> &ToolDescriptor {
+                &self.descriptor
+            }
+
+            async fn validate(
+                &self,
+                input: &Value,
+                _ctx: &ToolContext,
+            ) -> Result<(), ValidationError> {
+                request(input)?;
+                Ok(())
+            }
+
+            async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
+                minimax_network_permission(ctx, &self.descriptor).await
+            }
+
+            async fn execute(
+                &self,
+                input: Value,
+                ctx: ToolContext,
+            ) -> Result<ToolStream, ToolError> {
+                let poll_operation_id = $poll_operation_id;
+                let artifact_kind = self
+                    .descriptor
+                    .service_binding
+                    .as_ref()
+                    .map(|binding| binding.output_artifact)
+                    .unwrap_or(ModelModality::Video);
+                Ok(execute_async_create_request(
+                    input,
+                    ctx,
+                    &self.descriptor,
+                    poll_operation_id,
+                    artifact_kind,
+                    $display_name,
+                    |client, request| async move {
+                        client.$operation(request).await.map_err(model_error)
+                    },
+                ))
+            }
+        }
+    };
+}
+
+macro_rules! minimax_sync_media_tool {
+    ($type_name:ident, $name:literal, $display_name:literal, $description:literal, $operation:ident, $artifact_title:literal, $binding:expr) => {
+        #[derive(Clone)]
+        pub struct $type_name {
+            descriptor: ToolDescriptor,
+        }
+
+        impl Default for $type_name {
+            fn default() -> Self {
+                Self {
+                    descriptor: media_descriptor($name, $display_name, $description, $binding),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl Tool for $type_name {
+            fn descriptor(&self) -> &ToolDescriptor {
+                &self.descriptor
+            }
+
+            async fn validate(
+                &self,
+                input: &Value,
+                _ctx: &ToolContext,
+            ) -> Result<(), ValidationError> {
+                request(input)?;
+                Ok(())
+            }
+
+            async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
+                minimax_network_permission(ctx, &self.descriptor).await
+            }
+
+            async fn execute(
+                &self,
+                input: Value,
+                ctx: ToolContext,
+            ) -> Result<ToolStream, ToolError> {
+                let artifact_kind = self
+                    .descriptor
+                    .service_binding
+                    .as_ref()
+                    .map(|binding| binding.output_artifact)
+                    .unwrap_or(ModelModality::Audio);
+                Ok(execute_sync_media_request(
+                    input,
+                    ctx,
+                    &self.descriptor,
+                    artifact_kind,
+                    $artifact_title,
+                    |client, request| async move {
+                        client.$operation(request).await.map_err(model_error)
+                    },
+                ))
+            }
+        }
+    };
+}
+
+macro_rules! minimax_media_query_tool {
+    ($type_name:ident, $name:literal, $display_name:literal, $description:literal, $operation:ident, $artifact_title:literal, $binding:expr) => {
+        #[derive(Clone)]
+        pub struct $type_name {
+            descriptor: ToolDescriptor,
+        }
+
+        impl Default for $type_name {
+            fn default() -> Self {
+                Self {
+                    descriptor: media_descriptor($name, $display_name, $description, $binding),
                 }
             }
         }
@@ -143,7 +287,7 @@ macro_rules! minimax_task_query_tool {
             }
 
             async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx).await
+                minimax_network_permission(ctx, &self.descriptor).await
             }
 
             async fn execute(
@@ -151,10 +295,24 @@ macro_rules! minimax_task_query_tool {
                 input: Value,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
-                Ok(execute_request(input, ctx, |client, request| async move {
-                    let task_id = required_string(&request, "task_id").map_err(validation_error)?;
-                    client.$operation(&task_id).await.map_err(model_error)
-                }))
+                let artifact_kind = self
+                    .descriptor
+                    .service_binding
+                    .as_ref()
+                    .map(|binding| binding.output_artifact)
+                    .unwrap_or(ModelModality::Video);
+                Ok(execute_media_query_request(
+                    input,
+                    ctx,
+                    &self.descriptor,
+                    artifact_kind,
+                    $artifact_title,
+                    |client, request| async move {
+                        let task_id =
+                            required_string(&request, "task_id").map_err(validation_error)?;
+                        client.$operation(&task_id).await.map_err(model_error)
+                    },
+                ))
             }
         }
     };
@@ -170,7 +328,7 @@ macro_rules! minimax_string_arg_tool {
         impl Default for $type_name {
             fn default() -> Self {
                 Self {
-                    descriptor: descriptor($name, $display_name, $description),
+                    descriptor: descriptor($name, $display_name, $description, None),
                 }
             }
         }
@@ -192,7 +350,7 @@ macro_rules! minimax_string_arg_tool {
             }
 
             async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx).await
+                minimax_network_permission(ctx, &self.descriptor).await
             }
 
             async fn execute(
@@ -200,10 +358,15 @@ macro_rules! minimax_string_arg_tool {
                 input: Value,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
-                Ok(execute_request(input, ctx, |client, request| async move {
-                    let value = required_string(&request, $field).map_err(validation_error)?;
-                    client.$operation(&value).await.map_err(model_error)
-                }))
+                Ok(execute_request(
+                    input,
+                    ctx,
+                    &self.descriptor,
+                    |client, request| async move {
+                        let value = required_string(&request, $field).map_err(validation_error)?;
+                        client.$operation(&value).await.map_err(model_error)
+                    },
+                ))
             }
         }
     };
@@ -213,132 +376,238 @@ minimax_image_tool!(
     MiniMaxTextToImageTool,
     "MiniMaxTextToImage",
     "MiniMax text to image",
-    "Generate an image with MiniMax image generation."
+    "Generate an image with MiniMax image generation.",
+    Some(service_binding(
+        "minimax.image_generation",
+        CapabilityRouteKind::ImageGeneration,
+        ModelModality::Image,
+    ))
 );
 minimax_image_tool!(
     MiniMaxImageToImageTool,
     "MiniMaxImageToImage",
     "MiniMax image to image",
-    "Generate or transform an image with MiniMax image generation."
+    "Generate or transform an image with MiniMax image generation.",
+    Some(service_binding(
+        "minimax.image_generation",
+        CapabilityRouteKind::ImageGeneration,
+        ModelModality::Image,
+    ))
 );
-minimax_tool!(
+minimax_async_create_tool!(
     MiniMaxTextToVideoTool,
     "MiniMaxTextToVideo",
     "MiniMax text to video",
     "Create a MiniMax video generation task from text.",
-    video_generation
+    video_generation,
+    "minimax.video_generation.query",
+    Some(service_binding(
+        "minimax.video_generation",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
-minimax_tool!(
+minimax_async_create_tool!(
     MiniMaxImageToVideoTool,
     "MiniMaxImageToVideo",
     "MiniMax image to video",
     "Create a MiniMax video generation task from an image reference.",
-    video_generation
+    video_generation,
+    "minimax.video_generation.query",
+    Some(service_binding(
+        "minimax.video_generation",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
-minimax_tool!(
+minimax_async_create_tool!(
     MiniMaxFirstLastFrameToVideoTool,
     "MiniMaxFirstLastFrameToVideo",
     "MiniMax first last frame video",
     "Create a MiniMax video task from first and last frame references.",
-    video_generation
+    video_generation,
+    "minimax.video_generation.query",
+    Some(service_binding(
+        "minimax.video_generation",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
-minimax_tool!(
+minimax_async_create_tool!(
     MiniMaxSubjectReferenceVideoTool,
     "MiniMaxSubjectReferenceVideo",
     "MiniMax subject reference video",
     "Create a MiniMax video task with subject reference inputs.",
-    video_generation
+    video_generation,
+    "minimax.video_generation.query",
+    Some(service_binding(
+        "minimax.video_generation",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
-minimax_task_query_tool!(
+minimax_media_query_tool!(
     MiniMaxVideoGenerationQueryTool,
     "MiniMaxVideoGenerationQuery",
     "MiniMax video generation query",
     "Query a MiniMax video generation task.",
-    query_video_generation
+    query_video_generation,
+    "Generated video",
+    Some(service_binding(
+        "minimax.video_generation.query",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
-minimax_tool!(
+minimax_async_create_tool!(
     MiniMaxVideoTemplateTool,
     "MiniMaxVideoTemplate",
     "MiniMax video template",
     "Create a MiniMax video template generation task.",
-    video_template_generation
+    video_template_generation,
+    "minimax.video_template.query",
+    Some(service_binding(
+        "minimax.video_template",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
-minimax_task_query_tool!(
+minimax_media_query_tool!(
     MiniMaxVideoTemplateQueryTool,
     "MiniMaxVideoTemplateQuery",
     "MiniMax video template query",
     "Query a MiniMax video template generation task.",
-    query_video_template_generation
+    query_video_template_generation,
+    "Generated video",
+    Some(service_binding(
+        "minimax.video_template.query",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
-minimax_tool!(
+minimax_sync_media_tool!(
     MiniMaxTextToSpeechTool,
     "MiniMaxTextToSpeech",
     "MiniMax text to speech",
     "Generate speech with MiniMax synchronous TTS.",
-    text_to_speech
+    text_to_speech,
+    "Generated speech",
+    Some(service_binding(
+        "minimax.text_to_speech.sync",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Audio,
+    ))
 );
-minimax_tool!(
+minimax_async_create_tool!(
     MiniMaxTextToSpeechAsyncTool,
     "MiniMaxTextToSpeechAsync",
     "MiniMax async text to speech",
     "Create a MiniMax async long-form TTS task.",
-    text_to_speech_async
+    text_to_speech_async,
+    "minimax.text_to_speech.async.query",
+    Some(service_binding(
+        "minimax.text_to_speech.async",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Audio,
+    ))
 );
-minimax_task_query_tool!(
+minimax_media_query_tool!(
     MiniMaxTextToSpeechAsyncQueryTool,
     "MiniMaxTextToSpeechAsyncQuery",
     "MiniMax async text to speech query",
     "Query a MiniMax async TTS task.",
-    query_text_to_speech_async
+    query_text_to_speech_async,
+    "Generated speech",
+    Some(service_binding(
+        "minimax.text_to_speech.async.query",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Audio,
+    ))
 );
 minimax_tool!(
     MiniMaxVoiceCloneTool,
     "MiniMaxVoiceClone",
     "MiniMax voice clone",
     "Clone a voice with MiniMax voice cloning.",
-    voice_clone
+    voice_clone,
+    Some(service_binding(
+        "minimax.voice_clone",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Audio,
+    ))
 );
 minimax_tool!(
     MiniMaxVoiceDesignTool,
     "MiniMaxVoiceDesign",
     "MiniMax voice design",
     "Design a voice with MiniMax voice design.",
-    voice_design
+    voice_design,
+    Some(service_binding(
+        "minimax.voice_design",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Audio,
+    ))
 );
 minimax_tool!(
     MiniMaxListVoicesTool,
     "MiniMaxListVoices",
     "MiniMax list voices",
     "List MiniMax voices.",
-    get_voice
+    get_voice,
+    Some(service_binding(
+        "minimax.voice_list",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Text,
+    ))
 );
 minimax_tool!(
     MiniMaxDeleteVoiceTool,
     "MiniMaxDeleteVoice",
     "MiniMax delete voice",
     "Delete a MiniMax voice.",
-    delete_voice
+    delete_voice,
+    Some(service_binding(
+        "minimax.voice_delete",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Text,
+    ))
 );
 minimax_tool!(
     MiniMaxLyricsGenerationTool,
     "MiniMaxLyricsGeneration",
     "MiniMax lyrics generation",
     "Generate lyrics with MiniMax music APIs.",
-    lyrics_generation
+    lyrics_generation,
+    Some(service_binding(
+        "minimax.lyrics_generation",
+        CapabilityRouteKind::MusicGeneration,
+        ModelModality::Text,
+    ))
 );
-minimax_tool!(
+minimax_sync_media_tool!(
     MiniMaxMusicGenerationTool,
     "MiniMaxMusicGeneration",
     "MiniMax music generation",
     "Generate music with MiniMax music APIs.",
-    music_generation
+    music_generation,
+    "Generated music",
+    Some(service_binding(
+        "minimax.music_generation",
+        CapabilityRouteKind::MusicGeneration,
+        ModelModality::Audio,
+    ))
 );
 minimax_tool!(
     MiniMaxMusicCoverPreprocessTool,
     "MiniMaxMusicCoverPreprocess",
     "MiniMax music cover preprocess",
     "Preprocess source audio for MiniMax music cover generation.",
-    music_cover_preprocess
+    music_cover_preprocess,
+    Some(service_binding(
+        "minimax.music_cover_preprocess",
+        CapabilityRouteKind::MusicGeneration,
+        ModelModality::Audio,
+    ))
 );
 minimax_tool!(
     MiniMaxResponsesTool,
@@ -381,6 +650,7 @@ impl Default for MiniMaxFileUploadTool {
                 "MiniMaxFileUpload",
                 "MiniMax file upload",
                 "Upload a file to MiniMax files API.",
+                None,
             ),
         }
     }
@@ -399,22 +669,27 @@ impl Tool for MiniMaxFileUploadTool {
     }
 
     async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        minimax_network_permission(ctx).await
+        minimax_network_permission(ctx, &self.descriptor).await
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        Ok(execute_request(input, ctx, |client, request| async move {
-            let upload = file_upload_request(&request).map_err(validation_error)?;
-            client
-                .file_upload_with_group_id(
-                    &upload.purpose,
-                    &upload.file_name,
-                    upload.bytes,
-                    upload.group_id.as_deref(),
-                )
-                .await
-                .map_err(model_error)
-        }))
+        Ok(execute_request(
+            input,
+            ctx,
+            &self.descriptor,
+            |client, request| async move {
+                let upload = file_upload_request(&request).map_err(validation_error)?;
+                client
+                    .file_upload_with_group_id(
+                        &upload.purpose,
+                        &upload.file_name,
+                        upload.bytes,
+                        upload.group_id.as_deref(),
+                    )
+                    .await
+                    .map_err(model_error)
+            },
+        ))
     }
 }
 
@@ -463,6 +738,7 @@ impl Default for MiniMaxFileListTool {
                 "MiniMaxFileList",
                 "MiniMax file list",
                 "List MiniMax files.",
+                None,
             ),
         }
     }
@@ -480,17 +756,22 @@ impl Tool for MiniMaxFileListTool {
     }
 
     async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        minimax_network_permission(ctx).await
+        minimax_network_permission(ctx, &self.descriptor).await
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        Ok(execute_request(input, ctx, |client, request| async move {
-            let purpose = optional_string(&request, "purpose").map_err(validation_error)?;
-            client
-                .file_list(purpose.as_deref())
-                .await
-                .map_err(model_error)
-        }))
+        Ok(execute_request(
+            input,
+            ctx,
+            &self.descriptor,
+            |client, request| async move {
+                let purpose = optional_string(&request, "purpose").map_err(validation_error)?;
+                client
+                    .file_list(purpose.as_deref())
+                    .await
+                    .map_err(model_error)
+            },
+        ))
     }
 }
 
@@ -506,6 +787,7 @@ impl Default for MiniMaxModelsListTool {
                 "MiniMaxModelsList",
                 "MiniMax models list",
                 "List MiniMax models.",
+                None,
             ),
         }
     }
@@ -523,13 +805,16 @@ impl Tool for MiniMaxModelsListTool {
     }
 
     async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        minimax_network_permission(ctx).await
+        minimax_network_permission(ctx, &self.descriptor).await
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        Ok(execute_request(input, ctx, |client, _request| async move {
-            client.list_models().await.map_err(model_error)
-        }))
+        Ok(execute_request(
+            input,
+            ctx,
+            &self.descriptor,
+            |client, _request| async move { client.list_models().await.map_err(model_error) },
+        ))
     }
 }
 
@@ -545,6 +830,7 @@ impl Default for MiniMaxAnthropicModelsListTool {
                 "MiniMaxAnthropicModelsList",
                 "MiniMax Anthropic models list",
                 "List MiniMax Anthropic-compatible models.",
+                None,
             ),
         }
     }
@@ -562,30 +848,152 @@ impl Tool for MiniMaxAnthropicModelsListTool {
     }
 
     async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        minimax_network_permission(ctx).await
+        minimax_network_permission(ctx, &self.descriptor).await
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        Ok(execute_request(input, ctx, |client, request| async move {
-            let limit = optional_u32(&request, "limit").map_err(validation_error)?;
-            let after_id = optional_string(&request, "after_id").map_err(validation_error)?;
-            let before_id = optional_string(&request, "before_id").map_err(validation_error)?;
-            client
-                .list_anthropic_models(limit, after_id.as_deref(), before_id.as_deref())
-                .await
-                .map_err(model_error)
-        }))
+        Ok(execute_request(
+            input,
+            ctx,
+            &self.descriptor,
+            |client, request| async move {
+                let limit = optional_u32(&request, "limit").map_err(validation_error)?;
+                let after_id = optional_string(&request, "after_id").map_err(validation_error)?;
+                let before_id = optional_string(&request, "before_id").map_err(validation_error)?;
+                client
+                    .list_anthropic_models(limit, after_id.as_deref(), before_id.as_deref())
+                    .await
+                    .map_err(model_error)
+            },
+        ))
     }
 }
 
-fn execute_request<F, Fut>(input: Value, ctx: ToolContext, call: F) -> ToolStream
+fn execute_async_create_request<F, Fut>(
+    input: Value,
+    ctx: ToolContext,
+    descriptor: &ToolDescriptor,
+    poll_operation_id: &'static str,
+    artifact_kind: ModelModality,
+    title: &'static str,
+    call: F,
+) -> ToolStream
 where
     F: FnOnce(MinimaxApiClient, Value) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<Value, ToolError>> + Send + 'static,
 {
+    let (operation_id, route_kind) = service_credential_context(descriptor);
     Box::pin(stream::once(async move {
         let result = async {
-            let credential = minimax_credential(&ctx).await?;
+            let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
+            let request = request(&input).map_err(validation_error)?;
+            let mut client = MinimaxApiClient::from_api_key(credential.api_key);
+            if let Some(base_url) = credential.base_url {
+                client = client.with_base_url(base_url);
+            }
+            let response = call(client, request).await?;
+            async_job_tool_result(&response, poll_operation_id, artifact_kind, title)
+        }
+        .await;
+        match result {
+            Ok(result) => ToolEvent::Final(result),
+            Err(error) => ToolEvent::Error(error),
+        }
+    }))
+}
+
+fn execute_sync_media_request<F, Fut>(
+    input: Value,
+    ctx: ToolContext,
+    descriptor: &ToolDescriptor,
+    artifact_kind: ModelModality,
+    title: &'static str,
+    call: F,
+) -> ToolStream
+where
+    F: FnOnce(MinimaxApiClient, Value) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<Value, ToolError>> + Send + 'static,
+{
+    let (operation_id, route_kind) = service_credential_context(descriptor);
+    Box::pin(stream::once(async move {
+        let result = async {
+            let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
+            let request = request(&input).map_err(validation_error)?;
+            let mut client = MinimaxApiClient::from_api_key(credential.api_key);
+            if let Some(base_url) = credential.base_url {
+                client = client.with_base_url(base_url);
+            }
+            let response = call(client, request).await?;
+            media_tool_result_from_response(
+                response,
+                &ctx,
+                artifact_kind,
+                title,
+                &ReqwestProviderMediaDownloader,
+            )
+            .await
+        }
+        .await;
+        match result {
+            Ok(result) => ToolEvent::Final(result),
+            Err(error) => ToolEvent::Error(error),
+        }
+    }))
+}
+
+fn execute_media_query_request<F, Fut>(
+    input: Value,
+    ctx: ToolContext,
+    descriptor: &ToolDescriptor,
+    artifact_kind: ModelModality,
+    title: &'static str,
+    call: F,
+) -> ToolStream
+where
+    F: FnOnce(MinimaxApiClient, Value) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<Value, ToolError>> + Send + 'static,
+{
+    let (operation_id, route_kind) = service_credential_context(descriptor);
+    Box::pin(stream::once(async move {
+        let result = async {
+            let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
+            let request = request(&input).map_err(validation_error)?;
+            let mut client = MinimaxApiClient::from_api_key(credential.api_key);
+            if let Some(base_url) = credential.base_url {
+                client = client.with_base_url(base_url);
+            }
+            let response = call(client, request).await?;
+            query_tool_result_from_response(
+                response,
+                &ctx,
+                artifact_kind,
+                title,
+                &ReqwestProviderMediaDownloader,
+            )
+            .await
+        }
+        .await;
+        match result {
+            Ok(result) => ToolEvent::Final(result),
+            Err(error) => ToolEvent::Error(error),
+        }
+    }))
+}
+
+fn execute_request<F, Fut>(
+    input: Value,
+    ctx: ToolContext,
+    descriptor: &ToolDescriptor,
+    call: F,
+) -> ToolStream
+where
+    F: FnOnce(MinimaxApiClient, Value) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<Value, ToolError>> + Send + 'static,
+{
+    let (operation_id, route_kind) = service_credential_context(descriptor);
+    Box::pin(stream::once(async move {
+        let result = async {
+            let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
             let request = request(&input).map_err(validation_error)?;
             let mut client = MinimaxApiClient::from_api_key(credential.api_key);
             if let Some(base_url) = credential.base_url {
@@ -601,10 +1009,15 @@ where
     }))
 }
 
-fn execute_image_request(input: Value, ctx: ToolContext) -> ToolStream {
+fn execute_image_request(
+    input: Value,
+    ctx: ToolContext,
+    descriptor: &ToolDescriptor,
+) -> ToolStream {
+    let (operation_id, route_kind) = service_credential_context(descriptor);
     Box::pin(stream::once(async move {
         let result = async {
-            let credential = minimax_credential(&ctx).await?;
+            let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
             let base_url = credential.base_url.clone();
             let request = request(&input).map_err(validation_error)?;
             let mut client = MinimaxApiClient::from_api_key(credential.api_key);
@@ -634,7 +1047,7 @@ async fn image_tool_result_from_response(
         response,
         ctx,
         provider_base_url,
-        &ReqwestMinimaxImageDownloader,
+        &ReqwestProviderMediaDownloader,
     )
     .await
 }
@@ -643,51 +1056,137 @@ async fn image_tool_result_from_response_with_downloader(
     response: Value,
     ctx: &ToolContext,
     _provider_base_url: Option<&str>,
-    downloader: &dyn MinimaxImageDownloader,
+    downloader: &dyn ProviderMediaDownloader,
 ) -> Result<ToolResult, ToolError> {
-    let candidate = select_image_candidate(&response).ok_or_else(|| {
-        ToolError::Message("MiniMax image response did not include a supported image".to_owned())
-    })?;
-    let image = match candidate {
-        ImageCandidate::DataUrl(value) => decode_data_url_image(&value)?,
-        ImageCandidate::Base64(value) => decode_base64_image(&value)?,
-        ImageCandidate::HttpsUrl(value) => download_https_image(&value, downloader).await?,
-    };
-    let blob_ref = write_image_blob(ctx, image.bytes, &image.mime_type).await?;
-    Ok(ToolResult::Mixed(vec![
-        ToolResultPart::Structured {
-            value: json!({
-                "kind": "image",
-                "status": "ready",
-                "summary": "生成的图片",
-                "mimeType": image.mime_type,
-                "sizeBytes": blob_ref.size,
-            }),
-            schema_ref: None,
-        },
-        ToolResultPart::Blob {
-            content_type: image.mime_type,
-            blob_ref,
-            summary: Some("生成的图片".to_owned()),
-        },
-    ]))
+    media_tool_result_from_response(
+        response,
+        ctx,
+        ModelModality::Image,
+        "Generated image",
+        downloader,
+    )
+    .await
 }
 
-async fn write_image_blob(
+async fn media_tool_result_from_response(
+    response: Value,
+    ctx: &ToolContext,
+    modality: ModelModality,
+    title: &str,
+    downloader: &dyn ProviderMediaDownloader,
+) -> Result<ToolResult, ToolError> {
+    let candidate = select_media_candidate(&response, modality).ok_or_else(|| {
+        ToolError::Message(format!(
+            "MiniMax {} response did not include supported media",
+            modality_label(modality)
+        ))
+    })?;
+    let media = resolve_media_candidate(candidate, modality, downloader).await?;
+    let mime_type = validate_media_bytes(&media.bytes, modality, Some(&media.mime_type))?;
+    let blob_ref = write_media_blob(ctx, media.bytes, &mime_type).await?;
+    Ok(artifact_tool_result(modality, mime_type, blob_ref, title))
+}
+
+async fn query_tool_result_from_response(
+    response: Value,
+    ctx: &ToolContext,
+    modality: ModelModality,
+    title: &str,
+    downloader: &dyn ProviderMediaDownloader,
+) -> Result<ToolResult, ToolError> {
+    if let Some(candidate) = select_media_candidate(&response, modality) {
+        let media = resolve_media_candidate(candidate, modality, downloader).await?;
+        let mime_type = validate_media_bytes(&media.bytes, modality, Some(&media.mime_type))?;
+        let blob_ref = write_media_blob(ctx, media.bytes, &mime_type).await?;
+        return Ok(artifact_tool_result(modality, mime_type, blob_ref, title));
+    }
+    if is_pending_task_status(&response) {
+        return Ok(ToolResult::Structured(response));
+    }
+    Ok(ToolResult::Structured(response))
+}
+
+fn async_job_tool_result(
+    response: &Value,
+    poll_operation_id: &str,
+    artifact_kind: ModelModality,
+    title: &str,
+) -> Result<ToolResult, ToolError> {
+    let job_id = extract_task_id(response).ok_or_else(|| {
+        ToolError::Message("MiniMax async task response did not include task id".to_owned())
+    })?;
+    Ok(ToolResult::Mixed(vec![ToolResultPart::Structured {
+        value: json!({
+            "kind": "async_job",
+            "jobId": job_id,
+            "pollOperationId": poll_operation_id,
+            "artifactKind": modality_label(artifact_kind),
+            "title": title,
+        }),
+        schema_ref: Some("provider_service_async_job.v1".to_string()),
+    }]))
+}
+
+fn artifact_tool_result(
+    artifact_kind: ModelModality,
+    content_type: String,
+    blob_ref: harness_contracts::BlobRef,
+    title: &str,
+) -> ToolResult {
+    ToolResult::Mixed(vec![ToolResultPart::Artifact {
+        artifact_kind,
+        content_type,
+        blob_ref,
+        title: title.to_owned(),
+        preview: Some(title.to_owned()),
+    }])
+}
+
+fn modality_label(modality: ModelModality) -> &'static str {
+    match modality {
+        ModelModality::Image => "image",
+        ModelModality::Video => "video",
+        ModelModality::Audio => "audio",
+        ModelModality::File => "file",
+        ModelModality::Text | ModelModality::Embedding => "text",
+    }
+}
+
+fn extract_task_id(value: &Value) -> Option<String> {
+    value
+        .get("task_id")
+        .or_else(|| value.pointer("/data/task_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|task_id| !task_id.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn is_pending_task_status(value: &Value) -> bool {
+    if let Some(status) = value.get("status").and_then(Value::as_str) {
+        return matches!(
+            status.to_ascii_lowercase().as_str(),
+            "processing" | "pending" | "running" | "queueing" | "preparing"
+        );
+    }
+    false
+}
+
+async fn write_media_blob(
     ctx: &ToolContext,
     bytes: Vec<u8>,
     mime_type: &str,
 ) -> Result<harness_contracts::BlobRef, ToolError> {
     if bytes.is_empty() {
         return Err(ToolError::Message(
-            "MiniMax image response was empty".to_owned(),
+            "MiniMax media response was empty".to_owned(),
         ));
     }
     let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    if size > MAX_MINIMAX_IMAGE_BYTES {
+    if size > MAX_MINIMAX_MEDIA_BYTES {
         return Err(ToolError::ResultTooLarge {
             original: size,
-            limit: MAX_MINIMAX_IMAGE_BYTES,
+            limit: MAX_MINIMAX_MEDIA_BYTES,
             metric: BudgetMetric::Bytes,
         });
     }
@@ -709,123 +1208,175 @@ async fn write_image_blob(
 }
 
 #[derive(Debug, Clone)]
-struct ImageBytes {
-    bytes: Vec<u8>,
-    mime_type: String,
-}
-
-#[async_trait::async_trait]
-trait MinimaxImageDownloader: Send + Sync {
-    async fn download(&self, url: &Url) -> Result<ImageBytes, ToolError>;
-}
-
-struct ReqwestMinimaxImageDownloader;
-
-#[derive(Debug, Clone)]
-enum ImageCandidate {
+enum MediaCandidate {
     DataUrl(String),
     Base64(String),
     HttpsUrl(String),
 }
 
-fn select_image_candidate(value: &Value) -> Option<ImageCandidate> {
+fn select_media_candidate(value: &Value, modality: ModelModality) -> Option<MediaCandidate> {
     let mut candidates = Vec::new();
-    collect_image_candidates(value, None, &mut candidates);
-    candidates.sort_by_key(image_candidate_priority);
+    collect_media_candidates(value, None, modality, &mut candidates);
+    candidates.sort_by_key(media_candidate_priority);
     candidates.into_iter().next()
 }
 
-fn image_candidate_priority(candidate: &ImageCandidate) -> u8 {
+fn media_candidate_priority(candidate: &MediaCandidate) -> u8 {
     match candidate {
-        ImageCandidate::DataUrl(_) => 0,
-        ImageCandidate::Base64(_) => 1,
-        ImageCandidate::HttpsUrl(_) => 2,
+        MediaCandidate::DataUrl(_) => 0,
+        MediaCandidate::Base64(_) => 1,
+        MediaCandidate::HttpsUrl(_) => 2,
     }
 }
 
-fn collect_image_candidates(
+fn collect_media_candidates(
     value: &Value,
     key_hint: Option<&str>,
-    candidates: &mut Vec<ImageCandidate>,
+    modality: ModelModality,
+    candidates: &mut Vec<MediaCandidate>,
 ) {
     match value {
         Value::String(text) => {
             let trimmed = text.trim();
-            if trimmed.starts_with("data:image/") {
-                candidates.push(ImageCandidate::DataUrl(trimmed.to_owned()));
+            let data_prefix = match modality {
+                ModelModality::Image => "data:image/",
+                ModelModality::Video => "data:video/",
+                ModelModality::Audio => "data:audio/",
+                ModelModality::Text | ModelModality::Embedding | ModelModality::File => return,
+            };
+            if trimmed.starts_with(data_prefix) {
+                candidates.push(MediaCandidate::DataUrl(trimmed.to_owned()));
                 return;
             }
-            if key_hint.is_some_and(is_likely_base64_image_key) {
-                candidates.push(ImageCandidate::Base64(trimmed.to_owned()));
+            if key_hint.is_some_and(|key| is_likely_base64_media_key(key, modality)) {
+                candidates.push(MediaCandidate::Base64(trimmed.to_owned()));
                 return;
             }
-            if key_hint.is_some_and(is_likely_image_url_key) && trimmed.starts_with("https://") {
-                candidates.push(ImageCandidate::HttpsUrl(trimmed.to_owned()));
+            if key_hint.is_some_and(|key| is_likely_media_url_key(key, modality))
+                && is_collectible_media_url(trimmed)
+            {
+                candidates.push(MediaCandidate::HttpsUrl(trimmed.to_owned()));
             }
         }
         Value::Array(items) => {
             for item in items {
-                collect_image_candidates(item, key_hint, candidates);
+                collect_media_candidates(item, key_hint, modality, candidates);
             }
         }
         Value::Object(object) => {
             for (key, nested) in object {
-                collect_image_candidates(nested, Some(key), candidates);
+                collect_media_candidates(nested, Some(key), modality, candidates);
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 
-fn is_likely_base64_image_key(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
-    key.contains("base64") || key == "image" || key == "image_data"
+fn is_collectible_media_url(value: &str) -> bool {
+    if value.starts_with("https://") {
+        return true;
+    }
+    if value.starts_with("http://") {
+        return Url::parse(value)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .is_some_and(|host| matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]"));
+    }
+    false
 }
 
-fn is_likely_image_url_key(key: &str) -> bool {
+fn is_likely_base64_media_key(key: &str, modality: ModelModality) -> bool {
     let key = key.to_ascii_lowercase();
-    key.contains("url") && (key.contains("image") || key.contains("file") || key == "url")
+    match modality {
+        ModelModality::Image => key.contains("base64") || key == "image" || key == "image_data",
+        ModelModality::Video => key.contains("base64") || key == "video_data",
+        ModelModality::Audio => key.contains("base64") || key == "audio" || key == "audio_data",
+        ModelModality::Text | ModelModality::Embedding | ModelModality::File => false,
+    }
 }
 
-fn decode_data_url_image(value: &str) -> Result<ImageBytes, ToolError> {
+fn is_likely_media_url_key(key: &str, modality: ModelModality) -> bool {
+    let key = key.to_ascii_lowercase();
+    match modality {
+        ModelModality::Image => {
+            key.contains("url") && (key.contains("image") || key.contains("file") || key == "url")
+        }
+        ModelModality::Video => {
+            key.contains("url") && (key.contains("video") || key.contains("file") || key == "url")
+        }
+        ModelModality::Audio => {
+            key.contains("url") && (key.contains("audio") || key.contains("music") || key == "url")
+        }
+        ModelModality::Text | ModelModality::Embedding | ModelModality::File => false,
+    }
+}
+
+async fn resolve_media_candidate(
+    candidate: MediaCandidate,
+    modality: ModelModality,
+    downloader: &dyn ProviderMediaDownloader,
+) -> Result<ProviderMediaBytes, ToolError> {
+    match candidate {
+        MediaCandidate::DataUrl(value) => decode_data_url_media(&value, modality),
+        MediaCandidate::Base64(value) => decode_base64_media(&value, modality),
+        MediaCandidate::HttpsUrl(value) => {
+            download_provider_https_media(
+                MINIMAX_PROVIDER_ID,
+                &value,
+                modality,
+                downloader,
+                MAX_MINIMAX_MEDIA_BYTES,
+            )
+            .await
+        }
+    }
+}
+
+fn decode_data_url_media(
+    value: &str,
+    modality: ModelModality,
+) -> Result<ProviderMediaBytes, ToolError> {
     let comma = value
         .find(',')
-        .ok_or_else(|| ToolError::Message("MiniMax image data URL is malformed".to_owned()))?;
+        .ok_or_else(|| ToolError::Message("MiniMax media data URL is malformed".to_owned()))?;
     let metadata = &value["data:".len()..comma];
     let mut parts = metadata.split(';');
     let mime_type = parts.next().unwrap_or_default().trim();
     let is_base64 = parts.any(|part| part.eq_ignore_ascii_case("base64"));
-    let mime_type = safe_minimax_image_mime(mime_type)
-        .ok_or_else(|| ToolError::Message("MiniMax image data URL is unsupported".to_owned()))?;
+    let mime_type = crate::provider_media::safe_mime_for_modality(mime_type, modality)
+        .ok_or_else(|| ToolError::Message("MiniMax media data URL is unsupported".to_owned()))?;
     if !is_base64 {
         return Err(ToolError::Message(
-            "MiniMax image data URL is unsupported".to_owned(),
+            "MiniMax media data URL is unsupported".to_owned(),
         ));
     }
     let bytes = decode_base64_bytes(&value[comma + 1..])?;
-    let mime_type = validate_image_bytes(&bytes, Some(mime_type))?;
-    Ok(ImageBytes { bytes, mime_type })
+    let mime_type = validate_media_bytes(&bytes, modality, Some(mime_type))?;
+    Ok(ProviderMediaBytes { bytes, mime_type })
 }
 
-fn decode_base64_image(value: &str) -> Result<ImageBytes, ToolError> {
+fn decode_base64_media(
+    value: &str,
+    modality: ModelModality,
+) -> Result<ProviderMediaBytes, ToolError> {
     let bytes = decode_base64_bytes(value)?;
-    let mime_type = validate_image_bytes(&bytes, None)?;
-    Ok(ImageBytes { bytes, mime_type })
+    let mime_type = validate_media_bytes(&bytes, modality, None)?;
+    Ok(ProviderMediaBytes { bytes, mime_type })
 }
 
 fn decode_base64_bytes(value: &str) -> Result<Vec<u8>, ToolError> {
     let value = value.trim();
     let decoded_upper_bound = base64_decoded_upper_bound(value);
-    if decoded_upper_bound > MAX_MINIMAX_IMAGE_BYTES {
+    if decoded_upper_bound > MAX_MINIMAX_MEDIA_BYTES {
         return Err(ToolError::ResultTooLarge {
             original: decoded_upper_bound,
-            limit: MAX_MINIMAX_IMAGE_BYTES,
+            limit: MAX_MINIMAX_MEDIA_BYTES,
             metric: BudgetMetric::Bytes,
         });
     }
     general_purpose::STANDARD
         .decode(value)
-        .map_err(|_| ToolError::Message("MiniMax image payload is not valid base64".to_owned()))
+        .map_err(|_| ToolError::Message("MiniMax media payload is not valid base64".to_owned()))
 }
 
 fn base64_decoded_upper_bound(value: &str) -> u64 {
@@ -841,169 +1392,12 @@ fn base64_decoded_upper_bound(value: &str) -> u64 {
         .saturating_sub(u64::try_from(padding).unwrap_or(0))
 }
 
-async fn download_https_image(
-    value: &str,
-    downloader: &dyn MinimaxImageDownloader,
-) -> Result<ImageBytes, ToolError> {
-    let url = Url::parse(value)
-        .map_err(|_| ToolError::Message("MiniMax image asset URL is malformed".to_owned()))?;
-    if url.scheme() != "https" || !is_allowed_minimax_image_host(&url) {
-        return Err(ToolError::PermissionDenied(
-            "MiniMax image asset host is not allowed".to_owned(),
-        ));
-    }
-    if url.username() != "" || url.password().is_some() {
-        return Err(ToolError::PermissionDenied(
-            "MiniMax image asset URL is not allowed".to_owned(),
-        ));
-    }
-    let image = downloader.download(&url).await?;
-    let mime_type = validate_image_bytes(&image.bytes, Some(&image.mime_type))?;
-    Ok(ImageBytes {
-        bytes: image.bytes,
-        mime_type,
-    })
-}
-
-#[async_trait::async_trait]
-impl MinimaxImageDownloader for ReqwestMinimaxImageDownloader {
-    async fn download(&self, url: &Url) -> Result<ImageBytes, ToolError> {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|error| {
-                ToolError::Message(format!("MiniMax image download setup failed: {error}"))
-            })?;
-        let response = client
-            .get(url.clone())
-            .send()
-            .await
-            .map_err(|_| ToolError::Message("MiniMax image download failed".to_owned()))?;
-        if !response.status().is_success() {
-            return Err(ToolError::Message(
-                "MiniMax image download failed".to_owned(),
-            ));
-        }
-        let mime_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split(';').next())
-            .map(str::trim)
-            .and_then(safe_minimax_image_mime)
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| {
-                ToolError::Message("MiniMax image download returned non-image content".to_owned())
-            })?;
-        let content_length = response.content_length().unwrap_or(0);
-        if content_length > MAX_MINIMAX_IMAGE_BYTES {
-            return Err(ToolError::ResultTooLarge {
-                original: content_length,
-                limit: MAX_MINIMAX_IMAGE_BYTES,
-                metric: BudgetMetric::Bytes,
-            });
-        }
-        let mut bytes = Vec::with_capacity(content_length.min(MAX_MINIMAX_IMAGE_BYTES) as usize);
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk
-                .map_err(|_| ToolError::Message("MiniMax image download failed".to_owned()))?;
-            let next_len = u64::try_from(bytes.len())
-                .unwrap_or(u64::MAX)
-                .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-            if next_len > MAX_MINIMAX_IMAGE_BYTES {
-                return Err(ToolError::ResultTooLarge {
-                    original: next_len,
-                    limit: MAX_MINIMAX_IMAGE_BYTES,
-                    metric: BudgetMetric::Bytes,
-                });
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        let mime_type = validate_image_bytes(&bytes, Some(&mime_type))?;
-        Ok(ImageBytes { bytes, mime_type })
-    }
-}
-
-fn is_allowed_minimax_image_host(url: &Url) -> bool {
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    matches!(
-        host,
-        "api.minimaxi.com" | "api.minimax.io" | "api.minimax.chat"
-    ) || host.ends_with(".minimaxi.com")
-        || host.ends_with(".minimax.io")
-        || host.ends_with(".minimax.chat")
-}
-
-fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1A\n") {
-        return Some("image/png");
-    }
-    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        return Some("image/jpeg");
-    }
-    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        return Some("image/gif");
-    }
-    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-        return Some("image/webp");
-    }
-    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
-        let major_brand = &bytes[8..12];
-        if major_brand == b"avif" || major_brand == b"avis" {
-            return Some("image/avif");
-        }
-        if bytes
-            .get(16..)
-            .unwrap_or_default()
-            .chunks_exact(4)
-            .any(|brand| brand == b"avif" || brand == b"avis")
-        {
-            return Some("image/avif");
-        }
-    }
-    None
-}
-
-fn safe_minimax_image_mime(value: &str) -> Option<&'static str> {
-    let mime = value
-        .split(';')
-        .next()
-        .unwrap_or(value)
-        .trim()
-        .to_ascii_lowercase();
-    match mime.as_str() {
-        "image/png" => Some("image/png"),
-        "image/jpeg" => Some("image/jpeg"),
-        "image/gif" => Some("image/gif"),
-        "image/webp" => Some("image/webp"),
-        "image/avif" => Some("image/avif"),
-        _ => None,
-    }
-}
-
-fn validate_image_bytes(bytes: &[u8], declared_mime: Option<&str>) -> Result<String, ToolError> {
-    let detected_mime = detect_image_mime(bytes).ok_or_else(|| {
-        ToolError::Message("MiniMax image payload is not a supported image".to_owned())
-    })?;
-    if let Some(declared_mime) = declared_mime {
-        let declared_mime = safe_minimax_image_mime(declared_mime).ok_or_else(|| {
-            ToolError::Message("MiniMax image payload is not a supported image".to_owned())
-        })?;
-        if declared_mime != detected_mime {
-            return Err(ToolError::Message(
-                "MiniMax image payload MIME type does not match image bytes".to_owned(),
-            ));
-        }
-    }
-    Ok(detected_mime.to_owned())
-}
-
-async fn minimax_network_permission(ctx: &ToolContext) -> PermissionCheck {
-    let credential = match minimax_credential(ctx).await {
+async fn minimax_network_permission(
+    ctx: &ToolContext,
+    descriptor: &ToolDescriptor,
+) -> PermissionCheck {
+    let (operation_id, route_kind) = service_credential_context(descriptor);
+    let credential = match minimax_credential(ctx, operation_id, route_kind).await {
         Ok(credential) => credential,
         Err(error) => return minimax_permission_denied(error),
     };
@@ -1045,8 +1439,26 @@ fn minimax_base_url_host(base_url: Option<&str>) -> Result<(String, Option<u16>)
     Ok((host.to_owned(), url.port()))
 }
 
-fn descriptor(name: &str, display_name: &str, description: &str) -> ToolDescriptor {
-    super::descriptor(
+fn service_binding(
+    operation_id: &str,
+    route_kind: CapabilityRouteKind,
+    output_artifact: ModelModality,
+) -> ToolServiceBinding {
+    ToolServiceBinding {
+        provider_id: MINIMAX_PROVIDER_ID.to_owned(),
+        operation_id: operation_id.to_owned(),
+        route_kind,
+        output_artifact,
+    }
+}
+
+fn descriptor(
+    name: &str,
+    display_name: &str,
+    description: &str,
+    service_binding: Option<ToolServiceBinding>,
+) -> ToolDescriptor {
+    super::descriptor_with_binding(
         name,
         display_name,
         description,
@@ -1065,11 +1477,49 @@ fn descriptor(name: &str, display_name: &str, description: &str) -> ToolDescript
                 }
             }),
         ),
+        service_binding,
     )
 }
 
-fn image_descriptor(name: &str, display_name: &str, description: &str) -> ToolDescriptor {
-    super::descriptor(
+fn media_descriptor(
+    name: &str,
+    display_name: &str,
+    description: &str,
+    service_binding: Option<ToolServiceBinding>,
+) -> ToolDescriptor {
+    super::descriptor_with_binding(
+        name,
+        display_name,
+        description,
+        ToolGroup::Network,
+        true,
+        false,
+        false,
+        128_000,
+        vec![
+            ToolCapability::ProviderCredentialResolver,
+            ToolCapability::BlobWriter,
+        ],
+        super::object_schema(
+            &["request"],
+            json!({
+                "request": {
+                    "type": "object",
+                    "description": "MiniMax official API request body for this operation."
+                }
+            }),
+        ),
+        service_binding,
+    )
+}
+
+fn image_descriptor(
+    name: &str,
+    display_name: &str,
+    description: &str,
+    service_binding: Option<ToolServiceBinding>,
+) -> ToolDescriptor {
+    super::descriptor_with_binding(
         name,
         display_name,
         description,
@@ -1091,6 +1541,7 @@ fn image_descriptor(name: &str, display_name: &str, description: &str) -> ToolDe
                 }
             }),
         ),
+        service_binding,
     )
 }
 
@@ -1169,7 +1620,26 @@ fn validation_error(error: ValidationError) -> ToolError {
     ToolError::Validation(error.to_string())
 }
 
-async fn minimax_credential(ctx: &ToolContext) -> Result<ProviderCredential, ToolError> {
+fn service_credential_context(
+    descriptor: &ToolDescriptor,
+) -> (Option<String>, Option<CapabilityRouteKind>) {
+    descriptor
+        .service_binding
+        .as_ref()
+        .map(|binding| (Some(binding.operation_id.clone()), Some(binding.route_kind)))
+        .unwrap_or((None, None))
+}
+
+async fn minimax_credential(
+    ctx: &ToolContext,
+    operation_id: Option<String>,
+    route_kind: Option<CapabilityRouteKind>,
+) -> Result<ProviderCredential, ToolError> {
+    if operation_id.is_some() != route_kind.is_some() {
+        return Err(ToolError::PermissionDenied(
+            "MiniMax service operation credential context is incomplete".to_owned(),
+        ));
+    }
     let resolver = ctx.capability::<dyn ProviderCredentialResolverCap>(
         ToolCapability::ProviderCredentialResolver,
     )?;
@@ -1179,6 +1649,8 @@ async fn minimax_credential(ctx: &ToolContext) -> Result<ProviderCredential, Too
             session_id: ctx.session_id,
             run_id: ctx.run_id,
             provider_id: MINIMAX_PROVIDER_ID.to_owned(),
+            operation_id: operation_id.clone(),
+            route_kind,
         })
         .await?;
     if credential.provider_id != MINIMAX_PROVIDER_ID {
@@ -1209,7 +1681,7 @@ mod tests {
     use futures::future::BoxFuture;
     use harness_contracts::{
         AgentId, BlobMeta, BlobRef, BlobWriterCap, CapabilityRegistry, CorrelationId, Decision,
-        PermissionError, RunId, SessionId, TenantId, ToolResultPart, ToolUseId,
+        ModelModality, PermissionError, RunId, SessionId, TenantId, ToolResultPart, ToolUseId,
     };
     use harness_permission::{
         PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
@@ -1219,7 +1691,22 @@ mod tests {
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 
     #[tokio::test]
-    async fn image_response_base64_is_stored_as_blob_result() {
+    async fn minimax_credential_rejects_incomplete_service_context_before_resolver() {
+        let resolver = Arc::new(PanickingResolver);
+        let mut caps = CapabilityRegistry::default();
+        caps.install(ToolCapability::ProviderCredentialResolver, resolver);
+        let ctx = test_context(Arc::new(CapturingBlobWriter));
+
+        let error = minimax_credential(&ctx, Some("minimax.image_generation".to_owned()), None)
+            .await
+            .expect_err("partial service context should fail closed");
+
+        assert!(matches!(error, ToolError::PermissionDenied(_)));
+        assert!(error.to_string().contains("incomplete"));
+    }
+
+    #[tokio::test]
+    async fn minimax_image_typed_artifact_from_base64_response() {
         let ctx = test_context(Arc::new(CapturingBlobWriter));
         let result = image_tool_result_from_response(
             json!({
@@ -1239,18 +1726,16 @@ mod tests {
         };
         assert!(parts.iter().any(|part| matches!(
             part,
-            ToolResultPart::Structured { value, .. }
-                if value["kind"] == "image" && value.get("url").is_none()
-        )));
-        assert!(parts.iter().any(|part| matches!(
-            part,
-            ToolResultPart::Blob {
+            ToolResultPart::Artifact {
+                artifact_kind: ModelModality::Image,
                 content_type,
                 blob_ref,
-                summary
+                title,
+                preview,
             } if content_type == "image/png"
                 && blob_ref.content_type.as_deref() == Some("image/png")
-                && summary.as_deref() == Some("生成的图片")
+                && title == "Generated image"
+                && preview.as_deref() == Some("Generated image")
         )));
     }
 
@@ -1271,7 +1756,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("MiniMax image asset host is not allowed"));
+            .contains("provider media asset host is not allowed"));
         assert!(!error.to_string().contains("private.png"));
     }
 
@@ -1294,7 +1779,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("MiniMax image asset host is not allowed"));
+            .contains("provider media asset host is not allowed"));
         assert!(!error.to_string().contains("proxy.example.invalid"));
         assert!(!error.to_string().contains("private-token.png"));
     }
@@ -1321,7 +1806,7 @@ mod tests {
     #[tokio::test]
     async fn image_response_rejects_oversized_inline_base64_before_decoding() {
         let ctx = test_context(Arc::new(CapturingBlobWriter));
-        let oversized_base64 = "A".repeat(((MAX_MINIMAX_IMAGE_BYTES + 3) / 3 * 4) as usize);
+        let oversized_base64 = "A".repeat(((MAX_MINIMAX_MEDIA_BYTES + 3) / 3 * 4) as usize);
         let error = image_tool_result_from_response(
             json!({
                 "data": {
@@ -1354,12 +1839,11 @@ mod tests {
         .await
         .expect_err("svg asset should be rejected");
 
-        assert!(error.to_string().contains("supported image"));
-        assert!(!error.to_string().contains("vector.svg"));
+        assert!(error.to_string().contains("supported media"));
     }
 
     #[tokio::test]
-    async fn image_response_allowed_https_asset_is_downloaded_as_blob_result() {
+    async fn image_response_allowed_https_asset_is_downloaded_as_artifact_result() {
         let ctx = test_context(Arc::new(CapturingBlobWriter));
         let downloader = FakeImageDownloader;
         let result = image_tool_result_from_response_with_downloader(
@@ -1381,12 +1865,15 @@ mod tests {
         let serialized = serde_json::to_string(&parts).unwrap();
         assert!(parts.iter().any(|part| matches!(
             part,
-            ToolResultPart::Blob {
+            ToolResultPart::Artifact {
+                artifact_kind: ModelModality::Image,
                 content_type,
                 blob_ref,
+                title,
                 ..
             } if content_type == "image/png"
                 && blob_ref.content_type.as_deref() == Some("image/png")
+                && title == "Generated image"
         )));
         assert!(!serialized.contains("private-token.png"));
         assert!(!serialized.contains("assets.minimaxi.com"));
@@ -1416,9 +1903,15 @@ mod tests {
     struct FakeImageDownloader;
 
     #[async_trait::async_trait]
-    impl MinimaxImageDownloader for FakeImageDownloader {
-        async fn download(&self, _url: &Url) -> Result<ImageBytes, ToolError> {
-            Ok(ImageBytes {
+    impl ProviderMediaDownloader for FakeImageDownloader {
+        async fn download(
+            &self,
+            _url: &url::Url,
+            _max_bytes: u64,
+            modality: ModelModality,
+        ) -> Result<ProviderMediaBytes, ToolError> {
+            assert_eq!(modality, ModelModality::Image);
+            Ok(ProviderMediaBytes {
                 bytes: general_purpose::STANDARD.decode(PNG_1X1_BASE64).unwrap(),
                 mime_type: "image/png".to_owned(),
             })
@@ -1428,9 +1921,14 @@ mod tests {
     struct FakeSvgImageDownloader;
 
     #[async_trait::async_trait]
-    impl MinimaxImageDownloader for FakeSvgImageDownloader {
-        async fn download(&self, _url: &Url) -> Result<ImageBytes, ToolError> {
-            Ok(ImageBytes {
+    impl ProviderMediaDownloader for FakeSvgImageDownloader {
+        async fn download(
+            &self,
+            _url: &url::Url,
+            _max_bytes: u64,
+            _modality: ModelModality,
+        ) -> Result<ProviderMediaBytes, ToolError> {
+            Ok(ProviderMediaBytes {
                 bytes: br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#.to_vec(),
                 mime_type: "image/svg+xml".to_owned(),
             })
@@ -1438,6 +1936,17 @@ mod tests {
     }
 
     struct CapturingBlobWriter;
+
+    struct PanickingResolver;
+
+    impl ProviderCredentialResolverCap for PanickingResolver {
+        fn resolve_provider_credential(
+            &self,
+            _context: ProviderCredentialResolveContext,
+        ) -> BoxFuture<'_, Result<ProviderCredential, ToolError>> {
+            panic!("credential resolver must not be called for incomplete service context");
+        }
+    }
 
     impl BlobWriterCap for CapturingBlobWriter {
         fn write_blob(

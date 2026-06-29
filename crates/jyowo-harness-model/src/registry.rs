@@ -386,10 +386,14 @@ fn provider_auth_scheme(provider_id: &str) -> ProviderAuthScheme {
 }
 
 fn service_capabilities(provider_id: &str) -> Vec<ProviderServiceCapability> {
-    if provider_id != "minimax" {
-        return Vec::new();
+    match provider_id {
+        "minimax" => minimax_service_capabilities(),
+        "doubao" => seedance_service_capabilities(),
+        _ => Vec::new(),
     }
+}
 
+fn minimax_service_capabilities() -> Vec<ProviderServiceCapability> {
     vec![
         service(
             "minimax.image_generation",
@@ -641,6 +645,29 @@ fn service_capabilities(provider_id: &str) -> Vec<ProviderServiceCapability> {
     ]
 }
 
+fn seedance_service_capabilities() -> Vec<ProviderServiceCapability> {
+    vec![
+        doubao_service(
+            "seedance.video_generation",
+            ProviderServiceCategory::Video,
+            vec![ModelModality::Text, ModelModality::Image],
+            ModelModality::Video,
+            ProviderServiceExecution::AsyncJob,
+            true,
+            ProviderServiceCostRisk::High,
+        ),
+        doubao_service(
+            "seedance.video_generation.query",
+            ProviderServiceCategory::Video,
+            vec![ModelModality::Text],
+            ModelModality::Video,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+    ]
+}
+
 fn service(
     operation_id: &str,
     category: ProviderServiceCategory,
@@ -658,6 +685,27 @@ fn service(
         execution,
         requires_polling,
         permission_subject: "network:minimax".to_owned(),
+        cost_risk,
+    }
+}
+
+fn doubao_service(
+    operation_id: &str,
+    category: ProviderServiceCategory,
+    input_modalities: Vec<ModelModality>,
+    output_artifact: ModelModality,
+    execution: ProviderServiceExecution,
+    requires_polling: bool,
+    cost_risk: ProviderServiceCostRisk,
+) -> ProviderServiceCapability {
+    ProviderServiceCapability {
+        operation_id: operation_id.to_owned(),
+        category,
+        input_modalities,
+        output_artifact,
+        execution,
+        requires_polling,
+        permission_subject: "network:doubao".to_owned(),
         cost_risk,
     }
 }

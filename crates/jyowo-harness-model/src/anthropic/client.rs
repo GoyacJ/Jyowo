@@ -502,6 +502,13 @@ fn anthropic_tool_result_content_part(part: &ToolResultPart) -> Result<Value, Mo
         ToolResultPart::Blob { .. } => Err(ModelError::InvalidRequest(
             "AnthropicProvider does not inline blob tool result parts".to_owned(),
         )),
+        ToolResultPart::Artifact { title, preview, .. } => Ok(json!({
+            "type": "text",
+            "text": preview
+                .as_deref()
+                .filter(|text| !text.is_empty())
+                .unwrap_or(title.as_str()),
+        })),
         _ => Err(ModelError::InvalidRequest(
             "unsupported Anthropic tool result part".to_owned(),
         )),

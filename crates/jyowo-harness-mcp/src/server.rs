@@ -2028,6 +2028,21 @@ fn tool_result_part_to_mcp(part: ToolResultPart) -> McpContent {
             McpContent::Text { text }
         }
         ToolResultPart::Structured { value, .. } => McpContent::Json { value },
+        ToolResultPart::Artifact {
+            artifact_kind,
+            content_type,
+            title,
+            preview,
+            ..
+        } => McpContent::Json {
+            value: json!({
+                "kind": "artifact",
+                "artifactKind": artifact_kind,
+                "contentType": content_type,
+                "title": title,
+                "preview": preview,
+            }),
+        },
         other => McpContent::Json {
             value: serde_json::to_value(other).unwrap_or_else(|_| json!({})),
         },

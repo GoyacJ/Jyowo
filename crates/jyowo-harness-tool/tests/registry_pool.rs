@@ -796,6 +796,7 @@ fn descriptor(
         provider_restriction,
         origin,
         search_hint: None,
+        service_binding: None,
     }
 }
 

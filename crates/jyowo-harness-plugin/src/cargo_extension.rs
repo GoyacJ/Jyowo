@@ -1387,6 +1387,7 @@ fn tool_descriptor_for(manifest: &PluginManifest, entry: &ToolManifestEntry) -> 
         },
         trust_level: manifest.trust_level,
         required_capabilities: Vec::new(),
+        service_binding: None,
         budget: default_result_budget(),
         provider_restriction: ProviderRestriction::All,
         origin: ToolOrigin::Plugin {

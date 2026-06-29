@@ -127,6 +127,7 @@ import {
   deleteMcpServer,
   deleteMemoryItem,
   deleteProject,
+  deleteProviderCapabilityRoute,
   deleteSkill,
   exportMemoryItems,
   exportSupportBundle,
@@ -160,6 +161,8 @@ import {
   listMemoryItems,
   listModelProviderCatalog,
   listPlugins,
+  listProviderCapabilityRouteOptions,
+  listProviderCapabilityRoutes,
   listProviderSettings,
   listReferenceCandidates,
   listSkillCatalogEntries,
@@ -174,6 +177,7 @@ import {
   restartMcpServer,
   runEvalCase,
   saveMcpServer,
+  saveProviderCapabilityRoute,
   saveProviderSettings,
   setExecutionSettings,
   setMcpServerEnabled,
@@ -2690,6 +2694,111 @@ describe('CommandClient', () => {
           modelId: '',
           providerId: 'unknown',
         } as unknown as Parameters<typeof saveProviderSettings>[0],
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('parses provider capability route list responses', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      version: 1,
+      routes: [
+        {
+          kind: 'image_generation',
+          configId: 'minimax-image',
+          providerId: 'minimax',
+          operationIds: ['minimax.image_generation'],
+          enabled: false,
+        },
+      ],
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listProviderCapabilityRoutes(client)).resolves.toEqual({
+      version: 1,
+      routes: [
+        {
+          kind: 'image_generation',
+          configId: 'minimax-image',
+          providerId: 'minimax',
+          operationIds: ['minimax.image_generation'],
+          enabled: false,
+        },
+      ],
+    })
+    expect(invoke).toHaveBeenCalledWith('list_provider_capability_routes')
+  })
+
+  it('parses provider capability route options with runtime support metadata', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      options: [
+        {
+          kind: 'image_generation',
+          configId: 'minimax-image',
+          providerId: 'minimax',
+          operationId: 'minimax.image_generation',
+          outputArtifact: 'image',
+          execution: 'sync',
+          costRisk: 'medium',
+          runtimeSupported: false,
+          unavailableReason: 'runtime adapter unavailable',
+        },
+      ],
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listProviderCapabilityRouteOptions(client)).resolves.toEqual({
+      options: [
+        {
+          kind: 'image_generation',
+          configId: 'minimax-image',
+          providerId: 'minimax',
+          operationId: 'minimax.image_generation',
+          outputArtifact: 'image',
+          execution: 'sync',
+          costRisk: 'medium',
+          runtimeSupported: false,
+          unavailableReason: 'runtime adapter unavailable',
+        },
+      ],
+    })
+    expect(invoke).toHaveBeenCalledWith('list_provider_capability_route_options')
+  })
+
+  it('rejects unknown provider capability route save fields before invoking Tauri', async () => {
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      saveProviderCapabilityRoute(
+        {
+          route: {
+            kind: 'image_generation',
+            configId: 'minimax-image',
+            providerId: 'minimax',
+            operationIds: ['minimax.image_generation'],
+            enabled: false,
+          },
+          unexpectedField: true,
+        } as unknown as Parameters<typeof saveProviderCapabilityRoute>[0],
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('validates provider capability route delete kind before invoking Tauri', async () => {
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      deleteProviderCapabilityRoute(
+        {
+          kind: 'invalid_kind',
+          configId: 'minimax-image',
+          providerId: 'minimax',
+        } as unknown as Parameters<typeof deleteProviderCapabilityRoute>[0],
         client,
       ),
     ).rejects.toThrow(TauriCommandPayloadError)

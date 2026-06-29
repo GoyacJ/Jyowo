@@ -2252,6 +2252,19 @@ fn redact_tool_result_part(part: ToolResultPart, redactor: &dyn Redactor) -> Too
             message: redactor.redact(&message, &RedactRules::default()),
             retriable,
         },
+        ToolResultPart::Artifact {
+            artifact_kind,
+            content_type,
+            blob_ref,
+            title,
+            preview,
+        } => ToolResultPart::Artifact {
+            artifact_kind,
+            content_type,
+            blob_ref,
+            title: redactor.redact(&title, &RedactRules::default()),
+            preview: preview.map(|text| redactor.redact(&text, &RedactRules::default())),
+        },
         part => part,
     }
 }
@@ -2778,20 +2791,20 @@ fn tool_result_events(
                 duration_ms: result.duration.as_millis().min(u128::from(u64::MAX)) as u64,
                 at,
             })];
-            if let Some(blob_ref) = image_artifact_blob(&result.tool_name, tool_result) {
+            if let Some(artifact) = artifact_from_tool_result(tool_result) {
                 events.push(Event::ArtifactCreated(ArtifactCreatedEvent {
                     session_id,
                     run_id,
                     artifact_id: format!("artifact:{}", result.tool_use_id),
-                    title: "生成的图片".to_owned(),
-                    kind: "image".to_owned(),
+                    title: artifact.title,
+                    kind: artifact.kind,
                     status: ArtifactStatus::Ready,
                     source: ArtifactSource::Tool,
                     source_message_id: None,
                     source_tool_use_id: Some(result.tool_use_id),
-                    content_hash: Some(blob_ref.content_hash.to_vec()),
-                    blob_ref: Some(blob_ref),
-                    preview: Some("生成的图片".to_owned()),
+                    content_hash: Some(artifact.blob_ref.content_hash.to_vec()),
+                    blob_ref: Some(artifact.blob_ref),
+                    preview: artifact.preview,
                     at,
                 }));
             }
@@ -2805,50 +2818,116 @@ fn tool_result_events(
     }
 }
 
-fn image_artifact_blob(tool_name: &str, result: &ToolResult) -> Option<BlobRef> {
-    if !is_image_artifact_tool(tool_name) {
+struct TypedArtifactOutput {
+    kind: String,
+    blob_ref: BlobRef,
+    title: String,
+    preview: Option<String>,
+}
+
+fn artifact_from_tool_result(result: &ToolResult) -> Option<TypedArtifactOutput> {
+    let ToolResult::Mixed(parts) = result else {
         return None;
-    }
-    match result {
-        ToolResult::Blob {
+    };
+    let artifact = parts.iter().find_map(|part| match part {
+        ToolResultPart::Artifact {
+            artifact_kind,
             content_type,
             blob_ref,
-        } if is_image_content_type(content_type, blob_ref.content_type.as_deref()) => {
-            Some(blob_ref.clone())
-        }
-        ToolResult::Mixed(parts) => parts.iter().find_map(|part| match part {
-            ToolResultPart::Blob {
-                content_type,
-                blob_ref,
-                ..
-            } if is_image_content_type(content_type, blob_ref.content_type.as_deref()) => {
-                Some(blob_ref.clone())
-            }
-            _ => None,
-        }),
+            title,
+            preview,
+        } => validated_typed_artifact_output(
+            *artifact_kind,
+            content_type,
+            blob_ref,
+            title,
+            preview.as_deref(),
+        ),
         _ => None,
+    })?;
+    Some(artifact)
+}
+
+fn validated_typed_artifact_output(
+    artifact_kind: ModelModality,
+    content_type: &str,
+    blob_ref: &BlobRef,
+    title: &str,
+    preview: Option<&str>,
+) -> Option<TypedArtifactOutput> {
+    let kind = artifact_kind_label(artifact_kind)?;
+    if !artifact_content_type_matches_kind(kind, content_type) {
+        return None;
+    }
+    if !artifact_content_type_matches_kind(
+        kind,
+        blob_ref.content_type.as_deref().unwrap_or(content_type),
+    ) {
+        return None;
+    }
+    let title = title.trim();
+    if title.is_empty() {
+        return None;
+    }
+    Some(TypedArtifactOutput {
+        kind: kind.to_owned(),
+        blob_ref: blob_ref.clone(),
+        title: title.to_owned(),
+        preview: preview
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned),
+    })
+}
+
+fn artifact_kind_label(kind: ModelModality) -> Option<&'static str> {
+    match kind {
+        ModelModality::Image => Some("image"),
+        ModelModality::Video => Some("video"),
+        ModelModality::Audio => Some("audio"),
+        ModelModality::File => Some("file"),
+        ModelModality::Text | ModelModality::Embedding => None,
     }
 }
 
-fn is_image_artifact_tool(tool_name: &str) -> bool {
-    let normalized = tool_name.to_ascii_lowercase();
-    normalized.contains("image") || normalized.contains("minimax")
+fn artifact_content_type_matches_kind(kind: &str, content_type: &str) -> bool {
+    let mime = normalized_mime_type(content_type);
+    match kind {
+        "image" => is_safe_image_content_type(&mime),
+        "video" => matches!(
+            mime.as_str(),
+            "video/mp4" | "video/webm" | "video/quicktime"
+        ),
+        "audio" => matches!(
+            mime.as_str(),
+            "audio/mpeg" | "audio/mp4" | "audio/ogg" | "audio/wav" | "audio/webm"
+        ),
+        "file" => matches!(
+            mime.as_str(),
+            "text/plain"
+                | "text/markdown"
+                | "text/csv"
+                | "application/json"
+                | "application/pdf"
+                | "application/zip"
+                | "application/octet-stream"
+        ),
+        _ => false,
+    }
 }
 
-fn is_image_content_type(content_type: &str, blob_content_type: Option<&str>) -> bool {
-    is_safe_image_content_type(content_type)
-        || blob_content_type.is_some_and(is_safe_image_content_type)
-}
-
-fn is_safe_image_content_type(content_type: &str) -> bool {
-    let mime = content_type
+fn normalized_mime_type(content_type: &str) -> String {
+    content_type
         .split(';')
         .next()
         .unwrap_or(content_type)
         .trim()
-        .to_ascii_lowercase();
+        .to_ascii_lowercase()
+}
+
+fn is_safe_image_content_type(content_type: &str) -> bool {
     matches!(
-        mime.as_str(),
+        normalized_mime_type(content_type).as_str(),
         "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
     )
 }
@@ -3297,5 +3376,69 @@ mod tests {
             }),
             hook_overrides: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod artifact_tests {
+    use super::*;
+    use harness_contracts::{BlobId, BlobRef, ModelModality, ToolResult, ToolResultPart};
+
+    fn image_blob_ref() -> BlobRef {
+        BlobRef {
+            id: BlobId::new(),
+            size: 128,
+            content_hash: [7; 32],
+            content_type: Some("image/png".to_owned()),
+        }
+    }
+
+    #[test]
+    fn artifact_from_tool_result_accepts_typed_image_output() {
+        let result = ToolResult::Mixed(vec![ToolResultPart::Artifact {
+            artifact_kind: ModelModality::Image,
+            content_type: "image/png".to_owned(),
+            blob_ref: image_blob_ref(),
+            title: "Generated image".to_owned(),
+            preview: Some("Generated image".to_owned()),
+        }]);
+        let artifact = artifact_from_tool_result(&result).expect("typed image artifact");
+        assert_eq!(artifact.kind, "image");
+        assert_eq!(artifact.title, "Generated image");
+    }
+
+    #[test]
+    fn artifact_from_tool_result_accepts_typed_video_output() {
+        let result = ToolResult::Mixed(vec![ToolResultPart::Artifact {
+            artifact_kind: ModelModality::Video,
+            content_type: "video/mp4".to_owned(),
+            blob_ref: BlobRef {
+                id: BlobId::new(),
+                size: 2048,
+                content_hash: [8; 32],
+                content_type: Some("video/mp4".to_owned()),
+            },
+            title: "Generated video".to_owned(),
+            preview: None,
+        }]);
+        let artifact = artifact_from_tool_result(&result).expect("typed video artifact");
+        assert_eq!(artifact.kind, "video");
+    }
+
+    #[test]
+    fn artifact_from_tool_result_rejects_mismatched_content_type() {
+        let result = ToolResult::Mixed(vec![ToolResultPart::Artifact {
+            artifact_kind: ModelModality::Image,
+            content_type: "video/mp4".to_owned(),
+            blob_ref: BlobRef {
+                id: BlobId::new(),
+                size: 128,
+                content_hash: [9; 32],
+                content_type: Some("video/mp4".to_owned()),
+            },
+            title: "Bad image".to_owned(),
+            preview: None,
+        }]);
+        assert!(artifact_from_tool_result(&result).is_none());
     }
 }

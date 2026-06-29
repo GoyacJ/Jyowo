@@ -810,6 +810,7 @@ fn budgeted_text(result: &ToolResult) -> Option<String> {
                         text.push_str(&serde_json::to_string(value).ok()?);
                     }
                     ToolResultPart::Code { text: code, .. } => text.push_str(code),
+                    ToolResultPart::Artifact { .. } => {}
                     _ => {}
                 }
             }

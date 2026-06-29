@@ -201,6 +201,7 @@ delete_conversation
 delete_mcp_server
 delete_memory_item
 delete_project
+delete_provider_capability_route
 delete_skill
 export_memory_items
 export_support_bundle
@@ -234,6 +235,8 @@ list_mcp_diagnostics
 list_mcp_servers
 list_memory_items
 list_plugins
+list_provider_capability_route_options
+list_provider_capability_routes
 list_provider_settings
 list_projects
 list_skills
@@ -244,6 +247,7 @@ request_provider_config_api_key_reveal
 restart_mcp_server
 run_eval_case
 save_mcp_server
+save_provider_capability_route
 save_provider_settings
 import_skill
 install_skill_from_catalog
@@ -283,6 +287,11 @@ delete_conversation(conversation_id: String) -> Result<DeleteConversationRespons
 delete_mcp_server(id: String) -> Result<DeleteMcpServerResponse, CommandErrorPayload>
 delete_memory_item(id: String) -> Result<DeleteMemoryItemResponse, CommandErrorPayload>
 delete_project(path: String) -> Result<DeleteProjectResponse, CommandErrorPayload>
+delete_provider_capability_route(
+  kind: CapabilityRouteKind,
+  config_id: String,
+  provider_id: String
+) -> Result<DeleteProviderCapabilityRouteResponse, CommandErrorPayload>
 delete_skill(id: String) -> Result<DeleteSkillResponse, CommandErrorPayload>
 export_memory_items() -> Result<ExportMemoryItemsResponse, CommandErrorPayload>
 export_support_bundle(
@@ -363,6 +372,8 @@ list_mcp_diagnostics(
 list_mcp_servers() -> Result<ListMcpServersResponse, CommandErrorPayload>
 list_memory_items() -> Result<ListMemoryItemsResponse, CommandErrorPayload>
 list_plugins() -> Result<ListPluginsResponse, CommandErrorPayload>
+list_provider_capability_route_options() -> Result<ListProviderCapabilityRouteOptionsResponse, CommandErrorPayload>
+list_provider_capability_routes() -> Result<ListProviderCapabilityRoutesResponse, CommandErrorPayload>
 list_provider_settings() -> Result<ListProviderSettingsResponse, CommandErrorPayload>
 list_projects() -> ListProjectsResponse
 list_skills() -> Result<ListSkillsResponse, CommandErrorPayload>
@@ -393,6 +404,9 @@ save_mcp_server(
   scope: String,
   transport: McpServerTransportConfig
 ) -> Result<SaveMcpServerResponse, CommandErrorPayload>
+save_provider_capability_route(
+  route: ProviderCapabilityRoute
+) -> Result<SaveProviderCapabilityRouteResponse, CommandErrorPayload>
 save_provider_settings(
   api_key: Option<String>,
   base_url: Option<String>,
@@ -488,6 +502,18 @@ when saving an existing config without changing provider or base URL. The save
 and list payloads must not return the raw key. `request_provider_config_api_key_reveal`
 issues a short-lived one-use reveal token; `get_provider_config_api_key` requires
 that token and is the explicit reveal path.
+
+`list_provider_capability_routes`, `list_provider_capability_route_options`,
+`save_provider_capability_route`, and `delete_provider_capability_route` manage
+workspace capability routes stored in `.jyowo/runtime/provider-capability-routes.json`.
+These commands must not return API keys, signed URLs, or provider-native payloads.
+`list_provider_capability_route_options` is UX metadata only. It reports
+`runtimeSupported` from descriptor-derived `ProviderServiceAdapterAvailability`,
+not from provider catalog declarations alone. Save and delete validation remain
+backend authority and must reject unknown configs, provider mismatches, missing
+API keys, unsupported operations, and duplicate enabled route kinds.
+`save_provider_capability_route` reloads runtime route settings for newly built
+conversation harnesses. `start_run` must not carry route decisions.
 
 `list_mcp_servers`, `get_mcp_server_config`, `save_mcp_server`,
 `set_mcp_server_enabled`, `restart_mcp_server`, and `delete_mcp_server` expose
@@ -680,6 +706,88 @@ command string built from frontend input
 command returning untyped serde_json::Value as the stable API
 command reading or writing Secret values without a policy check
 command bypassing PermissionBroker for tool or filesystem operations
+```
+
+## Provider Capability Routing
+
+Capability routes are workspace-level policies that bind a `CapabilityRouteKind`
+to a provider profile and provider operation ids.
+
+Contracts live in `harness-contracts`:
+
+```text
+CapabilityRouteKind
+ProviderCapabilityRoute
+ProviderCapabilityRouteSettings
+ProviderCapabilityRouteOption
+ListProviderCapabilityRouteOptionsResponse
+ToolServiceBinding
+ProviderServiceAdapterAvailability
+ProviderCredentialResolveContext.operation_id
+ProviderCredentialResolveContext.route_kind
+```
+
+Persistence:
+
+```text
+.jyowo/runtime/provider-capability-routes.json
+```
+
+Route validation rules:
+
+- `version == 1`
+- missing route file normalizes to empty version 1 settings
+- each route passes `validate_provider_capability_route`
+- each enabled route references an existing provider config with an API key
+- `route.provider_id == config.provider_id`
+- every operation id is declared by the provider catalog for that provider
+- every enabled operation has a registered runtime adapter
+- the same enabled `CapabilityRouteKind` cannot point to multiple configs in one settings file
+
+Service tool visibility:
+
+- `ToolDescriptor.service_binding` identifies the provider service operation.
+- `jyowo-harness-sdk` owns route-based service tool filtering during ToolPool assembly.
+- Descriptors without `service_binding` are unaffected.
+- Descriptors with `service_binding` are denylisted when no enabled matching route exists.
+- Match by `route_kind`, `provider_id`, and `operation_id`.
+- `jyowo-harness-engine` keeps only the existing tool-calling visibility gate.
+
+Credential resolution:
+
+- `DesktopProviderCredentialResolver` must resolve routed service operations from route settings and `route.config_id`.
+- Routed service operations must not fall back to the default provider profile.
+- Non-service tools may keep provider-only resolution where allowed.
+
+Typed service artifacts:
+
+- Completed provider service output uses `ToolResultPart::Artifact`.
+- Async provider jobs use structured tool output with schema ref `provider_service_async_job.v1`.
+- Engine artifact creation must read typed artifact output only.
+- Provider adapters must not send raw artifact blob metadata to model providers.
+
+Provider media download:
+
+- Shared provider media download policy lives in `jyowo-harness-tool`.
+- Only http/https URLs on an explicit provider allowlist or trusted signed CDN host are accepted.
+- Redirects must be disabled or revalidated at every hop.
+- Content length, response MIME, and sniffed MIME must match the expected artifact kind.
+- Raw provider URLs must not become trusted artifact metadata.
+
+Provider service onboarding checklist:
+
+```text
+[ ] official API docs verified
+[ ] provider catalog service capability added
+[ ] runtime adapter implemented
+[ ] descriptor service binding added
+[ ] route validation recognizes adapter through descriptor-derived service binding
+[ ] backend route option command exposes only backend-evaluated runtime support
+[ ] credential resolver passes operation id and route kind
+[ ] artifact output typed
+[ ] provider media download uses shared fail-closed URL/MIME policy
+[ ] tests cover success and fail-closed errors
+[ ] frontend eligibility shows only runnable options
 ```
 
 ## Runtime Bypass Rules

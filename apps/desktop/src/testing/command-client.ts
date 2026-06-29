@@ -10,6 +10,7 @@ import type {
   CreateConversationResponse,
   DeleteConversationResponse,
   DeleteProjectResponse,
+  DeleteProviderCapabilityRouteResponse,
   ExportMemoryItemsResponse,
   ExportSupportBundleResponse,
   GetArtifactMediaPreviewResponse,
@@ -37,6 +38,8 @@ import type {
   ListMemoryItemsResponse,
   ListPluginsResponse,
   ListProjectsResponse,
+  ListProviderCapabilityRouteOptionsResponse,
+  ListProviderCapabilityRoutesResponse,
   ListProviderSettingsResponse,
   ListReferenceCandidatesResponse,
   ListSkillCatalogEntriesResponse,
@@ -53,6 +56,7 @@ import type {
   ResolvePermissionResponse,
   RunEvalCaseResponse,
   SaveMcpServerResponse,
+  SaveProviderCapabilityRouteResponse,
   SaveProviderSettingsResponse,
   SetConversationModelConfigResponse,
   SetExecutionSettingsResponse,
@@ -1058,6 +1062,8 @@ export interface TestCommandClientOptions {
   providerConfigApiKey?: GetProviderConfigApiKeyResponse
   providerConfigApiKeyReveal?: RequestProviderConfigApiKeyRevealResponse
   providerSettingsList?: ListProviderSettingsResponse
+  providerCapabilityRoutes?: ListProviderCapabilityRoutesResponse
+  providerCapabilityRouteOptions?: ListProviderCapabilityRouteOptionsResponse
   projects?: ListProjectsResponse
   providerSettings?: SaveProviderSettingsResponse
   providerValidation?: ValidateProviderSettingsResponse
@@ -1104,6 +1110,17 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
   let completionBatchFlushed: Promise<void> = Promise.resolve()
   let projects = options.projects ?? testJyowoProject
   let providerSettings = cloneResponse(options.providerSettingsList ?? fixtureProviderSettingsList)
+  let providerCapabilityRoutes = cloneResponse(
+    options.providerCapabilityRoutes ?? {
+      version: 1,
+      routes: [],
+    },
+  )
+  let providerCapabilityRouteOptions = cloneResponse(
+    options.providerCapabilityRouteOptions ?? {
+      options: [],
+    },
+  )
   let createdConversationCounter = 0
   let conversations = cloneResponse(options.conversations ?? fixtureListConversations)
   const providerRevealConfigIdsByToken = new Map<string, string>()
@@ -1469,6 +1486,14 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
       await wait(options.delayMs)
       return cloneResponse(providerSettings)
     },
+    async listProviderCapabilityRoutes() {
+      await wait(options.delayMs)
+      return cloneResponse(providerCapabilityRoutes)
+    },
+    async listProviderCapabilityRouteOptions() {
+      await wait(options.delayMs)
+      return cloneResponse(providerCapabilityRouteOptions)
+    },
     async listProjects() {
       await wait(options.delayMs)
       return projects
@@ -1633,6 +1658,50 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
           .sort((left, right) => left.id.localeCompare(right.id)),
       }
       return response
+    },
+    async saveProviderCapabilityRoute(request) {
+      await wait(options.delayMs)
+      const nextRoutes = providerCapabilityRoutes.routes.filter(
+        (route) =>
+          !(
+            route.kind === request.route.kind &&
+            route.configId === request.route.configId &&
+            route.providerId === request.route.providerId
+          ),
+      )
+      if (request.route.enabled) {
+        nextRoutes.push(request.route)
+      }
+      providerCapabilityRoutes = {
+        version: providerCapabilityRoutes.version,
+        routes: nextRoutes.sort((left, right) =>
+          `${left.kind}:${left.configId}`.localeCompare(`${right.kind}:${right.configId}`),
+        ),
+      }
+      return {
+        version: providerCapabilityRoutes.version,
+        routes: cloneResponse(providerCapabilityRoutes.routes),
+        status: 'saved',
+      } satisfies SaveProviderCapabilityRouteResponse
+    },
+    async deleteProviderCapabilityRoute(request) {
+      await wait(options.delayMs)
+      providerCapabilityRoutes = {
+        version: providerCapabilityRoutes.version,
+        routes: providerCapabilityRoutes.routes.filter(
+          (route) =>
+            !(
+              route.kind === request.kind &&
+              route.configId === request.configId &&
+              route.providerId === request.providerId
+            ),
+        ),
+      }
+      return {
+        version: providerCapabilityRoutes.version,
+        routes: cloneResponse(providerCapabilityRoutes.routes),
+        status: 'deleted',
+      } satisfies DeleteProviderCapabilityRouteResponse
     },
     async setExecutionSettings(request) {
       await wait(options.delayMs)
@@ -2070,6 +2139,8 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     listMemoryItems: () => Promise.reject(error),
     listPlugins: () => Promise.reject(error),
     listProviderSettings: () => Promise.reject(error),
+    listProviderCapabilityRoutes: () => Promise.reject(error),
+    listProviderCapabilityRouteOptions: () => Promise.reject(error),
     listProjects: () => Promise.reject(error),
     addProject: () => Promise.reject(error),
     switchProject: () => Promise.reject(error),
@@ -2089,6 +2160,8 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     restartMcpServer: () => Promise.reject(error),
     clearMcpDiagnostics: () => Promise.reject(error),
     saveProviderSettings: () => Promise.reject(error),
+    saveProviderCapabilityRoute: () => Promise.reject(error),
+    deleteProviderCapabilityRoute: () => Promise.reject(error),
     setExecutionSettings: () => Promise.reject(error),
     setConversationModelConfig: () => Promise.reject(error),
     setSkillEnabled: () => Promise.reject(error),

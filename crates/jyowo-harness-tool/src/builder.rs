@@ -149,6 +149,14 @@ impl ToolRegistryBuilder {
                             crate::builtin::MiniMaxAnthropicModelRetrieveTool,
                         >::default())?;
                     }
+                    #[cfg(feature = "seedance-tools")]
+                    {
+                        registry.register(Box::<crate::builtin::SeedanceTextToVideo>::default())?;
+                        registry.register(Box::<crate::builtin::SeedanceImageToVideo>::default())?;
+                        registry.register(
+                            Box::<crate::builtin::SeedanceVideoGenerationQueryTool>::default(),
+                        )?;
+                    }
                 }
             }
             BuiltinToolset::Clarification => {
@@ -199,6 +207,10 @@ impl ToolRegistryBuilder {
         Ok(registry)
     }
 }
+
+pub use crate::registry::{
+    provider_service_adapter_availability_from_snapshot, tool_service_bindings_from_snapshot,
+};
 
 fn register_skill_tools(registry: &ToolRegistry) -> Result<(), RegistrationError> {
     #[cfg(any(feature = "builtin-toolset", feature = "skill-tools"))]

@@ -683,6 +683,10 @@ fn tool_result_part_content(part: &ToolResultPart) -> Result<String, ModelError>
             "blob tool result parts are not supported by OpenAI-compatible providers in M2-T04.5"
                 .to_owned(),
         )),
+        ToolResultPart::Artifact { .. } => Err(ModelError::InvalidRequest(
+            "artifact tool result parts are not supported by OpenAI-compatible providers"
+                .to_owned(),
+        )),
         _ => Err(ModelError::InvalidRequest(
             "unsupported tool result part for OpenAI-compatible providers".to_owned(),
         )),

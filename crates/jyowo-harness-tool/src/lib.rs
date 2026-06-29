@@ -14,6 +14,7 @@ pub mod context;
 pub mod error;
 pub mod orchestrator;
 pub mod pool;
+pub mod provider_media;
 pub mod registry;
 pub mod result_budget;
 pub mod skill_script;

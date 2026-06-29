@@ -81,6 +81,7 @@ fn tool_descriptor() -> ToolDescriptor {
         provider_restriction: ProviderRestriction::All,
         origin: ToolOrigin::Builtin,
         search_hint: None,
+        service_binding: None,
     }
 }
 

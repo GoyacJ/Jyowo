@@ -156,6 +156,7 @@ fn model_request_accepts_contract_tool_descriptor() {
             provider_restriction: ProviderRestriction::All,
             origin: ToolOrigin::Builtin,
             search_hint: None,
+            service_binding: None,
         }]),
         system: None,
         temperature: None,

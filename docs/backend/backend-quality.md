@@ -49,8 +49,8 @@ Required test groups:
 | Redaction | Redactor before every durable store path |
 | Replay | cursor behavior, redacted output, snapshot reads, conversation event ordering |
 | Conversation worktree | complete turn paging, event cursor reporting, stable node ids, nested tool permissions, safe process steps, artifact media metadata, and tool failure summaries |
-| Tauri command | command payload identity, shell metadata, SDK availability, replay-before-live conversation subscription, artifact media preview ownership checks, window-scoped event batches, unsubscribe cleanup |
-| SDK | builder requirements, runtime assembly, test adapters |
+| Tauri command | command payload identity, shell metadata, SDK availability, replay-before-live conversation subscription, artifact media preview ownership checks, window-scoped event batches, unsubscribe cleanup, provider capability route validation, route option runtime support reporting, routed credential fail-closed behavior |
+| SDK | builder requirements, runtime assembly, test adapters, capability route filtering during ToolPool assembly |
 | Budget | quota serialization and token budget defaults |
 | Search | SQLite FTS5 indexing, query behavior, deleted item removal, visibility filtering |
 | Secret | explicit reveal handling, missing secret behavior, no raw Secret serialization |
@@ -70,6 +70,7 @@ Critical backend tests:
 apps/desktop/src-tauri/tests/commands.rs
 crates/jyowo-harness-budget/tests/budget_contract.rs
 crates/jyowo-harness-contracts/tests/m1_contracts.rs
+crates/jyowo-harness-contracts/tests/provider_capability_routes.rs
 crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs
 crates/jyowo-harness-journal/tests/conversation_read_model.rs
 crates/jyowo-harness-journal/tests/version.rs
@@ -131,6 +132,7 @@ Update backend docs when changing:
 - MCP tool registration
 - Memory visibility or persistence
 - model provider boundaries
+- provider capability route validation, credential scope, and typed service artifacts
 - Journal, Replay, Audit, or Redactor behavior
 - Tauri command surface
 - Rust quality gates
@@ -177,6 +179,8 @@ Architecture:
 [ ] no lower layer imports a higher layer
 [ ] no runtime bypass of PermissionBroker, Redactor, Journal, or tenant scope checks
 [ ] artifact preview reads are scoped to the owning conversation
+[ ] capability routes do not expose API keys or default-profile credential fallback for routed service operations
+[ ] service tools are hidden unless an enabled route matches binding metadata
 ```
 
 Contracts:
@@ -199,6 +203,7 @@ Security:
 [ ] Secret values do not enter events, logs, traces, prompts, screenshots, or tests
 [ ] destructive Tool execution requires explicit permission or persisted scoped approval
 [ ] MCP tools carry origin and scope through permission checks
+[ ] routed service credentials resolve from route settings and fail closed when route config is missing or invalid
 ```
 
 Persistence:

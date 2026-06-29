@@ -18,6 +18,8 @@ mod minimax;
 mod read;
 #[cfg(feature = "builtin-toolset")]
 mod read_blob;
+#[cfg(feature = "seedance-tools")]
+mod seedance;
 #[cfg(feature = "builtin-toolset")]
 mod send_message;
 mod skills;
@@ -66,6 +68,8 @@ pub use minimax::{
 pub use read::FileReadTool;
 #[cfg(feature = "builtin-toolset")]
 pub use read_blob::ReadBlobTool;
+#[cfg(feature = "seedance-tools")]
+pub use seedance::{SeedanceImageToVideo, SeedanceTextToVideo, SeedanceVideoGenerationQueryTool};
 #[cfg(feature = "builtin-toolset")]
 pub use send_message::SendMessageTool;
 pub use skills::{SkillsInvokeTool, SkillsListTool, SkillsViewTool};
@@ -82,7 +86,7 @@ pub use write::FileWriteTool;
 
 use harness_contracts::{
     BudgetMetric, DeferPolicy, OverflowAction, ProviderRestriction, ResultBudget, ToolCapability,
-    ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties, TrustLevel,
+    ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties, ToolServiceBinding, TrustLevel,
 };
 use serde_json::{json, Value};
 
@@ -97,6 +101,34 @@ fn descriptor(
     budget_limit: u64,
     required_capabilities: Vec<ToolCapability>,
     input_schema: Value,
+) -> ToolDescriptor {
+    descriptor_with_binding(
+        name,
+        display_name,
+        description,
+        group,
+        is_concurrency_safe,
+        is_read_only,
+        is_destructive,
+        budget_limit,
+        required_capabilities,
+        input_schema,
+        None,
+    )
+}
+
+pub(super) fn descriptor_with_binding(
+    name: &str,
+    display_name: &str,
+    description: &str,
+    group: ToolGroup,
+    is_concurrency_safe: bool,
+    is_read_only: bool,
+    is_destructive: bool,
+    budget_limit: u64,
+    required_capabilities: Vec<ToolCapability>,
+    input_schema: Value,
+    service_binding: Option<ToolServiceBinding>,
 ) -> ToolDescriptor {
     ToolDescriptor {
         name: name.to_owned(),
@@ -127,6 +159,7 @@ fn descriptor(
         provider_restriction: ProviderRestriction::All,
         origin: ToolOrigin::Builtin,
         search_hint: None,
+        service_binding,
     }
 }
 

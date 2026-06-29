@@ -14,9 +14,9 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 
 use crate::{
-    AgentId, BlobMeta, BlobRef, BlobStore, CorrelationId, Event, HookEventKind, OverflowMetadata,
-    RunId, SessionId, SkillId, SkillSourceKind, SubagentId, TenantId, ToolCapability, ToolError,
-    ToolUseId, TranscriptRef, TurnInput, UsageSnapshot,
+    AgentId, BlobMeta, BlobRef, BlobStore, CapabilityRouteKind, CorrelationId, Event,
+    HookEventKind, OverflowMetadata, RunId, SessionId, SkillId, SkillSourceKind, SubagentId,
+    TenantId, ToolCapability, ToolError, ToolUseId, TranscriptRef, TurnInput, UsageSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -123,6 +123,14 @@ pub struct ProviderCredentialResolveContext {
     pub session_id: SessionId,
     pub run_id: RunId,
     pub provider_id: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "operationId"
+    )]
+    pub operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "routeKind")]
+    pub route_kind: Option<CapabilityRouteKind>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]

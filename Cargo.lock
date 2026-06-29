@@ -2870,7 +2870,9 @@ dependencies = [
  "jyowo-harness-sandbox",
  "jyowo-harness-sdk",
  "jyowo-harness-skill",
+ "jyowo-harness-tool",
  "oxideav-avif",
+ "parking_lot",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
@@ -3329,6 +3331,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "url",
+ "wiremock",
 ]
 
 [[package]]

@@ -53,6 +53,27 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         "provider_service_capability",
         ProviderServiceCapability
     );
+    insert_schema!(schemas, "capability_route_kind", CapabilityRouteKind);
+    insert_schema!(
+        schemas,
+        "provider_capability_route",
+        ProviderCapabilityRoute
+    );
+    insert_schema!(
+        schemas,
+        "provider_capability_route_settings",
+        ProviderCapabilityRouteSettings
+    );
+    insert_schema!(
+        schemas,
+        "provider_capability_route_option",
+        ProviderCapabilityRouteOption
+    );
+    insert_schema!(
+        schemas,
+        "list_provider_capability_route_options_response",
+        ListProviderCapabilityRouteOptionsResponse
+    );
     insert_schema!(
         schemas,
         "provider_runtime_capability",
@@ -140,6 +161,12 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "reasoning_summary_chunk", ReasoningSummaryChunk);
     insert_schema!(schemas, "tool_properties", ToolProperties);
     insert_schema!(schemas, "tool_descriptor", ToolDescriptor);
+    insert_schema!(schemas, "tool_service_binding", ToolServiceBinding);
+    insert_schema!(
+        schemas,
+        "provider_service_adapter_availability",
+        ProviderServiceAdapterAvailability
+    );
     insert_schema!(schemas, "skill_filter", SkillFilter);
     insert_schema!(schemas, "skill_summary", SkillSummary);
     insert_schema!(schemas, "skill_status", SkillStatus);

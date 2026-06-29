@@ -1888,6 +1888,7 @@ impl TestTool {
                 provider_restriction: ProviderRestriction::All,
                 origin,
                 search_hint: None,
+                service_binding: None,
             },
         }
     }

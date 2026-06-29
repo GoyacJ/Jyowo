@@ -146,6 +146,12 @@ pub(crate) fn tool_result_text(result: &ToolResult) -> Option<String> {
                     harness_contracts::ToolResultPart::Code { text: code, .. } => {
                         text.push_str(code);
                     }
+                    harness_contracts::ToolResultPart::Artifact { title, preview, .. } => {
+                        text.push_str(title);
+                        if let Some(preview) = preview {
+                            text.push_str(preview);
+                        }
+                    }
                     _ => {}
                 }
             }

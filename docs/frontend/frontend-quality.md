@@ -43,6 +43,7 @@ Must test:
 - system status page loading, ready, and error
 - PermissionDialog decision flow
 - ProviderSettingsForm validation
+- ProviderSettingsForm capability routing loading, empty, error, ready, save, and delete flows
 - About settings version display, update check, update available, download
   progress, installed pending restart, failure, and release notes rendering
 - MCP server config validation
@@ -82,7 +83,7 @@ Component acceptance matrix:
 | Context components | no context, selected context, long lists, missing files, stale references |
 | Activity components | queued, running, success, failed, blocked, redacted, drill-down |
 | Execution components | permission pending, approved, denied, high risk, large output, Raw JSON |
-| Form components | invalid input, pending submit, backend error, saved, secret masking |
+| Form components | invalid input, pending submit, backend error, saved, secret masking, capability route empty state, unsupported runtime option hidden |
 
 Playwright:
 
@@ -245,6 +246,7 @@ Update docs when changing:
 - Tauri capabilities
 - updater/process plugin wrapper usage
 - permission UI behavior
+- provider capability route command schemas and settings UX
 - RunEvent schema
 - state ownership
 - quality gates
@@ -274,6 +276,7 @@ Architecture:
 [ ] shared modules do not import app/routes/features
 [ ] no circular dependency
 [ ] no bare Tauri invoke outside shared/tauri
+[ ] capability route eligibility is not derived from provider catalog on the frontend
 [ ] TanStack Query owns backend and IPC-derived server state
 [ ] Zustand owns local UI state only
 [ ] TanStack Router owns route and URL state

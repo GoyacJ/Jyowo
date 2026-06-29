@@ -38,9 +38,10 @@ use harness_contracts::{
     InteractivityLevel, JournalOffset, ManifestOriginRef, ManifestValidationFailedEvent,
     McpServerId, Message, MessageContent, MessageId, MessagePart, MessageRole, ModelModality,
     PermissionError, PermissionMode, PluginCapabilitiesSummary, PluginFailedEvent,
-    PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginRejectedEvent, RedactPatternSet,
-    RedactRules, RedactScope, Redactor, RejectionReason, RunId, SessionError, SessionId, TenantId,
-    ToolCapability, ToolSearchMode, TrustLevel, TurnInput,
+    PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginRejectedEvent,
+    ProviderCapabilityRouteSettings, RedactPatternSet, RedactRules, RedactScope, Redactor,
+    RejectionReason, RunId, SessionError, SessionId, TenantId, ToolCapability, ToolSearchMode,
+    TrustLevel, TurnInput,
 };
 #[cfg(feature = "sqlite-store")]
 use harness_contracts::{
@@ -588,6 +589,7 @@ struct HarnessInner {
     workspace_registry: Arc<WorkspaceRegistry>,
     active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, ActiveConversationRun>>>,
     deleted_conversation_sessions: Arc<parking_lot::Mutex<HashSet<(TenantId, SessionId)>>>,
+    provider_capability_routes: Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>>,
 }
 
 #[derive(Clone)]
@@ -1057,6 +1059,15 @@ impl Harness {
                 workspace_registry: Arc::new(WorkspaceRegistry::new()),
                 active_conversation_runs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
                 deleted_conversation_sessions: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+                provider_capability_routes: extras
+                    .provider_capability_routes
+                    .take()
+                    .unwrap_or_else(|| {
+                        Arc::new(parking_lot::RwLock::new(ProviderCapabilityRouteSettings {
+                            version: 1,
+                            routes: Vec::new(),
+                        }))
+                    }),
             }),
         })
     }
@@ -2073,6 +2084,11 @@ impl Harness {
         };
         let tool_registry_snapshot = self.inner.tool_registry.snapshot();
         let mut tool_filter = filter_unavailable_tools(&tool_registry_snapshot, &cap_registry);
+        filter_unrouted_service_tools(
+            &mut tool_filter,
+            &tool_registry_snapshot,
+            &*self.inner.provider_capability_routes.read(),
+        );
         apply_tenant_tool_filter(&mut tool_filter, &self.inner.options.tenant_policy);
         let schema_context = SchemaResolverContext {
             run_id: RunId::new(),
@@ -3033,6 +3049,13 @@ impl Harness {
     #[must_use]
     pub fn tool_registry(&self) -> &ToolRegistry {
         &self.inner.tool_registry
+    }
+
+    #[must_use]
+    pub fn provider_capability_routes(
+        &self,
+    ) -> Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>> {
+        Arc::clone(&self.inner.provider_capability_routes)
     }
 
     #[must_use]
@@ -5537,6 +5560,30 @@ fn filter_unavailable_tools(
         }
     }
     filter
+}
+
+pub fn filter_unrouted_service_tools(
+    filter: &mut ToolPoolFilter,
+    snapshot: &ToolRegistrySnapshot,
+    routes: &ProviderCapabilityRouteSettings,
+) {
+    for descriptor in snapshot.as_descriptors() {
+        let Some(binding) = descriptor.service_binding.as_ref() else {
+            continue;
+        };
+        let routed = routes.routes.iter().any(|route| {
+            route.enabled
+                && route.kind == binding.route_kind
+                && route.provider_id == binding.provider_id
+                && route
+                    .operation_ids
+                    .iter()
+                    .any(|operation_id| operation_id == &binding.operation_id)
+        });
+        if !routed {
+            filter.denylist.insert(descriptor.name.clone());
+        }
+    }
 }
 
 fn apply_tenant_tool_filter(filter: &mut ToolPoolFilter, policy: &TenantPolicy) {

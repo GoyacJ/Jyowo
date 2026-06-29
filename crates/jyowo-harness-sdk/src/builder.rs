@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 #[cfg(feature = "agents-subagent")]
 use harness_contracts::SubagentRunnerCap;
-use harness_contracts::{BlobStore, CapabilityRegistry, HarnessError, ToolCapability};
+use harness_contracts::{
+    BlobStore, CapabilityRegistry, HarnessError, ProviderCapabilityRouteSettings, ToolCapability,
+};
 use harness_hook::HookRegistry;
 use harness_journal::EventStore;
 use harness_mcp::{ElicitationHandler, StreamElicitationHandler};
@@ -55,6 +57,8 @@ pub(crate) struct BuilderExtras {
     pub(crate) rule_providers: Vec<Arc<dyn RuleProvider>>,
     pub(crate) decision_persistence: Option<Arc<dyn DecisionPersistence>>,
     pub(crate) cap_registry: Option<CapabilityRegistry>,
+    pub(crate) provider_capability_routes:
+        Option<Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>>>,
     #[cfg(feature = "tool-search")]
     pub(crate) tool_search_scorer: Option<Arc<dyn harness_tool_search::ToolSearchScorer>>,
 }
@@ -388,6 +392,20 @@ impl<M, S, SB> HarnessBuilder<M, S, SB> {
     pub fn with_rule_provider(mut self, provider: Arc<dyn RuleProvider>) -> Self {
         self.extras.rule_providers.push(provider);
         self
+    }
+
+    #[must_use]
+    pub fn with_shared_provider_capability_routes(
+        mut self,
+        routes: Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>>,
+    ) -> Self {
+        self.extras.provider_capability_routes = Some(routes);
+        self
+    }
+
+    #[must_use]
+    pub fn with_provider_capability_routes(self, routes: ProviderCapabilityRouteSettings) -> Self {
+        self.with_shared_provider_capability_routes(Arc::new(parking_lot::RwLock::new(routes)))
     }
 
     #[must_use]

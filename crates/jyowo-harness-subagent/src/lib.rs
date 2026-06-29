@@ -1934,6 +1934,7 @@ impl Default for AgentTool {
                 provider_restriction: harness_contracts::ProviderRestriction::All,
                 origin: ToolOrigin::Builtin,
                 search_hint: Some("delegate task to subagent".to_owned()),
+                service_binding: None,
             },
         }
     }
