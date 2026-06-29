@@ -369,7 +369,7 @@ fn runtime_capability(
     ProviderRuntimeCapability {
         auth_scheme: provider_auth_scheme(provider_id),
         base_url_regions,
-        supports_live_validation: true,
+        supports_live_validation: false,
         supports_streaming_validation: true,
         secret_reveal_supported: true,
     }

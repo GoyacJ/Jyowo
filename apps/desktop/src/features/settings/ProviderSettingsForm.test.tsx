@@ -1,26 +1,83 @@
 import '@testing-library/jest-dom/vitest'
 
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-
+import { onProjectWorkspaceChanged } from '@/features/workspace/reset-workspace-scope'
 import type {
   CommandClient,
   ConversationModelCapability,
+  ListProviderSettingsResponse,
   ModelProviderCatalogResponse,
 } from '@/shared/tauri/commands'
 import { createMockCommandClient } from '@/shared/tauri/mock-client'
 import { CommandClientProvider } from '@/shared/tauri/react'
-
 import { ProviderSettingsForm } from './ProviderSettingsForm'
 
 type ModelCatalogEntry = ModelProviderCatalogResponse['providers'][number]['models'][number]
 
 function renderProviderSettingsForm(commandClient: CommandClient = createMockCommandClient()) {
-  return render(
-    <CommandClientProvider client={commandClient}>
-      <ProviderSettingsForm />
-    </CommandClientProvider>,
-  )
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { gcTime: 0, retry: false },
+      mutations: { retry: false },
+    },
+  })
+
+  return {
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <CommandClientProvider client={commandClient}>
+          <ProviderSettingsForm />
+        </CommandClientProvider>
+      </QueryClientProvider>,
+    ),
+  }
+}
+
+function getQueryClientCacheSnapshot(queryClient: QueryClient) {
+  return JSON.stringify({
+    mutations: queryClient
+      .getMutationCache()
+      .getAll()
+      .map((mutation) => mutation.state),
+    queries: queryClient
+      .getQueryCache()
+      .getAll()
+      .map((query) => query.state.data),
+  })
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, reject, resolve }
+}
+
+async function findReadyNewConfigurationButton() {
+  const button = await screen.findByRole('button', { name: 'New configuration' })
+  await waitFor(() => expect(button).toBeEnabled())
+  return button
+}
+
+async function openCreateDialog() {
+  fireEvent.click(await findReadyNewConfigurationButton())
+  return screen.findByRole('dialog', { name: 'Create model configuration' })
+}
+
+async function findSavedConfigurations() {
+  return screen.findByRole('region', { name: 'Saved configurations' })
+}
+
+async function findProfileDetails(profileName: RegExp | string) {
+  const detail = await screen.findByRole('region', { name: 'Model configuration details' })
+  await within(detail).findByRole('heading', { name: profileName })
+  return detail
 }
 
 const textConversationCapability: ConversationModelCapability = {
@@ -38,7 +95,7 @@ const textConversationCapability: ConversationModelCapability = {
 const providerRuntimeCapability = {
   authScheme: 'bearer',
   baseUrlRegions: [{ id: 'default', label: 'Default', baseUrl: 'https://api.example.com' }],
-  supportsLiveValidation: true,
+  supportsLiveValidation: false,
   supportsStreamingValidation: true,
   secretRevealSupported: true,
 }
@@ -118,8 +175,7 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'New configuration' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Create model configuration' })
+    const dialog = await openCreateDialog()
 
     expect(within(dialog).getByText('Base URL region')).toBeInTheDocument()
     expect(within(dialog).getByLabelText('Base URL')).toHaveValue('https://api.minimax.io')
@@ -199,7 +255,7 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    const detail = await screen.findByRole('region', { name: 'Model configuration details' })
+    const detail = await findProfileDetails('Minimax')
 
     expect(within(detail).getByText('Provider services')).toBeInTheDocument()
     expect(within(detail).getByText('minimax.image_generation')).toBeInTheDocument()
@@ -228,9 +284,9 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    const profileList = await screen.findByRole('region', { name: 'Saved configurations' })
-    const openAiProfileButton = await screen.findByRole('button', { name: /OpenAI/ })
-    const detail = screen.getByRole('region', { name: 'Model configuration details' })
+    const profileList = await findSavedConfigurations()
+    const openAiProfileButton = await within(profileList).findByRole('button', { name: /OpenAI/ })
+    const detail = await findProfileDetails('OpenAI')
 
     expect(profileList).toHaveClass('rounded-md')
     expect(profileList).toHaveClass('border')
@@ -296,7 +352,7 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    const detail = await screen.findByRole('region', { name: 'Model configuration details' })
+    const detail = await findProfileDetails('OpenAI')
     const saveButton = within(detail).getByRole('button', { name: 'Save' })
     await waitFor(() => expect(saveButton).toBeEnabled())
     await waitFor(() =>
@@ -321,6 +377,79 @@ describe('ProviderSettingsForm', () => {
     })
     expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('apiKey')
     expect(screen.queryByText('Provider saved.')).not.toBeInTheDocument()
+  })
+
+  it('does not write a completed save into provider settings cache after workspace reset', async () => {
+    const initialSettings: ListProviderSettingsResponse = {
+      defaultConfigId: 'openai',
+      configs: [
+        {
+          protocol: 'responses',
+          baseUrl: 'https://api.openai.com',
+          displayName: 'OpenAI',
+          hasApiKey: true,
+          id: 'openai',
+          isDefault: true,
+          modelDescriptor: openAiModelDescriptor,
+          modelId: 'gpt-5.4-mini',
+          providerId: 'openai',
+        },
+      ],
+    }
+    const resetSettings: ListProviderSettingsResponse = {
+      defaultConfigId: null,
+      configs: [],
+    }
+    const saveDeferred =
+      createDeferred<Awaited<ReturnType<CommandClient['saveProviderSettings']>>>()
+    const saveProviderSettings = vi.fn(() => saveDeferred.promise)
+    const client = {
+      ...createMockCommandClient(),
+      listProviderSettings: vi
+        .fn()
+        .mockResolvedValueOnce(initialSettings)
+        .mockResolvedValue(resetSettings),
+      saveProviderSettings,
+    }
+
+    const { queryClient } = renderProviderSettingsForm(client)
+
+    const detail = await findProfileDetails('OpenAI')
+    const saveButton = within(detail).getByRole('button', { name: 'Save' })
+    await waitFor(() => expect(saveButton).toBeEnabled())
+    fireEvent.change(within(detail).getByRole('textbox', { name: 'Configuration name' }), {
+      target: { value: 'OpenAI from old workspace' },
+    })
+    fireEvent.click(saveButton)
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    await onProjectWorkspaceChanged(queryClient, async () => undefined)
+    queryClient.setQueryData<ListProviderSettingsResponse>(['provider-settings'], resetSettings)
+    expect(queryClient.getQueryData<ListProviderSettingsResponse>(['provider-settings'])).toEqual(
+      resetSettings,
+    )
+
+    saveDeferred.resolve({
+      config: {
+        protocol: 'responses',
+        baseUrl: 'https://api.openai.com',
+        displayName: 'OpenAI from old workspace',
+        hasApiKey: true,
+        id: 'openai',
+        isDefault: true,
+        modelDescriptor: openAiModelDescriptor,
+        modelId: 'gpt-5.4-mini',
+        providerId: 'openai',
+      },
+      status: 'saved',
+    })
+
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0))
+    expect(
+      queryClient
+        .getQueryData<ListProviderSettingsResponse>(['provider-settings'])
+        ?.configs.some((profile) => profile.displayName === 'OpenAI from old workspace') ?? false,
+    ).toBe(false)
   })
 
   it('renders provider models from the backend catalog', async () => {
@@ -362,8 +491,7 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'New configuration' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Create model configuration' })
+    const dialog = await openCreateDialog()
 
     expect(within(dialog).getByRole('option', { name: 'OpenAI' })).toBeInTheDocument()
     expect(within(dialog).getByRole('option', { name: 'GPT-5.4 mini' })).toBeInTheDocument()
@@ -393,8 +521,7 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'New configuration' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Create model configuration' })
+    const dialog = await openCreateDialog()
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled())
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
 
@@ -448,7 +575,7 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    const detail = await screen.findByRole('region', { name: 'Model configuration details' })
+    const detail = await findProfileDetails('OpenRouter dynamic')
 
     expect(within(detail).getAllByText('OpenRouter dynamic').length).toBeGreaterThan(0)
     await waitFor(() =>
@@ -485,7 +612,7 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    const detail = await screen.findByRole('region', { name: 'Model configuration details' })
+    const detail = await findProfileDetails('OpenAI')
 
     expect(within(detail).getByText('Capabilities')).toBeInTheDocument()
     expect(within(detail).getByText('Tools')).toBeInTheDocument()
@@ -546,12 +673,12 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    const profileList = await screen.findByRole('region', { name: 'Saved configurations' })
-    fireEvent.click(within(profileList).getByRole('button', { name: /OpenAI/ }))
-    const detail = await screen.findByRole('region', { name: 'Model configuration details' })
+    const profileList = await findSavedConfigurations()
+    fireEvent.click(await within(profileList).findByRole('button', { name: /OpenAI/ }))
+    const detail = await findProfileDetails('OpenAI')
     const setDefaultButton = within(detail).getByRole('button', { name: 'Set as default' })
-    const testButton = within(detail).getByRole('button', { name: 'Test' })
-    expect(setDefaultButton.compareDocumentPosition(testButton)).toBe(
+    const checkButton = within(detail).getByRole('button', { name: 'Check' })
+    expect(setDefaultButton.compareDocumentPosition(checkButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     )
 
@@ -605,8 +732,7 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'New configuration' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Create model configuration' })
+    const dialog = await openCreateDialog()
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled())
     fireEvent.change(within(dialog).getByLabelText('API key'), {
       target: { value: 'provider-test-token' },
@@ -628,8 +754,7 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'New configuration' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Create model configuration' })
+    const dialog = await openCreateDialog()
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled())
     fireEvent.change(within(dialog).getByLabelText('API key'), {
       target: { value: 'provider-test-token' },
@@ -663,10 +788,9 @@ describe('ProviderSettingsForm', () => {
       }),
     }
 
-    renderProviderSettingsForm(client)
+    const { queryClient } = renderProviderSettingsForm(client)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'New configuration' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Create model configuration' })
+    const dialog = await openCreateDialog()
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled())
     fireEvent.change(within(dialog).getByLabelText('API key'), {
       target: { value: rawKey },
@@ -687,6 +811,7 @@ describe('ProviderSettingsForm', () => {
     ).not.toBeInTheDocument()
     expect(screen.queryByDisplayValue(rawKey)).not.toBeInTheDocument()
     expect(screen.queryByText(rawKey)).not.toBeInTheDocument()
+    expect(getQueryClientCacheSnapshot(queryClient)).not.toContain(rawKey)
   })
 
   it('keeps saved keys masked and out of editable state', async () => {
@@ -716,19 +841,82 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    await screen.findByRole('region', { name: 'Model configuration details' })
-    const apiKeyInput = screen.getByLabelText('API key')
+    const detail = await findProfileDetails('OpenAI')
+    const apiKeyInput = within(detail).getByLabelText('API key')
     const savedKeyMask = '\u2022'.repeat(32)
 
     expect(apiKeyInput).toHaveValue('')
     expect(apiKeyInput).toHaveAttribute('type', 'password')
     expect(screen.getByText(savedKeyMask)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'View key' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'View key' })).toBeInTheDocument()
     expect(requestProviderConfigApiKeyReveal).not.toHaveBeenCalled()
     expect(getProviderConfigApiKey).not.toHaveBeenCalled()
   })
 
-  it('tests the selected provider and model from selected profile details', async () => {
+  it('reveals a saved key only after explicit request and clears it when the profile changes', async () => {
+    const rawKey = 'provider-test-token'
+    const requestProviderConfigApiKeyReveal = vi.fn().mockResolvedValue({
+      configId: 'openai',
+      expiresInSeconds: 60,
+      revealToken: 'reveal-token-openai',
+      status: 'ready',
+    })
+    const getProviderConfigApiKey = vi.fn().mockResolvedValue({
+      apiKey: rawKey,
+      configId: 'openai',
+    })
+    const client = {
+      ...createMockCommandClient(),
+      getProviderConfigApiKey,
+      listProviderSettings: vi.fn().mockResolvedValue({
+        defaultConfigId: 'openai',
+        configs: [
+          {
+            protocol: 'responses',
+            baseUrl: 'https://api.openai.com',
+            displayName: 'OpenAI',
+            hasApiKey: true,
+            id: 'openai',
+            isDefault: true,
+            modelDescriptor: openAiModelDescriptor,
+            modelId: 'gpt-5.4-mini',
+            providerId: 'openai',
+          },
+          {
+            protocol: 'messages',
+            baseUrl: 'http://localhost:11434',
+            displayName: 'Local',
+            hasApiKey: false,
+            id: 'local',
+            isDefault: false,
+            modelDescriptor: localModelDescriptor,
+            modelId: 'llama3.1',
+            providerId: 'local-llama',
+          },
+        ],
+      }),
+      requestProviderConfigApiKeyReveal,
+    }
+
+    const { queryClient } = renderProviderSettingsForm(client)
+
+    const profileList = await findSavedConfigurations()
+    const detail = await findProfileDetails('OpenAI')
+    expect(screen.queryByText(rawKey)).not.toBeInTheDocument()
+
+    fireEvent.click(within(detail).getByRole('button', { name: 'View key' }))
+
+    await waitFor(() => expect(requestProviderConfigApiKeyReveal).toHaveBeenCalledWith('openai'))
+    expect(getProviderConfigApiKey).toHaveBeenCalledWith('openai', 'reveal-token-openai')
+    expect(await screen.findByText(rawKey)).toBeInTheDocument()
+    expect(getQueryClientCacheSnapshot(queryClient)).not.toContain(rawKey)
+
+    fireEvent.click(within(profileList).getByRole('button', { name: /Local/ }))
+
+    expect(screen.queryByText(rawKey)).not.toBeInTheDocument()
+  })
+
+  it('checks selected provider metadata without implying network latency', async () => {
     const validateProviderSettings = vi.fn().mockResolvedValue({
       modelId: 'gpt-4o-mini',
       providerId: 'openai',
@@ -757,8 +945,8 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    const detail = await screen.findByRole('region', { name: 'Model configuration details' })
-    fireEvent.click(within(detail).getByRole('button', { name: 'Test' }))
+    const detail = await findProfileDetails('OpenAI')
+    fireEvent.click(within(detail).getByRole('button', { name: 'Check' }))
 
     await waitFor(() =>
       expect(validateProviderSettings).toHaveBeenCalledWith({
@@ -766,17 +954,16 @@ describe('ProviderSettingsForm', () => {
         providerId: 'openai',
       }),
     )
-    expect(await screen.findByRole('status')).toHaveTextContent('Test passed')
-    expect(screen.getByRole('status')).toHaveTextContent(/Latency \d+ ms\./)
-    expect(await within(detail).findByText(/\d+ ms/)).toBeInTheDocument()
-    expect(within(detail).queryByText('Provider settings accepted.')).not.toBeInTheDocument()
+    expect(await screen.findByRole('status')).toHaveTextContent('Check accepted')
+    expect(screen.getByRole('status')).toHaveTextContent('Provider metadata accepted.')
+    expect(screen.getByRole('status')).not.toHaveTextContent(/\d+ ms/)
+    expect(within(detail).queryByText(/\d+ ms/)).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'New configuration' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Create model configuration' })
-    expect(within(dialog).queryByRole('button', { name: 'Test' })).not.toBeInTheDocument()
+    const dialog = await openCreateDialog()
+    expect(within(dialog).queryByRole('button', { name: 'Check' })).not.toBeInTheDocument()
   })
 
-  it('auto-tests the selected profile and shows latency in the profile list without a toast', async () => {
+  it('does not auto-check selected profiles or show latency in the profile list', async () => {
     const validateProviderSettings = vi.fn().mockResolvedValue({
       modelId: 'gpt-4o-mini',
       providerId: 'openai',
@@ -816,27 +1003,19 @@ describe('ProviderSettingsForm', () => {
 
     renderProviderSettingsForm(client)
 
-    const profileList = await screen.findByRole('region', { name: 'Saved configurations' })
-    const openAiProfile = within(profileList).getByRole('button', { name: /OpenAI/ })
+    const profileList = await findSavedConfigurations()
+    const openAiProfile = await within(profileList).findByRole('button', { name: /OpenAI/ })
 
-    await waitFor(() =>
-      expect(validateProviderSettings).toHaveBeenCalledWith({
-        modelId: 'gpt-4o-mini',
-        providerId: 'openai',
-      }),
-    )
-    expect(openAiProfile).toHaveTextContent(/\d+ ms/)
+    expect(openAiProfile).not.toHaveTextContent(/\d+ ms/)
+    expect(validateProviderSettings).not.toHaveBeenCalled()
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
 
     fireEvent.click(within(profileList).getByRole('button', { name: /Local/ }))
 
-    await waitFor(() =>
-      expect(validateProviderSettings).toHaveBeenCalledWith({
-        modelId: 'llama3.1',
-        providerId: 'local-llama',
-      }),
+    expect(validateProviderSettings).not.toHaveBeenCalled()
+    expect(within(profileList).getByRole('button', { name: /Local/ })).not.toHaveTextContent(
+      /\d+ ms/,
     )
-    expect(within(profileList).getByRole('button', { name: /Local/ })).toHaveTextContent(/\d+ ms/)
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 })

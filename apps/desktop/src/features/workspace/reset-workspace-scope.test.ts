@@ -10,7 +10,7 @@ describe('onProjectWorkspaceChanged', () => {
     uiStore.getState().clearTimelineScrollRequest()
   })
 
-  it('clears run state, conversation cache, and navigates to welcome', async () => {
+  it('clears run state, workspace-scoped caches, and navigates to welcome', async () => {
     const queryClient = new QueryClient()
     const navigate = vi.fn(async () => undefined)
     const workspacePath = '/Users/goya/Repo/Git/Jyowo'
@@ -26,6 +26,15 @@ describe('onProjectWorkspaceChanged', () => {
       conversationQueryKeys.detail(workspacePath, 'conversation-runtime-001'),
       { conversation: { id: 'conversation-runtime-001' } },
     )
+    queryClient.setQueryData(['provider-settings'], {
+      defaultConfigId: 'openai',
+      configs: [{ id: 'openai', hasApiKey: true }],
+    })
+    const providerSettingsSaveMutation = queryClient.getMutationCache().build(queryClient, {
+      mutationKey: ['provider-settings', 'save'],
+      mutationFn: async () => undefined,
+    })
+    queryClient.getMutationCache().add(providerSettingsSaveMutation)
 
     await onProjectWorkspaceChanged(queryClient, navigate)
 
@@ -37,6 +46,10 @@ describe('onProjectWorkspaceChanged', () => {
         conversationQueryKeys.detail(workspacePath, 'conversation-runtime-001'),
       ),
     ).toBeUndefined()
+    expect(queryClient.getQueryData(['provider-settings'])).toBeUndefined()
+    expect(
+      queryClient.getMutationCache().findAll({ mutationKey: ['provider-settings', 'save'] }),
+    ).toHaveLength(0)
     expect(navigate).toHaveBeenCalledWith({ replace: true, search: {}, to: '/' })
   })
 })

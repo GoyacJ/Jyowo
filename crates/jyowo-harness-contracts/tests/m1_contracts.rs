@@ -754,7 +754,7 @@ fn provider_capability_contracts_use_stable_wire_names() {
                 base_url: "https://api.minimaxi.com".to_owned(),
             },
         ],
-        supports_live_validation: true,
+        supports_live_validation: false,
         supports_streaming_validation: true,
         secret_reveal_supported: true,
     };

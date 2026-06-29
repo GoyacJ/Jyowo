@@ -2216,7 +2216,7 @@ describe('CommandClient', () => {
                 baseUrlRegions: [
                   { id: 'default', label: 'Default', baseUrl: 'https://api.openai.com' },
                 ],
-                supportsLiveValidation: true,
+                supportsLiveValidation: false,
                 supportsStreamingValidation: true,
                 secretRevealSupported: true,
               },
@@ -2289,7 +2289,7 @@ describe('CommandClient', () => {
           runtimeCapability: {
             authScheme: 'bearer',
             baseUrlRegions: [{ id: 'cn', label: 'China', baseUrl: 'https://api.minimaxi.com' }],
-            supportsLiveValidation: true,
+            supportsLiveValidation: false,
             supportsStreamingValidation: true,
             secretRevealSupported: true,
           },
@@ -2346,10 +2346,18 @@ describe('CommandClient', () => {
         }
       }
       if (command === 'request_provider_config_api_key_reveal') {
-        throw new Error('provider API key reveal is disabled')
+        return {
+          configId: 'openai',
+          expiresInSeconds: 60,
+          revealToken: 'reveal-token',
+          status: 'ready',
+        }
       }
       if (command === 'get_provider_config_api_key') {
-        throw new Error('provider API key reveal is disabled')
+        return {
+          apiKey: providerToken,
+          configId: 'openai',
+        }
       }
 
       return {
@@ -2410,10 +2418,16 @@ describe('CommandClient', () => {
       status: 'saved',
     })
 
-    await expect(requestProviderConfigApiKeyReveal('openai', client)).rejects.toThrow('disabled')
-    await expect(getProviderConfigApiKey('openai', 'reveal-token', client)).rejects.toThrow(
-      'disabled',
-    )
+    await expect(requestProviderConfigApiKeyReveal('openai', client)).resolves.toEqual({
+      configId: 'openai',
+      expiresInSeconds: 60,
+      revealToken: 'reveal-token',
+      status: 'ready',
+    })
+    await expect(getProviderConfigApiKey('openai', 'reveal-token', client)).resolves.toEqual({
+      apiKey: providerToken,
+      configId: 'openai',
+    })
 
     expect(JSON.stringify(invoke.mock.results.slice(0, 2))).not.toContain(providerToken)
     expect(invoke).toHaveBeenCalledWith('validate_provider_settings', {
@@ -2438,13 +2452,43 @@ describe('CommandClient', () => {
     })
   })
 
-  it('keeps mock provider API key reveal disabled by default', async () => {
+  it('returns mock provider API key reveal after save without storing raw keys in list data', async () => {
     const client = createMockCommandClient()
+    const providerToken = 'provider-test-token'
 
-    await expect(client.requestProviderConfigApiKeyReveal('openai')).rejects.toThrow('disabled')
-    await expect(client.getProviderConfigApiKey('openai', 'reveal-token')).rejects.toThrow(
-      'disabled',
+    await client.saveProviderSettings({
+      apiKey: providerToken,
+      baseUrl: 'https://api.openai.com',
+      modelId: 'gpt-4o-mini',
+      providerId: 'openai',
+      setDefault: true,
+    })
+    const reveal = await client.requestProviderConfigApiKeyReveal('openai')
+    expect(reveal).toMatchObject({
+      configId: 'openai',
+      expiresInSeconds: 60,
+      status: 'ready',
+    })
+    expect(reveal.revealToken).toMatch(/^mock-reveal-token-\d+$/)
+    await expect(client.getProviderConfigApiKey('openai', reveal.revealToken)).resolves.toEqual({
+      apiKey: expect.any(String),
+      configId: 'openai',
+    })
+    await expect(client.getProviderConfigApiKey('openai', reveal.revealToken)).rejects.toThrow(
+      'invalid or expired',
     )
+
+    const mismatchReveal = await client.requestProviderConfigApiKeyReveal('openai')
+    await expect(
+      client.getProviderConfigApiKey('openai-personal', mismatchReveal.revealToken),
+    ).rejects.toThrow('invalid or expired')
+    await expect(
+      client.getProviderConfigApiKey('openai', mismatchReveal.revealToken),
+    ).rejects.toThrow('invalid or expired')
+    await expect(client.requestProviderConfigApiKeyReveal('unknown')).rejects.toThrow(
+      'not configured',
+    )
+    expect(JSON.stringify(await client.listProviderSettings())).not.toContain(providerToken)
   })
 
   it('rejects invalid provider settings before invoking Tauri', async () => {

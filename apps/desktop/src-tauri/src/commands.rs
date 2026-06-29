@@ -46,6 +46,7 @@ use serde_json::{json, Value};
 use tauri::Emitter;
 use tokio::sync::RwLock as AsyncRwLock;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 use crate::project_registry::{ProjectRecord, ProjectRegistry};
 use crate::skill_catalog::{
@@ -77,6 +78,7 @@ const CONVERSATION_SUBSCRIPTION_BATCH_LIMIT: usize = 50;
 const MCP_DIAGNOSTIC_RETENTION_LIMIT: usize = 500;
 const MCP_DIAGNOSTIC_SUBSCRIPTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MCP_DIAGNOSTIC_SUBSCRIPTION_BATCH_LIMIT: usize = 50;
+const PROVIDER_API_KEY_REVEAL_TTL: Duration = Duration::from_secs(60);
 
 pub type ConversationEventBatchEmitter =
     Arc<dyn Fn(ConversationEventBatchPayload) -> Result<(), String> + Send + Sync>;
@@ -1127,13 +1129,17 @@ impl ProviderSettingsStore for DesktopProviderSettingsStore {
             RunId::new()
         ));
         ensure_no_symlink_components(&temp_path, "provider settings temp file")?;
-        let mut temp_file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)
-            .map_err(|error| {
-                runtime_operation_failed(format!("provider settings temp open failed: {error}"))
-            })?;
+        let mut open_options = std::fs::OpenOptions::new();
+        open_options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+
+            open_options.mode(0o600);
+        }
+        let mut temp_file = open_options.open(&temp_path).map_err(|error| {
+            runtime_operation_failed(format!("provider settings temp open failed: {error}"))
+        })?;
         if let Err(error) = temp_file.write_all(&bytes) {
             let _ = std::fs::remove_file(&temp_path);
             return Err(runtime_operation_failed(format!(
@@ -2302,6 +2308,8 @@ pub struct DesktopRuntimeState {
     mcp_server_lock: Arc<tokio::sync::Mutex<()>>,
     mcp_server_store: Arc<dyn McpServerStore>,
     permission_resolver: Option<Arc<dyn PermissionResolver>>,
+    provider_api_key_reveal_tokens:
+        Arc<tokio::sync::Mutex<HashMap<String, ProviderConfigRevealTokenRecord>>>,
     provider_settings_lock: Arc<tokio::sync::Mutex<()>>,
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
     execution_settings_lock: Arc<tokio::sync::Mutex<()>>,
@@ -2313,6 +2321,13 @@ pub struct DesktopRuntimeState {
     start_run_lock: Arc<tokio::sync::Mutex<()>>,
     stream_permission_runtime: Option<Arc<StreamPermissionRuntime>>,
     workspace_root: PathBuf,
+}
+
+#[derive(Clone)]
+struct ProviderConfigRevealTokenRecord {
+    api_key_fingerprint: [u8; 32],
+    config_id: String,
+    expires_at: Instant,
 }
 
 #[derive(Clone)]
@@ -2356,6 +2371,7 @@ impl DesktopRuntimeState {
             mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_server_store: Arc::new(DesktopMcpServerStore::new(workspace_root.clone())),
             permission_resolver: None,
+            provider_api_key_reveal_tokens: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             provider_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_store: Arc::new(DesktopProviderSettingsStore::new(
                 workspace_root.clone(),
@@ -2460,6 +2476,7 @@ impl DesktopRuntimeState {
             mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_server_store: Arc::new(DesktopMcpServerStore::new(workspace_root.clone())),
             permission_resolver: Some(permission_resolver),
+            provider_api_key_reveal_tokens: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             provider_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_store: Arc::new(DesktopProviderSettingsStore::new(
                 workspace_root.clone(),
@@ -4093,43 +4110,87 @@ pub async fn list_provider_settings_with_store(
     })
 }
 
+fn provider_config_with_api_key<'a>(
+    record: &'a ProviderSettingsRecord,
+    config_id: &str,
+) -> Result<&'a ProviderConfigRecord, CommandErrorPayload> {
+    let Some(config) = record.configs.iter().find(|config| config.id == config_id) else {
+        return Err(not_found(format!("provider config not found: {config_id}")));
+    };
+    ensure_provider_config_has_api_key(config)?;
+    Ok(config)
+}
+
+fn provider_api_key_fingerprint(api_key: &str) -> [u8; 32] {
+    *blake3::hash(api_key.as_bytes()).as_bytes()
+}
+
+fn prune_expired_provider_api_key_reveal_tokens(
+    tokens: &mut HashMap<String, ProviderConfigRevealTokenRecord>,
+    now: Instant,
+) {
+    tokens.retain(|_, token| token.expires_at > now);
+}
+
+async fn clear_provider_api_key_reveal_tokens_for_config(
+    runtime_state: &DesktopRuntimeState,
+    config_id: &str,
+) {
+    let mut tokens = runtime_state.provider_api_key_reveal_tokens.lock().await;
+    tokens.retain(|_, token| token.config_id != config_id);
+}
+
 pub async fn request_provider_config_api_key_reveal_with_store(
     request: RequestProviderConfigApiKeyRevealRequest,
     store: &dyn ProviderSettingsStore,
 ) -> Result<(), CommandErrorPayload> {
     ensure_non_empty("configId", &request.config_id)?;
     let record = store.load_record()?.unwrap_or_default();
-    let Some(config) = record
-        .configs
-        .iter()
-        .find(|config| config.id == request.config_id)
-    else {
-        return Err(not_found(format!(
-            "provider config not found: {}",
-            request.config_id
-        )));
-    };
-    ensure_provider_config_has_api_key(config)?;
+    provider_config_with_api_key(&record, &request.config_id)?;
     Err(invalid_payload(
-        "provider API key reveal is disabled".to_owned(),
+        "provider API key reveal requires runtime state".to_owned(),
     ))
+}
+
+async fn request_provider_config_api_key_reveal_with_runtime_state_unlocked(
+    request: RequestProviderConfigApiKeyRevealRequest,
+    runtime_state: &DesktopRuntimeState,
+) -> Result<RequestProviderConfigApiKeyRevealResponse, CommandErrorPayload> {
+    ensure_non_empty("configId", &request.config_id)?;
+    let record = runtime_state
+        .provider_settings_store
+        .load_record()?
+        .unwrap_or_default();
+    let config = provider_config_with_api_key(&record, &request.config_id)?;
+    let api_key_fingerprint = provider_api_key_fingerprint(&config.api_key);
+
+    let now = Instant::now();
+    let reveal_token = RunId::new().to_string();
+    let mut tokens = runtime_state.provider_api_key_reveal_tokens.lock().await;
+    prune_expired_provider_api_key_reveal_tokens(&mut tokens, now);
+    tokens.insert(
+        reveal_token.clone(),
+        ProviderConfigRevealTokenRecord {
+            api_key_fingerprint,
+            config_id: request.config_id.clone(),
+            expires_at: now + PROVIDER_API_KEY_REVEAL_TTL,
+        },
+    );
+
+    Ok(RequestProviderConfigApiKeyRevealResponse {
+        config_id: request.config_id,
+        expires_in_seconds: PROVIDER_API_KEY_REVEAL_TTL.as_secs(),
+        reveal_token,
+        status: "ready",
+    })
 }
 
 pub async fn request_provider_config_api_key_reveal_with_runtime_state(
     request: RequestProviderConfigApiKeyRevealRequest,
     runtime_state: &DesktopRuntimeState,
 ) -> Result<RequestProviderConfigApiKeyRevealResponse, CommandErrorPayload> {
-    Err(
-        match request_provider_config_api_key_reveal_with_store(
-            request.clone(),
-            runtime_state.provider_settings_store.as_ref(),
-        )
-        .await
-        {
-            Ok(()) => invalid_payload("provider API key reveal is disabled".to_owned()),
-            Err(error) => error,
-        },
-    )
+    let _provider_settings_guard = runtime_state.provider_settings_lock.lock().await;
+    request_provider_config_api_key_reveal_with_runtime_state_unlocked(request, runtime_state).await
 }
 
 pub async fn get_provider_config_api_key_with_store(
@@ -4139,29 +4200,64 @@ pub async fn get_provider_config_api_key_with_store(
     ensure_non_empty("configId", &request.config_id)?;
     ensure_non_empty("revealToken", &request.reveal_token)?;
     let record = store.load_record()?.unwrap_or_default();
-    let Some(config) = record
-        .configs
-        .iter()
-        .find(|config| config.id == request.config_id)
-    else {
-        return Err(not_found(format!(
-            "provider config not found: {}",
-            request.config_id
-        )));
-    };
-    ensure_provider_config_has_api_key(config)?;
+    provider_config_with_api_key(&record, &request.config_id)?;
 
     Err(invalid_payload(
-        "provider API key reveal is disabled".to_owned(),
+        "provider API key reveal requires runtime state".to_owned(),
     ))
+}
+
+async fn get_provider_config_api_key_with_runtime_state_unlocked(
+    request: GetProviderConfigApiKeyRequest,
+    runtime_state: &DesktopRuntimeState,
+) -> Result<GetProviderConfigApiKeyResponse, CommandErrorPayload> {
+    ensure_non_empty("configId", &request.config_id)?;
+    ensure_non_empty("revealToken", &request.reveal_token)?;
+
+    let now = Instant::now();
+    let token_record = {
+        let mut tokens = runtime_state.provider_api_key_reveal_tokens.lock().await;
+        let token_record = tokens.remove(&request.reveal_token);
+        prune_expired_provider_api_key_reveal_tokens(&mut tokens, now);
+        token_record
+    }
+    .ok_or_else(|| {
+        invalid_payload("provider API key reveal token is invalid or expired".to_owned())
+    })?;
+
+    if token_record.expires_at <= now {
+        return Err(invalid_payload(
+            "provider API key reveal token expired".to_owned(),
+        ));
+    }
+    if token_record.config_id != request.config_id {
+        return Err(invalid_payload(
+            "provider API key reveal token does not match configId".to_owned(),
+        ));
+    }
+
+    let record = runtime_state
+        .provider_settings_store
+        .load_record()?
+        .unwrap_or_default();
+    let config = provider_config_with_api_key(&record, &request.config_id)?;
+    if token_record.api_key_fingerprint != provider_api_key_fingerprint(&config.api_key) {
+        return Err(invalid_payload(
+            "provider API key reveal token no longer matches config".to_owned(),
+        ));
+    }
+    Ok(GetProviderConfigApiKeyResponse {
+        api_key: config.api_key.clone(),
+        config_id: request.config_id,
+    })
 }
 
 pub async fn get_provider_config_api_key_with_runtime_state(
     request: GetProviderConfigApiKeyRequest,
     runtime_state: &DesktopRuntimeState,
 ) -> Result<GetProviderConfigApiKeyResponse, CommandErrorPayload> {
-    get_provider_config_api_key_with_store(request, runtime_state.provider_settings_store.as_ref())
-        .await
+    let _provider_settings_guard = runtime_state.provider_settings_lock.lock().await;
+    get_provider_config_api_key_with_runtime_state_unlocked(request, runtime_state).await
 }
 
 pub async fn save_provider_settings_with_store(
@@ -4240,6 +4336,25 @@ pub async fn save_provider_settings_with_store(
         )?,
         status: "saved",
     })
+}
+
+async fn save_provider_settings_with_runtime_state_unlocked(
+    request: ProviderSettingsRequest,
+    runtime_state: &DesktopRuntimeState,
+) -> Result<SaveProviderSettingsResponse, CommandErrorPayload> {
+    let response =
+        save_provider_settings_with_store(request, runtime_state.provider_settings_store.as_ref())
+            .await?;
+    clear_provider_api_key_reveal_tokens_for_config(runtime_state, &response.config.id).await;
+    Ok(response)
+}
+
+pub async fn save_provider_settings_with_runtime_state(
+    request: ProviderSettingsRequest,
+    runtime_state: &DesktopRuntimeState,
+) -> Result<SaveProviderSettingsResponse, CommandErrorPayload> {
+    let _provider_settings_guard = runtime_state.provider_settings_lock.lock().await;
+    save_provider_settings_with_runtime_state_unlocked(request, runtime_state).await
 }
 
 pub async fn list_mcp_servers_with_runtime_state(
@@ -10357,8 +10472,7 @@ pub async fn save_provider_settings(
         set_default: set_default.unwrap_or(true),
     };
     let response =
-        save_provider_settings_with_store(request, runtime_state.provider_settings_store.as_ref())
-            .await?;
+        save_provider_settings_with_runtime_state_unlocked(request, &runtime_state).await?;
     if response.config.is_default {
         let stream_permission_runtime = runtime_state
             .stream_permission_runtime

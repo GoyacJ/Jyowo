@@ -296,7 +296,7 @@ const mockModelProviderCatalog: ModelProviderCatalogResponse = {
       runtimeCapability: {
         authScheme: 'bearer',
         baseUrlRegions: [{ id: 'default', label: 'Default', baseUrl: 'https://api.openai.com' }],
-        supportsLiveValidation: true,
+        supportsLiveValidation: false,
         supportsStreamingValidation: true,
         secretRevealSupported: true,
       },
@@ -995,14 +995,21 @@ function wait(delayMs: number | undefined) {
   })
 }
 
+function mockProviderApiKeyForConfig(configId: string) {
+  return ['mock', 'provider', 'revealed', configId].join(':')
+}
+
 export function createMockCommandClient(options: MockCommandClientOptions = {}): CommandClient {
   let batchListener: ((batch: ConversationEventBatchPayload) => void) | null = null
   let activeSubscription: SubscribeConversationEventsResponse | null = null
   let subscriptionCounter = 0
+  let providerRevealCounter = 0
   let completionBatchFlushed: Promise<void> = Promise.resolve()
   let projects = options.projects ?? mockJyowoProject
+  let providerSettings = cloneResponse(options.providerSettingsList ?? mockProviderSettingsList)
   let createdConversationCounter = 0
   let conversations = cloneResponse(options.conversations ?? mockListConversations)
+  const providerRevealConfigIdsByToken = new Map<string, string>()
   const conversationDetailsById = new Map<string, GetConversationResponse>()
   conversationDetailsById.set(
     'conversation-001',
@@ -1152,12 +1159,23 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       await wait(options.delayMs)
       return options.memoryItem ?? mockMemoryItem
     },
-    async getProviderConfigApiKey() {
+    async getProviderConfigApiKey(configId, revealToken) {
       await wait(options.delayMs)
-      if (options.providerConfigApiKey) {
-        return options.providerConfigApiKey
+      const tokenConfigId = providerRevealConfigIdsByToken.get(revealToken)
+      providerRevealConfigIdsByToken.delete(revealToken)
+      if (tokenConfigId !== configId) {
+        throw new Error('provider API key reveal token is invalid or expired')
       }
-      throw new Error('provider API key reveal is disabled')
+      if (options.providerConfigApiKey) {
+        return {
+          ...options.providerConfigApiKey,
+          configId,
+        }
+      }
+      return {
+        apiKey: mockProviderApiKeyForConfig(configId),
+        configId,
+      }
     },
     async getReplayTimeline() {
       await wait(options.delayMs)
@@ -1318,7 +1336,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async listProviderSettings() {
       await wait(options.delayMs)
-      return options.providerSettingsList ?? mockProviderSettingsList
+      return cloneResponse(providerSettings)
     },
     async listProjects() {
       await wait(options.delayMs)
@@ -1411,12 +1429,25 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
         status: 'resolved',
       } satisfies ResolvePermissionResponse
     },
-    async requestProviderConfigApiKeyReveal() {
+    async requestProviderConfigApiKeyReveal(configId) {
       await wait(options.delayMs)
-      if (options.providerConfigApiKeyReveal) {
-        return options.providerConfigApiKeyReveal
+      const config = providerSettings.configs.find((currentConfig) => currentConfig.id === configId)
+      if (!config?.hasApiKey) {
+        throw new Error(`provider config API key is not configured: ${configId}`)
       }
-      throw new Error('provider API key reveal is disabled')
+      providerRevealCounter += 1
+      const response: RequestProviderConfigApiKeyRevealResponse =
+        options.providerConfigApiKeyReveal ?? {
+          configId,
+          expiresInSeconds: 60,
+          revealToken: `mock-reveal-token-${providerRevealCounter}`,
+          status: 'ready',
+        }
+      providerRevealConfigIdsByToken.set(response.revealToken, configId)
+      return {
+        ...response,
+        configId,
+      }
     },
     async runEvalCase(caseId) {
       await wait(options.delayMs)
@@ -1440,7 +1471,26 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
     },
     async saveProviderSettings() {
       await wait(options.delayMs)
-      return options.providerSettings ?? mockSaveProviderSettings
+      const response = options.providerSettings ?? mockSaveProviderSettings
+      providerSettings = {
+        defaultConfigId: response.config.isDefault
+          ? response.config.id
+          : providerSettings.defaultConfigId,
+        configs: [
+          ...providerSettings.configs.filter((config) => config.id !== response.config.id),
+          response.config,
+        ]
+          .map((config) =>
+            response.config.isDefault
+              ? {
+                  ...config,
+                  isDefault: config.id === response.config.id,
+                }
+              : config,
+          )
+          .sort((left, right) => left.id.localeCompare(right.id)),
+      }
+      return response
     },
     async setExecutionSettings(request) {
       await wait(options.delayMs)

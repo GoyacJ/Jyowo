@@ -1,9 +1,15 @@
-import { Plus, Save, Star, Wifi } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { CheckCircle, Eye, Plus, Save, Star } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { type UseFormSetValue, useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
-
+import {
+  getWorkspaceScopeGeneration,
+  providerSettingsQueryKey,
+  providerSettingsSaveMutationKey,
+} from '@/shared/state/workspace-scope'
 import type {
+  ListProviderSettingsResponse,
   ModelProviderCatalogResponse,
   ProviderConfig,
   ProviderSettingsRequest,
@@ -47,6 +53,12 @@ const MINIMAX_BASE_URLS = {
   international: 'https://api.minimax.io',
 } as const
 const SAVED_API_KEY_MASK = '\u2022'.repeat(32)
+const modelProviderCatalogQueryKey = ['model-provider-catalog'] as const
+
+type ProviderSettingsSaveMutationVariables = {
+  requestId: string
+  workspaceScopeGeneration: number
+}
 
 const modelCapabilities = [
   ['toolCalling', 'provider.capability.tools'],
@@ -61,17 +73,73 @@ const modelCapabilities = [
 export function ProviderSettingsForm() {
   const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
-  const [catalog, setCatalog] = useState<ModelProviderCatalogResponse['providers']>([])
-  const [profiles, setProfiles] = useState<ProviderConfig[]>([])
+  const queryClient = useQueryClient()
+  const catalogQuery = useQuery({
+    queryKey: modelProviderCatalogQueryKey,
+    queryFn: () => commandClient.listModelProviderCatalog(),
+  })
+  const settingsQuery = useQuery({
+    queryKey: providerSettingsQueryKey,
+    queryFn: () => commandClient.listProviderSettings(),
+  })
   const [formError, setFormError] = useState<string | null>(null)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [selectedConfigId, setSelectedConfigId] = useState<string | null>(null)
   const [isSettingDefault, setIsSettingDefault] = useState(false)
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
-  const [testLatencies, setTestLatencies] = useState<Record<string, number>>({})
-  const [testingConfigIds, setTestingConfigIds] = useState<Record<string, true>>({})
+  const [revealedApiKey, setRevealedApiKey] = useState<{
+    configId: string
+    value: string
+  } | null>(null)
+  const [checkingConfigIds, setCheckingConfigIds] = useState<Record<string, true>>({})
   const [toast, setToast] = useState<ProviderToast | null>(null)
+  const selectedConfigIdRef = useRef<string | null>(null)
+  const saveRequestIdRef = useRef(0)
+  const pendingSaveRequestsRef = useRef(new Map<string, ProviderSettingsRequest>())
+  const revealVersionRef = useRef(0)
+  const catalog = catalogQuery.data?.providers ?? []
+  const profiles = settingsQuery.data?.configs ?? []
+  const loadError = catalogQuery.error
+    ? getCommandErrorMessage(catalogQuery.error)
+    : settingsQuery.error
+      ? getCommandErrorMessage(settingsQuery.error)
+      : null
+  const isLoading = catalogQuery.isLoading || settingsQuery.isLoading
+  const saveSettingsMutation = useMutation({
+    mutationKey: providerSettingsSaveMutationKey,
+    mutationFn: async ({ requestId }: ProviderSettingsSaveMutationVariables) => {
+      const request = pendingSaveRequestsRef.current.get(requestId)
+      if (!request) {
+        throw new Error('provider settings save request missing')
+      }
+      return commandClient.saveProviderSettings(request)
+    },
+    onSuccess: (saved, variables) => {
+      if (variables.workspaceScopeGeneration !== getWorkspaceScopeGeneration(queryClient)) {
+        return
+      }
+      cacheSavedProfile(saved.config)
+    },
+    onSettled: (_data, _error, variables) => {
+      pendingSaveRequestsRef.current.delete(variables.requestId)
+    },
+  })
+  const checkProviderSettingsMutation = useMutation({
+    mutationFn: (request: { modelId: string; providerId: ProviderId }) =>
+      commandClient.validateProviderSettings(request),
+  })
+  const revealApiKeyMutation = useMutation({
+    mutationFn: async (request: { configId: string; revealVersion: number }) => {
+      const { configId, revealVersion } = request
+      const reveal = await commandClient.requestProviderConfigApiKeyReveal(configId)
+      const payload = await commandClient.getProviderConfigApiKey(configId, reveal.revealToken)
+      if (selectedConfigIdRef.current === configId && revealVersionRef.current === revealVersion) {
+        setRevealedApiKey({
+          configId,
+          value: payload.apiKey,
+        })
+      }
+    },
+  })
   const {
     clearErrors,
     formState: { errors, isSubmitting },
@@ -152,11 +220,20 @@ export function ProviderSettingsForm() {
     }
     return models
   }, [editProviderId, profiles, selectedEditProvider, selectedProfile, selectedProfileModel])
-  const selectedTestLatencyMs = selectedConfigId ? testLatencies[selectedConfigId] : undefined
-  const isSelectedProfileTesting = selectedConfigId
-    ? testingConfigIds[selectedConfigId] === true
+  const selectedRevealedApiKey =
+    selectedConfigId && revealedApiKey?.configId === selectedConfigId ? revealedApiKey.value : null
+  const isSelectedApiKeyRevealing =
+    revealApiKeyMutation.isPending && selectedConfigId === revealApiKeyMutation.variables?.configId
+  const isSelectedProfileChecking = selectedConfigId
+    ? checkingConfigIds[selectedConfigId] === true
     : false
   const shouldShowSavedApiKeyMask = selectedProfile?.hasApiKey === true && editApiKey.length === 0
+  selectedConfigIdRef.current = selectedConfigId
+
+  const clearRevealedApiKey = useCallback(() => {
+    revealVersionRef.current += 1
+    setRevealedApiKey(null)
+  }, [])
 
   function clearEditApiKey() {
     setEditValue('apiKey', '')
@@ -181,76 +258,85 @@ export function ProviderSettingsForm() {
 
   function handleCreateDialogOpenChange(open: boolean) {
     setIsCreateDialogOpen(open)
+    clearRevealedApiKey()
     if (open) {
       resetCreateForm()
       clearEditApiKey()
     }
   }
 
-  function replaceSavedProfile(savedConfig: ProviderConfig) {
-    setProfiles((currentProfiles) => {
-      const nextProfiles = currentProfiles.filter((profile) => profile.id !== savedConfig.id)
-      nextProfiles.push(savedConfig)
-      return nextProfiles
-        .map((profile) =>
-          savedConfig.isDefault
-            ? {
-                ...profile,
-                isDefault: profile.id === savedConfig.id,
-              }
-            : profile,
-        )
-        .sort((left, right) => left.id.localeCompare(right.id))
+  function cacheSavedProfile(savedConfig: ProviderConfig) {
+    queryClient.setQueryData<ListProviderSettingsResponse>(providerSettingsQueryKey, (current) => {
+      const currentConfigs = current?.configs ?? profiles
+      const nextConfigs = currentConfigs.filter((profile) => profile.id !== savedConfig.id)
+      nextConfigs.push(savedConfig)
+      return {
+        defaultConfigId: savedConfig.isDefault
+          ? savedConfig.id
+          : (current?.defaultConfigId ?? settingsQuery.data?.defaultConfigId ?? null),
+        configs: nextConfigs
+          .map((profile) =>
+            savedConfig.isDefault
+              ? {
+                  ...profile,
+                  isDefault: profile.id === savedConfig.id,
+                }
+              : profile,
+          )
+          .sort((left, right) => left.id.localeCompare(right.id)),
+      }
     })
   }
 
+  async function saveProviderSettingsRequest(request: ProviderSettingsRequest) {
+    saveRequestIdRef.current += 1
+    const requestId = String(saveRequestIdRef.current)
+    const workspaceScopeGeneration = getWorkspaceScopeGeneration(queryClient)
+    pendingSaveRequestsRef.current.set(requestId, request)
+    const saved = await saveSettingsMutation.mutateAsync({
+      requestId,
+      workspaceScopeGeneration,
+    })
+    if (workspaceScopeGeneration !== getWorkspaceScopeGeneration(queryClient)) {
+      return null
+    }
+    return saved
+  }
+
   useEffect(() => {
-    let cancelled = false
-
-    async function loadProviderSettings() {
-      setIsLoading(true)
-      setLoadError(null)
-
-      try {
-        const [catalogResponse, settingsResponse] = await Promise.all([
-          commandClient.listModelProviderCatalog(),
-          commandClient.listProviderSettings(),
-        ])
-
-        if (cancelled) {
-          return
-        }
-
-        setCatalog(catalogResponse.providers)
-        setProfiles(settingsResponse.configs)
-
-        const defaultProfile =
-          settingsResponse.configs.find(
-            (profile) => profile.id === settingsResponse.defaultConfigId,
-          ) ?? settingsResponse.configs[0]
-
-        if (defaultProfile) {
-          setSelectedConfigId(defaultProfile.id)
-        } else if (catalogResponse.providers[0]) {
-          reset(createFormValuesFromProvider(catalogResponse.providers[0]))
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setLoadError(getCommandErrorMessage(error))
-        }
-      } finally {
-        if (!cancelled) {
-          setIsLoading(false)
-        }
-      }
-    }
-
-    void loadProviderSettings()
-
     return () => {
-      cancelled = true
+      pendingSaveRequestsRef.current.clear()
     }
-  }, [commandClient, reset])
+  }, [])
+
+  useEffect(() => {
+    const configs = settingsQuery.data?.configs ?? []
+    if (configs.length === 0) {
+      setSelectedConfigId(null)
+      return
+    }
+
+    setSelectedConfigId((currentConfigId) => {
+      if (currentConfigId && configs.some((profile) => profile.id === currentConfigId)) {
+        return currentConfigId
+      }
+      return (
+        configs.find((profile) => profile.id === settingsQuery.data?.defaultConfigId)?.id ??
+        configs[0]?.id ??
+        null
+      )
+    })
+  }, [settingsQuery.data])
+
+  useEffect(() => {
+    if (profiles.length === 0 && catalog[0]) {
+      reset(createFormValuesFromProvider(catalog[0]))
+    }
+  }, [catalog, profiles.length, reset])
+
+  useEffect(() => {
+    clearRevealedApiKey()
+  }, [clearRevealedApiKey, selectedConfigId])
 
   useEffect(() => {
     if (!selectedProfile) {
@@ -279,6 +365,7 @@ export function ProviderSettingsForm() {
   async function submit(values: ProviderSettingsFormValues) {
     setFormError(null)
     clearEditApiKey()
+    clearRevealedApiKey()
 
     const provider = catalog.find(
       (currentProvider) => currentProvider.providerId === values.providerId,
@@ -332,8 +419,10 @@ export function ProviderSettingsForm() {
     }
 
     try {
-      const saved = await commandClient.saveProviderSettings(request)
-      replaceSavedProfile(saved.config)
+      const saved = await saveProviderSettingsRequest(request)
+      if (!saved) {
+        return
+      }
       setSelectedConfigId(saved.config.id)
       setIsCreateDialogOpen(false)
       reset(createFormValuesFromProvider(provider))
@@ -349,6 +438,7 @@ export function ProviderSettingsForm() {
 
     setFormError(null)
     clearEditApiKey()
+    clearRevealedApiKey()
 
     const providerId = values.providerId || selectedProfile.providerId
     const modelId = values.modelId || selectedProfile.modelId
@@ -406,8 +496,10 @@ export function ProviderSettingsForm() {
     }
 
     try {
-      const saved = await commandClient.saveProviderSettings(request)
-      replaceSavedProfile(saved.config)
+      const saved = await saveProviderSettingsRequest(request)
+      if (!saved) {
+        return
+      }
       setSelectedConfigId(saved.config.id)
       resetEdit(createFormValuesFromProfile(saved.config))
     } catch (error) {
@@ -415,78 +507,70 @@ export function ProviderSettingsForm() {
     }
   }
 
-  const setProfileTesting = useCallback((configId: string, isTesting: boolean) => {
-    setTestingConfigIds((currentTestingConfigIds) => {
-      if (isTesting) {
+  const setProfileChecking = useCallback((configId: string, isChecking: boolean) => {
+    setCheckingConfigIds((currentCheckingConfigIds) => {
+      if (isChecking) {
         return {
-          ...currentTestingConfigIds,
+          ...currentCheckingConfigIds,
           [configId]: true,
         }
       }
 
-      const { [configId]: _removed, ...nextTestingConfigIds } = currentTestingConfigIds
-      return nextTestingConfigIds
+      const { [configId]: _removed, ...nextCheckingConfigIds } = currentCheckingConfigIds
+      return nextCheckingConfigIds
     })
   }, [])
 
-  const testProviderConfiguration = useCallback(
-    async (profile: ProviderConfig | null, options: { showToast: boolean }) => {
+  const checkProviderConfiguration = useCallback(
+    async (profile: ProviderConfig | null) => {
       if (!profile) {
         return
       }
 
-      if (options.showToast) {
-        setFormError(null)
-      }
+      setFormError(null)
 
-      setProfileTesting(profile.id, true)
-      const startedAt = performance.now()
+      setProfileChecking(profile.id, true)
       try {
-        await commandClient.validateProviderSettings({
+        await checkProviderSettingsMutation.mutateAsync({
           modelId: profile.modelId,
           providerId: profile.providerId,
         })
-        const latencyMs = Math.max(0, Math.round(performance.now() - startedAt))
-        setTestLatencies((currentLatencies) => ({
-          ...currentLatencies,
-          [profile.id]: latencyMs,
-        }))
-        if (options.showToast) {
-          setToast({
-            description: t('provider.testSuccessToastDescription', { latencyMs }),
-            id: Date.now(),
-            title: t('provider.testSuccessToastTitle'),
-            variant: 'success',
-          })
-        }
+        setToast({
+          description: t('provider.testSuccessToastDescription'),
+          id: Date.now(),
+          title: t('provider.testSuccessToastTitle'),
+          variant: 'success',
+        })
       } catch (error) {
-        const latencyMs = Math.max(0, Math.round(performance.now() - startedAt))
-        setTestLatencies((currentLatencies) => ({
-          ...currentLatencies,
-          [profile.id]: latencyMs,
-        }))
-        if (options.showToast) {
-          setToast({
-            description: getCommandErrorMessage(error),
-            id: Date.now(),
-            title: t('provider.testErrorToastTitle'),
-            variant: 'destructive',
-          })
-        }
+        setToast({
+          description: getCommandErrorMessage(error),
+          id: Date.now(),
+          title: t('provider.testErrorToastTitle'),
+          variant: 'destructive',
+        })
       } finally {
-        setProfileTesting(profile.id, false)
+        setProfileChecking(profile.id, false)
       }
     },
-    [commandClient, setProfileTesting, t],
+    [checkProviderSettingsMutation, setProfileChecking, t],
   )
 
-  useEffect(() => {
+  async function revealSelectedApiKey() {
     if (!selectedProfile) {
       return
     }
 
-    void testProviderConfiguration(selectedProfile, { showToast: false })
-  }, [selectedProfile, testProviderConfiguration])
+    setFormError(null)
+    clearRevealedApiKey()
+    const configId = selectedProfile.id
+    const revealVersion = revealVersionRef.current
+
+    try {
+      await revealApiKeyMutation.mutateAsync({ configId, revealVersion })
+    } catch (error) {
+      setFormError(getCommandErrorMessage(error))
+    }
+  }
 
   async function setSelectedProfileAsDefault() {
     if (!selectedProfile) {
@@ -495,6 +579,7 @@ export function ProviderSettingsForm() {
 
     setFormError(null)
     clearEditApiKey()
+    clearRevealedApiKey()
     setIsSettingDefault(true)
 
     const request: ProviderSettingsRequest = {
@@ -509,8 +594,10 @@ export function ProviderSettingsForm() {
     }
 
     try {
-      const saved = await commandClient.saveProviderSettings(request)
-      replaceSavedProfile(saved.config)
+      const saved = await saveProviderSettingsRequest(request)
+      if (!saved) {
+        return
+      }
       setSelectedConfigId(saved.config.id)
     } catch (error) {
       setFormError(getCommandErrorMessage(error))
@@ -703,8 +790,7 @@ export function ProviderSettingsForm() {
               </div>
             ) : null}
             {profiles.map((profile) => {
-              const latencyMs = testLatencies[profile.id]
-              const isProfileTesting = testingConfigIds[profile.id] === true
+              const isProfileChecking = checkingConfigIds[profile.id] === true
 
               return (
                 <button
@@ -715,6 +801,7 @@ export function ProviderSettingsForm() {
                   onClick={() => {
                     setSelectedConfigId(profile.id)
                     clearEditApiKey()
+                    clearRevealedApiKey()
                     setFormError(null)
                   }}
                   type="button"
@@ -729,10 +816,8 @@ export function ProviderSettingsForm() {
                       </span>
                     </span>
                     <span className="flex shrink-0 flex-col items-end gap-1">
-                      {isProfileTesting ? (
+                      {isProfileChecking ? (
                         <Badge variant="outline">{t('provider.testing')}</Badge>
-                      ) : latencyMs !== undefined ? (
-                        <Badge variant="outline">{t('provider.latencyMs', { latencyMs })}</Badge>
                       ) : null}
                       {profile.isDefault ? (
                         <Badge variant="secondary">{t('provider.default')}</Badge>
@@ -755,11 +840,6 @@ export function ProviderSettingsForm() {
                 <span className="truncate">
                   {selectedProfile?.displayName ?? t('provider.emptyDetails')}
                 </span>
-                {selectedTestLatencyMs !== undefined ? (
-                  <Badge aria-hidden="true" variant="outline">
-                    {t('provider.latencyMs', { latencyMs: selectedTestLatencyMs })}
-                  </Badge>
-                ) : null}
               </h2>
             </div>
             {selectedProfile ? (
@@ -777,16 +857,14 @@ export function ProviderSettingsForm() {
                   </Button>
                 ) : null}
                 <Button
-                  disabled={isSelectedProfileTesting || isLoading}
-                  onClick={() =>
-                    void testProviderConfiguration(selectedProfile, { showToast: true })
-                  }
+                  disabled={isSelectedProfileChecking || isLoading}
+                  onClick={() => void checkProviderConfiguration(selectedProfile)}
                   size="sm"
                   type="button"
                   variant="outline"
                 >
-                  <Wifi className="size-4" />
-                  {isSelectedProfileTesting ? t('provider.testing') : t('provider.test')}
+                  <CheckCircle className="size-4" />
+                  {isSelectedProfileChecking ? t('provider.testing') : t('provider.test')}
                 </Button>
               </div>
             ) : null}
@@ -975,7 +1053,9 @@ export function ProviderSettingsForm() {
                             : t('provider.apiKeyPlaceholder')
                       }
                       type="password"
-                      {...registerEdit('apiKey')}
+                      {...registerEdit('apiKey', {
+                        onChange: clearRevealedApiKey,
+                      })}
                     />
                     {shouldShowSavedApiKeyMask ? (
                       <div
@@ -992,6 +1072,29 @@ export function ProviderSettingsForm() {
                     </span>
                   ) : null}
                 </label>
+                {selectedProfile.hasApiKey ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <Button
+                      disabled={isEditSubmitting || isLoading || isSelectedApiKeyRevealing}
+                      onClick={() => void revealSelectedApiKey()}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      <Eye className="size-4" />
+                      {isSelectedApiKeyRevealing
+                        ? t('provider.revealingApiKey')
+                        : t('provider.revealApiKey')}
+                    </Button>
+                  </div>
+                ) : null}
+                {selectedRevealedApiKey ? (
+                  <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
+                    <code className="block break-all font-mono text-sm">
+                      {selectedRevealedApiKey}
+                    </code>
+                  </div>
+                ) : null}
               </div>
 
               {formError ? (

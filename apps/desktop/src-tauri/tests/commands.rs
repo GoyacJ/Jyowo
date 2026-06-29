@@ -38,9 +38,10 @@ use jyowo_desktop_shell::commands::{
     resolve_permission_with_runtime_state, restart_mcp_server_with_runtime_state,
     run_eval_case_payload, run_eval_case_with_runtime_state, runtime_state_async,
     runtime_state_for_workspace, save_mcp_server_with_runtime_state, save_mcp_server_with_store,
-    save_provider_settings_with_store, set_conversation_model_config_with_runtime_state,
-    set_execution_settings_with_store, set_mcp_server_enabled_with_runtime_state,
-    set_skill_enabled_with_runtime_state, start_run_payload, start_run_with_runtime_state,
+    save_provider_settings_with_runtime_state, save_provider_settings_with_store,
+    set_conversation_model_config_with_runtime_state, set_execution_settings_with_store,
+    set_mcp_server_enabled_with_runtime_state, set_skill_enabled_with_runtime_state,
+    start_run_payload, start_run_with_runtime_state,
     subscribe_conversation_events_for_window_with_runtime_state,
     unsubscribe_conversation_events_for_window_with_runtime_state,
     update_memory_item_with_runtime_state, validate_provider_settings_payload,
@@ -733,7 +734,7 @@ async fn save_provider_settings_payload_stores_viewable_api_key_but_omits_key_fr
 }
 
 #[tokio::test]
-async fn get_provider_config_api_key_with_store_rejects_plaintext_reveal() {
+async fn get_provider_config_api_key_with_store_requires_runtime_reveal_token_store() {
     let raw_key = "provider-test-token";
     let store = RecordingProviderSettingsStore {
         record: Mutex::new(Some(ProviderSettingsRecord {
@@ -763,57 +764,104 @@ async fn get_provider_config_api_key_with_store_rejects_plaintext_reveal() {
     .unwrap_err();
 
     assert_eq!(error.code, "INVALID_PAYLOAD");
-    assert!(error.message.contains("disabled"));
+    assert!(error.message.contains("runtime state"));
 }
 
 #[tokio::test]
-async fn get_provider_config_api_key_with_runtime_state_rejects_plaintext_reveal() {
+async fn provider_config_api_key_reveal_token_is_single_use_and_scoped_to_config() {
     let raw_key = "provider-test-token";
     let workspace = unique_workspace("provider-key-reveal-token");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
     DesktopProviderSettingsStore::new(workspace.clone())
         .save_record(&ProviderSettingsRecord {
-            default_config_id: Some("openai".to_owned()),
-            configs: vec![ProviderConfigRecord {
-                api_key: raw_key.to_owned(),
-                protocol: ModelProtocol::Responses,
-                base_url: None,
-                display_name: "OpenAI".to_owned(),
-                id: "openai".to_owned(),
-                model_id: "gpt-5.4-mini".to_owned(),
-                provider_id: "openai".to_owned(),
-                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
-            }],
+            default_config_id: Some("openai-work".to_owned()),
+            configs: vec![
+                ProviderConfigRecord {
+                    api_key: raw_key.to_owned(),
+                    protocol: ModelProtocol::Responses,
+                    base_url: None,
+                    display_name: "OpenAI Work".to_owned(),
+                    id: "openai-work".to_owned(),
+                    model_id: "gpt-5.4-mini".to_owned(),
+                    provider_id: "openai".to_owned(),
+                    model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+                },
+                ProviderConfigRecord {
+                    api_key: "personal-token".to_owned(),
+                    protocol: ModelProtocol::Responses,
+                    base_url: None,
+                    display_name: "OpenAI Personal".to_owned(),
+                    id: "openai-personal".to_owned(),
+                    model_id: "gpt-5.4-mini".to_owned(),
+                    provider_id: "openai".to_owned(),
+                    model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+                },
+            ],
         })
         .unwrap();
     let state = runtime_state_with_harness_for_workspace(workspace).await;
 
-    let error = get_provider_config_api_key_with_runtime_state(
-        GetProviderConfigApiKeyRequest {
-            config_id: "openai".to_owned(),
-            reveal_token: "test-reveal-token".to_owned(),
-        },
-        &state,
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, "INVALID_PAYLOAD");
-
-    let reveal_error = request_provider_config_api_key_reveal_with_runtime_state(
+    let reveal = request_provider_config_api_key_reveal_with_runtime_state(
         RequestProviderConfigApiKeyRevealRequest {
-            config_id: "openai".to_owned(),
+            config_id: "openai-work".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("saved provider config should create a reveal token");
+    assert_eq!(reveal.config_id, "openai-work");
+    assert_eq!(reveal.expires_in_seconds, 60);
+    assert_eq!(reveal.status, "ready");
+    assert!(!reveal.reveal_token.trim().is_empty());
+    assert!(!serde_json::to_string(&reveal).unwrap().contains(raw_key));
+
+    let mismatch_error = get_provider_config_api_key_with_runtime_state(
+        GetProviderConfigApiKeyRequest {
+            config_id: "openai-personal".to_owned(),
+            reveal_token: reveal.reveal_token,
         },
         &state,
     )
     .await
     .unwrap_err();
-    assert_eq!(reveal_error.code, "INVALID_PAYLOAD");
-    assert!(reveal_error.message.contains("disabled"));
+    assert_eq!(mismatch_error.code, "INVALID_PAYLOAD");
+
+    let reveal = request_provider_config_api_key_reveal_with_runtime_state(
+        RequestProviderConfigApiKeyRevealRequest {
+            config_id: "openai-work".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("saved provider config should create another reveal token");
+    let token = reveal.reveal_token;
+    let payload = get_provider_config_api_key_with_runtime_state(
+        GetProviderConfigApiKeyRequest {
+            config_id: "openai-work".to_owned(),
+            reveal_token: token.clone(),
+        },
+        &state,
+    )
+    .await
+    .expect("fresh reveal token should return the provider key");
+    assert_eq!(payload.config_id, "openai-work");
+    assert_eq!(payload.api_key, raw_key);
+
+    let reuse_error = get_provider_config_api_key_with_runtime_state(
+        GetProviderConfigApiKeyRequest {
+            config_id: "openai-work".to_owned(),
+            reveal_token: token,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(reuse_error.code, "INVALID_PAYLOAD");
 }
 
 #[tokio::test]
-async fn request_provider_config_api_key_reveal_with_store_is_disabled() {
+async fn request_provider_config_api_key_reveal_with_store_requires_runtime_reveal_token_store() {
     let store = RecordingProviderSettingsStore {
         record: Mutex::new(Some(ProviderSettingsRecord {
             default_config_id: Some("openai".to_owned()),
@@ -838,9 +886,171 @@ async fn request_provider_config_api_key_reveal_with_store_is_disabled() {
         &store,
     )
     .await
-    .expect_err("plaintext key reveal should fail closed");
+    .expect_err("plaintext key reveal should fail closed without runtime state");
     assert_eq!(error.code, "INVALID_PAYLOAD");
-    assert!(error.message.contains("disabled"));
+    assert!(error.message.contains("runtime state"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn provider_config_api_key_reveal_token_expires() {
+    let workspace = unique_workspace("provider-key-reveal-expired");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    DesktopProviderSettingsStore::new(workspace.clone())
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some("openai".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "provider-test-token".to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI".to_owned(),
+                id: "openai".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })
+        .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+
+    let reveal = request_provider_config_api_key_reveal_with_runtime_state(
+        RequestProviderConfigApiKeyRevealRequest {
+            config_id: "openai".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("saved provider config should create a reveal token");
+    tokio::time::advance(Duration::from_secs(61)).await;
+
+    let error = get_provider_config_api_key_with_runtime_state(
+        GetProviderConfigApiKeyRequest {
+            config_id: "openai".to_owned(),
+            reveal_token: reveal.reveal_token,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("expired"));
+}
+
+#[tokio::test]
+async fn provider_config_api_key_reveal_token_rejects_config_key_changed_after_issue() {
+    let workspace = unique_workspace("provider-key-reveal-key-changed");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let store = DesktopProviderSettingsStore::new(workspace.clone());
+    store
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some("openai".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "old-provider-test-token".to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI".to_owned(),
+                id: "openai".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })
+        .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+
+    let reveal = request_provider_config_api_key_reveal_with_runtime_state(
+        RequestProviderConfigApiKeyRevealRequest {
+            config_id: "openai".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("saved provider config should create a reveal token");
+    store
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some("openai".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "new-provider-test-token".to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI".to_owned(),
+                id: "openai".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })
+        .unwrap();
+
+    let error = get_provider_config_api_key_with_runtime_state(
+        GetProviderConfigApiKeyRequest {
+            config_id: "openai".to_owned(),
+            reveal_token: reveal.reveal_token,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("no longer matches"));
+}
+
+#[tokio::test]
+async fn save_provider_settings_with_runtime_state_invalidates_pending_reveal_tokens_for_config() {
+    let workspace = unique_workspace("provider-key-reveal-save-invalidates");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    DesktopProviderSettingsStore::new(workspace.clone())
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some("openai".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "old-provider-test-token".to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI".to_owned(),
+                id: "openai".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })
+        .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+
+    let reveal = request_provider_config_api_key_reveal_with_runtime_state(
+        RequestProviderConfigApiKeyRevealRequest {
+            config_id: "openai".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("saved provider config should create a reveal token");
+    save_provider_settings_with_runtime_state(
+        ProviderSettingsRequest {
+            api_key: Some("new-provider-test-token".to_owned()),
+            base_url: None,
+            config_id: Some("openai".to_owned()),
+            display_name: Some("OpenAI".to_owned()),
+            model_id: "gpt-5.4-mini".to_owned(),
+            provider_id: "openai".to_owned(),
+            set_default: true,
+        },
+        &state,
+    )
+    .await
+    .expect("saving provider settings should succeed");
+
+    let error = get_provider_config_api_key_with_runtime_state(
+        GetProviderConfigApiKeyRequest {
+            config_id: "openai".to_owned(),
+            reveal_token: reveal.reveal_token,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, "INVALID_PAYLOAD");
 }
 
 #[tokio::test]
@@ -2418,6 +2628,41 @@ fn desktop_provider_settings_store_rejects_config_without_api_key() {
 
     assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
     assert!(error.message.contains("apiKey is required"));
+}
+
+#[cfg(unix)]
+#[test]
+fn desktop_provider_settings_store_writes_owner_only_file_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let workspace = unique_workspace("provider-settings-owner-only");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    DesktopProviderSettingsStore::new(workspace.clone())
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some("openai-work".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "provider-test-token".to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI Work".to_owned(),
+                id: "openai-work".to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            }],
+        })
+        .unwrap();
+
+    let settings_path = workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("provider-settings.json");
+    let mode = std::fs::metadata(settings_path)
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
 }
 
 #[tokio::test]
