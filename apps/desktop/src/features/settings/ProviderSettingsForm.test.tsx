@@ -162,6 +162,13 @@ const minimaxVideoRouteOption = {
   runtimeSupported: true,
 } as const satisfies ListProviderCapabilityRouteOptionsResponse['options'][number]
 
+const minimaxVideoQueryRouteOption = {
+  ...minimaxVideoRouteOption,
+  operationId: 'minimax.video_generation.query',
+  execution: 'sync',
+  costRisk: 'low',
+} as const satisfies ListProviderCapabilityRouteOptionsResponse['options'][number]
+
 const minimaxTtsRouteOption = {
   kind: 'text_to_speech',
   configId: 'minimax',
@@ -184,12 +191,47 @@ const minimaxMusicRouteOption = {
   runtimeSupported: true,
 } as const satisfies ListProviderCapabilityRouteOptionsResponse['options'][number]
 
+const minimaxAlternateImageRouteOption = {
+  ...minimaxImageRouteOption,
+  configId: 'minimax-alt',
+} as const satisfies ListProviderCapabilityRouteOptionsResponse['options'][number]
+
 const unsupportedImageRouteOption = {
   ...minimaxImageRouteOption,
   operationId: 'minimax.image_generation.unsupported',
   runtimeSupported: false,
   unavailableReason: 'runtime adapter unavailable',
 } as const satisfies ListProviderCapabilityRouteOptionsResponse['options'][number]
+
+function providerSettingsWithMinimaxProfiles(): ListProviderSettingsResponse {
+  return {
+    defaultConfigId: null,
+    configs: [
+      {
+        protocol: 'chat_completions',
+        baseUrl: 'https://api.minimax.io',
+        displayName: 'Minimax',
+        hasApiKey: true,
+        id: 'minimax',
+        isDefault: false,
+        modelDescriptor: localModelDescriptor,
+        modelId: 'minimax-text-01',
+        providerId: 'minimax',
+      },
+      {
+        protocol: 'chat_completions',
+        baseUrl: 'https://api.minimax.io',
+        displayName: 'Minimax alternate',
+        hasApiKey: true,
+        id: 'minimax-alt',
+        isDefault: false,
+        modelDescriptor: localModelDescriptor,
+        modelId: 'minimax-text-01',
+        providerId: 'minimax',
+      },
+    ],
+  }
+}
 
 function createCapabilityRoutingClient(
   overrides: Partial<CommandClient> & {
@@ -241,7 +283,7 @@ describe('ProviderSettingsForm capability routing', () => {
     ).toBeInTheDocument()
   })
 
-  it('shows image, video, TTS, and music options returned by listProviderCapabilityRouteOptions', async () => {
+  it('shows one profile selector per returned capability kind', async () => {
     renderProviderSettingsForm(
       createCapabilityRoutingClient({
         providerCapabilityRouteOptions: {
@@ -261,10 +303,51 @@ describe('ProviderSettingsForm capability routing', () => {
     expect(within(section).getByText('Video generation')).toBeInTheDocument()
     expect(within(section).getByText('Text to speech')).toBeInTheDocument()
     expect(within(section).getByText('Music generation')).toBeInTheDocument()
-    expect(within(section).getByText('minimax.image_generation')).toBeInTheDocument()
+    expect(
+      within(section).getByRole('combobox', { name: 'Select profile for Image generation' }),
+    ).toBeInTheDocument()
+    expect(
+      within(section).getByRole('combobox', { name: 'Select profile for Video generation' }),
+    ).toBeInTheDocument()
+    expect(
+      within(section).getByRole('combobox', { name: 'Select profile for Text to speech' }),
+    ).toBeInTheDocument()
+    expect(
+      within(section).getByRole('combobox', { name: 'Select profile for Music generation' }),
+    ).toBeInTheDocument()
+    expect(within(section).queryByText('Enable route')).not.toBeInTheDocument()
+  })
+
+  it('groups multiple operations for the same kind under one configured capability row', async () => {
+    renderProviderSettingsForm(
+      createCapabilityRoutingClient({
+        providerCapabilityRouteOptions: {
+          options: [minimaxVideoRouteOption, minimaxVideoQueryRouteOption],
+        },
+        providerCapabilityRoutes: {
+          version: 1,
+          routes: [
+            {
+              kind: 'video_generation',
+              configId: 'minimax',
+              providerId: 'minimax',
+              operationIds: ['minimax.video_generation', 'minimax.video_generation.query'],
+              enabled: true,
+            },
+          ],
+        },
+        providerSettingsList: providerSettingsWithMinimaxProfiles(),
+      }),
+    )
+
+    const section = await findCapabilityRoutingSection()
+    await waitForCapabilityRoutingLoaded(section)
+    expect(
+      within(section).getAllByRole('combobox', { name: 'Select profile for Video generation' }),
+    ).toHaveLength(1)
+    expect(within(section).getByText('2 operations')).toBeInTheDocument()
     expect(within(section).getByText('minimax.video_generation')).toBeInTheDocument()
-    expect(within(section).getByText('minimax.text_to_speech.sync')).toBeInTheDocument()
-    expect(within(section).getByText('minimax.music_generation')).toBeInTheDocument()
+    expect(within(section).getByText('minimax.video_generation.query')).toBeInTheDocument()
   })
 
   it('does not show backend options with runtimeSupported = false as selectable routes', async () => {
@@ -278,11 +361,13 @@ describe('ProviderSettingsForm capability routing', () => {
 
     const section = await findCapabilityRoutingSection()
     await waitForCapabilityRoutingLoaded(section)
-    expect(within(section).getByText('minimax.image_generation')).toBeInTheDocument()
+    expect(
+      within(section).getByRole('combobox', { name: 'Select profile for Image generation' }),
+    ).toBeInTheDocument()
     expect(
       within(section).queryByText('minimax.image_generation.unsupported'),
     ).not.toBeInTheDocument()
-    expect(within(section).getAllByRole('button', { name: 'Enable route' })).toHaveLength(1)
+    expect(within(section).queryByRole('option', { name: /unsupported/i })).not.toBeInTheDocument()
   })
 
   it('does not derive runtime adapter support from provider catalog on the frontend', async () => {
@@ -341,7 +426,7 @@ describe('ProviderSettingsForm capability routing', () => {
     expect(within(section).queryByText('Speech to text')).not.toBeInTheDocument()
   })
 
-  it('saves a route through saveProviderCapabilityRoute', async () => {
+  it('selects a profile through saveProviderCapabilityRoute', async () => {
     const saveProviderCapabilityRoute = vi.fn().mockResolvedValue({
       version: 1,
       routes: [
@@ -358,13 +443,19 @@ describe('ProviderSettingsForm capability routing', () => {
     renderProviderSettingsForm(
       createCapabilityRoutingClient({
         providerCapabilityRouteOptions: { options: [minimaxImageRouteOption] },
+        providerSettingsList: providerSettingsWithMinimaxProfiles(),
         saveProviderCapabilityRoute,
       }),
     )
 
     const section = await findCapabilityRoutingSection()
     await waitForCapabilityRoutingLoaded(section)
-    fireEvent.click(within(section).getByRole('button', { name: 'Enable route' }))
+    fireEvent.change(
+      within(section).getByRole('combobox', { name: 'Select profile for Image generation' }),
+      {
+        target: { value: 'minimax::minimax' },
+      },
+    )
 
     await waitFor(() => expect(saveProviderCapabilityRoute).toHaveBeenCalledTimes(1))
     expect(saveProviderCapabilityRoute).toHaveBeenCalledWith({
@@ -376,10 +467,10 @@ describe('ProviderSettingsForm capability routing', () => {
         enabled: true,
       },
     })
-    expect(await within(section).findByText('Enabled')).toBeInTheDocument()
+    expect(await within(section).findByText('Configured')).toBeInTheDocument()
   })
 
-  it('deletes a route through deleteProviderCapabilityRoute', async () => {
+  it('clears a configured capability route through deleteProviderCapabilityRoute', async () => {
     const deleteProviderCapabilityRoute = vi.fn().mockResolvedValue({
       version: 1,
       routes: [],
@@ -388,6 +479,7 @@ describe('ProviderSettingsForm capability routing', () => {
     renderProviderSettingsForm(
       createCapabilityRoutingClient({
         providerCapabilityRouteOptions: { options: [minimaxImageRouteOption] },
+        providerSettingsList: providerSettingsWithMinimaxProfiles(),
         providerCapabilityRoutes: {
           version: 1,
           routes: [
@@ -406,13 +498,73 @@ describe('ProviderSettingsForm capability routing', () => {
 
     const section = await findCapabilityRoutingSection()
     await waitForCapabilityRoutingLoaded(section)
-    fireEvent.click(within(section).getByRole('button', { name: 'Disable route' }))
+    fireEvent.click(within(section).getByRole('button', { name: 'Clear configuration' }))
 
     await waitFor(() => expect(deleteProviderCapabilityRoute).toHaveBeenCalledTimes(1))
     expect(deleteProviderCapabilityRoute).toHaveBeenCalledWith({
       kind: 'image_generation',
       configId: 'minimax',
       providerId: 'minimax',
+    })
+  })
+
+  it('switches configured profiles with one save and no delete', async () => {
+    const saveProviderCapabilityRoute = vi.fn().mockResolvedValue({
+      version: 1,
+      routes: [
+        {
+          kind: 'image_generation',
+          configId: 'minimax-alt',
+          providerId: 'minimax',
+          operationIds: ['minimax.image_generation'],
+          enabled: true,
+        },
+      ],
+      status: 'saved',
+    })
+    const deleteProviderCapabilityRoute = vi.fn()
+    renderProviderSettingsForm(
+      createCapabilityRoutingClient({
+        providerCapabilityRouteOptions: {
+          options: [minimaxImageRouteOption, minimaxAlternateImageRouteOption],
+        },
+        providerSettingsList: providerSettingsWithMinimaxProfiles(),
+        providerCapabilityRoutes: {
+          version: 1,
+          routes: [
+            {
+              kind: 'image_generation',
+              configId: 'minimax',
+              providerId: 'minimax',
+              operationIds: ['minimax.image_generation'],
+              enabled: true,
+            },
+          ],
+        },
+        saveProviderCapabilityRoute,
+        deleteProviderCapabilityRoute,
+      }),
+    )
+
+    const section = await findCapabilityRoutingSection()
+    await waitForCapabilityRoutingLoaded(section)
+    fireEvent.change(
+      within(section).getByRole('combobox', { name: 'Select profile for Image generation' }),
+      {
+        target: { value: 'minimax-alt::minimax' },
+      },
+    )
+
+    await waitFor(() => expect(saveProviderCapabilityRoute).toHaveBeenCalledTimes(1))
+    expect(deleteProviderCapabilityRoute).not.toHaveBeenCalled()
+    expect(saveProviderCapabilityRoute).toHaveBeenCalledWith({
+      route: {
+        kind: 'image_generation',
+        configId: 'minimax-alt',
+        providerId: 'minimax',
+        operationIds: ['minimax.image_generation'],
+        enabled: true,
+      },
     })
   })
 
@@ -517,9 +669,11 @@ describe('ProviderSettingsForm capability routing', () => {
     })
     renderProviderSettingsForm(errorClient)
 
-    const errorSection = (await screen.findAllByRole('region', { name: 'Capability routing' })).at(
-      -1,
-    )!
+    const errorSections = await screen.findAllByRole('region', { name: 'Capability routing' })
+    const errorSection = errorSections.at(-1)
+    if (!errorSection) {
+      throw new Error('Capability routing error section missing')
+    }
     expect(await within(errorSection).findByText('route options unavailable')).toBeInTheDocument()
   })
 })

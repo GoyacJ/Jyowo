@@ -5819,11 +5819,17 @@ pub async fn save_provider_capability_route_with_store(
     let mut record = store
         .load_record()?
         .unwrap_or_else(empty_provider_capability_route_settings);
-    record.routes.retain(|route| {
-        route.kind != request.route.kind
-            || route.config_id != request.route.config_id
-            || route.provider_id != request.route.provider_id
-    });
+    if request.route.enabled {
+        record
+            .routes
+            .retain(|route| route.kind != request.route.kind);
+    } else {
+        record.routes.retain(|route| {
+            route.kind != request.route.kind
+                || route.config_id != request.route.config_id
+                || route.provider_id != request.route.provider_id
+        });
+    }
     record.routes.push(request.route);
     let validation = ensure_provider_capability_route_settings(
         &record,

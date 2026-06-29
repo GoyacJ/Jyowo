@@ -63,6 +63,23 @@ const providerCapabilityRouteOptionsQueryKey = ['provider-capability-route-optio
 type ProviderCapabilityRouteOption = ListProviderCapabilityRouteOptionsResponse['options'][number]
 type ProviderCapabilityRoute = ListProviderCapabilityRoutesResponse['routes'][number]
 type CapabilityRouteKind = ProviderCapabilityRouteOption['kind']
+type ProviderProfile = ListProviderSettingsResponse['configs'][number]
+type CapabilityRouteProfileOption = {
+  configId: string
+  costRisks: ProviderCapabilityRouteOption['costRisk'][]
+  executions: ProviderCapabilityRouteOption['execution'][]
+  key: string
+  kind: CapabilityRouteKind
+  operationIds: string[]
+  outputArtifacts: ProviderCapabilityRouteOption['outputArtifact'][]
+  profileLabel: string
+  providerId: string
+}
+type CapabilityRouteRow = {
+  kind: CapabilityRouteKind
+  options: CapabilityRouteProfileOption[]
+  savedRoute: ProviderCapabilityRoute | null
+}
 
 const capabilityRouteKindOrder = [
   'image_generation',
@@ -269,16 +286,11 @@ export function ProviderSettingsForm() {
     () => (routeOptionsQuery.data?.options ?? []).filter((option) => option.runtimeSupported),
     [routeOptionsQuery.data],
   )
-  const routeOptionsByKind = useMemo(() => {
-    const groups = new Map<CapabilityRouteKind, ProviderCapabilityRouteOption[]>()
-    for (const option of eligibleRouteOptions) {
-      const current = groups.get(option.kind) ?? []
-      current.push(option)
-      groups.set(option.kind, current)
-    }
-    return groups
-  }, [eligibleRouteOptions])
   const savedCapabilityRoutes = routesQuery.data?.routes ?? []
+  const capabilityRouteRows = useMemo(
+    () => buildCapabilityRouteRows(eligibleRouteOptions, savedCapabilityRoutes, profiles),
+    [eligibleRouteOptions, profiles, savedCapabilityRoutes],
+  )
   const defaultMainModelProfile = useMemo(() => {
     const defaultConfigId = settingsQuery.data?.defaultConfigId
     if (!defaultConfigId) {
@@ -1261,142 +1273,176 @@ export function ProviderSettingsForm() {
 
         {isRouteReady && eligibleRouteOptions.length > 0 ? (
           <div className="mt-4 space-y-4">
-            {capabilityRouteKindOrder.map((kind) => {
-              const options = routeOptionsByKind.get(kind)
-              if (!options || options.length === 0) {
-                return null
-              }
+            {capabilityRouteRows.map((row) => {
+              const kindLabel = t(capabilityRouteKindLabelKeys[row.kind])
+              const selectedOption =
+                row.savedRoute?.enabled === true
+                  ? (row.options.find(
+                      (option) =>
+                        option.configId === row.savedRoute?.configId &&
+                        option.providerId === row.savedRoute.providerId,
+                    ) ?? null)
+                  : null
+              const routeToClear = row.savedRoute?.enabled === true ? row.savedRoute : null
+              const routeStatus = selectedOption
+                ? t('provider.capabilityRouting.statusConfigured')
+                : t('provider.capabilityRouting.statusNotConfigured')
 
               return (
-                <div className="space-y-2" key={kind}>
-                  <h3 className="font-medium text-sm">{t(capabilityRouteKindLabelKeys[kind])}</h3>
-                  <div className="space-y-2">
-                    {options.map((option) => {
-                      const savedRoute = findSavedCapabilityRoute(savedCapabilityRoutes, option)
-                      const profileLabel =
-                        profiles.find((profile) => profile.id === option.configId)?.displayName ??
-                        option.configId
-                      const routeStatus = savedRoute
-                        ? savedRoute.enabled
-                          ? t('provider.capabilityRouting.statusEnabled')
-                          : t('provider.capabilityRouting.statusDisabled')
-                        : t('provider.capabilityRouting.statusNotConfigured')
-                      const isSavingRoute =
-                        saveCapabilityRouteMutation.isPending &&
-                        saveCapabilityRouteMutation.variables?.route.kind === option.kind &&
-                        saveCapabilityRouteMutation.variables.route.configId === option.configId &&
-                        saveCapabilityRouteMutation.variables.route.providerId === option.providerId
-                      const isDeletingRoute =
-                        deleteCapabilityRouteMutation.isPending &&
-                        deleteCapabilityRouteMutation.variables?.kind === option.kind &&
-                        deleteCapabilityRouteMutation.variables.configId === option.configId &&
-                        deleteCapabilityRouteMutation.variables.providerId === option.providerId
+                <div
+                  className="rounded-md border border-border bg-surface px-3 py-3"
+                  key={row.kind}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="font-medium text-sm">{kindLabel}</h3>
+                        <Badge variant={selectedOption ? 'success' : 'outline'}>
+                          {routeStatus}
+                        </Badge>
+                      </div>
+                      <p className="text-muted-foreground text-xs">
+                        {selectedOption
+                          ? selectedOption.profileLabel
+                          : t('provider.capabilityRouting.noProfileSelected')}
+                      </p>
+                    </div>
+                    <div className="flex w-full flex-wrap items-end gap-2 sm:w-auto">
+                      <label className="min-w-[14rem] flex-1 space-y-2 text-sm sm:flex-none">
+                        <span className="font-medium">
+                          {t('provider.capabilityRouting.selectProfile')}
+                        </span>
+                        <select
+                          aria-label={t('provider.capabilityRouting.selectProfileFor', {
+                            kind: kindLabel,
+                          })}
+                          className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          disabled={isLoading || isRouteMutationPending}
+                          onChange={(event) => {
+                            const nextValue = event.target.value
+                            if (nextValue.length === 0) {
+                              if (routeToClear) {
+                                void deleteCapabilityRouteMutation.mutateAsync({
+                                  kind: routeToClear.kind,
+                                  configId: routeToClear.configId,
+                                  providerId: routeToClear.providerId,
+                                })
+                              }
+                              return
+                            }
 
-                      return (
-                        <div
-                          className="rounded-md border border-border bg-surface px-3 py-3"
-                          key={`${option.kind}:${option.configId}:${option.operationId}`}
+                            const nextOption = row.options.find(
+                              (option) => option.key === nextValue,
+                            )
+                            if (!nextOption) {
+                              return
+                            }
+
+                            void saveCapabilityRouteMutation.mutateAsync({
+                              route: buildCapabilityRouteFromProfileOption(nextOption, true),
+                            })
+                          }}
+                          value={selectedOption?.key ?? ''}
                         >
-                          <div className="flex flex-wrap items-start justify-between gap-3">
-                            <div className="min-w-0 space-y-2">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-medium text-sm">{profileLabel}</span>
-                                <Badge variant={savedRoute?.enabled ? 'success' : 'outline'}>
-                                  {routeStatus}
-                                </Badge>
-                              </div>
-                              <dl className="grid gap-2 text-sm md:grid-cols-2">
-                                <div>
-                                  <dt className="text-muted-foreground text-xs">
-                                    {t('provider.capabilityRouting.operationId')}
-                                  </dt>
-                                  <dd className="mt-1 break-all font-mono text-xs">
-                                    {option.operationId}
-                                  </dd>
-                                </div>
-                                <div>
-                                  <dt className="text-muted-foreground text-xs">
-                                    {t('provider.capabilityRouting.outputArtifact')}
-                                  </dt>
-                                  <dd className="mt-1">
-                                    <Badge variant="outline">
-                                      {t(
-                                        `provider.capabilityRouting.outputArtifactKind.${option.outputArtifact}`,
-                                      )}
-                                    </Badge>
-                                  </dd>
-                                </div>
-                                <div>
-                                  <dt className="text-muted-foreground text-xs">
-                                    {t('provider.capabilityRouting.execution')}
-                                  </dt>
-                                  <dd className="mt-1">
-                                    <Badge variant="outline">
-                                      {t(
-                                        `provider.capabilityRouting.executionMode.${option.execution}`,
-                                      )}
-                                    </Badge>
-                                  </dd>
-                                </div>
-                                <div>
-                                  <dt className="text-muted-foreground text-xs">
-                                    {t('provider.capabilityRouting.costRisk')}
-                                  </dt>
-                                  <dd className="mt-1">
-                                    <Badge variant="outline">
-                                      {t(
-                                        `provider.capabilityRouting.costRiskLevel.${option.costRisk}`,
-                                      )}
-                                    </Badge>
-                                  </dd>
-                                </div>
-                              </dl>
-                            </div>
-                            <div className="flex shrink-0 flex-wrap gap-2">
-                              {savedRoute?.enabled ? (
-                                <Button
-                                  disabled={isLoading || isRouteMutationPending}
-                                  onClick={() =>
-                                    void deleteCapabilityRouteMutation.mutateAsync({
-                                      kind: option.kind,
-                                      configId: option.configId,
-                                      providerId: option.providerId,
-                                    })
-                                  }
-                                  size="sm"
-                                  type="button"
-                                  variant="outline"
-                                >
-                                  {isDeletingRoute
-                                    ? t('provider.capabilityRouting.disablingRoute')
-                                    : t('provider.capabilityRouting.disableRoute')}
-                                </Button>
-                              ) : (
-                                <Button
-                                  disabled={isLoading || isRouteMutationPending}
-                                  onClick={() =>
-                                    void saveCapabilityRouteMutation.mutateAsync({
-                                      route: buildCapabilityRouteFromOption(
-                                        eligibleRouteOptions,
-                                        option,
-                                        true,
-                                      ),
-                                    })
-                                  }
-                                  size="sm"
-                                  type="button"
-                                >
-                                  {isSavingRoute
-                                    ? t('provider.capabilityRouting.enablingRoute')
-                                    : t('provider.capabilityRouting.enableRoute')}
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      )
-                    })}
+                          <option value="">
+                            {t('provider.capabilityRouting.noConfiguration')}
+                          </option>
+                          {row.options.map((option) => (
+                            <option key={option.key} value={option.key}>
+                              {option.profileLabel}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {routeToClear ? (
+                        <Button
+                          disabled={isLoading || isRouteMutationPending}
+                          onClick={() =>
+                            void deleteCapabilityRouteMutation.mutateAsync({
+                              kind: routeToClear.kind,
+                              configId: routeToClear.configId,
+                              providerId: routeToClear.providerId,
+                            })
+                          }
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          {deleteCapabilityRouteMutation.isPending &&
+                          deleteCapabilityRouteMutation.variables?.kind === routeToClear.kind
+                            ? t('provider.capabilityRouting.clearingConfiguration')
+                            : t('provider.capabilityRouting.clearConfiguration')}
+                        </Button>
+                      ) : null}
+                    </div>
                   </div>
+
+                  {selectedOption ? (
+                    <dl className="mt-3 grid gap-3 text-sm md:grid-cols-2">
+                      <div>
+                        <dt className="text-muted-foreground text-xs">
+                          {t('provider.capabilityRouting.operations')}
+                        </dt>
+                        <dd className="mt-1 space-y-1">
+                          <div className="text-xs">
+                            {selectedOption.operationIds.length === 1
+                              ? t('provider.capabilityRouting.operationCountOne', {
+                                  count: selectedOption.operationIds.length,
+                                })
+                              : t('provider.capabilityRouting.operationCountOther', {
+                                  count: selectedOption.operationIds.length,
+                                })}
+                          </div>
+                          <div className="space-y-1">
+                            {selectedOption.operationIds.map((operationId) => (
+                              <code
+                                className="block break-all font-mono text-muted-foreground text-xs"
+                                key={operationId}
+                              >
+                                {operationId}
+                              </code>
+                            ))}
+                          </div>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground text-xs">
+                          {t('provider.capabilityRouting.outputArtifact')}
+                        </dt>
+                        <dd className="mt-1 flex flex-wrap gap-1">
+                          {selectedOption.outputArtifacts.map((outputArtifact) => (
+                            <Badge key={outputArtifact} variant="outline">
+                              {t(`provider.capabilityRouting.outputArtifactKind.${outputArtifact}`)}
+                            </Badge>
+                          ))}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground text-xs">
+                          {t('provider.capabilityRouting.execution')}
+                        </dt>
+                        <dd className="mt-1 flex flex-wrap gap-1">
+                          {selectedOption.executions.map((execution) => (
+                            <Badge key={execution} variant="outline">
+                              {t(`provider.capabilityRouting.executionMode.${execution}`)}
+                            </Badge>
+                          ))}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground text-xs">
+                          {t('provider.capabilityRouting.costRisk')}
+                        </dt>
+                        <dd className="mt-1 flex flex-wrap gap-1">
+                          {selectedOption.costRisks.map((costRisk) => (
+                            <Badge key={costRisk} variant="outline">
+                              {t(`provider.capabilityRouting.costRiskLevel.${costRisk}`)}
+                            </Badge>
+                          ))}
+                        </dd>
+                      </div>
+                    </dl>
+                  ) : null}
                 </div>
               )
             })}
@@ -1412,41 +1458,75 @@ function optionalTrimmed(value: string) {
   return trimmed.length > 0 ? trimmed : undefined
 }
 
-function findSavedCapabilityRoute(
+function buildCapabilityRouteRows(
+  options: ProviderCapabilityRouteOption[],
   routes: ProviderCapabilityRoute[],
-  option: ProviderCapabilityRouteOption,
-) {
-  return routes.find(
-    (route) =>
-      route.kind === option.kind &&
-      route.configId === option.configId &&
-      route.providerId === option.providerId,
-  )
+  profiles: ProviderProfile[],
+): CapabilityRouteRow[] {
+  const profileLabels = new Map(profiles.map((profile) => [profile.id, profile.displayName]))
+  const groups = new Map<CapabilityRouteKind, Map<string, CapabilityRouteProfileOption>>()
+
+  for (const option of options) {
+    const profilesByKind =
+      groups.get(option.kind) ?? new Map<string, CapabilityRouteProfileOption>()
+    const key = capabilityRouteProfileOptionKey(option.configId, option.providerId)
+    const current =
+      profilesByKind.get(key) ??
+      ({
+        configId: option.configId,
+        costRisks: [],
+        executions: [],
+        key,
+        kind: option.kind,
+        operationIds: [],
+        outputArtifacts: [],
+        profileLabel: profileLabels.get(option.configId) ?? option.configId,
+        providerId: option.providerId,
+      } satisfies CapabilityRouteProfileOption)
+
+    current.operationIds = appendUniqueSorted(current.operationIds, option.operationId)
+    current.outputArtifacts = appendUniqueSorted(current.outputArtifacts, option.outputArtifact)
+    current.executions = appendUniqueSorted(current.executions, option.execution)
+    current.costRisks = appendUniqueSorted(current.costRisks, option.costRisk)
+    profilesByKind.set(key, current)
+    groups.set(option.kind, profilesByKind)
+  }
+
+  return [...groups.entries()]
+    .sort(
+      ([left], [right]) => capabilityRouteKindSortValue(left) - capabilityRouteKindSortValue(right),
+    )
+    .map(([kind, profilesByKind]) => ({
+      kind,
+      options: [...profilesByKind.values()].sort((left, right) =>
+        left.profileLabel.localeCompare(right.profileLabel),
+      ),
+      savedRoute: routes.find((route) => route.kind === kind && route.enabled) ?? null,
+    }))
 }
 
-function buildCapabilityRouteFromOption(
-  eligibleOptions: ProviderCapabilityRouteOption[],
-  option: ProviderCapabilityRouteOption,
+function capabilityRouteKindSortValue(kind: CapabilityRouteKind) {
+  const index = capabilityRouteKindOrder.indexOf(kind)
+  return index === -1 ? capabilityRouteKindOrder.length : index
+}
+
+function capabilityRouteProfileOptionKey(configId: string, providerId: string) {
+  return `${configId}::${providerId}`
+}
+
+function appendUniqueSorted<T extends string>(current: T[], next: T): T[] {
+  return [...new Set([...current, next])].sort()
+}
+
+function buildCapabilityRouteFromProfileOption(
+  option: CapabilityRouteProfileOption,
   enabled: boolean,
 ): SaveProviderCapabilityRouteRequest['route'] {
-  const operationIds = [
-    ...new Set(
-      eligibleOptions
-        .filter(
-          (candidate) =>
-            candidate.kind === option.kind &&
-            candidate.configId === option.configId &&
-            candidate.providerId === option.providerId,
-        )
-        .map((candidate) => candidate.operationId),
-    ),
-  ].sort()
-
   return {
     kind: option.kind,
     configId: option.configId,
     providerId: option.providerId,
-    operationIds,
+    operationIds: option.operationIds,
     enabled,
   }
 }

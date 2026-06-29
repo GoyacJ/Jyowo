@@ -1582,6 +1582,98 @@ async fn provider_capability_route_rejects_same_enabled_kind_for_multiple_config
     assert_eq!(error.code, "INVALID_PAYLOAD");
 }
 
+#[tokio::test]
+async fn provider_capability_route_enabled_save_replaces_same_kind_route() {
+    let store = provider_capability_route_store("provider-capability-route-kind-replace");
+    let mut provider_settings =
+        provider_settings_record_with_minimax_config("minimax-image-primary", true);
+    let mut secondary = provider_settings.configs[0].clone();
+    secondary.id = "minimax-image-secondary".to_owned();
+    provider_settings.configs.push(secondary);
+
+    save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest {
+            route: minimax_image_route("minimax-image-primary", true),
+        },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &minimax_image_adapter_availability(),
+    )
+    .await
+    .unwrap();
+
+    let payload = save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest {
+            route: minimax_image_route("minimax-image-secondary", true),
+        },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &minimax_image_adapter_availability(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(payload.routes.len(), 1);
+    assert_eq!(payload.routes[0].kind, CapabilityRouteKind::ImageGeneration);
+    assert_eq!(payload.routes[0].config_id, "minimax-image-secondary");
+}
+
+#[tokio::test]
+async fn provider_capability_route_enabled_save_keeps_other_kinds() {
+    let store = provider_capability_route_store("provider-capability-route-kind-replace-keeps");
+    let mut provider_settings =
+        provider_settings_record_with_minimax_config("minimax-primary", true);
+    let mut secondary = provider_settings.configs[0].clone();
+    secondary.id = "minimax-secondary".to_owned();
+    provider_settings.configs.push(secondary);
+    let availability = minimax_image_and_video_adapter_availability();
+
+    save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest {
+            route: minimax_video_route("minimax-primary", true),
+        },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &availability,
+    )
+    .await
+    .unwrap();
+    save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest {
+            route: minimax_image_route("minimax-primary", true),
+        },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &availability,
+    )
+    .await
+    .unwrap();
+
+    let payload = save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest {
+            route: minimax_image_route("minimax-secondary", true),
+        },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &availability,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(payload.routes.len(), 2);
+    assert!(payload.routes.iter().any(|route| {
+        route.kind == CapabilityRouteKind::ImageGeneration && route.config_id == "minimax-secondary"
+    }));
+    assert!(payload.routes.iter().any(|route| {
+        route.kind == CapabilityRouteKind::VideoGeneration && route.config_id == "minimax-primary"
+    }));
+}
+
 #[test]
 fn provider_capability_route_options_use_injected_adapter_availability() {
     let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
@@ -1956,6 +2048,31 @@ fn minimax_image_adapter_availability() -> ProviderServiceAdapterAvailability {
             route_kind: CapabilityRouteKind::ImageGeneration,
             output_artifact: ModelModality::Image,
         }],
+    }
+}
+
+fn minimax_image_and_video_adapter_availability() -> ProviderServiceAdapterAvailability {
+    ProviderServiceAdapterAvailability {
+        bindings: vec![
+            ToolServiceBinding {
+                provider_id: "minimax".to_owned(),
+                operation_id: "minimax.image_generation".to_owned(),
+                route_kind: CapabilityRouteKind::ImageGeneration,
+                output_artifact: ModelModality::Image,
+            },
+            ToolServiceBinding {
+                provider_id: "minimax".to_owned(),
+                operation_id: "minimax.video_generation".to_owned(),
+                route_kind: CapabilityRouteKind::VideoGeneration,
+                output_artifact: ModelModality::Video,
+            },
+            ToolServiceBinding {
+                provider_id: "minimax".to_owned(),
+                operation_id: "minimax.video_generation.query".to_owned(),
+                route_kind: CapabilityRouteKind::VideoGeneration,
+                output_artifact: ModelModality::Video,
+            },
+        ],
     }
 }
 

@@ -1116,7 +1116,7 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
       routes: [],
     },
   )
-  let providerCapabilityRouteOptions = cloneResponse(
+  const providerCapabilityRouteOptions = cloneResponse(
     options.providerCapabilityRouteOptions ?? {
       options: [],
     },
