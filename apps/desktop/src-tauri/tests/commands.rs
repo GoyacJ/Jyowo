@@ -7,8 +7,8 @@ use harness_contracts::{
     CapabilityRouteKind, ConfigHash, ConversationAttachmentReference, CorrelationId, DecidedBy,
     EngineError, EngineFailedEvent, EventId, McpConnectionLostEvent, McpConnectionLostReason,
     MessageContent, MessageId, MessageMetadata, ModelModality, PermissionRequestedEvent,
-    PermissionResolvedEvent, ProviderCapabilityRoute, ProviderServiceAdapterAvailability,
-    ReasoningSummaryChunk, RunStartedEvent, SnapshotId, StopReason, ToolErrorPayload,
+    PermissionResolvedEvent, ProviderCapabilityRoute, ProviderCapabilityRouteSettings,
+    ProviderServiceAdapterAvailability, ReasoningSummaryChunk, RunStartedEvent, SnapshotId, StopReason, ToolErrorPayload,
     ToolServiceBinding, ToolUseFailedEvent, ToolUseRequestedEvent, ToolUseSummary, TurnInput,
     UiSafeText, UserMessageAppendedEvent,
 };
@@ -88,9 +88,9 @@ use jyowo_harness_sdk::ext::{
     MemoryId, MemoryKind, MemoryMetadata, MemoryRecord, MemorySource, MemoryStore,
     MemoryVisibility, Message, MessagePart, MessageRole, ModelError, ModelProtocol, OverflowAction,
     PermissionCheck, PermissionContext, PermissionMode, PermissionRequest, PermissionSubject,
-    ProviderCredentialResolveContext, ProviderCredentialResolverCap, ProviderRestriction,
+    ProviderCredentialResolveContext, ProviderRestriction,
     RedactPatternSet, RedactRules, RedactScope, Redactor, RequestId, ResultBudget, RuleSnapshot,
-    RunId, SessionId, Severity, StreamBrokerConfig, TenantId,
+    RunId, SessionId, Severity, StreamBrokerConfig, TenantId, ToolCapability,
     ThinkingDelta, Tool, ToolContext, ToolDescriptor, ToolError, ToolEvent, ToolGroup,
     ToolProperties, ToolRegistry, ToolResult, ToolStream, ToolUseId, TransportChoice, TrustLevel,
     UsageSnapshot, ValidationError,
@@ -103,6 +103,8 @@ use jyowo_harness_sdk::testing::{
 use jyowo_harness_sdk::{
     ConversationEventsPageRequest, Harness, HarnessOptions, McpConfig, StreamPermissionRuntime,
 };
+use harness_tool::BuiltinToolset;
+use parking_lot::RwLock as ParkingRwLock;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1931,66 +1933,694 @@ fn provider_capability_route_store(name: &str) -> DesktopProviderCapabilityRoute
     DesktopProviderCapabilityRouteStore::new(canonical_unique_workspace(name))
 }
 
-#[tokio::test]
-async fn provider_credential_route_provider_only_resolution_still_works() {
-    let workspace = canonical_unique_workspace("provider-credential-route-provider-only");
-    let provider_settings = provider_settings_record_with_minimax_config("minimax-main", true);
-    let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
-    provider_store
-        .save_record(&provider_settings)
-        .expect("provider settings should save");
-    let conversation_store = DesktopConversationModelConfigStore::new(workspace);
-    let resolver = desktop_provider_credential_resolver_with_stores(
-        Arc::new(conversation_store),
-        Arc::new(provider_store),
-    );
-    let session_id = SessionId::new();
-
-    let credential = resolver
-        .resolve_provider_credential(ProviderCredentialResolveContext {
-            tenant_id: TenantId::SINGLE,
-            session_id,
-            run_id: RunId::new(),
-            provider_id: "minimax".to_owned(),
-            operation_id: None,
-            route_kind: None,
-        })
-        .await
-        .expect("provider-only credential resolution should succeed");
-
-    assert_eq!(credential.provider_id, "minimax");
-    assert_eq!(credential.config_id, "minimax-main");
-    assert!(!credential.api_key.is_empty());
+fn empty_provider_capability_routes() -> Arc<ParkingRwLock<ProviderCapabilityRouteSettings>> {
+    Arc::new(ParkingRwLock::new(ProviderCapabilityRouteSettings {
+        version: 1,
+        routes: Vec::new(),
+    }))
 }
 
-#[tokio::test]
-async fn provider_credential_route_routed_service_context_fails_closed() {
-    let workspace = canonical_unique_workspace("provider-credential-route-routed-fail-closed");
-    let provider_settings = provider_settings_record_with_minimax_config("minimax-main", true);
-    let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
-    provider_store
+fn provider_settings_with_openai_and_minimax(
+    openai_config_id: &str,
+    minimax_config_id: &str,
+    minimax_api_key: &str,
+) -> ProviderSettingsRecord {
+    ProviderSettingsRecord {
+        default_config_id: Some(openai_config_id.to_owned()),
+        configs: vec![
+            ProviderConfigRecord {
+                api_key: "openai-test-token".to_owned(),
+                protocol: ModelProtocol::Responses,
+                base_url: None,
+                display_name: "OpenAI main".to_owned(),
+                id: openai_config_id.to_owned(),
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+            },
+            ProviderConfigRecord {
+                api_key: minimax_api_key.to_owned(),
+                protocol: ModelProtocol::ChatCompletions,
+                base_url: None,
+                display_name: "MiniMax image".to_owned(),
+                id: minimax_config_id.to_owned(),
+                model_id: "minimax-text-01".to_owned(),
+                provider_id: "minimax".to_owned(),
+                model_descriptor: ProviderModelDescriptorRecord {
+                    protocol: ModelProtocol::ChatCompletions,
+                    conversation_capability: ConversationModelCapabilityRecord {
+                        input_modalities: vec![ProviderModelModalityRecord::Text],
+                        output_modalities: vec![ProviderModelModalityRecord::Text],
+                        context_window: 1_000_000,
+                        max_output_tokens: 8_192,
+                        streaming: true,
+                        tool_calling: true,
+                        reasoning: false,
+                        prompt_cache: false,
+                        structured_output: true,
+                    },
+                    context_window: 1_000_000,
+                    display_name: "MiniMax service".to_owned(),
+                    lifecycle: ProviderModelLifecycleRecord::Stable,
+                    max_output_tokens: 8_192,
+                    model_id: "minimax-text-01".to_owned(),
+                    provider_id: "minimax".to_owned(),
+                },
+            },
+        ],
+    }
+}
+
+fn minimax_video_route(config_id: &str, enabled: bool) -> ProviderCapabilityRoute {
+    ProviderCapabilityRoute {
+        kind: CapabilityRouteKind::VideoGeneration,
+        config_id: config_id.to_owned(),
+        provider_id: "minimax".to_owned(),
+        operation_ids: vec![
+            "minimax.video_generation".to_owned(),
+            "minimax.video_generation.query".to_owned(),
+        ],
+        enabled,
+    }
+}
+
+fn minimax_tts_route(config_id: &str, enabled: bool) -> ProviderCapabilityRoute {
+    ProviderCapabilityRoute {
+        kind: CapabilityRouteKind::TextToSpeech,
+        config_id: config_id.to_owned(),
+        provider_id: "minimax".to_owned(),
+        operation_ids: vec!["minimax.text_to_speech.sync".to_owned()],
+        enabled,
+    }
+}
+
+fn model_request_tool_names(request: &jyowo_harness_sdk::ext::ModelRequest) -> Vec<String> {
+    request
+        .tools
+        .as_ref()
+        .map(|tools| tools.iter().map(|tool| tool.name.clone()).collect())
+        .unwrap_or_default()
+}
+
+async fn wait_for_scripted_model_requests(
+    provider: &ScriptedProvider,
+) -> Vec<jyowo_harness_sdk::ext::ModelRequest> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let requests = provider.requests().await;
+        if !requests.is_empty() {
+            return requests;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("timed out waiting for model requests");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn runtime_state_with_capability_route_harness(
+    workspace: PathBuf,
+    routes: ProviderCapabilityRouteSettings,
+    provider: Arc<ScriptedProvider>,
+    provider_settings: ProviderSettingsRecord,
+) -> DesktopRuntimeState {
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    DesktopProviderSettingsStore::new(workspace.clone())
         .save_record(&provider_settings)
         .expect("provider settings should save");
-    let conversation_store = DesktopConversationModelConfigStore::new(workspace);
+    let routes = Arc::new(ParkingRwLock::new(routes));
     let resolver = desktop_provider_credential_resolver_with_stores(
-        Arc::new(conversation_store),
-        Arc::new(provider_store),
+        Arc::new(DesktopConversationModelConfigStore::new(workspace.clone())),
+        Arc::new(DesktopProviderSettingsStore::new(workspace.clone())),
+        Arc::clone(&routes),
+    );
+    let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    }));
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Default)
+        .build()
+        .expect("tool registry should build");
+    std::fs::create_dir_all(workspace.join(".jyowo").join("runtime").join("blobs")).unwrap();
+    let blob_store = FileBlobStore::open(workspace.join(".jyowo").join("runtime").join("blobs"))
+        .expect("blob store should open");
+    let harness = Arc::new(
+        Harness::builder()
+            .with_options(test_harness_options(&workspace))
+            .with_model_arc(provider)
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .with_blob_store(blob_store)
+            .with_stream_permission_broker_arc(
+                stream_permission_runtime.broker(),
+                stream_permission_runtime.resolver_handle(),
+            )
+            .with_tool_registry(registry)
+            .with_shared_provider_capability_routes(routes)
+            .with_capability(ToolCapability::ProviderCredentialResolver, resolver)
+            .build()
+            .await
+            .expect("harness should build with capability routes"),
     );
 
-    let error = resolver
-        .resolve_provider_credential(ProviderCredentialResolveContext {
-            tenant_id: TenantId::SINGLE,
-            session_id: SessionId::new(),
-            run_id: RunId::new(),
-            provider_id: "minimax".to_owned(),
-            operation_id: Some("minimax.image_generation".to_owned()),
-            route_kind: Some(CapabilityRouteKind::ImageGeneration),
-        })
-        .await
-        .expect_err("routed service credential resolution should fail closed");
+    DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
+        workspace,
+        harness,
+        stream_permission_runtime,
+    )
+    .expect("state should use the harness permission broker")
+}
 
-    assert!(matches!(error, ToolError::PermissionDenied(_)));
-    assert!(!error.to_string().contains("provider-test-token"));
+mod capability_route_conversation {
+    use super::*;
+    use harness_contracts::ConversationModelCapability;
+
+    struct NoToolCallingScriptedProvider {
+        responses: Vec<ScriptedResponse>,
+        requests: Mutex<Vec<jyowo_harness_sdk::ext::ModelRequest>>,
+    }
+
+    impl NoToolCallingScriptedProvider {
+        fn new(responses: Vec<ScriptedResponse>) -> Self {
+            Self {
+                responses,
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        async fn requests(&self) -> Vec<jyowo_harness_sdk::ext::ModelRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl jyowo_harness_sdk::ext::ModelProvider for NoToolCallingScriptedProvider {
+        fn provider_id(&self) -> &str {
+            "test"
+        }
+
+        fn supported_models(&self) -> Vec<jyowo_harness_sdk::ext::ModelDescriptor> {
+            vec![jyowo_harness_sdk::ext::ModelDescriptor {
+                provider_id: "test".to_owned(),
+                model_id: "test-model".to_owned(),
+                display_name: "No tool calling".to_owned(),
+                protocol: ModelProtocol::Messages,
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                conversation_capability: ConversationModelCapability {
+                    tool_calling: false,
+                    ..ConversationModelCapability::default()
+                },
+                lifecycle: jyowo_harness_sdk::ext::ModelLifecycle::Stable,
+                pricing: None,
+            }]
+        }
+
+        async fn infer(
+            &self,
+            req: jyowo_harness_sdk::ext::ModelRequest,
+            _ctx: jyowo_harness_sdk::ext::InferContext,
+        ) -> Result<
+            jyowo_harness_sdk::ext::ModelStream,
+            jyowo_harness_sdk::ext::ModelError,
+        > {
+            self.requests.lock().unwrap().push(req);
+            let response = self.responses.first().cloned().unwrap_or(ScriptedResponse::Stream(
+                vec![ModelStreamEvent::MessageStop],
+            ));
+            match response {
+                ScriptedResponse::Stream(events) => {
+                    Ok(Box::pin(futures::stream::iter(events)))
+                }
+                ScriptedResponse::Error(error) => Err(error),
+                ScriptedResponse::WaitForCancel => {
+                    std::future::pending::<()>().await;
+                    Err(jyowo_harness_sdk::ext::ModelError::Cancelled)
+                }
+            }
+        }
+
+        async fn health(&self) -> jyowo_harness_sdk::ext::HealthStatus {
+            jyowo_harness_sdk::ext::HealthStatus::Healthy
+        }
+    }
+
+    #[tokio::test]
+    async fn capability_route_conversation_exposes_minimax_image_tool_with_route() {
+        let workspace = unique_workspace("capability-route-conversation-image-with-route");
+        let provider = Arc::new(ScriptedProvider::new(vec![ScriptedResponse::Stream(vec![
+            ModelStreamEvent::MessageStop,
+        ])]));
+        let state = runtime_state_with_capability_route_harness(
+            workspace,
+            ProviderCapabilityRouteSettings {
+                version: 1,
+                routes: vec![minimax_image_route("minimax-image", true)],
+            },
+            Arc::clone(&provider),
+            provider_settings_with_openai_and_minimax("openai-main", "minimax-image", "route-token"),
+        )
+        .await;
+        let session_id = SessionId::new();
+        open_conversation_session(&state, session_id).await;
+
+        start_run_with_runtime_state(
+            StartRunRequest {
+                client_message_id: None,
+                attachments: None,
+                context_references: None,
+                conversation_id: session_id.to_string(),
+                permission_mode: None,
+                prompt: "draw a poster".to_owned(),
+            },
+            &state,
+        )
+        .await
+        .expect("start_run should start");
+
+        let requests = wait_for_scripted_model_requests(&provider).await;
+        let tool_names = model_request_tool_names(&requests[0]);
+        assert!(tool_names.contains(&"MiniMaxTextToImage".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn capability_route_conversation_hides_minimax_image_tool_without_route() {
+        let workspace = unique_workspace("capability-route-conversation-image-without-route");
+        let provider = Arc::new(ScriptedProvider::new(vec![ScriptedResponse::Stream(vec![
+            ModelStreamEvent::MessageStop,
+        ])]));
+        let state = runtime_state_with_capability_route_harness(
+            workspace,
+            ProviderCapabilityRouteSettings {
+                version: 1,
+                routes: Vec::new(),
+            },
+            Arc::clone(&provider),
+            provider_settings_with_openai_and_minimax("openai-main", "minimax-image", "route-token"),
+        )
+        .await;
+        let session_id = SessionId::new();
+        open_conversation_session(&state, session_id).await;
+
+        start_run_with_runtime_state(
+            StartRunRequest {
+                client_message_id: None,
+                attachments: None,
+                context_references: None,
+                conversation_id: session_id.to_string(),
+                permission_mode: None,
+                prompt: "draw a poster".to_owned(),
+            },
+            &state,
+        )
+        .await
+        .expect("start_run should start");
+
+        let requests = wait_for_scripted_model_requests(&provider).await;
+        let tool_names = model_request_tool_names(&requests[0]);
+        assert!(!tool_names.contains(&"MiniMaxTextToImage".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn capability_route_conversation_hides_service_tools_without_tool_calling() {
+        let workspace = unique_workspace("capability-route-conversation-no-tool-calling");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace = workspace.canonicalize().unwrap();
+        let provider = Arc::new(NoToolCallingScriptedProvider::new(vec![ScriptedResponse::Stream(
+            vec![ModelStreamEvent::MessageStop],
+        )]));
+        let routes = Arc::new(ParkingRwLock::new(ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: vec![minimax_image_route("minimax-image", true)],
+        }));
+        let resolver = desktop_provider_credential_resolver_with_stores(
+            Arc::new(DesktopConversationModelConfigStore::new(workspace.clone())),
+            Arc::new(DesktopProviderSettingsStore::new(workspace.clone())),
+            Arc::clone(&routes),
+        );
+        DesktopProviderSettingsStore::new(workspace.clone())
+            .save_record(&provider_settings_with_openai_and_minimax(
+                "openai-main",
+                "minimax-image",
+                "route-token",
+            ))
+            .expect("provider settings should save");
+        let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
+            default_timeout: Some(Duration::from_secs(5)),
+            heartbeat_interval: None,
+            max_pending: 16,
+        }));
+        let registry = ToolRegistry::builder()
+            .with_builtin_toolset(BuiltinToolset::Default)
+            .build()
+            .expect("tool registry should build");
+        std::fs::create_dir_all(workspace.join(".jyowo").join("runtime").join("blobs")).unwrap();
+        let blob_store = FileBlobStore::open(workspace.join(".jyowo").join("runtime").join("blobs"))
+            .expect("blob store should open");
+        let harness = Arc::new(
+            Harness::builder()
+                .with_options(test_harness_options(&workspace))
+                .with_model_arc(provider.clone())
+                .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+                .with_sandbox(NoopSandbox::new())
+                .with_blob_store(blob_store)
+                .with_stream_permission_broker_arc(
+                    stream_permission_runtime.broker(),
+                    stream_permission_runtime.resolver_handle(),
+                )
+                .with_tool_registry(registry)
+                .with_shared_provider_capability_routes(routes)
+                .with_capability(ToolCapability::ProviderCredentialResolver, resolver)
+                .build()
+                .await
+                .expect("harness should build"),
+        );
+        let state = DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
+            workspace,
+            harness,
+            stream_permission_runtime,
+        )
+        .expect("state should initialize");
+        let session_id = SessionId::new();
+        open_conversation_session(&state, session_id).await;
+
+        start_run_with_runtime_state(
+            StartRunRequest {
+                client_message_id: None,
+                attachments: None,
+                context_references: None,
+                conversation_id: session_id.to_string(),
+                permission_mode: None,
+                prompt: "draw a poster".to_owned(),
+            },
+            &state,
+        )
+        .await
+        .expect("start_run should start");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let requests = provider.requests().await;
+            if !requests.is_empty() {
+                assert!(requests[0].tools.is_none());
+                return;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("timed out waiting for model requests");
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn capability_route_conversation_exposes_video_tools_when_video_route_exists() {
+        let workspace = unique_workspace("capability-route-conversation-video");
+        let provider = Arc::new(ScriptedProvider::new(vec![ScriptedResponse::Stream(vec![
+            ModelStreamEvent::MessageStop,
+        ])]));
+        let state = runtime_state_with_capability_route_harness(
+            workspace,
+            ProviderCapabilityRouteSettings {
+                version: 1,
+                routes: vec![minimax_video_route("minimax-image", true)],
+            },
+            Arc::clone(&provider),
+            provider_settings_with_openai_and_minimax("openai-main", "minimax-image", "route-token"),
+        )
+        .await;
+        let session_id = SessionId::new();
+        open_conversation_session(&state, session_id).await;
+
+        start_run_with_runtime_state(
+            StartRunRequest {
+                client_message_id: None,
+                attachments: None,
+                context_references: None,
+                conversation_id: session_id.to_string(),
+                permission_mode: None,
+                prompt: "make a clip".to_owned(),
+            },
+            &state,
+        )
+        .await
+        .expect("start_run should start");
+
+        let requests = wait_for_scripted_model_requests(&provider).await;
+        let tool_names = model_request_tool_names(&requests[0]);
+        assert!(tool_names.contains(&"MiniMaxTextToVideo".to_owned()));
+        assert!(tool_names.contains(&"MiniMaxVideoGenerationQuery".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn capability_route_conversation_exposes_tts_tools_when_tts_route_exists() {
+        let workspace = unique_workspace("capability-route-conversation-tts");
+        let provider = Arc::new(ScriptedProvider::new(vec![ScriptedResponse::Stream(vec![
+            ModelStreamEvent::MessageStop,
+        ])]));
+        let state = runtime_state_with_capability_route_harness(
+            workspace,
+            ProviderCapabilityRouteSettings {
+                version: 1,
+                routes: vec![minimax_tts_route("minimax-image", true)],
+            },
+            Arc::clone(&provider),
+            provider_settings_with_openai_and_minimax("openai-main", "minimax-image", "route-token"),
+        )
+        .await;
+        let session_id = SessionId::new();
+        open_conversation_session(&state, session_id).await;
+
+        start_run_with_runtime_state(
+            StartRunRequest {
+                client_message_id: None,
+                attachments: None,
+                context_references: None,
+                conversation_id: session_id.to_string(),
+                permission_mode: None,
+                prompt: "read this aloud".to_owned(),
+            },
+            &state,
+        )
+        .await
+        .expect("start_run should start");
+
+        let requests = wait_for_scripted_model_requests(&provider).await;
+        let tool_names = model_request_tool_names(&requests[0]);
+        assert!(tool_names.contains(&"MiniMaxTextToSpeech".to_owned()));
+    }
+}
+
+mod provider_credential_route {
+    use super::*;
+
+    #[tokio::test]
+    async fn provider_credential_route_provider_only_resolution_still_works() {
+        let workspace = canonical_unique_workspace("provider-credential-route-provider-only");
+        let provider_settings = provider_settings_record_with_minimax_config("minimax-main", true);
+        let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
+        provider_store
+            .save_record(&provider_settings)
+            .expect("provider settings should save");
+        let conversation_store = DesktopConversationModelConfigStore::new(workspace);
+        let resolver = desktop_provider_credential_resolver_with_stores(
+            Arc::new(conversation_store),
+            Arc::new(provider_store),
+            empty_provider_capability_routes(),
+        );
+        let session_id = SessionId::new();
+
+        let credential = resolver
+            .resolve_provider_credential(ProviderCredentialResolveContext {
+                tenant_id: TenantId::SINGLE,
+                session_id,
+                run_id: RunId::new(),
+                provider_id: "minimax".to_owned(),
+                operation_id: None,
+                route_kind: None,
+            })
+            .await
+            .expect("provider-only credential resolution should succeed");
+
+        assert_eq!(credential.provider_id, "minimax");
+        assert_eq!(credential.config_id, "minimax-main");
+        assert!(!credential.api_key.is_empty());
+    }
+
+    #[tokio::test]
+    async fn provider_credential_route_routed_service_context_fails_closed_without_route() {
+        let workspace = canonical_unique_workspace("provider-credential-route-routed-fail-closed");
+        let provider_settings = provider_settings_record_with_minimax_config("minimax-main", true);
+        let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
+        provider_store
+            .save_record(&provider_settings)
+            .expect("provider settings should save");
+        let conversation_store = DesktopConversationModelConfigStore::new(workspace);
+        let resolver = desktop_provider_credential_resolver_with_stores(
+            Arc::new(conversation_store),
+            Arc::new(provider_store),
+            empty_provider_capability_routes(),
+        );
+
+        let error = resolver
+            .resolve_provider_credential(ProviderCredentialResolveContext {
+                tenant_id: TenantId::SINGLE,
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
+                provider_id: "minimax".to_owned(),
+                operation_id: Some("minimax.image_generation".to_owned()),
+                route_kind: Some(CapabilityRouteKind::ImageGeneration),
+            })
+            .await
+            .expect_err("routed service credential resolution should fail closed");
+
+        assert!(matches!(error, ToolError::PermissionDenied(_)));
+        assert!(!error.to_string().contains("provider-test-token"));
+    }
+
+    #[tokio::test]
+    async fn provider_credential_route_resolves_routed_service_credential() {
+        let workspace = canonical_unique_workspace("provider-credential-route-success");
+        let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
+        provider_store
+            .save_record(&provider_settings_with_openai_and_minimax(
+                "openai-main",
+                "minimax-image",
+                "route-specific-token",
+            ))
+            .expect("provider settings should save");
+        let routes = Arc::new(ParkingRwLock::new(ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: vec![minimax_image_route("minimax-image", true)],
+        }));
+        let resolver = desktop_provider_credential_resolver_with_stores(
+            Arc::new(DesktopConversationModelConfigStore::new(workspace)),
+            Arc::new(provider_store),
+            routes,
+        );
+
+        let credential = resolver
+            .resolve_provider_credential(ProviderCredentialResolveContext {
+                tenant_id: TenantId::SINGLE,
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
+                provider_id: "minimax".to_owned(),
+                operation_id: Some("minimax.image_generation".to_owned()),
+                route_kind: Some(CapabilityRouteKind::ImageGeneration),
+            })
+            .await
+            .expect("routed service credential resolution should succeed");
+
+        assert_eq!(credential.config_id, "minimax-image");
+        assert_eq!(credential.api_key, "route-specific-token");
+    }
+
+    #[tokio::test]
+    async fn provider_credential_route_wrong_provider_denies_routed_service_credential() {
+        let workspace = canonical_unique_workspace("provider-credential-route-wrong-provider");
+        let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
+        provider_store
+            .save_record(&provider_settings_with_openai_and_minimax(
+                "openai-main",
+                "minimax-image",
+                "route-specific-token",
+            ))
+            .expect("provider settings should save");
+        let routes = Arc::new(ParkingRwLock::new(ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: vec![minimax_image_route("minimax-image", true)],
+        }));
+        let resolver = desktop_provider_credential_resolver_with_stores(
+            Arc::new(DesktopConversationModelConfigStore::new(workspace)),
+            Arc::new(provider_store),
+            routes,
+        );
+
+        let error = resolver
+            .resolve_provider_credential(ProviderCredentialResolveContext {
+                tenant_id: TenantId::SINGLE,
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
+                provider_id: "openai".to_owned(),
+                operation_id: Some("minimax.image_generation".to_owned()),
+                route_kind: Some(CapabilityRouteKind::ImageGeneration),
+            })
+            .await
+            .expect_err("wrong provider should deny routed credential");
+
+        assert!(matches!(error, ToolError::PermissionDenied(_)));
+    }
+
+    #[tokio::test]
+    async fn provider_credential_route_disabled_route_denies_routed_service_credential() {
+        let workspace = canonical_unique_workspace("provider-credential-route-disabled");
+        let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
+        provider_store
+            .save_record(&provider_settings_with_openai_and_minimax(
+                "openai-main",
+                "minimax-image",
+                "route-specific-token",
+            ))
+            .expect("provider settings should save");
+        let routes = Arc::new(ParkingRwLock::new(ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: vec![minimax_image_route("minimax-image", false)],
+        }));
+        let resolver = desktop_provider_credential_resolver_with_stores(
+            Arc::new(DesktopConversationModelConfigStore::new(workspace)),
+            Arc::new(provider_store),
+            routes,
+        );
+
+        let error = resolver
+            .resolve_provider_credential(ProviderCredentialResolveContext {
+                tenant_id: TenantId::SINGLE,
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
+                provider_id: "minimax".to_owned(),
+                operation_id: Some("minimax.image_generation".to_owned()),
+                route_kind: Some(CapabilityRouteKind::ImageGeneration),
+            })
+            .await
+            .expect_err("disabled route should deny routed credential");
+
+        assert!(matches!(error, ToolError::PermissionDenied(_)));
+    }
+
+    #[tokio::test]
+    async fn provider_credential_route_routed_service_never_falls_back_to_default_config() {
+        let workspace = canonical_unique_workspace("provider-credential-route-no-fallback");
+        let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
+        provider_store
+            .save_record(&provider_settings_with_openai_and_minimax(
+                "openai-main",
+                "minimax-image",
+                "route-specific-token",
+            ))
+            .expect("provider settings should save");
+        let resolver = desktop_provider_credential_resolver_with_stores(
+            Arc::new(DesktopConversationModelConfigStore::new(workspace)),
+            Arc::new(provider_store),
+            empty_provider_capability_routes(),
+        );
+
+        let error = resolver
+            .resolve_provider_credential(ProviderCredentialResolveContext {
+                tenant_id: TenantId::SINGLE,
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
+                provider_id: "minimax".to_owned(),
+                operation_id: Some("minimax.image_generation".to_owned()),
+                route_kind: Some(CapabilityRouteKind::ImageGeneration),
+            })
+            .await
+            .expect_err("routed service must not fall back to default provider config");
+
+        assert!(matches!(error, ToolError::PermissionDenied(_)));
+        assert!(!error.to_string().contains("openai-test-token"));
+    }
 }
 
 #[test]

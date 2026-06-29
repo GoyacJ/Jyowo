@@ -579,6 +579,7 @@ struct HarnessInner {
     workspace_registry: Arc<WorkspaceRegistry>,
     active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, ActiveConversationRun>>>,
     deleted_conversation_sessions: Arc<parking_lot::Mutex<HashSet<(TenantId, SessionId)>>>,
+    provider_capability_routes: Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>>,
 }
 
 #[derive(Clone)]
@@ -1045,6 +1046,15 @@ impl Harness {
                 workspace_registry: Arc::new(WorkspaceRegistry::new()),
                 active_conversation_runs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
                 deleted_conversation_sessions: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+                provider_capability_routes: extras
+                    .provider_capability_routes
+                    .take()
+                    .unwrap_or_else(|| {
+                        Arc::new(parking_lot::RwLock::new(ProviderCapabilityRouteSettings {
+                            version: 1,
+                            routes: Vec::new(),
+                        }))
+                    }),
             }),
         })
     }
@@ -2061,6 +2071,11 @@ impl Harness {
         };
         let tool_registry_snapshot = self.inner.tool_registry.snapshot();
         let mut tool_filter = filter_unavailable_tools(&tool_registry_snapshot, &cap_registry);
+        filter_unrouted_service_tools(
+            &mut tool_filter,
+            &tool_registry_snapshot,
+            &*self.inner.provider_capability_routes.read(),
+        );
         apply_tenant_tool_filter(&mut tool_filter, &self.inner.options.tenant_policy);
         let schema_context = SchemaResolverContext {
             run_id: RunId::new(),
@@ -2945,6 +2960,13 @@ impl Harness {
     #[must_use]
     pub fn tool_registry(&self) -> &ToolRegistry {
         &self.inner.tool_registry
+    }
+
+    #[must_use]
+    pub fn provider_capability_routes(
+        &self,
+    ) -> Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>> {
+        Arc::clone(&self.inner.provider_capability_routes)
     }
 
     #[must_use]

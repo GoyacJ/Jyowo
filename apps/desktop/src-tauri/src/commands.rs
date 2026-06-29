@@ -45,6 +45,10 @@ use jyowo_harness_sdk::{
     ConversationTurnInput, ConversationTurnPageDirection, ConversationTurnRequest, Harness,
     McpConfig, RuntimeSkillSummary, RuntimeSkillView, SessionOptions, StreamPermissionRuntime,
 };
+use harness_tool::{
+    provider_service_adapter_availability_from_snapshot, BuiltinToolset, ToolRegistryBuilder,
+};
+use parking_lot::RwLock as ParkingRwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::Emitter;
@@ -1063,16 +1067,19 @@ pub trait SkillStore: Send + Sync {
 struct DesktopProviderCredentialResolver {
     conversation_model_config_store: Arc<dyn ConversationModelConfigStore>,
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
+    provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
 }
 
 impl DesktopProviderCredentialResolver {
     fn new(
         conversation_model_config_store: Arc<dyn ConversationModelConfigStore>,
         provider_settings_store: Arc<dyn ProviderSettingsStore>,
+        provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
     ) -> Self {
         Self {
             conversation_model_config_store,
             provider_settings_store,
+            provider_capability_routes,
         }
     }
 }
@@ -1083,10 +1090,51 @@ impl ProviderCredentialResolverCap for DesktopProviderCredentialResolver {
         context: ProviderCredentialResolveContext,
     ) -> futures::future::BoxFuture<'_, Result<ProviderCredential, ToolError>> {
         Box::pin(async move {
-            if context.operation_id.is_some() && context.route_kind.is_some() {
-                return Err(ToolError::PermissionDenied(
-                    "provider service credential resolution is unavailable".to_owned(),
-                ));
+            if let (Some(operation_id), Some(route_kind)) =
+                (context.operation_id.clone(), context.route_kind)
+            {
+                let routes = context_provider_capability_route(
+                    &self.provider_capability_routes,
+                    &context.provider_id,
+                    &operation_id,
+                    route_kind,
+                )?;
+                let record = self
+                    .provider_settings_store
+                    .load_record()
+                    .map_err(|error| ToolError::PermissionDenied(error.message))?
+                    .ok_or_else(|| {
+                        ToolError::PermissionDenied(
+                            "provider service credential resolution is unavailable".to_owned(),
+                        )
+                    })?;
+                let selected = record
+                    .configs
+                    .iter()
+                    .find(|config| config.id == routes.config_id)
+                    .ok_or_else(|| {
+                        ToolError::PermissionDenied(
+                            "provider service credential resolution is unavailable".to_owned(),
+                        )
+                    })?;
+                if selected.provider_id != context.provider_id
+                    || selected.provider_id != routes.provider_id
+                {
+                    return Err(ToolError::PermissionDenied(
+                        "provider service credential resolution is unavailable".to_owned(),
+                    ));
+                }
+                if selected.api_key.trim().is_empty() {
+                    return Err(ToolError::PermissionDenied(
+                        "provider service credential resolution is unavailable".to_owned(),
+                    ));
+                }
+                return Ok(ProviderCredential {
+                    provider_id: selected.provider_id.clone(),
+                    config_id: selected.id.clone(),
+                    api_key: selected.api_key.clone(),
+                    base_url: selected.base_url.clone(),
+                });
             }
             let record = self
                 .provider_settings_store
@@ -1140,11 +1188,92 @@ impl ProviderCredentialResolverCap for DesktopProviderCredentialResolver {
 pub fn desktop_provider_credential_resolver_with_stores(
     conversation_model_config_store: Arc<dyn ConversationModelConfigStore>,
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
+    provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
 ) -> Arc<dyn ProviderCredentialResolverCap> {
     Arc::new(DesktopProviderCredentialResolver::new(
         conversation_model_config_store,
         provider_settings_store,
+        provider_capability_routes,
     ))
+}
+
+struct ResolvedCapabilityRoute {
+    config_id: String,
+    provider_id: String,
+}
+
+fn context_provider_capability_route(
+    routes: &Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
+    provider_id: &str,
+    operation_id: &str,
+    route_kind: CapabilityRouteKind,
+) -> Result<ResolvedCapabilityRoute, ToolError> {
+    let routes = routes.read();
+    let route = routes.routes.iter().find(|route| {
+        route.enabled
+            && route.kind == route_kind
+            && route.provider_id == provider_id
+            && route
+                .operation_ids
+                .iter()
+                .any(|configured| configured == operation_id)
+    });
+    let route = route.ok_or_else(|| {
+        ToolError::PermissionDenied(
+            "provider service credential resolution is unavailable".to_owned(),
+        )
+    })?;
+    Ok(ResolvedCapabilityRoute {
+        config_id: route.config_id.clone(),
+        provider_id: route.provider_id.clone(),
+    })
+}
+
+fn load_provider_capability_route_settings(
+    store: &dyn ProviderCapabilityRouteStore,
+) -> Result<ProviderCapabilityRouteSettings, CommandErrorPayload> {
+    Ok(store
+        .load_record()?
+        .unwrap_or_else(empty_provider_capability_route_settings))
+}
+
+fn shared_provider_capability_routes_from_store(
+    store: &dyn ProviderCapabilityRouteStore,
+) -> Result<Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>, CommandErrorPayload> {
+    Ok(Arc::new(ParkingRwLock::new(
+        load_provider_capability_route_settings(store)?,
+    )))
+}
+
+fn desktop_provider_service_adapter_availability(
+    runtime_state: &DesktopRuntimeState,
+) -> ProviderServiceAdapterAvailability {
+    runtime_state
+        .harness()
+        .map(|harness| {
+            provider_service_adapter_availability_from_snapshot(&harness.tool_registry().snapshot())
+        })
+        .unwrap_or_else(default_desktop_provider_service_adapter_availability)
+}
+
+fn default_desktop_provider_service_adapter_availability() -> ProviderServiceAdapterAvailability {
+    ToolRegistryBuilder::new()
+        .with_builtin_toolset(BuiltinToolset::Default)
+        .build()
+        .map(|registry| {
+            provider_service_adapter_availability_from_snapshot(&registry.snapshot())
+        })
+        .unwrap_or_default()
+}
+
+fn sync_runtime_provider_capability_routes(
+    runtime_state: &DesktopRuntimeState,
+    routes: &ProviderCapabilityRouteSettings,
+) {
+    *runtime_state.provider_capability_routes.write() = routes.clone();
+    if let Some(harness) = runtime_state.harness() {
+        *harness.provider_capability_routes().write() = routes.clone();
+    }
 }
 
 #[derive(Clone)]
@@ -2648,6 +2777,9 @@ pub struct DesktopRuntimeState {
         Arc<tokio::sync::Mutex<HashMap<String, ProviderConfigRevealTokenRecord>>>,
     provider_settings_lock: Arc<tokio::sync::Mutex<()>>,
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
+    provider_capability_route_lock: Arc<tokio::sync::Mutex<()>>,
+    provider_capability_route_store: Arc<DesktopProviderCapabilityRouteStore>,
+    provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
     execution_settings_lock: Arc<tokio::sync::Mutex<()>>,
     execution_settings_store: Arc<DesktopExecutionSettingsStore>,
     skill_catalog_install_tasks:
@@ -2711,6 +2843,13 @@ impl DesktopRuntimeState {
             provider_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_store: Arc::new(DesktopProviderSettingsStore::new(
                 workspace_root.clone(),
+            )),
+            provider_capability_route_lock: Arc::new(tokio::sync::Mutex::new(())),
+            provider_capability_route_store: Arc::new(DesktopProviderCapabilityRouteStore::new(
+                workspace_root.clone(),
+            )),
+            provider_capability_routes: Arc::new(ParkingRwLock::new(
+                empty_provider_capability_route_settings(),
             )),
             execution_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
             execution_settings_store: Arc::new(DesktopExecutionSettingsStore::new(
@@ -2793,6 +2932,7 @@ impl DesktopRuntimeState {
         }
         let permission_resolver: Arc<dyn PermissionResolver> = stream_permission_runtime.clone();
 
+        let provider_capability_routes = harness.provider_capability_routes();
         Ok(Self {
             active_runtime: Arc::new(RwLock::new(DesktopActiveRuntime {
                 default_model_id,
@@ -2817,6 +2957,11 @@ impl DesktopRuntimeState {
             provider_settings_store: Arc::new(DesktopProviderSettingsStore::new(
                 workspace_root.clone(),
             )),
+            provider_capability_route_lock: Arc::new(tokio::sync::Mutex::new(())),
+            provider_capability_route_store: Arc::new(DesktopProviderCapabilityRouteStore::new(
+                workspace_root.clone(),
+            )),
+            provider_capability_routes,
             execution_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
             execution_settings_store: Arc::new(DesktopExecutionSettingsStore::new(
                 workspace_root.clone(),
@@ -2986,10 +3131,14 @@ async fn runtime_state_from_stream_permission_runtime(
     stream_permission_runtime: Arc<StreamPermissionRuntime>,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
     let workspace_root = canonical_workspace_root(workspace_root, "workspace root".to_owned())?;
+    let route_store = DesktopProviderCapabilityRouteStore::new(workspace_root.clone());
+    let provider_capability_routes =
+        shared_provider_capability_routes_from_store(&route_store)?;
     let (harness, model_id, protocol) = build_desktop_harness(
         &workspace_root,
         Arc::clone(&stream_permission_runtime),
         None,
+        Arc::clone(&provider_capability_routes),
     )
     .await?;
 
@@ -3006,6 +3155,7 @@ async fn build_desktop_harness(
     workspace_root: &Path,
     stream_permission_runtime: Arc<StreamPermissionRuntime>,
     model_config_id: Option<&str>,
+    provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
 ) -> Result<(Harness, String, ModelProtocol), CommandErrorPayload> {
     let event_store = JsonlEventStore::open(
         workspace_root.join(".jyowo").join("runtime").join("events"),
@@ -3050,12 +3200,14 @@ async fn build_desktop_harness(
         Arc::new(DesktopProviderCredentialResolver::new(
             Arc::new(conversation_model_config_store),
             Arc::new(provider_settings_store.clone()),
+            Arc::clone(&provider_capability_routes),
         ));
 
     let harness = Harness::builder()
         .with_workspace_root(workspace_root)
         .with_model_arc(model_provider)
         .with_model_id(model_id.clone())
+        .with_shared_provider_capability_routes(provider_capability_routes)
         .with_default_session_options(
             SessionOptions::new(workspace_root)
                 .with_model_id(model_id.clone())
@@ -5103,19 +5255,21 @@ async fn provider_capability_route_runtime_context(
     runtime_state: &DesktopRuntimeState,
 ) -> Result<
     (
-        DesktopProviderCapabilityRouteStore,
+        Arc<DesktopProviderCapabilityRouteStore>,
         ProviderSettingsRecord,
         ModelProviderCatalogResponse,
+        ProviderServiceAdapterAvailability,
     ),
     CommandErrorPayload,
 > {
     Ok((
-        DesktopProviderCapabilityRouteStore::new(runtime_state.workspace_root.clone()),
+        Arc::clone(&runtime_state.provider_capability_route_store),
         runtime_state
             .provider_settings_store
             .load_record()?
             .unwrap_or_default(),
         list_model_provider_catalog_payload_with_remote().await,
+        desktop_provider_service_adapter_availability(runtime_state),
     ))
 }
 
@@ -7771,6 +7925,7 @@ pub async fn start_run_with_runtime_state(
                 &state.workspace_root,
                 Arc::clone(stream_permission_runtime),
                 Some(&model_config_id),
+                Arc::clone(&state.provider_capability_routes),
             )
             .await?;
             (
@@ -11650,13 +11805,13 @@ pub async fn list_provider_capability_routes(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListProviderCapabilityRoutesResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
-    let (store, provider_settings, provider_catalog) =
+    let (store, provider_settings, provider_catalog, adapter_availability) =
         provider_capability_route_runtime_context(&runtime_state).await?;
     list_provider_capability_routes_with_store(
-        &store,
+        store.as_ref(),
         &provider_settings,
         &provider_catalog,
-        &ProviderServiceAdapterAvailability::default(),
+        &adapter_availability,
     )
     .await
 }
@@ -11666,13 +11821,13 @@ pub async fn list_provider_capability_route_options(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListProviderCapabilityRouteOptionsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
-    let (store, provider_settings, provider_catalog) =
+    let (store, provider_settings, provider_catalog, adapter_availability) =
         provider_capability_route_runtime_context(&runtime_state).await?;
     list_provider_capability_route_options_from_inputs(
-        &store,
+        store.as_ref(),
         &provider_settings,
         &provider_catalog,
-        &ProviderServiceAdapterAvailability::default(),
+        &adapter_availability,
     )
 }
 
@@ -11682,16 +11837,24 @@ pub async fn save_provider_capability_route(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SaveProviderCapabilityRouteResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
-    let (store, provider_settings, provider_catalog) =
+    let (store, provider_settings, provider_catalog, adapter_availability) =
         provider_capability_route_runtime_context(&runtime_state).await?;
-    save_provider_capability_route_with_store(
+    let response = save_provider_capability_route_with_store(
         SaveProviderCapabilityRouteRequest { route },
-        &store,
+        store.as_ref(),
         &provider_settings,
         &provider_catalog,
-        &ProviderServiceAdapterAvailability::default(),
+        &adapter_availability,
     )
-    .await
+    .await?;
+    sync_runtime_provider_capability_routes(
+        &runtime_state,
+        &ProviderCapabilityRouteSettings {
+            version: response.version,
+            routes: response.routes.clone(),
+        },
+    );
+    Ok(response)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -11702,20 +11865,28 @@ pub async fn delete_provider_capability_route(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<DeleteProviderCapabilityRouteResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
-    let (store, provider_settings, provider_catalog) =
+    let (store, provider_settings, provider_catalog, adapter_availability) =
         provider_capability_route_runtime_context(&runtime_state).await?;
-    delete_provider_capability_route_with_store(
+    let response = delete_provider_capability_route_with_store(
         DeleteProviderCapabilityRouteRequest {
             kind,
             config_id,
             provider_id,
         },
-        &store,
+        store.as_ref(),
         &provider_settings,
         &provider_catalog,
-        &ProviderServiceAdapterAvailability::default(),
+        &adapter_availability,
     )
-    .await
+    .await?;
+    sync_runtime_provider_capability_routes(
+        &runtime_state,
+        &ProviderCapabilityRouteSettings {
+            version: response.version,
+            routes: response.routes.clone(),
+        },
+    );
+    Ok(response)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -11793,6 +11964,7 @@ pub async fn save_provider_settings(
             &runtime_state.workspace_root,
             Arc::clone(stream_permission_runtime),
             Some(&response.config.id),
+            Arc::clone(&runtime_state.provider_capability_routes),
         )
         .await?;
         let _start_run_guard = runtime_state.start_run_lock.lock().await;
