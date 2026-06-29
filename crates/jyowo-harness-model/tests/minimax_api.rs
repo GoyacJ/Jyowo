@@ -454,6 +454,65 @@ async fn minimax_api_client_covers_official_generation_endpoints() {
     client.file_delete("file-1").await.unwrap();
 }
 
+#[tokio::test]
+async fn minimax_api_async_job_and_media_response_fields_match_tool_contract() {
+    let server = MockServer::start().await;
+    let client = MinimaxApiClient::from_api_key("provider-key").with_base_url(server.uri());
+
+    assert_post(
+        &server,
+        "/v1/video_generation",
+        json!({"model": "MiniMax-Hailuo-2.3-Fast", "prompt": "wave"}),
+        json!({"task_id": "video-task"}),
+    )
+    .await;
+    let create = client
+        .video_generation(json!({"model": "MiniMax-Hailuo-2.3-Fast", "prompt": "wave"}))
+        .await
+        .unwrap();
+    assert_eq!(create["task_id"], "video-task");
+
+    Mock::given(method("GET"))
+        .and(path("/v1/query/video_generation"))
+        .and(query_param("task_id", "video-task"))
+        .and(header("authorization", "Bearer provider-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "Success",
+            "video_url": "https://assets.minimaxi.com/generated/video.mp4"
+        })))
+        .mount(&server)
+        .await;
+    let query = client.query_video_generation("video-task").await.unwrap();
+    assert_eq!(query["status"], "Success");
+    assert!(query["video_url"].is_string());
+
+    assert_post(
+        &server,
+        "/v1/t2a_async_v2",
+        json!({"model": "speech-2.8-turbo", "text": "long"}),
+        json!({"task_id": "tts-task"}),
+    )
+    .await;
+    let tts_create = client
+        .text_to_speech_async(json!({"model": "speech-2.8-turbo", "text": "long"}))
+        .await
+        .unwrap();
+    assert_eq!(tts_create["task_id"], "tts-task");
+
+    assert_post(
+        &server,
+        "/v1/music_generation",
+        json!({"model": "music-2.6", "prompt": "short"}),
+        json!({"audio": "AA=="}),
+    )
+    .await;
+    let music = client
+        .music_generation(json!({"model": "music-2.6", "prompt": "short"}))
+        .await
+        .unwrap();
+    assert!(music.get("audio").is_some() || music.get("audio_url").is_some());
+}
+
 async fn assert_post(server: &MockServer, expected_path: &str, expected_body: Value, body: Value) {
     Mock::given(method("POST"))
         .and(path(expected_path))

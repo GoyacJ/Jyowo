@@ -10,6 +10,7 @@
 pub mod builder;
 #[cfg(any(feature = "builtin-toolset", feature = "skill-tools"))]
 pub mod builtin;
+pub mod provider_media;
 pub mod context;
 pub mod error;
 pub mod orchestrator;
