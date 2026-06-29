@@ -99,6 +99,26 @@ impl HookRegistry {
             .retain(|registered| registered.handler.handler_id() != id);
         inner.generation += 1;
     }
+
+    pub fn deregister_from_plugin(&self, plugin_id: &PluginId, id: &str) -> bool {
+        let mut inner = self.inner.write();
+        if !matches!(
+            inner.origins.get(id),
+            Some(HookOrigin::Plugin {
+                plugin_id: owner,
+                ..
+            }) if owner == plugin_id
+        ) {
+            return false;
+        }
+        inner.ids.remove(id);
+        inner.origins.remove(id);
+        inner
+            .handlers
+            .retain(|registered| registered.handler.handler_id() != id);
+        inner.generation += 1;
+        true
+    }
 }
 
 pub struct HookRegistryBuilder {

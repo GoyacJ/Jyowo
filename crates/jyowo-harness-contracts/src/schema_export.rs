@@ -197,6 +197,28 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     );
     insert_schema!(schemas, "manifest_origin_ref", ManifestOriginRef);
     insert_schema!(schemas, "rejection_reason", RejectionReason);
+    insert_schema!(schemas, "plugin_summary", PluginSummary);
+    insert_schema!(schemas, "plugin_detail", PluginDetail);
+    insert_schema!(schemas, "plugin_install_report", PluginInstallReport);
+    insert_schema!(schemas, "plugin_operation_status", PluginOperationStatus);
+    insert_schema!(schemas, "plugin_operation_result", PluginOperationResult);
+    insert_schema!(schemas, "plugin_config_update", PluginConfigUpdate);
+    insert_schema!(schemas, "plugin_recent_event", PluginRecentEvent);
+    insert_schema!(
+        schemas,
+        "plugin_runtime_capability",
+        PluginRuntimeCapability
+    );
+    insert_schema!(
+        schemas,
+        "plugin_runtime_rpc_request",
+        PluginRuntimeRpcRequest
+    );
+    insert_schema!(
+        schemas,
+        "plugin_runtime_rpc_response",
+        PluginRuntimeRpcResponse
+    );
     insert_schema!(schemas, "clarify_prompt", ClarifyPrompt);
     insert_schema!(schemas, "clarify_choice", ClarifyChoice);
     insert_schema!(schemas, "clarify_answer", ClarifyAnswer);
@@ -399,6 +421,7 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "trace_span_completed", TraceSpanCompletedEvent);
     insert_schema!(schemas, "plugin_loaded", PluginLoadedEvent);
     insert_schema!(schemas, "plugin_rejected", PluginRejectedEvent);
+    insert_schema!(schemas, "plugin_failed", PluginFailedEvent);
     insert_schema!(
         schemas,
         "manifest_validation_failed",

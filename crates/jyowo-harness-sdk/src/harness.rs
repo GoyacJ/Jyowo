@@ -37,10 +37,10 @@ use harness_contracts::{
     ConversationTurnInput, Decision, Event, EventId, HarnessError, HookEventKind,
     InteractivityLevel, JournalOffset, ManifestOriginRef, ManifestValidationFailedEvent,
     McpServerId, Message, MessageContent, MessageId, MessagePart, MessageRole, ModelModality,
-    PermissionError, PermissionMode, PluginCapabilitiesSummary, PluginLifecycleStateDiscriminant,
-    PluginLoadedEvent, PluginRejectedEvent, RedactPatternSet, RedactRules, RedactScope, Redactor,
-    RejectionReason, RunId, SessionError, SessionId, TenantId, ToolCapability, ToolSearchMode,
-    TrustLevel, TurnInput,
+    PermissionError, PermissionMode, PluginCapabilitiesSummary, PluginFailedEvent,
+    PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginRejectedEvent, RedactPatternSet,
+    RedactRules, RedactScope, Redactor, RejectionReason, RunId, SessionError, SessionId, TenantId,
+    ToolCapability, ToolSearchMode, TrustLevel, TurnInput,
 };
 #[cfg(feature = "sqlite-store")]
 use harness_contracts::{
@@ -96,6 +96,7 @@ use harness_permission::{
 use harness_permission::{PendingPermissionRequest, ResolverHandle};
 use harness_plugin::{
     ManifestLoaderError, ManifestOrigin, ManifestRecord, PluginCapabilityRegistries, PluginError,
+    PluginEventSink,
 };
 use harness_sandbox::SandboxBackend;
 use harness_session::{
@@ -129,6 +130,14 @@ use crate::skill_pack_loader::{
 
 const JYOWO_DEFAULT_SYSTEM_PROMPT: &str =
     "你是 Jyowo，本地项目工作空间里的 AI 编程伙伴。必须以 Jyowo 的身份协助用户，不能以底层 provider 身份自称。遵守 workspace、权限、脱敏和安全边界。";
+const PLUGIN_FAILURE_WITHHELD_MESSAGE: &str = "Plugin failure withheld from conversation timeline.";
+const PLUGIN_DISCOVERY_FAILED_MESSAGE: &str = "Plugin discovery failed. See Activity for details.";
+const PLUGIN_ACTIVATION_FAILED_MESSAGE: &str =
+    "Plugin activation failed. See Activity for details.";
+const PLUGIN_EVENT_DETAILS_WITHHELD: &str = "withheld";
+const PLUGIN_EVENT_LOCAL_ORIGIN: &str = "<local-plugin>";
+const PLUGIN_EVENT_CARGO_EXTENSION_ORIGIN: &str = "<cargo-extension>";
+const PLUGIN_EVENT_REMOTE_ORIGIN: &str = "<remote-plugin>";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -930,6 +939,9 @@ impl Harness {
         let skill_registry = SkillRegistry::builder().build();
         let mut mcp_config = extras.mcp_config.take();
         let plugin_registry = extras.plugin_registry.take();
+        if plugin_registry.is_some() && mcp_config.is_none() {
+            mcp_config = Some(McpConfig::default());
+        }
         if let Some(registry) = &plugin_registry {
             let mut capability_registries = PluginCapabilityRegistries::default()
                 .with_tool_registry(tool_registry.clone())
@@ -2211,19 +2223,36 @@ impl Harness {
         let Some(registry) = &self.inner.plugin_registry else {
             return Ok(());
         };
-        let discovered = match registry.discover().await {
+        let pending_plugin_events = Arc::new(PendingSessionEvents::default());
+        let discovery_registry =
+            registry.with_scoped_event_sink(Arc::new(BufferedPluginEventSink {
+                pending_session_events: Arc::clone(&pending_plugin_events),
+            }));
+        let discovered = match discovery_registry.discover().await {
             Ok(discovered) => discovered,
             Err(error) => {
-                self.emit_plugin_discovery_error(options, &error).await?;
-                return Err(HarnessError::Other(error.to_string()));
+                let pending_events = pending_plugin_events.drain();
+                let emitted_discovery_event = !pending_events.is_empty();
+                self.append_plugin_events(options, pending_events).await?;
+                if !emitted_discovery_event {
+                    self.emit_plugin_discovery_error(options, &error).await?;
+                }
+                return Err(HarnessError::Other(
+                    PLUGIN_DISCOVERY_FAILED_MESSAGE.to_owned(),
+                ));
             }
         };
+        self.append_plugin_events(options, pending_plugin_events.drain())
+            .await?;
         for plugin in discovered {
             let plugin_id = plugin.record.manifest.plugin_id();
             if matches!(
                 registry.state(&plugin_id),
                 Some(harness_plugin::PluginLifecycleState::Activated)
             ) {
+                continue;
+            }
+            if registry.is_plugin_enabled(&plugin_id) == Some(false) {
                 continue;
             }
             let from_state = registry
@@ -2236,12 +2265,37 @@ impl Harness {
                         .await?;
                 }
                 Err(error) => {
-                    self.emit_plugin_rejected(options, &plugin.record, &error)
-                        .await?;
-                    return Err(HarnessError::Other(error.to_string()));
+                    if matches!(
+                        registry.state(&plugin_id),
+                        Some(harness_plugin::PluginLifecycleState::Failed(_))
+                    ) {
+                        self.emit_plugin_failed(options, &plugin.record).await?;
+                    } else {
+                        self.emit_plugin_rejected(options, &plugin.record, &error)
+                            .await?;
+                    }
+                    return Err(HarnessError::Other(
+                        PLUGIN_ACTIVATION_FAILED_MESSAGE.to_owned(),
+                    ));
                 }
             }
         }
+        Ok(())
+    }
+
+    async fn append_plugin_events(
+        &self,
+        options: &SessionOptions,
+        events: Vec<Event>,
+    ) -> Result<(), HarnessError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        self.inner
+            .event_store
+            .append(options.tenant_id, options.session_id, &events)
+            .await
+            .map_err(HarnessError::Journal)?;
         Ok(())
     }
 
@@ -2304,6 +2358,34 @@ impl Harness {
         Ok(())
     }
 
+    async fn emit_plugin_failed(
+        &self,
+        options: &SessionOptions,
+        record: &ManifestRecord,
+    ) -> Result<(), HarnessError> {
+        let manifest = &record.manifest;
+        self.inner
+            .event_store
+            .append(
+                options.tenant_id,
+                options.session_id,
+                &[Event::PluginFailed(PluginFailedEvent {
+                    tenant_id: options.tenant_id,
+                    plugin_id: manifest.plugin_id(),
+                    plugin_name: manifest.name.to_string(),
+                    plugin_version: manifest.version.to_string(),
+                    trust_level: manifest.trust_level,
+                    manifest_origin: manifest_origin_ref(&record.origin),
+                    manifest_hash: record.manifest_hash,
+                    failure: PLUGIN_FAILURE_WITHHELD_MESSAGE.to_owned(),
+                    at: harness_contracts::now(),
+                })],
+            )
+            .await
+            .map_err(HarnessError::Journal)?;
+        Ok(())
+    }
+
     async fn emit_plugin_discovery_error(
         &self,
         options: &SessionOptions,
@@ -2328,7 +2410,7 @@ impl Harness {
                             partial_name: failure.partial_name.clone(),
                             partial_version: failure.partial_version.clone(),
                             raw_bytes_hash: failure.raw_bytes_hash,
-                            failure: failure.failure.clone(),
+                            failure: manifest_validation_failure_for_event(&failure.failure),
                             at: harness_contracts::now(),
                         },
                     )],
@@ -2343,7 +2425,13 @@ impl Harness {
         let Some(config) = &self.inner.mcp_config else {
             return Ok(());
         };
-        for server_id in &config.server_ids_to_inject {
+        let mut server_ids = config.server_ids_to_inject.clone();
+        for server_id in config.registry.ready_plugin_server_ids().await {
+            if !server_ids.contains(&server_id) {
+                server_ids.push(server_id);
+            }
+        }
+        for server_id in &server_ids {
             config
                 .registry
                 .inject_tools_into(&self.inner.tool_registry, server_id)
@@ -4874,17 +4962,58 @@ fn plugin_capabilities_summary(
 
 fn manifest_origin_ref(origin: &ManifestOrigin) -> ManifestOriginRef {
     match origin {
-        ManifestOrigin::File { path } => ManifestOriginRef::File {
-            path: path.display().to_string(),
+        ManifestOrigin::File { .. } => ManifestOriginRef::File {
+            path: PLUGIN_EVENT_LOCAL_ORIGIN.to_owned(),
         },
-        ManifestOrigin::CargoExtension { binary, .. } => ManifestOriginRef::CargoExtension {
-            binary: binary.display().to_string(),
+        ManifestOrigin::CargoExtension { .. } => ManifestOriginRef::CargoExtension {
+            binary: PLUGIN_EVENT_CARGO_EXTENSION_ORIGIN.to_owned(),
         },
-        ManifestOrigin::RemoteRegistry { endpoint, .. } => ManifestOriginRef::RemoteRegistry {
-            endpoint: endpoint.clone(),
+        ManifestOrigin::RemoteRegistry { .. } => ManifestOriginRef::RemoteRegistry {
+            endpoint: PLUGIN_EVENT_REMOTE_ORIGIN.to_owned(),
         },
         _ => ManifestOriginRef::File {
-            path: origin.to_string(),
+            path: PLUGIN_EVENT_LOCAL_ORIGIN.to_owned(),
+        },
+    }
+}
+
+fn manifest_validation_failure_for_event(
+    failure: &harness_contracts::ManifestValidationFailure,
+) -> harness_contracts::ManifestValidationFailure {
+    match failure {
+        harness_contracts::ManifestValidationFailure::SyntaxError { .. } => {
+            harness_contracts::ManifestValidationFailure::SyntaxError {
+                details: PLUGIN_EVENT_DETAILS_WITHHELD.to_owned(),
+            }
+        }
+        harness_contracts::ManifestValidationFailure::SchemaViolation { json_pointer, .. } => {
+            harness_contracts::ManifestValidationFailure::SchemaViolation {
+                json_pointer: json_pointer.clone(),
+                details: PLUGIN_EVENT_DETAILS_WITHHELD.to_owned(),
+            }
+        }
+        harness_contracts::ManifestValidationFailure::UnsupportedSchemaVersion {
+            found,
+            supported,
+        } => harness_contracts::ManifestValidationFailure::UnsupportedSchemaVersion {
+            found: *found,
+            supported: supported.clone(),
+        },
+        harness_contracts::ManifestValidationFailure::CargoExtensionMetadataMalformed {
+            ..
+        } => harness_contracts::ManifestValidationFailure::CargoExtensionMetadataMalformed {
+            details: PLUGIN_EVENT_DETAILS_WITHHELD.to_owned(),
+        },
+        harness_contracts::ManifestValidationFailure::RemoteIntegrityMismatch {
+            got_etag, ..
+        } => harness_contracts::ManifestValidationFailure::RemoteIntegrityMismatch {
+            expected_etag: PLUGIN_EVENT_DETAILS_WITHHELD.to_owned(),
+            got_etag: got_etag
+                .as_ref()
+                .map(|_| PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()),
+        },
+        _ => harness_contracts::ManifestValidationFailure::SyntaxError {
+            details: PLUGIN_EVENT_DETAILS_WITHHELD.to_owned(),
         },
     }
 }
@@ -4919,88 +5048,169 @@ fn plugin_state_discriminant(
 fn rejection_reason(error: &PluginError) -> RejectionReason {
     match error {
         PluginError::SignatureInvalid { details } => RejectionReason::SignatureInvalid {
-            details: details.clone(),
+            details: if details.is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
         },
         PluginError::UnknownSigner(signer) => RejectionReason::UnknownSigner {
-            signer: signer.clone(),
+            signer: if signer.is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
         },
         PluginError::SignerRevoked { signer, revoked_at } => RejectionReason::SignerRevoked {
-            signer: signer.clone(),
+            signer: if signer.is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
             revoked_at: *revoked_at,
         },
         PluginError::SlotOccupied { slot, occupant } => RejectionReason::SlotOccupied {
-            slot: format!("{slot:?}"),
-            occupant: occupant.0.clone(),
+            slot: if format!("{slot:?}").is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
+            occupant: if occupant.0.is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
         },
         PluginError::DependencyUnsatisfied {
             dependency,
             requirement,
         } => RejectionReason::DependencyUnsatisfied {
-            dependency: dependency.clone(),
-            requirement: requirement.clone(),
+            dependency: if dependency.is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
+            requirement: if requirement.is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
         },
         PluginError::DependencyCycle(cycle) => RejectionReason::DependencyCycle {
-            cycle: cycle.clone(),
+            cycle: cycle
+                .iter()
+                .map(|_| PLUGIN_EVENT_DETAILS_WITHHELD.to_owned())
+                .collect(),
         },
         PluginError::AdmissionDenied { policy } => RejectionReason::AdmissionDenied {
-            policy: policy.clone(),
+            policy: if policy.is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
         },
         PluginError::NamespaceConflict { details } => RejectionReason::NamespaceConflict {
-            details: details.clone(),
+            details: if details.is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
         },
         PluginError::TrustMismatch {
             declared,
-            source_label,
+            source_label: _,
         } => RejectionReason::AdmissionDenied {
-            policy: format!("trust mismatch: declared {declared:?}, source {source_label}"),
+            policy: format!("trust mismatch: declared {declared:?}, source withheld"),
         },
         PluginError::HarnessVersionIncompatible { required, actual } => {
             RejectionReason::AdmissionDenied {
                 policy: format!(
-                    "harness version incompatible: required {required}, actual {actual}"
+                    "harness version incompatible: required {}, actual {}",
+                    safe_nonempty(required),
+                    safe_nonempty(actual)
                 ),
             }
         }
         PluginError::ActiveDependents(dependents) => RejectionReason::AdmissionDenied {
-            policy: format!("active dependents: {dependents:?}"),
+            policy: format!("active dependents: {}", dependents.len()),
         },
         PluginError::InvalidManifest(details) => RejectionReason::NamespaceConflict {
-            details: details.clone(),
+            details: if details.is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
         },
         PluginError::Registration(error) => RejectionReason::AdmissionDenied {
-            policy: error.to_string(),
+            policy: if error.to_string().is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
         },
         PluginError::ActivateFailed(details)
         | PluginError::DeactivateFailed(details)
         | PluginError::Builder(details) => RejectionReason::AdmissionDenied {
-            policy: details.clone(),
+            policy: if details.is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
         },
         PluginError::SignerStore(error) => RejectionReason::AdmissionDenied {
-            policy: error.to_string(),
+            policy: if error.to_string().is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
         },
         PluginError::ManifestLoader(ManifestLoaderError::Io(error))
         | PluginError::RuntimeLoader(harness_plugin::RuntimeLoaderError::LoadFailed(error))
         | PluginError::RuntimeLoader(harness_plugin::RuntimeLoaderError::UnsupportedOrigin(
             error,
         )) => RejectionReason::AdmissionDenied {
-            policy: error.clone(),
+            policy: if error.is_empty() {
+                String::new()
+            } else {
+                PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+            },
         },
         PluginError::ManifestLoader(ManifestLoaderError::UnsupportedSource(source)) => {
             RejectionReason::AdmissionDenied {
-                policy: source.clone(),
+                policy: if source.is_empty() {
+                    String::new()
+                } else {
+                    PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+                },
             }
         }
         PluginError::ManifestLoader(ManifestLoaderError::Validation(failure)) => {
             RejectionReason::AdmissionDenied {
-                policy: failure.details.clone(),
+                policy: if failure.details.is_empty() {
+                    String::new()
+                } else {
+                    PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+                },
             }
         }
         PluginError::RuntimeLoader(harness_plugin::RuntimeLoaderError::PluginNotFound(name)) => {
             RejectionReason::DependencyUnsatisfied {
-                dependency: name.to_string(),
-                requirement: "static runtime factory".to_owned(),
+                dependency: if name.to_string().is_empty() {
+                    String::new()
+                } else {
+                    PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
+                },
+                requirement: PLUGIN_EVENT_DETAILS_WITHHELD.to_owned(),
             }
         }
+    }
+}
+
+fn safe_nonempty(value: &str) -> String {
+    if value.is_empty() {
+        String::new()
+    } else {
+        PLUGIN_EVENT_DETAILS_WITHHELD.to_owned()
     }
 }
 
@@ -6346,6 +6556,16 @@ struct BufferedSkillEventSink {
 #[async_trait]
 impl harness_skill::SkillEventSink for BufferedSkillEventSink {
     async fn emit(&self, event: Event) {
+        self.pending_session_events.push(event);
+    }
+}
+
+struct BufferedPluginEventSink {
+    pending_session_events: Arc<PendingSessionEvents>,
+}
+
+impl PluginEventSink for BufferedPluginEventSink {
+    fn emit(&self, event: Event) {
         self.pending_session_events.push(event);
     }
 }

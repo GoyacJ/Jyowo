@@ -213,6 +213,7 @@ get_conversation
 get_execution_settings
 get_memory_item
 get_mcp_server_config
+get_plugin_detail
 get_provider_config_api_key
 get_replay_timeline
 get_skill_catalog_entry
@@ -220,6 +221,7 @@ get_skill_catalog_file
 get_skill_detail
 get_skill_file
 harness_healthcheck
+install_plugin_from_path
 list_activity
 list_conversations
 list_skill_catalog_entries
@@ -230,6 +232,7 @@ list_model_provider_catalog
 list_mcp_diagnostics
 list_mcp_servers
 list_memory_items
+list_plugins
 list_provider_settings
 list_projects
 list_skills
@@ -247,13 +250,19 @@ set_execution_settings
 set_conversation_model_config
 set_mcp_server_enabled
 set_skill_enabled
+set_project_plugins_enabled
 start_run
 subscribe_conversation_events
 subscribe_mcp_diagnostics
 switch_project
 unsubscribe_conversation_events
 unsubscribe_mcp_diagnostics
+uninstall_plugin
 update_memory_item
+reload_plugin
+set_plugin_enabled
+update_plugin_config
+validate_plugin_from_path
 validate_provider_settings
 ```
 
@@ -296,6 +305,7 @@ get_conversation(conversation_id: String) -> Result<GetConversationResponse, Com
 get_execution_settings() -> Result<GetExecutionSettingsResponse, CommandErrorPayload>
 get_memory_item(id: String) -> Result<GetMemoryItemResponse, CommandErrorPayload>
 get_mcp_server_config(id: String) -> Result<GetMcpServerConfigResponse, CommandErrorPayload>
+get_plugin_detail(plugin_id: PluginId) -> Result<GetPluginDetailResponse, CommandErrorPayload>
 get_provider_config_api_key(
   config_id: String,
   reveal_token: String
@@ -321,6 +331,9 @@ get_skill_catalog_file(
   path: String
 ) -> Result<GetSkillCatalogFileResponse, CommandErrorPayload>
 harness_healthcheck() -> HarnessHealthcheckPayload
+install_plugin_from_path(
+  source_path: String
+) -> Result<PluginOperationResult, CommandErrorPayload>
 list_activity(
   conversation_id: Option<String>,
   run_id: Option<String>
@@ -344,6 +357,7 @@ list_mcp_diagnostics(
 ) -> Result<ListMcpDiagnosticsResponse, CommandErrorPayload>
 list_mcp_servers() -> Result<ListMcpServersResponse, CommandErrorPayload>
 list_memory_items() -> Result<ListMemoryItemsResponse, CommandErrorPayload>
+list_plugins() -> Result<ListPluginsResponse, CommandErrorPayload>
 list_provider_settings() -> Result<ListProviderSettingsResponse, CommandErrorPayload>
 list_projects() -> ListProjectsResponse
 list_skills() -> Result<ListSkillsResponse, CommandErrorPayload>
@@ -431,10 +445,26 @@ unsubscribe_conversation_events(
 unsubscribe_mcp_diagnostics(
   subscription_id: String
 ) -> Result<UnsubscribeMcpDiagnosticsResponse, CommandErrorPayload>
+uninstall_plugin(plugin_id: PluginId) -> Result<PluginOperationResult, CommandErrorPayload>
 update_memory_item(
   content: String,
   id: String
 ) -> Result<UpdateMemoryItemResponse, CommandErrorPayload>
+reload_plugin(plugin_id: PluginId) -> Result<PluginOperationResult, CommandErrorPayload>
+set_plugin_enabled(
+  plugin_id: PluginId,
+  enabled: bool
+) -> Result<PluginOperationResult, CommandErrorPayload>
+set_project_plugins_enabled(
+  enabled: bool
+) -> Result<SetProjectPluginsEnabledResponse, CommandErrorPayload>
+update_plugin_config(
+  plugin_id: PluginId,
+  values: Value
+) -> Result<PluginOperationResult, CommandErrorPayload>
+validate_plugin_from_path(
+  source_path: String
+) -> Result<PluginInstallReport, CommandErrorPayload>
 validate_provider_settings(
   model_id: String,
   provider_id: String

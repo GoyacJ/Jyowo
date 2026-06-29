@@ -28,6 +28,10 @@ const requiredDocs = [
   'backend-quality.md',
 ]
 
+const requiredArchitectureDocs = [
+  'docs/architecture/harness/crates/harness-plugin.md',
+]
+
 const requiredConcepts = [
   'Policy authority',
   'PermissionBroker',
@@ -145,6 +149,7 @@ function packageNameForMember(member) {
 
 let markdownFiles = []
 let missingDocs = [...requiredDocs]
+let missingArchitectureDocs = []
 let unexpectedDocs = []
 let activeDocs = ''
 
@@ -163,6 +168,8 @@ if (existsSync(docsDir)) {
 
   activeDocs = markdownFiles.map((file) => read(join(docsDir, file))).join('\n')
 }
+
+missingArchitectureDocs = requiredArchitectureDocs.filter((path) => !existsSync(join(repoRoot, path)))
 
 const engineeringDocPath = join(docsDir, 'backend-engineering.md')
 const qualityDocPath = join(docsDir, 'backend-quality.md')
@@ -291,6 +298,7 @@ const mismatchedRustDependencyRows = upstreamHeldRustDependencies.flatMap((depen
 
 if (
   missingDocs.length > 0 ||
+  missingArchitectureDocs.length > 0 ||
   unexpectedDocs.length > 0 ||
   oldNameMatches.length > 0 ||
   stageLanguageMatches.length > 0 ||
@@ -319,6 +327,12 @@ if (
   if (missingDocs.length > 0) {
     console.error('\nMissing active docs:')
     for (const file of missingDocs) {
+      console.error(`- ${file}`)
+    }
+  }
+  if (missingArchitectureDocs.length > 0) {
+    console.error('\nMissing architecture docs:')
+    for (const file of missingArchitectureDocs) {
       console.error(`- ${file}`)
     }
   }

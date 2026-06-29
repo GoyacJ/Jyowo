@@ -32,6 +32,19 @@ pub struct PluginRejectedEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PluginFailedEvent {
+    pub tenant_id: TenantId,
+    pub plugin_id: PluginId,
+    pub plugin_name: String,
+    pub plugin_version: SemverString,
+    pub trust_level: TrustLevel,
+    pub manifest_origin: ManifestOriginRef,
+    pub manifest_hash: [u8; 32],
+    pub failure: String,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ManifestValidationFailedEvent {
     pub tenant_id: TenantId,
     pub manifest_origin: ManifestOriginRef,

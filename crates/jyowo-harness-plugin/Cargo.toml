@@ -29,10 +29,13 @@ jyowo-harness-mcp = { path = "../jyowo-harness-mcp" }
 jyowo-harness-skill = { path = "../jyowo-harness-skill" }
 jyowo-harness-tool = { path = "../jyowo-harness-tool" }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
+jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox" }
 jsonschema = { workspace = true }
 parking_lot = "0.12.5"
+regex = { workspace = true }
 ring = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }

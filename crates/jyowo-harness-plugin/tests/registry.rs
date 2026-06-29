@@ -7,16 +7,19 @@ use std::sync::{
 
 use async_trait::async_trait;
 use harness_contracts::{
-    DeferPolicy, Event, HookFailureMode, McpServerId, McpServerSource, MemoryError, MemoryId,
-    PluginId, ProviderRestriction, RejectionReason, SteeringBody, SteeringId, SteeringKind,
-    SteeringPriority, SteeringRequest, SteeringSource, ToolDescriptor, ToolGroup, ToolOrigin,
-    ToolProperties, TrustLevel,
+    DeferPolicy, Event, HookFailureMode, ManifestOriginRef, McpServerId, McpServerSource,
+    MemoryError, MemoryId, PluginId, PluginRecentEvent, ProviderRestriction, RejectionReason,
+    SteeringBody, SteeringId, SteeringKind, SteeringPriority, SteeringRequest, SteeringSource,
+    ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties, TrustLevel,
 };
 use harness_hook::{
     HookContext, HookEvent, HookHandler, HookOrigin, HookOutcome, HookRegistrationKind,
     HookRegistry,
 };
-use harness_mcp::{McpRegistry, McpServerSpec, TransportChoice};
+use harness_mcp::{
+    McpConnection, McpError, McpRegistry, McpServerSpec, McpToolDescriptor, McpToolResult,
+    TransportChoice,
+};
 use harness_memory::{
     MemoryLifecycle, MemoryListScope, MemoryQuery, MemoryRecord, MemoryStore, MemorySummary,
 };
@@ -76,6 +79,7 @@ async fn activate_injects_only_declared_capability_handles() {
             tools: vec![harness_plugin::ToolManifestEntry {
                 name: "declared-tool".to_owned(),
                 destructive: false,
+                input_schema: serde_json::json!({ "type": "object" }),
             }],
             ..PluginCapabilities::default()
         },
@@ -126,6 +130,43 @@ async fn config_disabled_skips_manifest_and_runtime_loaders() {
 }
 
 #[tokio::test]
+async fn disabled_plugin_is_discovered_but_not_activated() {
+    let manifest = record("disabled-entry", PluginCapabilities::default());
+    let plugin: Arc<dyn Plugin> = Arc::new(NoopPlugin::new(manifest.clone()));
+    let runtime = Arc::new(CountingRuntimeLoader::new(plugin));
+    let registry = PluginRegistry::builder()
+        .with_config(PluginConfig {
+            disabled_plugins: BTreeSet::from([PluginName::new("disabled-entry").unwrap()]),
+            ..PluginConfig::default()
+        })
+        .with_manifest_loader(Arc::new(StaticManifestLoader::new(vec![manifest.clone()])))
+        .with_runtime_loader(runtime.clone())
+        .build()
+        .unwrap();
+
+    let discovered = registry.discover().await.unwrap();
+    let error = registry
+        .activate(&plugin_id("disabled-entry"))
+        .await
+        .unwrap_err();
+    let products = registry.product_snapshot();
+
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(
+        registry.state(&plugin_id("disabled-entry")).unwrap(),
+        harness_plugin::PluginLifecycleState::Deactivated
+    );
+    assert!(matches!(error, PluginError::AdmissionDenied { .. }));
+    assert_eq!(runtime.load_count(), 0);
+    assert_eq!(products.len(), 1);
+    assert!(!products[0].enabled);
+    assert!(matches!(
+        products[0].state,
+        harness_contracts::PluginProductState::Disabled { .. }
+    ));
+}
+
+#[tokio::test]
 async fn project_sources_are_skipped_without_explicit_allow_gate() {
     let manifest_loader = Arc::new(CountingManifestLoader::new(vec![record(
         "project-plugin",
@@ -166,6 +207,86 @@ async fn project_sources_are_discovered_when_allow_gate_is_enabled() {
 }
 
 #[tokio::test]
+async fn product_snapshot_exposes_declared_and_registered_capabilities() {
+    let manifest = record(
+        "product-plugin",
+        PluginCapabilities {
+            tools: vec![harness_plugin::ToolManifestEntry {
+                name: "registered-tool".to_owned(),
+                destructive: false,
+                input_schema: serde_json::json!({ "type": "object" }),
+            }],
+            hooks: vec![harness_plugin::HookManifestEntry {
+                name: "registered-hook".to_owned(),
+                events: Vec::new(),
+            }],
+            mcp_servers: vec![harness_plugin::McpManifestEntry {
+                name: "registered-mcp".to_owned(),
+            }],
+            skills: vec![harness_plugin::SkillManifestEntry {
+                name: "registered-skill".to_owned(),
+            }],
+            memory_provider: Some(harness_plugin::MemoryProviderManifestEntry {
+                name: "memory".to_owned(),
+            }),
+            ..PluginCapabilities::default()
+        },
+    );
+    let plugin: Arc<dyn Plugin> = Arc::new(RegisteringPlugin::new(manifest.clone()));
+    let registry = PluginRegistry::builder()
+        .with_config(PluginConfig {
+            allow_project_plugins: true,
+            ..PluginConfig::default()
+        })
+        .with_source(DiscoverySource::Project("/workspace".into()))
+        .with_manifest_loader(Arc::new(StaticManifestLoader::new(vec![manifest.clone()])))
+        .with_runtime_loader(Arc::new(CountingRuntimeLoader::new(plugin)))
+        .with_capability_registries(
+            PluginCapabilityRegistries::default()
+                .with_tool_registry(ToolRegistry::builder().build().unwrap())
+                .with_hook_registry(HookRegistry::builder().build().unwrap())
+                .with_mcp_registry(McpRegistry::new())
+                .with_skill_registry(SkillRegistry::builder().build()),
+        )
+        .build()
+        .unwrap();
+
+    registry.discover().await.unwrap();
+    registry
+        .activate(&plugin_id("product-plugin"))
+        .await
+        .unwrap();
+
+    let snapshot = registry.product_snapshot();
+    let detail = registry
+        .product_detail(&plugin_id("product-plugin"))
+        .expect("product detail exists");
+
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot[0].id, plugin_id("product-plugin"));
+    assert_eq!(
+        snapshot[0].state,
+        harness_contracts::PluginProductState::Activated
+    );
+    assert!(snapshot[0].capabilities.iter().any(|capability| {
+        capability.kind == harness_contracts::PluginRuntimeCapabilityKind::Tool
+            && capability.name.as_deref() == Some("registered-tool")
+            && capability.registered
+    }));
+    assert_eq!(detail.summary, snapshot[0]);
+    assert_eq!(detail.registered_capabilities.len(), 5);
+    assert_eq!(detail.manifest_hash, [3; 32]);
+    assert_eq!(
+        detail.manifest_origin,
+        ManifestOriginRef::File {
+            path: "<local-plugin>".to_owned()
+        }
+    );
+    assert!(detail.rejection_reason.is_none());
+    assert_eq!(detail.recent_events, vec![PluginRecentEvent::Loaded]);
+}
+
+#[tokio::test]
 async fn admission_policy_rejects_plugins_during_discovery() {
     let denied = record("denied-plugin", PluginCapabilities::default());
     let allowed = record("allowed-plugin", PluginCapabilities::default());
@@ -173,6 +294,8 @@ async fn admission_policy_rejects_plugins_during_discovery() {
         .with_config(PluginConfig {
             enabled: true,
             allow_project_plugins: false,
+            allowed_user_plugins: None,
+            disabled_plugins: BTreeSet::new(),
             policy: PluginAdmissionPolicy::Allow(BTreeSet::from([PluginName::new(
                 "allowed-plugin",
             )
@@ -209,6 +332,8 @@ async fn deny_admission_policy_rejects_plugins_during_discovery() {
         .with_config(PluginConfig {
             enabled: true,
             allow_project_plugins: false,
+            allowed_user_plugins: None,
+            disabled_plugins: BTreeSet::new(),
             policy: PluginAdmissionPolicy::Deny(BTreeSet::from([PluginName::new(
                 "denylisted-plugin",
             )
@@ -245,6 +370,7 @@ async fn strict_plugin_only_policy_blocks_user_controlled_tool_manifests() {
             tools: vec![harness_plugin::ToolManifestEntry {
                 name: "user-tool".to_owned(),
                 destructive: false,
+                input_schema: serde_json::json!({ "type": "object" }),
             }],
             ..PluginCapabilities::default()
         },
@@ -415,6 +541,8 @@ async fn configuration_schema_rejects_invalid_plugin_config_entry() {
         .with_config(PluginConfig {
             enabled: true,
             allow_project_plugins: false,
+            allowed_user_plugins: None,
+            disabled_plugins: BTreeSet::new(),
             policy: PluginAdmissionPolicy::AllowAll,
             entries: BTreeMap::from([(
                 PluginName::new("schema-plugin").unwrap(),
@@ -437,6 +565,236 @@ async fn configuration_schema_rejects_invalid_plugin_config_entry() {
 }
 
 #[tokio::test]
+async fn configuration_schema_validates_product_config_updates() {
+    let mut manifest = record("configurable-plugin", PluginCapabilities::default());
+    manifest.manifest.capabilities.configuration_schema = Some(json!({
+        "type": "object",
+        "required": ["mode"],
+        "properties": {
+            "mode": { "type": "string" },
+            "limit": { "type": "number" }
+        },
+        "additionalProperties": false
+    }));
+    let registry = PluginRegistry::builder()
+        .with_config(PluginConfig {
+            entries: BTreeMap::from([(
+                PluginName::new("configurable-plugin").unwrap(),
+                json!({ "mode": "default" }),
+            )]),
+            ..PluginConfig::default()
+        })
+        .with_manifest_loader(Arc::new(StaticManifestLoader::new(vec![manifest.clone()])))
+        .build()
+        .unwrap();
+
+    registry.discover().await.unwrap();
+
+    registry
+        .validate_config_update(&harness_contracts::PluginConfigUpdate {
+            plugin_id: plugin_id("configurable-plugin"),
+            values: json!({ "mode": "strict", "limit": 8 }),
+        })
+        .unwrap();
+    let error = registry
+        .validate_config_update(&harness_contracts::PluginConfigUpdate {
+            plugin_id: plugin_id("configurable-plugin"),
+            values: json!({ "mode": 1 }),
+        })
+        .unwrap_err();
+
+    assert!(matches!(error, PluginError::AdmissionDenied { .. }));
+
+    let error = registry
+        .validate_config_update(&harness_contracts::PluginConfigUpdate {
+            plugin_id: plugin_id("configurable-plugin"),
+            values: json!({ "mode": "strict", "unknown": "ignored" }),
+        })
+        .unwrap_err();
+
+    assert!(matches!(error, PluginError::AdmissionDenied { .. }));
+}
+
+#[tokio::test]
+async fn configuration_schema_allows_required_secret_to_be_managed_outside_public_config() {
+    let mut manifest = record("secret-plugin", PluginCapabilities::default());
+    manifest.manifest.capabilities.configuration_schema = Some(json!({
+        "type": "object",
+        "required": ["apiToken"],
+        "properties": {
+            "apiToken": { "type": "string", "secret": true },
+            "lineWidth": { "type": "number" }
+        },
+        "additionalProperties": false
+    }));
+    let registry = PluginRegistry::builder()
+        .with_manifest_loader(Arc::new(StaticManifestLoader::new(vec![manifest.clone()])))
+        .build()
+        .unwrap();
+
+    let discovered = registry.discover().await.unwrap();
+
+    assert_eq!(discovered.len(), 1);
+    registry
+        .validate_config_update(&harness_contracts::PluginConfigUpdate {
+            plugin_id: plugin_id("secret-plugin"),
+            values: json!({ "lineWidth": 120 }),
+        })
+        .unwrap();
+    let error = registry
+        .validate_config_update(&harness_contracts::PluginConfigUpdate {
+            plugin_id: plugin_id("secret-plugin"),
+            values: json!({ "apiToken": "sk-unsafe-secret" }),
+        })
+        .unwrap_err();
+
+    assert!(matches!(error, PluginError::AdmissionDenied { .. }));
+}
+
+#[tokio::test]
+async fn product_detail_redacts_nested_secret_config_schema_and_values() {
+    let mut manifest = record("nested-secret-plugin", PluginCapabilities::default());
+    manifest.manifest.capabilities.configuration_schema = Some(json!({
+        "type": "object",
+        "properties": {
+            "service": {
+                "type": "object",
+                "required": ["endpoint", "apiToken"],
+                "properties": {
+                    "endpoint": { "type": "string" },
+                    "apiToken": { "type": "string", "secret": true }
+                },
+                "additionalProperties": false
+            }
+        },
+        "additionalProperties": false
+    }));
+    let registry = PluginRegistry::builder()
+        .with_config(PluginConfig {
+            entries: BTreeMap::from([(
+                PluginName::new("nested-secret-plugin").unwrap(),
+                json!({
+                    "service": {
+                        "endpoint": "https://example.invalid",
+                        "apiToken": "sk-unsafe-secret"
+                    }
+                }),
+            )]),
+            ..PluginConfig::default()
+        })
+        .with_manifest_loader(Arc::new(StaticManifestLoader::new(vec![manifest.clone()])))
+        .build()
+        .unwrap();
+
+    registry.discover().await.unwrap();
+    let detail = registry
+        .product_detail(&manifest.manifest.plugin_id())
+        .expect("plugin detail exists");
+
+    assert_eq!(
+        detail.config,
+        json!({ "service": { "endpoint": "https://example.invalid" } })
+    );
+    let schema = detail.configuration_schema.expect("schema is public");
+    assert!(schema["properties"]["service"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item != "apiToken"));
+    assert!(schema["properties"]["service"]["properties"]
+        .get("apiToken")
+        .is_none());
+    assert!(!detail.config.to_string().contains("sk-unsafe-secret"));
+    assert!(!detail.manifest.to_string().contains("apiToken"));
+    assert!(!schema.to_string().contains("apiToken"));
+}
+
+#[tokio::test]
+async fn product_detail_redacts_secret_schema_maps_and_dynamic_config_values() {
+    let mut manifest = record("dynamic-secret-plugin", PluginCapabilities::default());
+    manifest.manifest.capabilities.configuration_schema = Some(json!({
+        "type": "object",
+        "properties": {
+            "safeMode": { "type": "boolean" }
+        },
+        "patternProperties": {
+            "^token": { "type": "string", "secret": true }
+        },
+        "additionalProperties": { "type": "string", "secret": true },
+        "$defs": {
+            "apiToken": { "type": "string", "secret": true },
+            "safeCount": { "type": "number" }
+        }
+    }));
+    let registry = PluginRegistry::builder()
+        .with_config(PluginConfig {
+            entries: BTreeMap::from([(
+                PluginName::new("dynamic-secret-plugin").unwrap(),
+                json!({
+                    "safeMode": true,
+                    "tokenValue": "sk-pattern-secret",
+                    "extraToken": "sk-additional-secret"
+                }),
+            )]),
+            ..PluginConfig::default()
+        })
+        .with_manifest_loader(Arc::new(StaticManifestLoader::new(vec![manifest.clone()])))
+        .build()
+        .unwrap();
+
+    registry.discover().await.unwrap();
+    let detail = registry
+        .product_detail(&manifest.manifest.plugin_id())
+        .expect("plugin detail exists");
+    let schema = detail.configuration_schema.expect("schema is public");
+    let encoded_schema = schema.to_string();
+    let encoded_manifest = detail.manifest.to_string();
+    let encoded_config = detail.config.to_string();
+
+    assert_eq!(detail.config, json!({ "safeMode": true }));
+    assert!(!encoded_config.contains("sk-pattern-secret"));
+    assert!(!encoded_config.contains("sk-additional-secret"));
+    assert!(!encoded_schema.contains("apiToken"));
+    assert!(!encoded_schema.contains("\"secret\""));
+    assert!(!encoded_manifest.contains("apiToken"));
+    assert!(!encoded_manifest.contains("\"secret\""));
+}
+
+#[tokio::test]
+async fn product_detail_redacts_pattern_property_secrets_using_json_schema_regex() {
+    let mut manifest = record("regex-secret-plugin", PluginCapabilities::default());
+    manifest.manifest.capabilities.configuration_schema = Some(json!({
+        "type": "object",
+        "patternProperties": {
+            "^api(Token|Key)$": { "type": "string", "secret": true }
+        },
+        "additionalProperties": { "type": "string" }
+    }));
+    let registry = PluginRegistry::builder()
+        .with_config(PluginConfig {
+            entries: BTreeMap::from([(
+                PluginName::new("regex-secret-plugin").unwrap(),
+                json!({
+                    "apiToken": "sk-pattern-secret",
+                    "displayName": "Formatter"
+                }),
+            )]),
+            ..PluginConfig::default()
+        })
+        .with_manifest_loader(Arc::new(StaticManifestLoader::new(vec![manifest.clone()])))
+        .build()
+        .unwrap();
+
+    registry.discover().await.unwrap();
+    let detail = registry
+        .product_detail(&manifest.manifest.plugin_id())
+        .expect("plugin detail exists");
+
+    assert_eq!(detail.config, json!({ "displayName": "Formatter" }));
+    assert!(!detail.config.to_string().contains("sk-pattern-secret"));
+}
+
+#[tokio::test]
 async fn activation_context_receives_config_and_workspace_root() {
     let manifest = record("configured-plugin", PluginCapabilities::default());
     let plugin = Arc::new(CapturingPlugin::new(manifest.clone()));
@@ -446,6 +804,8 @@ async fn activation_context_receives_config_and_workspace_root() {
         .with_config(PluginConfig {
             enabled: true,
             allow_project_plugins: false,
+            allowed_user_plugins: None,
+            disabled_plugins: BTreeSet::new(),
             policy: PluginAdmissionPolicy::AllowAll,
             entries: BTreeMap::from([(
                 PluginName::new("configured-plugin").unwrap(),
@@ -478,9 +838,11 @@ async fn activation_records_declared_capability_warnings() {
             tools: vec![harness_plugin::ToolManifestEntry {
                 name: "implemented-tool".to_owned(),
                 destructive: false,
+                input_schema: serde_json::json!({ "type": "object" }),
             }],
             hooks: vec![harness_plugin::HookManifestEntry {
                 name: "missing-hook".to_owned(),
+                events: Vec::new(),
             }],
             ..PluginCapabilities::default()
         },
@@ -681,9 +1043,11 @@ async fn capability_handles_reject_undeclared_registrations() {
             tools: vec![harness_plugin::ToolManifestEntry {
                 name: "allowed".to_owned(),
                 destructive: false,
+                input_schema: serde_json::json!({ "type": "object" }),
             }],
             hooks: vec![harness_plugin::HookManifestEntry {
                 name: "allowed-hook".to_owned(),
+                events: Vec::new(),
             }],
             mcp_servers: vec![harness_plugin::McpManifestEntry {
                 name: "allowed-mcp".to_owned(),
@@ -758,9 +1122,11 @@ async fn plugin_metrics_records_undeclared_capability_registration_rejections() 
             tools: vec![harness_plugin::ToolManifestEntry {
                 name: "allowed".to_owned(),
                 destructive: false,
+                input_schema: serde_json::json!({ "type": "object" }),
             }],
             hooks: vec![harness_plugin::HookManifestEntry {
                 name: "allowed-hook".to_owned(),
+                events: Vec::new(),
             }],
             mcp_servers: vec![harness_plugin::McpManifestEntry {
                 name: "allowed-mcp".to_owned(),
@@ -856,9 +1222,11 @@ async fn plugin_registered_capabilities_are_written_to_owning_registries() {
             tools: vec![harness_plugin::ToolManifestEntry {
                 name: "registered-tool".to_owned(),
                 destructive: false,
+                input_schema: serde_json::json!({ "type": "object" }),
             }],
             hooks: vec![harness_plugin::HookManifestEntry {
                 name: "registered-hook".to_owned(),
+                events: Vec::new(),
             }],
             mcp_servers: vec![harness_plugin::McpManifestEntry {
                 name: "registered-mcp".to_owned(),
@@ -954,6 +1322,7 @@ async fn deactivate_failure_still_unregisters_plugin_capabilities() {
             tools: vec![harness_plugin::ToolManifestEntry {
                 name: "cleanup-tool".to_owned(),
                 destructive: false,
+                input_schema: serde_json::json!({ "type": "object" }),
             }],
             ..PluginCapabilities::default()
         },
@@ -992,6 +1361,7 @@ async fn deactivate_unregisters_host_capabilities_before_plugin_deactivate_callb
             tools: vec![harness_plugin::ToolManifestEntry {
                 name: "ordered-tool".to_owned(),
                 destructive: false,
+                input_schema: serde_json::json!({ "type": "object" }),
             }],
             ..PluginCapabilities::default()
         },
@@ -1019,6 +1389,96 @@ async fn deactivate_unregisters_host_capabilities_before_plugin_deactivate_callb
 }
 
 #[tokio::test]
+async fn deactivate_does_not_unregister_shadowed_builtin_tool() {
+    let manifest = record(
+        "shadowed-tool-plugin",
+        PluginCapabilities {
+            tools: vec![harness_plugin::ToolManifestEntry {
+                name: "shared-tool".to_owned(),
+                destructive: false,
+                input_schema: serde_json::json!({ "type": "object" }),
+            }],
+            ..PluginCapabilities::default()
+        },
+    );
+    let plugin_id = plugin_id("shadowed-tool-plugin");
+    let tool_registry = ToolRegistry::builder().build().unwrap();
+    tool_registry
+        .register(Box::new(FakeTool::builtin("shared-tool")))
+        .unwrap();
+    let plugin: Arc<dyn Plugin> = Arc::new(SpecificToolPlugin::new(
+        manifest.clone(),
+        "shared-tool".to_owned(),
+    ));
+    let registry = PluginRegistry::builder()
+        .with_manifest_loader(Arc::new(StaticManifestLoader::new(vec![manifest])))
+        .with_runtime_loader(Arc::new(CountingRuntimeLoader::new(plugin)))
+        .with_capability_registries(
+            PluginCapabilityRegistries::default().with_tool_registry(tool_registry.clone()),
+        )
+        .build()
+        .unwrap();
+
+    registry.discover().await.unwrap();
+    registry.activate(&plugin_id).await.unwrap();
+    registry.deactivate(&plugin_id).await.unwrap();
+
+    let snapshot = tool_registry.snapshot();
+    let descriptor = snapshot
+        .descriptor("shared-tool")
+        .expect("builtin tool must remain after shadowing plugin deactivates");
+    assert_eq!(descriptor.origin, ToolOrigin::Builtin);
+}
+
+#[tokio::test]
+async fn deactivate_unregisters_plugin_mcp_injected_tools() {
+    let manifest = record(
+        "plugin-mcp",
+        PluginCapabilities {
+            mcp_servers: vec![harness_plugin::McpManifestEntry {
+                name: "registered-mcp".to_owned(),
+            }],
+            ..PluginCapabilities::default()
+        },
+    );
+    let plugin_id = plugin_id("plugin-mcp");
+    let tool_registry = ToolRegistry::builder().build().unwrap();
+    let mcp_registry = McpRegistry::new();
+    let plugin: Arc<dyn Plugin> = Arc::new(ReadyMcpPlugin::new(manifest.clone()));
+    let registry = PluginRegistry::builder()
+        .with_config(PluginConfig {
+            allow_project_plugins: true,
+            ..PluginConfig::default()
+        })
+        .with_source(DiscoverySource::Project("/workspace".into()))
+        .with_manifest_loader(Arc::new(StaticManifestLoader::new(vec![manifest])))
+        .with_runtime_loader(Arc::new(CountingRuntimeLoader::new(plugin)))
+        .with_capability_registries(
+            PluginCapabilityRegistries::default()
+                .with_tool_registry(tool_registry.clone())
+                .with_mcp_registry(mcp_registry.clone()),
+        )
+        .build()
+        .unwrap();
+
+    registry.discover().await.unwrap();
+    registry.activate(&plugin_id).await.unwrap();
+    mcp_registry
+        .inject_tools_into(&tool_registry, &McpServerId("registered-mcp".to_owned()))
+        .await
+        .unwrap();
+    assert!(tool_registry.get("mcp__registered-mcp__lookup").is_some());
+
+    registry.deactivate(&plugin_id).await.unwrap();
+
+    assert!(tool_registry.get("mcp__registered-mcp__lookup").is_none());
+    assert!(mcp_registry
+        .server_spec(&McpServerId("registered-mcp".to_owned()))
+        .await
+        .is_none());
+}
+
+#[tokio::test]
 async fn user_controlled_destructive_tool_registration_is_rejected() {
     let manifest = record(
         "dangerous-plugin",
@@ -1026,6 +1486,7 @@ async fn user_controlled_destructive_tool_registration_is_rejected() {
             tools: vec![harness_plugin::ToolManifestEntry {
                 name: "dangerous-tool".to_owned(),
                 destructive: true,
+                input_schema: serde_json::json!({ "type": "object" }),
             }],
             ..PluginCapabilities::default()
         },
@@ -1051,6 +1512,7 @@ async fn tool_descriptor_destructive_flag_must_match_manifest() {
             tools: vec![harness_plugin::ToolManifestEntry {
                 name: "mismatch-tool".to_owned(),
                 destructive: false,
+                input_schema: serde_json::json!({ "type": "object" }),
             }],
             ..PluginCapabilities::default()
         },
@@ -1082,6 +1544,7 @@ async fn user_controlled_fail_closed_hook_registration_is_rejected() {
         PluginCapabilities {
             hooks: vec![harness_plugin::HookManifestEntry {
                 name: "fail-closed-hook".to_owned(),
+                events: Vec::new(),
             }],
             ..PluginCapabilities::default()
         },
@@ -1106,6 +1569,7 @@ async fn user_controlled_exec_hook_registration_is_rejected() {
         PluginCapabilities {
             hooks: vec![harness_plugin::HookManifestEntry {
                 name: "exec-hook".to_owned(),
+                events: Vec::new(),
             }],
             ..PluginCapabilities::default()
         },
@@ -1130,6 +1594,7 @@ async fn user_controlled_http_hook_without_security_posture_is_rejected() {
         PluginCapabilities {
             hooks: vec![harness_plugin::HookManifestEntry {
                 name: "http-hook".to_owned(),
+                events: Vec::new(),
             }],
             ..PluginCapabilities::default()
         },
@@ -1154,6 +1619,7 @@ async fn hook_declared_trust_must_match_plugin_trust() {
         PluginCapabilities {
             hooks: vec![harness_plugin::HookManifestEntry {
                 name: "trust-hook".to_owned(),
+                events: Vec::new(),
             }],
             ..PluginCapabilities::default()
         },
@@ -1274,10 +1740,18 @@ async fn failed_activation_can_be_retried_from_validated_manifest() {
     let manifest = record("retryable", PluginCapabilities::default());
     let plugin = Arc::new(RetryPlugin::new(manifest.clone()));
     let runtime_plugin: Arc<dyn Plugin> = plugin.clone();
-    let registry = registry_for(
-        manifest,
-        Arc::new(CountingRuntimeLoader::new(runtime_plugin)),
-    );
+    let sink = Arc::new(CollectingSink::default());
+    let registry = PluginRegistry::builder()
+        .with_config(PluginConfig {
+            allow_project_plugins: true,
+            ..PluginConfig::default()
+        })
+        .with_source(DiscoverySource::Project("/workspace".into()))
+        .with_manifest_loader(Arc::new(StaticManifestLoader::new(vec![manifest])))
+        .with_runtime_loader(Arc::new(CountingRuntimeLoader::new(runtime_plugin)))
+        .with_event_sink(sink.clone())
+        .build()
+        .unwrap();
 
     registry.discover().await.unwrap();
     let first = registry
@@ -1289,11 +1763,46 @@ async fn failed_activation_can_be_retried_from_validated_manifest() {
         registry.state(&plugin_id("retryable")).unwrap(),
         harness_plugin::PluginLifecycleState::Failed(_)
     ));
+    let failed_detail = registry
+        .product_detail(&plugin_id("retryable"))
+        .expect("product detail exists");
+    assert_eq!(failed_detail.recent_events, vec![PluginRecentEvent::Failed]);
+    assert!(sink.events().iter().any(|event| matches!(
+        event,
+        Event::PluginFailed(failed)
+            if failed.plugin_id == plugin_id("retryable")
+                && failed.failure == "Plugin failure details withheld."
+    )));
+    assert!(!sink.events().iter().any(|event| matches!(
+        event,
+        Event::PluginRejected(rejected)
+            if rejected.plugin_id == plugin_id("retryable")
+    )));
+
+    registry.discover().await.unwrap();
+    let rediscovered_detail = registry
+        .product_detail(&plugin_id("retryable"))
+        .expect("product detail exists");
+    assert!(matches!(
+        rediscovered_detail.summary.state,
+        harness_contracts::PluginProductState::Failed
+    ));
+    assert_eq!(
+        rediscovered_detail.recent_events,
+        vec![PluginRecentEvent::Failed]
+    );
 
     registry.activate(&plugin_id("retryable")).await.unwrap();
     assert_eq!(
         registry.state(&plugin_id("retryable")).unwrap(),
         harness_plugin::PluginLifecycleState::Activated
+    );
+    let activated_detail = registry
+        .product_detail(&plugin_id("retryable"))
+        .expect("product detail exists");
+    assert_eq!(
+        activated_detail.recent_events,
+        vec![PluginRecentEvent::Failed, PluginRecentEvent::Loaded]
     );
 }
 
@@ -1436,6 +1945,7 @@ async fn custom_toolset_slot_requires_manifest_declaration() {
             tools: vec![harness_plugin::ToolManifestEntry {
                 name: "bundle".to_owned(),
                 destructive: false,
+                input_schema: serde_json::json!({ "type": "object" }),
             }],
             ..PluginCapabilities::default()
         },
@@ -1943,6 +2453,51 @@ impl Plugin for RegisteringPlugin {
     }
 }
 
+struct ReadyMcpPlugin {
+    manifest: PluginManifest,
+}
+
+impl ReadyMcpPlugin {
+    fn new(record: ManifestRecord) -> Self {
+        Self {
+            manifest: record.manifest,
+        }
+    }
+}
+
+#[async_trait]
+impl Plugin for ReadyMcpPlugin {
+    fn manifest(&self) -> &PluginManifest {
+        &self.manifest
+    }
+
+    async fn activate(
+        &self,
+        ctx: PluginActivationContext,
+    ) -> Result<PluginActivationResult, PluginError> {
+        let mcp_id = ctx
+            .mcp
+            .as_ref()
+            .expect("mcp handle")
+            .register_ready(
+                mcp_spec("registered-mcp"),
+                Arc::new(StaticMcpConnection {
+                    tools: vec![mcp_tool_descriptor("lookup")],
+                }),
+            )
+            .await?;
+
+        Ok(PluginActivationResult {
+            registered_mcp: vec![mcp_id],
+            ..PluginActivationResult::default()
+        })
+    }
+
+    async fn deactivate(&self) -> Result<(), PluginError> {
+        Ok(())
+    }
+}
+
 struct PartialRegisteringPlugin {
     manifest: PluginManifest,
 }
@@ -2098,6 +2653,46 @@ impl Plugin for RetryPlugin {
     }
 }
 
+struct SpecificToolPlugin {
+    manifest: PluginManifest,
+    tool_name: String,
+}
+
+impl SpecificToolPlugin {
+    fn new(record: ManifestRecord, tool_name: String) -> Self {
+        Self {
+            manifest: record.manifest,
+            tool_name,
+        }
+    }
+}
+
+#[async_trait]
+impl Plugin for SpecificToolPlugin {
+    fn manifest(&self) -> &PluginManifest {
+        &self.manifest
+    }
+
+    async fn activate(
+        &self,
+        ctx: PluginActivationContext,
+    ) -> Result<PluginActivationResult, PluginError> {
+        ctx.tools
+            .as_ref()
+            .expect("tool handle")
+            .register(Box::new(FakeTool::new(&self.tool_name)))
+            .await?;
+        Ok(PluginActivationResult {
+            registered_tools: vec![self.tool_name.clone()],
+            ..PluginActivationResult::default()
+        })
+    }
+
+    async fn deactivate(&self) -> Result<(), PluginError> {
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl Plugin for ResultPlugin {
     fn manifest(&self) -> &PluginManifest {
@@ -2157,6 +2752,13 @@ impl FakeTool {
         let mut tool = Self::new(name);
         tool.descriptor.properties.is_read_only = false;
         tool.descriptor.properties.is_destructive = true;
+        tool
+    }
+
+    fn builtin(name: &str) -> Self {
+        let mut tool = Self::new(name);
+        tool.descriptor.origin = ToolOrigin::Builtin;
+        tool.descriptor.trust_level = TrustLevel::AdminTrusted;
         tool
     }
 }
@@ -2409,6 +3011,40 @@ fn mcp_spec(id: &str) -> McpServerSpec {
         TransportChoice::InProcess,
         McpServerSource::Plugin(plugin_id("declared-tool")),
     )
+}
+
+fn mcp_tool_descriptor(name: &str) -> McpToolDescriptor {
+    McpToolDescriptor {
+        name: name.to_owned(),
+        description: Some(format!("{name} tool")),
+        input_schema: json!({ "type": "object" }),
+        output_schema: None,
+        annotations: None,
+        meta: BTreeMap::new(),
+    }
+}
+
+struct StaticMcpConnection {
+    tools: Vec<McpToolDescriptor>,
+}
+
+#[async_trait]
+impl McpConnection for StaticMcpConnection {
+    fn connection_id(&self) -> &str {
+        "static-plugin-mcp"
+    }
+
+    async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
+        Ok(self.tools.clone())
+    }
+
+    async fn call_tool(&self, _name: &str, _args: Value) -> Result<McpToolResult, McpError> {
+        Ok(McpToolResult::text("ok"))
+    }
+
+    async fn shutdown(&self) -> Result<(), McpError> {
+        Ok(())
+    }
 }
 
 fn fake_skill(name: &str) -> Skill {

@@ -83,9 +83,43 @@ async fn registry_emits_manifest_validation_failed_event() {
                 && failed.raw_bytes_hash == [7; 32]
                 && matches!(
                     failed.failure,
-                    EventManifestValidationFailure::SyntaxError { .. }
+                    EventManifestValidationFailure::SyntaxError { ref details }
+                        if details == "withheld"
                 )
     )));
+    let encoded = serde_json::to_string(&sink.events()).expect("events json");
+    assert!(!encoded.contains("/plugins/partial"));
+    assert!(!encoded.contains("invalid"));
+}
+
+#[tokio::test]
+async fn registry_emits_plugin_rejected_event_without_raw_details() {
+    let sink = Arc::new(CollectingSink::default());
+    let record = record("jyowo-audit-rejected");
+    let registry = PluginRegistry::builder()
+        .with_event_sink(sink.clone())
+        .with_manifest_loader(Arc::new(StaticManifestLoader {
+            record: record.clone(),
+        }))
+        .build()
+        .expect("registry");
+
+    let discovered = registry.discover().await.expect("discover");
+
+    assert!(discovered.is_empty());
+    assert!(sink.events().iter().any(|event| matches!(
+        event,
+        Event::PluginRejected(rejected)
+            if rejected.plugin_id == record.manifest.plugin_id()
+                && matches!(
+                    rejected.reason,
+                    harness_contracts::RejectionReason::NamespaceConflict { ref details }
+                        if details == "withheld"
+                )
+    )));
+    let encoded = serde_json::to_string(&sink.events()).expect("events json");
+    assert!(!encoded.contains("/plugins/jyowo-audit-rejected"));
+    assert!(!encoded.contains("reserved plugin prefix requires AdminTrusted source"));
 }
 
 #[tokio::test]

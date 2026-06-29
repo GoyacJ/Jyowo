@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use harness_contracts::{HookFailureMode, PluginId, SteeringId, SteeringRequest, TrustLevel};
 use harness_hook::HookRegistry;
 use harness_hook::{HookHandler, HookRegistrationKind};
-use harness_mcp::{McpRegistry, McpServerSpec, TransportChoice};
+use harness_mcp::{McpConnection, McpRegistry, McpServerSpec, TransportChoice};
 use harness_skill::{Skill, SkillRegistry};
 use harness_tool::Tool;
 use harness_tool::ToolRegistry;
@@ -75,6 +75,16 @@ pub trait McpRegistration: Send + Sync {
         &self,
         server: McpServerSpec,
     ) -> Result<harness_contracts::McpServerId, RegistrationError>;
+
+    async fn register_ready(
+        &self,
+        server: McpServerSpec,
+        connection: Arc<dyn McpConnection>,
+    ) -> Result<harness_contracts::McpServerId, RegistrationError> {
+        let _ = connection;
+        self.register(server).await
+    }
+
     fn pending_declared(&self) -> Vec<String>;
 }
 
@@ -206,15 +216,19 @@ impl ToolRegistration for ScopedToolRegistration {
                 details: "UserControlled plugins cannot register destructive tools".to_owned(),
             });
         }
-        if let Some(registry) = &self.registry {
+        let registered = if let Some(registry) = &self.registry {
             registry
                 .register_from_plugin(self.plugin_id.clone(), self.trust_level, tool)
                 .map_err(|error| RegistrationError::OwnerRegistry {
                     kind: "tool",
                     details: error.to_string(),
-                })?;
+                })?
+        } else {
+            true
+        };
+        if registered {
+            self.state.tools.lock().insert(name);
         }
-        self.state.tools.lock().insert(name);
         Ok(())
     }
 
@@ -362,6 +376,51 @@ impl McpRegistration for ScopedMcpRegistration {
         &self,
         server: McpServerSpec,
     ) -> Result<harness_contracts::McpServerId, RegistrationError> {
+        self.validate_server(&server)?;
+        if let Some(registry) = &self.registry {
+            registry
+                .add_plugin_server(self.plugin_id.clone(), self.trust_level, server.clone())
+                .await
+                .map_err(|error| RegistrationError::OwnerRegistry {
+                    kind: "mcp",
+                    details: error.to_string(),
+                })?;
+        }
+        self.state.mcp.lock().insert(server.server_id.0.clone());
+        Ok(server.server_id)
+    }
+
+    async fn register_ready(
+        &self,
+        server: McpServerSpec,
+        connection: Arc<dyn McpConnection>,
+    ) -> Result<harness_contracts::McpServerId, RegistrationError> {
+        self.validate_server(&server)?;
+        if let Some(registry) = &self.registry {
+            registry
+                .add_ready_plugin_server(
+                    self.plugin_id.clone(),
+                    self.trust_level,
+                    server.clone(),
+                    connection,
+                )
+                .await
+                .map_err(|error| RegistrationError::OwnerRegistry {
+                    kind: "mcp",
+                    details: error.to_string(),
+                })?;
+        }
+        self.state.mcp.lock().insert(server.server_id.0.clone());
+        Ok(server.server_id)
+    }
+
+    fn pending_declared(&self) -> Vec<String> {
+        pending(&self.declared, &self.state.mcp)
+    }
+}
+
+impl ScopedMcpRegistration {
+    fn validate_server(&self, server: &McpServerSpec) -> Result<(), RegistrationError> {
         let name = server.server_id.0.clone();
         if !self.declared.contains(&name) {
             record_capability_rejection(self.metrics.as_ref(), "mcp", "undeclared_mcp");
@@ -380,21 +439,7 @@ impl McpRegistration for ScopedMcpRegistration {
                 details: "UserControlled plugins cannot register remote MCP transports".to_owned(),
             });
         }
-        if let Some(registry) = &self.registry {
-            registry
-                .add_plugin_server(self.plugin_id.clone(), self.trust_level, server.clone())
-                .await
-                .map_err(|error| RegistrationError::OwnerRegistry {
-                    kind: "mcp",
-                    details: error.to_string(),
-                })?;
-        }
-        self.state.mcp.lock().insert(server.server_id.0.clone());
-        Ok(server.server_id)
-    }
-
-    fn pending_declared(&self) -> Vec<String> {
-        pending(&self.declared, &self.state.mcp)
+        Ok(())
     }
 }
 

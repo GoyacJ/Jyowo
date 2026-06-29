@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -8,15 +9,29 @@ use std::{
 };
 
 use async_trait::async_trait;
+use chrono::Utc;
+use futures::StreamExt;
 use harness_contracts::{
-    ManifestValidationFailure as EventManifestValidationFailure, PluginId, RejectionReason,
-    TrustLevel,
+    CapabilityRegistry, CausationId, CorrelationId, Decision, InteractivityLevel,
+    ManifestValidationFailure as EventManifestValidationFailure, McpServerId, McpServerSource,
+    PermissionMode, PluginId, RedactRules, RejectionReason, RunId, SessionId, TenantId, ToolResult,
+    ToolUseId, TrustLevel,
 };
+use harness_hook::{
+    HookContext, HookDispatcher, HookEvent, HookMessageView, HookOutcome, HookRegistry,
+    HookSessionView, ReplayMode, ToolDescriptorView,
+};
+use harness_mcp::McpRegistry;
 use harness_plugin::{
     CargoExtensionManifestLoader, CargoExtensionRuntimeLoader, DiscoverySource, FileManifestLoader,
     ManifestLoaderError, ManifestOrigin, ManifestSigner, Plugin, PluginActivationContext,
     PluginActivationResult, PluginConfig, PluginError, PluginManifest, PluginManifestLoader,
     PluginRegistry, PluginRuntimeLoader, StaticLinkRuntimeLoader,
+};
+use harness_skill::{SkillRegistry, SkillSource};
+use harness_tool::{
+    InterruptToken, PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest,
+    PersistedDecision, ToolContext, ToolEvent, ToolRegistry,
 };
 use ring::digest;
 
@@ -150,6 +165,79 @@ async fn file_loader_records_canonical_manifest_hash() {
     let expected_hash: [u8; 32] = expected.as_ref().try_into().unwrap();
 
     assert_eq!(records[0].manifest_hash, expected_hash);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn file_loader_rejects_symlink_plugin_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    write_manifest(
+        &outside.path().join("outside-plugin/plugin.json"),
+        manifest_json("outside-plugin", TrustLevel::AdminTrusted),
+    );
+    std::os::unix::fs::symlink(
+        outside.path().join("outside-plugin"),
+        root.path().join("linked-plugin"),
+    )
+    .unwrap();
+
+    let error = FileManifestLoader
+        .enumerate(&DiscoverySource::Workspace(root.path().into()))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, ManifestLoaderError::Io(message) if message.contains("symlink")));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn file_loader_rejects_symlink_manifest_file() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    write_manifest(
+        &outside.path().join("plugin.json"),
+        manifest_json("linked-manifest", TrustLevel::AdminTrusted),
+    );
+    std::fs::create_dir_all(root.path().join("linked-manifest")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("plugin.json"),
+        root.path().join("linked-manifest/plugin.json"),
+    )
+    .unwrap();
+
+    let error = FileManifestLoader
+        .enumerate(&DiscoverySource::Workspace(root.path().into()))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, ManifestLoaderError::Io(message) if message.contains("symlink")));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn file_loader_rejects_world_writable_plugin_directory_ancestor() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let parent = root.path().join("writable-parent");
+    let plugin = parent.join("plugin");
+    write_manifest(
+        &plugin.join("plugin.json"),
+        manifest_json("world-writable-ancestor", TrustLevel::AdminTrusted),
+    );
+    let mut permissions = std::fs::metadata(&parent).unwrap().permissions();
+    permissions.set_mode(0o777);
+    std::fs::set_permissions(&parent, permissions).unwrap();
+
+    let error = FileManifestLoader
+        .load_package_report(&plugin)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ManifestLoaderError::Io(message) if message.contains("world-writable"))
+    );
 }
 
 #[tokio::test]
@@ -286,8 +374,50 @@ exit 2
 
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].manifest.plugin_id().0, "cargo-a@0.1.0");
+    let canonical_binary = binary.canonicalize().unwrap();
     assert!(
-        matches!(&records[0].origin, ManifestOrigin::CargoExtension { binary: found, package_metadata } if found == &binary && package_metadata.contains_key("package"))
+        matches!(&records[0].origin, ManifestOrigin::CargoExtension { binary: found, package_metadata } if found == &canonical_binary && package_metadata.contains_key("package"))
+    );
+}
+
+#[tokio::test]
+async fn cargo_extension_manifest_loader_supports_runtime_metadata_rpc() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = root.path().join("jyowo-plugin-cargo-rpc");
+    let metadata = serde_json::json!({
+        "manifest": serde_json::from_str::<serde_json::Value>(&manifest_json("cargo-rpc", TrustLevel::AdminTrusted)).unwrap(),
+        "package_metadata": { "package": "cargo-rpc" }
+    });
+    write_executable(
+        &binary,
+        &format!(
+            r#"#!/bin/sh
+if [ "$1" = "--harness-runtime" ]; then
+request=$(cat)
+case "$request" in
+  *\"method\":\"metadata\"*)
+    printf '%s' '{{"jsonrpc":"2.0","id":1,"result":{metadata}}}'
+    exit 0
+    ;;
+esac
+fi
+exit 2
+"#,
+        ),
+    );
+
+    let records = CargoExtensionManifestLoader::new()
+        .with_search_paths(vec![root.path().to_path_buf()])
+        .with_timeout(Duration::from_secs(15))
+        .enumerate(&DiscoverySource::CargoExtension)
+        .await
+        .unwrap();
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].manifest.plugin_id().0, "cargo-rpc@0.1.0");
+    let canonical_binary = binary.canonicalize().unwrap();
+    assert!(
+        matches!(&records[0].origin, ManifestOrigin::CargoExtension { binary: found, package_metadata } if found == &canonical_binary && package_metadata.contains_key("package"))
     );
 }
 
@@ -364,6 +494,376 @@ exit 2
     plugin.deactivate().await.unwrap();
 
     assert_eq!(result.registered_tools, vec!["cargo-tool".to_owned()]);
+}
+
+#[tokio::test]
+async fn cargo_extension_runtime_registers_manifest_tool_proxy_and_executes_it() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = root.path().join("jyowo-plugin-tool-proxy");
+    let manifest = manifest_with_tool(
+        "tool-proxy",
+        "sidecar-tool",
+        false,
+        TrustLevel::UserControlled,
+    );
+    let metadata = serde_json::json!({
+        "manifest": serde_json::to_value(&manifest).unwrap(),
+        "package_metadata": { "package": "tool-proxy" }
+    });
+    write_manifest(&binary.with_extension("metadata"), metadata.to_string());
+    write_executable(
+        &binary,
+        r#"#!/bin/sh
+if [ "$1" = "--harness-manifest" ]; then
+cat "$0.metadata"
+exit 0
+fi
+if [ "$1" = "--harness-runtime" ]; then
+request=$(cat)
+case "$request" in
+  *\"method\":\"activate\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":{"registered_tools":[],"registered_hooks":[],"registered_skills":[],"registered_mcp":[],"occupied_slots":[]}}'
+    exit 0
+    ;;
+  *\"method\":\"tool.execute\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":{"text":"sidecar ok"}}'
+    exit 0
+    ;;
+  *\"method\":\"deactivate\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":null}'
+    exit 0
+    ;;
+esac
+fi
+exit 2
+"#,
+    );
+    let tools = ToolRegistry::builder().build().unwrap();
+    let registry = PluginRegistry::builder()
+        .with_source(DiscoverySource::CargoExtension)
+        .with_manifest_loader(Arc::new(
+            CargoExtensionManifestLoader::new()
+                .with_search_paths(vec![root.path().to_path_buf()])
+                .with_timeout(Duration::from_secs(15)),
+        ))
+        .with_runtime_loader(Arc::new(
+            CargoExtensionRuntimeLoader::new().with_timeout(Duration::from_secs(15)),
+        ))
+        .with_capability_registries(
+            harness_plugin::PluginCapabilityRegistries::default().with_tool_registry(tools.clone()),
+        )
+        .build()
+        .unwrap();
+
+    registry.discover().await.unwrap();
+    registry.activate(&manifest.plugin_id()).await.unwrap();
+
+    let tool = tools.get("sidecar-tool").expect("tool proxy registered");
+    let permission = tool
+        .check_permission(&serde_json::json!({"input": "hello"}), &tool_ctx())
+        .await;
+    assert!(matches!(
+        permission,
+        PermissionCheck::AskUser {
+            subject: harness_contracts::PermissionSubject::ToolInvocation { ref tool, .. },
+            scope: harness_contracts::DecisionScope::ToolName(ref scope)
+        } if tool == "sidecar-tool" && scope == "sidecar-tool"
+    ));
+    tool.validate(&serde_json::json!("not an object"), &tool_ctx())
+        .await
+        .expect_err("sidecar proxy must enforce the manifest input schema");
+    let mut stream = tool
+        .execute(serde_json::json!({"input": "hello"}), tool_ctx())
+        .await
+        .unwrap();
+    let Some(ToolEvent::Final(ToolResult::Text(text))) = stream.next().await else {
+        panic!("expected final text result from sidecar proxy");
+    };
+    assert_eq!(text, "sidecar ok");
+
+    registry.deactivate(&manifest.plugin_id()).await.unwrap();
+    assert!(tools.get("sidecar-tool").is_none());
+}
+
+#[tokio::test]
+async fn cargo_extension_tool_proxy_uses_manifest_input_schema() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = root.path().join("jyowo-plugin-tool-schema");
+    let manifest = manifest_with_tool_schema(
+        "tool-schema",
+        "sidecar-tool",
+        serde_json::json!({
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+                "path": { "type": "string" }
+            },
+            "additionalProperties": false
+        }),
+    );
+    let metadata = serde_json::json!({
+        "manifest": serde_json::to_value(&manifest).unwrap(),
+        "package_metadata": { "package": "tool-schema" }
+    });
+    write_manifest(&binary.with_extension("metadata"), metadata.to_string());
+    write_executable(
+        &binary,
+        r#"#!/bin/sh
+if [ "$1" = "--harness-manifest" ]; then
+cat "$0.metadata"
+exit 0
+fi
+if [ "$1" = "--harness-runtime" ]; then
+request=$(cat)
+case "$request" in
+  *\"method\":\"activate\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":{"registered_tools":[],"registered_hooks":[],"registered_skills":[],"registered_mcp":[],"occupied_slots":[]}}'
+    exit 0
+    ;;
+  *\"method\":\"deactivate\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":null}'
+    exit 0
+    ;;
+esac
+fi
+exit 2
+"#,
+    );
+    let tools = ToolRegistry::builder().build().unwrap();
+    let registry = PluginRegistry::builder()
+        .with_source(DiscoverySource::CargoExtension)
+        .with_manifest_loader(Arc::new(
+            CargoExtensionManifestLoader::new()
+                .with_search_paths(vec![root.path().to_path_buf()])
+                .with_timeout(Duration::from_secs(15)),
+        ))
+        .with_runtime_loader(Arc::new(
+            CargoExtensionRuntimeLoader::new().with_timeout(Duration::from_secs(15)),
+        ))
+        .with_capability_registries(
+            harness_plugin::PluginCapabilityRegistries::default().with_tool_registry(tools.clone()),
+        )
+        .build()
+        .unwrap();
+
+    registry.discover().await.unwrap();
+    registry.activate(&manifest.plugin_id()).await.unwrap();
+
+    let tool = tools.get("sidecar-tool").expect("tool proxy registered");
+    tool.validate(&serde_json::json!({}), &tool_ctx())
+        .await
+        .expect_err("manifest schema should require path");
+    tool.validate(&serde_json::json!({"path": "README.md"}), &tool_ctx())
+        .await
+        .expect("manifest schema should accept a valid payload");
+}
+
+#[tokio::test]
+async fn cargo_extension_runtime_registers_hook_skill_and_mcp_proxies() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = root.path().join("jyowo-plugin-capability-proxy");
+    let manifest = manifest_with_proxy_capabilities("capability-proxy", TrustLevel::UserControlled);
+    let metadata = serde_json::json!({
+        "manifest": serde_json::to_value(&manifest).unwrap(),
+        "package_metadata": { "package": "capability-proxy" }
+    });
+    write_manifest(&binary.with_extension("metadata"), metadata.to_string());
+    write_executable(
+        &binary,
+        r#"#!/bin/sh
+if [ "$1" = "--harness-manifest" ]; then
+cat "$0.metadata"
+exit 0
+fi
+if [ "$1" = "--harness-runtime" ]; then
+request=$(cat)
+case "$request" in
+  *\"method\":\"activate\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":{"registered_tools":[],"registered_hooks":[],"registered_skills":[],"registered_mcp":[],"occupied_slots":[]}}'
+    exit 0
+    ;;
+  *\"method\":\"skill.read\"*)
+    printf '%s' '{"jsonrpc":"2.0","id":1,"result":{"markdown":"---\nname: sidecar-skill\ndescription: Sidecar skill\n---\nUse sidecar skill."}}'
+    exit 0
+    ;;
+  *\"method\":\"hook.handle\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":{"type":"continue"}}'
+    exit 0
+    ;;
+  *\"method\":\"mcp.list_tools\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":[{"name":"echo","description":"Echo","inputSchema":{"type":"object"},"outputSchema":null}]}'
+    exit 0
+    ;;
+  *\"method\":\"mcp.tool.call\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"mcp ok"}],"isError":false}}'
+    exit 0
+    ;;
+  *\"method\":\"deactivate\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":null}'
+    exit 0
+    ;;
+esac
+fi
+exit 2
+"#,
+    );
+    let hooks = HookRegistry::builder().build().unwrap();
+    let skills = SkillRegistry::builder().build();
+    let mcp = McpRegistry::new();
+    let tools = ToolRegistry::builder().build().unwrap();
+    let registry = PluginRegistry::builder()
+        .with_source(DiscoverySource::CargoExtension)
+        .with_manifest_loader(Arc::new(
+            CargoExtensionManifestLoader::new()
+                .with_search_paths(vec![root.path().to_path_buf()])
+                .with_timeout(Duration::from_secs(15)),
+        ))
+        .with_runtime_loader(Arc::new(
+            CargoExtensionRuntimeLoader::new().with_timeout(Duration::from_secs(15)),
+        ))
+        .with_capability_registries(
+            harness_plugin::PluginCapabilityRegistries::default()
+                .with_hook_registry(hooks.clone())
+                .with_skill_registry(skills.clone())
+                .with_mcp_registry(mcp.clone()),
+        )
+        .build()
+        .unwrap();
+
+    registry.discover().await.unwrap();
+    registry.activate(&manifest.plugin_id()).await.unwrap();
+
+    let unrelated_hook_result = HookDispatcher::new(hooks.snapshot())
+        .dispatch(
+            HookEvent::PreToolUse {
+                tool_use_id: ToolUseId::new(),
+                tool_name: "bash".to_owned(),
+                input: serde_json::json!({}),
+            },
+            hook_ctx(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        unrelated_hook_result.trail.is_empty(),
+        "sidecar hook must not receive undeclared hook events"
+    );
+
+    let hook_result = HookDispatcher::new(hooks.snapshot())
+        .dispatch(
+            HookEvent::SessionStart {
+                session_id: SessionId::new(),
+            },
+            hook_ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hook_result.trail.len(), 1);
+    assert_eq!(hook_result.trail[0].handler_id, "sidecar-hook");
+    assert_eq!(hook_result.final_outcome, HookOutcome::Continue);
+
+    let skill = skills
+        .get("sidecar-skill")
+        .expect("sidecar skill proxy registered");
+    assert!(matches!(
+        &skill.source,
+        SkillSource::Plugin { plugin_id, trust }
+            if plugin_id == &manifest.plugin_id() && *trust == TrustLevel::UserControlled
+    ));
+
+    let server_id = McpServerId("sidecar-mcp".to_owned());
+    let spec = mcp
+        .server_spec(&server_id)
+        .await
+        .expect("sidecar MCP proxy registered");
+    assert!(matches!(
+        spec.source,
+        McpServerSource::Plugin(ref plugin_id) if plugin_id == &manifest.plugin_id()
+    ));
+    let injected = mcp.inject_tools_into(&tools, &server_id).await.unwrap();
+    assert_eq!(injected.len(), 1);
+    let mcp_tool = tools.get(&injected[0]).expect("MCP tool was injected");
+    let mut stream = mcp_tool
+        .execute(serde_json::json!({}), tool_ctx())
+        .await
+        .unwrap();
+    let Some(ToolEvent::Final(ToolResult::Text(text))) = stream.next().await else {
+        panic!("expected final text result from sidecar MCP proxy");
+    };
+    assert_eq!(text, "mcp ok");
+
+    registry.deactivate(&manifest.plugin_id()).await.unwrap();
+    assert!(hooks.origin_for("sidecar-hook").is_none());
+    assert!(skills.get("sidecar-skill").is_none());
+    assert!(mcp.server_spec(&server_id).await.is_none());
+}
+
+#[tokio::test]
+async fn cargo_extension_runtime_activate_failure_marks_plugin_failed() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = root.path().join("jyowo-plugin-failing");
+    let manifest = manifest("failing", TrustLevel::UserControlled);
+    let metadata = serde_json::json!({
+        "manifest": serde_json::to_value(&manifest).unwrap(),
+        "package_metadata": { "package": "failing" }
+    });
+    write_manifest(&binary.with_extension("metadata"), metadata.to_string());
+    write_executable(
+        &binary,
+        r#"#!/bin/sh
+if [ "$1" = "--harness-manifest" ]; then
+cat "$0.metadata"
+exit 0
+fi
+if [ "$1" = "--harness-runtime" ]; then
+request=$(cat)
+case "$request" in
+  *\"method\":\"activate\"*)
+    printf '{"jsonrpc":"2.0","id":1,"error":{"code":500,"message":"activate exploded with token=plugin-secret-token at /Users/goya/private"}}'
+    exit 0
+    ;;
+esac
+fi
+exit 2
+"#,
+    );
+    let registry = PluginRegistry::builder()
+        .with_source(DiscoverySource::CargoExtension)
+        .with_manifest_loader(Arc::new(
+            CargoExtensionManifestLoader::new()
+                .with_search_paths(vec![root.path().to_path_buf()])
+                .with_timeout(Duration::from_secs(15)),
+        ))
+        .with_runtime_loader(Arc::new(
+            CargoExtensionRuntimeLoader::new().with_timeout(Duration::from_secs(15)),
+        ))
+        .build()
+        .unwrap();
+
+    registry.discover().await.unwrap();
+    let error = registry.activate(&manifest.plugin_id()).await.unwrap_err();
+
+    assert!(
+        matches!(error, PluginError::ActivateFailed(message) if message.contains("activate exploded"))
+    );
+    assert!(matches!(
+        registry.state(&manifest.plugin_id()),
+        Some(harness_plugin::PluginLifecycleState::Failed(message)) if message.contains("activate exploded")
+    ));
+    let detail = registry
+        .product_detail(&manifest.plugin_id())
+        .expect("failed plugin detail exists");
+    assert_eq!(
+        detail.manifest_origin,
+        harness_contracts::ManifestOriginRef::CargoExtension {
+            binary: "<cargo-extension>".to_owned()
+        }
+    );
+    let failure = detail.failure.expect("product failure summary exists");
+    assert_eq!(failure, "Plugin failure details withheld.");
+    assert!(!failure.contains("plugin-secret-token"));
+    assert!(!failure.contains("/Users/goya"));
+    assert!(!failure.contains("activate exploded"));
 }
 
 #[tokio::test]
@@ -555,6 +1055,176 @@ fn manifest_json(name: &str, trust_level: TrustLevel) -> String {
 
 fn manifest(name: &str, trust_level: TrustLevel) -> PluginManifest {
     serde_json::from_str(&manifest_json(name, trust_level)).unwrap()
+}
+
+fn manifest_with_tool(
+    name: &str,
+    tool_name: &str,
+    destructive: bool,
+    trust_level: TrustLevel,
+) -> PluginManifest {
+    let trust_level = match trust_level {
+        TrustLevel::AdminTrusted => "admin_trusted",
+        TrustLevel::UserControlled => "user_controlled",
+        _ => unreachable!("test only uses known trust levels"),
+    };
+    serde_json::from_str(&format!(
+        r#"{{
+  "manifest_schema_version": 1,
+  "name": "{name}",
+  "version": "0.1.0",
+  "trust_level": "{trust_level}",
+  "min_harness_version": ">=0.0.0",
+  "capabilities": {{
+    "tools": [
+      {{ "name": "{tool_name}", "destructive": {destructive} }}
+    ]
+  }}
+}}"#
+    ))
+    .unwrap()
+}
+
+fn manifest_with_tool_schema(
+    name: &str,
+    tool_name: &str,
+    input_schema: serde_json::Value,
+) -> PluginManifest {
+    let mut manifest = serde_json::json!({
+        "manifest_schema_version": 1,
+        "name": name,
+        "version": "0.1.0",
+        "trust_level": "user_controlled",
+        "min_harness_version": ">=0.0.0",
+        "capabilities": {
+            "tools": [
+                {
+                    "name": tool_name,
+                    "destructive": false,
+                    "input_schema": input_schema
+                }
+            ]
+        }
+    });
+    serde_json::from_value(manifest.take()).unwrap()
+}
+
+fn manifest_with_proxy_capabilities(name: &str, trust_level: TrustLevel) -> PluginManifest {
+    let trust_level = match trust_level {
+        TrustLevel::AdminTrusted => "admin_trusted",
+        TrustLevel::UserControlled => "user_controlled",
+        _ => unreachable!("test only uses known trust levels"),
+    };
+    serde_json::from_str(&format!(
+        r#"{{
+  "manifest_schema_version": 1,
+  "name": "{name}",
+  "version": "0.1.0",
+  "trust_level": "{trust_level}",
+  "min_harness_version": ">=0.0.0",
+  "capabilities": {{
+    "hooks": [
+      {{ "name": "sidecar-hook", "events": ["session_start"] }}
+    ],
+    "skills": [
+      {{ "name": "sidecar-skill" }}
+    ],
+    "mcp_servers": [
+      {{ "name": "sidecar-mcp" }}
+    ]
+  }}
+}}"#
+    ))
+    .unwrap()
+}
+
+fn tool_ctx() -> ToolContext {
+    ToolContext {
+        tool_use_id: ToolUseId::new(),
+        run_id: RunId::new(),
+        session_id: SessionId::new(),
+        tenant_id: TenantId::SINGLE,
+        correlation_id: CorrelationId::new(),
+        agent_id: harness_contracts::AgentId::from_u128(1),
+        subagent_depth: 0,
+        workspace_root: std::env::temp_dir(),
+        sandbox: None,
+        permission_broker: Arc::new(AllowBroker),
+        cap_registry: Arc::new(CapabilityRegistry::default()),
+        redactor: Arc::new(TestRedactor),
+        interrupt: InterruptToken::default(),
+        parent_run: None,
+    }
+}
+
+fn hook_ctx() -> HookContext {
+    HookContext {
+        tenant_id: TenantId::SINGLE,
+        session_id: SessionId::new(),
+        run_id: Some(RunId::new()),
+        turn_index: Some(1),
+        correlation_id: CorrelationId::new(),
+        causation_id: CausationId::new(),
+        trust_level: TrustLevel::UserControlled,
+        permission_mode: PermissionMode::Default,
+        interactivity: InteractivityLevel::FullyInteractive,
+        at: Utc::now(),
+        view: Arc::new(TestSessionView {
+            redactor: TestRedactor,
+        }),
+        upstream_outcome: None,
+        replay_mode: ReplayMode::Live,
+    }
+}
+
+struct AllowBroker;
+
+#[async_trait]
+impl PermissionBroker for AllowBroker {
+    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+        Decision::AllowOnce
+    }
+
+    async fn persist(
+        &self,
+        _decision: PersistedDecision,
+    ) -> Result<(), harness_contracts::PermissionError> {
+        Ok(())
+    }
+}
+
+struct TestRedactor;
+
+impl harness_contracts::Redactor for TestRedactor {
+    fn redact(&self, input: &str, _rules: &RedactRules) -> String {
+        input.replace("secret", "[REDACTED]")
+    }
+}
+
+struct TestSessionView {
+    redactor: TestRedactor,
+}
+
+impl HookSessionView for TestSessionView {
+    fn workspace_root(&self) -> Option<&Path> {
+        None
+    }
+
+    fn recent_messages(&self, _limit: usize) -> Vec<HookMessageView> {
+        Vec::new()
+    }
+
+    fn permission_mode(&self) -> PermissionMode {
+        PermissionMode::Default
+    }
+
+    fn redacted(&self) -> &dyn harness_contracts::Redactor {
+        &self.redactor
+    }
+
+    fn current_tool_descriptor(&self) -> Option<ToolDescriptorView> {
+        None
+    }
 }
 
 fn counting_factory(

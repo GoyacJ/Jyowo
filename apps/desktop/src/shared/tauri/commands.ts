@@ -1232,6 +1232,7 @@ const mcpServerSummarySchema = z
     manageable: z.boolean(),
     origin: mcpServerOriginSchema,
     scope: mcpServerScopeSchema,
+    sourcePluginId: z.string().min(1).optional(),
     status: mcpServerStatusSchema,
     transport: mcpServerTransportKindSchema,
   })
@@ -1487,6 +1488,7 @@ const skillSummarySchema = z
     manageable: z.boolean(),
     name: z.string().min(1),
     origin: skillInstallOriginSchema.optional(),
+    sourcePluginId: z.string().min(1).optional(),
     sourceKind: skillSourceKindSchema,
     status: skillStatusSchema,
     tags: z.array(z.string()),
@@ -1600,6 +1602,223 @@ const deleteSkillResponseSchema = z
     status: z.literal('deleted'),
   })
   .strict()
+
+const pluginIdSchema = z.string().trim().min(1)
+const pluginSourceKindSchema = z.enum(['user', 'workspace', 'project', 'cargo_extension', 'inline'])
+const pluginTrustLevelSchema = z.enum(['admin_trusted', 'user_controlled'])
+const pluginLifecycleStateSchema = z.enum([
+  'validated',
+  'activating',
+  'activated',
+  'deactivating',
+  'deactivated',
+  'rejected',
+  'failed',
+])
+const pluginProductStateSchema = z.union([
+  z.enum([
+    'discovered',
+    'validated',
+    'activating',
+    'activated',
+    'rejected',
+    'failed',
+    'deactivated',
+  ]),
+  z
+    .object({
+      disabled: z
+        .object({
+          last_state: pluginLifecycleStateSchema.nullable().optional(),
+        })
+        .strict(),
+    })
+    .strict(),
+])
+const pluginRuntimeCapabilityKindSchema = z.enum([
+  'tool',
+  'hook',
+  'mcp_server',
+  'skill',
+  'steering',
+  'memory_provider',
+  'coordinator',
+  'custom_toolset',
+])
+const pluginRuntimeCapabilitySchema = z
+  .object({
+    kind: pluginRuntimeCapabilityKindSchema,
+    name: z.string().min(1).optional(),
+    destructive: z.boolean().optional(),
+    registered: z.boolean(),
+  })
+  .strict()
+const pluginSummarySchema = z
+  .object({
+    id: pluginIdSchema,
+    name: z.string().min(1),
+    version: z.string().min(1),
+    description: z.string().optional(),
+    source: pluginSourceKindSchema,
+    trustLevel: pluginTrustLevelSchema,
+    enabled: z.boolean(),
+    state: pluginProductStateSchema,
+    capabilities: z.array(pluginRuntimeCapabilitySchema),
+    warnings: z.array(z.string()),
+  })
+  .strict()
+const pluginManifestOriginSchema = z.union([
+  z
+    .object({
+      file: z
+        .object({
+          path: z.string().min(1),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      cargo_extension: z
+        .object({
+          binary: z.string().min(1),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      remote_registry: z
+        .object({
+          endpoint: z.string().min(1),
+        })
+        .strict(),
+    })
+    .strict(),
+])
+const pluginJsonSchema: z.ZodType<unknown> = z.lazy(() =>
+  z.union([
+    z.null(),
+    z.boolean(),
+    z.number(),
+    z.string(),
+    z.array(pluginJsonSchema),
+    z.record(z.string(), pluginJsonSchema),
+  ]),
+)
+
+function hasUnredactedSecretInJson(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return hasObviousUnredactedSecret(value)
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((item) => hasUnredactedSecretInJson(item))
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.entries(value).some(([key, item]) => {
+      if (/(?:api_?key|auth|authorization|bearer|password|secret|token)/i.test(key)) {
+        return typeof item === 'string' && item.trim().length > 0
+      }
+
+      return hasUnredactedSecretInJson(item)
+    })
+  }
+
+  return false
+}
+
+const pluginConfigValuesSchema = z
+  .record(z.string().trim().min(1), pluginJsonSchema)
+  .refine((value) => !hasUnredactedSecretInJson(value), {
+    message: 'Plugin config values must not contain unredacted secrets',
+  })
+const pluginRecentEventSchema = z.enum(['loaded', 'failed', 'rejected', 'deactivated'])
+const pluginDetailSchema = z
+  .object({
+    summary: pluginSummarySchema,
+    manifestOrigin: pluginManifestOriginSchema,
+    manifestHash: z.array(z.number().int().min(0).max(255)).length(32),
+    manifest: pluginJsonSchema,
+    configurationSchema: pluginJsonSchema.optional(),
+    config: pluginConfigValuesSchema.or(z.null()),
+    registeredCapabilities: z.array(pluginRuntimeCapabilitySchema),
+    recentEvents: z.array(pluginRecentEventSchema),
+    rejectionReason: z.unknown().optional(),
+    failure: z.string().optional(),
+  })
+  .strict()
+const pluginInstallReportSchema = z
+  .object({
+    sourcePath: z.string().min(1),
+    valid: z.boolean(),
+    summary: pluginSummarySchema.optional(),
+    warnings: z.array(z.string()),
+    reason: z.string().optional(),
+  })
+  .strict()
+const pluginOperationStatusSchema = z.enum([
+  'rejected',
+  'installed',
+  'enabled',
+  'disabled',
+  'configured',
+  'uninstalled',
+  'reloaded',
+])
+const pluginOperationResultSchema = z
+  .object({
+    pluginId: pluginIdSchema.optional(),
+    status: pluginOperationStatusSchema,
+    summary: pluginSummarySchema.optional(),
+    report: pluginInstallReportSchema.optional(),
+  })
+  .strict()
+const listPluginsResponseSchema = z
+  .object({
+    allowProjectPlugins: z.boolean(),
+    plugins: z.array(pluginSummarySchema),
+  })
+  .strict()
+const getPluginDetailRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+  })
+  .strict()
+const getPluginDetailResponseSchema = z
+  .object({
+    plugin: pluginDetailSchema,
+  })
+  .strict()
+const pluginPathRequestSchema = z
+  .object({
+    sourcePath: z.string().trim().min(1),
+  })
+  .strict()
+const setPluginEnabledRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    enabled: z.boolean(),
+  })
+  .strict()
+const setProjectPluginsEnabledRequestSchema = z
+  .object({
+    enabled: z.boolean(),
+  })
+  .strict()
+const setProjectPluginsEnabledResponseSchema = z
+  .object({
+    allowProjectPlugins: z.boolean(),
+  })
+  .strict()
+const updatePluginConfigRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    values: pluginConfigValuesSchema,
+  })
+  .strict()
+const pluginIdRequestSchema = getPluginDetailRequestSchema
 
 const skillCatalogSourceSchema = z
   .object({
@@ -2091,6 +2310,17 @@ export type GetSkillFileResponse = z.infer<typeof getSkillFileResponseSchema>
 export type ImportSkillResponse = z.infer<typeof importSkillResponseSchema>
 export type SetSkillEnabledResponse = z.infer<typeof setSkillEnabledResponseSchema>
 export type DeleteSkillResponse = z.infer<typeof deleteSkillResponseSchema>
+export type PluginRuntimeCapability = z.infer<typeof pluginRuntimeCapabilitySchema>
+export type PluginSummary = z.infer<typeof pluginSummarySchema>
+export type PluginDetail = z.infer<typeof pluginDetailSchema>
+export type ListPluginsResponse = z.infer<typeof listPluginsResponseSchema>
+export type GetPluginDetailResponse = z.infer<typeof getPluginDetailResponseSchema>
+export type PluginInstallReport = z.infer<typeof pluginInstallReportSchema>
+export type PluginOperationResult = z.infer<typeof pluginOperationResultSchema>
+export type PluginConfigUpdate = z.infer<typeof updatePluginConfigRequestSchema>
+export type SetProjectPluginsEnabledResponse = z.infer<
+  typeof setProjectPluginsEnabledResponseSchema
+>
 export type ListSkillCatalogSourcesResponse = z.infer<typeof listSkillCatalogSourcesResponseSchema>
 export type ListSkillCatalogEntriesResponse = z.infer<typeof listSkillCatalogEntriesResponseSchema>
 export type GetSkillCatalogEntryResponse = z.infer<typeof getSkillCatalogEntryResponseSchema>
@@ -2122,6 +2352,7 @@ export interface CommandClient {
   deleteConversation: (conversationId: string) => Promise<DeleteConversationResponse>
   deleteMcpServer: (id: string) => Promise<DeleteMcpServerResponse>
   deleteMemoryItem: (id: string) => Promise<DeleteMemoryItemResponse>
+  uninstallPlugin: (pluginId: string) => Promise<PluginOperationResult>
   deleteSkill: (id: string) => Promise<DeleteSkillResponse>
   getContextSnapshot: (request: GetContextSnapshotRequest) => Promise<GetContextSnapshotResponse>
   getConversation: (conversationId: string) => Promise<GetConversationResponse>
@@ -2129,6 +2360,7 @@ export interface CommandClient {
   getHarnessHealthcheck: () => Promise<HarnessHealthcheck>
   getMemoryItem: (id: string) => Promise<GetMemoryItemResponse>
   getMcpServerConfig: (id: string) => Promise<GetMcpServerConfigResponse>
+  getPluginDetail: (pluginId: string) => Promise<GetPluginDetailResponse>
   getProviderConfigApiKey: (
     configId: string,
     revealToken: string,
@@ -2141,6 +2373,7 @@ export interface CommandClient {
   getSkillDetail: (id: string) => Promise<GetSkillDetailResponse>
   getSkillFile: (id: string, path: string) => Promise<GetSkillFileResponse>
   importSkill: (sourcePath: string) => Promise<ImportSkillResponse>
+  installPluginFromPath: (sourcePath: string) => Promise<PluginOperationResult>
   installSkillFromCatalog: (
     request: InstallSkillFromCatalogRequest,
   ) => Promise<InstallSkillFromCatalogResponse>
@@ -2162,6 +2395,7 @@ export interface CommandClient {
   listMcpDiagnostics: (serverId?: string) => Promise<ListMcpDiagnosticsResponse>
   listMcpServers: () => Promise<ListMcpServersResponse>
   listMemoryItems: () => Promise<ListMemoryItemsResponse>
+  listPlugins: () => Promise<ListPluginsResponse>
   listProviderSettings: () => Promise<ListProviderSettingsResponse>
   listProjects: () => Promise<ListProjectsResponse>
   addProject: (path: string) => Promise<SwitchProjectResponse>
@@ -2182,12 +2416,15 @@ export interface CommandClient {
   listSkillCatalogSources: () => Promise<ListSkillCatalogSourcesResponse>
   listSkills: () => Promise<ListSkillsResponse>
   resolvePermission: (request: ResolvePermissionRequest) => Promise<ResolvePermissionResponse>
+  reloadPlugin: (pluginId: string) => Promise<PluginOperationResult>
   requestProviderConfigApiKeyReveal: (
     configId: string,
   ) => Promise<RequestProviderConfigApiKeyRevealResponse>
   runEvalCase: (caseId: string) => Promise<RunEvalCaseResponse>
   saveMcpServer: (request: SaveMcpServerRequest) => Promise<SaveMcpServerResponse>
   setMcpServerEnabled: (id: string, enabled: boolean) => Promise<SetMcpServerEnabledResponse>
+  setPluginEnabled: (pluginId: string, enabled: boolean) => Promise<PluginOperationResult>
+  setProjectPluginsEnabled: (enabled: boolean) => Promise<SetProjectPluginsEnabledResponse>
   restartMcpServer: (id: string) => Promise<RestartMcpServerResponse>
   clearMcpDiagnostics: (serverId?: string) => Promise<ClearMcpDiagnosticsResponse>
   saveProviderSettings: (request: ProviderSettingsRequest) => Promise<SaveProviderSettingsResponse>
@@ -2217,6 +2454,11 @@ export interface CommandClient {
     subscriptionId: string,
   ) => Promise<UnsubscribeConversationEventsResponse>
   updateMemoryItem: (request: UpdateMemoryItemRequest) => Promise<UpdateMemoryItemResponse>
+  updatePluginConfig: (
+    pluginId: string,
+    values: PluginConfigUpdate['values'],
+  ) => Promise<PluginOperationResult>
+  validatePluginFromPath: (sourcePath: string) => Promise<PluginInstallReport>
   validateProviderSettings: (
     request: ValidateProviderSettingsRequest,
   ) => Promise<ValidateProviderSettingsResponse>
@@ -2275,6 +2517,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'delete_memory_item'
       const args = parseArgs(command, deleteMemoryItemRequestSchema, { id })
       return parsePayload(command, deleteMemoryItemResponseSchema, await invoke(command, args))
+    },
+    async uninstallPlugin(pluginId) {
+      const command = 'uninstall_plugin'
+      const args = parseArgs(command, pluginIdRequestSchema, { pluginId })
+      return parsePayload(command, pluginOperationResultSchema, await invoke(command, args))
     },
     async deleteSkill(id) {
       const command = 'delete_skill'
@@ -2470,6 +2717,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, getMcpServerConfigRequestSchema, { id })
       return parsePayload(command, getMcpServerConfigResponseSchema, await invoke(command, args))
     },
+    async getPluginDetail(pluginId) {
+      const command = 'get_plugin_detail'
+      const args = parseArgs(command, getPluginDetailRequestSchema, { pluginId })
+      return parsePayload(command, getPluginDetailResponseSchema, await invoke(command, args))
+    },
     async listMemoryItems() {
       const command = 'list_memory_items'
       return parsePayload(command, listMemoryItemsResponseSchema, await invoke(command))
@@ -2504,6 +2756,10 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'list_projects'
       return parsePayload(command, listProjectsResponseSchema, await invoke(command))
     },
+    async listPlugins() {
+      const command = 'list_plugins'
+      return parsePayload(command, listPluginsResponseSchema, await invoke(command))
+    },
     async addProject(path) {
       const command = 'add_project'
       const args = parseArgs(command, switchProjectRequestSchema, { path })
@@ -2527,6 +2783,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'resolve_permission'
       const args = parseArgs(command, resolvePermissionRequestSchema, request)
       return parsePayload(command, resolvePermissionResponseSchema, await invoke(command, args))
+    },
+    async reloadPlugin(pluginId) {
+      const command = 'reload_plugin'
+      const args = parseArgs(command, pluginIdRequestSchema, { pluginId })
+      return parsePayload(command, pluginOperationResultSchema, await invoke(command, args))
     },
     async requestProviderConfigApiKeyReveal(configId) {
       const command = 'request_provider_config_api_key_reveal'
@@ -2564,6 +2825,20 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, setMcpServerEnabledRequestSchema, { enabled, id })
       return parsePayload(command, setMcpServerEnabledResponseSchema, await invoke(command, args))
     },
+    async setPluginEnabled(pluginId, enabled) {
+      const command = 'set_plugin_enabled'
+      const args = parseArgs(command, setPluginEnabledRequestSchema, { enabled, pluginId })
+      return parsePayload(command, pluginOperationResultSchema, await invoke(command, args))
+    },
+    async setProjectPluginsEnabled(enabled) {
+      const command = 'set_project_plugins_enabled'
+      const args = parseArgs(command, setProjectPluginsEnabledRequestSchema, { enabled })
+      return parsePayload(
+        command,
+        setProjectPluginsEnabledResponseSchema,
+        await invoke(command, args),
+      )
+    },
     async restartMcpServer(id) {
       const command = 'restart_mcp_server'
       const args = parseArgs(command, restartMcpServerRequestSchema, { id })
@@ -2593,6 +2868,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         id,
       })
       return parsePayload(command, setSkillEnabledResponseSchema, await invoke(command, args))
+    },
+    async installPluginFromPath(sourcePath) {
+      const command = 'install_plugin_from_path'
+      const args = parseArgs(command, pluginPathRequestSchema, { sourcePath })
+      return parsePayload(command, pluginOperationResultSchema, await invoke(command, args))
     },
     async startRun(request) {
       const command = 'start_run'
@@ -2665,6 +2945,16 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'update_memory_item'
       const args = parseArgs(command, updateMemoryItemRequestSchema, request)
       return parsePayload(command, updateMemoryItemResponseSchema, await invoke(command, args))
+    },
+    async updatePluginConfig(pluginId, values) {
+      const command = 'update_plugin_config'
+      const args = parseArgs(command, updatePluginConfigRequestSchema, { pluginId, values })
+      return parsePayload(command, pluginOperationResultSchema, await invoke(command, args))
+    },
+    async validatePluginFromPath(sourcePath) {
+      const command = 'validate_plugin_from_path'
+      const args = parseArgs(command, pluginPathRequestSchema, { sourcePath })
+      return parsePayload(command, pluginInstallReportSchema, await invoke(command, args))
     },
     async validateProviderSettings(request) {
       const command = 'validate_provider_settings'
@@ -2859,6 +3149,70 @@ export function deleteMcpServer(
   client: CommandClient = tauriCommandClient,
 ): Promise<DeleteMcpServerResponse> {
   return client.deleteMcpServer(id)
+}
+
+export function listPlugins(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListPluginsResponse> {
+  return client.listPlugins()
+}
+
+export function getPluginDetail(
+  pluginId: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<GetPluginDetailResponse> {
+  return client.getPluginDetail(pluginId)
+}
+
+export function validatePluginFromPath(
+  sourcePath: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<PluginInstallReport> {
+  return client.validatePluginFromPath(sourcePath)
+}
+
+export function installPluginFromPath(
+  sourcePath: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<PluginOperationResult> {
+  return client.installPluginFromPath(sourcePath)
+}
+
+export function setPluginEnabled(
+  pluginId: string,
+  enabled: boolean,
+  client: CommandClient = tauriCommandClient,
+): Promise<PluginOperationResult> {
+  return client.setPluginEnabled(pluginId, enabled)
+}
+
+export function setProjectPluginsEnabled(
+  enabled: boolean,
+  client: CommandClient = tauriCommandClient,
+): Promise<SetProjectPluginsEnabledResponse> {
+  return client.setProjectPluginsEnabled(enabled)
+}
+
+export function updatePluginConfig(
+  pluginId: string,
+  values: PluginConfigUpdate['values'],
+  client: CommandClient = tauriCommandClient,
+): Promise<PluginOperationResult> {
+  return client.updatePluginConfig(pluginId, values)
+}
+
+export function uninstallPlugin(
+  pluginId: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<PluginOperationResult> {
+  return client.uninstallPlugin(pluginId)
+}
+
+export function reloadPlugin(
+  pluginId: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<PluginOperationResult> {
+  return client.reloadPlugin(pluginId)
 }
 
 export function listSkills(

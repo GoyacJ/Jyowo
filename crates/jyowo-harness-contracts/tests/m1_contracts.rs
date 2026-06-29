@@ -62,6 +62,26 @@ fn key_events_serialize_with_type_tag() {
     assert_eq!(value["type"], "sandbox_backend_failed");
     assert_eq!(value["phase"], "execute");
 
+    let plugin_failed = Event::PluginFailed(PluginFailedEvent {
+        tenant_id: TenantId::SINGLE,
+        plugin_id: PluginId("formatter@1.0.0".to_owned()),
+        plugin_name: "formatter".to_owned(),
+        plugin_version: "1.0.0".to_owned(),
+        trust_level: TrustLevel::UserControlled,
+        manifest_origin: ManifestOriginRef::File {
+            path: "/tmp/formatter/plugin.json".to_owned(),
+        },
+        manifest_hash: [7; 32],
+        failure: "Plugin failure withheld from conversation timeline.".to_owned(),
+        at: chrono::Utc::now(),
+    });
+    let value = serde_json::to_value(plugin_failed).unwrap();
+    assert_eq!(value["type"], "plugin_failed");
+    assert_eq!(
+        value["failure"],
+        "Plugin failure withheld from conversation timeline."
+    );
+
     let grace = GraceCallTriggeredEvent {
         run_id: RunId::new(),
         session_id: SessionId::new(),
@@ -142,6 +162,7 @@ fn schema_export_contains_required_surface() {
     assert!(schemas.contains_key("assistant_notice"));
     assert!(schemas.contains_key("credential_pool_shared_across_tenants"));
     assert!(schemas.contains_key("manifest_validation_failed"));
+    assert!(schemas.contains_key("plugin_failed"));
     assert!(schemas.contains_key("hook_failed"));
     assert!(schemas.contains_key("clarify_prompt"));
     assert!(schemas.contains_key("user_message_delivery"));

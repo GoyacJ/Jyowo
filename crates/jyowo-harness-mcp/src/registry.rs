@@ -208,25 +208,47 @@ impl McpRegistry {
         plugin_trust: TrustLevel,
         mut spec: McpServerSpec,
     ) -> Result<(), McpError> {
-        spec.source = McpServerSource::Plugin(plugin_id);
+        spec.source = McpServerSource::Plugin(plugin_id.clone());
         spec.trust = plugin_trust;
-        self.inner.write().await.insert(
-            spec.server_id.clone(),
-            ManagedMcpServer {
-                spec,
-                scope: McpServerScope::Global,
-                connection: Arc::new(RegisteredPluginMcpConnection),
-                connection_state: McpConnectionState::Ready,
-                injected_tools: BTreeMap::new(),
-                known_resources: BTreeSet::new(),
-                resource_observers: BTreeMap::new(),
-                known_prompts: BTreeSet::new(),
-                pending_list_changed: false,
-                last_list_changed: None,
-                schema_fingerprint: None,
-            },
-        );
-        Ok(())
+        let server = ManagedMcpServer {
+            spec,
+            scope: McpServerScope::Global,
+            connection: Arc::new(RegisteredPluginMcpConnection),
+            connection_state: McpConnectionState::Ready,
+            injected_tools: BTreeMap::new(),
+            known_resources: BTreeSet::new(),
+            resource_observers: BTreeMap::new(),
+            known_prompts: BTreeSet::new(),
+            pending_list_changed: false,
+            last_list_changed: None,
+            schema_fingerprint: None,
+        };
+        self.insert_plugin_server(plugin_id, server).await
+    }
+
+    pub async fn add_ready_plugin_server(
+        &self,
+        plugin_id: PluginId,
+        plugin_trust: TrustLevel,
+        mut spec: McpServerSpec,
+        connection: Arc<dyn McpConnection>,
+    ) -> Result<(), McpError> {
+        spec.source = McpServerSource::Plugin(plugin_id.clone());
+        spec.trust = plugin_trust;
+        let server = ManagedMcpServer {
+            spec,
+            scope: McpServerScope::Global,
+            connection,
+            connection_state: McpConnectionState::Ready,
+            injected_tools: BTreeMap::new(),
+            known_resources: BTreeSet::new(),
+            resource_observers: BTreeMap::new(),
+            known_prompts: BTreeSet::new(),
+            pending_list_changed: false,
+            last_list_changed: None,
+            schema_fingerprint: None,
+        };
+        self.insert_plugin_server(plugin_id, server).await
     }
 
     pub async fn subscribe_list_changed(
@@ -294,6 +316,19 @@ impl McpRegistry {
 
     pub async fn server_ids(&self) -> Vec<McpServerId> {
         self.inner.read().await.keys().cloned().collect()
+    }
+
+    pub async fn ready_plugin_server_ids(&self) -> Vec<McpServerId> {
+        self.inner
+            .read()
+            .await
+            .iter()
+            .filter(|(_, managed)| {
+                matches!(managed.spec.source, McpServerSource::Plugin(_))
+                    && matches!(managed.connection_state, McpConnectionState::Ready)
+            })
+            .map(|(server_id, _)| server_id.clone())
+            .collect()
     }
 
     pub async fn connection_state(&self, server_id: &McpServerId) -> Option<McpConnectionState> {
@@ -379,6 +414,44 @@ impl McpRegistry {
             .await
             .remove(server_id)
             .ok_or_else(|| McpError::ServerNotFound(server_id.0.clone()))?;
+        Ok(())
+    }
+
+    pub async fn remove_plugin_server(
+        &self,
+        plugin_id: &PluginId,
+        server_id: &McpServerId,
+    ) -> Result<(), McpError> {
+        let mut inner = self.inner.write().await;
+        let Some(managed) = inner.get(server_id) else {
+            return Err(McpError::ServerNotFound(server_id.0.clone()));
+        };
+        if !matches!(&managed.spec.source, McpServerSource::Plugin(owner) if owner == plugin_id) {
+            return Err(McpError::Protocol(format!(
+                "server {} is not owned by plugin {}",
+                server_id.0, plugin_id.0
+            )));
+        }
+        inner.remove(server_id);
+        Ok(())
+    }
+
+    async fn insert_plugin_server(
+        &self,
+        plugin_id: PluginId,
+        server: ManagedMcpServer,
+    ) -> Result<(), McpError> {
+        let mut inner = self.inner.write().await;
+        if let Some(existing) = inner.get(&server.spec.server_id) {
+            if !matches!(&existing.spec.source, McpServerSource::Plugin(owner) if owner == &plugin_id)
+            {
+                return Err(McpError::Protocol(format!(
+                    "server {} is already registered and is not owned by plugin {}",
+                    server.spec.server_id.0, plugin_id.0
+                )));
+            }
+        }
+        inner.insert(server.spec.server_id.clone(), server);
         Ok(())
     }
 
@@ -511,9 +584,7 @@ impl McpRegistry {
         }
 
         for name in &removed {
-            if tool_registry.get(name).is_some() {
-                tool_registry.deregister(name)?;
-            }
+            let _ = tool_registry.deregister_mcp_tool(server_id, &managed.spec.source, name)?;
         }
         let names_to_register = if schema_changed && added.is_empty() && removed.is_empty() {
             latest.keys().cloned().collect::<Vec<_>>()
@@ -522,9 +593,7 @@ impl McpRegistry {
         };
         if schema_changed && added.is_empty() && removed.is_empty() {
             for name in &names_to_register {
-                if tool_registry.get(name).is_some() {
-                    tool_registry.deregister(name)?;
-                }
+                let _ = tool_registry.deregister_mcp_tool(server_id, &managed.spec.source, name)?;
             }
         }
         for name in &names_to_register {

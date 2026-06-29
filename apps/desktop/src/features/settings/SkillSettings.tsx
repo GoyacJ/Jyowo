@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  ExternalLink,
   FileText,
   Folder,
   Search,
@@ -52,6 +53,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shared/ui/tooltip'
 
 import { MCPManager } from './MCPManager'
+import { type PluginOpenRequest, PluginsManager } from './PluginsManager'
 
 type BuiltinTool = {
   name: string
@@ -105,6 +107,7 @@ const CATALOG_PAGE_SIZE = 12
 
 type SkillStatusFilter = 'all' | SkillSummary['status']
 type SkillSourceFilter = 'all' | SkillSummary['sourceKind']
+type SkillSettingsTab = 'skills' | 'tools' | 'mcp' | 'plugins'
 type SkillCatalogSourceId = SkillCatalogSource['id']
 type CatalogInstallMutationRequest = {
   entry: SkillCatalogEntry
@@ -413,25 +416,43 @@ function createCatalogInstallOperationId() {
 
 export function SkillSettingsPage() {
   const { t } = useTranslation('skills')
+  const [activeTab, setActiveTab] = useState<SkillSettingsTab>('skills')
+  const [openPluginRequest, setOpenPluginRequest] = useState<PluginOpenRequest | null>(null)
+
+  function openPlugin(pluginId: string) {
+    setOpenPluginRequest((current) => ({
+      pluginId,
+      requestId: (current?.requestId ?? 0) + 1,
+    }))
+    setActiveTab('plugins')
+  }
 
   return (
     <section aria-label={t('pageTitle')} className="h-full min-h-0 overflow-y-auto pr-1">
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 pb-6">
-        <Tabs className="min-h-0" defaultValue="skills">
+        <Tabs
+          className="min-h-0"
+          onValueChange={(value) => setActiveTab(value as SkillSettingsTab)}
+          value={activeTab}
+        >
           <TabsList aria-label={t('tabs.label')}>
             <TabsTrigger value="skills">{t('tabs.skills')}</TabsTrigger>
             <TabsTrigger value="tools">{t('tabs.tools')}</TabsTrigger>
             <TabsTrigger value="mcp">{t('tabs.mcp')}</TabsTrigger>
+            <TabsTrigger value="plugins">{t('tabs.plugins')}</TabsTrigger>
           </TabsList>
 
           <TabsContent className="space-y-5 pt-3" value="skills">
-            <SkillsManager />
+            <SkillsManager onOpenPlugin={openPlugin} />
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="tools">
             <BuiltinToolsList />
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="mcp">
-            <MCPManager />
+            <MCPManager onOpenPlugin={openPlugin} />
+          </TabsContent>
+          <TabsContent className="space-y-5 pt-3" value="plugins">
+            <PluginsManager openPluginRequest={openPluginRequest} />
           </TabsContent>
         </Tabs>
       </div>
@@ -439,7 +460,11 @@ export function SkillSettingsPage() {
   )
 }
 
-export function SkillsManager() {
+export function SkillsManager({
+  onOpenPlugin,
+}: {
+  onOpenPlugin?: (pluginId: string) => void
+} = {}) {
   const { t } = useTranslation('skills')
 
   return (
@@ -449,7 +474,7 @@ export function SkillsManager() {
         <TabsTrigger value="catalog">{t('managerTabs.catalog')}</TabsTrigger>
       </TabsList>
       <TabsContent className="space-y-5 pt-3" value="installed">
-        <InstalledSkillsManager />
+        <InstalledSkillsManager onOpenPlugin={onOpenPlugin} />
       </TabsContent>
       <TabsContent className="space-y-5 pt-3" value="catalog">
         <SkillCatalogManager />
@@ -458,7 +483,7 @@ export function SkillsManager() {
   )
 }
 
-function InstalledSkillsManager() {
+function InstalledSkillsManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string) => void }) {
   const { t } = useTranslation('skills')
   const skillsQuery = useSkills()
   const importMutation = useImportSkill()
@@ -664,6 +689,7 @@ function InstalledSkillsManager() {
                   deletePending={deleteMutation.isPending}
                   key={skill.id}
                   onDelete={requestDeleteSkill}
+                  onOpenPlugin={onOpenPlugin}
                   onSelect={selectSkill}
                   onToggle={toggleSkill}
                   selected={selectedId === skill.id}
@@ -1313,6 +1339,7 @@ function CatalogFilePreview({
 function SkillListItem({
   deletePending,
   onDelete,
+  onOpenPlugin,
   onSelect,
   onToggle,
   selected,
@@ -1321,6 +1348,7 @@ function SkillListItem({
 }: {
   deletePending: boolean
   onDelete: (skill: SkillSummary) => void
+  onOpenPlugin?: (pluginId: string) => void
   onSelect: (id: string) => void
   onToggle: (skill: SkillSummary) => void
   selected: boolean
@@ -1328,10 +1356,13 @@ function SkillListItem({
   togglePending: boolean
 }) {
   const { t } = useTranslation('skills')
+  const sourcePluginId =
+    skill.sourceKind === 'plugin' && skill.sourcePluginId ? skill.sourcePluginId : null
 
   return (
     <div
       className="rounded-md border border-border bg-surface px-2.5 py-2 text-sm transition-colors data-[selected=true]:border-primary data-[selected=true]:bg-muted/35"
+      data-skill-card
       data-selected={selected}
     >
       <button
@@ -1383,6 +1414,19 @@ function SkillListItem({
           >
             <Trash2 data-icon className="size-4 text-destructive" />
             {t('actions.delete')}
+          </Button>
+        </div>
+      ) : sourcePluginId && onOpenPlugin ? (
+        <div className="mt-2 flex justify-end">
+          <Button
+            aria-label={t('actions.viewSourcePlugin', { pluginId: sourcePluginId })}
+            onClick={() => onOpenPlugin(sourcePluginId)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <ExternalLink data-icon className="size-4" />
+            {t('actions.sourcePlugin')}
           </Button>
         </div>
       ) : null}

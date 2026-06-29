@@ -88,6 +88,9 @@ function createDeferredMockCommandClient(): CommandClient {
     async getMcpServerConfig(id) {
       return (await getClient()).getMcpServerConfig(id)
     },
+    async getPluginDetail(pluginId) {
+      return (await getClient()).getPluginDetail(pluginId)
+    },
     async getProviderConfigApiKey(configId, revealToken) {
       return (await getClient()).getProviderConfigApiKey(configId, revealToken)
     },
@@ -114,6 +117,9 @@ function createDeferredMockCommandClient(): CommandClient {
     },
     async importSkill(sourcePath) {
       return (await getClient()).importSkill(sourcePath)
+    },
+    async installPluginFromPath(sourcePath) {
+      return (await getClient()).installPluginFromPath(sourcePath)
     },
     async installSkillFromCatalog(request) {
       return (await getClient()).installSkillFromCatalog(request)
@@ -144,6 +150,9 @@ function createDeferredMockCommandClient(): CommandClient {
     },
     async listModelProviderCatalog() {
       return (await getClient()).listModelProviderCatalog()
+    },
+    async listPlugins() {
+      return (await getClient()).listPlugins()
     },
     async listMcpDiagnostics(serverId) {
       return (await getClient()).listMcpDiagnostics(serverId)
@@ -184,6 +193,9 @@ function createDeferredMockCommandClient(): CommandClient {
     async resolvePermission(request) {
       return (await getClient()).resolvePermission(request)
     },
+    async reloadPlugin(pluginId) {
+      return (await getClient()).reloadPlugin(pluginId)
+    },
     async requestProviderConfigApiKeyReveal(configId) {
       return (await getClient()).requestProviderConfigApiKeyReveal(configId)
     },
@@ -195,6 +207,12 @@ function createDeferredMockCommandClient(): CommandClient {
     },
     async setMcpServerEnabled(id, enabled) {
       return (await getClient()).setMcpServerEnabled(id, enabled)
+    },
+    async setPluginEnabled(pluginId, enabled) {
+      return (await getClient()).setPluginEnabled(pluginId, enabled)
+    },
+    async setProjectPluginsEnabled(enabled) {
+      return (await getClient()).setProjectPluginsEnabled(enabled)
     },
     async restartMcpServer(id) {
       return (await getClient()).restartMcpServer(id)
@@ -237,6 +255,15 @@ function createDeferredMockCommandClient(): CommandClient {
     },
     async updateMemoryItem(request) {
       return (await getClient()).updateMemoryItem(request)
+    },
+    async uninstallPlugin(pluginId) {
+      return (await getClient()).uninstallPlugin(pluginId)
+    },
+    async updatePluginConfig(pluginId, values) {
+      return (await getClient()).updatePluginConfig(pluginId, values)
+    },
+    async validatePluginFromPath(sourcePath) {
+      return (await getClient()).validatePluginFromPath(sourcePath)
     },
     async validateProviderSettings(request) {
       return (await getClient()).validateProviderSettings(request)

@@ -3,7 +3,14 @@ import { z } from 'zod'
 import { assertNever } from './assert-never'
 
 export const runEventVisibilitySchema = z.enum(['public', 'redacted', 'withheld'])
-export const runEventSourceSchema = z.enum(['user', 'assistant', 'tool', 'engine', 'policy'])
+export const runEventSourceSchema = z.enum([
+  'user',
+  'assistant',
+  'tool',
+  'engine',
+  'policy',
+  'plugin',
+])
 export const runEventContractTypeSchema = z.enum([
   'run_started',
   'run_ended',
@@ -23,6 +30,9 @@ export const runEventContractTypeSchema = z.enum([
   'assistant_clarification_requested',
   'assistant_notice',
   'engine_failed',
+  'plugin_loaded',
+  'plugin_rejected',
+  'plugin_failed',
 ])
 
 const payloadSchema = z.record(z.string(), z.unknown())
@@ -376,6 +386,31 @@ const engineFailedPayloadSchema = z
     message: z.string().min(1),
   })
   .strict()
+const pluginTrustLevelSchema = z.enum(['admin_trusted', 'user_controlled'])
+const pluginLoadedPayloadSchema = z
+  .object({
+    capabilityCount: z.number().int().nonnegative().optional(),
+    pluginId: permissionDisplayTextSchema,
+    pluginName: permissionDisplayTextSchema,
+    trustLevel: pluginTrustLevelSchema.optional(),
+  })
+  .strict()
+const pluginRejectedPayloadSchema = z
+  .object({
+    pluginId: permissionDisplayTextSchema,
+    pluginName: permissionDisplayTextSchema,
+    reason: permissionDisplayTextSchema,
+    trustLevel: pluginTrustLevelSchema.optional(),
+  })
+  .strict()
+const pluginFailedPayloadSchema = z
+  .object({
+    message: z.literal('Plugin failure withheld from conversation timeline.'),
+    pluginId: permissionDisplayTextSchema,
+    pluginName: permissionDisplayTextSchema,
+    trustLevel: pluginTrustLevelSchema.optional(),
+  })
+  .strict()
 
 const baseRunEventSchema = z
   .object({
@@ -429,6 +464,9 @@ export const runEventSchema = z
     eventSchema('assistant.clarification.requested', assistantClarificationRequestedPayloadSchema),
     eventSchema('assistant.notice', assistantNoticePayloadSchema),
     eventSchema('engine.failed', engineFailedPayloadSchema),
+    eventSchema('plugin.loaded', pluginLoadedPayloadSchema),
+    eventSchema('plugin.rejected', pluginRejectedPayloadSchema),
+    eventSchema('plugin.failed', pluginFailedPayloadSchema),
   ])
   .superRefine((event, context) => {
     if (
@@ -438,6 +476,19 @@ export const runEventSchema = z
       context.addIssue({
         code: 'custom',
         message: 'permission events must be emitted by policy',
+        path: ['source'],
+      })
+    }
+
+    if (
+      (event.type === 'plugin.loaded' ||
+        event.type === 'plugin.rejected' ||
+        event.type === 'plugin.failed') &&
+      event.source !== 'plugin'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'plugin events must be emitted by plugin',
         path: ['source'],
       })
     }
@@ -556,6 +607,12 @@ export function mapRunEventContractType(contractType: RunEventContractType): Run
       return 'assistant.notice'
     case 'engine_failed':
       return 'engine.failed'
+    case 'plugin_loaded':
+      return 'plugin.loaded'
+    case 'plugin_rejected':
+      return 'plugin.rejected'
+    case 'plugin_failed':
+      return 'plugin.failed'
     default:
       return assertNever(contractType)
   }
@@ -800,6 +857,12 @@ export function getRunEventLabel(event: RunEvent): string {
       return 'Assistant notice'
     case 'engine.failed':
       return 'Engine failed'
+    case 'plugin.loaded':
+      return 'Plugin loaded'
+    case 'plugin.rejected':
+      return 'Plugin rejected'
+    case 'plugin.failed':
+      return 'Plugin failed'
     default:
       return assertNever(event)
   }

@@ -136,6 +136,7 @@ import {
   getHarnessHealthcheck,
   getMcpServerConfig,
   getMemoryItem,
+  getPluginDetail,
   getProviderConfigApiKey,
   getReplayTimeline,
   getSkillCatalogEntry,
@@ -143,6 +144,7 @@ import {
   getSkillDetail,
   getSkillFile,
   importSkill,
+  installPluginFromPath,
   installSkillFromCatalog,
   listActivity,
   listArtifacts,
@@ -154,6 +156,7 @@ import {
   listMcpServers,
   listMemoryItems,
   listModelProviderCatalog,
+  listPlugins,
   listProviderSettings,
   listReferenceCandidates,
   listSkillCatalogEntries,
@@ -162,6 +165,7 @@ import {
   listSkills,
   type PageConversationWorktreeResponse,
   pageConversationWorktree,
+  reloadPlugin,
   requestProviderConfigApiKeyReveal,
   resolvePermission,
   restartMcpServer,
@@ -169,12 +173,17 @@ import {
   saveMcpServer,
   saveProviderSettings,
   setMcpServerEnabled,
+  setPluginEnabled,
+  setProjectPluginsEnabled,
   setSkillEnabled,
   startRun,
   subscribeMcpDiagnostics,
   TauriCommandPayloadError,
+  uninstallPlugin,
   unsubscribeMcpDiagnostics,
   updateMemoryItem,
+  updatePluginConfig,
+  validatePluginFromPath,
   validateProviderSettings,
 } from './commands'
 import { getCommandErrorMessage } from './errors'
@@ -2480,6 +2489,18 @@ describe('CommandClient', () => {
               status: 'ready',
               transport: 'stdio',
             },
+            {
+              displayName: 'Plugin Context',
+              enabled: true,
+              exposedToolCount: 1,
+              id: 'plugin-context',
+              manageable: false,
+              origin: 'plugin',
+              scope: 'session',
+              sourcePluginId: 'formatter@1.0.0',
+              status: 'ready',
+              transport: 'http',
+            },
           ],
         }
       }
@@ -2537,6 +2558,18 @@ describe('CommandClient', () => {
           scope: 'global',
           status: 'ready',
           transport: 'stdio',
+        },
+        {
+          displayName: 'Plugin Context',
+          enabled: true,
+          exposedToolCount: 1,
+          id: 'plugin-context',
+          manageable: false,
+          origin: 'plugin',
+          scope: 'session',
+          sourcePluginId: 'formatter@1.0.0',
+          status: 'ready',
+          transport: 'http',
         },
       ],
     })
@@ -2962,6 +2995,17 @@ describe('CommandClient', () => {
               tags: ['writing'],
               updatedAt: '2026-06-21T00:00:00.000Z',
             },
+            {
+              description: 'Formats workspace files.',
+              enabled: true,
+              id: 'format-file',
+              manageable: false,
+              name: 'format-file',
+              sourceKind: 'plugin',
+              sourcePluginId: 'formatter@1.0.0',
+              status: 'ready',
+              tags: ['formatting'],
+            },
           ],
         }
       }
@@ -3063,6 +3107,10 @@ describe('CommandClient', () => {
     const client = createInvokeCommandClient(invoke)
 
     await expect(listSkills(client)).resolves.toHaveProperty('skills.0.name', 'release-notes')
+    await expect(listSkills(client)).resolves.toHaveProperty(
+      'skills.1.sourcePluginId',
+      'formatter@1.0.0',
+    )
     await expect(getSkillDetail('skill-001', client)).resolves.toMatchObject({
       skill: {
         bodyPreview: 'Write concise release notes.',
@@ -3127,6 +3175,221 @@ describe('CommandClient', () => {
     await expect(setSkillEnabled('', true, client)).rejects.toThrow(TauriCommandPayloadError)
     await expect(deleteSkill('', client)).rejects.toThrow(TauriCommandPayloadError)
     await expect(listSkills(client)).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('models plugin management commands through strict parsed payloads', async () => {
+    const summary = {
+      id: 'formatter@1.0.0',
+      name: 'formatter',
+      version: '1.0.0',
+      description: 'Formats workspace files.',
+      source: 'user',
+      trustLevel: 'user_controlled',
+      enabled: true,
+      state: 'activated',
+      capabilities: [
+        {
+          kind: 'tool',
+          name: 'format_file',
+          destructive: false,
+          registered: true,
+        },
+      ],
+      warnings: [],
+    } as const
+    const disabledSummary = {
+      ...summary,
+      enabled: false,
+      state: { disabled: { last_state: 'validated' } },
+    } as const
+    const installReport = {
+      sourcePath: '/tmp/formatter-plugin',
+      valid: true,
+      summary,
+      warnings: [],
+    } as const
+    const operation = {
+      pluginId: summary.id,
+      status: 'installed',
+      summary,
+      report: installReport,
+    } as const
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'list_plugins') {
+        return {
+          allowProjectPlugins: true,
+          plugins: [summary, disabledSummary],
+        }
+      }
+
+      if (command === 'get_plugin_detail') {
+        return {
+          plugin: {
+            summary,
+            manifestOrigin: {
+              file: {
+                path: '/tmp/formatter-plugin/plugin.json',
+              },
+            },
+            manifestHash: Array.from({ length: 32 }, () => 7),
+            manifest: {
+              name: 'formatter',
+              version: '1.0.0',
+            },
+            configurationSchema: {
+              type: 'object',
+              properties: {
+                lineWidth: { type: 'number' },
+                apiToken: { type: 'string', secret: true },
+              },
+            },
+            config: {
+              lineWidth: 100,
+            },
+            registeredCapabilities: summary.capabilities,
+            recentEvents: ['loaded'],
+          },
+        }
+      }
+
+      if (command === 'validate_plugin_from_path') {
+        return installReport
+      }
+
+      if (command === 'set_plugin_enabled') {
+        return {
+          pluginId: summary.id,
+          status: 'disabled',
+          summary: disabledSummary,
+        }
+      }
+
+      if (command === 'update_plugin_config') {
+        return {
+          pluginId: summary.id,
+          status: 'configured',
+          summary,
+        }
+      }
+
+      if (command === 'uninstall_plugin') {
+        return {
+          pluginId: summary.id,
+          status: 'uninstalled',
+        }
+      }
+
+      if (command === 'reload_plugin') {
+        return {
+          pluginId: summary.id,
+          status: 'reloaded',
+          summary,
+        }
+      }
+
+      if (command === 'set_project_plugins_enabled') {
+        return {
+          allowProjectPlugins: true,
+        }
+      }
+
+      return operation
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listPlugins(client)).resolves.toEqual({
+      allowProjectPlugins: true,
+      plugins: [summary, disabledSummary],
+    })
+    await expect(getPluginDetail(summary.id, client)).resolves.toMatchObject({
+      plugin: {
+        summary: { id: summary.id, state: 'activated' },
+        manifestOrigin: { file: { path: '/tmp/formatter-plugin/plugin.json' } },
+        manifestHash: Array.from({ length: 32 }, () => 7),
+        config: { lineWidth: 100 },
+      },
+    })
+    await expect(validatePluginFromPath('/tmp/formatter-plugin', client)).resolves.toEqual(
+      installReport,
+    )
+    await expect(installPluginFromPath('/tmp/formatter-plugin', client)).resolves.toEqual(operation)
+    await expect(setPluginEnabled(summary.id, false, client)).resolves.toHaveProperty(
+      'summary.state.disabled.last_state',
+      'validated',
+    )
+    await expect(
+      updatePluginConfig(summary.id, { lineWidth: 120 }, client),
+    ).resolves.toHaveProperty('status', 'configured')
+    await expect(uninstallPlugin(summary.id, client)).resolves.toEqual({
+      pluginId: summary.id,
+      status: 'uninstalled',
+    })
+    await expect(reloadPlugin(summary.id, client)).resolves.toHaveProperty('status', 'reloaded')
+    await expect(setProjectPluginsEnabled(true, client)).resolves.toEqual({
+      allowProjectPlugins: true,
+    })
+
+    expect(JSON.stringify(invoke.mock.calls)).not.toContain('api-token-value')
+    expect(invoke).toHaveBeenCalledWith('list_plugins')
+    expect(invoke).toHaveBeenCalledWith('get_plugin_detail', { pluginId: summary.id })
+    expect(invoke).toHaveBeenCalledWith('validate_plugin_from_path', {
+      sourcePath: '/tmp/formatter-plugin',
+    })
+    expect(invoke).toHaveBeenCalledWith('install_plugin_from_path', {
+      sourcePath: '/tmp/formatter-plugin',
+    })
+    expect(invoke).toHaveBeenCalledWith('set_plugin_enabled', {
+      enabled: false,
+      pluginId: summary.id,
+    })
+    expect(invoke).toHaveBeenCalledWith('update_plugin_config', {
+      pluginId: summary.id,
+      values: { lineWidth: 120 },
+    })
+    expect(invoke).toHaveBeenCalledWith('uninstall_plugin', { pluginId: summary.id })
+    expect(invoke).toHaveBeenCalledWith('reload_plugin', { pluginId: summary.id })
+    expect(invoke).toHaveBeenCalledWith('set_project_plugins_enabled', { enabled: true })
+  })
+
+  it('rejects invalid plugin command args and unsafe plugin payloads', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      plugins: [
+        {
+          id: 'formatter@1.0.0',
+          name: 'formatter',
+          version: '1.0.0',
+          source: 'remote_marketplace',
+          trustLevel: 'user_controlled',
+          enabled: true,
+          state: 'activated',
+          capabilities: [],
+          warnings: [],
+        },
+      ],
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(getPluginDetail('', client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(validatePluginFromPath('', client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(installPluginFromPath('', client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(setPluginEnabled('', true, client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(updatePluginConfig('', {}, client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      updatePluginConfig('formatter@1.0.0', { apiToken: 'sk-unsafe-secret' }, client),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(uninstallPlugin('', client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(reloadPlugin('', client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(listPlugins(client)).rejects.toThrow(TauriCommandPayloadError)
+
+    const invalidProjectClient = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        allowProjectPlugins: true,
+        extra: true,
+      }),
+    )
+    await expect(setProjectPluginsEnabled(true, invalidProjectClient)).rejects.toThrow(
+      TauriCommandPayloadError,
+    )
   })
 
   it('invokes skill catalog commands through validated payloads', async () => {

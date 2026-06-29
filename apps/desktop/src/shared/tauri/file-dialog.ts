@@ -80,3 +80,12 @@ export async function pickSkillPackagePath(): Promise<string | null> {
 
   return typeof selected === 'string' ? selected : null
 }
+
+export async function pickPluginPackagePath(): Promise<string | null> {
+  const selected = await open({
+    directory: true,
+    multiple: false,
+  })
+
+  return typeof selected === 'string' ? selected : null
+}

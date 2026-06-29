@@ -1,6 +1,10 @@
 import '@testing-library/jest-dom/vitest'
 
+import { configure } from '@testing-library/react'
+
 import { appI18n } from '@/shared/i18n/i18n'
+
+configure({ asyncUtilTimeout: 3000 })
 
 void appI18n.changeLanguage('en-US')
 

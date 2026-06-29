@@ -28,7 +28,14 @@ describe('RunEvent schema', () => {
   })
 
   it('keeps event source values aligned with the frontend specification', () => {
-    expect(runEventSourceSchema.options).toEqual(['user', 'assistant', 'tool', 'engine', 'policy'])
+    expect(runEventSourceSchema.options).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'engine',
+      'policy',
+      'plugin',
+    ])
     expect(() => runEventSourceSchema.parse('permission')).toThrow()
     expect(() => runEventSourceSchema.parse('system')).toThrow()
   })
@@ -53,6 +60,9 @@ describe('RunEvent schema', () => {
       ['assistant_clarification_requested', 'assistant.clarification.requested'],
       ['assistant_notice', 'assistant.notice'],
       ['engine_failed', 'engine.failed'],
+      ['plugin_loaded', 'plugin.loaded'],
+      ['plugin_rejected', 'plugin.rejected'],
+      ['plugin_failed', 'plugin.failed'],
     ]
 
     expect(runEventContractTypeSchema.options).toEqual(
@@ -85,6 +95,65 @@ describe('RunEvent schema', () => {
       'assistant.clarification.requested',
       'assistant.notice',
       'engine.failed',
+    ])
+  })
+
+  it('accepts redacted plugin lifecycle events without unsafe details', () => {
+    const events = runEventsSchema.parse([
+      {
+        id: 'evt-plugin-loaded',
+        conversationSequence: 18,
+        runId: 'plugin-runtime',
+        sequence: 1,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'plugin.loaded',
+        source: 'plugin',
+        visibility: 'redacted',
+        payload: {
+          capabilityCount: 2,
+          pluginId: 'formatter@1.0.0',
+          pluginName: 'formatter',
+          trustLevel: 'user_controlled',
+        },
+      },
+      {
+        id: 'evt-plugin-rejected',
+        conversationSequence: 19,
+        runId: 'plugin-runtime',
+        sequence: 2,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'plugin.rejected',
+        source: 'plugin',
+        visibility: 'redacted',
+        payload: {
+          pluginId: 'formatter@1.0.0',
+          pluginName: 'formatter',
+          reason: 'CapabilityDenied',
+          trustLevel: 'user_controlled',
+        },
+      },
+      {
+        id: 'evt-plugin-failed',
+        conversationSequence: 20,
+        runId: 'plugin-runtime',
+        sequence: 3,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'plugin.failed',
+        source: 'plugin',
+        visibility: 'redacted',
+        payload: {
+          message: 'Plugin failure withheld from conversation timeline.',
+          pluginId: 'formatter@1.0.0',
+          pluginName: 'formatter',
+          trustLevel: 'user_controlled',
+        },
+      },
+    ])
+
+    expect(events.map((event) => event.type)).toEqual([
+      'plugin.loaded',
+      'plugin.rejected',
+      'plugin.failed',
     ])
   })
 
