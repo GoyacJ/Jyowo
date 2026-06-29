@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,6 +18,32 @@ use crate::{
 
 #[derive(Debug, Default, Clone)]
 pub struct FileManifestLoader;
+
+impl FileManifestLoader {
+    pub async fn load_package_report(
+        &self,
+        plugin_dir: &Path,
+    ) -> Result<ManifestLoadReport, ManifestLoaderError> {
+        let metadata = secure_plugin_directory(plugin_dir)?;
+        if !metadata.is_dir() {
+            return Ok(ManifestLoadReport::default());
+        }
+        let Some(manifest_path) = manifest_path(plugin_dir)? else {
+            return Ok(ManifestLoadReport::default());
+        };
+        match read_manifest(&manifest_path) {
+            Ok(record) => Ok(ManifestLoadReport {
+                records: vec![record],
+                failures: Vec::new(),
+            }),
+            Err(ManifestLoaderError::Validation(failure)) => Ok(ManifestLoadReport {
+                records: Vec::new(),
+                failures: vec![failure],
+            }),
+            Err(error) => Err(error),
+        }
+    }
+}
 
 #[async_trait]
 impl PluginManifestLoader for FileManifestLoader {
@@ -42,6 +70,10 @@ impl PluginManifestLoader for FileManifestLoader {
         if !plugin_root.exists() {
             return Ok(ManifestLoadReport::default());
         }
+        let metadata = secure_plugin_directory(&plugin_root)?;
+        if !metadata.is_dir() {
+            return Ok(ManifestLoadReport::default());
+        }
 
         let mut entries = fs::read_dir(&plugin_root)
             .map_err(|error| ManifestLoaderError::Io(error.to_string()))?
@@ -53,10 +85,11 @@ impl PluginManifestLoader for FileManifestLoader {
         let mut failures = Vec::new();
         for entry in entries {
             let path = entry.path();
-            if !path.is_dir() {
+            let metadata = secure_plugin_directory(&path)?;
+            if !metadata.is_dir() {
                 continue;
             }
-            let Some(manifest_path) = manifest_path(&path) else {
+            let Some(manifest_path) = manifest_path(&path)? else {
                 continue;
             };
             match read_manifest(&manifest_path) {
@@ -126,20 +159,54 @@ fn plugin_root(source: &DiscoverySource, root: &Path) -> PathBuf {
     }
 }
 
-fn manifest_path(plugin_dir: &Path) -> Option<PathBuf> {
-    ["plugin.json", "plugin.yaml", "plugin.yml"]
+fn manifest_path(plugin_dir: &Path) -> Result<Option<PathBuf>, ManifestLoaderError> {
+    for path in ["plugin.json", "plugin.yaml", "plugin.yml"]
         .into_iter()
         .map(|name| plugin_dir.join(name))
-        .find(|path| path.is_file())
+    {
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(ManifestLoaderError::Io(error.to_string())),
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(ManifestLoaderError::Io(
+                "plugin manifest must not be a symlink".to_owned(),
+            ));
+        }
+        if metadata.is_file() {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
 }
 
 fn read_manifest(path: &Path) -> Result<ManifestRecord, ManifestLoaderError> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| ManifestLoaderError::Io(error.to_string()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(ManifestLoaderError::Io(
+            "plugin manifest must not be a symlink".to_owned(),
+        ));
+    }
     let bytes = fs::read(path).map_err(|error| ManifestLoaderError::Io(error.to_string()))?;
     let raw_hash = sha256(&bytes);
-    let origin = ManifestOrigin::File {
+    let file_origin = ManifestOrigin::File {
         path: path.to_path_buf(),
     };
-    let manifest = parse_manifest(path, &bytes, raw_hash, origin.clone())?;
+    let manifest = parse_manifest(path, &bytes, raw_hash, file_origin.clone())?;
+    let origin = match path
+        .parent()
+        .map(|plugin_dir| local_sidecar_binary(plugin_dir, manifest.name.as_str()))
+        .transpose()?
+        .flatten()
+    {
+        Some(binary) => ManifestOrigin::CargoExtension {
+            binary,
+            package_metadata: BTreeMap::new(),
+        },
+        None => file_origin,
+    };
     let canonical_hash = canonical_manifest_hash(&manifest, raw_hash, &origin)?;
 
     ManifestRecord::new(manifest.clone(), origin, canonical_hash).map_err(|error| {
@@ -155,6 +222,115 @@ fn read_manifest(path: &Path) -> Result<ManifestRecord, ManifestLoaderError> {
             format!("manifest basic validation failed: {error}"),
         )
     })
+}
+
+fn secure_plugin_directory(path: &Path) -> Result<fs::Metadata, ManifestLoaderError> {
+    ensure_no_world_writable_ancestors(path, "plugin directory")?;
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| ManifestLoaderError::Io(error.to_string()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(ManifestLoaderError::Io(
+            "plugin directory must not be a symlink".to_owned(),
+        ));
+    }
+    if metadata.is_dir() && is_world_writable(&metadata) {
+        return Err(ManifestLoaderError::Io(
+            "plugin directory must not be world-writable".to_owned(),
+        ));
+    }
+    Ok(metadata)
+}
+
+fn local_sidecar_binary(
+    plugin_dir: &Path,
+    plugin_name: &str,
+) -> Result<Option<PathBuf>, ManifestLoaderError> {
+    let entries = fs::read_dir(plugin_dir)
+        .map_err(|error| ManifestLoaderError::Io(error.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| ManifestLoaderError::Io(error.to_string()))?;
+    let mut candidates = entries
+        .into_iter()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name().is_some_and(is_cargo_extension_name)
+                && is_executable_regular_file(path)
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    candidates.sort();
+    let expected_name = format!("jyowo-plugin-{plugin_name}");
+    let selected = candidates
+        .iter()
+        .find(|path| path.file_name().and_then(OsStr::to_str) == Some(expected_name.as_str()))
+        .or_else(|| candidates.first())
+        .expect("non-empty candidates");
+    selected.canonicalize().map(Some).map_err(|error| {
+        ManifestLoaderError::Io(format!("plugin sidecar path unavailable: {error}"))
+    })
+}
+
+fn is_cargo_extension_name(name: &OsStr) -> bool {
+    name.to_string_lossy().starts_with("jyowo-plugin-")
+}
+
+#[cfg(unix)]
+fn ensure_no_world_writable_ancestors(path: &Path, label: &str) -> Result<(), ManifestLoaderError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    for ancestor in path.ancestors().skip(1) {
+        let metadata = fs::symlink_metadata(ancestor)
+            .map_err(|error| ManifestLoaderError::Io(error.to_string()))?;
+        let mode = metadata.permissions().mode();
+        if mode & 0o002 != 0 && mode & 0o1000 == 0 {
+            return Err(ManifestLoaderError::Io(format!(
+                "{label} ancestors must not be world-writable"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_no_world_writable_ancestors(
+    _path: &Path,
+    _label: &str,
+) -> Result<(), ManifestLoaderError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn is_executable_regular_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::symlink_metadata(path)
+        .map(|metadata| {
+            !metadata.file_type().is_symlink()
+                && metadata.is_file()
+                && metadata.permissions().mode() & 0o111 != 0
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_regular_file(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| !metadata.file_type().is_symlink() && metadata.is_file())
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn is_world_writable(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    metadata.permissions().mode() & 0o002 != 0
+}
+
+#[cfg(not(unix))]
+fn is_world_writable(_metadata: &fs::Metadata) -> bool {
+    false
 }
 
 fn canonical_manifest_hash(

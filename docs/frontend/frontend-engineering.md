@@ -1028,7 +1028,7 @@ type RunEventBase = {
   sequence: number
   timestamp: string
   type: RunEventType
-  source: 'user' | 'assistant' | 'tool' | 'engine' | 'policy'
+  source: 'user' | 'assistant' | 'tool' | 'engine' | 'policy' | 'plugin'
   visibility: 'public' | 'redacted' | 'withheld'
 }
 ```
@@ -1048,6 +1048,9 @@ type RunEventType =
   | 'tool.failed'
   | 'permission.requested'
   | 'permission.resolved'
+  | 'plugin.loaded'
+  | 'plugin.rejected'
+  | 'plugin.failed'
   | 'engine.failed'
 ```
 

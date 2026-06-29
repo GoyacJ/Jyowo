@@ -75,6 +75,9 @@ Ordering rules:
 - Tool completion or failure events MUST be emitted after the execution attempt finishes.
 - Redaction MUST run before the event reaches a durable `Journal`.
 - Replay MUST return redacted or withheld payloads according to event visibility.
+- Plugin loaded, rejected, and failed lifecycle events are activity/replay events.
+- Plugin failure events MUST carry a redacted failure summary, not raw sidecar RPC,
+  environment, credential, path, or process error text.
 
 Conversation worktree paging rules:
 

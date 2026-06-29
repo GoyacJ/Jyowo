@@ -15,7 +15,10 @@ import { createTestCommandClient } from '@/testing/command-client'
 
 import { MCPManager } from './MCPManager'
 
-function renderMCPManager(commandClient: CommandClient = createTestCommandClient()) {
+function renderMCPManager(
+  commandClient: CommandClient = createTestCommandClient(),
+  onOpenPlugin?: (pluginId: string) => void,
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -32,7 +35,7 @@ function renderMCPManager(commandClient: CommandClient = createTestCommandClient
 
   return render(
     <Wrapper>
-      <MCPManager />
+      <MCPManager onOpenPlugin={onOpenPlugin} />
     </Wrapper>,
   )
 }
@@ -103,6 +106,7 @@ describe('MCPManager', () => {
               manageable: false,
               origin: 'plugin',
               scope: 'session',
+              sourcePluginId: 'formatter@1.0.0',
               status: 'ready',
               transport: 'http',
             }),
@@ -125,6 +129,34 @@ describe('MCPManager', () => {
     expect(
       within(await screen.findByRole('article', { name: 'Plugin Context' })).getByText('Read-only'),
     ).toBeInTheDocument()
+  })
+
+  it('opens the source plugin for read-only MCP servers', async () => {
+    const openPlugin = vi.fn()
+    renderMCPManager(
+      createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: {
+          servers: [
+            mcpServer({
+              displayName: 'Plugin Context',
+              id: 'plugin-context',
+              manageable: false,
+              origin: 'plugin',
+              sourcePluginId: 'formatter@1.0.0',
+            }),
+          ],
+        },
+      }),
+      openPlugin,
+    )
+
+    const card = await screen.findByRole('article', { name: 'Plugin Context' })
+    fireEvent.click(
+      within(card).getByRole('button', { name: 'View source plugin formatter@1.0.0' }),
+    )
+
+    expect(openPlugin).toHaveBeenCalledWith('formatter@1.0.0')
   })
 
   it('rejects invalid config before calling the backend', async () => {

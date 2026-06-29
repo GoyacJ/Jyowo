@@ -74,7 +74,7 @@ const defaultFormValues: MCPServerFormValues = {
   workingDir: '',
 }
 
-export function MCPManager() {
+export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string) => void } = {}) {
   const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
   const queryClient = useQueryClient()
@@ -656,6 +656,7 @@ export function MCPManager() {
             empty={t('mcp.groupEmpty')}
             onConfigure={openConfigureDialog}
             onDelete={(id) => deleteMutation.mutate(id)}
+            onOpenPlugin={onOpenPlugin}
             onRestart={(id) => restartMutation.mutate(id)}
             onToggle={(id, enabled) => toggleMutation.mutate({ enabled, id })}
             servers={workspaceServers}
@@ -665,6 +666,7 @@ export function MCPManager() {
             empty={t('mcp.pluginsEmpty')}
             onConfigure={openConfigureDialog}
             onDelete={(id) => deleteMutation.mutate(id)}
+            onOpenPlugin={onOpenPlugin}
             onRestart={(id) => restartMutation.mutate(id)}
             onToggle={(id, enabled) => toggleMutation.mutate({ enabled, id })}
             servers={pluginServers}
@@ -739,6 +741,7 @@ function ServerGroup({
   empty,
   onConfigure,
   onDelete,
+  onOpenPlugin,
   onRestart,
   onToggle,
   servers,
@@ -747,6 +750,7 @@ function ServerGroup({
   empty: string
   onConfigure: (server: McpServerSummary) => void
   onDelete: (id: string) => void
+  onOpenPlugin?: (pluginId: string) => void
   onRestart: (id: string) => void
   onToggle: (id: string, enabled: boolean) => void
   servers: McpServerSummary[]
@@ -769,6 +773,7 @@ function ServerGroup({
               key={server.id}
               onConfigure={onConfigure}
               onDelete={onDelete}
+              onOpenPlugin={onOpenPlugin}
               onRestart={onRestart}
               onToggle={onToggle}
               server={server}

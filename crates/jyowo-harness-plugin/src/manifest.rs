@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
-use harness_contracts::{PluginId, TrustLevel};
+use harness_contracts::{HookEventKind, PluginId, TrustLevel};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -88,12 +88,18 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+fn default_tool_input_schema() -> Value {
+    serde_json::json!({ "type": "object" })
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolManifestEntry {
     pub name: String,
     #[serde(default)]
     pub destructive: bool,
+    #[serde(default = "default_tool_input_schema")]
+    pub input_schema: Value,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -106,6 +112,8 @@ pub struct SkillManifestEntry {
 #[serde(deny_unknown_fields)]
 pub struct HookManifestEntry {
     pub name: String,
+    #[serde(default)]
+    pub events: Vec<HookEventKind>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]

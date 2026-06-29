@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    canonical_mcp_tool_name, parse_canonical_mcp_tool_name, validate_tool_name, ShadowReason,
-    ToolCapability, ToolDescriptor, ToolGroup, ToolOrigin, TrustLevel,
+    canonical_mcp_tool_name, parse_canonical_mcp_tool_name, validate_tool_name, McpServerId,
+    McpServerSource, ShadowReason, ToolCapability, ToolDescriptor, ToolGroup, ToolOrigin,
+    TrustLevel,
 };
 use parking_lot::RwLock;
 use serde_json::Value;
@@ -75,6 +76,15 @@ impl ToolRegistry {
         tool: Box<dyn Tool>,
         journal_authority: ToolJournalAuthority,
     ) -> Result<(), RegistrationError> {
+        self.register_with_journal_authority_inner(tool, journal_authority)
+            .map(|_| ())
+    }
+
+    fn register_with_journal_authority_inner(
+        &self,
+        tool: Box<dyn Tool>,
+        journal_authority: ToolJournalAuthority,
+    ) -> Result<bool, RegistrationError> {
         let descriptor = tool.descriptor().clone();
         validate_descriptor(&descriptor)?;
         validate_capabilities(&descriptor)?;
@@ -102,7 +112,7 @@ impl ToolRegistry {
                         at: Utc::now(),
                     });
                     inner.generation += 1;
-                    return Ok(());
+                    return Ok(false);
                 }
                 RegistrationDecision::ReplaceExisting(reason) => {
                     inner.shadowed.push(ShadowedRegistration {
@@ -114,14 +124,14 @@ impl ToolRegistry {
                     });
                     inner.tools.insert(name, registered);
                     inner.generation += 1;
-                    return Ok(());
+                    return Ok(true);
                 }
             }
         }
 
         inner.tools.insert(name, registered);
         inner.generation += 1;
-        Ok(())
+        Ok(true)
     }
 
     pub fn register_from_plugin(
@@ -129,14 +139,17 @@ impl ToolRegistry {
         plugin_id: harness_contracts::PluginId,
         trust: TrustLevel,
         tool: Box<dyn Tool>,
-    ) -> Result<(), RegistrationError> {
+    ) -> Result<bool, RegistrationError> {
         if trust == TrustLevel::UserControlled && tool.descriptor().properties.is_destructive {
             return Err(RegistrationError::TrustViolation {
                 required: TrustLevel::AdminTrusted,
                 provided: trust,
             });
         }
-        self.register(Box::new(PluginOriginTool::new(plugin_id, trust, tool)))
+        self.register_with_journal_authority_inner(
+            Box::new(PluginOriginTool::new(plugin_id, trust, tool)),
+            ToolJournalAuthority::None,
+        )
     }
 
     pub fn deregister(&self, name: &str) -> Result<(), RegistrationError> {
@@ -146,6 +159,46 @@ impl ToolRegistry {
         }
         inner.generation += 1;
         Ok(())
+    }
+
+    pub fn deregister_from_plugin(
+        &self,
+        plugin_id: &harness_contracts::PluginId,
+        name: &str,
+    ) -> Result<bool, RegistrationError> {
+        let mut inner = self.inner.write();
+        let Some(existing) = inner.tools.get(name) else {
+            return Ok(false);
+        };
+        if !matches!(&existing.origin, ToolOrigin::Plugin { plugin_id: owner, .. } if owner == plugin_id)
+        {
+            return Ok(false);
+        }
+        inner.tools.remove(name);
+        inner.generation += 1;
+        Ok(true)
+    }
+
+    pub fn deregister_mcp_tool(
+        &self,
+        server_id: &McpServerId,
+        server_source: &McpServerSource,
+        name: &str,
+    ) -> Result<bool, RegistrationError> {
+        let mut inner = self.inner.write();
+        let Some(existing) = inner.tools.get(name) else {
+            return Ok(false);
+        };
+        if !matches!(
+            &existing.origin,
+            ToolOrigin::Mcp(origin)
+                if &origin.server_id == server_id && &origin.server_source == server_source
+        ) {
+            return Ok(false);
+        }
+        inner.tools.remove(name);
+        inner.generation += 1;
+        Ok(true)
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {

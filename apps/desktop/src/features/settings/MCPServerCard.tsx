@@ -1,4 +1,4 @@
-import { RotateCw, Settings, Trash2 } from 'lucide-react'
+import { ExternalLink, RotateCw, Settings, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import type { McpServerSummary } from '@/shared/tauri/commands'
@@ -10,6 +10,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shar
 interface MCPServerCardProps {
   onConfigure: (server: McpServerSummary) => void
   onDelete: (id: string) => void
+  onOpenPlugin?: (pluginId: string) => void
   onRestart: (id: string) => void
   onToggle: (id: string, enabled: boolean) => void
   server: McpServerSummary
@@ -18,11 +19,14 @@ interface MCPServerCardProps {
 export function MCPServerCard({
   onConfigure,
   onDelete,
+  onOpenPlugin,
   onRestart,
   onToggle,
   server,
 }: MCPServerCardProps) {
   const { t } = useTranslation('settings')
+  const sourcePluginId =
+    server.origin === 'plugin' && server.sourcePluginId ? server.sourcePluginId : null
 
   return (
     <article
@@ -118,7 +122,27 @@ export function MCPServerCard({
                 </Tooltip>
               </>
             ) : (
-              <Badge variant="outline">{t('mcp.readOnly')}</Badge>
+              <>
+                <Badge variant="outline">{t('mcp.readOnly')}</Badge>
+                {sourcePluginId && onOpenPlugin ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        aria-label={t('mcp.viewSourcePlugin', { pluginId: sourcePluginId })}
+                        onClick={() => onOpenPlugin(sourcePluginId)}
+                        size="icon"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <ExternalLink className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {t('mcp.viewSourcePlugin', { pluginId: sourcePluginId })}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : null}
+              </>
             )}
           </div>
         </TooltipProvider>

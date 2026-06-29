@@ -4,9 +4,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use harness_contracts::{
-    now, Event, ManifestOriginRef, ManifestValidationFailedEvent, PluginCapabilitiesSummary,
-    PluginId, PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginRejectedEvent,
-    RejectionReason, TenantId, TrustLevel,
+    now, Event, ManifestOriginRef, ManifestValidationFailedEvent, McpServerSource,
+    PluginCapabilitiesSummary, PluginConfigUpdate, PluginDetail, PluginFailedEvent, PluginId,
+    PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginProductState, PluginRecentEvent,
+    PluginRejectedEvent, PluginRuntimeCapability, PluginRuntimeCapabilityKind, PluginSourceKind,
+    PluginSummary, RejectionReason, TenantId, TrustLevel,
 };
 use parking_lot::RwLock;
 use serde_json::Value;
@@ -22,10 +24,16 @@ use crate::{
     StaticLinkRuntimeLoader, StaticTrustedSignerStore, TrustedSigner, TrustedSignerStore,
 };
 
+const PRODUCT_FAILURE_WITHHELD_MESSAGE: &str = "Plugin failure details withheld.";
+const PRODUCT_REJECTION_DETAILS_WITHHELD: &str = "withheld";
+const MAX_PRODUCT_RECENT_EVENTS: usize = 20;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PluginConfig {
     pub enabled: bool,
     pub allow_project_plugins: bool,
+    pub allowed_user_plugins: Option<BTreeSet<PluginName>>,
+    pub disabled_plugins: BTreeSet<PluginName>,
     pub policy: PluginAdmissionPolicy,
     pub entries: BTreeMap<PluginName, Value>,
     pub workspace_root: Option<PathBuf>,
@@ -37,6 +45,8 @@ impl Default for PluginConfig {
         Self {
             enabled: true,
             allow_project_plugins: false,
+            allowed_user_plugins: None,
+            disabled_plugins: BTreeSet::new(),
             policy: PluginAdmissionPolicy::AllowAll,
             entries: BTreeMap::new(),
             workspace_root: None,
@@ -98,6 +108,7 @@ struct PluginRegistryInner {
     activated: BTreeMap<PluginId, ActivatedPlugin>,
     state: BTreeMap<PluginId, PluginLifecycleState>,
     state_detail: BTreeMap<PluginId, PluginLifecycleDetail>,
+    recent_events: BTreeMap<PluginId, Vec<PluginRecentEvent>>,
     warnings: BTreeMap<PluginId, Vec<PluginWarning>>,
     slots: CapabilitySlotManager,
     memory_provider: Option<Arc<dyn harness_memory::MemoryProvider>>,
@@ -181,10 +192,23 @@ pub trait PluginEventSink: Send + Sync + 'static {
     fn emit(&self, event: Event);
 }
 
+struct TeePluginEventSink {
+    first: Arc<dyn PluginEventSink>,
+    second: Arc<dyn PluginEventSink>,
+}
+
+impl PluginEventSink for TeePluginEventSink {
+    fn emit(&self, event: Event) {
+        self.first.emit(event.clone());
+        self.second.emit(event);
+    }
+}
+
 pub trait PluginMetricsSink: Send + Sync + 'static {
     fn plugin_discovered(&self, _source: &str, _trust_level: TrustLevel) {}
     fn plugin_loaded(&self, _source: &str, _trust_level: TrustLevel) {}
     fn plugin_activated(&self, _source: &str, _trust_level: TrustLevel) {}
+    fn plugin_failed(&self, _source: &str, _trust_level: TrustLevel) {}
     fn plugin_rejected(&self, _source: &str, _trust_level: TrustLevel, _reason: &str) {}
     fn plugin_manifest_validation_failed(&self, _source: &str, _failure: &str) {}
     fn plugin_signature_validation_duration_ms(&self, _source: &str, _duration_ms: u64) {}
@@ -197,6 +221,19 @@ pub trait PluginMetricsSink: Send + Sync + 'static {
 impl PluginRegistry {
     pub fn builder() -> PluginRegistryBuilder {
         PluginRegistryBuilder::default()
+    }
+
+    #[must_use]
+    pub fn with_scoped_event_sink(&self, sink: Arc<dyn PluginEventSink>) -> Self {
+        let mut registry = self.clone();
+        registry.event_sink = Some(match &self.event_sink {
+            Some(existing) => Arc::new(TeePluginEventSink {
+                first: Arc::clone(existing),
+                second: sink,
+            }),
+            None => sink,
+        });
+        registry
     }
 
     pub async fn discover(&self) -> Result<Vec<DiscoveredPlugin>, PluginError> {
@@ -268,15 +305,26 @@ impl PluginRegistry {
                 signature_started.elapsed().as_millis() as u64,
             );
 
+            let disabled = self.plugin_disabled(&plugin.record.manifest.name);
+            let lifecycle_state = if disabled {
+                PluginLifecycleState::Deactivated
+            } else {
+                PluginLifecycleState::Validated
+            };
             let mut inner = self.inner.write();
-            if !inner.activated.contains_key(&plugin_id) {
+            let should_refresh_state = !inner.activated.contains_key(&plugin_id)
+                && !matches!(
+                    inner.state.get(&plugin_id),
+                    Some(PluginLifecycleState::Failed(_)) | Some(PluginLifecycleState::Rejected(_))
+                );
+            if should_refresh_state {
                 inner
                     .state
-                    .insert(plugin_id.clone(), PluginLifecycleState::Validated);
+                    .insert(plugin_id.clone(), lifecycle_state.clone());
                 inner.state_detail.insert(
                     plugin_id.clone(),
                     PluginLifecycleDetail {
-                        state: PluginLifecycleState::Validated,
+                        state: lifecycle_state,
                         rejection_reason: None,
                         failure: None,
                     },
@@ -406,6 +454,22 @@ impl PluginRegistry {
             let discovered = inner.discovered.get(id).cloned().ok_or_else(|| {
                 PluginError::ActivateFailed(format!("plugin not discovered: {}", id.0))
             })?;
+            if self.plugin_disabled(&discovered.record.manifest.name) {
+                inner
+                    .state
+                    .insert(id.clone(), PluginLifecycleState::Deactivated);
+                inner.state_detail.insert(
+                    id.clone(),
+                    PluginLifecycleDetail {
+                        state: PluginLifecycleState::Deactivated,
+                        rejection_reason: None,
+                        failure: None,
+                    },
+                );
+                return Err(PluginError::AdmissionDenied {
+                    policy: format!("disabled:{}", discovered.record.manifest.name),
+                });
+            }
             inner
                 .state
                 .insert(id.clone(), PluginLifecycleState::Activating);
@@ -423,7 +487,7 @@ impl PluginRegistry {
         if let Err(error) = self.validate_activation_requirements(&discovered.record.manifest) {
             let error = PluginError::Registration(error);
             self.mark_failed_with(id, error.to_string());
-            self.emit_plugin_rejected(&discovered.record, &error);
+            self.emit_plugin_failed(&discovered.record);
             return Err(error);
         }
 
@@ -431,7 +495,7 @@ impl PluginRegistry {
             Ok(plugin) => plugin,
             Err(error) => {
                 self.mark_failed_with(id, error.to_string());
-                self.emit_plugin_rejected(&discovered.record, &error);
+                self.emit_plugin_failed(&discovered.record);
                 return Err(error);
             }
         };
@@ -443,7 +507,7 @@ impl PluginRegistry {
             Err(error) => {
                 self.rollback_activation(id, &activation).await;
                 self.mark_failed_with(id, error.to_string());
-                self.emit_plugin_rejected(&discovered.record, &error);
+                self.emit_plugin_failed(&discovered.record);
                 return Err(error);
             }
         };
@@ -455,7 +519,7 @@ impl PluginRegistry {
             let error = PluginError::Registration(error);
             self.mark_failed_with(id, error.to_string());
             self.emit_capability_registration_rejected(&error);
-            self.emit_plugin_rejected(&discovered.record, &error);
+            self.emit_plugin_failed(&discovered.record);
             return Err(error);
         }
 
@@ -463,7 +527,7 @@ impl PluginRegistry {
             self.rollback_activation(id, &activation).await;
             self.mark_failed_with(id, error.to_string());
             self.emit_capability_registration_rejected(&error);
-            self.emit_plugin_rejected(&discovered.record, &error);
+            self.emit_plugin_failed(&discovered.record);
             return Err(error);
         }
 
@@ -549,6 +613,7 @@ impl PluginRegistry {
                             failure: None,
                         },
                     );
+                    push_recent_event_locked(&mut inner, id, PluginRecentEvent::Deactivated);
                 }
                 return Ok(());
             };
@@ -595,6 +660,7 @@ impl PluginRegistry {
                     failure: Some(details.clone()),
                 },
             );
+            push_recent_event_locked(&mut inner, id, PluginRecentEvent::Failed);
             return Err(PluginError::DeactivateFailed(details));
         }
         inner
@@ -608,6 +674,7 @@ impl PluginRegistry {
                 failure: None,
             },
         );
+        push_recent_event_locked(&mut inner, id, PluginRecentEvent::Deactivated);
         drop(inner);
         self.emit_active_total();
         Ok(())
@@ -653,12 +720,84 @@ impl PluginRegistry {
         }
     }
 
+    pub fn product_snapshot(&self) -> Vec<PluginSummary> {
+        let inner = self.inner.read();
+        inner
+            .discovered
+            .iter()
+            .map(|(id, discovered)| self.product_summary_locked(id, discovered, &inner))
+            .collect()
+    }
+
+    pub fn product_detail(&self, id: &PluginId) -> Option<PluginDetail> {
+        let inner = self.inner.read();
+        let discovered = inner.discovered.get(id)?;
+        let summary = self.product_summary_locked(id, discovered, &inner);
+        let registered_capabilities = summary
+            .capabilities
+            .iter()
+            .filter(|capability| capability.registered)
+            .cloned()
+            .collect();
+        let configuration_schema = discovered
+            .record
+            .manifest
+            .capabilities
+            .configuration_schema
+            .as_ref();
+        let config = self
+            .config
+            .entries
+            .get(&discovered.record.manifest.name)
+            .cloned()
+            .unwrap_or(Value::Null);
+        let public_config = configuration_schema
+            .map(|schema| strip_secret_config_fields(schema, &config))
+            .unwrap_or(config);
+        Some(PluginDetail {
+            summary,
+            manifest_origin: manifest_origin_ref(&discovered.record.origin),
+            manifest_hash: discovered.record.manifest_hash,
+            manifest: public_plugin_manifest_value(&discovered.record.manifest),
+            configuration_schema: configuration_schema.map(public_plugin_config_schema),
+            config: public_config,
+            registered_capabilities,
+            recent_events: inner.recent_events.get(id).cloned().unwrap_or_default(),
+            rejection_reason: inner
+                .state_detail
+                .get(id)
+                .and_then(|detail| detail.rejection_reason.as_ref())
+                .map(product_rejection_reason),
+            failure: inner
+                .state_detail
+                .get(id)
+                .and_then(|detail| detail.failure.as_ref())
+                .map(|_| PRODUCT_FAILURE_WITHHELD_MESSAGE.to_owned()),
+        })
+    }
+
+    pub fn validate_config_update(&self, update: &PluginConfigUpdate) -> Result<(), PluginError> {
+        let inner = self.inner.read();
+        let Some(discovered) = inner.discovered.get(&update.plugin_id) else {
+            return Err(PluginError::AdmissionDenied {
+                policy: format!("unknown_plugin:{}", update.plugin_id.0),
+            });
+        };
+        validate_plugin_config_update_value(&discovered.record.manifest, &update.values)
+    }
+
     pub fn state(&self, id: &PluginId) -> Option<PluginLifecycleState> {
         self.inner.read().state.get(id).cloned()
     }
 
     pub fn state_detail(&self, id: &PluginId) -> Option<PluginLifecycleDetail> {
         self.inner.read().state_detail.get(id).cloned()
+    }
+
+    pub fn is_plugin_enabled(&self, id: &PluginId) -> Option<bool> {
+        let inner = self.inner.read();
+        let discovered = inner.discovered.get(id)?;
+        Some(!self.plugin_disabled(&discovered.record.manifest.name))
     }
 
     pub fn set_capability_registries(&self, registries: PluginCapabilityRegistries) {
@@ -674,6 +813,39 @@ impl PluginRegistry {
         manifest: &PluginManifest,
     ) -> PluginActivationContext {
         self.activation_context(manifest, Arc::new(CapabilityRegistrationState::default()))
+    }
+
+    fn plugin_disabled(&self, name: &PluginName) -> bool {
+        self.config.disabled_plugins.contains(name)
+    }
+
+    fn product_summary_locked(
+        &self,
+        id: &PluginId,
+        discovered: &DiscoveredPlugin,
+        inner: &PluginRegistryInner,
+    ) -> PluginSummary {
+        let manifest = &discovered.record.manifest;
+        let lifecycle_state = inner.state.get(id).cloned();
+        PluginSummary {
+            id: id.clone(),
+            name: manifest.name.to_string(),
+            version: manifest.version.to_string(),
+            description: manifest.description.clone(),
+            source: plugin_source_kind(&discovered.source),
+            trust_level: manifest.trust_level,
+            enabled: !self.plugin_disabled(&manifest.name),
+            state: product_state_for(
+                !self.plugin_disabled(&manifest.name),
+                lifecycle_state.as_ref(),
+            ),
+            capabilities: product_capabilities_for(manifest, inner.activated.get(id)),
+            warnings: inner
+                .warnings
+                .get(id)
+                .map(|warnings| warnings.iter().map(plugin_warning_message).collect())
+                .unwrap_or_default(),
+        }
     }
 
     fn activation_context(
@@ -797,6 +969,7 @@ impl PluginRegistry {
             .into());
         }
 
+        validate_user_source_allowlist(&self.config, source, &record.manifest)?;
         validate_semver_manifest(&record.manifest)?;
         validate_admission(&self.config.policy, &record.manifest)?;
         validate_strict_plugin_only(
@@ -882,6 +1055,7 @@ impl PluginRegistry {
                 failure: Some(failure),
             },
         );
+        push_recent_event_locked(&mut inner, id, PluginRecentEvent::Failed);
     }
 
     fn mark_rejected_with(&self, id: &PluginId, error: &PluginError) {
@@ -898,6 +1072,7 @@ impl PluginRegistry {
                 failure: None,
             },
         );
+        push_recent_event_locked(&mut inner, id, PluginRecentEvent::Rejected);
     }
 
     fn discovered_record(&self, id: &PluginId) -> Option<ManifestRecord> {
@@ -926,19 +1101,30 @@ impl PluginRegistry {
         let registries = self.capability_registries.read().clone();
         if let Some(registry) = &registries.tools {
             for name in &registrations.tools {
-                let _ = registry.deregister(name);
+                let _ = registry.deregister_from_plugin(plugin_id, name);
             }
         }
         if let Some(registry) = &registries.hooks {
             for name in &registrations.hooks {
-                registry.deregister(name);
+                registry.deregister_from_plugin(plugin_id, name);
             }
         }
         if let Some(registry) = &registries.mcp {
             for name in &registrations.mcp {
-                let _ = registry
-                    .remove_server(&harness_contracts::McpServerId(name.clone()))
-                    .await;
+                let server_id = harness_contracts::McpServerId(name.clone());
+                if let Some(tool_registry) = &registries.tools {
+                    if let Some(tool_names) = registry.injected_tool_names(&server_id).await {
+                        let server_source = McpServerSource::Plugin(plugin_id.clone());
+                        for tool_name in tool_names {
+                            let _ = tool_registry.deregister_mcp_tool(
+                                &server_id,
+                                &server_source,
+                                &tool_name,
+                            );
+                        }
+                    }
+                }
+                let _ = registry.remove_plugin_server(plugin_id, &server_id).await;
             }
         }
         if let Some(registry) = &registries.skills {
@@ -959,6 +1145,7 @@ impl PluginRegistry {
         from_state: PluginLifecycleStateDiscriminant,
     ) {
         let manifest = &record.manifest;
+        self.record_recent_event(&manifest.plugin_id(), PluginRecentEvent::Loaded);
         if let Some(metrics) = &self.metrics_sink {
             metrics.plugin_loaded(
                 manifest_origin_metric_label(&record.origin),
@@ -980,6 +1167,11 @@ impl PluginRegistry {
             from_state,
             at: now(),
         }));
+    }
+
+    fn record_recent_event(&self, id: &PluginId, event: PluginRecentEvent) {
+        let mut inner = self.inner.write();
+        push_recent_event_locked(&mut inner, id, event);
     }
 
     fn emit_plugin_discovered(&self, record: &ManifestRecord) {
@@ -1068,7 +1260,31 @@ impl PluginRegistry {
             trust_level: manifest.trust_level,
             manifest_origin: manifest_origin_ref(&record.origin),
             manifest_hash: record.manifest_hash,
-            reason,
+            reason: product_rejection_reason(&reason),
+            at: now(),
+        }));
+    }
+
+    fn emit_plugin_failed(&self, record: &ManifestRecord) {
+        let manifest = &record.manifest;
+        if let Some(metrics) = &self.metrics_sink {
+            metrics.plugin_failed(
+                manifest_origin_metric_label(&record.origin),
+                manifest.trust_level,
+            );
+        }
+        let Some(sink) = &self.event_sink else {
+            return;
+        };
+        sink.emit(Event::PluginFailed(PluginFailedEvent {
+            tenant_id: self.tenant_id,
+            plugin_id: manifest.plugin_id(),
+            plugin_name: manifest.name.to_string(),
+            plugin_version: manifest.version.to_string(),
+            trust_level: manifest.trust_level,
+            manifest_origin: manifest_origin_ref(&record.origin),
+            manifest_hash: record.manifest_hash,
+            failure: PRODUCT_FAILURE_WITHHELD_MESSAGE.to_owned(),
             at: now(),
         }));
     }
@@ -1107,7 +1323,7 @@ impl PluginRegistry {
                 partial_name: failure.partial_name.clone(),
                 partial_version: failure.partial_version.clone(),
                 raw_bytes_hash: failure.raw_bytes_hash,
-                failure: failure.failure.clone(),
+                failure: manifest_validation_failure_for_event(&failure.failure),
                 at: now(),
             },
         ));
@@ -1214,6 +1430,155 @@ fn resolve_plugin_dependencies(
     Ok(())
 }
 
+fn plugin_source_kind(source: &DiscoverySource) -> PluginSourceKind {
+    match source {
+        DiscoverySource::Workspace(_) => PluginSourceKind::Workspace,
+        DiscoverySource::User(_) => PluginSourceKind::User,
+        DiscoverySource::Project(_) => PluginSourceKind::Project,
+        DiscoverySource::CargoExtension => PluginSourceKind::CargoExtension,
+        DiscoverySource::Inline => PluginSourceKind::Inline,
+    }
+}
+
+fn product_state_for(enabled: bool, state: Option<&PluginLifecycleState>) -> PluginProductState {
+    if !enabled {
+        return PluginProductState::Disabled {
+            last_state: state.map(plugin_lifecycle_discriminant),
+        };
+    }
+
+    match state {
+        None => PluginProductState::Discovered,
+        Some(PluginLifecycleState::Validated) => PluginProductState::Validated,
+        Some(PluginLifecycleState::Activating) => PluginProductState::Activating,
+        Some(PluginLifecycleState::Activated) => PluginProductState::Activated,
+        Some(PluginLifecycleState::Deactivating | PluginLifecycleState::Deactivated) => {
+            PluginProductState::Deactivated
+        }
+        Some(PluginLifecycleState::Rejected(_)) => PluginProductState::Rejected,
+        Some(PluginLifecycleState::Failed(_)) => PluginProductState::Failed,
+    }
+}
+
+fn push_recent_event_locked(
+    inner: &mut PluginRegistryInner,
+    id: &PluginId,
+    event: PluginRecentEvent,
+) {
+    let events = inner.recent_events.entry(id.clone()).or_default();
+    events.push(event);
+    if events.len() > MAX_PRODUCT_RECENT_EVENTS {
+        let overflow = events.len() - MAX_PRODUCT_RECENT_EVENTS;
+        events.drain(0..overflow);
+    }
+}
+
+fn plugin_lifecycle_discriminant(state: &PluginLifecycleState) -> PluginLifecycleStateDiscriminant {
+    match state {
+        PluginLifecycleState::Validated => PluginLifecycleStateDiscriminant::Validated,
+        PluginLifecycleState::Activating => PluginLifecycleStateDiscriminant::Activating,
+        PluginLifecycleState::Activated => PluginLifecycleStateDiscriminant::Activated,
+        PluginLifecycleState::Deactivating => PluginLifecycleStateDiscriminant::Deactivating,
+        PluginLifecycleState::Deactivated => PluginLifecycleStateDiscriminant::Deactivated,
+        PluginLifecycleState::Rejected(_) => PluginLifecycleStateDiscriminant::Rejected,
+        PluginLifecycleState::Failed(_) => PluginLifecycleStateDiscriminant::Failed,
+    }
+}
+
+fn product_capabilities_for(
+    manifest: &PluginManifest,
+    activated: Option<&ActivatedPlugin>,
+) -> Vec<PluginRuntimeCapability> {
+    let registrations = activated.map(|plugin| &plugin.registrations);
+    let slots = activated
+        .map(|plugin| plugin.slots.as_slice())
+        .unwrap_or_default();
+    let mut capabilities = Vec::new();
+
+    for tool in &manifest.capabilities.tools {
+        capabilities.push(PluginRuntimeCapability {
+            kind: PluginRuntimeCapabilityKind::Tool,
+            name: Some(tool.name.clone()),
+            destructive: Some(tool.destructive),
+            registered: registrations
+                .is_some_and(|registrations| registrations.tools.contains(&tool.name)),
+        });
+    }
+    for hook in &manifest.capabilities.hooks {
+        capabilities.push(PluginRuntimeCapability {
+            kind: PluginRuntimeCapabilityKind::Hook,
+            name: Some(hook.name.clone()),
+            destructive: None,
+            registered: registrations
+                .is_some_and(|registrations| registrations.hooks.contains(&hook.name)),
+        });
+    }
+    for server in &manifest.capabilities.mcp_servers {
+        capabilities.push(PluginRuntimeCapability {
+            kind: PluginRuntimeCapabilityKind::McpServer,
+            name: Some(server.name.clone()),
+            destructive: None,
+            registered: registrations
+                .is_some_and(|registrations| registrations.mcp.contains(&server.name)),
+        });
+    }
+    for skill in &manifest.capabilities.skills {
+        capabilities.push(PluginRuntimeCapability {
+            kind: PluginRuntimeCapabilityKind::Skill,
+            name: Some(skill.name.clone()),
+            destructive: None,
+            registered: registrations
+                .is_some_and(|registrations| registrations.skills.contains(&skill.name)),
+        });
+    }
+    for toolset in &manifest.capabilities.custom_toolsets {
+        capabilities.push(PluginRuntimeCapability {
+            kind: PluginRuntimeCapabilityKind::CustomToolset,
+            name: Some(toolset.name.clone()),
+            destructive: None,
+            registered: slots.contains(&CapabilitySlot::CustomToolset(toolset.name.clone())),
+        });
+    }
+    if let Some(memory) = &manifest.capabilities.memory_provider {
+        capabilities.push(PluginRuntimeCapability {
+            kind: PluginRuntimeCapabilityKind::MemoryProvider,
+            name: Some(memory.name.clone()),
+            destructive: None,
+            registered: activated.is_some_and(|plugin| plugin.memory_provider.is_some()),
+        });
+    }
+    if let Some(coordinator) = &manifest.capabilities.coordinator_strategy {
+        capabilities.push(PluginRuntimeCapability {
+            kind: PluginRuntimeCapabilityKind::Coordinator,
+            name: Some(coordinator.name.clone()),
+            destructive: None,
+            registered: slots.contains(&CapabilitySlot::CoordinatorStrategy),
+        });
+    }
+    if manifest.capabilities.steering {
+        capabilities.push(PluginRuntimeCapability {
+            kind: PluginRuntimeCapabilityKind::Steering,
+            name: Some("steering".to_owned()),
+            destructive: None,
+            registered: activated.is_some(),
+        });
+    }
+
+    capabilities
+}
+
+fn plugin_warning_message(warning: &PluginWarning) -> String {
+    match warning {
+        PluginWarning::OptionalDependencyMissing {
+            dependency,
+            requirement,
+        } => format!("optional dependency missing: {dependency} {requirement}"),
+        PluginWarning::DeclaredCapabilityUnregistered { kind, name } => {
+            format!("declared {kind} capability was not registered: {name}")
+        }
+    }
+}
+
 fn find_dependency_candidate(
     discovered: &BTreeMap<PluginId, DiscoveredPlugin>,
     name: &crate::PluginName,
@@ -1284,6 +1649,22 @@ fn validate_semver_manifest(manifest: &PluginManifest) -> Result<(), PluginError
     Ok(())
 }
 
+fn validate_user_source_allowlist(
+    config: &PluginConfig,
+    source: &DiscoverySource,
+    manifest: &PluginManifest,
+) -> Result<(), PluginError> {
+    let Some(allowed) = &config.allowed_user_plugins else {
+        return Ok(());
+    };
+    if !matches!(source, DiscoverySource::User(_)) || allowed.contains(&manifest.name) {
+        return Ok(());
+    }
+    Err(PluginError::AdmissionDenied {
+        policy: format!("user_source_allowlist:{}", manifest.name),
+    })
+}
+
 fn validate_admission(
     policy: &PluginAdmissionPolicy,
     manifest: &PluginManifest,
@@ -1322,26 +1703,328 @@ fn validate_plugin_config_entry(
     config: &PluginConfig,
     manifest: &PluginManifest,
 ) -> Result<(), PluginError> {
+    let entry = config.entries.get(&manifest.name).unwrap_or(&Value::Null);
+    validate_plugin_config_value(manifest, entry, SecretConfigFieldPolicy::Allow)
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum SecretConfigFieldPolicy {
+    Allow,
+    Reject,
+}
+
+fn validate_plugin_config_update_value(
+    manifest: &PluginManifest,
+    value: &Value,
+) -> Result<(), PluginError> {
+    validate_plugin_config_value(manifest, value, SecretConfigFieldPolicy::Reject)
+}
+
+fn validate_plugin_config_value(
+    manifest: &PluginManifest,
+    value: &Value,
+    secret_policy: SecretConfigFieldPolicy,
+) -> Result<(), PluginError> {
     let Some(schema) = &manifest.capabilities.configuration_schema else {
         return Ok(());
     };
-    let validator = jsonschema::validator_for(schema).map_err(|error| {
+    let public_schema = public_plugin_config_schema(schema);
+    if secret_policy == SecretConfigFieldPolicy::Reject
+        && value_contains_secret_config_field(schema, value)
+    {
+        return Err(PluginError::AdmissionDenied {
+            policy: format!(
+                "config_schema:{}:secret fields are managed outside plugin config",
+                manifest.name
+            ),
+        });
+    }
+
+    let empty_public_config = Value::Object(serde_json::Map::new());
+    let public_value = strip_secret_config_fields_for_validation(schema, value);
+    let validation_value = if public_value.is_null()
+        && public_schema
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|schema_type| schema_type == "object")
+    {
+        &empty_public_config
+    } else {
+        &public_value
+    };
+    let validator = jsonschema::validator_for(&public_schema).map_err(|error| {
         PluginError::InvalidManifest(format!(
             "configuration_schema cannot compile for {}: {error}",
             manifest.plugin_id().0
         ))
     })?;
-    let entry = config.entries.get(&manifest.name).unwrap_or(&Value::Null);
-    if validator.is_valid(entry) {
+    if validator.is_valid(validation_value) {
         return Ok(());
     }
-    let details = validator.iter_errors(entry).next().map_or_else(
+    let details = validator.iter_errors(validation_value).next().map_or_else(
         || "configuration entry does not match schema".to_owned(),
         |error| error.to_string(),
     );
     Err(PluginError::AdmissionDenied {
         policy: format!("config_schema:{}:{details}", manifest.name),
     })
+}
+
+fn public_plugin_config_schema(schema: &Value) -> Value {
+    let mut schema = schema.clone();
+    strip_secret_schema_fields(&mut schema);
+    schema
+}
+
+fn public_plugin_manifest_value(manifest: &PluginManifest) -> Value {
+    let mut value = serde_json::to_value(manifest).unwrap_or(Value::Null);
+    if let Some(schema) = manifest
+        .capabilities
+        .configuration_schema
+        .as_ref()
+        .map(public_plugin_config_schema)
+    {
+        if let Some(capabilities) = value.get_mut("capabilities").and_then(Value::as_object_mut) {
+            capabilities.insert("configuration_schema".to_owned(), schema);
+        }
+    }
+    value
+}
+
+fn strip_secret_schema_fields(schema: &mut Value) -> bool {
+    if schema_marked_secret(schema) {
+        return true;
+    }
+    match schema {
+        Value::Object(object) => {
+            let secret_keys = strip_secret_schema_map(object, "properties");
+            for key in [
+                "patternProperties",
+                "$defs",
+                "definitions",
+                "dependentSchemas",
+            ] {
+                strip_secret_schema_map(object, key);
+            }
+            if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
+                properties
+                    .retain(|_, property_schema| !strip_secret_schema_fields(property_schema));
+            }
+            if let Some(required) = object.get_mut("required").and_then(Value::as_array_mut) {
+                required.retain(|item| {
+                    item.as_str()
+                        .is_none_or(|field| !secret_keys.contains(field))
+                });
+            }
+            if let Some(items) = object.get_mut("items") {
+                if strip_secret_schema_fields(items) {
+                    *items = Value::Object(serde_json::Map::new());
+                }
+            }
+            for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+                if let Some(values) = object.get_mut(key).and_then(Value::as_array_mut) {
+                    values.retain_mut(|value| !strip_secret_schema_fields(value));
+                }
+            }
+            for key in [
+                "additionalProperties",
+                "unevaluatedProperties",
+                "contains",
+                "propertyNames",
+                "if",
+                "then",
+                "else",
+                "not",
+            ] {
+                if let Some(value) = object.get_mut(key) {
+                    if strip_secret_schema_fields(value) {
+                        *value = Value::Bool(false);
+                    }
+                }
+            }
+            false
+        }
+        Value::Array(values) => {
+            values.retain_mut(|value| !strip_secret_schema_fields(value));
+            false
+        }
+        _ => false,
+    }
+}
+
+fn value_contains_secret_config_field(schema: &Value, value: &Value) -> bool {
+    if schema_marked_secret(schema) {
+        return true;
+    }
+    if let (Some(properties), Some(values)) = (
+        schema.get("properties").and_then(Value::as_object),
+        value.as_object(),
+    ) {
+        for (key, property_schema) in properties {
+            if let Some(field_value) = values.get(key) {
+                if value_contains_secret_config_field(property_schema, field_value) {
+                    return true;
+                }
+            }
+        }
+    }
+    if let Some(values) = value.as_object() {
+        let properties = schema.get("properties").and_then(Value::as_object);
+        for (key, field_value) in values {
+            if properties.is_some_and(|properties| properties.contains_key(key)) {
+                continue;
+            }
+            if let Some(field_schema) = dynamic_object_field_schema(schema, key) {
+                if value_contains_secret_config_field(field_schema, field_value) {
+                    return true;
+                }
+            }
+        }
+    }
+    if let (Some(item_schema), Some(values)) = (schema.get("items"), value.as_array()) {
+        if values
+            .iter()
+            .any(|item| value_contains_secret_config_field(item_schema, item))
+        {
+            return true;
+        }
+    }
+    for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+        if let Some(schemas) = schema.get(key).and_then(Value::as_array) {
+            if schemas
+                .iter()
+                .any(|schema| value_contains_secret_config_field(schema, value))
+            {
+                return true;
+            }
+        }
+    }
+    for key in [
+        "contains",
+        "if",
+        "then",
+        "else",
+        "not",
+        "additionalProperties",
+        "unevaluatedProperties",
+    ] {
+        if let Some(schema) = schema.get(key).filter(|schema| schema.is_object()) {
+            if value_contains_secret_config_field(schema, value) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn strip_secret_config_fields(schema: &Value, value: &Value) -> Value {
+    strip_secret_config_value(schema, value, UnknownConfigFieldPolicy::Drop).unwrap_or(Value::Null)
+}
+
+fn strip_secret_config_fields_for_validation(schema: &Value, value: &Value) -> Value {
+    strip_secret_config_value(schema, value, UnknownConfigFieldPolicy::Preserve)
+        .unwrap_or(Value::Null)
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum UnknownConfigFieldPolicy {
+    Drop,
+    Preserve,
+}
+
+fn strip_secret_config_value(
+    schema: &Value,
+    value: &Value,
+    unknown_policy: UnknownConfigFieldPolicy,
+) -> Option<Value> {
+    if schema
+        .get("secret")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    match value {
+        Value::Object(object) => {
+            let properties = schema.get("properties").and_then(Value::as_object);
+            Some(Value::Object(
+                object
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        let field_schema = properties
+                            .and_then(|properties| properties.get(key))
+                            .or_else(|| dynamic_object_field_schema(schema, key));
+                        match field_schema {
+                            Some(field_schema) => {
+                                strip_secret_config_value(field_schema, value, unknown_policy)
+                                    .map(|value| (key.clone(), value))
+                            }
+                            None if unknown_policy == UnknownConfigFieldPolicy::Preserve => {
+                                Some((key.clone(), value.clone()))
+                            }
+                            None => None,
+                        }
+                    })
+                    .collect(),
+            ))
+        }
+        Value::Array(values) => {
+            let Some(item_schema) = schema.get("items") else {
+                return Some(value.clone());
+            };
+            Some(Value::Array(
+                values
+                    .iter()
+                    .filter_map(|value| {
+                        strip_secret_config_value(item_schema, value, unknown_policy)
+                    })
+                    .collect(),
+            ))
+        }
+        value => Some(value.clone()),
+    }
+}
+
+fn schema_marked_secret(schema: &Value) -> bool {
+    schema
+        .get("secret")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn strip_secret_schema_map(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+) -> BTreeSet<String> {
+    let Some(map) = object.get_mut(key).and_then(Value::as_object_mut) else {
+        return BTreeSet::new();
+    };
+    let mut secret_keys = BTreeSet::new();
+    map.retain(|entry_key, entry_schema| {
+        if strip_secret_schema_fields(entry_schema) {
+            secret_keys.insert(entry_key.clone());
+            false
+        } else {
+            true
+        }
+    });
+    secret_keys
+}
+
+fn dynamic_object_field_schema<'a>(schema: &'a Value, key: &str) -> Option<&'a Value> {
+    if let Some(pattern_properties) = schema.get("patternProperties").and_then(Value::as_object) {
+        for (pattern, field_schema) in pattern_properties {
+            if regex::Regex::new(pattern)
+                .map(|regex| regex.is_match(key))
+                .unwrap_or(false)
+            {
+                return Some(field_schema);
+            }
+        }
+    }
+    schema
+        .get("additionalProperties")
+        .filter(|schema| schema.is_object())
 }
 
 fn source_expected_trust(source: &DiscoverySource) -> Option<harness_contracts::TrustLevel> {
@@ -1493,17 +2176,15 @@ fn plugin_capabilities_summary(manifest: &PluginManifest) -> PluginCapabilitiesS
 
 fn manifest_origin_ref(origin: &crate::ManifestOrigin) -> ManifestOriginRef {
     match origin {
-        crate::ManifestOrigin::File { path } => ManifestOriginRef::File {
-            path: path.display().to_string(),
+        crate::ManifestOrigin::File { .. } => ManifestOriginRef::File {
+            path: "<local-plugin>".to_owned(),
         },
-        crate::ManifestOrigin::CargoExtension { binary, .. } => ManifestOriginRef::CargoExtension {
-            binary: binary.display().to_string(),
+        crate::ManifestOrigin::CargoExtension { .. } => ManifestOriginRef::CargoExtension {
+            binary: "<cargo-extension>".to_owned(),
         },
-        crate::ManifestOrigin::RemoteRegistry { endpoint, .. } => {
-            ManifestOriginRef::RemoteRegistry {
-                endpoint: endpoint.clone(),
-            }
-        }
+        crate::ManifestOrigin::RemoteRegistry { .. } => ManifestOriginRef::RemoteRegistry {
+            endpoint: "<remote-plugin>".to_owned(),
+        },
     }
 }
 
@@ -1512,6 +2193,47 @@ fn manifest_origin_metric_label(origin: &crate::ManifestOrigin) -> &'static str 
         crate::ManifestOrigin::File { .. } => "file",
         crate::ManifestOrigin::CargoExtension { .. } => "cargo_extension",
         crate::ManifestOrigin::RemoteRegistry { .. } => "remote_registry",
+    }
+}
+
+fn manifest_validation_failure_for_event(
+    failure: &harness_contracts::ManifestValidationFailure,
+) -> harness_contracts::ManifestValidationFailure {
+    match failure {
+        harness_contracts::ManifestValidationFailure::SyntaxError { .. } => {
+            harness_contracts::ManifestValidationFailure::SyntaxError {
+                details: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+            }
+        }
+        harness_contracts::ManifestValidationFailure::SchemaViolation { json_pointer, .. } => {
+            harness_contracts::ManifestValidationFailure::SchemaViolation {
+                json_pointer: json_pointer.clone(),
+                details: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+            }
+        }
+        harness_contracts::ManifestValidationFailure::UnsupportedSchemaVersion {
+            found,
+            supported,
+        } => harness_contracts::ManifestValidationFailure::UnsupportedSchemaVersion {
+            found: *found,
+            supported: supported.clone(),
+        },
+        harness_contracts::ManifestValidationFailure::CargoExtensionMetadataMalformed {
+            ..
+        } => harness_contracts::ManifestValidationFailure::CargoExtensionMetadataMalformed {
+            details: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+        },
+        harness_contracts::ManifestValidationFailure::RemoteIntegrityMismatch {
+            got_etag, ..
+        } => harness_contracts::ManifestValidationFailure::RemoteIntegrityMismatch {
+            expected_etag: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+            got_etag: got_etag
+                .as_ref()
+                .map(|_| PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned()),
+        },
+        _ => harness_contracts::ManifestValidationFailure::SyntaxError {
+            details: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+        },
     }
 }
 
@@ -1617,6 +2339,51 @@ fn rejection_reason(error: &PluginError) -> RejectionReason {
                 requirement: "static runtime factory".to_owned(),
             }
         }
+    }
+}
+
+fn product_rejection_reason(reason: &RejectionReason) -> RejectionReason {
+    match reason {
+        RejectionReason::SignatureInvalid { .. } => RejectionReason::SignatureInvalid {
+            details: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+        },
+        RejectionReason::UnknownSigner { .. } => RejectionReason::UnknownSigner {
+            signer: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+        },
+        RejectionReason::SignerRevoked { revoked_at, .. } => RejectionReason::SignerRevoked {
+            signer: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+            revoked_at: *revoked_at,
+        },
+        RejectionReason::TrustMismatch { declared, .. } => RejectionReason::TrustMismatch {
+            declared: *declared,
+            source: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+        },
+        RejectionReason::NamespaceConflict { .. } => RejectionReason::NamespaceConflict {
+            details: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+        },
+        RejectionReason::DependencyUnsatisfied { .. } => RejectionReason::DependencyUnsatisfied {
+            dependency: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+            requirement: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+        },
+        RejectionReason::DependencyCycle { .. } => {
+            RejectionReason::DependencyCycle { cycle: vec![] }
+        }
+        RejectionReason::HarnessVersionIncompatible { .. } => {
+            RejectionReason::HarnessVersionIncompatible {
+                required: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+                actual: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+            }
+        }
+        RejectionReason::SlotOccupied { .. } => RejectionReason::SlotOccupied {
+            slot: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+            occupant: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+        },
+        RejectionReason::AdmissionDenied { .. } => RejectionReason::AdmissionDenied {
+            policy: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+        },
+        _ => RejectionReason::AdmissionDenied {
+            policy: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+        },
     }
 }
 

@@ -100,6 +100,10 @@ function getActivityLabel(event: RunEvent): string {
       return event.payload?.artifactId ?? 'artifact'
     case 'engine.failed':
       return 'engine'
+    case 'plugin.loaded':
+    case 'plugin.rejected':
+    case 'plugin.failed':
+      return event.payload?.pluginName ?? 'plugin'
     default:
       return assertNever(event)
   }
@@ -134,6 +138,10 @@ function getWithheldActivityLabel(event: RunEvent): string {
       return 'artifact'
     case 'engine.failed':
       return 'engine'
+    case 'plugin.loaded':
+    case 'plugin.rejected':
+    case 'plugin.failed':
+      return 'plugin'
     default:
       return assertNever(event)
   }
@@ -160,7 +168,11 @@ function getActivityStatus(event: RunEvent): ActivityRailItem['status'] {
       return 'blocked'
     case 'tool.failed':
     case 'engine.failed':
+    case 'plugin.rejected':
+    case 'plugin.failed':
       return 'failed'
+    case 'plugin.loaded':
+      return 'success'
     case 'artifact.created':
     case 'artifact.updated':
       if (event.payload?.status === 'failed') {
@@ -242,6 +254,9 @@ function getDetails(event: RunEvent): RunEventViewModel['details'] {
     case 'artifact.created':
     case 'artifact.updated':
     case 'engine.failed':
+    case 'plugin.loaded':
+    case 'plugin.rejected':
+    case 'plugin.failed':
       return undefined
     default:
       return assertNever(event)

@@ -19,6 +19,7 @@ import type {
   GetExecutionSettingsResponse,
   GetMcpServerConfigResponse,
   GetMemoryItemResponse,
+  GetPluginDetailResponse,
   GetProviderConfigApiKeyResponse,
   GetSkillCatalogEntryResponse,
   GetSkillCatalogFileResponse,
@@ -34,6 +35,7 @@ import type {
   ListMcpDiagnosticsResponse,
   ListMcpServersResponse,
   ListMemoryItemsResponse,
+  ListPluginsResponse,
   ListProjectsResponse,
   ListProviderSettingsResponse,
   ListReferenceCandidatesResponse,
@@ -44,6 +46,8 @@ import type {
   ModelProviderCatalogResponse,
   PageConversationTimelineResponse,
   PageConversationWorktreeResponse,
+  PluginInstallReport,
+  PluginOperationResult,
   ReplayTimelineResponse,
   RequestProviderConfigApiKeyRevealResponse,
   ResolvePermissionResponse,
@@ -53,6 +57,7 @@ import type {
   SetConversationModelConfigResponse,
   SetExecutionSettingsResponse,
   SetMcpServerEnabledResponse,
+  SetProjectPluginsEnabledResponse,
   SkillCatalogInstallProgressPayload,
   SkillSummary,
   StartRunResponse,
@@ -452,6 +457,82 @@ const fixtureBundledSkill: SkillSummary = {
 
 const fixtureListSkills: ListSkillsResponse = {
   skills: [fixtureWorkspaceSkill, fixtureBundledSkill],
+}
+
+const fixtureListPlugins: ListPluginsResponse = {
+  allowProjectPlugins: false,
+  plugins: [
+    {
+      id: 'formatter@1.0.0',
+      name: 'formatter',
+      version: '1.0.0',
+      description: 'Formats workspace files.',
+      source: 'user',
+      trustLevel: 'user_controlled',
+      enabled: true,
+      state: 'activated',
+      capabilities: [
+        {
+          kind: 'tool',
+          name: 'format_file',
+          destructive: false,
+          registered: true,
+        },
+      ],
+      warnings: [],
+    },
+  ],
+}
+
+const fixturePluginInstallReport: PluginInstallReport = {
+  sourcePath: '/tmp/formatter-plugin',
+  valid: true,
+  summary: fixtureListPlugins.plugins[0],
+  warnings: [],
+}
+
+const fixturePluginDetail: GetPluginDetailResponse = {
+  plugin: {
+    summary: fixtureListPlugins.plugins[0],
+    manifestOrigin: {
+      file: {
+        path: '/tmp/formatter-plugin/plugin.json',
+      },
+    },
+    manifestHash: Array.from({ length: 32 }, () => 7),
+    manifest: {
+      name: 'formatter',
+      version: '1.0.0',
+    },
+    configurationSchema: {
+      type: 'object',
+      properties: {
+        lineWidth: {
+          type: 'number',
+        },
+        formatOnSave: {
+          type: 'boolean',
+        },
+        apiToken: {
+          type: 'string',
+          secret: true,
+        },
+      },
+    },
+    config: {
+      lineWidth: 100,
+      formatOnSave: true,
+    },
+    registeredCapabilities: fixtureListPlugins.plugins[0].capabilities,
+    recentEvents: ['loaded'],
+  },
+}
+
+const fixturePluginOperation: PluginOperationResult = {
+  pluginId: fixtureListPlugins.plugins[0].id,
+  status: 'installed',
+  summary: fixtureListPlugins.plugins[0],
+  report: fixturePluginInstallReport,
 }
 
 const fixtureSkillCatalogSources: ListSkillCatalogSourcesResponse = {
@@ -970,6 +1051,10 @@ export interface TestCommandClientOptions {
   mcpServer?: SaveMcpServerResponse
   mcpServers?: ListMcpServersResponse
   modelProviderCatalog?: ModelProviderCatalogResponse
+  pluginDetail?: GetPluginDetailResponse
+  pluginInstallReport?: PluginInstallReport
+  pluginOperation?: PluginOperationResult
+  plugins?: ListPluginsResponse
   providerConfigApiKey?: GetProviderConfigApiKeyResponse
   providerConfigApiKeyReveal?: RequestProviderConfigApiKeyRevealResponse
   providerSettingsList?: ListProviderSettingsResponse
@@ -977,6 +1062,7 @@ export interface TestCommandClientOptions {
   providerSettings?: SaveProviderSettingsResponse
   providerValidation?: ValidateProviderSettingsResponse
   setExecutionSettings?: SetExecutionSettingsResponse
+  setProjectPluginsEnabled?: SetProjectPluginsEnabledResponse
   referenceCandidates?: ListReferenceCandidatesResponse
   replayTimeline?: ReplayTimelineResponse
   conversationTimelinePage?: PageConversationTimelineResponse
@@ -1130,6 +1216,13 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
       await wait(options.delayMs)
       return { id, status: 'deleted' }
     },
+    async uninstallPlugin(pluginId) {
+      await wait(options.delayMs)
+      return {
+        pluginId,
+        status: 'uninstalled',
+      } satisfies PluginOperationResult
+    },
     async deleteSkill(id) {
       await wait(options.delayMs)
       return { id, status: 'deleted' }
@@ -1178,6 +1271,16 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
     async getMemoryItem() {
       await wait(options.delayMs)
       return options.memoryItem ?? fixtureMemoryItem
+    },
+    async getPluginDetail(pluginId) {
+      await wait(options.delayMs)
+      if (options.pluginDetail?.plugin.summary.id === pluginId) {
+        return options.pluginDetail
+      }
+      if (fixturePluginDetail.plugin.summary.id === pluginId) {
+        return fixturePluginDetail
+      }
+      throw new Error(`Plugin not found: ${pluginId}`)
     },
     async getProviderConfigApiKey(configId, revealToken) {
       await wait(options.delayMs)
@@ -1282,6 +1385,10 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
       await wait(options.delayMs)
       return { skill: fixtureWorkspaceSkill }
     },
+    async installPluginFromPath() {
+      await wait(options.delayMs)
+      return options.pluginOperation ?? fixturePluginOperation
+    },
     async installSkillFromCatalog(request) {
       emitCatalogInstallProgress(request, 'preparing', 5)
       await wait(options.delayMs)
@@ -1353,6 +1460,10 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
     async listMemoryItems() {
       await wait(options.delayMs)
       return options.memoryItems ?? fixtureMemoryItems
+    },
+    async listPlugins() {
+      await wait(options.delayMs)
+      return options.plugins ?? fixtureListPlugins
     },
     async listProviderSettings() {
       await wait(options.delayMs)
@@ -1469,6 +1580,17 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
         configId,
       }
     },
+    async reloadPlugin(pluginId) {
+      await wait(options.delayMs)
+      const summary =
+        (options.plugins ?? fixtureListPlugins).plugins.find((plugin) => plugin.id === pluginId) ??
+        fixtureListPlugins.plugins[0]
+      return {
+        pluginId,
+        status: 'reloaded',
+        summary,
+      } satisfies PluginOperationResult
+    },
     async runEvalCase(caseId) {
       await wait(options.delayMs)
       const evalCase =
@@ -1544,6 +1666,29 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
           status: enabled ? server.status : 'disabled',
         },
       } satisfies SetMcpServerEnabledResponse
+    },
+    async setPluginEnabled(pluginId, enabled) {
+      await wait(options.delayMs)
+      const summary =
+        (options.plugins ?? fixtureListPlugins).plugins.find((plugin) => plugin.id === pluginId) ??
+        fixtureListPlugins.plugins[0]
+      return {
+        pluginId,
+        status: enabled ? 'enabled' : 'disabled',
+        summary: {
+          ...summary,
+          enabled,
+          state: enabled ? 'activated' : { disabled: { last_state: 'activated' } },
+        },
+      } satisfies PluginOperationResult
+    },
+    async setProjectPluginsEnabled(enabled) {
+      await wait(options.delayMs)
+      return (
+        options.setProjectPluginsEnabled ?? {
+          allowProjectPlugins: enabled,
+        }
+      )
     },
     async restartMcpServer(id) {
       await wait(options.delayMs)
@@ -1788,6 +1933,21 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
         },
       } satisfies UpdateMemoryItemResponse
     },
+    async updatePluginConfig(pluginId) {
+      await wait(options.delayMs)
+      const summary =
+        (options.plugins ?? fixtureListPlugins).plugins.find((plugin) => plugin.id === pluginId) ??
+        fixtureListPlugins.plugins[0]
+      return {
+        pluginId,
+        status: 'configured',
+        summary,
+      } satisfies PluginOperationResult
+    },
+    async validatePluginFromPath() {
+      await wait(options.delayMs)
+      return options.pluginInstallReport ?? fixturePluginInstallReport
+    },
     async validateProviderSettings() {
       await wait(options.delayMs)
       return options.providerValidation ?? fixtureValidateProviderSettings
@@ -1873,6 +2033,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     deleteConversation: () => Promise.reject(error),
     deleteMcpServer: () => Promise.reject(error),
     deleteMemoryItem: () => Promise.reject(error),
+    uninstallPlugin: () => Promise.reject(error),
     deleteSkill: () => Promise.reject(error),
     exportMemoryItems: () => Promise.reject(error),
     exportSupportBundle: () => Promise.reject(error),
@@ -1885,6 +2046,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     getHarnessHealthcheck: () => Promise.reject(error),
     getMemoryItem: () => Promise.reject(error),
     getMcpServerConfig: () => Promise.reject(error),
+    getPluginDetail: () => Promise.reject(error),
     getProviderConfigApiKey: () => Promise.reject(error),
     getReplayTimeline: () => Promise.reject(error),
     getSkillCatalogEntry: () => Promise.reject(error),
@@ -1894,6 +2056,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     getSkillDetail: () => Promise.reject(error),
     getSkillFile: () => Promise.reject(error),
     importSkill: () => Promise.reject(error),
+    installPluginFromPath: () => Promise.reject(error),
     installSkillFromCatalog: () => Promise.reject(error),
     listSkillCatalogInstallTasks: () => Promise.reject(error),
     listenSkillCatalogInstallProgress: () => Promise.reject(error),
@@ -1905,6 +2068,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     listMcpDiagnostics: () => Promise.reject(error),
     listMcpServers: () => Promise.reject(error),
     listMemoryItems: () => Promise.reject(error),
+    listPlugins: () => Promise.reject(error),
     listProviderSettings: () => Promise.reject(error),
     listProjects: () => Promise.reject(error),
     addProject: () => Promise.reject(error),
@@ -1915,10 +2079,13 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     listSkillCatalogSources: () => Promise.reject(error),
     listSkills: () => Promise.reject(error),
     resolvePermission: () => Promise.reject(error),
+    reloadPlugin: () => Promise.reject(error),
     requestProviderConfigApiKeyReveal: () => Promise.reject(error),
     runEvalCase: () => Promise.reject(error),
     saveMcpServer: () => Promise.reject(error),
     setMcpServerEnabled: () => Promise.reject(error),
+    setPluginEnabled: () => Promise.reject(error),
+    setProjectPluginsEnabled: () => Promise.reject(error),
     restartMcpServer: () => Promise.reject(error),
     clearMcpDiagnostics: () => Promise.reject(error),
     saveProviderSettings: () => Promise.reject(error),
@@ -1933,6 +2100,8 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     unsubscribeMcpDiagnostics: () => Promise.reject(error),
     unsubscribeConversationEvents: () => Promise.reject(error),
     updateMemoryItem: () => Promise.reject(error),
+    updatePluginConfig: () => Promise.reject(error),
+    validatePluginFromPath: () => Promise.reject(error),
     validateProviderSettings: () => Promise.reject(error),
   }
 }

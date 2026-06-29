@@ -90,6 +90,56 @@ async fn plugin_mcp_registration_preserves_plugin_trust() {
 }
 
 #[tokio::test]
+async fn plugin_mcp_registration_cannot_replace_non_plugin_server() {
+    let registry = McpRegistry::new();
+    registry
+        .add_ready_server(
+            spec(McpServerSource::Workspace),
+            McpServerScope::Global,
+            Arc::new(NotifyingTools::static_tools(Vec::new())),
+        )
+        .await
+        .expect("workspace server");
+
+    let error = registry
+        .add_plugin_server(
+            PluginId("plugin-owner@1.0.0".into()),
+            TrustLevel::UserControlled,
+            spec(McpServerSource::Workspace),
+        )
+        .await
+        .expect_err("plugin server must not replace a non-plugin server");
+
+    assert!(matches!(error, McpError::Protocol(message) if message.contains("already registered")));
+    let registered = registry
+        .server_spec(&server_id())
+        .await
+        .expect("workspace server remains registered");
+    assert_eq!(registered.source, McpServerSource::Workspace);
+}
+
+#[tokio::test]
+async fn remove_plugin_server_does_not_remove_non_owner_server() {
+    let registry = McpRegistry::new();
+    registry
+        .add_ready_server(
+            spec(McpServerSource::Workspace),
+            McpServerScope::Global,
+            Arc::new(NotifyingTools::static_tools(Vec::new())),
+        )
+        .await
+        .expect("workspace server");
+
+    let error = registry
+        .remove_plugin_server(&PluginId("plugin-owner@1.0.0".into()), &server_id())
+        .await
+        .expect_err("plugin removal must check server ownership");
+
+    assert!(matches!(error, McpError::Protocol(message) if message.contains("owned by plugin")));
+    assert!(registry.server_spec(&server_id()).await.is_some());
+}
+
+#[tokio::test]
 async fn schema_fingerprint_is_stable_across_tool_order_changes() {
     let tool_registry = ToolRegistry::builder()
         .with_builtin_toolset(BuiltinToolset::Empty)

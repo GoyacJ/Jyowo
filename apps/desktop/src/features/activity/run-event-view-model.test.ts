@@ -157,6 +157,65 @@ describe('run-event-view-model', () => {
     ])
   })
 
+  it('maps plugin lifecycle events to activity labels and statuses', () => {
+    const events = runEventsSchema.parse([
+      {
+        id: 'evt-plugin-loaded',
+        conversationSequence: 18,
+        runId: 'plugin-runtime',
+        sequence: 1,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'plugin.loaded',
+        source: 'plugin',
+        visibility: 'redacted',
+        payload: {
+          capabilityCount: 2,
+          pluginId: 'formatter@1.0.0',
+          pluginName: 'formatter',
+          trustLevel: 'user_controlled',
+        },
+      },
+      {
+        id: 'evt-plugin-rejected',
+        conversationSequence: 19,
+        runId: 'plugin-runtime',
+        sequence: 2,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'plugin.rejected',
+        source: 'plugin',
+        visibility: 'redacted',
+        payload: {
+          pluginId: 'bad-plugin@1.0.0',
+          pluginName: 'bad-plugin',
+          reason: 'ManifestInvalid',
+          trustLevel: 'user_controlled',
+        },
+      },
+      {
+        id: 'evt-plugin-failed',
+        conversationSequence: 20,
+        runId: 'plugin-runtime',
+        sequence: 3,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'plugin.failed',
+        source: 'plugin',
+        visibility: 'redacted',
+        payload: {
+          message: 'Plugin failure withheld from conversation timeline.',
+          pluginId: 'crash-plugin@1.0.0',
+          pluginName: 'crash-plugin',
+          trustLevel: 'admin_trusted',
+        },
+      },
+    ])
+
+    expect(toRunEventViewModels(events).map((viewModel) => viewModel.activityItem)).toMatchObject([
+      { label: 'formatter', status: 'success' },
+      { label: 'bad-plugin', status: 'failed' },
+      { label: 'crash-plugin', status: 'failed' },
+    ])
+  })
+
   it('merges permission resolved events into the matching requested details', () => {
     const events = runEventsSchema.parse([
       {

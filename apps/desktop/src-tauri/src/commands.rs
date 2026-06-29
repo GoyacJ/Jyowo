@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ffi::OsStr;
 use std::future::Future;
 use std::io::{Cursor, Write};
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -13,8 +14,16 @@ use chrono::{NaiveDate, Utc};
 use futures::StreamExt;
 use harness_contracts::{
     AgentCapabilityKind, AgentCapabilityUnavailableReason, ConversationCursor,
-    ConversationMessageAuthor, ConversationTurnCursor, ConversationWorktreePage, UiSafeText,
+    ConversationMessageAuthor, ConversationTurnCursor, ConversationWorktreePage, LocalIsolationTag,
+    PluginCapabilitiesSummary, PluginConfigUpdate, PluginDetail, PluginId, PluginInstallReport,
+    PluginOperationResult, PluginOperationStatus, PluginSummary, RejectionReason, SandboxMode,
+    TrustLevel, UiSafeText,
 };
+use harness_plugin::{
+    CargoExtensionManifestLoader, CargoExtensionRuntimeLoader, DiscoverySource, FileManifestLoader,
+    InlineManifestLoader, ManifestOrigin, PluginConfig, PluginName, PluginRegistry,
+};
+use harness_sandbox::{LocalIsolation, SandboxBackend};
 use image::{ImageFormat, ImageReader, Limits};
 use jyowo_harness_sdk::builtin::{
     DefaultRedactor, FileBlobStore, InMemoryMemoryProvider, JsonlEventStore, LocalLlamaProvider,
@@ -75,6 +84,9 @@ const MAX_SKILL_MARKDOWN_BYTES: u64 = 256 * 1024;
 const MAX_SKILL_PACKAGE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_SKILL_PACKAGE_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_SKILL_PACKAGE_FILES: usize = 200;
+const MAX_PLUGIN_PACKAGE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_PLUGIN_PACKAGE_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_PLUGIN_PACKAGE_FILES: usize = 300;
 const SKILL_PACKAGE_ENTRY_FILE: &str = "SKILL.md";
 const CONVERSATION_SUBSCRIPTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CONVERSATION_SUBSCRIPTION_BATCH_LIMIT: usize = 50;
@@ -82,6 +94,11 @@ const MCP_DIAGNOSTIC_RETENTION_LIMIT: usize = 500;
 const MCP_DIAGNOSTIC_SUBSCRIPTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MCP_DIAGNOSTIC_SUBSCRIPTION_BATCH_LIMIT: usize = 50;
 const PROVIDER_API_KEY_REVEAL_TTL: Duration = Duration::from_secs(60);
+const PLUGIN_RUNTIME_RUN_ID: &str = "plugin-runtime";
+const PLUGIN_FAILURE_WITHHELD_MESSAGE: &str = "Plugin failure withheld from conversation timeline.";
+const PLUGIN_REPORT_SOURCE_PATH_WITHHELD: &str = "<local-plugin>";
+const LOCAL_PLUGIN_SIDECAR_REQUIRED_REASON: &str =
+    "local plugin package must include a jyowo-plugin-* sidecar executable";
 
 pub type ConversationEventBatchEmitter =
     Arc<dyn Fn(ConversationEventBatchPayload) -> Result<(), String> + Send + Sync>;
@@ -574,6 +591,8 @@ pub struct McpServerSummaryPayload {
     pub manageable: bool,
     pub origin: &'static str,
     pub scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_plugin_id: Option<String>,
     pub status: &'static str,
     pub transport: &'static str,
 }
@@ -728,6 +747,8 @@ pub struct SkillSummaryPayload {
     pub updated_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<SkillInstallOriginRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_plugin_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -860,6 +881,111 @@ pub struct SetSkillEnabledResponse {
 pub struct DeleteSkillResponse {
     pub id: String,
     pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ValidatePluginFromPathRequest {
+    pub source_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct InstallPluginFromPathRequest {
+    pub source_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GetPluginDetailRequest {
+    pub plugin_id: PluginId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SetPluginEnabledRequest {
+    pub plugin_id: PluginId,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SetProjectPluginsEnabledRequest {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetProjectPluginsEnabledResponse {
+    pub allow_project_plugins: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct UpdatePluginConfigRequest {
+    pub plugin_id: PluginId,
+    pub values: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct UninstallPluginRequest {
+    pub plugin_id: PluginId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ReloadPluginRequest {
+    pub plugin_id: PluginId,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPluginsResponse {
+    pub allow_project_plugins: bool,
+    pub plugins: Vec<PluginSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetPluginDetailResponse {
+    pub plugin: PluginDetail,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PluginStoreRecord {
+    pub plugin_id: PluginId,
+    pub name: String,
+    pub version: String,
+    pub enabled: bool,
+    pub package_dir: String,
+    pub source_path: String,
+    pub content_hash: String,
+    pub imported_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub config: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_validation_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PluginSettingsRecord {
+    #[serde(default)]
+    pub allow_project_plugins: bool,
+    #[serde(default)]
+    pub records: Vec<PluginStoreRecord>,
+}
+
+impl Default for PluginSettingsRecord {
+    fn default() -> Self {
+        Self {
+            allow_project_plugins: false,
+            records: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -997,6 +1123,20 @@ pub trait SkillStore: Send + Sync {
     ) -> Result<SkillFileContentPayload, CommandErrorPayload>;
     fn move_skill_package(&self, id: &str, enabled: bool) -> Result<(), CommandErrorPayload>;
     fn delete_skill_package(&self, id: &str) -> Result<(), CommandErrorPayload>;
+}
+
+pub trait PluginStore: Send + Sync {
+    fn package_root(&self) -> PathBuf;
+    fn cargo_extension_root(&self) -> PathBuf;
+    fn workspace_plugin_root(&self) -> PathBuf;
+    fn load_record(&self) -> Result<PluginSettingsRecord, CommandErrorPayload>;
+    fn save_record(&self, record: &PluginSettingsRecord) -> Result<(), CommandErrorPayload>;
+    fn write_plugin_package(
+        &self,
+        package_dir: &str,
+        source_path: &Path,
+    ) -> Result<(), CommandErrorPayload>;
+    fn delete_plugin_package(&self, package_dir: &str) -> Result<(), CommandErrorPayload>;
 }
 
 #[derive(Clone)]
@@ -1686,6 +1826,127 @@ impl McpDiagnosticStore for DesktopMcpDiagnosticStore {
 }
 
 #[derive(Clone)]
+pub struct DesktopPluginStore {
+    workspace_root: PathBuf,
+}
+
+impl DesktopPluginStore {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root }
+    }
+
+    fn root_dir(&self) -> PathBuf {
+        self.workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("plugins")
+    }
+
+    fn index_path(&self) -> PathBuf {
+        self.root_dir().join("index.json")
+    }
+
+    fn package_dir(&self, package_dir: &str) -> PathBuf {
+        self.package_root().join(package_dir)
+    }
+}
+
+impl PluginStore for DesktopPluginStore {
+    fn package_root(&self) -> PathBuf {
+        self.root_dir().join("user")
+    }
+
+    fn cargo_extension_root(&self) -> PathBuf {
+        self.root_dir().join("extensions")
+    }
+
+    fn workspace_plugin_root(&self) -> PathBuf {
+        self.workspace_root.join(".jyowo").join("plugins")
+    }
+
+    fn load_record(&self) -> Result<PluginSettingsRecord, CommandErrorPayload> {
+        let index_path = self.index_path();
+        ensure_no_symlink_components(&index_path, "plugin index file")?;
+        match std::fs::read(&index_path) {
+            Ok(bytes) => {
+                let record =
+                    serde_json::from_slice::<PluginSettingsRecord>(&bytes).map_err(|error| {
+                        runtime_operation_failed(format!("plugin index parse failed: {error}"))
+                    })?;
+                ensure_plugin_settings_record(&record)?;
+                Ok(record)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(PluginSettingsRecord::default())
+            }
+            Err(error) => Err(runtime_operation_failed(format!(
+                "plugin index read failed: {error}"
+            ))),
+        }
+    }
+
+    fn save_record(&self, record: &PluginSettingsRecord) -> Result<(), CommandErrorPayload> {
+        ensure_plugin_settings_record(record)?;
+        write_plugin_settings_record(&self.index_path(), record)
+    }
+
+    fn write_plugin_package(
+        &self,
+        package_dir: &str,
+        source_path: &Path,
+    ) -> Result<(), CommandErrorPayload> {
+        ensure_plugin_package_dir_name(package_dir)?;
+        let destination = self.package_dir(package_dir);
+        let parent = destination.parent().ok_or_else(|| {
+            runtime_operation_failed("plugin package path has no parent".to_owned())
+        })?;
+        ensure_no_symlink_components(parent, "plugin package directory")?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            runtime_operation_failed(format!("plugin package directory unavailable: {error}"))
+        })?;
+        ensure_no_symlink_components(parent, "plugin package directory")?;
+        copy_plugin_package(source_path, &destination)
+    }
+
+    fn delete_plugin_package(&self, package_dir: &str) -> Result<(), CommandErrorPayload> {
+        ensure_plugin_package_dir_name(package_dir)?;
+        let path = self.package_dir(package_dir);
+        ensure_no_symlink_components(&path, "plugin package")?;
+        let root = self.package_root();
+        let normalized_root = match root.canonicalize() {
+            Ok(root) => root,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(runtime_operation_failed(format!(
+                    "plugin package root unavailable: {error}"
+                )));
+            }
+        };
+        let normalized_path = match path.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(runtime_operation_failed(format!(
+                    "plugin package unavailable: {error}"
+                )));
+            }
+        };
+        if normalized_path == normalized_root || !normalized_path.starts_with(&normalized_root) {
+            return Err(invalid_payload(
+                "plugin package path escaped package root".to_owned(),
+            ));
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(runtime_operation_failed(format!(
+                "plugin package delete failed: {error}"
+            ))),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct DesktopSkillStore {
     workspace_root: PathBuf,
 }
@@ -2060,6 +2321,57 @@ fn write_skill_records(
     })
 }
 
+fn write_plugin_settings_record(
+    index_path: &Path,
+    record: &PluginSettingsRecord,
+) -> Result<(), CommandErrorPayload> {
+    let parent = index_path
+        .parent()
+        .ok_or_else(|| runtime_operation_failed("plugin index path has no parent".to_owned()))?;
+    ensure_no_symlink_components(parent, "plugin index directory")?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        runtime_operation_failed(format!("plugin index directory unavailable: {error}"))
+    })?;
+    ensure_no_symlink_components(parent, "plugin index directory")?;
+    let bytes = serde_json::to_vec_pretty(record).map_err(|error| {
+        runtime_operation_failed(format!("plugin index serialization failed: {error}"))
+    })?;
+    let temp_path = index_path.with_file_name(format!(
+        "{}.{}.tmp",
+        index_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("index.json"),
+        RunId::new()
+    ));
+    ensure_no_symlink_components(&temp_path, "plugin index temp file")?;
+    let mut temp_file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp_path)
+        .map_err(|error| {
+            runtime_operation_failed(format!("plugin index temp open failed: {error}"))
+        })?;
+    if let Err(error) = temp_file.write_all(&bytes) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(runtime_operation_failed(format!(
+            "plugin index write failed: {error}"
+        )));
+    }
+    if let Err(error) = temp_file.sync_all() {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(runtime_operation_failed(format!(
+            "plugin index sync failed: {error}"
+        )));
+    }
+    drop(temp_file);
+    ensure_no_symlink_components(index_path, "plugin index file")?;
+    std::fs::rename(&temp_path, index_path).map_err(|error| {
+        let _ = std::fs::remove_file(&temp_path);
+        runtime_operation_failed(format!("plugin index commit failed: {error}"))
+    })
+}
+
 fn ensure_skill_id(id: &str) -> Result<(), CommandErrorPayload> {
     if id.is_empty()
         || id.len() > 96
@@ -2068,6 +2380,47 @@ fn ensure_skill_id(id: &str) -> Result<(), CommandErrorPayload> {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
     {
         return Err(invalid_payload("skill id is invalid".to_owned()));
+    }
+    Ok(())
+}
+
+fn ensure_plugin_package_dir_name(value: &str) -> Result<(), CommandErrorPayload> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.starts_with('.')
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+    {
+        return Err(invalid_payload(
+            "plugin package directory is invalid".to_owned(),
+        ));
+    }
+    let mut components = Path::new(value).components();
+    if !matches!(components.next(), Some(Component::Normal(component)) if component == OsStr::new(value))
+        || components.next().is_some()
+    {
+        return Err(invalid_payload(
+            "plugin package directory is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_plugin_store_record(record: &PluginStoreRecord) -> Result<(), CommandErrorPayload> {
+    ensure_plugin_package_dir_name(&record.package_dir)?;
+    let expected_package_dir = plugin_package_dir_name(&record.plugin_id);
+    if record.package_dir != expected_package_dir {
+        return Err(invalid_payload(
+            "plugin package directory does not match plugin id".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_plugin_settings_record(record: &PluginSettingsRecord) -> Result<(), CommandErrorPayload> {
+    for plugin in &record.records {
+        ensure_plugin_store_record(plugin)?;
     }
     Ok(())
 }
@@ -2270,6 +2623,185 @@ fn copy_skill_package_dir(
     Ok(())
 }
 
+fn hash_plugin_package(source_path: &Path) -> Result<String, CommandErrorPayload> {
+    let mut hasher = blake3::Hasher::new();
+    let mut file_count = 0_usize;
+    let mut total_bytes = 0_u64;
+    hash_plugin_package_dir(
+        source_path,
+        source_path,
+        &mut hasher,
+        &mut file_count,
+        &mut total_bytes,
+    )?;
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn hash_plugin_package_dir(
+    root: &Path,
+    dir: &Path,
+    hasher: &mut blake3::Hasher,
+    file_count: &mut usize,
+    total_bytes: &mut u64,
+) -> Result<(), CommandErrorPayload> {
+    ensure_no_symlink_components(dir, "plugin package directory")?;
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|error| runtime_operation_failed(format!("plugin package read failed: {error}")))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            runtime_operation_failed(format!("plugin package read failed: {error}"))
+        })?;
+    entries.sort();
+    for path in entries {
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+            runtime_operation_failed(format!("plugin package metadata failed: {error}"))
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(runtime_operation_failed(
+                "plugin package must not use symlinks".to_owned(),
+            ));
+        }
+        if metadata.is_dir() {
+            hash_plugin_package_dir(root, &path, hasher, file_count, total_bytes)?;
+            continue;
+        }
+        if !metadata.is_file() {
+            return Err(invalid_payload(
+                "plugin package may contain only files and directories".to_owned(),
+            ));
+        }
+        *file_count += 1;
+        if *file_count > MAX_PLUGIN_PACKAGE_FILES {
+            return Err(invalid_payload(
+                "plugin package has too many files".to_owned(),
+            ));
+        }
+        if metadata.len() > MAX_PLUGIN_PACKAGE_FILE_BYTES {
+            return Err(invalid_payload(
+                "plugin package file is too large".to_owned(),
+            ));
+        }
+        *total_bytes = total_bytes.saturating_add(metadata.len());
+        if *total_bytes > MAX_PLUGIN_PACKAGE_BYTES {
+            return Err(invalid_payload("plugin package is too large".to_owned()));
+        }
+        let relative_path = path.strip_prefix(root).map_err(|_| {
+            runtime_operation_failed("plugin package path escaped its root".to_owned())
+        })?;
+        let bytes = std::fs::read(&path).map_err(|error| {
+            runtime_operation_failed(format!("plugin package file read failed: {error}"))
+        })?;
+        hasher.update(path_to_workspace_string(relative_path).as_bytes());
+        hasher.update(&[0]);
+        hasher.update(&bytes);
+        hasher.update(&[0]);
+    }
+    Ok(())
+}
+
+fn copy_plugin_package(
+    source_path: &Path,
+    destination_path: &Path,
+) -> Result<(), CommandErrorPayload> {
+    ensure_no_symlink_components(source_path, "plugin source package")?;
+    ensure_no_symlink_components(destination_path, "plugin package")?;
+    let _ = hash_plugin_package(source_path)?;
+    if destination_path.exists() {
+        std::fs::remove_dir_all(destination_path).map_err(|error| {
+            runtime_operation_failed(format!("plugin package cleanup failed: {error}"))
+        })?;
+    }
+    std::fs::create_dir_all(destination_path).map_err(|error| {
+        runtime_operation_failed(format!("plugin package directory unavailable: {error}"))
+    })?;
+    let mut file_count = 0_usize;
+    let mut total_bytes = 0_u64;
+    match copy_plugin_package_dir(
+        source_path,
+        source_path,
+        destination_path,
+        &mut file_count,
+        &mut total_bytes,
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(destination_path);
+            Err(error)
+        }
+    }
+}
+
+fn copy_plugin_package_dir(
+    root: &Path,
+    dir: &Path,
+    destination_root: &Path,
+    file_count: &mut usize,
+    total_bytes: &mut u64,
+) -> Result<(), CommandErrorPayload> {
+    ensure_no_symlink_components(dir, "plugin source package")?;
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|error| runtime_operation_failed(format!("plugin package read failed: {error}")))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            runtime_operation_failed(format!("plugin package read failed: {error}"))
+        })?;
+    entries.sort();
+    for path in entries {
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+            runtime_operation_failed(format!("plugin package metadata failed: {error}"))
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(runtime_operation_failed(
+                "plugin package must not use symlinks".to_owned(),
+            ));
+        }
+        let relative_path = path.strip_prefix(root).map_err(|_| {
+            runtime_operation_failed("plugin package path escaped its root".to_owned())
+        })?;
+        let destination_path = destination_root.join(relative_path);
+        ensure_no_symlink_components(&destination_path, "plugin package")?;
+        if metadata.is_dir() {
+            std::fs::create_dir_all(&destination_path).map_err(|error| {
+                runtime_operation_failed(format!("plugin package directory copy failed: {error}"))
+            })?;
+            copy_plugin_package_dir(root, &path, destination_root, file_count, total_bytes)?;
+            continue;
+        }
+        if !metadata.is_file() {
+            return Err(invalid_payload(
+                "plugin package may contain only files and directories".to_owned(),
+            ));
+        }
+        *file_count += 1;
+        if *file_count > MAX_PLUGIN_PACKAGE_FILES {
+            return Err(invalid_payload(
+                "plugin package has too many files".to_owned(),
+            ));
+        }
+        if metadata.len() > MAX_PLUGIN_PACKAGE_FILE_BYTES {
+            return Err(invalid_payload(
+                "plugin package file is too large".to_owned(),
+            ));
+        }
+        *total_bytes = total_bytes.saturating_add(metadata.len());
+        if *total_bytes > MAX_PLUGIN_PACKAGE_BYTES {
+            return Err(invalid_payload("plugin package is too large".to_owned()));
+        }
+        let parent = destination_path.parent().ok_or_else(|| {
+            runtime_operation_failed("plugin package file path has no parent".to_owned())
+        })?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            runtime_operation_failed(format!("plugin package directory copy failed: {error}"))
+        })?;
+        std::fs::copy(&path, &destination_path).map_err(|error| {
+            runtime_operation_failed(format!("plugin package file copy failed: {error}"))
+        })?;
+    }
+    Ok(())
+}
+
 fn list_skill_package_files(
     package_root: &Path,
 ) -> Result<Vec<SkillFilePayload>, CommandErrorPayload> {
@@ -2433,6 +2965,8 @@ pub struct DesktopRuntimeState {
     permission_resolver: Option<Arc<dyn PermissionResolver>>,
     provider_api_key_reveal_tokens:
         Arc<tokio::sync::Mutex<HashMap<String, ProviderConfigRevealTokenRecord>>>,
+    plugin_store: Arc<dyn PluginStore>,
+    plugin_store_lock: Arc<tokio::sync::Mutex<()>>,
     provider_settings_lock: Arc<tokio::sync::Mutex<()>>,
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
     execution_settings_lock: Arc<tokio::sync::Mutex<()>>,
@@ -2495,6 +3029,8 @@ impl DesktopRuntimeState {
             mcp_server_store: Arc::new(DesktopMcpServerStore::new(workspace_root.clone())),
             permission_resolver: None,
             provider_api_key_reveal_tokens: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            plugin_store: Arc::new(DesktopPluginStore::new(workspace_root.clone())),
+            plugin_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_store: Arc::new(DesktopProviderSettingsStore::new(
                 workspace_root.clone(),
@@ -2600,6 +3136,8 @@ impl DesktopRuntimeState {
             mcp_server_store: Arc::new(DesktopMcpServerStore::new(workspace_root.clone())),
             permission_resolver: Some(permission_resolver),
             provider_api_key_reveal_tokens: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            plugin_store: Arc::new(DesktopPluginStore::new(workspace_root.clone())),
+            plugin_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_store: Arc::new(DesktopProviderSettingsStore::new(
                 workspace_root.clone(),
@@ -2838,6 +3376,9 @@ async fn build_desktop_harness(
             Arc::new(conversation_model_config_store),
             Arc::new(provider_settings_store.clone()),
         ));
+    let plugin_store: Arc<dyn PluginStore> =
+        Arc::new(DesktopPluginStore::new(workspace_root.to_path_buf()));
+    let plugin_registry = build_plugin_registry(workspace_root, plugin_store.as_ref())?;
 
     let harness = Harness::builder()
         .with_workspace_root(workspace_root)
@@ -2856,6 +3397,7 @@ async fn build_desktop_harness(
             provider_credential_resolver,
         )
         .with_mcp_config(mcp_config)
+        .with_plugin_registry(plugin_registry)
         .with_memory_provider(InMemoryMemoryProvider::new("desktop-memory"))
         .with_skill_loader(skill_loader)
         .with_stream_permission_broker_arc(
@@ -2867,6 +3409,137 @@ async fn build_desktop_harness(
         .map_err(|error| runtime_init_failed(format!("harness initialization failed: {error}")))?;
 
     Ok((harness, model_id, protocol))
+}
+
+fn build_plugin_registry(
+    workspace_root: &Path,
+    plugin_store: &dyn PluginStore,
+) -> Result<PluginRegistry, CommandErrorPayload> {
+    let settings = plugin_store.load_record()?;
+    let (sidecar_sandbox, sidecar_sandbox_mode) = desktop_plugin_sidecar_sandbox(workspace_root);
+    let mut entries = BTreeMap::new();
+    let mut disabled_plugins = BTreeSet::new();
+    for record in &settings.records {
+        if record.enabled {
+            verify_installed_plugin_content_hash(record, plugin_store)?;
+        }
+        let name = PluginName::new(record.name.clone())
+            .map_err(|error| runtime_init_failed(format!("plugin record invalid: {error}")))?;
+        entries.insert(name.clone(), record.config.clone());
+        if !record.enabled {
+            disabled_plugins.insert(name);
+        }
+    }
+
+    let mut builder = PluginRegistry::builder()
+        .with_config(plugin_config_from_settings(
+            &settings,
+            disabled_plugins,
+            entries,
+        ))
+        .with_source(DiscoverySource::User(plugin_store.package_root()))
+        .with_source(DiscoverySource::Workspace(
+            plugin_store.workspace_plugin_root(),
+        ))
+        .with_source(DiscoverySource::CargoExtension)
+        .with_manifest_loader(Arc::new(FileManifestLoader))
+        .with_manifest_loader(Arc::new(
+            CargoExtensionManifestLoader::new()
+                .with_timeout(Duration::from_secs(5))
+                .with_search_paths(desktop_cargo_extension_search_paths(plugin_store))
+                .with_sandbox(
+                    sidecar_sandbox.clone(),
+                    sidecar_sandbox_mode.clone(),
+                    workspace_root.to_path_buf(),
+                ),
+        ))
+        .with_runtime_loader(Arc::new(CargoExtensionRuntimeLoader::new().with_sandbox(
+            sidecar_sandbox,
+            sidecar_sandbox_mode,
+            workspace_root.to_path_buf(),
+        )));
+
+    if settings.allow_project_plugins {
+        builder = builder.with_source(DiscoverySource::Project(workspace_root.to_path_buf()));
+    }
+
+    builder.build().map_err(|error| {
+        runtime_init_failed(format!("plugin registry initialization failed: {error}"))
+    })
+}
+
+fn desktop_plugin_sidecar_sandbox(workspace_root: &Path) -> (Arc<dyn SandboxBackend>, SandboxMode) {
+    let isolation = LocalIsolation::for_current_platform();
+    let mode = SandboxMode::OsLevel(local_isolation_tag(isolation));
+    let sandbox = LocalSandbox::new(workspace_root).with_isolation(isolation);
+    (Arc::new(sandbox), mode)
+}
+
+fn local_isolation_tag(isolation: LocalIsolation) -> LocalIsolationTag {
+    match isolation {
+        LocalIsolation::None => LocalIsolationTag::None,
+        LocalIsolation::Bubblewrap => LocalIsolationTag::Bubblewrap,
+        LocalIsolation::Seatbelt => LocalIsolationTag::Seatbelt,
+        LocalIsolation::JobObject => LocalIsolationTag::JobObject,
+    }
+}
+
+fn plugin_config_from_settings(
+    settings: &PluginSettingsRecord,
+    disabled_plugins: BTreeSet<PluginName>,
+    entries: BTreeMap<PluginName, Value>,
+) -> PluginConfig {
+    let allowed_user_plugins = entries.keys().cloned().collect();
+    PluginConfig {
+        allow_project_plugins: settings.allow_project_plugins,
+        allowed_user_plugins: Some(allowed_user_plugins),
+        disabled_plugins,
+        entries,
+        ..PluginConfig::default()
+    }
+}
+
+fn desktop_cargo_extension_search_paths(plugin_store: &dyn PluginStore) -> Vec<PathBuf> {
+    vec![plugin_store.cargo_extension_root()]
+}
+
+fn verify_installed_plugin_content_hash(
+    record: &PluginStoreRecord,
+    plugin_store: &dyn PluginStore,
+) -> Result<(), CommandErrorPayload> {
+    ensure_plugin_package_dir_name(&record.package_dir)?;
+    let package_path = plugin_store.package_root().join(&record.package_dir);
+    let current_hash = hash_plugin_package(&package_path)?;
+    if current_hash == record.content_hash {
+        return Ok(());
+    }
+    Err(runtime_operation_failed(format!(
+        "plugin package content hash mismatch: {}",
+        record.plugin_id.0
+    )))
+}
+
+async fn reload_desktop_harness_after_plugin_change_locked(
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let Some(stream_permission_runtime) = state.stream_permission_runtime.as_ref() else {
+        return Ok(());
+    };
+    let (harness, model_id, protocol) = build_desktop_harness(
+        &state.workspace_root,
+        Arc::clone(stream_permission_runtime),
+        None,
+    )
+    .await?;
+    if let Some(old_harness) = state.harness() {
+        if let Some(registry) = old_harness.plugin_registry() {
+            for manifest in registry.list_activated() {
+                let _ = registry.deactivate_cascade(&manifest.plugin_id()).await;
+            }
+        }
+    }
+    state.replace_harness(Arc::new(harness), model_id, protocol);
+    Ok(())
 }
 
 fn current_workspace_root() -> Result<PathBuf, CommandErrorPayload> {
@@ -6049,6 +6722,759 @@ async fn reload_managed_skills(
         .map_err(|error| runtime_operation_failed(format!("skill reload failed: {error}")))
 }
 
+pub async fn list_plugins_with_runtime_state(
+    state: &DesktopRuntimeState,
+) -> Result<ListPluginsResponse, CommandErrorPayload> {
+    let settings = state.plugin_store.load_record()?;
+    if let Some(harness) = state.harness() {
+        if let Some(registry) = harness.plugin_registry() {
+            registry.discover().await.map_err(|error| {
+                runtime_operation_failed(format!("plugin discovery failed: {error}"))
+            })?;
+            return Ok(ListPluginsResponse {
+                allow_project_plugins: settings.allow_project_plugins,
+                plugins: registry.product_snapshot(),
+            });
+        }
+    }
+
+    let registry = build_plugin_registry(&state.workspace_root, state.plugin_store.as_ref())?;
+    registry
+        .discover()
+        .await
+        .map_err(|error| runtime_operation_failed(format!("plugin discovery failed: {error}")))?;
+    Ok(ListPluginsResponse {
+        allow_project_plugins: settings.allow_project_plugins,
+        plugins: registry.product_snapshot(),
+    })
+}
+
+pub async fn get_plugin_detail_with_runtime_state(
+    request: GetPluginDetailRequest,
+    state: &DesktopRuntimeState,
+) -> Result<GetPluginDetailResponse, CommandErrorPayload> {
+    if let Some(harness) = state.harness() {
+        if let Some(registry) = harness.plugin_registry() {
+            registry.discover().await.map_err(|error| {
+                runtime_operation_failed(format!("plugin discovery failed: {error}"))
+            })?;
+            let plugin = registry
+                .product_detail(&request.plugin_id)
+                .map(redact_plugin_detail_config)
+                .ok_or_else(|| invalid_payload("plugin not found".to_owned()))?;
+            return Ok(GetPluginDetailResponse { plugin });
+        }
+    }
+
+    let registry = build_plugin_registry(&state.workspace_root, state.plugin_store.as_ref())?;
+    registry
+        .discover()
+        .await
+        .map_err(|error| runtime_operation_failed(format!("plugin discovery failed: {error}")))?;
+    let plugin = registry
+        .product_detail(&request.plugin_id)
+        .map(redact_plugin_detail_config)
+        .ok_or_else(|| invalid_payload("plugin not found".to_owned()))?;
+    Ok(GetPluginDetailResponse { plugin })
+}
+
+pub async fn validate_plugin_from_path_with_runtime_state(
+    request: ValidatePluginFromPathRequest,
+    _state: &DesktopRuntimeState,
+) -> Result<PluginInstallReport, CommandErrorPayload> {
+    let source_path = ensure_plugin_source_path(&request.source_path)?;
+    validate_plugin_source_path(&source_path).await
+}
+
+pub async fn install_plugin_from_path_with_runtime_state(
+    request: InstallPluginFromPathRequest,
+    state: &DesktopRuntimeState,
+) -> Result<PluginOperationResult, CommandErrorPayload> {
+    let source_path = ensure_plugin_source_path(&request.source_path)?;
+    let report = validate_plugin_source_path(&source_path).await?;
+    let Some(summary) = report.summary.clone() else {
+        return Ok(PluginOperationResult {
+            plugin_id: None,
+            status: PluginOperationStatus::Rejected,
+            summary: None,
+            report: Some(report),
+        });
+    };
+    if !report.valid {
+        return Ok(PluginOperationResult {
+            plugin_id: Some(summary.id.clone()),
+            status: PluginOperationStatus::Rejected,
+            summary: Some(summary),
+            report: Some(report),
+        });
+    }
+
+    let _start_run_guard = state.start_run_lock.lock().await;
+    let _plugin_store_guard = state.plugin_store_lock.lock().await;
+    let mut settings = state.plugin_store.load_record()?;
+    let previous_settings = settings.clone();
+    if settings
+        .records
+        .iter()
+        .any(|record| record.name == summary.name || record.plugin_id == summary.id)
+    {
+        return Ok(PluginOperationResult {
+            plugin_id: Some(summary.id.clone()),
+            status: PluginOperationStatus::Rejected,
+            summary: Some(summary.clone()),
+            report: Some(PluginInstallReport {
+                source_path: plugin_report_source_path(&source_path),
+                valid: false,
+                summary: Some(summary),
+                warnings: Vec::new(),
+                reason: Some("plugin is already installed".to_owned()),
+            }),
+        });
+    }
+
+    let package_dir = plugin_package_dir_name(&summary.id);
+    let content_hash = hash_plugin_package(&source_path)?;
+    state
+        .plugin_store
+        .write_plugin_package(&package_dir, &source_path)?;
+    let installed_package = state.plugin_store.package_root().join(&package_dir);
+    let installed_hash = hash_plugin_package(&installed_package)?;
+    if installed_hash != content_hash {
+        let _ = state.plugin_store.delete_plugin_package(&package_dir);
+        return Err(runtime_operation_failed(
+            "plugin package changed while it was being installed".to_owned(),
+        ));
+    }
+    let installed_report = validate_plugin_source_path(&installed_package).await?;
+    let installed_summary = installed_report.summary.as_ref();
+    let installed_matches_source = installed_report.valid
+        && installed_summary.is_some_and(|installed_summary| {
+            installed_summary.id == summary.id
+                && installed_summary.name == summary.name
+                && installed_summary.version == summary.version
+        });
+    if !installed_matches_source {
+        let _ = state.plugin_store.delete_plugin_package(&package_dir);
+        return Ok(PluginOperationResult {
+            plugin_id: Some(summary.id.clone()),
+            status: PluginOperationStatus::Rejected,
+            summary: Some(summary.clone()),
+            report: Some(PluginInstallReport {
+                source_path: plugin_report_source_path(&source_path),
+                valid: false,
+                summary: Some(summary),
+                warnings: Vec::new(),
+                reason: Some(installed_report.reason.unwrap_or_else(|| {
+                    "installed plugin package did not match validation".to_owned()
+                })),
+            }),
+        });
+    }
+    let now = now().to_rfc3339();
+    settings.records.push(PluginStoreRecord {
+        plugin_id: summary.id.clone(),
+        name: summary.name.clone(),
+        version: summary.version.clone(),
+        enabled: false,
+        package_dir: package_dir.clone(),
+        source_path: source_path.display().to_string(),
+        content_hash,
+        imported_at: now.clone(),
+        updated_at: now,
+        config: Value::Null,
+        last_validation_error: None,
+    });
+    settings.records.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then(left.version.cmp(&right.version))
+            .then(left.plugin_id.cmp(&right.plugin_id))
+    });
+    if let Err(error) = state.plugin_store.save_record(&settings) {
+        let _ = state.plugin_store.delete_plugin_package(&package_dir);
+        return Err(error);
+    }
+    if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
+        let _ = state.plugin_store.save_record(&previous_settings);
+        let _ = state.plugin_store.delete_plugin_package(&package_dir);
+        return Err(error);
+    }
+
+    Ok(PluginOperationResult {
+        plugin_id: Some(summary.id.clone()),
+        status: PluginOperationStatus::Installed,
+        summary: Some(summary),
+        report: Some(report),
+    })
+}
+
+pub async fn set_plugin_enabled_with_runtime_state(
+    request: SetPluginEnabledRequest,
+    state: &DesktopRuntimeState,
+) -> Result<PluginOperationResult, CommandErrorPayload> {
+    let _start_run_guard = state.start_run_lock.lock().await;
+    let _plugin_store_guard = state.plugin_store_lock.lock().await;
+    let mut settings = state.plugin_store.load_record()?;
+    let previous_settings = settings.clone();
+    let record = settings
+        .records
+        .iter_mut()
+        .find(|record| record.plugin_id == request.plugin_id)
+        .ok_or_else(|| invalid_payload("plugin not found".to_owned()))?;
+    record.enabled = request.enabled;
+    record.updated_at = now().to_rfc3339();
+    state.plugin_store.save_record(&settings)?;
+    if request.enabled {
+        if let Err(error) = preflight_plugin_activation(state, &request.plugin_id).await {
+            let _ = state.plugin_store.save_record(&previous_settings);
+            return Err(error);
+        }
+    }
+    if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
+        let _ = state.plugin_store.save_record(&previous_settings);
+        return Err(error);
+    }
+    let summary = plugin_summary_after_reload(state, &request.plugin_id).await?;
+    Ok(PluginOperationResult {
+        plugin_id: Some(request.plugin_id),
+        status: if request.enabled {
+            PluginOperationStatus::Enabled
+        } else {
+            PluginOperationStatus::Disabled
+        },
+        summary,
+        report: None,
+    })
+}
+
+pub async fn set_project_plugins_enabled_with_runtime_state(
+    request: SetProjectPluginsEnabledRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SetProjectPluginsEnabledResponse, CommandErrorPayload> {
+    let _start_run_guard = state.start_run_lock.lock().await;
+    let _plugin_store_guard = state.plugin_store_lock.lock().await;
+    let mut settings = state.plugin_store.load_record()?;
+    let previous_settings = settings.clone();
+    settings.allow_project_plugins = request.enabled;
+    state.plugin_store.save_record(&settings)?;
+    if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
+        let _ = state.plugin_store.save_record(&previous_settings);
+        return Err(error);
+    }
+    Ok(SetProjectPluginsEnabledResponse {
+        allow_project_plugins: settings.allow_project_plugins,
+    })
+}
+
+pub async fn update_plugin_config_with_runtime_state(
+    request: UpdatePluginConfigRequest,
+    state: &DesktopRuntimeState,
+) -> Result<PluginOperationResult, CommandErrorPayload> {
+    let _start_run_guard = state.start_run_lock.lock().await;
+    let _plugin_store_guard = state.plugin_store_lock.lock().await;
+    let mut settings = state.plugin_store.load_record()?;
+    let previous_settings = settings.clone();
+    let record_index = settings
+        .records
+        .iter()
+        .position(|record| record.plugin_id == request.plugin_id)
+        .ok_or_else(|| invalid_payload("plugin not found".to_owned()))?;
+    let registry = build_plugin_registry(&state.workspace_root, state.plugin_store.as_ref())?;
+    let discovered = registry
+        .discover()
+        .await
+        .map_err(|error| runtime_operation_failed(format!("plugin discovery failed: {error}")))?;
+    ensure_no_secret_like_config_values(&request.values)?;
+    let private_schema = discovered
+        .iter()
+        .find(|plugin| plugin.record.manifest.plugin_id() == request.plugin_id)
+        .and_then(|plugin| {
+            plugin
+                .record
+                .manifest
+                .capabilities
+                .configuration_schema
+                .as_ref()
+        });
+    if registry.product_detail(&request.plugin_id).is_none() {
+        return Err(invalid_payload("plugin not found".to_owned()));
+    }
+    let merged_config = merge_plugin_config_values(
+        private_schema,
+        &settings.records[record_index].config,
+        request.values.clone(),
+    );
+    let validation_config = redact_secret_config_values(private_schema, merged_config.clone());
+    registry
+        .validate_config_update(&PluginConfigUpdate {
+            plugin_id: request.plugin_id.clone(),
+            values: validation_config,
+        })
+        .map_err(|error| invalid_payload(format!("plugin config rejected: {error}")))?;
+    settings.records[record_index].config = merged_config;
+    settings.records[record_index].updated_at = now().to_rfc3339();
+    state.plugin_store.save_record(&settings)?;
+    if settings.records[record_index].enabled {
+        if let Err(error) = preflight_plugin_activation(state, &request.plugin_id).await {
+            let _ = state.plugin_store.save_record(&previous_settings);
+            return Err(error);
+        }
+    }
+    if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
+        let _ = state.plugin_store.save_record(&previous_settings);
+        return Err(error);
+    }
+    let summary = plugin_summary_after_reload(state, &request.plugin_id).await?;
+    Ok(PluginOperationResult {
+        plugin_id: Some(request.plugin_id),
+        status: PluginOperationStatus::Configured,
+        summary,
+        report: None,
+    })
+}
+
+pub async fn uninstall_plugin_with_runtime_state(
+    request: UninstallPluginRequest,
+    state: &DesktopRuntimeState,
+) -> Result<PluginOperationResult, CommandErrorPayload> {
+    let _start_run_guard = state.start_run_lock.lock().await;
+    let _plugin_store_guard = state.plugin_store_lock.lock().await;
+    let mut settings = state.plugin_store.load_record()?;
+    let previous_settings = settings.clone();
+    let original_len = settings.records.len();
+    let mut package_dirs = Vec::new();
+    settings.records.retain(|record| {
+        if record.plugin_id == request.plugin_id {
+            package_dirs.push(record.package_dir.clone());
+            false
+        } else {
+            true
+        }
+    });
+    if settings.records.len() == original_len {
+        return Err(invalid_payload("plugin not found".to_owned()));
+    }
+    state.plugin_store.save_record(&settings)?;
+    if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
+        let _ = state.plugin_store.save_record(&previous_settings);
+        return Err(error);
+    }
+    for package_dir in &package_dirs {
+        if let Err(error) = state.plugin_store.delete_plugin_package(package_dir) {
+            let _ = state.plugin_store.save_record(&previous_settings);
+            let _ = reload_desktop_harness_after_plugin_change_locked(state).await;
+            return Err(error);
+        }
+    }
+    Ok(PluginOperationResult {
+        plugin_id: Some(request.plugin_id),
+        status: PluginOperationStatus::Uninstalled,
+        summary: None,
+        report: None,
+    })
+}
+
+pub async fn reload_plugin_with_runtime_state(
+    request: ReloadPluginRequest,
+    state: &DesktopRuntimeState,
+) -> Result<PluginOperationResult, CommandErrorPayload> {
+    let _start_run_guard = state.start_run_lock.lock().await;
+    let _plugin_store_guard = state.plugin_store_lock.lock().await;
+    let settings = state.plugin_store.load_record()?;
+    let enabled = settings
+        .records
+        .iter()
+        .find(|record| record.plugin_id == request.plugin_id)
+        .map(|record| record.enabled)
+        .ok_or_else(|| invalid_payload("plugin not found".to_owned()))?;
+    if enabled {
+        preflight_plugin_activation(state, &request.plugin_id).await?;
+    }
+    reload_desktop_harness_after_plugin_change_locked(state).await?;
+    let summary = plugin_summary_after_reload(state, &request.plugin_id).await?;
+    Ok(PluginOperationResult {
+        plugin_id: Some(request.plugin_id),
+        status: PluginOperationStatus::Reloaded,
+        summary,
+        report: None,
+    })
+}
+
+async fn preflight_plugin_activation(
+    state: &DesktopRuntimeState,
+    plugin_id: &PluginId,
+) -> Result<(), CommandErrorPayload> {
+    let registry = build_plugin_registry(&state.workspace_root, state.plugin_store.as_ref())?;
+    let discovered = registry
+        .discover()
+        .await
+        .map_err(|error| runtime_operation_failed(format!("plugin discovery failed: {error}")))?;
+    if let Some(plugin) = discovered
+        .iter()
+        .find(|plugin| plugin.record.manifest.plugin_id() == *plugin_id)
+    {
+        if matches!(plugin.record.origin, ManifestOrigin::CargoExtension { .. }) {
+            return Ok(());
+        }
+        return Err(invalid_payload(format!(
+            "plugin cannot be enabled: {LOCAL_PLUGIN_SIDECAR_REQUIRED_REASON}"
+        )));
+    }
+    let reason = registry
+        .state_detail(plugin_id)
+        .and_then(|detail| detail.rejection_reason)
+        .map(|reason| plugin_rejection_report_reason(&reason))
+        .unwrap_or_else(|| "plugin was not discovered".to_owned());
+    Err(invalid_payload(format!(
+        "plugin cannot be enabled: {reason}"
+    )))
+}
+
+async fn plugin_summary_after_reload(
+    state: &DesktopRuntimeState,
+    plugin_id: &PluginId,
+) -> Result<Option<PluginSummary>, CommandErrorPayload> {
+    Ok(list_plugins_with_runtime_state(state)
+        .await?
+        .plugins
+        .into_iter()
+        .find(|plugin| &plugin.id == plugin_id))
+}
+
+async fn validate_plugin_source_path(
+    source_path: &Path,
+) -> Result<PluginInstallReport, CommandErrorPayload> {
+    let loader = FileManifestLoader;
+    let load_report = loader
+        .load_package_report(source_path)
+        .await
+        .map_err(|error| {
+            runtime_operation_failed(format!("plugin manifest load failed: {error}"))
+        })?;
+    if let Some(failure) = load_report.failures.first() {
+        return Ok(PluginInstallReport {
+            source_path: plugin_report_source_path(source_path),
+            valid: false,
+            summary: None,
+            warnings: Vec::new(),
+            reason: Some(plugin_manifest_validation_failure_report_reason(
+                &failure.failure,
+            )),
+        });
+    }
+    let Some(record) = load_report.records.first() else {
+        return Ok(PluginInstallReport {
+            source_path: plugin_report_source_path(source_path),
+            valid: false,
+            summary: None,
+            warnings: Vec::new(),
+            reason: Some("plugin manifest not found".to_owned()),
+        });
+    };
+    if record.manifest.trust_level != TrustLevel::UserControlled {
+        return Ok(PluginInstallReport {
+            source_path: plugin_report_source_path(source_path),
+            valid: false,
+            summary: None,
+            warnings: Vec::new(),
+            reason: Some("local user plugin must declare user_controlled trust".to_owned()),
+        });
+    }
+    if !matches!(record.origin, ManifestOrigin::CargoExtension { .. }) {
+        return Ok(PluginInstallReport {
+            source_path: plugin_report_source_path(source_path),
+            valid: false,
+            summary: None,
+            warnings: Vec::new(),
+            reason: Some(LOCAL_PLUGIN_SIDECAR_REQUIRED_REASON.to_owned()),
+        });
+    }
+
+    let registry = PluginRegistry::builder()
+        .with_source(DiscoverySource::Inline)
+        .with_manifest_loader(Arc::new(InlineManifestLoader::new(vec![record.clone()])))
+        .build()
+        .map_err(|error| runtime_operation_failed(format!("plugin registry failed: {error}")))?;
+    let discovered = registry
+        .discover()
+        .await
+        .map_err(|error| runtime_operation_failed(format!("plugin discovery failed: {error}")))?;
+    let plugin_id = record.manifest.plugin_id();
+    let summary = registry
+        .product_snapshot()
+        .into_iter()
+        .find(|summary| summary.id == plugin_id);
+    let valid = discovered
+        .iter()
+        .any(|plugin| plugin.record.manifest.plugin_id() == plugin_id);
+    let reason = if valid {
+        None
+    } else {
+        registry
+            .state_detail(&plugin_id)
+            .and_then(|detail| detail.rejection_reason)
+            .map(|reason| plugin_rejection_report_reason(&reason))
+            .or_else(|| Some("plugin rejected".to_owned()))
+    };
+    let warnings = summary
+        .as_ref()
+        .map(|summary| summary.warnings.clone())
+        .unwrap_or_default();
+    Ok(PluginInstallReport {
+        source_path: plugin_report_source_path(source_path),
+        valid,
+        summary,
+        warnings,
+        reason,
+    })
+}
+
+fn plugin_report_source_path(_source_path: &Path) -> String {
+    PLUGIN_REPORT_SOURCE_PATH_WITHHELD.to_owned()
+}
+
+fn plugin_manifest_validation_failure_report_reason(
+    failure: &harness_contracts::ManifestValidationFailure,
+) -> String {
+    match failure {
+        harness_contracts::ManifestValidationFailure::UnsupportedSchemaVersion { .. } => {
+            "plugin manifest uses an unsupported schema version".to_owned()
+        }
+        harness_contracts::ManifestValidationFailure::RemoteIntegrityMismatch { .. } => {
+            "plugin manifest integrity check failed".to_owned()
+        }
+        _ => "plugin manifest is invalid.".to_owned(),
+    }
+}
+
+fn plugin_rejection_report_reason(reason: &RejectionReason) -> String {
+    match reason {
+        RejectionReason::SignatureInvalid { .. } => "plugin signature is invalid".to_owned(),
+        RejectionReason::UnknownSigner { .. } => "plugin signer is unknown".to_owned(),
+        RejectionReason::SignerRevoked { .. } => "plugin signer is revoked".to_owned(),
+        RejectionReason::TrustMismatch { .. } => "plugin trust level is not allowed".to_owned(),
+        RejectionReason::NamespaceConflict { .. } => "plugin namespace is not allowed".to_owned(),
+        RejectionReason::DependencyUnsatisfied { .. } => {
+            "plugin dependency is not satisfied".to_owned()
+        }
+        RejectionReason::DependencyCycle { .. } => "plugin dependency cycle detected".to_owned(),
+        RejectionReason::HarnessVersionIncompatible { .. } => {
+            "plugin requires an incompatible harness version".to_owned()
+        }
+        RejectionReason::SlotOccupied { .. } => "plugin capability slot is occupied".to_owned(),
+        RejectionReason::AdmissionDenied { .. } => "plugin rejected by policy".to_owned(),
+        _ => "plugin rejected by policy".to_owned(),
+    }
+}
+
+fn ensure_plugin_source_path(value: &str) -> Result<PathBuf, CommandErrorPayload> {
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err(invalid_payload(
+            "plugin source path must be absolute".to_owned(),
+        ));
+    }
+    ensure_no_symlink_components(&path, "plugin source directory")?;
+    let path = path.canonicalize().map_err(|error| {
+        runtime_operation_failed(format!("plugin source path unavailable: {error}"))
+    })?;
+    ensure_no_symlink_components(&path, "plugin source directory")?;
+    ensure_no_world_writable_ancestors(&path, "plugin source directory")?;
+    ensure_not_world_writable_path(&path, "plugin source directory")?;
+    if !path.is_dir() {
+        return Err(invalid_payload(
+            "plugin source path must point to a directory".to_owned(),
+        ));
+    }
+    if !["plugin.json", "plugin.yaml", "plugin.yml"]
+        .iter()
+        .any(|name| path.join(name).is_file())
+    {
+        return Err(invalid_payload(
+            "plugin package must contain plugin.json, plugin.yaml, or plugin.yml".to_owned(),
+        ));
+    }
+    Ok(path)
+}
+
+#[cfg(unix)]
+fn ensure_not_world_writable_path(path: &Path, label: &str) -> Result<(), CommandErrorPayload> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        runtime_operation_failed(format!("{label} metadata unavailable: {error}"))
+    })?;
+    if metadata.permissions().mode() & 0o002 != 0 {
+        return Err(invalid_payload(format!(
+            "{label} must not be world-writable"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_not_world_writable_path(_path: &Path, _label: &str) -> Result<(), CommandErrorPayload> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_no_world_writable_ancestors(path: &Path, label: &str) -> Result<(), CommandErrorPayload> {
+    use std::os::unix::fs::PermissionsExt;
+
+    for ancestor in path.ancestors().skip(1) {
+        let metadata = std::fs::symlink_metadata(ancestor).map_err(|error| {
+            runtime_operation_failed(format!("{label} ancestor metadata unavailable: {error}"))
+        })?;
+        let mode = metadata.permissions().mode();
+        let world_writable = mode & 0o002 != 0;
+        let sticky = mode & 0o1000 != 0;
+        if world_writable && !sticky {
+            return Err(invalid_payload(format!(
+                "{label} ancestors must not be world-writable"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_no_world_writable_ancestors(
+    _path: &Path,
+    _label: &str,
+) -> Result<(), CommandErrorPayload> {
+    Ok(())
+}
+
+fn plugin_package_dir_name(plugin_id: &PluginId) -> String {
+    plugin_id
+        .0
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn redact_plugin_detail_config(mut detail: PluginDetail) -> PluginDetail {
+    detail.config =
+        redact_secret_config_values(detail.configuration_schema.as_ref(), detail.config);
+    detail
+}
+
+fn redact_secret_config_values(schema: Option<&Value>, values: Value) -> Value {
+    let Some(schema) = schema else {
+        return values;
+    };
+    strip_secret_config_value(schema, &values).unwrap_or(Value::Null)
+}
+
+fn strip_secret_config_value(schema: &Value, value: &Value) -> Option<Value> {
+    if schema
+        .get("secret")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    match value {
+        Value::Object(object) => {
+            let properties = schema.get("properties").and_then(Value::as_object);
+            Some(Value::Object(
+                object
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        let field_schema = properties.and_then(|properties| properties.get(key));
+                        match field_schema {
+                            Some(field_schema) => strip_secret_config_value(field_schema, value)
+                                .map(|value| (key.clone(), value)),
+                            None => Some((key.clone(), value.clone())),
+                        }
+                    })
+                    .collect(),
+            ))
+        }
+        Value::Array(values) => {
+            let Some(item_schema) = schema.get("items") else {
+                return Some(value.clone());
+            };
+            Some(Value::Array(
+                values
+                    .iter()
+                    .filter_map(|value| strip_secret_config_value(item_schema, value))
+                    .collect(),
+            ))
+        }
+        value => Some(value.clone()),
+    }
+}
+
+fn merge_plugin_config_values(schema: Option<&Value>, current: &Value, update: Value) -> Value {
+    let update = redact_secret_config_values(schema, update);
+    match update {
+        Value::Object(update_object) => {
+            let mut merged = current.as_object().cloned().unwrap_or_default();
+            for (key, value) in update_object {
+                merged.insert(key, value);
+            }
+            Value::Object(merged)
+        }
+        value => value,
+    }
+}
+
+fn ensure_no_secret_like_config_values(value: &Value) -> Result<(), CommandErrorPayload> {
+    fn visit(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => object
+                .iter()
+                .any(|(key, value)| is_secret_like_key(key) || visit(value)),
+            Value::Array(values) => values.iter().any(visit),
+            Value::String(value) => is_secret_like_value(value),
+            _ => false,
+        }
+    }
+    if visit(value) {
+        return Err(invalid_payload(
+            "plugin config contains a secret-like field; secrets must be managed by the secure store"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_secret_like_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    [
+        "secret",
+        "token",
+        "apikey",
+        "credential",
+        "password",
+        "privatekey",
+        "bearer",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn is_secret_like_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with("sk-")
+        || trimmed.starts_with("Bearer ")
+        || trimmed.starts_with("ghp_")
+        || trimmed.starts_with("gho_")
+        || trimmed.starts_with("ghu_")
+        || trimmed.starts_with("github_pat_")
+}
+
 fn ensure_import_skill_source_path(value: &str) -> Result<PathBuf, CommandErrorPayload> {
     let path = PathBuf::from(value);
     if !path.is_absolute() {
@@ -6132,6 +7558,7 @@ fn managed_skill_summary(
         imported_at: Some(record.imported_at.clone()),
         updated_at: Some(record.updated_at.clone()),
         origin: record.origin.clone(),
+        source_plugin_id: None,
     }
 }
 
@@ -6149,6 +7576,7 @@ fn runtime_skill_summary_payload(skill: &RuntimeSkillSummary) -> SkillSummaryPay
         imported_at: None,
         updated_at: None,
         origin: None,
+        source_plugin_id: skill_source_plugin_id(&skill.source),
     }
 }
 
@@ -6201,6 +7629,13 @@ fn skill_source_string(source: &jyowo_harness_sdk::ext::SkillSourceKind) -> &'st
         jyowo_harness_sdk::ext::SkillSourceKind::Plugin(_) => "plugin",
         jyowo_harness_sdk::ext::SkillSourceKind::Mcp(_) => "mcp",
         _ => "workspace",
+    }
+}
+
+fn skill_source_plugin_id(source: &jyowo_harness_sdk::ext::SkillSourceKind) -> Option<String> {
+    match source {
+        jyowo_harness_sdk::ext::SkillSourceKind::Plugin(plugin_id) => Some(plugin_id.0.clone()),
+        _ => None,
     }
 }
 
@@ -6850,6 +8285,7 @@ async fn mcp_server_summary_from_registry(
         manageable: false,
         origin: mcp_server_origin_payload(&spec.source),
         scope: mcp_server_scope_payload(&scope),
+        source_plugin_id: mcp_source_plugin_id(&spec.source),
         status,
         transport: mcp_transport_payload(&spec.transport),
     })
@@ -6873,6 +8309,7 @@ fn mcp_server_summary_from_record(record: &McpServerConfigRecord) -> McpServerSu
         } else {
             "disabled"
         },
+        source_plugin_id: None,
         transport: mcp_transport_config_payload(&record.transport),
     }
 }
@@ -8898,6 +10335,13 @@ fn mcp_server_origin_payload(source: &McpServerSource) -> &'static str {
     }
 }
 
+fn mcp_source_plugin_id(source: &McpServerSource) -> Option<String> {
+    match source {
+        McpServerSource::Plugin(plugin_id) => Some(plugin_id.0.clone()),
+        _ => None,
+    }
+}
+
 fn mcp_server_scope_payload(scope: &McpServerScope) -> String {
     match scope {
         McpServerScope::Global => "global".to_owned(),
@@ -10699,6 +12143,54 @@ impl RunEventMapper {
                     event_type: "permission.resolved",
                     visibility: "public",
                 }),
+            Event::PluginLoaded(event) => Some(RunEventPayload {
+                id: event_id,
+                conversation_sequence: 0,
+                payload: json!({
+                    "capabilityCount": plugin_capability_count(&event.capabilities),
+                    "pluginId": public_text_display(event.plugin_id.0, redactor),
+                    "pluginName": public_text_display(event.plugin_name, redactor),
+                    "trustLevel": plugin_trust_level_payload(event.trust_level),
+                }),
+                run_id: PLUGIN_RUNTIME_RUN_ID.to_owned(),
+                sequence: 0,
+                source: "plugin",
+                timestamp: event.at.to_rfc3339(),
+                event_type: "plugin.loaded",
+                visibility: "redacted",
+            }),
+            Event::PluginRejected(event) => Some(RunEventPayload {
+                id: event_id,
+                conversation_sequence: 0,
+                payload: json!({
+                    "pluginId": public_text_display(event.plugin_id.0, redactor),
+                    "pluginName": public_text_display(event.plugin_name, redactor),
+                    "reason": plugin_rejection_reason_payload(&event.reason),
+                    "trustLevel": plugin_trust_level_payload(event.trust_level),
+                }),
+                run_id: PLUGIN_RUNTIME_RUN_ID.to_owned(),
+                sequence: 0,
+                source: "plugin",
+                timestamp: event.at.to_rfc3339(),
+                event_type: "plugin.rejected",
+                visibility: "redacted",
+            }),
+            Event::PluginFailed(event) => Some(RunEventPayload {
+                id: event_id,
+                conversation_sequence: 0,
+                payload: json!({
+                    "message": PLUGIN_FAILURE_WITHHELD_MESSAGE,
+                    "pluginId": public_text_display(event.plugin_id.0, redactor),
+                    "pluginName": public_text_display(event.plugin_name, redactor),
+                    "trustLevel": plugin_trust_level_payload(event.trust_level),
+                }),
+                run_id: PLUGIN_RUNTIME_RUN_ID.to_owned(),
+                sequence: 0,
+                source: "plugin",
+                timestamp: event.at.to_rfc3339(),
+                event_type: "plugin.failed",
+                visibility: "redacted",
+            }),
             Event::EngineFailed(event) => event.run_id.and_then(|run_id| {
                 self.is_allowed_run(&run_id).then(|| RunEventPayload {
                     id: event_id,
@@ -10719,6 +12211,40 @@ impl RunEventMapper {
 
 fn tool_result_summary(_result: impl Serialize) -> String {
     "Output withheld from conversation timeline.".to_owned()
+}
+
+fn plugin_capability_count(capabilities: &PluginCapabilitiesSummary) -> u64 {
+    u64::from(capabilities.tools)
+        + u64::from(capabilities.hooks)
+        + u64::from(capabilities.mcp_servers)
+        + u64::from(capabilities.skills)
+        + if capabilities.steering { 1 } else { 0 }
+        + if capabilities.memory_provider { 1 } else { 0 }
+        + if capabilities.coordinator { 1 } else { 0 }
+}
+
+fn plugin_trust_level_payload(trust_level: TrustLevel) -> &'static str {
+    match trust_level {
+        TrustLevel::AdminTrusted => "admin_trusted",
+        TrustLevel::UserControlled => "user_controlled",
+        _ => "user_controlled",
+    }
+}
+
+fn plugin_rejection_reason_payload(reason: &RejectionReason) -> &'static str {
+    match reason {
+        RejectionReason::SignatureInvalid { .. } => "SignatureInvalid",
+        RejectionReason::UnknownSigner { .. } => "UnknownSigner",
+        RejectionReason::SignerRevoked { .. } => "SignerRevoked",
+        RejectionReason::TrustMismatch { .. } => "TrustMismatch",
+        RejectionReason::NamespaceConflict { .. } => "NamespaceConflict",
+        RejectionReason::DependencyUnsatisfied { .. } => "DependencyUnsatisfied",
+        RejectionReason::DependencyCycle { .. } => "DependencyCycle",
+        RejectionReason::HarnessVersionIncompatible { .. } => "HarnessVersionIncompatible",
+        RejectionReason::SlotOccupied { .. } => "SlotOccupied",
+        RejectionReason::AdmissionDenied { .. } => "AdmissionDenied",
+        _ => "AdmissionDenied",
+    }
 }
 
 fn safe_tool_command_preview(
@@ -11491,6 +13017,109 @@ pub async fn delete_skill(
 }
 
 #[tauri::command]
+pub async fn list_plugins(
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListPluginsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    list_plugins_with_runtime_state(&*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_plugin_detail(
+    plugin_id: PluginId,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetPluginDetailResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_plugin_detail_with_runtime_state(GetPluginDetailRequest { plugin_id }, &*runtime_state)
+        .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn validate_plugin_from_path(
+    source_path: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<PluginInstallReport, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    validate_plugin_from_path_with_runtime_state(
+        ValidatePluginFromPathRequest { source_path },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn install_plugin_from_path(
+    source_path: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<PluginOperationResult, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    install_plugin_from_path_with_runtime_state(
+        InstallPluginFromPathRequest { source_path },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn set_plugin_enabled(
+    plugin_id: PluginId,
+    enabled: bool,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<PluginOperationResult, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    set_plugin_enabled_with_runtime_state(
+        SetPluginEnabledRequest { plugin_id, enabled },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn set_project_plugins_enabled(
+    enabled: bool,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<SetProjectPluginsEnabledResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    set_project_plugins_enabled_with_runtime_state(
+        SetProjectPluginsEnabledRequest { enabled },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn update_plugin_config(
+    plugin_id: PluginId,
+    values: Value,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<PluginOperationResult, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    update_plugin_config_with_runtime_state(
+        UpdatePluginConfigRequest { plugin_id, values },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn uninstall_plugin(
+    plugin_id: PluginId,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<PluginOperationResult, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    uninstall_plugin_with_runtime_state(UninstallPluginRequest { plugin_id }, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn reload_plugin(
+    plugin_id: PluginId,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<PluginOperationResult, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    reload_plugin_with_runtime_state(ReloadPluginRequest { plugin_id }, &*runtime_state).await
+}
+
+#[tauri::command]
 pub async fn list_memory_items(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListMemoryItemsResponse, CommandErrorPayload> {
@@ -11889,6 +13518,11 @@ pub async fn get_context_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use harness_contracts::{
+        ManifestOriginRef, PluginCapabilitiesSummary, PluginFailedEvent,
+        PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginProductState,
+        PluginRejectedEvent, PluginSourceKind, RejectionReason, TrustLevel,
+    };
 
     struct EmptyRedactor;
 
@@ -11914,6 +13548,101 @@ mod tests {
             ),
             "Run error withheld from conversation timeline."
         );
+    }
+
+    #[test]
+    fn run_event_mapper_projects_plugin_lifecycle_events_without_raw_errors() {
+        let requested_session_id = SessionId::new();
+        let mut mapper = RunEventMapper::default();
+        let manifest_origin = ManifestOriginRef::File {
+            path: "/Users/goya/.config/jyowo/plugins/formatter/plugin.json".to_owned(),
+        };
+        let loaded = mapper
+            .map(
+                "evt-plugin-loaded".to_owned(),
+                Event::PluginLoaded(PluginLoadedEvent {
+                    tenant_id: TenantId::SINGLE,
+                    plugin_id: PluginId("formatter@1.0.0".to_owned()),
+                    plugin_name: "formatter".to_owned(),
+                    plugin_version: "1.0.0".to_owned(),
+                    trust_level: TrustLevel::UserControlled,
+                    capabilities: plugin_capabilities_summary_for_test(),
+                    manifest_origin: manifest_origin.clone(),
+                    manifest_hash: [7; 32],
+                    from_state: PluginLifecycleStateDiscriminant::Validated,
+                    at: Utc::now(),
+                }),
+                requested_session_id,
+                &DefaultRedactor::default(),
+            )
+            .expect("plugin loaded should be projected");
+
+        assert_eq!(loaded.run_id, "plugin-runtime");
+        assert_eq!(loaded.event_type, "plugin.loaded");
+        assert_eq!(loaded.source, "plugin");
+        assert_eq!(loaded.visibility, "redacted");
+        assert_eq!(loaded.payload["pluginId"], "formatter@1.0.0");
+        assert_eq!(loaded.payload["pluginName"], "formatter");
+        assert_eq!(loaded.payload["trustLevel"], "user_controlled");
+        assert_eq!(loaded.payload["capabilityCount"], 3);
+
+        let rejected = mapper
+            .map(
+                "evt-plugin-rejected".to_owned(),
+                Event::PluginRejected(PluginRejectedEvent {
+                    tenant_id: TenantId::SINGLE,
+                    plugin_id: PluginId("formatter@1.0.0".to_owned()),
+                    plugin_name: "formatter".to_owned(),
+                    plugin_version: "1.0.0".to_owned(),
+                    trust_level: TrustLevel::UserControlled,
+                    manifest_origin: manifest_origin.clone(),
+                    manifest_hash: [7; 32],
+                    reason: RejectionReason::AdmissionDenied {
+                        policy: "Authorization=Bearer plugin-secret-token".to_owned(),
+                    },
+                    at: Utc::now(),
+                }),
+                requested_session_id,
+                &DefaultRedactor::default(),
+            )
+            .expect("plugin rejected should be projected");
+
+        assert_eq!(rejected.event_type, "plugin.rejected");
+        assert_eq!(rejected.source, "plugin");
+        assert_eq!(rejected.visibility, "redacted");
+        assert_eq!(rejected.payload["reason"], "AdmissionDenied");
+        let rejected_payload = serde_json::to_string(&rejected.payload).unwrap();
+        assert!(!rejected_payload.contains("plugin-secret-token"));
+        assert!(!rejected_payload.contains("Authorization"));
+        assert!(!rejected_payload.contains("/Users/goya"));
+
+        let failed = mapper
+            .map(
+                "evt-plugin-failed".to_owned(),
+                Event::PluginFailed(PluginFailedEvent {
+                    tenant_id: TenantId::SINGLE,
+                    plugin_id: PluginId("formatter@1.0.0".to_owned()),
+                    plugin_name: "formatter".to_owned(),
+                    plugin_version: "1.0.0".to_owned(),
+                    trust_level: TrustLevel::UserControlled,
+                    manifest_origin,
+                    manifest_hash: [7; 32],
+                    failure: "sidecar crashed with token=plugin-secret-token".to_owned(),
+                    at: Utc::now(),
+                }),
+                requested_session_id,
+                &DefaultRedactor::default(),
+            )
+            .expect("plugin failed should be projected");
+
+        assert_eq!(failed.event_type, "plugin.failed");
+        assert_eq!(
+            failed.payload["message"],
+            "Plugin failure withheld from conversation timeline."
+        );
+        let failed_payload = serde_json::to_string(&failed.payload).unwrap();
+        assert!(!failed_payload.contains("plugin-secret-token"));
+        assert!(!failed_payload.contains("sidecar crashed"));
     }
 
     #[test]
@@ -12013,6 +13742,692 @@ mod tests {
         assert_eq!(tasks.tasks[0].status, "running");
     }
 
+    #[tokio::test]
+    async fn plugin_install_failure_does_not_write_store_record() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(
+            source.path().join("plugin.json"),
+            r#"{"manifest_schema_version":99,"name":"bad-plugin"}"#,
+        )
+        .unwrap();
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let source_path = source.path().canonicalize().unwrap();
+
+        let result = install_plugin_from_path_with_runtime_state(
+            InstallPluginFromPathRequest {
+                source_path: source_path.to_string_lossy().to_string(),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+        let plugins = list_plugins_with_runtime_state(&state).await.unwrap();
+
+        assert_eq!(result.status, PluginOperationStatus::Rejected);
+        let report = result.report.as_ref().expect("rejection includes report");
+        assert_eq!(report.source_path, "<local-plugin>");
+        assert_eq!(
+            report.reason.as_deref(),
+            Some("plugin manifest uses an unsupported schema version")
+        );
+        assert!(!report
+            .source_path
+            .contains(source_path.to_string_lossy().as_ref()));
+        assert!(!report
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("unsupported manifest_schema_version 99"));
+        assert!(plugins.plugins.is_empty());
+    }
+
+    #[tokio::test]
+    async fn installed_plugin_can_be_listed_and_disabled_without_activation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_package(source.path(), "local-tools");
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let source_path = source.path().canonicalize().unwrap();
+
+        let install = install_plugin_from_path_with_runtime_state(
+            InstallPluginFromPathRequest {
+                source_path: source_path.to_string_lossy().to_string(),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+        let installed_id = install.plugin_id.clone().unwrap();
+        let listed = list_plugins_with_runtime_state(&state).await.unwrap();
+
+        assert_eq!(install.status, PluginOperationStatus::Installed);
+        assert_eq!(listed.plugins.len(), 1);
+        assert_eq!(listed.plugins[0].id, installed_id);
+        assert!(!listed.plugins[0].enabled);
+        assert!(matches!(
+            listed.plugins[0].state,
+            PluginProductState::Disabled { .. }
+        ));
+
+        let disabled = set_plugin_enabled_with_runtime_state(
+            SetPluginEnabledRequest {
+                plugin_id: installed_id.clone(),
+                enabled: false,
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+        let listed = list_plugins_with_runtime_state(&state).await.unwrap();
+
+        assert_eq!(disabled.status, PluginOperationStatus::Disabled);
+        assert_eq!(listed.plugins[0].id, installed_id);
+        assert!(!listed.plugins[0].enabled);
+        assert!(matches!(
+            listed.plugins[0].state,
+            PluginProductState::Disabled { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn unregistered_user_plugin_package_is_rejected_by_desktop_registry() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_package(source.path(), "registered-tools");
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        install_plugin_from_path_with_runtime_state(
+            InstallPluginFromPathRequest {
+                source_path: source.path().canonicalize().unwrap().display().to_string(),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+
+        let rogue_package = state.plugin_store.package_root().join("rogue-tools_0.1.0");
+        std::fs::create_dir_all(&rogue_package).unwrap();
+        write_desktop_plugin_package(&rogue_package, "rogue-tools");
+
+        let listed = list_plugins_with_runtime_state(&state).await.unwrap();
+
+        assert_eq!(listed.plugins.len(), 1);
+        assert_eq!(listed.plugins[0].name, "registered-tools");
+        assert!(listed
+            .plugins
+            .iter()
+            .all(|plugin| plugin.name != "rogue-tools"));
+    }
+
+    #[tokio::test]
+    async fn installing_file_plugin_without_sidecar_is_rejected() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_manifest(source.path(), "local-preflight");
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let source_path = source.path().canonicalize().unwrap();
+        let result = install_plugin_from_path_with_runtime_state(
+            InstallPluginFromPathRequest {
+                source_path: source_path.to_string_lossy().to_string(),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+        let listed = list_plugins_with_runtime_state(&state).await.unwrap();
+
+        assert_eq!(result.status, PluginOperationStatus::Rejected);
+        assert_eq!(
+            result
+                .report
+                .as_ref()
+                .and_then(|report| report.reason.as_deref()),
+            Some("local plugin package must include a jyowo-plugin-* sidecar executable")
+        );
+        assert!(listed.plugins.is_empty());
+    }
+
+    #[tokio::test]
+    async fn plugin_config_update_preserves_existing_secret_config_fields() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_manifest_with_config_schema(source.path(), "secret-tools");
+        write_desktop_plugin_sidecar(source.path(), "secret-tools");
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let source_path = source.path().canonicalize().unwrap();
+
+        let install = install_plugin_from_path_with_runtime_state(
+            InstallPluginFromPathRequest {
+                source_path: source_path.to_string_lossy().to_string(),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+        let installed_id = install.plugin_id.clone().unwrap();
+        let mut settings = state.plugin_store.load_record().unwrap();
+        settings.records[0].config =
+            serde_json::json!({ "apiToken": "managed-secret-ref", "lineWidth": 80 });
+        state.plugin_store.save_record(&settings).unwrap();
+
+        update_plugin_config_with_runtime_state(
+            UpdatePluginConfigRequest {
+                plugin_id: installed_id.clone(),
+                values: serde_json::json!({ "lineWidth": 120 }),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+
+        let settings = state.plugin_store.load_record().unwrap();
+        assert_eq!(
+            settings.records[0].config,
+            serde_json::json!({ "apiToken": "managed-secret-ref", "lineWidth": 120 })
+        );
+        let detail = get_plugin_detail_with_runtime_state(
+            GetPluginDetailRequest {
+                plugin_id: installed_id,
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            detail.plugin.config,
+            serde_json::json!({ "lineWidth": 120 })
+        );
+    }
+
+    #[tokio::test]
+    async fn plugin_config_update_validates_merged_config_values() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_manifest_with_required_config_schema(source.path(), "merged-config");
+        write_desktop_plugin_sidecar(source.path(), "merged-config");
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let installed_id = PluginId("merged-config@0.1.0".to_owned());
+        let package_dir = plugin_package_dir_name(&installed_id);
+        state
+            .plugin_store
+            .write_plugin_package(&package_dir, &source.path().canonicalize().unwrap())
+            .unwrap();
+        state
+            .plugin_store
+            .save_record(&PluginSettingsRecord {
+                records: vec![PluginStoreRecord {
+                    plugin_id: installed_id.clone(),
+                    name: "merged-config".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    enabled: false,
+                    package_dir,
+                    source_path: "<local-plugin>".to_owned(),
+                    content_hash: "hash".to_owned(),
+                    imported_at: "2026-01-01T00:00:00Z".to_owned(),
+                    updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                    config: serde_json::json!({ "mode": "default", "limit": 10 }),
+                    last_validation_error: None,
+                }],
+                ..PluginSettingsRecord::default()
+            })
+            .unwrap();
+
+        update_plugin_config_with_runtime_state(
+            UpdatePluginConfigRequest {
+                plugin_id: installed_id,
+                values: serde_json::json!({ "limit": 20 }),
+            },
+            &state,
+        )
+        .await
+        .expect("merged config satisfies required schema fields");
+
+        let settings = state.plugin_store.load_record().unwrap();
+        assert_eq!(
+            settings.records[0].config,
+            serde_json::json!({ "mode": "default", "limit": 20 })
+        );
+    }
+
+    #[tokio::test]
+    async fn plugin_config_update_rejects_unknown_schema_fields_without_persisting() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_manifest_with_required_config_schema(source.path(), "strict-config");
+        write_desktop_plugin_sidecar(source.path(), "strict-config");
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let installed_id = PluginId("strict-config@0.1.0".to_owned());
+        let package_dir = plugin_package_dir_name(&installed_id);
+        state
+            .plugin_store
+            .write_plugin_package(&package_dir, &source.path().canonicalize().unwrap())
+            .unwrap();
+        state
+            .plugin_store
+            .save_record(&PluginSettingsRecord {
+                records: vec![PluginStoreRecord {
+                    plugin_id: installed_id.clone(),
+                    name: "strict-config".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    enabled: false,
+                    package_dir,
+                    source_path: "<local-plugin>".to_owned(),
+                    content_hash: "hash".to_owned(),
+                    imported_at: "2026-01-01T00:00:00Z".to_owned(),
+                    updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                    config: serde_json::json!({ "mode": "default", "limit": 10 }),
+                    last_validation_error: None,
+                }],
+                ..PluginSettingsRecord::default()
+            })
+            .unwrap();
+
+        let result = update_plugin_config_with_runtime_state(
+            UpdatePluginConfigRequest {
+                plugin_id: installed_id,
+                values: serde_json::json!({ "unknown": "ignored" }),
+            },
+            &state,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let settings = state.plugin_store.load_record().unwrap();
+        assert_eq!(
+            settings.records[0].config,
+            serde_json::json!({ "mode": "default", "limit": 10 })
+        );
+    }
+
+    #[tokio::test]
+    async fn plugin_config_update_rejects_existing_unknown_schema_fields_without_persisting_patch()
+    {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_manifest_with_required_config_schema(source.path(), "strict-existing");
+        write_desktop_plugin_sidecar(source.path(), "strict-existing");
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let installed_id = PluginId("strict-existing@0.1.0".to_owned());
+        let package_dir = plugin_package_dir_name(&installed_id);
+        state
+            .plugin_store
+            .write_plugin_package(&package_dir, &source.path().canonicalize().unwrap())
+            .unwrap();
+        state
+            .plugin_store
+            .save_record(&PluginSettingsRecord {
+                records: vec![PluginStoreRecord {
+                    plugin_id: installed_id.clone(),
+                    name: "strict-existing".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    enabled: false,
+                    package_dir,
+                    source_path: "<local-plugin>".to_owned(),
+                    content_hash: "hash".to_owned(),
+                    imported_at: "2026-01-01T00:00:00Z".to_owned(),
+                    updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                    config: serde_json::json!({
+                        "mode": "default",
+                        "unknown": "already-present"
+                    }),
+                    last_validation_error: None,
+                }],
+                ..PluginSettingsRecord::default()
+            })
+            .unwrap();
+
+        let result = update_plugin_config_with_runtime_state(
+            UpdatePluginConfigRequest {
+                plugin_id: installed_id,
+                values: serde_json::json!({ "limit": 20 }),
+            },
+            &state,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let settings = state.plugin_store.load_record().unwrap();
+        assert_eq!(
+            settings.records[0].config,
+            serde_json::json!({
+                "mode": "default",
+                "unknown": "already-present"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn plugin_config_update_rejects_secret_like_fields_without_secret_schema() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_manifest(source.path(), "plain-config");
+        write_desktop_plugin_sidecar(source.path(), "plain-config");
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let source_path = source.path().canonicalize().unwrap();
+        let install = install_plugin_from_path_with_runtime_state(
+            InstallPluginFromPathRequest {
+                source_path: source_path.to_string_lossy().to_string(),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+        let installed_id = install.plugin_id.clone().unwrap();
+
+        let result = update_plugin_config_with_runtime_state(
+            UpdatePluginConfigRequest {
+                plugin_id: installed_id,
+                values: serde_json::json!({ "apiToken": "not-even-a-real-token" }),
+            },
+            &state,
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn project_plugin_allow_gate_is_persisted_by_command() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+
+        let response = set_project_plugins_enabled_with_runtime_state(
+            SetProjectPluginsEnabledRequest { enabled: true },
+            &state,
+        )
+        .await
+        .unwrap();
+
+        assert!(response.allow_project_plugins);
+        assert!(
+            state
+                .plugin_store
+                .load_record()
+                .unwrap()
+                .allow_project_plugins
+        );
+        assert!(
+            list_plugins_with_runtime_state(&state)
+                .await
+                .unwrap()
+                .allow_project_plugins
+        );
+    }
+
+    #[tokio::test]
+    async fn enabling_cargo_extension_plugin_does_not_run_activate_preflight() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        write_desktop_plugin_manifest(source.path(), "counting-sidecar");
+        let binary = source.path().join("jyowo-plugin-counting-sidecar");
+        let counter = workspace.path().join("activate-count");
+        write_desktop_executable(
+            &binary,
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = "--harness-manifest" ]; then
+cat "$0.metadata"
+exit 0
+fi
+if [ "$1" = "--harness-runtime" ]; then
+request=$(cat)
+case "$request" in
+  *\"method\":\"activate\"*)
+    printf activate >> '{}'
+    printf '{{"jsonrpc":"2.0","id":1,"result":{{"registered_tools":[],"registered_hooks":[],"registered_skills":[],"registered_mcp":[],"occupied_slots":[]}}}}'
+    exit 0
+    ;;
+  *\"method\":\"deactivate\"*)
+    printf '{{"jsonrpc":"2.0","id":1,"result":null}}'
+    exit 0
+    ;;
+esac
+fi
+	exit 2
+	"#,
+                counter.display()
+            ),
+        );
+        let install = install_plugin_from_path_with_runtime_state(
+            InstallPluginFromPathRequest {
+                source_path: source.path().canonicalize().unwrap().display().to_string(),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+
+        set_plugin_enabled_with_runtime_state(
+            SetPluginEnabledRequest {
+                plugin_id: install.plugin_id.unwrap(),
+                enabled: true,
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !counter.exists(),
+            "enable preflight must not execute sidecar activate"
+        );
+    }
+
+    #[tokio::test]
+    async fn enabling_plugin_rejects_installed_package_hash_mismatch() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_package(source.path(), "tampered-sidecar");
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let install = install_plugin_from_path_with_runtime_state(
+            InstallPluginFromPathRequest {
+                source_path: source.path().canonicalize().unwrap().display().to_string(),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+        let installed_id = install.plugin_id.clone().unwrap();
+        let settings = state.plugin_store.load_record().unwrap();
+        let package_dir = settings.records[0].package_dir.clone();
+        write_desktop_executable(
+            &state
+                .plugin_store
+                .package_root()
+                .join(&package_dir)
+                .join("jyowo-plugin-tampered-sidecar"),
+            r#"#!/bin/sh
+printf tampered
+exit 0
+"#,
+        );
+
+        let result = set_plugin_enabled_with_runtime_state(
+            SetPluginEnabledRequest {
+                plugin_id: installed_id,
+                enabled: true,
+            },
+            &state,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let settings = state.plugin_store.load_record().unwrap();
+        assert!(!settings.records[0].enabled);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn plugin_validation_rejects_world_writable_source_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_manifest(source.path(), "world-writable-plugin");
+        let mut permissions = std::fs::metadata(source.path()).unwrap().permissions();
+        permissions.set_mode(0o777);
+        std::fs::set_permissions(source.path(), permissions).unwrap();
+        let state = DesktopRuntimeState::with_workspace_for_test(
+            tempfile::tempdir().unwrap().path().to_path_buf(),
+        )
+        .unwrap();
+
+        let error = validate_plugin_from_path_with_runtime_state(
+            ValidatePluginFromPathRequest {
+                source_path: source.path().canonicalize().unwrap().display().to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect_err("world-writable plugin source must be rejected");
+
+        assert!(error.message.contains("world-writable"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn plugin_validation_rejects_world_writable_source_ancestor() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("writable-parent");
+        let source = parent.join("plugin");
+        std::fs::create_dir_all(&source).unwrap();
+        write_desktop_plugin_manifest(&source, "world-writable-parent-plugin");
+        let mut permissions = std::fs::metadata(&parent).unwrap().permissions();
+        permissions.set_mode(0o777);
+        std::fs::set_permissions(&parent, permissions).unwrap();
+        let state = DesktopRuntimeState::with_workspace_for_test(
+            tempfile::tempdir().unwrap().path().to_path_buf(),
+        )
+        .unwrap();
+
+        let error = validate_plugin_from_path_with_runtime_state(
+            ValidatePluginFromPathRequest {
+                source_path: source.canonicalize().unwrap().display().to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect_err("world-writable plugin source ancestor must be rejected");
+
+        assert!(error.message.contains("world-writable"));
+    }
+
+    #[test]
+    fn plugin_package_dir_validation_rejects_path_like_values() {
+        for value in [".", "..", ".hidden", "nested/path", "nested\\path"] {
+            assert!(
+                ensure_plugin_package_dir_name(value).is_err(),
+                "{value} must be rejected"
+            );
+        }
+
+        ensure_plugin_package_dir_name("formatter_0.1.0").unwrap();
+    }
+
+    #[test]
+    fn plugin_store_rejects_tampered_package_dir_in_index() {
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace = workspace.path().canonicalize().unwrap();
+        let store = DesktopPluginStore::new(workspace);
+        let index_path = store.index_path();
+        std::fs::create_dir_all(index_path.parent().unwrap()).unwrap();
+        let record = serde_json::json!({
+            "records": [{
+                "pluginId": "formatter@0.1.0",
+                "name": "formatter",
+                "version": "0.1.0",
+                "enabled": true,
+                "packageDir": "..",
+                "sourcePath": "<local-plugin>",
+                "contentHash": "hash",
+                "importedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:00Z",
+                "config": null
+            }]
+        });
+        std::fs::write(index_path, serde_json::to_vec(&record).unwrap()).unwrap();
+
+        let error = store
+            .load_record()
+            .expect_err("tampered index must fail closed");
+
+        assert!(error.message.contains("plugin package directory"));
+    }
+
+    #[tokio::test]
+    async fn desktop_cargo_extension_search_path_discovers_workspace_owned_sidecar() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        write_desktop_cargo_extension(
+            &state.plugin_store.cargo_extension_root(),
+            "standalone-tools",
+        );
+
+        let response = list_plugins_with_runtime_state(&state).await.unwrap();
+
+        assert!(response.plugins.iter().any(|plugin| {
+            plugin.id == PluginId("standalone-tools@0.1.0".to_owned())
+                && plugin.source == PluginSourceKind::CargoExtension
+        }));
+    }
+
+    #[tokio::test]
+    async fn plugin_uninstall_does_not_delete_package_when_index_save_fails() {
+        let workspace = tempfile::tempdir().unwrap();
+        let plugin_id = PluginId("formatter@0.1.0".to_owned());
+        let store = Arc::new(FailingSavePluginStore::new(PluginSettingsRecord {
+            records: vec![PluginStoreRecord {
+                plugin_id: plugin_id.clone(),
+                name: "formatter".to_owned(),
+                version: "0.1.0".to_owned(),
+                enabled: true,
+                package_dir: "formatter_0.1.0".to_owned(),
+                source_path: "/tmp/formatter".to_owned(),
+                content_hash: "hash".to_owned(),
+                imported_at: "2026-01-01T00:00:00Z".to_owned(),
+                updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                config: Value::Null,
+                last_validation_error: None,
+            }],
+            ..PluginSettingsRecord::default()
+        }));
+        let mut state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        state.plugin_store = store.clone();
+
+        let result =
+            uninstall_plugin_with_runtime_state(UninstallPluginRequest { plugin_id }, &state).await;
+
+        assert!(result.is_err());
+        assert!(store.deleted_packages().is_empty());
+    }
+
+    #[test]
+    fn desktop_cargo_extension_search_paths_use_workspace_owned_extension_dir() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+
+        let paths = desktop_cargo_extension_search_paths(state.plugin_store.as_ref());
+
+        assert_eq!(paths, vec![state.plugin_store.cargo_extension_root()]);
+    }
+
     #[test]
     fn run_end_reason_display_withholds_error_reason() {
         let reason = run_end_reason_display(
@@ -12088,5 +14503,214 @@ mod tests {
         .expect("conversation should be created");
 
         assert!(created.conversation.is_empty);
+    }
+
+    fn plugin_capabilities_summary_for_test() -> PluginCapabilitiesSummary {
+        PluginCapabilitiesSummary {
+            tools: 1,
+            hooks: 1,
+            mcp_servers: 0,
+            skills: 1,
+            steering: false,
+            memory_provider: false,
+            coordinator: false,
+        }
+    }
+
+    fn write_desktop_plugin_manifest(root: &Path, name: &str) {
+        let manifest = serde_json::json!({
+            "manifest_schema_version": 1,
+            "name": name,
+            "version": "0.1.0",
+            "trust_level": "user_controlled",
+            "min_harness_version": ">=0.0.0",
+            "capabilities": {
+                "tools": [{ "name": "local-tool", "destructive": false }]
+            }
+        });
+        std::fs::write(
+            root.join("plugin.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_desktop_plugin_manifest_with_config_schema(root: &Path, name: &str) {
+        let manifest = serde_json::json!({
+            "manifest_schema_version": 1,
+            "name": name,
+            "version": "0.1.0",
+            "trust_level": "user_controlled",
+            "min_harness_version": ">=0.0.0",
+            "capabilities": {
+                "configuration_schema": {
+                    "type": "object",
+                    "required": ["apiToken"],
+                    "properties": {
+                        "apiToken": { "type": "string", "secret": true },
+                        "lineWidth": { "type": "number" }
+                    },
+                    "additionalProperties": false
+                },
+                "tools": [{ "name": "local-tool", "destructive": false }]
+            }
+        });
+        std::fs::write(
+            root.join("plugin.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_desktop_plugin_manifest_with_required_config_schema(root: &Path, name: &str) {
+        let manifest = serde_json::json!({
+            "manifest_schema_version": 1,
+            "name": name,
+            "version": "0.1.0",
+            "trust_level": "user_controlled",
+            "min_harness_version": ">=0.0.0",
+            "capabilities": {
+                "configuration_schema": {
+                    "type": "object",
+                    "required": ["mode"],
+                    "properties": {
+                        "mode": { "type": "string" },
+                        "limit": { "type": "number" }
+                    },
+                    "additionalProperties": false
+                }
+            }
+        });
+        std::fs::write(
+            root.join("plugin.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_desktop_plugin_package(root: &Path, name: &str) {
+        write_desktop_plugin_manifest(root, name);
+        write_desktop_plugin_sidecar(root, name);
+    }
+
+    fn write_desktop_cargo_extension(root: &Path, name: &str) {
+        let manifest = serde_json::json!({
+            "manifest_schema_version": 1,
+            "name": name,
+            "version": "0.1.0",
+            "trust_level": "user_controlled",
+            "min_harness_version": ">=0.0.0",
+            "capabilities": {
+                "tools": [{ "name": "local-tool", "destructive": false }]
+            }
+        });
+        let metadata = serde_json::json!({
+            "manifest": manifest,
+            "package_metadata": { "package": name }
+        });
+        write_desktop_executable(
+            &root.join(format!("jyowo-plugin-{name}")),
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = "--harness-manifest" ]; then
+printf '%s' '{}'
+exit 0
+fi
+if [ "$1" = "--harness-runtime" ]; then
+  printf '{{"jsonrpc":"2.0","id":1,"result":{{"registered_tools":[],"registered_hooks":[],"registered_skills":[],"registered_mcp":[],"occupied_slots":[]}}}}'
+  exit 0
+fi
+exit 2
+"#,
+                metadata
+            ),
+        );
+    }
+
+    fn write_desktop_plugin_sidecar(root: &Path, name: &str) {
+        write_desktop_executable(
+            &root.join(format!("jyowo-plugin-{name}")),
+            r#"#!/bin/sh
+if [ "$1" = "--harness-runtime" ]; then
+  printf '{"jsonrpc":"2.0","id":1,"result":{"registered_tools":[],"registered_hooks":[],"registered_skills":[],"registered_mcp":[],"occupied_slots":[]}}'
+  exit 0
+fi
+exit 2
+"#,
+        );
+    }
+
+    fn write_desktop_executable(path: &Path, content: impl AsRef<str>) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content.as_ref()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+    }
+
+    #[derive(Clone)]
+    struct FailingSavePluginStore {
+        deleted_packages: Arc<std::sync::Mutex<Vec<String>>>,
+        record: PluginSettingsRecord,
+        root: PathBuf,
+    }
+
+    impl FailingSavePluginStore {
+        fn new(record: PluginSettingsRecord) -> Self {
+            Self {
+                deleted_packages: Arc::new(std::sync::Mutex::new(Vec::new())),
+                record,
+                root: std::env::temp_dir().join(format!("jyowo-plugin-store-{}", RunId::new())),
+            }
+        }
+
+        fn deleted_packages(&self) -> Vec<String> {
+            self.deleted_packages.lock().unwrap().clone()
+        }
+    }
+
+    impl PluginStore for FailingSavePluginStore {
+        fn package_root(&self) -> PathBuf {
+            self.root.join("user")
+        }
+
+        fn cargo_extension_root(&self) -> PathBuf {
+            self.root.join("extensions")
+        }
+
+        fn workspace_plugin_root(&self) -> PathBuf {
+            self.root.join("workspace")
+        }
+
+        fn load_record(&self) -> Result<PluginSettingsRecord, CommandErrorPayload> {
+            Ok(self.record.clone())
+        }
+
+        fn save_record(&self, _record: &PluginSettingsRecord) -> Result<(), CommandErrorPayload> {
+            Err(runtime_operation_failed(
+                "plugin index save failed".to_owned(),
+            ))
+        }
+
+        fn write_plugin_package(
+            &self,
+            _package_dir: &str,
+            _source_path: &Path,
+        ) -> Result<(), CommandErrorPayload> {
+            Ok(())
+        }
+
+        fn delete_plugin_package(&self, package_dir: &str) -> Result<(), CommandErrorPayload> {
+            self.deleted_packages
+                .lock()
+                .unwrap()
+                .push(package_dir.to_owned());
+            Ok(())
+        }
     }
 }

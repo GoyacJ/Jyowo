@@ -57,6 +57,7 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('tab', { name: '技能' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '工具' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'MCP' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '插件' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '模型' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '关于' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: '语言' })).toBeInTheDocument()
@@ -75,6 +76,10 @@ describe('SettingsPage', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'MCP' }))
 
     expect(await screen.findByRole('heading', { name: 'MCP 服务器' })).toBeInTheDocument()
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '插件' }))
+
+    expect(await screen.findByRole('heading', { name: '插件' })).toBeInTheDocument()
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '模型' }))
 

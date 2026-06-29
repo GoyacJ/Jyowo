@@ -158,9 +158,11 @@ fn manifest() -> ManifestRecord {
                 tools: vec![ToolManifestEntry {
                     name: "registered-tool".to_owned(),
                     destructive: false,
+                    input_schema: serde_json::json!({ "type": "object" }),
                 }],
                 hooks: vec![HookManifestEntry {
                     name: "registered-hook".to_owned(),
+                    events: Vec::new(),
                 }],
                 mcp_servers: vec![McpManifestEntry {
                     name: "registered-mcp".to_owned(),

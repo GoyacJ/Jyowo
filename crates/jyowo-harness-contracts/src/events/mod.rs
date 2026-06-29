@@ -141,6 +141,7 @@ pub enum Event {
     TraceSpanCompleted(TraceSpanCompletedEvent),
     PluginLoaded(PluginLoadedEvent),
     PluginRejected(PluginRejectedEvent),
+    PluginFailed(PluginFailedEvent),
     ManifestValidationFailed(ManifestValidationFailedEvent),
     SandboxExecutionStarted(SandboxExecutionStartedEvent),
     SandboxExecutionCompleted(SandboxExecutionCompletedEvent),
