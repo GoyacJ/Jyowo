@@ -43,6 +43,8 @@ const requiredConcepts = [
   'Zod',
   'Zustand',
   'React Hook Form',
+  'capability routing',
+  'listProviderCapabilityRouteOptions',
 ]
 const forbiddenStageLanguage = [
   'DEFERRED',

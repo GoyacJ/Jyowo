@@ -62,6 +62,9 @@ const requiredConcepts = [
   'proc-macro-crate',
   'toml_datetime',
   'toml_edit',
+  'CapabilityRouteKind',
+  'ToolServiceBinding',
+  'provider-capability-routes',
 ]
 
 const forbiddenStageLanguage = [

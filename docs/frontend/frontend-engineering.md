@@ -568,6 +568,95 @@ list_provider_settings(): {
   configs: ProviderConfig[]
 }
 
+list_provider_capability_routes(): {
+  version: number
+  routes: Array<{
+    kind:
+      | 'image_generation'
+      | 'video_generation'
+      | 'text_to_speech'
+      | 'speech_to_text'
+      | 'music_generation'
+    configId: string
+    providerId: string
+    operationIds: string[]
+    enabled: boolean
+  }>
+}
+
+list_provider_capability_route_options(): {
+  options: Array<{
+    kind:
+      | 'image_generation'
+      | 'video_generation'
+      | 'text_to_speech'
+      | 'speech_to_text'
+      | 'music_generation'
+    configId: string
+    providerId: string
+    operationId: string
+    outputArtifact: 'image' | 'video' | 'audio' | 'file'
+    execution: 'sync' | 'async_job'
+    costRisk: 'low' | 'medium' | 'high'
+    runtimeSupported: boolean
+    unavailableReason?: string
+  }>
+}
+
+save_provider_capability_route(request: {
+  route: {
+    kind:
+      | 'image_generation'
+      | 'video_generation'
+      | 'text_to_speech'
+      | 'speech_to_text'
+      | 'music_generation'
+    configId: string
+    providerId: string
+    operationIds: string[]
+    enabled: boolean
+  }
+}): {
+  version: number
+  routes: Array<{
+    kind:
+      | 'image_generation'
+      | 'video_generation'
+      | 'text_to_speech'
+      | 'speech_to_text'
+      | 'music_generation'
+    configId: string
+    providerId: string
+    operationIds: string[]
+    enabled: boolean
+  }>
+}
+
+delete_provider_capability_route(request: {
+  kind:
+    | 'image_generation'
+    | 'video_generation'
+    | 'text_to_speech'
+    | 'speech_to_text'
+    | 'music_generation'
+  configId: string
+  providerId: string
+}): {
+  version: number
+  routes: Array<{
+    kind:
+      | 'image_generation'
+      | 'video_generation'
+      | 'text_to_speech'
+      | 'speech_to_text'
+      | 'music_generation'
+    configId: string
+    providerId: string
+    operationIds: string[]
+    enabled: boolean
+  }>
+}
+
 get_execution_settings(): {
   autoModeAvailable: boolean
   contextCompressionTriggerRatio: number
@@ -872,6 +961,41 @@ Command naming:
 - Frontend wrapper functions use `camelCase`.
 - Command names should be domain verbs: `start_run`, `cancel_run`, `resolve_permission`.
 - Avoid generic names such as `execute`, `handle`, `send`, and `process`.
+
+Provider capability route commands:
+
+```text
+list_provider_capability_routes
+list_provider_capability_route_options
+save_provider_capability_route
+delete_provider_capability_route
+```
+
+Rules:
+
+- Route command schemas use `.strict()` and reject unknown fields.
+- `listProviderCapabilityRouteOptions` is the only frontend source for runtime support eligibility.
+- Provider catalog service capabilities are read-only context and must not authorize route selection.
+- Route payloads must not include API keys.
+- `ProviderSettingsForm` may hide `runtimeSupported = false` options for UX, but backend validation remains authoritative.
+
+Capability route schema fields:
+
+```text
+kind
+configId
+providerId
+operationIds
+enabled
+operationId
+outputArtifact
+execution
+costRisk
+runtimeSupported
+unavailableReason?
+version
+routes
+```
 
 Memory IPC payloads must be Zod validated in `shared/tauri`, loaded through
 TanStack Query, and rendered with sanitized error text. Components must not

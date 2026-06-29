@@ -480,6 +480,23 @@ Agent domain components:
 - `MemoryHitCard`
 - `ProviderSettingsForm`
 
+`ProviderSettingsForm` includes a capability routing section under provider and model settings.
+
+Capability routing UX rules:
+
+- The main conversation model and capability routes are separate settings.
+- Image input describes the main model accepting image attachments.
+- Image generation describes a routed provider service for creating images.
+- Video input and video generation follow the same distinction.
+- Route rows are grouped by `CapabilityRouteKind` returned from `listProviderCapabilityRouteOptions`.
+- Only options with `runtimeSupported = true` are selectable.
+- The frontend must not infer runtime support from provider catalog data.
+- `speech_to_text` appears only when the backend returns an eligible option.
+- Each row shows current route status, selected provider profile, operation id, output artifact, execution mode, and cost risk.
+- Save uses `saveProviderCapabilityRoute`. Delete or disable uses `deleteProviderCapabilityRoute`.
+- Show a warning when the selected main model lacks tool calling.
+- Capability routing must cover loading, empty, error, and ready states.
+
 `ToolCallCard` must show:
 
 - tool name
@@ -760,6 +777,7 @@ Workspace operations:
 ```text
 workspace selector
 provider/model settings
+capability routing
 MCP manager
 Memory browser
 search
