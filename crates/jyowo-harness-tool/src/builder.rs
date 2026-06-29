@@ -200,6 +200,10 @@ impl ToolRegistryBuilder {
     }
 }
 
+pub use crate::registry::{
+    provider_service_adapter_availability_from_snapshot, tool_service_bindings_from_snapshot,
+};
+
 fn register_skill_tools(registry: &ToolRegistry) -> Result<(), RegistrationError> {
     #[cfg(any(feature = "builtin-toolset", feature = "skill-tools"))]
     {

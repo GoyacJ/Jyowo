@@ -93,3 +93,115 @@ fn descriptor(name: &str) -> ToolDescriptor {
         service_binding: None,
     }
 }
+
+#[cfg(feature = "minimax-tools")]
+mod minimax_service_binding {
+    use harness_contracts::{CapabilityRouteKind, ModelModality};
+    use harness_tool::{
+        provider_service_adapter_availability_from_snapshot, BuiltinToolset,
+        MiniMaxImageToImageTool, MiniMaxMusicGenerationTool, MiniMaxTextToImageTool,
+        MiniMaxTextToSpeechTool, MiniMaxTextToVideoTool, MiniMaxVideoGenerationQueryTool, Tool,
+        ToolRegistryBuilder,
+    };
+
+    #[test]
+    fn minimax_image_tool_descriptor_has_image_generation_binding() {
+        let binding = MiniMaxTextToImageTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("image tool should declare service binding");
+        assert_eq!(binding.provider_id, "minimax");
+        assert_eq!(binding.operation_id, "minimax.image_generation");
+        assert_eq!(binding.route_kind, CapabilityRouteKind::ImageGeneration);
+        assert_eq!(binding.output_artifact, ModelModality::Image);
+
+        let image_to_image_tool = MiniMaxImageToImageTool::default();
+        let image_to_image = image_to_image_tool
+            .descriptor()
+            .service_binding
+            .as_ref()
+            .expect("image-to-image tool should declare service binding");
+        assert_eq!(image_to_image.operation_id, "minimax.image_generation");
+    }
+
+    #[test]
+    fn minimax_video_tools_have_video_generation_bindings() {
+        let generation = MiniMaxTextToVideoTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("video generation tool should declare service binding");
+        assert_eq!(generation.operation_id, "minimax.video_generation");
+        assert_eq!(generation.route_kind, CapabilityRouteKind::VideoGeneration);
+
+        let query = MiniMaxVideoGenerationQueryTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("video query tool should declare service binding");
+        assert_eq!(query.operation_id, "minimax.video_generation.query");
+        assert_eq!(query.route_kind, CapabilityRouteKind::VideoGeneration);
+    }
+
+    #[test]
+    fn minimax_tts_tools_have_text_to_speech_bindings() {
+        let binding = MiniMaxTextToSpeechTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("tts tool should declare service binding");
+        assert_eq!(binding.operation_id, "minimax.text_to_speech.sync");
+        assert_eq!(binding.route_kind, CapabilityRouteKind::TextToSpeech);
+        assert_eq!(binding.output_artifact, ModelModality::Audio);
+    }
+
+    #[test]
+    fn adapter_availability_reports_runtime_support_from_descriptors() {
+        let registry = ToolRegistryBuilder::new()
+            .with_builtin_toolset(BuiltinToolset::Default)
+            .build()
+            .expect("default tool registry should build");
+        let availability =
+            provider_service_adapter_availability_from_snapshot(&registry.snapshot());
+
+        assert!(availability
+            .bindings
+            .iter()
+            .any(|binding| binding.operation_id == "minimax.image_generation"));
+        assert!(availability
+            .bindings
+            .iter()
+            .any(|binding| binding.operation_id == "minimax.music_generation"));
+    }
+
+    #[test]
+    fn adapter_availability_does_not_report_catalog_only_operations() {
+        let registry = ToolRegistryBuilder::new()
+            .with_builtin_toolset(BuiltinToolset::Default)
+            .build()
+            .expect("default tool registry should build");
+        let availability =
+            provider_service_adapter_availability_from_snapshot(&registry.snapshot());
+
+        assert!(!availability
+            .bindings
+            .iter()
+            .any(|binding| binding.operation_id == "minimax.responses"));
+        assert!(!availability
+            .bindings
+            .iter()
+            .any(|binding| binding.operation_id == "minimax.files.upload"));
+    }
+
+    #[test]
+    fn minimax_music_tool_has_music_generation_binding() {
+        let binding = MiniMaxMusicGenerationTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("music tool should declare service binding");
+        assert_eq!(binding.operation_id, "minimax.music_generation");
+        assert_eq!(binding.route_kind, CapabilityRouteKind::MusicGeneration);
+    }
+}

@@ -38,9 +38,9 @@ use harness_contracts::{
     InteractivityLevel, JournalOffset, ManifestOriginRef, ManifestValidationFailedEvent,
     McpServerId, Message, MessageContent, MessageId, MessagePart, MessageRole, ModelModality,
     PermissionError, PermissionMode, PluginCapabilitiesSummary, PluginLifecycleStateDiscriminant,
-    PluginLoadedEvent, PluginRejectedEvent, RedactPatternSet, RedactRules, RedactScope, Redactor,
-    RejectionReason, RunId, SessionError, SessionId, TenantId, ToolCapability, ToolSearchMode,
-    TrustLevel, TurnInput,
+    PluginLoadedEvent, PluginRejectedEvent, ProviderCapabilityRouteSettings, RedactPatternSet,
+    RedactRules, RedactScope, Redactor, RejectionReason, RunId, SessionError, SessionId, TenantId,
+    ToolCapability, ToolSearchMode, TrustLevel, TurnInput,
 };
 #[cfg(feature = "sqlite-store")]
 use harness_contracts::{
@@ -5327,6 +5327,30 @@ fn filter_unavailable_tools(
         }
     }
     filter
+}
+
+pub fn filter_unrouted_service_tools(
+    filter: &mut ToolPoolFilter,
+    snapshot: &ToolRegistrySnapshot,
+    routes: &ProviderCapabilityRouteSettings,
+) {
+    for descriptor in snapshot.as_descriptors() {
+        let Some(binding) = descriptor.service_binding.as_ref() else {
+            continue;
+        };
+        let routed = routes.routes.iter().any(|route| {
+            route.enabled
+                && route.kind == binding.route_kind
+                && route.provider_id == binding.provider_id
+                && route
+                    .operation_ids
+                    .iter()
+                    .any(|operation_id| operation_id == &binding.operation_id)
+        });
+        if !routed {
+            filter.denylist.insert(descriptor.name.clone());
+        }
+    }
 }
 
 fn apply_tenant_tool_filter(filter: &mut ToolPoolFilter, policy: &TenantPolicy) {

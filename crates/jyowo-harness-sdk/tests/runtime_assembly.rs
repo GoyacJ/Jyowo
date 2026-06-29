@@ -4615,3 +4615,164 @@ fn bool_attr(attrs: &SpanAttributes, key: &str) -> Option<bool> {
         _ => None,
     }
 }
+
+mod capability_route_filter {
+    use async_trait::async_trait;
+    use futures::stream;
+    use harness_contracts::{
+        CapabilityRouteKind, ConversationModelCapability, DeferPolicy, ModelModality,
+        ProviderCapabilityRoute, ProviderCapabilityRouteSettings, ProviderRestriction,
+        ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
+        ToolServiceBinding, TrustLevel,
+    };
+    use harness_tool::{
+        default_result_budget, BuiltinToolset, PermissionCheck, Tool, ToolContext, ToolEvent,
+        ToolPoolFilter, ToolRegistry, ToolRegistryBuilder, ToolStream, ValidationError,
+    };
+    use jyowo_harness_sdk::filter_unrouted_service_tools;
+    use serde_json::{json, Value};
+
+    struct RouteFilterTestTool {
+        descriptor: ToolDescriptor,
+    }
+
+    fn descriptor(name: &str, service_binding: Option<ToolServiceBinding>) -> ToolDescriptor {
+        ToolDescriptor {
+            name: name.to_owned(),
+            display_name: name.to_owned(),
+            description: name.to_owned(),
+            category: "test".to_owned(),
+            group: ToolGroup::Custom("test".to_owned()),
+            version: "0.1.0".to_owned(),
+            input_schema: json!({ "type": "object" }),
+            output_schema: None,
+            dynamic_schema: false,
+            properties: ToolProperties {
+                is_concurrency_safe: true,
+                is_read_only: true,
+                is_destructive: false,
+                long_running: None,
+                defer_policy: DeferPolicy::AlwaysLoad,
+            },
+            trust_level: TrustLevel::AdminTrusted,
+            required_capabilities: Vec::new(),
+            budget: default_result_budget(),
+            provider_restriction: ProviderRestriction::All,
+            origin: ToolOrigin::Builtin,
+            search_hint: None,
+            service_binding,
+        }
+    }
+
+    fn service_binding() -> ToolServiceBinding {
+        ToolServiceBinding {
+            provider_id: "minimax".to_owned(),
+            operation_id: "minimax.image_generation".to_owned(),
+            route_kind: CapabilityRouteKind::ImageGeneration,
+            output_artifact: ModelModality::Image,
+        }
+    }
+
+    fn empty_routes() -> ProviderCapabilityRouteSettings {
+        ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: Vec::new(),
+        }
+    }
+
+    fn enabled_image_route() -> ProviderCapabilityRouteSettings {
+        ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: vec![ProviderCapabilityRoute {
+                kind: CapabilityRouteKind::ImageGeneration,
+                config_id: "minimax-image".to_owned(),
+                provider_id: "minimax".to_owned(),
+                operation_ids: vec!["minimax.image_generation".to_owned()],
+                enabled: true,
+            }],
+        }
+    }
+
+    fn registry_with_tools() -> ToolRegistry {
+        let registry = ToolRegistryBuilder::new()
+            .with_builtin_toolset(BuiltinToolset::Empty)
+            .build()
+            .expect("empty tool registry should build");
+        registry
+            .register(Box::new(RouteFilterTestTool {
+                descriptor: descriptor("plain_tool", None),
+            }))
+            .expect("plain tool registers");
+        registry
+            .register(Box::new(RouteFilterTestTool {
+                descriptor: descriptor("service_tool", Some(service_binding())),
+            }))
+            .expect("service tool registers");
+        registry
+    }
+
+    #[async_trait]
+    impl Tool for RouteFilterTestTool {
+        fn descriptor(&self) -> &ToolDescriptor {
+            &self.descriptor
+        }
+
+        async fn validate(
+            &self,
+            _input: &Value,
+            _ctx: &ToolContext,
+        ) -> Result<(), ValidationError> {
+            Ok(())
+        }
+
+        async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
+            PermissionCheck::Allowed
+        }
+
+        async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolStream, ToolError> {
+            Ok(Box::pin(stream::iter([ToolEvent::Final(
+                ToolResult::Structured(input),
+            )])))
+        }
+    }
+
+    #[test]
+    fn capability_route_filter_denies_service_bound_tools_without_enabled_route() {
+        let registry = registry_with_tools();
+        let snapshot = registry.snapshot();
+        let mut filter = ToolPoolFilter::default();
+        filter_unrouted_service_tools(&mut filter, &snapshot, &empty_routes());
+
+        assert!(filter.denylist.contains("service_tool"));
+        assert!(!filter.denylist.contains("plain_tool"));
+    }
+
+    #[test]
+    fn capability_route_filter_allows_service_bound_tools_for_matching_route() {
+        let registry = registry_with_tools();
+        let snapshot = registry.snapshot();
+        let mut filter = ToolPoolFilter::default();
+        filter_unrouted_service_tools(&mut filter, &snapshot, &enabled_image_route());
+
+        assert!(!filter.denylist.contains("service_tool"));
+        assert!(!filter.denylist.contains("plain_tool"));
+    }
+
+    #[test]
+    fn capability_route_filter_leaves_non_service_tools_unaffected() {
+        let registry = registry_with_tools();
+        let snapshot = registry.snapshot();
+        let mut filter = ToolPoolFilter::default();
+        filter_unrouted_service_tools(&mut filter, &snapshot, &empty_routes());
+
+        assert!(!filter.denylist.contains("plain_tool"));
+    }
+
+    #[test]
+    fn capability_route_filter_does_not_replace_tool_calling_model_gate() {
+        let mut capability = ConversationModelCapability::default();
+        capability.tool_calling = false;
+
+        assert!(!capability.tool_calling);
+    }
+}

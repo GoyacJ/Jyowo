@@ -32,10 +32,11 @@ pub use error::HarnessError;
 #[cfg(feature = "stream-permission")]
 pub use harness::StreamPermissionRuntime;
 pub use harness::{
-    ConversationEventsPage, ConversationEventsPageRequest, ConversationSession,
-    ConversationSessionSummary, ConversationTurnReceipt, ConversationTurnRequest, Harness,
-    HarnessOptions, HarnessSamplingProvider, McpConfig, RuntimeSkillParameter, RuntimeSkillSummary,
-    RuntimeSkillView, TenantPolicy, WorkspaceCreateRequest,
+    filter_unrouted_service_tools, ConversationEventsPage, ConversationEventsPageRequest,
+    ConversationSession, ConversationSessionSummary, ConversationTurnReceipt,
+    ConversationTurnRequest, Harness, HarnessOptions, HarnessSamplingProvider, McpConfig,
+    RuntimeSkillParameter, RuntimeSkillSummary, RuntimeSkillView, TenantPolicy,
+    WorkspaceCreateRequest,
 };
 pub use harness_journal::{
     AuditFilter, AuditOrder, AuditPage, AuditQuery, AuditRecord, AuditScope,

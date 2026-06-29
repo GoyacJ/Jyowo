@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    canonical_mcp_tool_name, parse_canonical_mcp_tool_name, validate_tool_name, ShadowReason,
-    ToolCapability, ToolDescriptor, ToolGroup, ToolOrigin, TrustLevel,
+    canonical_mcp_tool_name, parse_canonical_mcp_tool_name, validate_tool_name,
+    ProviderServiceAdapterAvailability, ShadowReason, ToolCapability, ToolDescriptor, ToolGroup,
+    ToolOrigin, ToolServiceBinding, TrustLevel,
 };
 use parking_lot::RwLock;
 use serde_json::Value;
@@ -187,6 +188,10 @@ impl ToolRegistry {
     pub fn shadowed(&self) -> Vec<ShadowedRegistration> {
         self.inner.read().shadowed.clone()
     }
+
+    pub fn provider_service_adapter_availability(&self) -> ProviderServiceAdapterAvailability {
+        provider_service_adapter_availability_from_snapshot(&self.snapshot())
+    }
 }
 
 struct PluginOriginTool {
@@ -291,6 +296,36 @@ impl ToolRegistrySnapshot {
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+}
+
+pub fn tool_service_bindings_from_snapshot(
+    snapshot: &ToolRegistrySnapshot,
+) -> Vec<ToolServiceBinding> {
+    let mut bindings = Vec::new();
+
+    for descriptor in snapshot.as_descriptors() {
+        let Some(binding) = descriptor.service_binding.as_ref() else {
+            continue;
+        };
+        if bindings.iter().any(|existing: &ToolServiceBinding| {
+            existing.provider_id == binding.provider_id
+                && existing.operation_id == binding.operation_id
+                && existing.route_kind == binding.route_kind
+        }) {
+            continue;
+        }
+        bindings.push(binding.clone());
+    }
+
+    bindings
+}
+
+pub fn provider_service_adapter_availability_from_snapshot(
+    snapshot: &ToolRegistrySnapshot,
+) -> ProviderServiceAdapterAvailability {
+    ProviderServiceAdapterAvailability {
+        bindings: tool_service_bindings_from_snapshot(snapshot),
     }
 }
 

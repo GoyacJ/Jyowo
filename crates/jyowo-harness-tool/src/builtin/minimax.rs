@@ -4,9 +4,10 @@ use bytes::Bytes;
 use chrono::Utc;
 use futures::{stream, StreamExt as _};
 use harness_contracts::{
-    BlobMeta, BlobRetention, BlobWriterCap, BudgetMetric, DecisionScope, PermissionSubject,
-    ProviderCredential, ProviderCredentialResolveContext, ProviderCredentialResolverCap,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult, ToolResultPart,
+    BlobMeta, BlobRetention, BlobWriterCap, BudgetMetric, CapabilityRouteKind, DecisionScope,
+    ModelModality, PermissionSubject, ProviderCredential, ProviderCredentialResolveContext,
+    ProviderCredentialResolverCap, ToolCapability, ToolDescriptor, ToolError, ToolGroup,
+    ToolResult, ToolResultPart, ToolServiceBinding,
 };
 use harness_model::MinimaxApiClient;
 use harness_permission::PermissionCheck;
@@ -21,6 +22,16 @@ const MAX_MINIMAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 
 macro_rules! minimax_tool {
     ($type_name:ident, $name:literal, $display_name:literal, $description:literal, $operation:ident) => {
+        minimax_tool!(
+            $type_name,
+            $name,
+            $display_name,
+            $description,
+            $operation,
+            None
+        );
+    };
+    ($type_name:ident, $name:literal, $display_name:literal, $description:literal, $operation:ident, $binding:expr) => {
         #[derive(Clone)]
         pub struct $type_name {
             descriptor: ToolDescriptor,
@@ -29,7 +40,7 @@ macro_rules! minimax_tool {
         impl Default for $type_name {
             fn default() -> Self {
                 Self {
-                    descriptor: descriptor($name, $display_name, $description),
+                    descriptor: descriptor($name, $display_name, $description, $binding),
                 }
             }
         }
@@ -68,6 +79,9 @@ macro_rules! minimax_tool {
 
 macro_rules! minimax_image_tool {
     ($type_name:ident, $name:literal, $display_name:literal, $description:literal) => {
+        minimax_image_tool!($type_name, $name, $display_name, $description, None);
+    };
+    ($type_name:ident, $name:literal, $display_name:literal, $description:literal, $binding:expr) => {
         #[derive(Clone)]
         pub struct $type_name {
             descriptor: ToolDescriptor,
@@ -76,7 +90,7 @@ macro_rules! minimax_image_tool {
         impl Default for $type_name {
             fn default() -> Self {
                 Self {
-                    descriptor: image_descriptor($name, $display_name, $description),
+                    descriptor: image_descriptor($name, $display_name, $description, $binding),
                 }
             }
         }
@@ -113,6 +127,16 @@ macro_rules! minimax_image_tool {
 
 macro_rules! minimax_task_query_tool {
     ($type_name:ident, $name:literal, $display_name:literal, $description:literal, $operation:ident) => {
+        minimax_task_query_tool!(
+            $type_name,
+            $name,
+            $display_name,
+            $description,
+            $operation,
+            None
+        );
+    };
+    ($type_name:ident, $name:literal, $display_name:literal, $description:literal, $operation:ident, $binding:expr) => {
         #[derive(Clone)]
         pub struct $type_name {
             descriptor: ToolDescriptor,
@@ -121,7 +145,7 @@ macro_rules! minimax_task_query_tool {
         impl Default for $type_name {
             fn default() -> Self {
                 Self {
-                    descriptor: descriptor($name, $display_name, $description),
+                    descriptor: descriptor($name, $display_name, $description, $binding),
                 }
             }
         }
@@ -170,7 +194,7 @@ macro_rules! minimax_string_arg_tool {
         impl Default for $type_name {
             fn default() -> Self {
                 Self {
-                    descriptor: descriptor($name, $display_name, $description),
+                    descriptor: descriptor($name, $display_name, $description, None),
                 }
             }
         }
@@ -213,132 +237,227 @@ minimax_image_tool!(
     MiniMaxTextToImageTool,
     "MiniMaxTextToImage",
     "MiniMax text to image",
-    "Generate an image with MiniMax image generation."
+    "Generate an image with MiniMax image generation.",
+    Some(service_binding(
+        "minimax.image_generation",
+        CapabilityRouteKind::ImageGeneration,
+        ModelModality::Image,
+    ))
 );
 minimax_image_tool!(
     MiniMaxImageToImageTool,
     "MiniMaxImageToImage",
     "MiniMax image to image",
-    "Generate or transform an image with MiniMax image generation."
+    "Generate or transform an image with MiniMax image generation.",
+    Some(service_binding(
+        "minimax.image_generation",
+        CapabilityRouteKind::ImageGeneration,
+        ModelModality::Image,
+    ))
 );
 minimax_tool!(
     MiniMaxTextToVideoTool,
     "MiniMaxTextToVideo",
     "MiniMax text to video",
     "Create a MiniMax video generation task from text.",
-    video_generation
+    video_generation,
+    Some(service_binding(
+        "minimax.video_generation",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
 minimax_tool!(
     MiniMaxImageToVideoTool,
     "MiniMaxImageToVideo",
     "MiniMax image to video",
     "Create a MiniMax video generation task from an image reference.",
-    video_generation
+    video_generation,
+    Some(service_binding(
+        "minimax.video_generation",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
 minimax_tool!(
     MiniMaxFirstLastFrameToVideoTool,
     "MiniMaxFirstLastFrameToVideo",
     "MiniMax first last frame video",
     "Create a MiniMax video task from first and last frame references.",
-    video_generation
+    video_generation,
+    Some(service_binding(
+        "minimax.video_generation",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
 minimax_tool!(
     MiniMaxSubjectReferenceVideoTool,
     "MiniMaxSubjectReferenceVideo",
     "MiniMax subject reference video",
     "Create a MiniMax video task with subject reference inputs.",
-    video_generation
+    video_generation,
+    Some(service_binding(
+        "minimax.video_generation",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
 minimax_task_query_tool!(
     MiniMaxVideoGenerationQueryTool,
     "MiniMaxVideoGenerationQuery",
     "MiniMax video generation query",
     "Query a MiniMax video generation task.",
-    query_video_generation
+    query_video_generation,
+    Some(service_binding(
+        "minimax.video_generation.query",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
 minimax_tool!(
     MiniMaxVideoTemplateTool,
     "MiniMaxVideoTemplate",
     "MiniMax video template",
     "Create a MiniMax video template generation task.",
-    video_template_generation
+    video_template_generation,
+    Some(service_binding(
+        "minimax.video_template",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
 minimax_task_query_tool!(
     MiniMaxVideoTemplateQueryTool,
     "MiniMaxVideoTemplateQuery",
     "MiniMax video template query",
     "Query a MiniMax video template generation task.",
-    query_video_template_generation
+    query_video_template_generation,
+    Some(service_binding(
+        "minimax.video_template.query",
+        CapabilityRouteKind::VideoGeneration,
+        ModelModality::Video,
+    ))
 );
 minimax_tool!(
     MiniMaxTextToSpeechTool,
     "MiniMaxTextToSpeech",
     "MiniMax text to speech",
     "Generate speech with MiniMax synchronous TTS.",
-    text_to_speech
+    text_to_speech,
+    Some(service_binding(
+        "minimax.text_to_speech.sync",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Audio,
+    ))
 );
 minimax_tool!(
     MiniMaxTextToSpeechAsyncTool,
     "MiniMaxTextToSpeechAsync",
     "MiniMax async text to speech",
     "Create a MiniMax async long-form TTS task.",
-    text_to_speech_async
+    text_to_speech_async,
+    Some(service_binding(
+        "minimax.text_to_speech.async",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Audio,
+    ))
 );
 minimax_task_query_tool!(
     MiniMaxTextToSpeechAsyncQueryTool,
     "MiniMaxTextToSpeechAsyncQuery",
     "MiniMax async text to speech query",
     "Query a MiniMax async TTS task.",
-    query_text_to_speech_async
+    query_text_to_speech_async,
+    Some(service_binding(
+        "minimax.text_to_speech.async.query",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Audio,
+    ))
 );
 minimax_tool!(
     MiniMaxVoiceCloneTool,
     "MiniMaxVoiceClone",
     "MiniMax voice clone",
     "Clone a voice with MiniMax voice cloning.",
-    voice_clone
+    voice_clone,
+    Some(service_binding(
+        "minimax.voice_clone",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Audio,
+    ))
 );
 minimax_tool!(
     MiniMaxVoiceDesignTool,
     "MiniMaxVoiceDesign",
     "MiniMax voice design",
     "Design a voice with MiniMax voice design.",
-    voice_design
+    voice_design,
+    Some(service_binding(
+        "minimax.voice_design",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Audio,
+    ))
 );
 minimax_tool!(
     MiniMaxListVoicesTool,
     "MiniMaxListVoices",
     "MiniMax list voices",
     "List MiniMax voices.",
-    get_voice
+    get_voice,
+    Some(service_binding(
+        "minimax.voice_list",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Text,
+    ))
 );
 minimax_tool!(
     MiniMaxDeleteVoiceTool,
     "MiniMaxDeleteVoice",
     "MiniMax delete voice",
     "Delete a MiniMax voice.",
-    delete_voice
+    delete_voice,
+    Some(service_binding(
+        "minimax.voice_delete",
+        CapabilityRouteKind::TextToSpeech,
+        ModelModality::Text,
+    ))
 );
 minimax_tool!(
     MiniMaxLyricsGenerationTool,
     "MiniMaxLyricsGeneration",
     "MiniMax lyrics generation",
     "Generate lyrics with MiniMax music APIs.",
-    lyrics_generation
+    lyrics_generation,
+    Some(service_binding(
+        "minimax.lyrics_generation",
+        CapabilityRouteKind::MusicGeneration,
+        ModelModality::Text,
+    ))
 );
 minimax_tool!(
     MiniMaxMusicGenerationTool,
     "MiniMaxMusicGeneration",
     "MiniMax music generation",
     "Generate music with MiniMax music APIs.",
-    music_generation
+    music_generation,
+    Some(service_binding(
+        "minimax.music_generation",
+        CapabilityRouteKind::MusicGeneration,
+        ModelModality::Audio,
+    ))
 );
 minimax_tool!(
     MiniMaxMusicCoverPreprocessTool,
     "MiniMaxMusicCoverPreprocess",
     "MiniMax music cover preprocess",
     "Preprocess source audio for MiniMax music cover generation.",
-    music_cover_preprocess
+    music_cover_preprocess,
+    Some(service_binding(
+        "minimax.music_cover_preprocess",
+        CapabilityRouteKind::MusicGeneration,
+        ModelModality::Audio,
+    ))
 );
 minimax_tool!(
     MiniMaxResponsesTool,
@@ -381,6 +500,7 @@ impl Default for MiniMaxFileUploadTool {
                 "MiniMaxFileUpload",
                 "MiniMax file upload",
                 "Upload a file to MiniMax files API.",
+                None,
             ),
         }
     }
@@ -463,6 +583,7 @@ impl Default for MiniMaxFileListTool {
                 "MiniMaxFileList",
                 "MiniMax file list",
                 "List MiniMax files.",
+                None,
             ),
         }
     }
@@ -506,6 +627,7 @@ impl Default for MiniMaxModelsListTool {
                 "MiniMaxModelsList",
                 "MiniMax models list",
                 "List MiniMax models.",
+                None,
             ),
         }
     }
@@ -545,6 +667,7 @@ impl Default for MiniMaxAnthropicModelsListTool {
                 "MiniMaxAnthropicModelsList",
                 "MiniMax Anthropic models list",
                 "List MiniMax Anthropic-compatible models.",
+                None,
             ),
         }
     }
@@ -1045,8 +1168,26 @@ fn minimax_base_url_host(base_url: Option<&str>) -> Result<(String, Option<u16>)
     Ok((host.to_owned(), url.port()))
 }
 
-fn descriptor(name: &str, display_name: &str, description: &str) -> ToolDescriptor {
-    super::descriptor(
+fn service_binding(
+    operation_id: &str,
+    route_kind: CapabilityRouteKind,
+    output_artifact: ModelModality,
+) -> ToolServiceBinding {
+    ToolServiceBinding {
+        provider_id: MINIMAX_PROVIDER_ID.to_owned(),
+        operation_id: operation_id.to_owned(),
+        route_kind,
+        output_artifact,
+    }
+}
+
+fn descriptor(
+    name: &str,
+    display_name: &str,
+    description: &str,
+    service_binding: Option<ToolServiceBinding>,
+) -> ToolDescriptor {
+    super::descriptor_with_binding(
         name,
         display_name,
         description,
@@ -1065,11 +1206,17 @@ fn descriptor(name: &str, display_name: &str, description: &str) -> ToolDescript
                 }
             }),
         ),
+        service_binding,
     )
 }
 
-fn image_descriptor(name: &str, display_name: &str, description: &str) -> ToolDescriptor {
-    super::descriptor(
+fn image_descriptor(
+    name: &str,
+    display_name: &str,
+    description: &str,
+    service_binding: Option<ToolServiceBinding>,
+) -> ToolDescriptor {
+    super::descriptor_with_binding(
         name,
         display_name,
         description,
@@ -1091,6 +1238,7 @@ fn image_descriptor(name: &str, display_name: &str, description: &str) -> ToolDe
                 }
             }),
         ),
+        service_binding,
     )
 }
 
