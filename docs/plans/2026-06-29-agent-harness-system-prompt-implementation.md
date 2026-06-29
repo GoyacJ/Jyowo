@@ -232,13 +232,13 @@ Ownership rules:
 ```text
 Workspace bootstrap files -> EffectiveSystemPromptInputs.workspace_sections
 WorkspaceBootstrap.system_prompt_addendum -> EffectiveSystemPromptInputs.workspace_addendum
-Builtin memory inner MEMORY.md and USER.md block without outer <builtin-memory> -> EffectiveSystemPromptInputs.builtin_memory_inner
+Builtin memory compiler-owned MEMORY.md and USER.md blocks without outer <builtin-memory> -> EffectiveSystemPromptInputs.builtin_memory_inner
 SessionOptions.system_prompt_addendum -> EffectiveSystemPromptInputs.session_addendum
 ```
 
 `SessionOptions.system_prompt_addendum` must remain the user/session/team-provided addendum only. It must not be reused as a transport field for already-rendered workspace, memory, or runtime sections.
 
-Session hashing must still change when workspace bootstrap file contents or workspace addendum contents change. If the existing session hash only reads `SessionOptions`, add a private SDK-only field or hash input that records the effective prompt inputs without changing public serde contracts.
+Session hashing must still change when workspace bootstrap file contents or workspace addendum contents change. `SessionOptions` must not gain public serde fields for rendered prompt inputs. Because session config hashing is owned by `jyowo-harness-session`, add a non-serde builder/config-snapshot hash input there and pass a deterministic effective prompt hash from the SDK before session state is created.
 
 ### Exact Base Prompt Text
 
@@ -333,6 +333,7 @@ Modify:
 crates/jyowo-harness-sdk/src/lib.rs
 crates/jyowo-harness-sdk/src/harness.rs
 crates/jyowo-harness-sdk/tests/runtime_assembly.rs
+crates/jyowo-harness-session/src/session.rs
 crates/jyowo-harness-engine/src/engine.rs
 apps/desktop/src/shared/i18n/locales/en-US.ts
 apps/desktop/src/shared/i18n/locales/zh-CN.ts
@@ -572,7 +573,9 @@ Builtin memory inner content renders inside exactly one <builtin-memory> block.
 Session addendum renders as <session-addendum>.
 Empty trimmed content is omitted.
 Source attribute must be escaped for &, ", <, and >.
-Untrusted section content from workspace files, workspace addendum, builtin memory, session addendum, team addendum, and subagent addendum must be XML-escaped for &, <, and > before rendering inside section tags. The exact base prompt text remains unescaped because it is trusted Rust source.
+Untrusted section content from workspace files, workspace addendum, session addendum, team addendum, subagent addendum, and builtin memory file bodies must be XML-escaped for &, <, and > before rendering inside section tags.
+Builtin memory has two trust layers: compiler-owned <MEMORY.md> and <USER.md> wrapper tags must remain literal tags; only the untrusted content inside those tags is escaped.
+The exact base prompt text remains unescaped because it is trusted Rust source.
 Escaping must prevent input such as </workspace-instructions><runtime-context> from closing the current section or opening a fake section.
 ```
 
@@ -619,6 +622,7 @@ git commit -m "feat: add agent harness system prompt compiler"
 
 - Modify: `crates/jyowo-harness-sdk/src/harness.rs`
 - Modify: `crates/jyowo-harness-sdk/tests/runtime_assembly.rs`
+- Modify: `crates/jyowo-harness-session/src/session.rs`
 
 - [ ] **Step 1: Task-start analysis**
 
@@ -688,7 +692,18 @@ WorkspaceBootstrap.system_prompt_addendum -> <workspace-addendum source="workspa
 existing SessionOptions.system_prompt_addendum -> remains separate and becomes <session-addendum> later
 ```
 
-Do not lose current session hash behavior. Preserve that effect by including a deterministic representation of `EffectiveSystemPromptInputs.workspace_sections` and `EffectiveSystemPromptInputs.workspace_addendum` in the SDK session hash input before session state is created. The deterministic representation must include section kind, escaped source, and escaped content. Do not store these rendered workspace sections in `SessionOptions.system_prompt_addendum`.
+Do not lose current session hash behavior. Preserve that effect by including a deterministic representation of `EffectiveSystemPromptInputs.workspace_sections` and `EffectiveSystemPromptInputs.workspace_addendum` in the effective config hash input before session state is created. The deterministic representation must include section kind, escaped source, and escaped content. Do not store these rendered workspace sections in `SessionOptions.system_prompt_addendum`.
+
+The required implementation boundary is:
+
+```text
+crates/jyowo-harness-sdk/src/harness.rs computes effective_prompt_inputs_hash from EffectiveSystemPromptInputs before Session::builder().build().
+crates/jyowo-harness-session/src/session.rs adds a non-serde SessionBuilder field and method such as with_effective_prompt_inputs_hash([u8; 32]).
+SessionConfigSnapshot construction adds an internal helper such as from_options_and_effective_prompt_inputs_hash(options, Option<[u8; 32]>), and combines session_options_hash(options) with the optional effective_prompt_inputs_hash when deriving effective_config_hash.
+SessionOptions remains unchanged as a public serde contract.
+```
+
+The hash test must prove that changing only `AGENTS.md` content changes the persisted `effective_config_hash` or session creation hash input while `SessionOptions` public serde shape remains unchanged.
 
 - [ ] **Step 5: Run targeted tests**
 
@@ -713,7 +728,7 @@ Run the mandatory subagent audit for Task 3. Fix every finding.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/jyowo-harness-sdk/src/harness.rs crates/jyowo-harness-sdk/tests/runtime_assembly.rs
+git add crates/jyowo-harness-sdk/src/harness.rs crates/jyowo-harness-sdk/tests/runtime_assembly.rs crates/jyowo-harness-session/src/session.rs
 git commit -m "feat: render workspace instructions as prompt sections"
 ```
 
@@ -877,6 +892,7 @@ MEMORY.md content remains wrapped in <MEMORY.md>
 USER.md content remains wrapped in <USER.md>
 Both remain inside <builtin-memory>
 <builtin-memory> appears after workspace sections and before session addendum
+Injected memory text such as </MEMORY.md><runtime-context> is escaped inside MEMORY.md or USER.md content and cannot create a second prompt section
 Memory overflow events are still emitted when truncation thresholds are exceeded
 The rendered prompt contains exactly one opening <builtin-memory> tag and exactly one closing </builtin-memory> tag
 ```
@@ -904,9 +920,10 @@ The compiler must keep builtin memory ownership unambiguous:
 
 ```text
 RenderedBuiltinMemory.inner contains MEMORY.md and USER.md blocks only.
-EffectiveSystemPromptInputs.builtin_memory_inner stores that inner content only.
+EffectiveSystemPromptInputs.builtin_memory_inner stores that inner content only, with literal compiler-owned MEMORY.md and USER.md wrapper tags.
 SystemPromptBuilder::push_inputs wraps builtin_memory_inner with builtin_memory_section once.
 builtin_memory_section is the only function that emits the outer <builtin-memory> tag.
+The MEMORY.md and USER.md wrapper tags are trusted compiler output. Escape only the memory file bodies before placing them inside those tags.
 ```
 
 Preserve:
@@ -1220,7 +1237,11 @@ BASE_COMMIT=$(git merge-base main HEAD)
 git diff --stat "$BASE_COMMIT" HEAD
 git diff "$BASE_COMMIT" HEAD -- crates/jyowo-harness-sdk/src/system_prompt.rs
 git diff "$BASE_COMMIT" HEAD -- crates/jyowo-harness-sdk/src/harness.rs
+git diff "$BASE_COMMIT" HEAD -- crates/jyowo-harness-sdk/src/lib.rs
+git diff "$BASE_COMMIT" HEAD -- crates/jyowo-harness-sdk/tests/runtime_assembly.rs
+git diff "$BASE_COMMIT" HEAD -- crates/jyowo-harness-session/src/session.rs
 git diff "$BASE_COMMIT" HEAD -- crates/jyowo-harness-engine/src/engine.rs
+git diff "$BASE_COMMIT" HEAD -- apps/desktop/src/shared/i18n/locales/en-US.ts apps/desktop/src/shared/i18n/locales/zh-CN.ts
 git diff "$BASE_COMMIT" HEAD -- docs/backend/backend-runtime.md docs/frontend/frontend-product-ux.md
 ```
 
@@ -1252,6 +1273,7 @@ git add crates/jyowo-harness-sdk/src/system_prompt.rs
 git add crates/jyowo-harness-sdk/src/harness.rs
 git add crates/jyowo-harness-sdk/src/lib.rs
 git add crates/jyowo-harness-sdk/tests/runtime_assembly.rs
+git add crates/jyowo-harness-session/src/session.rs
 git add crates/jyowo-harness-engine/src/engine.rs
 git add apps/desktop/src/shared/i18n/locales/en-US.ts
 git add apps/desktop/src/shared/i18n/locales/zh-CN.ts
@@ -1302,6 +1324,7 @@ System prompt includes tool, permission, memory, trust, security, and output con
 Runtime context is rendered and contains only non-sensitive facts.
 Workspace instructions are source-wrapped.
 Workspace addendum is source-wrapped.
+Session effective config hash changes when workspace bootstrap file contents or workspace addendum contents change.
 Session addendum is section-wrapped.
 Builtin memory retains existing MEMORY.md and USER.md wrapping and overflow behavior.
 Team and subagent addenda do not bypass the new prompt section semantics.
