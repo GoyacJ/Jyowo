@@ -396,7 +396,8 @@ install_skill_from_catalog(
 // The shell also emits skill_catalog_install_progress while the task runs.
 // Event delivery failure is telemetry-only and must not alter install policy.
 set_execution_settings(
-  permission_mode: PermissionMode
+  permission_mode: PermissionMode,
+  context_compression_trigger_ratio: f32
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload>
 set_conversation_model_config(
   conversation_id: String,

@@ -29,12 +29,14 @@ describe('ExecutionSettings', () => {
   it('loads and saves permission mode', async () => {
     const setExecutionSettings = vi.fn(async () => ({
       autoModeAvailable: false,
+      contextCompressionTriggerRatio: 0.8,
       permissionMode: 'bypass_permissions' as const,
     }))
     const commandClient = {
       ...createMockCommandClient(),
       getExecutionSettings: async () => ({
         autoModeAvailable: false,
+        contextCompressionTriggerRatio: 0.8,
         permissionMode: 'default' as const,
       }),
       setExecutionSettings,
@@ -47,7 +49,42 @@ describe('ExecutionSettings', () => {
     fireEvent.click(screen.getByLabelText(/绕过/i))
 
     await waitFor(() => {
-      expect(setExecutionSettings).toHaveBeenCalledWith({ permissionMode: 'bypass_permissions' })
+      expect(setExecutionSettings).toHaveBeenCalledWith({
+        contextCompressionTriggerRatio: 0.8,
+        permissionMode: 'bypass_permissions',
+      })
+    })
+  })
+
+  it('loads and saves context compression trigger ratio', async () => {
+    const setExecutionSettings = vi.fn(async () => ({
+      autoModeAvailable: false,
+      contextCompressionTriggerRatio: 0.75,
+      permissionMode: 'default' as const,
+    }))
+    const commandClient = {
+      ...createMockCommandClient(),
+      getExecutionSettings: async () => ({
+        autoModeAvailable: false,
+        contextCompressionTriggerRatio: 0.8,
+        permissionMode: 'default' as const,
+      }),
+      setExecutionSettings,
+    } satisfies CommandClient
+
+    renderExecutionSettings(commandClient)
+
+    const ratioInput = await screen.findByLabelText(/上下文压缩触发比例/i)
+    expect(ratioInput).toHaveValue(80)
+
+    fireEvent.change(ratioInput, { target: { value: '75' } })
+    fireEvent.click(screen.getByRole('button', { name: /保存执行设置/i }))
+
+    await waitFor(() => {
+      expect(setExecutionSettings).toHaveBeenCalledWith({
+        contextCompressionTriggerRatio: 0.75,
+        permissionMode: 'default',
+      })
     })
   })
 
@@ -58,6 +95,7 @@ describe('ExecutionSettings', () => {
       createMockCommandClient({
         executionSettings: {
           autoModeAvailable: false,
+          contextCompressionTriggerRatio: 0.8,
           permissionMode: 'default',
         },
       }),

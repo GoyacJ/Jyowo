@@ -4755,6 +4755,7 @@ fn execution_settings_persist_permission_mode_for_session_options() {
     set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::BypassPermissions,
+            context_compression_trigger_ratio: 0.72,
         },
         &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
     )
@@ -4763,6 +4764,7 @@ fn execution_settings_persist_permission_mode_for_session_options() {
     let options = state.conversation_session_options(SessionId::new());
 
     assert_eq!(options.permission_mode, PermissionMode::BypassPermissions);
+    assert_eq!(options.context_compression_trigger_ratio, 0.72);
 }
 
 #[test]
@@ -4777,7 +4779,35 @@ fn get_execution_settings_defaults_to_standard_mode() {
     .expect("execution settings should load");
 
     assert_eq!(settings.permission_mode, PermissionMode::Default);
+    assert_eq!(settings.context_compression_trigger_ratio, 0.8);
     assert_eq!(settings.auto_mode_available, cfg!(feature = "auto-mode"));
+}
+
+#[test]
+fn set_execution_settings_rejects_invalid_context_compression_trigger_ratio() {
+    let workspace = unique_workspace("execution-settings-invalid-context-ratio");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let store = DesktopExecutionSettingsStore::new(workspace);
+
+    let low_error = set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            context_compression_trigger_ratio: 0.49,
+        },
+        &store,
+    )
+    .unwrap_err();
+    assert_eq!(low_error.code, "INVALID_PAYLOAD");
+
+    let high_error = set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            context_compression_trigger_ratio: 0.96,
+        },
+        &store,
+    )
+    .unwrap_err();
+    assert_eq!(high_error.code, "INVALID_PAYLOAD");
 }
 
 #[tokio::test(flavor = "current_thread")]

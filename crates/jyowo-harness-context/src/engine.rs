@@ -109,6 +109,11 @@ impl ContextEngine {
         &COMPACT_STAGE_ORDER
     }
 
+    #[must_use]
+    pub fn budget(&self) -> TokenBudget {
+        self.budget
+    }
+
     pub async fn compact(
         &self,
         ctx: &mut ContextBuffer,
@@ -489,6 +494,74 @@ impl ContextEngine {
             }),
         );
         let tokens_estimate = estimate_tokens(system.as_deref(), &buffer.active.history);
+        Ok(EmergencyCompactPrompt {
+            prompt: AssembledPrompt {
+                cache_breakpoints: self
+                    .select_cache_breakpoints(system.as_deref(), &buffer.active.history),
+                messages: buffer.active.history,
+                system,
+                tools_snapshot,
+                tokens_estimate,
+                budget_utilization: budget_utilization(
+                    tokens_estimate,
+                    self.budget.max_tokens_per_turn,
+                ),
+                events,
+            },
+            outcome,
+        })
+    }
+
+    pub async fn proactive_compact_prompt(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+        prompt: AssembledPrompt,
+        trigger_tokens: u64,
+    ) -> Result<EmergencyCompactPrompt, ContextError> {
+        let before_tokens = prompt
+            .tokens_estimate
+            .max(estimate_tokens(prompt.system.as_deref(), &prompt.messages));
+        let mut buffer = ContextBuffer::new(tenant_id, session_id);
+        buffer.frozen.system_header = prompt.system.clone().map(Arc::from);
+        buffer.frozen.tools_snapshot = Arc::new(crate::ContextToolSnapshot {
+            descriptors: prompt.tools_snapshot.clone(),
+        });
+        buffer.active.history = prompt.messages;
+        buffer.bookkeeping.estimated_tokens = before_tokens;
+        buffer.bookkeeping.budget_snapshot = self.budget;
+        buffer.rebuild_tool_use_pairs();
+        let (outcome, mut events) = self
+            .compact_internal(
+                &mut buffer,
+                CompactHint {
+                    estimated_tokens: before_tokens,
+                    target_tokens: Some(trigger_tokens.saturating_mul(9).saturating_div(10).max(1)),
+                },
+                true,
+            )
+            .await?;
+        events.insert(
+            0,
+            Event::ContextBudgetExceeded(ContextBudgetExceededEvent {
+                session_id,
+                budget_kind: BudgetKind::PerTurnTokens,
+                source: BudgetExceedanceSource::LocalEstimate,
+                requested: before_tokens,
+                max: trigger_tokens,
+                at: harness_contracts::now(),
+            }),
+        );
+        let tokens_estimate = estimate_tokens(
+            buffer.frozen.system_header.as_deref(),
+            &buffer.active.history,
+        );
+        let system = buffer
+            .frozen
+            .system_header
+            .as_ref()
+            .map(ToString::to_string);
+        let tools_snapshot = buffer.frozen.tools_snapshot.descriptors.clone();
         Ok(EmergencyCompactPrompt {
             prompt: AssembledPrompt {
                 cache_breakpoints: self

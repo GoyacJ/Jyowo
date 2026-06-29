@@ -1155,15 +1155,21 @@ impl ProviderSettingsStore for DesktopProviderSettingsStore {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ExecutionSettingsRecord {
     #[serde(default = "default_permission_mode")]
     pub permission_mode: PermissionMode,
+    #[serde(default = "default_context_compression_trigger_ratio")]
+    pub context_compression_trigger_ratio: f32,
 }
 
 fn default_permission_mode() -> PermissionMode {
     PermissionMode::Default
+}
+
+fn default_context_compression_trigger_ratio() -> f32 {
+    0.8
 }
 
 #[derive(Clone)]
@@ -1196,12 +1202,15 @@ impl DesktopExecutionSettingsStore {
                     remove_invalid_execution_settings_file(&settings_path)?;
                     Ok(ExecutionSettingsRecord {
                         permission_mode: PermissionMode::Default,
+                        context_compression_trigger_ratio:
+                            default_context_compression_trigger_ratio(),
                     })
                 }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok(ExecutionSettingsRecord {
                     permission_mode: PermissionMode::Default,
+                    context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
                 })
             }
             Err(error) => Err(runtime_operation_failed(format!(
@@ -1281,7 +1290,15 @@ fn ensure_execution_settings_record(
         _ => Err(invalid_payload(
             "permissionMode must be default, auto, or bypass_permissions".to_owned(),
         )),
+    }?;
+    if !(0.5..=0.95).contains(&record.context_compression_trigger_ratio)
+        || !record.context_compression_trigger_ratio.is_finite()
+    {
+        return Err(invalid_payload(
+            "contextCompressionTriggerRatio must be between 0.5 and 0.95".to_owned(),
+        ));
     }
+    Ok(())
 }
 
 fn auto_mode_available() -> bool {
@@ -2549,18 +2566,23 @@ impl DesktopRuntimeState {
         model_id: String,
         protocol: ModelProtocol,
     ) -> SessionOptions {
-        let permission_mode = self
-            .execution_settings_store
-            .load_record()
-            .map(|record| record.permission_mode)
-            .unwrap_or(PermissionMode::Default);
+        let execution_settings =
+            self.execution_settings_store
+                .load_record()
+                .unwrap_or(ExecutionSettingsRecord {
+                    permission_mode: PermissionMode::Default,
+                    context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
+                });
         SessionOptions::new(&self.workspace_root)
             .with_tenant_id(TenantId::SINGLE)
             .with_session_id(session_id)
             .with_interactivity(InteractivityLevel::FullyInteractive)
             .with_model_id(model_id)
             .with_protocol(protocol)
-            .with_permission_mode(permission_mode)
+            .with_permission_mode(execution_settings.permission_mode)
+            .with_context_compression_trigger_ratio(
+                execution_settings.context_compression_trigger_ratio,
+            )
     }
 
     #[must_use]
@@ -3247,23 +3269,26 @@ pub struct GetContextSnapshotResponse {
     pub project: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetExecutionSettingsResponse {
     pub permission_mode: PermissionMode,
+    pub context_compression_trigger_ratio: f32,
     pub auto_mode_available: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetExecutionSettingsRequest {
     pub permission_mode: PermissionMode,
+    pub context_compression_trigger_ratio: f32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetExecutionSettingsResponse {
     pub permission_mode: PermissionMode,
+    pub context_compression_trigger_ratio: f32,
     pub auto_mode_available: bool,
 }
 
@@ -4056,6 +4081,7 @@ pub fn get_execution_settings_with_store(
     let record = store.load_record()?;
     Ok(GetExecutionSettingsResponse {
         permission_mode: record.permission_mode,
+        context_compression_trigger_ratio: record.context_compression_trigger_ratio,
         auto_mode_available: auto_mode_available(),
     })
 }
@@ -4066,6 +4092,7 @@ pub fn set_execution_settings_with_store(
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
     ensure_execution_settings_record(&ExecutionSettingsRecord {
         permission_mode: request.permission_mode,
+        context_compression_trigger_ratio: request.context_compression_trigger_ratio,
     })?;
     if request.permission_mode == PermissionMode::Auto && !auto_mode_available() {
         return Err(invalid_payload(
@@ -4074,10 +4101,12 @@ pub fn set_execution_settings_with_store(
     }
     let record = ExecutionSettingsRecord {
         permission_mode: request.permission_mode,
+        context_compression_trigger_ratio: request.context_compression_trigger_ratio,
     };
     store.save_record(&record)?;
     Ok(SetExecutionSettingsResponse {
         permission_mode: record.permission_mode,
+        context_compression_trigger_ratio: record.context_compression_trigger_ratio,
         auto_mode_available: auto_mode_available(),
     })
 }
@@ -10274,12 +10303,16 @@ pub fn get_execution_settings(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn set_execution_settings(
     permission_mode: PermissionMode,
+    context_compression_trigger_ratio: f32,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     let _execution_settings_guard = runtime_state.execution_settings_lock.lock().await;
     set_execution_settings_with_store(
-        SetExecutionSettingsRequest { permission_mode },
+        SetExecutionSettingsRequest {
+            permission_mode,
+            context_compression_trigger_ratio,
+        },
         runtime_state.execution_settings_store.as_ref(),
     )
 }

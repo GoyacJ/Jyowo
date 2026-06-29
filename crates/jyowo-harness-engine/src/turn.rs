@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, StreamExt};
-use harness_context::ContextSessionView;
+use harness_context::{ContextSessionView, TokenBudget};
 use harness_contracts::{
     ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, AssistantDeltaProducedEvent,
     AssistantMessageCompletedEvent, BlobRef, BudgetKind, CausationId, ContextPatchLifecycle,
@@ -190,7 +190,7 @@ pub(crate) async fn run_turn(
             messages: working_messages.clone(),
             tools: prompt_visible_tools_for_model(engine),
         };
-        let assembled = engine
+        let mut assembled = engine
             .context
             .assemble(&prompt_view, &next_input)
             .await
@@ -204,6 +204,31 @@ pub(crate) async fn run_turn(
                 assembled.events.clone(),
             )
             .await?;
+        }
+        let budget = engine.context.budget();
+        let trigger_tokens = soft_budget_trigger_tokens(budget);
+        if assembled.tokens_estimate >= trigger_tokens {
+            let compacted = engine
+                .context
+                .proactive_compact_prompt(
+                    session.tenant_id,
+                    session.session_id,
+                    assembled,
+                    trigger_tokens,
+                )
+                .await
+                .map_err(engine_error)?;
+            assembled = compacted.prompt;
+            if !assembled.events.is_empty() {
+                append(
+                    engine,
+                    session.tenant_id,
+                    session.session_id,
+                    &mut emitted,
+                    assembled.events.clone(),
+                )
+                .await?;
+            }
         }
         validate_model_input_modalities(
             &assembled.messages,
@@ -1875,6 +1900,15 @@ async fn append(
         .map_err(engine_error)?;
     emitted.extend(events);
     Ok(())
+}
+
+fn soft_budget_trigger_tokens(budget: TokenBudget) -> u64 {
+    if budget.max_tokens_per_turn == 0 {
+        return 1;
+    }
+    ((budget.max_tokens_per_turn as f64) * f64::from(budget.soft_budget_ratio))
+        .ceil()
+        .max(1.0) as u64
 }
 
 async fn append_run_end(

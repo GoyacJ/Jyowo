@@ -341,11 +341,13 @@ const mockProviderSettingsList: ListProviderSettingsResponse = {
 
 const mockExecutionSettings: GetExecutionSettingsResponse = {
   autoModeAvailable: false,
+  contextCompressionTriggerRatio: 0.8,
   permissionMode: 'default',
 }
 
 const mockSetExecutionSettings: SetExecutionSettingsResponse = {
   autoModeAvailable: false,
+  contextCompressionTriggerRatio: 0.8,
   permissionMode: 'default',
 }
 
@@ -1447,6 +1449,7 @@ export function createMockCommandClient(options: MockCommandClientOptions = {}):
       return (
         options.setExecutionSettings ?? {
           ...mockSetExecutionSettings,
+          contextCompressionTriggerRatio: request.contextCompressionTriggerRatio,
           permissionMode: request.permissionMode,
         }
       )

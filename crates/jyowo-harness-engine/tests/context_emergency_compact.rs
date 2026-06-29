@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
-use harness_context::{CompactHint, ContextBuffer, ContextEngine, ContextOutcome, ContextProvider};
+use harness_context::{
+    CompactHint, ContextBuffer, ContextEngine, ContextOutcome, ContextProvider, TokenBudget,
+};
 use harness_contracts::{
-    CapabilityRegistry, ContextError, ContextStageId, Decision, EndReason, Event, Message,
-    MessageContent, MessageId, MessagePart, MessageRole, ModelError, NoopRedactor, PermissionError,
-    RunId, SessionId, StopReason, TenantId, TurnInput, UsageSnapshot,
+    BudgetExceedanceSource, CapabilityRegistry, ContextError, ContextStageId, Decision, EndReason,
+    Event, Message, MessageContent, MessageId, MessagePart, MessageRole, ModelError, NoopRedactor,
+    PermissionError, RunId, SessionId, StopReason, TenantId, TurnInput, UsageSnapshot,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};
@@ -85,6 +87,71 @@ async fn context_too_long_retries_once_with_emergency_compacted_prompt() {
     ));
 }
 
+#[tokio::test]
+async fn soft_budget_compacts_before_first_model_request() {
+    let workspace = tempfile::tempdir().unwrap();
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let model = Arc::new(OkRecordingModel::default());
+    let context = ContextEngine::builder()
+        .with_budget(TokenBudget {
+            max_tokens_per_turn: 10,
+            soft_budget_ratio: 0.5,
+            hard_budget_ratio: 0.95,
+            ..TokenBudget::default()
+        })
+        .with_provider(EmergencyTestProvider)
+        .build()
+        .unwrap();
+    let engine = Engine::builder()
+        .with_engine_id(EngineId::new("context-soft-budget-compact-test"))
+        .with_event_store(store)
+        .with_context(context)
+        .with_hooks(HookDispatcher::new(
+            HookRegistry::builder().build().unwrap().snapshot(),
+        ))
+        .with_model(model.clone())
+        .with_tools(ToolPool::default())
+        .with_permission_broker(Arc::new(AllowBroker))
+        .with_workspace_root(workspace.path())
+        .with_model_id("mock-model")
+        .with_cap_registry(Arc::new(CapabilityRegistry::default()))
+        .build()
+        .unwrap();
+
+    let events = engine
+        .run(
+            SessionHandle {
+                tenant_id,
+                session_id,
+            },
+            turn_input("this user prompt is long enough to cross the soft context budget"),
+            RunContext::new(tenant_id, session_id, RunId::new()),
+        )
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = model.requests().await;
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0]
+        .messages
+        .iter()
+        .any(|message| message_text(message).contains("[EMERGENCY_COMPACTED]")));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::ContextBudgetExceeded(exceeded)
+            if exceeded.source == BudgetExceedanceSource::LocalEstimate
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::ContextStageTransitioned(stage)
+            if stage.stage == ContextStageId::Snip && stage.provider_id == "emergency-test"
+    )));
+}
+
 #[derive(Default)]
 struct ContextTooLongThenOkModel {
     requests: Mutex<Vec<ModelRequest>>,
@@ -129,6 +196,51 @@ impl ModelProvider for ContextTooLongThenOkModel {
                 max: 100,
             });
         }
+        Ok(Box::pin(stream::iter(text_events("after compact"))))
+    }
+
+    async fn health(&self) -> HealthStatus {
+        HealthStatus::Healthy
+    }
+}
+
+#[derive(Default)]
+struct OkRecordingModel {
+    requests: Mutex<Vec<ModelRequest>>,
+}
+
+impl OkRecordingModel {
+    async fn requests(&self) -> Vec<ModelRequest> {
+        self.requests.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl ModelProvider for OkRecordingModel {
+    fn provider_id(&self) -> &str {
+        "mock"
+    }
+
+    fn supported_models(&self) -> Vec<ModelDescriptor> {
+        vec![ModelDescriptor {
+            protocol: harness_model::ModelProtocol::Messages,
+            lifecycle: harness_model::ModelLifecycle::Stable,
+            provider_id: "mock".to_owned(),
+            model_id: "mock-model".to_owned(),
+            display_name: "Mock model".to_owned(),
+            context_window: 100,
+            max_output_tokens: 10,
+            conversation_capability: ConversationModelCapability::default(),
+            pricing: None,
+        }]
+    }
+
+    async fn infer(
+        &self,
+        req: ModelRequest,
+        _ctx: InferContext,
+    ) -> Result<ModelStream, ModelError> {
+        self.requests.lock().await.push(req);
         Ok(Box::pin(stream::iter(text_events("after compact"))))
     }
 

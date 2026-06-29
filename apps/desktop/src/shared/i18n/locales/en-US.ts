@@ -232,6 +232,10 @@ export const enUS = {
       permissionMode: {
         label: 'Permission mode',
       },
+      contextCompressionTriggerRatio: {
+        label: 'Context compression trigger ratio',
+        description: 'Compress when the estimated context reaches this share of the model window.',
+      },
       mode: {
         standard: {
           label: 'Standard',

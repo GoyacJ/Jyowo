@@ -1110,16 +1110,19 @@ const saveProviderSettingsResponseSchema = z
   .strict()
 
 const permissionModeSchema = z.enum(['default', 'auto', 'bypass_permissions'])
+const contextCompressionTriggerRatioSchema = z.number().min(0.5).max(0.95)
 
 const getExecutionSettingsResponseSchema = z
   .object({
     autoModeAvailable: z.boolean(),
+    contextCompressionTriggerRatio: contextCompressionTriggerRatioSchema,
     permissionMode: permissionModeSchema,
   })
   .strict()
 
 const setExecutionSettingsRequestSchema = z
   .object({
+    contextCompressionTriggerRatio: contextCompressionTriggerRatioSchema,
     permissionMode: permissionModeSchema,
   })
   .strict()
@@ -1127,6 +1130,7 @@ const setExecutionSettingsRequestSchema = z
 const setExecutionSettingsResponseSchema = z
   .object({
     autoModeAvailable: z.boolean(),
+    contextCompressionTriggerRatio: contextCompressionTriggerRatioSchema,
     permissionMode: permissionModeSchema,
   })
   .strict()

@@ -133,6 +133,7 @@ import {
   getArtifactMediaPreview,
   getContextSnapshot,
   getConversation,
+  getExecutionSettings,
   getHarnessHealthcheck,
   getMcpServerConfig,
   getMemoryItem,
@@ -168,6 +169,7 @@ import {
   runEvalCase,
   saveMcpServer,
   saveProviderSettings,
+  setExecutionSettings,
   setMcpServerEnabled,
   setSkillEnabled,
   startRun,
@@ -244,6 +246,53 @@ describe('CommandClient', () => {
       sdkCrate: 'jyowo_harness_sdk',
     })
     expect(invoke).toHaveBeenCalledWith('harness_healthcheck')
+  })
+
+  it('normalizes execution settings with context compression ratio', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      autoModeAvailable: false,
+      contextCompressionTriggerRatio: 0.8,
+      permissionMode: 'default',
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(getExecutionSettings(client)).resolves.toEqual({
+      autoModeAvailable: false,
+      contextCompressionTriggerRatio: 0.8,
+      permissionMode: 'default',
+    })
+    expect(invoke).toHaveBeenCalledWith('get_execution_settings')
+  })
+
+  it('validates execution settings save payload ratio bounds', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      autoModeAvailable: false,
+      contextCompressionTriggerRatio: 0.8,
+      permissionMode: 'default',
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      setExecutionSettings(
+        {
+          contextCompressionTriggerRatio: 0.49,
+          permissionMode: 'default',
+        },
+        client,
+      ),
+    ).rejects.toBeInstanceOf(TauriCommandPayloadError)
+
+    await setExecutionSettings(
+      {
+        contextCompressionTriggerRatio: 0.8,
+        permissionMode: 'default',
+      },
+      client,
+    )
+    expect(invoke).toHaveBeenCalledWith('set_execution_settings', {
+      contextCompressionTriggerRatio: 0.8,
+      permissionMode: 'default',
+    })
   })
 
   it('throws a schema error for invalid IPC payloads', async () => {

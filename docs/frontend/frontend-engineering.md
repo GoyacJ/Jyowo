@@ -547,6 +547,21 @@ list_provider_settings(): {
   configs: ProviderConfig[]
 }
 
+get_execution_settings(): {
+  autoModeAvailable: boolean
+  contextCompressionTriggerRatio: number
+  permissionMode: 'default' | 'auto' | 'bypass_permissions'
+}
+
+set_execution_settings(request: {
+  contextCompressionTriggerRatio: number
+  permissionMode: 'default' | 'auto' | 'bypass_permissions'
+}): {
+  autoModeAvailable: boolean
+  contextCompressionTriggerRatio: number
+  permissionMode: 'default' | 'auto' | 'bypass_permissions'
+}
+
 get_provider_config_api_key(request: {
   configId: string
   revealToken: string
