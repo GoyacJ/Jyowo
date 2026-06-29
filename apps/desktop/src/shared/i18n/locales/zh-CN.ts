@@ -74,9 +74,9 @@ export const zhCN = {
       confirmDeleteTitle: '移除项目',
     },
     welcome: {
-      eyebrow: '本地 AI 工作区',
+      eyebrow: '本地 Agent Runtime 工作台',
       title: '欢迎使用 Jyowo',
-      description: '打开项目目录，创建对话，在同一界面里与代码协作。',
+      description: '打开工作空间，创建对话，在本地设计、运行、检查和治理 agent 工作流。',
       projectRequired: '开始对话前，请先打开或新建项目。',
     },
   },
@@ -86,7 +86,7 @@ export const zhCN = {
     draftTitle: '新建对话',
     emptyTitle: '暂无对话',
     emptyDescription: '工作区对话可用后，从输入框开始。',
-    intro: '用自然语言描述需求。Jyowo 会规划、在本地执行，并展示每一步，方便你审查和继续。',
+    intro: '用自然语言描述工作流。Jyowo 会规划、在本地执行，并展示证据，方便你检查、评估和继续。',
     timeline: {
       approve: '批准',
       assistantAuthor: 'Jyowo',

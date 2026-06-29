@@ -72,10 +72,10 @@ export const enUS = {
       confirmDeleteTitle: 'Remove project',
     },
     welcome: {
-      eyebrow: 'Local AI workspace',
+      eyebrow: 'Local Agent Runtime Workbench',
       title: 'Welcome to Jyowo',
       description:
-        'Open a project folder, start a conversation, and work with your code in one place.',
+        'Open a workspace, start a conversation, and design, run, inspect, and govern agent workflows locally.',
       projectRequired: 'Open or create a project before starting a conversation.',
     },
   },
@@ -86,7 +86,7 @@ export const enUS = {
     emptyTitle: 'No conversations yet',
     emptyDescription: 'Start from the composer when a workspace conversation is available.',
     intro:
-      'Ask in plain language. Jyowo plans the work, runs it locally, and shows every step so you can review and continue.',
+      'Describe the workflow in plain language. Jyowo plans, runs locally, and shows the evidence so you can inspect, evaluate, and continue.',
     timeline: {
       approve: 'Approve',
       assistantAuthor: 'Jyowo',
