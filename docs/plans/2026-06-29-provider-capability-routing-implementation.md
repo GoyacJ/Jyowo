@@ -760,9 +760,9 @@ Rules:
 - Empty route lists are valid and must not expose any service tools.
 - Each route passes contract validation.
 - Each enabled route references an existing provider config.
-- The config has an API key.
-- `route.provider_id == config.provider_id`.
-- Every operation id is declared by provider catalog for that provider.
+- The enabled route config has an API key.
+- Enabled `route.provider_id == config.provider_id`.
+- Every enabled operation id is declared by provider catalog for that provider.
 - Every enabled operation has a runtime adapter.
 - Same enabled `CapabilityRouteKind` cannot point to multiple configs in the same settings file.
 
@@ -1023,8 +1023,8 @@ Add tests for:
 Run:
 
 ```bash
-cargo test -p jyowo-harness-tool --test registry minimax_service_binding -- --nocapture
-cargo test -p jyowo-harness-sdk --test runtime_assembly capability_route_filter -- --nocapture
+cargo test -p jyowo-harness-tool --features minimax-tools --test registry minimax_service_binding -- --nocapture
+cargo test -p jyowo-harness-sdk --features testing,minimax-tools,blob-file --test runtime_assembly capability_route_filter -- --nocapture
 ```
 
 Expected:
@@ -1091,8 +1091,8 @@ Do not move route filtering into `crates/jyowo-harness-engine/src/turn.rs`. The 
 **Step 6: Run focused tests**
 
 ```bash
-cargo test -p jyowo-harness-tool --test registry minimax_service_binding -- --nocapture
-cargo test -p jyowo-harness-sdk --test runtime_assembly capability_route_filter -- --nocapture
+cargo test -p jyowo-harness-tool --features minimax-tools --test registry minimax_service_binding -- --nocapture
+cargo test -p jyowo-harness-sdk --features testing,minimax-tools,blob-file --test runtime_assembly capability_route_filter -- --nocapture
 cargo check --workspace
 ```
 
@@ -1163,7 +1163,7 @@ Run:
 
 ```bash
 cargo test -p jyowo-desktop-shell --test commands provider_credential_route -- --nocapture
-cargo test -p jyowo-harness-tool --test minimax_tools credential_route -- --nocapture
+cargo test -p jyowo-harness-tool --features minimax-tools --test minimax_tools credential_route -- --nocapture
 ```
 
 Expected:
@@ -1207,7 +1207,7 @@ Every MiniMax service tool must pass its operation id and route kind. Non-servic
 
 ```bash
 cargo test -p jyowo-desktop-shell --test commands provider_credential_route -- --nocapture
-cargo test -p jyowo-harness-tool --test minimax_tools credential_route -- --nocapture
+cargo test -p jyowo-harness-tool --features minimax-tools --test minimax_tools credential_route -- --nocapture
 cargo check --workspace
 ```
 
@@ -1398,7 +1398,7 @@ cargo test -p jyowo-harness-engine artifact -- --nocapture
 cargo test -p jyowo-harness-journal --test conversation_read_model artifact -- --nocapture
 cargo test -p jyowo-desktop-shell --test commands artifact -- --nocapture
 cargo test -p jyowo-harness-model --test token_counter artifact -- --nocapture
-cargo test -p jyowo-harness-tool --test minimax_tools minimax_image_typed_artifact -- --nocapture
+cargo test -p jyowo-harness-tool --features minimax-tools --test minimax_tools minimax_image_typed_artifact -- --nocapture
 cargo test -p jyowo-harness-tool --test orchestrator artifact -- --nocapture
 cargo test -p jyowo-harness-tool --test result_budget artifact -- --nocapture
 cargo test -p jyowo-harness-mcp --test server artifact -- --nocapture
@@ -1479,7 +1479,7 @@ Add tests for:
 Run:
 
 ```bash
-cargo test -p jyowo-harness-tool --test minimax_tools minimax_service_artifact -- --nocapture
+cargo test -p jyowo-harness-tool --features minimax-tools --test minimax_tools minimax_service_artifact -- --nocapture
 cargo test -p jyowo-harness-model --test minimax_api -- --nocapture
 ```
 
@@ -1514,7 +1514,7 @@ Feature-gate rule:
 ```rust
 // provider_media.rs
 // Policy structs and pure validation helpers may compile unconditionally.
-// HTTP download code that uses reqwest must be behind #[cfg(feature = "minimax-tools")].
+// HTTP download code that uses reqwest must be behind #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))].
 ```
 
 Keep `reqwest` optional in `crates/jyowo-harness-tool/Cargo.toml`. Do not move `reqwest` into default dependencies.
@@ -1562,9 +1562,9 @@ TTS and music tools:
 **Step 7: Run focused tests**
 
 ```bash
-cargo test -p jyowo-harness-tool --test minimax_tools minimax_service_artifact -- --nocapture
+cargo test -p jyowo-harness-tool --features minimax-tools --test minimax_tools minimax_service_artifact -- --nocapture
 cargo test -p jyowo-harness-model --test minimax_api -- --nocapture
-cargo test -p jyowo-harness-tool --test minimax_tools -- --nocapture
+cargo test -p jyowo-harness-tool --features minimax-tools --test minimax_tools -- --nocapture
 cargo check -p jyowo-harness-tool --no-default-features
 cargo check -p jyowo-harness-tool --features minimax-tools
 cargo check --workspace
@@ -1850,7 +1850,7 @@ Run:
 ```bash
 cargo test -p jyowo-desktop-shell --test commands capability_route_conversation -- --nocapture
 cargo test -p jyowo-desktop-shell --test commands provider_credential_route -- --nocapture
-cargo test -p jyowo-harness-sdk --test runtime_assembly capability_route -- --nocapture
+cargo test -p jyowo-harness-sdk --features testing,minimax-tools,blob-file --test runtime_assembly capability_route -- --nocapture
 ```
 
 Expected:
@@ -1944,7 +1944,7 @@ Also pass the descriptor-derived `Vec<ToolServiceBinding>` from Task 4 into desk
 ```bash
 cargo test -p jyowo-desktop-shell --test commands capability_route_conversation -- --nocapture
 cargo test -p jyowo-desktop-shell --test commands provider_credential_route -- --nocapture
-cargo test -p jyowo-harness-sdk --test runtime_assembly capability_route -- --nocapture
+cargo test -p jyowo-harness-sdk --features testing,minimax-tools,blob-file --test runtime_assembly capability_route -- --nocapture
 cargo check --workspace
 ```
 
@@ -2290,8 +2290,8 @@ cargo test -p jyowo-harness-contracts --test provider_capability_routes -- --noc
 cargo test -p jyowo-desktop-shell --test commands provider_capability_route -- --nocapture
 cargo test -p jyowo-desktop-shell --test commands provider_credential_route -- --nocapture
 cargo test -p jyowo-desktop-shell --test commands capability_route_conversation -- --nocapture
-cargo test -p jyowo-harness-tool --test minimax_tools -- --nocapture
-cargo test -p jyowo-harness-sdk --test runtime_assembly capability_route -- --nocapture
+cargo test -p jyowo-harness-tool --features minimax-tools --test minimax_tools -- --nocapture
+cargo test -p jyowo-harness-sdk --features testing,minimax-tools,blob-file --test runtime_assembly capability_route -- --nocapture
 pnpm -C apps/desktop test -- ProviderSettingsForm.test.tsx commands.test.ts default-client.test.ts run-event-schema.test.ts
 ```
 
