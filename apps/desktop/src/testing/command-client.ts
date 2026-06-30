@@ -1,6 +1,7 @@
 import type { RunEvent } from '@/shared/events/run-event-schema'
 import type {
   AppInfo,
+  AutomationSpec,
   CancelRunResponse,
   ClearMcpDiagnosticsResponse,
   CommandClient,
@@ -8,6 +9,7 @@ import type {
   ConversationModelCapability,
   CreateAttachmentFromPathResponse,
   CreateConversationResponse,
+  DeleteAutomationResponse,
   DeleteConversationResponse,
   DeleteProjectResponse,
   DeleteProviderCapabilityRouteResponse,
@@ -31,6 +33,9 @@ import type {
   InstallSkillFromCatalogResponse,
   ListActivityResponse,
   ListArtifactsResponse,
+  ListAutomationRunsResponse,
+  ListAutomationsResponse,
+  ListBrowserMcpPresetsResponse,
   ListConversationsResponse,
   ListEvalCasesResponse,
   ListMcpDiagnosticsResponse,
@@ -54,10 +59,15 @@ import type {
   ReplayTimelineResponse,
   RequestProviderConfigApiKeyRevealResponse,
   ResolvePermissionResponse,
+  RunAutomationNowResponse,
   RunEvalCaseResponse,
+  SaveAutomationRequest,
+  SaveAutomationResponse,
+  SaveBrowserMcpPresetResponse,
   SaveMcpServerResponse,
   SaveProviderCapabilityRouteResponse,
   SaveProviderSettingsResponse,
+  SetAutomationEnabledResponse,
   SetConversationModelConfigResponse,
   SetExecutionSettingsResponse,
   SetMcpServerEnabledResponse,
@@ -101,6 +111,38 @@ const fixtureListConversations: ListConversationsResponse = {
       updatedAt: timestamp,
     },
   ],
+}
+
+const fixtureAutomation = {
+  id: 'checks',
+  enabled: false,
+  prompt: 'Run checks',
+  schedule: { intervalMinutes: 30 },
+  toolProfile: 'coding',
+  permissionMode: 'default',
+  sandboxMode: 'none',
+  workspaceScope: 'current_workspace',
+  workspaceAccess: 'read_only',
+  missedRunPolicy: 'skip',
+  createdAt: '2026-06-30T01:00:00Z',
+  updatedAt: '2026-06-30T01:00:00Z',
+} satisfies ListAutomationsResponse['automations'][number]
+
+const fixtureListAutomations: ListAutomationsResponse = {
+  automations: [fixtureAutomation],
+}
+
+const fixtureAutomationRun = {
+  automationId: 'checks',
+  completedAt: '2026-06-30T01:01:00Z',
+  id: 'automation-run-001',
+  message: 'Starting automation runs requires the runtime conversation facade.',
+  startedAt: '2026-06-30T01:00:00Z',
+  status: 'rejected',
+} satisfies ListAutomationRunsResponse['runs'][number]
+
+const fixtureAutomationRuns: ListAutomationRunsResponse = {
+  runs: [fixtureAutomationRun],
 }
 
 const fixtureConversation: GetConversationResponse = {
@@ -364,6 +406,7 @@ const fixtureExecutionSettings: GetExecutionSettingsResponse = {
   autoModeAvailable: false,
   contextCompressionTriggerRatio: 0.8,
   permissionMode: 'default',
+  toolProfile: 'full',
 }
 
 const fixtureSetExecutionSettings: SetExecutionSettingsResponse = {
@@ -371,6 +414,7 @@ const fixtureSetExecutionSettings: SetExecutionSettingsResponse = {
   autoModeAvailable: false,
   contextCompressionTriggerRatio: 0.8,
   permissionMode: 'default',
+  toolProfile: 'full',
 }
 
 const fixtureSaveProviderSettings: SaveProviderSettingsResponse = {
@@ -415,6 +459,25 @@ const fixtureListMcpServers: ListMcpServersResponse = {
       scope: 'global',
       status: 'ready',
       transport: 'stdio',
+    },
+  ],
+}
+
+const fixtureListBrowserMcpPresets: ListBrowserMcpPresetsResponse = {
+  presets: [
+    {
+      description: 'Browser automation through Playwright MCP.',
+      displayName: 'Playwright Browser',
+      enabled: false,
+      id: 'playwright',
+      serverId: 'browser-playwright',
+    },
+    {
+      description: 'Browser inspection through Chrome DevTools MCP.',
+      displayName: 'Chrome DevTools Browser',
+      enabled: false,
+      id: 'chrome-devtools',
+      serverId: 'browser-chrome-devtools',
     },
   ],
 }
@@ -667,6 +730,21 @@ const fixtureSaveMcpServer: SaveMcpServerResponse = {
     origin: 'workspace',
     scope: 'global',
     status: 'configured',
+    transport: 'stdio',
+  },
+}
+
+const fixtureSaveBrowserMcpPreset: SaveBrowserMcpPresetResponse = {
+  preset: fixtureListBrowserMcpPresets.presets[0],
+  server: {
+    displayName: 'Playwright Browser',
+    enabled: false,
+    exposedToolCount: 0,
+    id: 'browser-playwright',
+    manageable: true,
+    origin: 'workspace',
+    scope: 'global',
+    status: 'disabled',
     transport: 'stdio',
   },
 }
@@ -1043,11 +1121,19 @@ export interface TestCommandClientOptions {
   executionSettings?: GetExecutionSettingsResponse
   healthcheck?: HarnessHealthcheck
   artifacts?: ListArtifactsResponse
+  automations?: ListAutomationsResponse
+  automationRuns?: ListAutomationRunsResponse
+  automationRunNow?: RunAutomationNowResponse
+  automationSave?: SaveAutomationResponse
+  automationSetEnabled?: SetAutomationEnabledResponse
+  automationDelete?: DeleteAutomationResponse
   artifactMediaPreview?: GetArtifactMediaPreviewResponse
   attachmentMediaPreview?: GetAttachmentMediaPreviewResponse
   listActivity?: ListActivityResponse
   memoryExport?: ExportMemoryItemsResponse
   evalCases?: ListEvalCasesResponse
+  browserMcpPresets?: ListBrowserMcpPresetsResponse
+  browserMcpPreset?: SaveBrowserMcpPresetResponse
   memoryItem?: GetMemoryItemResponse
   memoryItems?: ListMemoryItemsResponse
   mcpDiagnostics?: ListMcpDiagnosticsResponse
@@ -1102,6 +1188,29 @@ function fixtureProviderApiKeyForConfig(configId: string) {
   return ['fixture', 'provider', 'revealed', configId].join(':')
 }
 
+function normalizeAutomationSpec(automation: SaveAutomationRequest['automation']): AutomationSpec {
+  return {
+    ...automation,
+    enabled: automation.enabled ?? false,
+    missedRunPolicy: automation.missedRunPolicy ?? 'skip',
+    workspaceAccess: normalizeAutomationWorkspaceAccess(automation.workspaceAccess),
+  }
+}
+
+function normalizeAutomationWorkspaceAccess(
+  workspaceAccess: SaveAutomationRequest['automation']['workspaceAccess'],
+): AutomationSpec['workspaceAccess'] {
+  if (typeof workspaceAccess === 'object' && 'read_write' in workspaceAccess) {
+    return {
+      read_write: {
+        allowed_writable_subpaths: workspaceAccess.read_write.allowed_writable_subpaths ?? [],
+      },
+    }
+  }
+
+  return workspaceAccess
+}
+
 export function createTestCommandClient(options: TestCommandClientOptions = {}): CommandClient {
   let batchListener: ((batch: ConversationEventBatchPayload) => void) | null = null
   let activeSubscription: SubscribeConversationEventsResponse | null = null
@@ -1123,6 +1232,8 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
   )
   let createdConversationCounter = 0
   let conversations = cloneResponse(options.conversations ?? fixtureListConversations)
+  let automations = cloneResponse(options.automations ?? fixtureListAutomations)
+  let automationRuns = cloneResponse(options.automationRuns ?? fixtureAutomationRuns)
   const providerRevealConfigIdsByToken = new Map<string, string>()
   const conversationDetailsById = new Map<string, GetConversationResponse>()
   conversationDetailsById.set(
@@ -1224,6 +1335,18 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
         conversationId,
         status: 'deleted',
       } satisfies DeleteConversationResponse
+    },
+    async deleteAutomation(id) {
+      await wait(options.delayMs)
+      automations = {
+        automations: automations.automations.filter((automation) => automation.id !== id),
+      }
+      return (
+        options.automationDelete ?? {
+          id,
+          status: 'deleted',
+        }
+      )
     },
     async deleteMcpServer(id) {
       await wait(options.delayMs)
@@ -1448,9 +1571,27 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
       await wait(options.delayMs)
       return conversations
     },
+    async listAutomations() {
+      await wait(options.delayMs)
+      return cloneResponse(automations)
+    },
+    async listAutomationRuns(automationId) {
+      await wait(options.delayMs)
+      const runs =
+        automationId === undefined
+          ? automationRuns.runs
+          : automationRuns.runs.filter((run) => run.automationId === automationId)
+      return {
+        runs: cloneResponse(runs),
+      }
+    },
     async listEvalCases() {
       await wait(options.delayMs)
       return options.evalCases ?? fixtureListEvalCases
+    },
+    async listBrowserMcpPresets() {
+      await wait(options.delayMs)
+      return options.browserMcpPresets ?? fixtureListBrowserMcpPresets
     },
     async listModelProviderCatalog() {
       await wait(options.delayMs)
@@ -1636,6 +1777,39 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
         status: 'completed',
       } satisfies RunEvalCaseResponse
     },
+    async runAutomationNow(id) {
+      await wait(options.delayMs)
+      const record = {
+        ...fixtureAutomationRun,
+        automationId: id,
+      } satisfies ListAutomationRunsResponse['runs'][number]
+      automationRuns = {
+        runs: [record, ...automationRuns.runs.filter((run) => run.id !== record.id)],
+      }
+      return (
+        options.automationRunNow ?? {
+          record,
+        }
+      )
+    },
+    async saveAutomation(request) {
+      await wait(options.delayMs)
+      const automation = normalizeAutomationSpec(request.automation)
+      automations = {
+        automations: [
+          automation,
+          ...automations.automations.filter(
+            (automation) => automation.id !== request.automation.id,
+          ),
+        ],
+      }
+      return (
+        options.automationSave ?? {
+          automation,
+          status: 'saved',
+        }
+      )
+    },
     async saveProviderSettings() {
       await wait(options.delayMs)
       const response = options.providerSettings ?? fixtureSaveProviderSettings
@@ -1716,8 +1890,51 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
           },
           contextCompressionTriggerRatio: request.contextCompressionTriggerRatio,
           permissionMode: request.permissionMode,
+          toolProfile: request.toolProfile,
         }
       )
+    },
+    async setAutomationEnabled(id, enabled) {
+      await wait(options.delayMs)
+      const automation =
+        automations.automations.find((automation) => automation.id === id) ?? fixtureAutomation
+      const updated = {
+        ...automation,
+        enabled,
+        updatedAt: new Date().toISOString(),
+      } satisfies ListAutomationsResponse['automations'][number]
+      automations = {
+        automations: [
+          updated,
+          ...automations.automations.filter((automation) => automation.id !== id),
+        ],
+      }
+      return (
+        options.automationSetEnabled ?? {
+          automation: updated,
+          status: 'saved',
+        }
+      )
+    },
+    async saveBrowserMcpPreset(request) {
+      await wait(options.delayMs)
+      const preset =
+        (options.browserMcpPresets ?? fixtureListBrowserMcpPresets).presets.find(
+          (preset) => preset.id === request.presetId,
+        ) ?? fixtureListBrowserMcpPresets.presets[0]
+      return (options.browserMcpPreset ?? {
+        preset: {
+          ...preset,
+          enabled: request.enabled ?? false,
+        },
+        server: {
+          ...fixtureSaveBrowserMcpPreset.server,
+          displayName: preset.displayName,
+          enabled: request.enabled ?? false,
+          id: preset.serverId,
+          status: request.enabled ? 'configured' : 'disabled',
+        },
+      }) satisfies SaveBrowserMcpPresetResponse
     },
     async saveMcpServer() {
       await wait(options.delayMs)
@@ -2099,6 +2316,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     cancelRun: () => Promise.reject(error),
     createAttachmentFromPath: () => Promise.reject(error),
     createConversation: () => Promise.reject(error),
+    deleteAutomation: () => Promise.reject(error),
     deleteConversation: () => Promise.reject(error),
     deleteMcpServer: () => Promise.reject(error),
     deleteMemoryItem: () => Promise.reject(error),
@@ -2131,11 +2349,14 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     listenSkillCatalogInstallProgress: () => Promise.reject(error),
     listActivity: () => Promise.reject(error),
     listArtifacts: () => Promise.reject(error),
+    listAutomationRuns: () => Promise.reject(error),
+    listAutomations: () => Promise.reject(error),
     listConversations: () => Promise.reject(error),
     listEvalCases: () => Promise.reject(error),
     listModelProviderCatalog: () => Promise.reject(error),
     listMcpDiagnostics: () => Promise.reject(error),
     listMcpServers: () => Promise.reject(error),
+    listBrowserMcpPresets: () => Promise.reject(error),
     listMemoryItems: () => Promise.reject(error),
     listPlugins: () => Promise.reject(error),
     listProviderSettings: () => Promise.reject(error),
@@ -2152,7 +2373,10 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     resolvePermission: () => Promise.reject(error),
     reloadPlugin: () => Promise.reject(error),
     requestProviderConfigApiKeyReveal: () => Promise.reject(error),
+    runAutomationNow: () => Promise.reject(error),
     runEvalCase: () => Promise.reject(error),
+    saveAutomation: () => Promise.reject(error),
+    saveBrowserMcpPreset: () => Promise.reject(error),
     saveMcpServer: () => Promise.reject(error),
     setMcpServerEnabled: () => Promise.reject(error),
     setPluginEnabled: () => Promise.reject(error),
@@ -2163,6 +2387,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     saveProviderCapabilityRoute: () => Promise.reject(error),
     deleteProviderCapabilityRoute: () => Promise.reject(error),
     setExecutionSettings: () => Promise.reject(error),
+    setAutomationEnabled: () => Promise.reject(error),
     setConversationModelConfig: () => Promise.reject(error),
     setSkillEnabled: () => Promise.reject(error),
     startRun: () => Promise.reject(error),

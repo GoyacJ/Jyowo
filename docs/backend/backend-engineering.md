@@ -197,6 +197,7 @@ cancel_run
 clear_mcp_diagnostics
 create_attachment_from_path
 create_conversation
+delete_automation
 delete_conversation
 delete_mcp_server
 delete_memory_item
@@ -225,7 +226,10 @@ get_skill_file
 harness_healthcheck
 install_plugin_from_path
 list_activity
+list_automation_runs
+list_automations
 list_conversations
+list_browser_mcp_presets
 list_skill_catalog_entries
 list_skill_catalog_install_tasks
 list_skill_catalog_sources
@@ -245,13 +249,17 @@ page_conversation_worktree
 resolve_permission
 request_provider_config_api_key_reveal
 restart_mcp_server
+run_automation_now
 run_eval_case
+save_automation
+save_browser_mcp_preset
 save_mcp_server
 save_provider_capability_route
 save_provider_settings
 import_skill
 install_skill_from_catalog
 set_execution_settings
+set_automation_enabled
 set_conversation_model_config
 set_mcp_server_enabled
 set_skill_enabled
@@ -283,6 +291,7 @@ create_attachment_from_path(
   path: String
 ) -> Result<CreateAttachmentFromPathResponse, CommandErrorPayload>
 create_conversation() -> Result<CreateConversationResponse, CommandErrorPayload>
+delete_automation(id: String) -> Result<DeleteAutomationResponse, CommandErrorPayload>
 delete_conversation(conversation_id: String) -> Result<DeleteConversationResponse, CommandErrorPayload>
 delete_mcp_server(id: String) -> Result<DeleteMcpServerResponse, CommandErrorPayload>
 delete_memory_item(id: String) -> Result<DeleteMemoryItemResponse, CommandErrorPayload>
@@ -352,6 +361,11 @@ list_activity(
   conversation_id: Option<String>,
   run_id: Option<String>
 ) -> Result<ListActivityResponse, CommandErrorPayload>
+list_automation_runs(
+  automation_id: Option<String>
+) -> Result<ListAutomationRunsResponse, CommandErrorPayload>
+list_automations() -> Result<ListAutomationsResponse, CommandErrorPayload>
+list_browser_mcp_presets() -> Result<ListBrowserMcpPresetsResponse, CommandErrorPayload>
 list_conversations() -> Result<ListConversationsResponse, CommandErrorPayload>
 list_skill_catalog_entries(
   source_id: String,
@@ -396,7 +410,15 @@ request_provider_config_api_key_reveal(
   config_id: String
 ) -> Result<RequestProviderConfigApiKeyRevealResponse, CommandErrorPayload>
 restart_mcp_server(id: String) -> Result<RestartMcpServerResponse, CommandErrorPayload>
+run_automation_now(id: String) -> Result<RunAutomationNowResponse, CommandErrorPayload>
 run_eval_case(case_id: String) -> Result<RunEvalCaseResponse, CommandErrorPayload>
+save_automation(
+  automation: AutomationSpec
+) -> Result<SaveAutomationResponse, CommandErrorPayload>
+save_browser_mcp_preset(
+  preset_id: BrowserMcpPresetId,
+  enabled: Option<bool>
+) -> Result<SaveBrowserMcpPresetResponse, CommandErrorPayload>
 save_mcp_server(
   enabled: Option<bool>,
   display_name: String,
@@ -432,6 +454,10 @@ set_execution_settings(
   permission_mode: PermissionMode,
   context_compression_trigger_ratio: f32
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload>
+set_automation_enabled(
+  id: String,
+  enabled: bool
+) -> Result<SetAutomationEnabledResponse, CommandErrorPayload>
 set_conversation_model_config(
   conversation_id: String,
   model_config_id: String

@@ -368,6 +368,7 @@ describe('ConversationWorkspace', () => {
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'bypass_permissions',
+        toolProfile: 'full',
       },
     })
     const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
@@ -409,8 +410,20 @@ describe('ConversationWorkspace', () => {
       .mockResolvedValue(projectListResponse('/workspace-b'))
     const getExecutionSettings = vi
       .fn()
-      .mockResolvedValueOnce({ autoModeAvailable: false, permissionMode: 'default' })
-      .mockResolvedValue({ autoModeAvailable: false, permissionMode: 'default' })
+      .mockResolvedValueOnce({
+        agentCapabilities,
+        autoModeAvailable: false,
+        contextCompressionTriggerRatio: 0.8,
+        permissionMode: 'default',
+        toolProfile: 'full',
+      })
+      .mockResolvedValue({
+        agentCapabilities,
+        autoModeAvailable: false,
+        contextCompressionTriggerRatio: 0.8,
+        permissionMode: 'default',
+        toolProfile: 'full',
+      })
     const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
     const trackedClient = {
       ...baseClient,

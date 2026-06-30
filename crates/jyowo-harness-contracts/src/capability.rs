@@ -14,9 +14,10 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 
 use crate::{
-    AgentId, BlobMeta, BlobRef, BlobStore, CapabilityRouteKind, CorrelationId, Event,
-    HookEventKind, OverflowMetadata, RunId, SessionId, SkillId, SkillSourceKind, SubagentId,
-    TenantId, ToolCapability, ToolError, ToolUseId, TranscriptRef, TurnInput, UsageSnapshot,
+    AgentId, BlobMeta, BlobRef, BlobStore, CapabilityRouteKind, CorrelationId,
+    DiagnosticsRawOutput, DiagnosticsRunRequest, Event, HookEventKind, OverflowMetadata, RunId,
+    SessionId, SkillId, SkillSourceKind, SubagentId, TenantId, ToolCapability, ToolError,
+    ToolUseId, TranscriptRef, TurnInput, UsageSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -99,6 +100,14 @@ pub trait RunCancellerCap: Send + Sync + 'static {
         reason: String,
     ) -> BoxFuture<'_, Result<(), ToolError>>;
 }
+
+pub trait DiagnosticsRunnerCap: Send + Sync + 'static {
+    fn run_diagnostics(
+        &self,
+        request: DiagnosticsRunRequest,
+    ) -> BoxFuture<'_, Result<DiagnosticsRawOutput, ToolError>>;
+}
+
 pub trait ClarifyChannelCap: Send + Sync + 'static {
     fn ask(&self, prompt: ClarifyPrompt) -> BoxFuture<'static, Result<ClarifyAnswer, ToolError>>;
 }

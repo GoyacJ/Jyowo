@@ -14,6 +14,7 @@ pub mod context;
 pub mod error;
 pub mod orchestrator;
 pub mod pool;
+pub mod process_registry;
 pub mod provider_media;
 #[cfg(feature = "minimax-tools")]
 mod provider_minimax;
@@ -34,6 +35,7 @@ pub use harness_permission::{
 };
 pub use orchestrator::*;
 pub use pool::*;
+pub use process_registry::*;
 pub use registry::*;
 pub use result_budget::*;
 pub use skill_script::*;

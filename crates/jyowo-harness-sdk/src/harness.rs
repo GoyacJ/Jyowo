@@ -42,8 +42,8 @@ use harness_contracts::{
     PermissionError, PermissionMode, PluginCapabilitiesSummary, PluginFailedEvent,
     PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginRejectedEvent,
     ProviderCapabilityRouteSettings, RedactPatternSet, RedactRules, RedactScope, Redactor,
-    RejectionReason, RunId, SessionError, SessionId, TenantId, ToolCapability, ToolSearchMode,
-    TrustLevel, TurnInput,
+    RejectionReason, RunId, RunScopedProcessRegistryCap, SessionError, SessionId, TenantId,
+    ToolCapability, ToolSearchMode, TrustLevel, TurnInput, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
 #[cfg(feature = "sqlite-store")]
 use harness_contracts::{
@@ -115,8 +115,8 @@ use harness_skill::{
     SkillSourceConfig, SkillThreatEventScope, SkillValidator,
 };
 use harness_tool::{
-    SchemaResolverContext, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry,
-    ToolRegistrySnapshot,
+    DefaultRunScopedProcessRegistry, SchemaResolverContext, ToolPool, ToolPoolFilter,
+    ToolPoolModelProfile, ToolRegistry, ToolRegistrySnapshot,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1003,6 +1003,17 @@ impl Harness {
                         observer: Arc::clone(observer),
                     }));
         }
+        let mut cap_registry = extras.cap_registry.take().unwrap_or_default();
+        let process_registry_capability =
+            ToolCapability::Custom(RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY.to_owned());
+        if !cap_registry.contains(&process_registry_capability) {
+            cap_registry.install::<dyn RunScopedProcessRegistryCap>(
+                process_registry_capability,
+                Arc::new(DefaultRunScopedProcessRegistry::new(Arc::clone(
+                    &builder.sandbox.0,
+                ))),
+            );
+        }
         let session_limits = Arc::new(SessionLimitState::new(
             builder
                 .options
@@ -1071,7 +1082,7 @@ impl Harness {
                 aux_model: extras.aux_model.take(),
                 model_middlewares: extras.model_middlewares,
                 rule_providers: extras.rule_providers,
-                cap_registry: Arc::new(extras.cap_registry.take().unwrap_or_default()),
+                cap_registry: Arc::new(cap_registry),
                 #[cfg(feature = "tool-search")]
                 tool_search_scorer: extras.tool_search_scorer.take(),
                 enabled_features: Self::enabled_feature_set(),
@@ -1151,6 +1162,7 @@ impl Harness {
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine: session_engine.engine,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
+                process_registry: self.run_scoped_process_registry(),
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),
                 skill_config_snapshot: self.inner.skill_config_snapshot.clone(),
@@ -1675,6 +1687,14 @@ impl Harness {
         Ok(())
     }
 
+    fn run_scoped_process_registry(&self) -> Option<Arc<dyn RunScopedProcessRegistryCap>> {
+        self.inner
+            .cap_registry
+            .get::<dyn RunScopedProcessRegistryCap>(&ToolCapability::Custom(
+                RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY.to_owned(),
+            ))
+    }
+
     fn cancel_conversation_session_runs(&self, tenant_id: TenantId, session_id: SessionId) {
         let active_runs: Vec<_> = self
             .inner
@@ -1952,6 +1972,7 @@ impl Harness {
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine: session_engine.engine,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
+                process_registry: self.run_scoped_process_registry(),
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),
                 skill_config_snapshot: self.inner.skill_config_snapshot.clone(),
@@ -2138,6 +2159,7 @@ impl Harness {
             &*self.inner.provider_capability_routes.read(),
         );
         apply_tenant_tool_filter(&mut tool_filter, &self.inner.options.tenant_policy);
+        tool_filter.intersect_with(ToolPoolFilter::from_profile(&options.tool_profile));
         let schema_context = SchemaResolverContext {
             run_id: RunId::new(),
             session_id: options.session_id,
@@ -4061,6 +4083,7 @@ impl Harness {
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine: session_engine.engine,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
+                process_registry: self.run_scoped_process_registry(),
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),
                 skill_config_snapshot: self.inner.skill_config_snapshot.clone(),
@@ -5468,6 +5491,7 @@ fn safe_nonempty(value: &str) -> String {
 struct EngineSessionTurnRunner {
     engine: Engine,
     active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, ActiveConversationRun>>>,
+    process_registry: Option<Arc<dyn RunScopedProcessRegistryCap>>,
     skill_registry: Option<SkillRegistry>,
     skill_metrics_sink: Option<Arc<dyn SkillMetricsSink>>,
     skill_config_snapshot: SkillConfigSnapshot,
@@ -5475,6 +5499,9 @@ struct EngineSessionTurnRunner {
 
 struct ActiveConversationRunGuard {
     active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, ActiveConversationRun>>>,
+    process_registry: Option<Arc<dyn RunScopedProcessRegistryCap>>,
+    tenant_id: TenantId,
+    session_id: SessionId,
     run_id: RunId,
 }
 
@@ -5485,6 +5512,7 @@ impl ActiveConversationRunGuard {
         session_id: SessionId,
         run_id: RunId,
         cancellation: CancellationToken,
+        process_registry: Option<Arc<dyn RunScopedProcessRegistryCap>>,
     ) -> Self {
         active_conversation_runs.lock().insert(
             run_id,
@@ -5496,6 +5524,9 @@ impl ActiveConversationRunGuard {
         );
         Self {
             active_conversation_runs,
+            process_registry,
+            tenant_id,
+            session_id,
             run_id,
         }
     }
@@ -5504,6 +5535,16 @@ impl ActiveConversationRunGuard {
 impl Drop for ActiveConversationRunGuard {
     fn drop(&mut self) {
         self.active_conversation_runs.lock().remove(&self.run_id);
+        if let Some(registry) = self.process_registry.clone() {
+            let tenant_id = self.tenant_id;
+            let session_id = self.session_id;
+            let run_id = self.run_id;
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let _ = registry.cleanup_run(tenant_id, session_id, run_id).await;
+                });
+            }
+        }
     }
 }
 
@@ -5534,6 +5575,7 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
             ctx.session_id,
             ctx.run_id,
             cancellation.clone(),
+            self.process_registry.clone(),
         );
         let run_ctx = RunContext::new(ctx.tenant_id, ctx.session_id, ctx.run_id)
             .with_cancellation(cancellation)
@@ -5575,7 +5617,10 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
             )
             .await
             .map_err(|error| SessionError::Message(error.to_string()))?;
-        Ok(stream.collect().await)
+        let events = stream.collect().await;
+        self.cleanup_run_processes(ctx.tenant_id, ctx.session_id, ctx.run_id)
+            .await?;
+        Ok(events)
     }
 
     async fn push_context_patch(&self, request: ContextPatchRequest) -> Result<(), SessionError> {
@@ -5646,6 +5691,21 @@ mod conversation_metadata_tests {
 }
 
 impl EngineSessionTurnRunner {
+    async fn cleanup_run_processes(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+        run_id: RunId,
+    ) -> Result<(), SessionError> {
+        if let Some(registry) = &self.process_registry {
+            registry
+                .cleanup_run(tenant_id, session_id, run_id)
+                .await
+                .map_err(|error| SessionError::Message(error.to_string()))?;
+        }
+        Ok(())
+    }
+
     fn engine_with_turn_skill_snapshot(&self) -> Result<Engine, SessionError> {
         let engine = self.engine.clone();
         let Some(registry) = &self.skill_registry else {
@@ -5680,6 +5740,91 @@ impl EngineSessionTurnRunner {
             .with_cap_registry(Arc::new(cap_registry))
             .build()
             .map_err(|error| SessionError::Message(error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod run_scoped_process_cleanup_tests {
+    use super::*;
+    use futures::future::BoxFuture;
+    use harness_contracts::ToolError;
+    use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn active_run_guard_drop_cleans_run_scoped_processes() {
+        let active = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let registry = Arc::new(RecordingProcessRegistry::default());
+        let tenant_id = TenantId::SINGLE;
+        let session_id = SessionId::new();
+        let run_id = RunId::new();
+
+        {
+            let _guard = ActiveConversationRunGuard::register(
+                Arc::clone(&active),
+                tenant_id,
+                session_id,
+                run_id,
+                CancellationToken::new(),
+                Some(registry.clone()),
+            );
+            assert!(active.lock().contains_key(&run_id));
+        }
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            registry.notify.notified(),
+        )
+        .await
+        .unwrap();
+        assert!(!active.lock().contains_key(&run_id));
+        assert_eq!(
+            *registry.cleaned.lock(),
+            Some((tenant_id, session_id, run_id))
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingProcessRegistry {
+        cleaned: parking_lot::Mutex<Option<(TenantId, SessionId, RunId)>>,
+        notify: Notify,
+    }
+
+    impl RunScopedProcessRegistryCap for RecordingProcessRegistry {
+        fn start_process(
+            &self,
+            _invocation: harness_contracts::ProcessStartInvocation,
+            _redactor: Arc<dyn Redactor>,
+        ) -> BoxFuture<'_, Result<harness_contracts::ProcessStartResult, ToolError>> {
+            Box::pin(async { Err(ToolError::Message("not implemented".to_owned())) })
+        }
+
+        fn read_process(
+            &self,
+            _invocation: harness_contracts::ProcessReadInvocation,
+            _redactor: Arc<dyn Redactor>,
+        ) -> BoxFuture<'_, Result<harness_contracts::ProcessReadResult, ToolError>> {
+            Box::pin(async { Err(ToolError::Message("not implemented".to_owned())) })
+        }
+
+        fn stop_process(
+            &self,
+            _invocation: harness_contracts::ProcessStopInvocation,
+        ) -> BoxFuture<'_, Result<harness_contracts::ProcessStopResult, ToolError>> {
+            Box::pin(async { Err(ToolError::Message("not implemented".to_owned())) })
+        }
+
+        fn cleanup_run(
+            &self,
+            tenant_id: TenantId,
+            session_id: SessionId,
+            run_id: RunId,
+        ) -> BoxFuture<'_, Result<(), ToolError>> {
+            Box::pin(async move {
+                *self.cleaned.lock() = Some((tenant_id, session_id, run_id));
+                self.notify.notify_waiters();
+                Ok(())
+            })
+        }
     }
 }
 

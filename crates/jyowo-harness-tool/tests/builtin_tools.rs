@@ -26,6 +26,7 @@ fn default_builtin_toolset_registers_architecture_m0_tools() {
         "FileEdit",
         "Glob",
         "WebFetch",
+        "Diagnostics",
         "Todo",
         "TaskStop",
         "FileRead",
@@ -34,6 +35,9 @@ fn default_builtin_toolset_registers_architecture_m0_tools() {
         "Grep",
         "ReadBlob",
         "WebSearch",
+        "ProcessStart",
+        "ProcessRead",
+        "ProcessStop",
         "Clarify",
         "SendMessage",
     ] {

@@ -4,13 +4,15 @@ use futures::stream;
 use harness_contracts::{
     AssistantClarificationRequestedEvent, AssistantDeltaProducedEvent,
     AssistantMessageCompletedEvent, AssistantNoticeEvent, AssistantReviewRequestedEvent,
+    AutomationRunStatus, AutomationSchedule, AutomationSpec, AutomationWorkspaceScope,
     CapabilityRouteKind, ConfigHash, ConversationAttachmentReference, CorrelationId, DecidedBy,
     EngineError, EngineFailedEvent, EventId, McpConnectionLostEvent, McpConnectionLostReason,
-    MessageContent, MessageId, MessageMetadata, ModelModality, PermissionRequestedEvent,
-    PermissionResolvedEvent, ProviderCapabilityRoute, ProviderCapabilityRouteSettings,
-    ProviderServiceAdapterAvailability, ReasoningSummaryChunk, RunStartedEvent, SnapshotId,
-    StopReason, ToolErrorPayload, ToolServiceBinding, ToolUseFailedEvent, ToolUseRequestedEvent,
-    ToolUseSummary, TurnInput, UiSafeText, UserMessageAppendedEvent,
+    MessageContent, MessageId, MessageMetadata, MissedRunPolicy, ModelModality,
+    PermissionRequestedEvent, PermissionResolvedEvent, ProviderCapabilityRoute,
+    ProviderCapabilityRouteSettings, ProviderServiceAdapterAvailability, ReasoningSummaryChunk,
+    RunStartedEvent, SandboxMode, SnapshotId, StopReason, ToolErrorPayload, ToolServiceBinding,
+    ToolUseFailedEvent, ToolUseRequestedEvent, ToolUseSummary, TurnInput, UiSafeText,
+    UserMessageAppendedEvent, WorkspaceAccess,
 };
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
 use harness_tool::BuiltinToolset;
@@ -19,20 +21,22 @@ use image::{ExtendedColorType, ImageEncoder};
 use jyowo_desktop_shell::commands::{
     cancel_run_payload, cancel_run_with_runtime_state,
     create_attachment_from_path_with_runtime_state, create_conversation_with_runtime_state,
-    delete_conversation_with_runtime_state, delete_mcp_server_with_runtime_state,
-    delete_mcp_server_with_store, delete_memory_item_with_runtime_state,
-    delete_provider_capability_route_with_store, delete_skill_with_runtime_state,
-    desktop_provider_credential_resolver_with_stores, export_memory_items_with_runtime_state,
-    export_support_bundle_with_runtime_state, get_app_info_payload,
-    get_artifact_media_preview_with_runtime_state, get_attachment_media_preview_with_runtime_state,
-    get_context_snapshot_with_runtime_state, get_conversation_with_runtime_state,
-    get_execution_settings_for_request, get_execution_settings_with_store,
-    get_mcp_server_config_with_runtime_state, get_mcp_server_config_with_store,
-    get_memory_item_with_runtime_state, get_provider_config_api_key_with_runtime_state,
-    get_provider_config_api_key_with_store, get_replay_timeline_with_runtime_state,
-    get_skill_detail_with_runtime_state, get_skill_file_with_runtime_state,
-    harness_healthcheck_payload, import_skill_with_runtime_state, list_activity_payload,
-    list_activity_with_runtime_state, list_artifacts_with_runtime_state,
+    delete_automation_with_runtime_state, delete_conversation_with_runtime_state,
+    delete_mcp_server_with_runtime_state, delete_mcp_server_with_store,
+    delete_memory_item_with_runtime_state, delete_provider_capability_route_with_store,
+    delete_skill_with_runtime_state, desktop_provider_credential_resolver_with_stores,
+    export_memory_items_with_runtime_state, export_support_bundle_with_runtime_state,
+    get_app_info_payload, get_artifact_media_preview_with_runtime_state,
+    get_attachment_media_preview_with_runtime_state, get_context_snapshot_with_runtime_state,
+    get_conversation_with_runtime_state, get_execution_settings_for_request,
+    get_execution_settings_with_store, get_mcp_server_config_with_runtime_state,
+    get_mcp_server_config_with_store, get_memory_item_with_runtime_state,
+    get_provider_config_api_key_with_runtime_state, get_provider_config_api_key_with_store,
+    get_replay_timeline_with_runtime_state, get_skill_detail_with_runtime_state,
+    get_skill_file_with_runtime_state, harness_healthcheck_payload,
+    import_skill_with_runtime_state, list_activity_payload, list_activity_with_runtime_state,
+    list_artifacts_with_runtime_state, list_automation_runs_with_runtime_state,
+    list_automations_with_runtime_state, list_browser_mcp_presets_with_store,
     list_conversations_with_runtime_state, list_eval_cases_payload,
     list_eval_cases_with_runtime_state, list_mcp_diagnostics_with_store,
     list_mcp_servers_with_runtime_state, list_memory_items_with_runtime_state,
@@ -45,39 +49,42 @@ use jyowo_desktop_shell::commands::{
     request_provider_config_api_key_reveal_with_store,
     resolve_permission_for_window_with_runtime_state, resolve_permission_payload,
     resolve_permission_with_runtime_state, restart_mcp_server_with_runtime_state,
+    run_automation_now_with_runtime_state, run_due_automations_once_with_runtime_state,
     run_eval_case_payload, run_eval_case_with_runtime_state, runtime_state_async,
-    runtime_state_for_workspace, save_mcp_server_with_runtime_state, save_mcp_server_with_store,
-    save_provider_capability_route_settings_with_store, save_provider_capability_route_with_store,
-    save_provider_settings_with_runtime_state, save_provider_settings_with_store,
-    set_conversation_model_config_with_runtime_state, set_execution_settings_with_store,
-    set_mcp_server_enabled_with_runtime_state, set_skill_enabled_with_runtime_state,
-    start_run_payload, start_run_with_runtime_state,
-    subscribe_conversation_events_for_window_with_runtime_state,
+    runtime_state_for_workspace, save_automation_with_runtime_state,
+    save_browser_mcp_preset_with_store, save_mcp_server_with_runtime_state,
+    save_mcp_server_with_store, save_provider_capability_route_settings_with_store,
+    save_provider_capability_route_with_store, save_provider_settings_with_runtime_state,
+    save_provider_settings_with_store, set_conversation_model_config_with_runtime_state,
+    set_execution_settings_with_store, set_mcp_server_enabled_with_runtime_state,
+    set_skill_enabled_with_runtime_state, spawn_automation_scheduler, start_run_payload,
+    start_run_with_runtime_state, subscribe_conversation_events_for_window_with_runtime_state,
     unsubscribe_conversation_events_for_window_with_runtime_state,
     update_memory_item_with_runtime_state, validate_provider_settings_payload,
-    ArtifactSummaryPayload, AttachmentBlobRefPayload, AttachmentReferencePayload, CancelRunRequest,
-    ContextReferencePayload, ConversationEventBatchPayload, ConversationModelCapabilityRecord,
-    CreateAttachmentFromPathRequest, DeleteConversationRequest, DeleteMcpServerRequest,
-    DeleteMemoryItemRequest, DeleteProviderCapabilityRouteRequest, DeleteSkillRequest,
-    DesktopConversationModelConfigStore, DesktopExecutionSettingsStore, DesktopMcpDiagnosticStore,
-    DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore, DesktopRuntimeState,
-    DesktopSkillStore, ExportSupportBundleRequest, GetArtifactMediaPreviewRequest,
-    GetAttachmentMediaPreviewRequest, GetContextSnapshotRequest, GetConversationRequest,
-    GetExecutionSettingsRequest, GetMcpServerConfigRequest, GetMemoryItemRequest,
-    GetProviderConfigApiKeyRequest, GetSkillDetailRequest, GetSkillFileRequest, ImportSkillRequest,
-    ListActivityRequest, ListArtifactsRequest, ListReferenceCandidatesRequest, McpDiagnosticRecord,
-    McpDiagnosticSeverity, McpDiagnosticStore, McpHeaderEnvRecord, McpNameValueRecord,
-    McpServerConfigRecord, McpServerStore, McpServerTransportConfig,
-    PageConversationTimelineRequest, PageConversationWorktreeDirection,
+    ArtifactSummaryPayload, AttachmentBlobRefPayload, AttachmentReferencePayload,
+    BrowserMcpPresetId, CancelRunRequest, ContextReferencePayload, ConversationEventBatchPayload,
+    ConversationModelCapabilityRecord, CreateAttachmentFromPathRequest, DeleteConversationRequest,
+    DeleteMcpServerRequest, DeleteMemoryItemRequest, DeleteProviderCapabilityRouteRequest,
+    DeleteSkillRequest, DesktopConversationModelConfigStore, DesktopExecutionSettingsStore,
+    DesktopMcpDiagnosticStore, DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore,
+    DesktopRuntimeState, DesktopSkillStore, ExportSupportBundleRequest,
+    GetArtifactMediaPreviewRequest, GetAttachmentMediaPreviewRequest, GetContextSnapshotRequest,
+    GetConversationRequest, GetExecutionSettingsRequest, GetMcpServerConfigRequest,
+    GetMemoryItemRequest, GetProviderConfigApiKeyRequest, GetSkillDetailRequest,
+    GetSkillFileRequest, ImportSkillRequest, ListActivityRequest, ListArtifactsRequest,
+    ListReferenceCandidatesRequest, McpDiagnosticRecord, McpDiagnosticSeverity, McpDiagnosticStore,
+    McpHeaderEnvRecord, McpNameValueRecord, McpServerConfigRecord, McpServerStore,
+    McpServerTransportConfig, PageConversationTimelineRequest, PageConversationWorktreeDirection,
     PageConversationWorktreeRequest, PermissionDecision, ProviderCapabilityRouteStore,
     ProviderConfigRecord, ProviderModelDescriptorRecord, ProviderModelLifecycleRecord,
     ProviderModelModalityRecord, ProviderSettingsRecord, ProviderSettingsRequest,
     ProviderSettingsStore, ReplayTimelineRequest, RequestProviderConfigApiKeyRevealRequest,
-    ResolvePermissionRequest, RestartMcpServerRequest, RunEvalCaseRequest, SaveMcpServerRequest,
-    SaveProviderCapabilityRouteRequest, SetConversationModelConfigRequest,
-    SetExecutionSettingsRequest, SetMcpServerEnabledRequest, SetSkillEnabledRequest, SkillStore,
-    SkillStoreRecord, StartRunRequest, SubscribeConversationEventsRequest,
-    UnsubscribeConversationEventsRequest, UpdateMemoryItemRequest, ValidateProviderSettingsRequest,
+    ResolvePermissionRequest, RestartMcpServerRequest, RunEvalCaseRequest, SaveAutomationRequest,
+    SaveBrowserMcpPresetRequest, SaveMcpServerRequest, SaveProviderCapabilityRouteRequest,
+    SetAutomationEnabledRequest, SetConversationModelConfigRequest, SetExecutionSettingsRequest,
+    SetMcpServerEnabledRequest, SetSkillEnabledRequest, SkillStore, SkillStoreRecord,
+    StartRunRequest, SubscribeConversationEventsRequest, UnsubscribeConversationEventsRequest,
+    UpdateMemoryItemRequest, ValidateProviderSettingsRequest,
 };
 use jyowo_desktop_shell::project_registry::ProjectRegistry;
 use jyowo_harness_sdk::builtin::{DefaultRedactor, FileBlobStore};
@@ -92,8 +99,8 @@ use jyowo_harness_sdk::ext::{
     ProviderCredentialResolveContext, ProviderRestriction, RedactPatternSet, RedactRules,
     RedactScope, Redactor, RequestId, ResultBudget, RuleSnapshot, RunId, SessionId, Severity,
     StreamBrokerConfig, TenantId, ThinkingDelta, Tool, ToolCapability, ToolContext, ToolDescriptor,
-    ToolError, ToolEvent, ToolGroup, ToolProperties, ToolRegistry, ToolResult, ToolStream,
-    ToolUseId, TransportChoice, TrustLevel, UsageSnapshot, ValidationError,
+    ToolError, ToolEvent, ToolGroup, ToolProfile, ToolProperties, ToolRegistry, ToolResult,
+    ToolStream, ToolUseId, TransportChoice, TrustLevel, UsageSnapshot, ValidationError,
 };
 use jyowo_harness_sdk::ext::{ContentDelta, ModelStreamEvent};
 use jyowo_harness_sdk::testing::{
@@ -3225,6 +3232,80 @@ fn mcp_server_config_record_defaults_legacy_stdio_records_to_enabled() {
 }
 
 #[tokio::test]
+async fn browser_mcp_presets_are_disabled_until_saved() {
+    let store = RecordingMcpServerStore::default();
+
+    let payload = list_browser_mcp_presets_with_store(&store)
+        .await
+        .expect("browser MCP presets should list");
+
+    assert_eq!(payload.presets.len(), 2);
+    assert_eq!(payload.presets[0].id, BrowserMcpPresetId::Playwright);
+    assert_eq!(payload.presets[0].server_id, "browser-playwright");
+    assert!(!payload.presets[0].enabled);
+    assert_eq!(payload.presets[1].id, BrowserMcpPresetId::ChromeDevtools);
+    assert_eq!(payload.presets[1].server_id, "browser-chrome-devtools");
+    assert!(!payload.presets[1].enabled);
+}
+
+#[tokio::test]
+async fn browser_mcp_preset_save_writes_disabled_workspace_server_by_default() {
+    let store = RecordingMcpServerStore::default();
+
+    let payload = save_browser_mcp_preset_with_store(
+        SaveBrowserMcpPresetRequest {
+            preset_id: BrowserMcpPresetId::Playwright,
+            enabled: false,
+        },
+        &store,
+    )
+    .await
+    .expect("browser MCP preset should save");
+    let stored = store.record.lock().unwrap().clone().unwrap();
+
+    assert_eq!(payload.preset.id, BrowserMcpPresetId::Playwright);
+    assert!(!payload.preset.enabled);
+    assert_eq!(payload.server.status, "disabled");
+    assert!(!stored.enabled);
+    assert_eq!(stored.id, "browser-playwright");
+    assert!(matches!(
+        stored.transport,
+        McpServerTransportConfig::Stdio { ref command, ref args, ref env, .. }
+            if command == "npx" && args == &vec!["@playwright/mcp@latest".to_owned()] && env.is_empty()
+    ));
+    assert!(!serde_json::to_string(&stored)
+        .unwrap()
+        .contains("mcp-secret-token"));
+}
+
+#[tokio::test]
+async fn browser_mcp_preset_can_be_explicitly_enabled() {
+    let store = RecordingMcpServerStore::default();
+
+    let payload = save_browser_mcp_preset_with_store(
+        SaveBrowserMcpPresetRequest {
+            preset_id: BrowserMcpPresetId::ChromeDevtools,
+            enabled: true,
+        },
+        &store,
+    )
+    .await
+    .expect("browser MCP preset should save");
+    let stored = store.record.lock().unwrap().clone().unwrap();
+
+    assert_eq!(payload.preset.id, BrowserMcpPresetId::ChromeDevtools);
+    assert!(payload.preset.enabled);
+    assert!(payload.server.enabled);
+    assert_eq!(stored.id, "browser-chrome-devtools");
+    assert!(stored.enabled);
+    assert!(matches!(
+        stored.transport,
+        McpServerTransportConfig::Stdio { ref command, ref args, .. }
+            if command == "npx" && args == &vec!["chrome-devtools-mcp@latest".to_owned()]
+    ));
+}
+
+#[tokio::test]
 async fn save_mcp_server_payload_rejects_secret_bearing_stdio_args() {
     let store = RecordingMcpServerStore::default();
     let error = save_mcp_server_with_store(
@@ -3429,6 +3510,34 @@ async fn save_mcp_server_payload_rejects_secret_bearing_http_headers() {
                     value: "Bearer mcp-secret-token".to_owned(),
                 }],
                 headers_from_env: Vec::new(),
+            },
+        },
+        &store,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(store.record.lock().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn save_mcp_server_payload_rejects_cookie_headers_from_env() {
+    let store = RecordingMcpServerStore::default();
+    let error = save_mcp_server_with_store(
+        SaveMcpServerRequest {
+            enabled: true,
+            display_name: "Remote Browser".to_owned(),
+            id: "remote-browser".to_owned(),
+            scope: "global".to_owned(),
+            transport: McpServerTransportConfig::Http {
+                url: "https://mcp.example.com/mcp".to_owned(),
+                bearer_token_env_var: None,
+                headers: Vec::new(),
+                headers_from_env: vec![McpHeaderEnvRecord {
+                    key: "Cookie".to_owned(),
+                    env_var: "BROWSER_COOKIE".to_owned(),
+                }],
             },
         },
         &store,
@@ -7196,6 +7305,307 @@ fn start_run_request_deserializes_permission_mode_override() {
     assert_eq!(request.conversation_id, conversation_id);
 }
 
+#[tokio::test]
+async fn automation_store_missing_files_loads_empty_state() {
+    let workspace = unique_workspace("automation-empty-state");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+
+    let automations = list_automations_with_runtime_state(&state)
+        .await
+        .expect("missing automation file should load as empty");
+    let runs = list_automation_runs_with_runtime_state(None, &state)
+        .await
+        .expect("missing automation run ledger should load as empty");
+
+    assert!(automations.automations.is_empty());
+    assert!(runs.runs.is_empty());
+}
+
+#[tokio::test]
+async fn save_automation_writes_runtime_file_and_defaults_to_disabled() {
+    let workspace = unique_workspace("automation-save-file");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    let automation = automation_spec("checks", false, MissedRunPolicy::Skip);
+
+    let payload = save_automation_with_runtime_state(
+        SaveAutomationRequest {
+            automation: automation.clone(),
+        },
+        &state,
+    )
+    .await
+    .expect("automation should save");
+
+    assert_eq!(payload.automation.id, "checks");
+    assert!(!payload.automation.enabled);
+    let automations_path = state
+        .workspace_root()
+        .join(".jyowo")
+        .join("runtime")
+        .join("automations.json");
+    let saved = std::fs::read_to_string(&automations_path).expect("automation file should exist");
+    assert!(saved.contains("\"id\": \"checks\""));
+    assert!(
+        std::fs::read_dir(automations_path.parent().unwrap())
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp")),
+        "successful atomic write should not leave temp files"
+    );
+}
+
+#[tokio::test]
+async fn save_automation_rejects_secret_like_prompt() {
+    let workspace = unique_workspace("automation-secret-prompt");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    let mut automation = automation_spec("checks", false, MissedRunPolicy::Skip);
+    automation.prompt = "Use token=sk-test-secret-value".to_owned();
+
+    let error = save_automation_with_runtime_state(SaveAutomationRequest { automation }, &state)
+        .await
+        .expect_err("secret-like automation prompts should be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(list_automations_with_runtime_state(&state)
+        .await
+        .unwrap()
+        .automations
+        .is_empty());
+}
+
+#[tokio::test]
+async fn save_automation_rejects_non_read_only_workspace_snapshot() {
+    let workspace = unique_workspace("automation-rejects-write-scope");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    let mut automation = automation_spec("checks", false, MissedRunPolicy::Skip);
+    automation.workspace_access = WorkspaceAccess::ReadWrite {
+        allowed_writable_subpaths: Vec::new(),
+    };
+
+    let error = save_automation_with_runtime_state(SaveAutomationRequest { automation }, &state)
+        .await
+        .expect_err("automation MVP should reject writable workspace snapshots");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn disabled_automation_is_not_run_by_due_scheduler() {
+    let workspace = unique_workspace("automation-disabled-not-due");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    save_automation_with_runtime_state(
+        SaveAutomationRequest {
+            automation: automation_spec("checks", false, MissedRunPolicy::RunOnce),
+        },
+        &state,
+    )
+    .await
+    .expect("automation should save");
+
+    let records = run_due_automations_once_with_runtime_state(chrono::Utc::now(), &state)
+        .await
+        .expect("scheduler pass should succeed");
+
+    assert!(records.is_empty());
+    assert!(list_automation_runs_with_runtime_state(None, &state)
+        .await
+        .unwrap()
+        .runs
+        .is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn automation_scheduler_task_runs_due_automations_in_process() {
+    let workspace = unique_workspace("automation-scheduler-task");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    let now = chrono::Utc::now();
+    save_automation_with_runtime_state(
+        SaveAutomationRequest {
+            automation: automation_spec_at(
+                "checks",
+                true,
+                MissedRunPolicy::RunOnce,
+                now - chrono::Duration::minutes(120),
+            ),
+        },
+        &state,
+    )
+    .await
+    .expect("automation should save");
+    let runtime = Arc::new(tokio::sync::RwLock::new(state.clone()));
+
+    let task = spawn_automation_scheduler(runtime);
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::task::yield_now().await;
+    task.abort();
+    let runs = list_automation_runs_with_runtime_state(Some("checks".to_owned()), &state)
+        .await
+        .expect("scheduler should write ledger");
+
+    assert_eq!(runs.runs.len(), 1);
+    assert_eq!(runs.runs[0].status, AutomationRunStatus::Rejected);
+}
+
+#[tokio::test]
+async fn run_automation_now_writes_rejected_ledger_without_runtime() {
+    let workspace = unique_workspace("automation-run-now-ledger");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    save_automation_with_runtime_state(
+        SaveAutomationRequest {
+            automation: automation_spec("checks", true, MissedRunPolicy::Skip),
+        },
+        &state,
+    )
+    .await
+    .expect("automation should save");
+
+    let payload = run_automation_now_with_runtime_state("checks".to_owned(), &state)
+        .await
+        .expect("manual automation run should record a rejection");
+    let runs = list_automation_runs_with_runtime_state(Some("checks".to_owned()), &state)
+        .await
+        .expect("automation ledger should load");
+
+    assert_eq!(payload.record.status, AutomationRunStatus::Rejected);
+    assert_eq!(runs.runs.len(), 1);
+    assert_eq!(runs.runs[0].automation_id, "checks");
+    assert_eq!(runs.runs[0].status, AutomationRunStatus::Rejected);
+    let serialized = serde_json::to_string(&runs).unwrap();
+    assert!(!serialized.contains("rawToolOutput"));
+}
+
+#[tokio::test]
+async fn automation_missed_policy_skip_or_run_once_is_enforced() {
+    let workspace = unique_workspace("automation-missed-policy");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    let now = chrono::Utc::now();
+    save_automation_with_runtime_state(
+        SaveAutomationRequest {
+            automation: automation_spec_at(
+                "skip-missed",
+                true,
+                MissedRunPolicy::Skip,
+                now - chrono::Duration::minutes(120),
+            ),
+        },
+        &state,
+    )
+    .await
+    .expect("skip automation should save");
+    save_automation_with_runtime_state(
+        SaveAutomationRequest {
+            automation: automation_spec_at(
+                "run-once-missed",
+                true,
+                MissedRunPolicy::RunOnce,
+                now - chrono::Duration::minutes(120),
+            ),
+        },
+        &state,
+    )
+    .await
+    .expect("run-once automation should save");
+
+    let records = run_due_automations_once_with_runtime_state(now, &state)
+        .await
+        .expect("scheduler pass should handle missed policy");
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].automation_id, "run-once-missed");
+    assert_eq!(records[0].status, AutomationRunStatus::Rejected);
+}
+
+#[tokio::test]
+async fn automation_rejects_missing_permission_or_profile_snapshot() {
+    let workspace = unique_workspace("automation-missing-snapshot");
+    std::fs::create_dir_all(workspace.join(".jyowo").join("runtime"))
+        .expect("runtime directory should exist");
+    std::fs::write(
+        workspace
+            .join(".jyowo")
+            .join("runtime")
+            .join("automations.json"),
+        r#"[{
+          "id":"legacy",
+          "enabled":true,
+          "prompt":"Run checks",
+          "schedule":{"intervalMinutes":30},
+          "sandboxMode":"none",
+          "workspaceScope":"current_workspace",
+          "workspaceAccess":"read_only",
+          "createdAt":"2026-06-30T01:00:00Z",
+          "updatedAt":"2026-06-30T01:00:00Z"
+        }]"#,
+    )
+    .expect("legacy automation file should write");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+
+    let error = run_due_automations_once_with_runtime_state(chrono::Utc::now(), &state)
+        .await
+        .expect_err("missing snapshot should fail closed");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("automation"));
+}
+
+#[tokio::test]
+async fn automation_delete_and_set_enabled_update_saved_state() {
+    let workspace = unique_workspace("automation-delete-enable");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    save_automation_with_runtime_state(
+        SaveAutomationRequest {
+            automation: automation_spec("checks", false, MissedRunPolicy::Skip),
+        },
+        &state,
+    )
+    .await
+    .expect("automation should save");
+
+    let enabled = jyowo_desktop_shell::commands::set_automation_enabled_with_runtime_state(
+        SetAutomationEnabledRequest {
+            enabled: true,
+            id: "checks".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("automation should enable");
+    assert!(enabled.automation.enabled);
+
+    let deleted = delete_automation_with_runtime_state("checks".to_owned(), &state)
+        .await
+        .expect("automation should delete");
+    assert_eq!(deleted.status, "deleted");
+    assert!(list_automations_with_runtime_state(&state)
+        .await
+        .unwrap()
+        .automations
+        .is_empty());
+}
+
 #[test]
 fn execution_settings_save_default_without_changing_session_options() {
     let workspace = unique_workspace("execution-settings-session-options");
@@ -7205,6 +7615,7 @@ fn execution_settings_save_default_without_changing_session_options() {
     set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::BypassPermissions,
+            tool_profile: ToolProfile::Coding,
             context_compression_trigger_ratio: 0.72,
             subagents_enabled: false,
             agent_teams_enabled: false,
@@ -7217,7 +7628,61 @@ fn execution_settings_save_default_without_changing_session_options() {
     let options = state.conversation_session_options(SessionId::new());
 
     assert_eq!(options.permission_mode, PermissionMode::Default);
+    assert_eq!(options.tool_profile, ToolProfile::Coding);
     assert_eq!(options.context_compression_trigger_ratio, 0.72);
+}
+
+#[tokio::test]
+async fn active_conversation_runtime_applies_saved_tool_profile() {
+    let workspace = unique_workspace("execution-settings-active-runtime-tool-profile");
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+    set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Coding,
+            context_compression_trigger_ratio: 0.72,
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        },
+        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+    )
+    .expect("execution settings should save");
+
+    let (_, options) = state
+        .active_conversation_runtime(SessionId::new())
+        .expect("active runtime should be present");
+
+    assert_eq!(options.tool_profile, ToolProfile::Coding);
+    assert_eq!(options.context_compression_trigger_ratio, 0.72);
+}
+
+fn automation_spec(id: &str, enabled: bool, missed_run_policy: MissedRunPolicy) -> AutomationSpec {
+    automation_spec_at(id, enabled, missed_run_policy, chrono::Utc::now())
+}
+
+fn automation_spec_at(
+    id: &str,
+    enabled: bool,
+    missed_run_policy: MissedRunPolicy,
+    created_at: chrono::DateTime<chrono::Utc>,
+) -> AutomationSpec {
+    AutomationSpec {
+        id: id.to_owned(),
+        enabled,
+        prompt: "Run checks".to_owned(),
+        schedule: AutomationSchedule {
+            interval_minutes: 30,
+        },
+        tool_profile: ToolProfile::Coding,
+        permission_mode: PermissionMode::Default,
+        sandbox_mode: SandboxMode::None,
+        workspace_scope: AutomationWorkspaceScope::CurrentWorkspace,
+        workspace_access: WorkspaceAccess::ReadOnly,
+        missed_run_policy,
+        created_at,
+        updated_at: created_at,
+    }
 }
 
 #[test]
@@ -7232,6 +7697,7 @@ fn get_execution_settings_defaults_to_standard_mode() {
     .expect("execution settings should load");
 
     assert_eq!(settings.permission_mode, PermissionMode::Default);
+    assert_eq!(settings.tool_profile, ToolProfile::Full);
     assert_eq!(settings.context_compression_trigger_ratio, 0.8);
     assert_eq!(settings.auto_mode_available, cfg!(feature = "auto-mode"));
     assert!(!settings.agent_capabilities.subagents_enabled);
@@ -7328,6 +7794,7 @@ fn get_execution_settings_for_request_reads_registered_workspace_instead_of_acti
     set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::BypassPermissions,
+            tool_profile: ToolProfile::Full,
             context_compression_trigger_ratio: 0.8,
             subagents_enabled: false,
             agent_teams_enabled: false,
@@ -7386,6 +7853,7 @@ fn set_execution_settings_rejects_unavailable_agent_capabilities() {
     for request in [
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
             context_compression_trigger_ratio: 0.8,
             subagents_enabled: true,
             agent_teams_enabled: false,
@@ -7393,6 +7861,7 @@ fn set_execution_settings_rejects_unavailable_agent_capabilities() {
         },
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
             context_compression_trigger_ratio: 0.8,
             subagents_enabled: false,
             agent_teams_enabled: true,
@@ -7400,6 +7869,7 @@ fn set_execution_settings_rejects_unavailable_agent_capabilities() {
         },
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
             context_compression_trigger_ratio: 0.8,
             subagents_enabled: false,
             agent_teams_enabled: false,
@@ -7424,6 +7894,7 @@ fn set_execution_settings_serializes_agent_capability_fields() {
     let response = set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Coding,
             context_compression_trigger_ratio: 0.8,
             subagents_enabled: false,
             agent_teams_enabled: false,
@@ -7444,6 +7915,7 @@ fn set_execution_settings_serializes_agent_capability_fields() {
         saved,
         json!({
             "permission_mode": "default",
+            "tool_profile": "coding",
             "context_compression_trigger_ratio": 0.8,
             "subagents_enabled": false,
             "agent_teams_enabled": false,
@@ -7461,6 +7933,7 @@ fn set_execution_settings_rejects_invalid_context_compression_trigger_ratio() {
     let low_error = set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
             context_compression_trigger_ratio: 0.49,
             subagents_enabled: false,
             agent_teams_enabled: false,
@@ -7474,6 +7947,7 @@ fn set_execution_settings_rejects_invalid_context_compression_trigger_ratio() {
     let high_error = set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
             context_compression_trigger_ratio: 0.96,
             subagents_enabled: false,
             agent_teams_enabled: false,
@@ -7529,6 +8003,7 @@ fn set_execution_settings_rejects_auto_without_runtime_support() {
     let error = set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::Auto,
+            tool_profile: ToolProfile::Full,
             context_compression_trigger_ratio: 0.8,
             subagents_enabled: false,
             agent_teams_enabled: false,
@@ -7844,6 +8319,7 @@ async fn start_run_permission_mode_override_wins_over_saved_default() {
     set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::BypassPermissions,
+            tool_profile: ToolProfile::Full,
             context_compression_trigger_ratio: 0.8,
             subagents_enabled: false,
             agent_teams_enabled: false,

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use harness_contracts::{
     DeferPolicy, ModelProvider, ProviderRestriction, ToolDescriptor, ToolError, ToolGroup,
-    ToolOrigin, ToolSearchMode,
+    ToolOrigin, ToolProfile, ToolSearchMode,
 };
 use parking_lot::{Mutex, MutexGuard};
 
@@ -24,7 +24,7 @@ impl Default for ToolPoolModelProfile {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolPoolFilter {
     pub allowlist: Option<HashSet<String>>,
     pub denylist: HashSet<String>,
@@ -44,6 +44,86 @@ impl Default for ToolPoolFilter {
             group_allowlist: None,
             group_denylist: HashSet::new(),
         }
+    }
+}
+
+impl ToolPoolFilter {
+    #[must_use]
+    pub fn from_profile(profile: &ToolProfile) -> Self {
+        match profile {
+            ToolProfile::Minimal => Self::minimal(),
+            ToolProfile::Coding => Self {
+                mcp_included: false,
+                plugin_included: false,
+                group_allowlist: Some(HashSet::from([
+                    ToolGroup::Agent,
+                    ToolGroup::Clarification,
+                    ToolGroup::Coordinator,
+                    ToolGroup::FileSystem,
+                    ToolGroup::Memory,
+                    ToolGroup::Meta,
+                    ToolGroup::Search,
+                    ToolGroup::Shell,
+                ])),
+                ..Self::default()
+            },
+            ToolProfile::Full => Self::default(),
+            ToolProfile::Custom {
+                allowlist,
+                denylist,
+                group_allowlist,
+                group_denylist,
+                mcp_included,
+                plugin_included,
+            } => Self {
+                allowlist: (!allowlist.is_empty()).then(|| allowlist.iter().cloned().collect()),
+                denylist: denylist.iter().cloned().collect(),
+                mcp_included: *mcp_included,
+                plugin_included: *plugin_included,
+                group_allowlist: (!group_allowlist.is_empty())
+                    .then(|| group_allowlist.iter().cloned().collect()),
+                group_denylist: group_denylist.iter().cloned().collect(),
+            },
+            _ => Self::minimal(),
+        }
+    }
+
+    fn minimal() -> Self {
+        Self {
+            mcp_included: false,
+            plugin_included: false,
+            group_allowlist: Some(HashSet::from([
+                ToolGroup::Clarification,
+                ToolGroup::Coordinator,
+                ToolGroup::Meta,
+            ])),
+            ..Self::default()
+        }
+    }
+
+    pub fn intersect_with(&mut self, profile_filter: Self) {
+        self.allowlist = intersect_optional_sets(self.allowlist.take(), profile_filter.allowlist);
+        self.denylist.extend(profile_filter.denylist);
+        self.mcp_included &= profile_filter.mcp_included;
+        self.plugin_included &= profile_filter.plugin_included;
+        self.group_allowlist =
+            intersect_optional_sets(self.group_allowlist.take(), profile_filter.group_allowlist);
+        self.group_denylist.extend(profile_filter.group_denylist);
+    }
+}
+
+fn intersect_optional_sets<T>(
+    left: Option<HashSet<T>>,
+    right: Option<HashSet<T>>,
+) -> Option<HashSet<T>>
+where
+    T: Clone + Eq + std::hash::Hash,
+{
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.intersection(&right).cloned().collect()),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
     }
 }
 

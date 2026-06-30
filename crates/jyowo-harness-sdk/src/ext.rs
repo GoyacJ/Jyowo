@@ -16,9 +16,9 @@ pub use harness_contracts::{
     SessionId, Severity, SkillSourceKind, SkillStatus, SkillThreatDetectedEvent, StopReason,
     SubagentId, SubagentPermissionForwardedEvent, SuppressionReason, TeamCreatedEvent, TeamId,
     TenantId, ThoughtChunk, ThreatAction, ThreatCategory, ThreatDirection, ToolCapability,
-    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode,
-    ToolUseCompletedEvent, ToolUseId, TopologyKind, TrustLevel, UsageAccumulatedEvent,
-    UsageSnapshot, WorkspaceId,
+    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProfile, ToolProperties, ToolResult,
+    ToolSearchMode, ToolUseCompletedEvent, ToolUseId, TopologyKind, TrustLevel,
+    UsageAccumulatedEvent, UsageSnapshot, WorkspaceId,
 };
 pub use harness_hook::{HookEvent, HookHandler, HookOutcome, HookRegistry};
 pub use harness_journal::{

@@ -2,7 +2,7 @@ import { Shield } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import type { PermissionMode } from '@/shared/tauri/commands'
+import type { PermissionMode, ToolProfile } from '@/shared/tauri/commands'
 import { getExecutionSettings, setExecutionSettings } from '@/shared/tauri/commands'
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { useCommandClient } from '@/shared/tauri/react'
@@ -14,6 +14,12 @@ const permissionModeOptions = [
   { value: 'bypass_permissions', labelKey: 'execution.mode.bypass.label' },
 ] as const satisfies ReadonlyArray<{ value: PermissionMode; labelKey: string }>
 
+const toolProfileOptions = [
+  { value: 'minimal', labelKey: 'execution.toolProfile.minimal.label' },
+  { value: 'coding', labelKey: 'execution.toolProfile.coding.label' },
+  { value: 'full', labelKey: 'execution.toolProfile.full.label' },
+] as const satisfies ReadonlyArray<{ value: ToolProfile; labelKey: string }>
+
 const defaultAgentCapabilitySettings = {
   agentTeamsEnabled: false,
   backgroundAgentsEnabled: false,
@@ -24,6 +30,7 @@ export function ExecutionSettings() {
   const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
+  const [toolProfile, setToolProfile] = useState<ToolProfile>('full')
   const [contextCompressionTriggerPercent, setContextCompressionTriggerPercent] = useState(80)
   const [agentCapabilitySettings, setAgentCapabilitySettings] = useState(
     defaultAgentCapabilitySettings,
@@ -47,6 +54,7 @@ export function ExecutionSettings() {
         }
 
         setPermissionMode(settings.permissionMode)
+        setToolProfile(settings.toolProfile)
         setContextCompressionTriggerPercent(
           Math.round(settings.contextCompressionTriggerRatio * 100),
         )
@@ -76,6 +84,7 @@ export function ExecutionSettings() {
 
   async function saveSettings(
     nextMode: PermissionMode,
+    nextToolProfile: ToolProfile = toolProfile,
     nextContextCompressionTriggerPercent = contextCompressionTriggerPercent,
   ) {
     setSaving(true)
@@ -87,10 +96,12 @@ export function ExecutionSettings() {
           ...agentCapabilitySettings,
           contextCompressionTriggerRatio: nextContextCompressionTriggerPercent / 100,
           permissionMode: nextMode,
+          toolProfile: nextToolProfile,
         },
         commandClient,
       )
       setPermissionMode(settings.permissionMode)
+      setToolProfile(settings.toolProfile)
       setContextCompressionTriggerPercent(Math.round(settings.contextCompressionTriggerRatio * 100))
       setAgentCapabilitySettings({
         agentTeamsEnabled: settings.agentCapabilities.agentTeamsEnabled,
@@ -160,6 +171,39 @@ export function ExecutionSettings() {
             })}
           </fieldset>
 
+          <fieldset className="space-y-3">
+            <legend className="font-medium text-sm">{t('execution.toolProfile.label')}</legend>
+            {toolProfileOptions.map((option) => {
+              const disabled = saving || toolProfile === option.value
+
+              return (
+                <label
+                  className="flex cursor-pointer items-start gap-3 rounded-md border border-border p-4"
+                  key={option.value}
+                >
+                  <input
+                    checked={toolProfile === option.value}
+                    className="mt-1"
+                    disabled={disabled}
+                    name="toolProfile"
+                    onChange={() => {
+                      setToolProfile(option.value)
+                      void saveSettings(permissionMode, option.value)
+                    }}
+                    type="radio"
+                    value={option.value}
+                  />
+                  <span className="space-y-1">
+                    <span className="block font-medium text-sm">{t(option.labelKey)}</span>
+                    <span className="block text-muted-foreground text-sm">
+                      {t(toolProfileDescriptionKey(option.value))}
+                    </span>
+                  </span>
+                </label>
+              )
+            })}
+          </fieldset>
+
           <div className="space-y-2">
             <label
               className="block font-medium text-sm"
@@ -202,6 +246,19 @@ export function ExecutionSettings() {
       </div>
     </section>
   )
+}
+
+function toolProfileDescriptionKey(toolProfile: ToolProfile) {
+  switch (toolProfile) {
+    case 'minimal':
+      return 'execution.toolProfile.minimal.description'
+    case 'coding':
+      return 'execution.toolProfile.coding.description'
+    case 'full':
+      return 'execution.toolProfile.full.description'
+    default:
+      return 'execution.toolProfile.custom.description'
+  }
 }
 
 function permissionModeDescriptionKey(permissionMode: PermissionMode) {
