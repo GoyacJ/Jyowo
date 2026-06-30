@@ -1355,7 +1355,7 @@ git commit -m "feat: add model details and config editing"
 - Modify: `apps/desktop/src/shared/i18n/locales/en-US.ts`
 - Modify: `apps/desktop/src/shared/i18n/locales/zh-CN.ts`
 
-- [ ] **Step 1: Write failing route UI tests**
+- [x] **Step 1: Write failing route UI tests**
 
 Tests must cover:
 
@@ -1370,7 +1370,7 @@ Tests must cover:
 
 Expected: tests fail because route UI is still embedded in the old provider form or missing.
 
-- [ ] **Step 2: Move route editing into `CapabilityRoutesPanel`**
+- [x] **Step 2: Move route editing into `CapabilityRoutesPanel`**
 
 Rules:
 
@@ -1380,7 +1380,7 @@ Rules:
 - Show probe health if a selected route target has a probe snapshot.
 - Do not add fallback chains or priority routing. Current backend contract allows one enabled target per `CapabilityRouteKind`.
 
-- [ ] **Step 3: Add model detail read-only route binding**
+- [x] **Step 3: Add model detail read-only route binding**
 
 Rules:
 
@@ -1388,7 +1388,7 @@ Rules:
 - A shortcut such as "Use for image generation" may open the route editor drawer.
 - The route editor remains the only full editor.
 
-- [ ] **Step 4: Run tests and gates**
+- [x] **Step 4: Run tests and gates**
 
 Run:
 
@@ -1400,7 +1400,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 5: Audit and commit**
+- [x] **Step 5: Audit and commit**
 
 Code-review and security-review subagents are required.
 

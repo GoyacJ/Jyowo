@@ -23,7 +23,11 @@ export type QuerySlice<T> =
   | { status: 'error'; safeMessage: string }
   | { status: 'ready'; data: T }
 
-type SectionState<T> = { status: 'unavailable' } | { status: 'ready'; data: T }
+export type SectionState<T> =
+  | { status: 'loading' }
+  | { status: 'error'; safeMessage: string }
+  | { status: 'unavailable' }
+  | { status: 'ready'; data: T }
 
 export type ModelSettingsQueryInputs = {
   catalog: QuerySlice<ModelProviderCatalogResponse>
@@ -87,6 +91,7 @@ export type ModelAssetRow = {
   connectivity: ConnectivityDisplayState
   usage: UsageDisplayState
   quota: QuotaDisplayState
+  routeBindings: ModelRouteBinding[]
 }
 
 type ModelSettingsSummaryMetric<T> = SectionState<T>
@@ -116,17 +121,37 @@ export type ModelSettingsSummaryView = {
   }>
 }
 
+type ModelRouteBinding = {
+  kind: CapabilityRouteKind
+  operationIds: string[]
+}
+
+type CapabilityRouteTarget = {
+  configId: string
+  providerId: string
+  modelId: string
+  displayName: string
+  providerDisplayName: string
+  operationIds: string[]
+  execution: ProviderCapabilityRouteOption['execution']
+  costRisk: ProviderCapabilityRouteOption['costRisk']
+  health: ConnectivityDisplayState
+}
+
 type CapabilityRouteUnavailableTarget = {
   configId: string
   providerId: string
+  modelId: string
+  displayName: string
   operationId: string
   reason: string
 }
 
-type CapabilityRouteRow = {
+export type CapabilityRouteRow = {
   kind: CapabilityRouteKind
   savedRoute: ProviderCapabilityRoute | null
-  eligibleTargetCount: number
+  selectedTarget: CapabilityRouteTarget | null
+  eligibleTargets: CapabilityRouteTarget[]
   unavailableTargets: CapabilityRouteUnavailableTarget[]
 }
 
@@ -153,8 +178,8 @@ const FAILING_PROBE_STATUSES = new Set<ProviderProbeSnapshot['status']>([
 const capabilityRouteKindOrder = [
   'image_generation',
   'video_generation',
-  'text_to_speech',
   'speech_to_text',
+  'text_to_speech',
   'music_generation',
 ] as const satisfies readonly CapabilityRouteKind[]
 
@@ -231,17 +256,25 @@ export function buildModelSettingsViewModel(
     }),
   )
 
+  const capabilityRoutes = buildCapabilityRoutesSection(
+    input.routes,
+    input.routeOptions,
+    settings,
+    rows,
+  )
+  const rowsWithRouteBindings = attachRouteBindingsToRows(rows, capabilityRoutes)
+
   return {
     summary: buildModelSettingsSummary({
-      rows,
+      rows: rowsWithRouteBindings,
       settings,
       usageSummary: input.usageSummary,
       quotaSnapshots: input.quotaSnapshots,
     }),
-    rows,
+    rows: rowsWithRouteBindings,
     catalog,
     configs: settings.configs,
-    capabilityRoutes: buildCapabilityRoutesSection(input.routes, input.routeOptions, settings),
+    capabilityRoutes,
   }
 }
 
@@ -377,6 +410,7 @@ function buildModelAssetRow({
     connectivity: buildConnectivityDisplay(probe, probeAvailable),
     usage: buildUsageDisplay(usageValues, sharedUsageKeys.has(usageKey)),
     quota: buildQuotaDisplay(quota, quotaAvailable),
+    routeBindings: [],
   }
 }
 
@@ -551,18 +585,27 @@ function buildCapabilityRoutesSection(
   routes: QuerySlice<ListProviderCapabilityRoutesResponse>,
   routeOptions: QuerySlice<ListProviderCapabilityRouteOptionsResponse>,
   settings: ListProviderSettingsResponse,
+  rows: ModelAssetRow[],
 ): SectionState<CapabilityRouteRow[]> {
   if (routes.status === 'error' || routeOptions.status === 'error') {
-    return { status: 'unavailable' }
+    return {
+      status: 'error',
+      safeMessage:
+        routes.status === 'error'
+          ? routes.safeMessage
+          : routeOptions.status === 'error'
+            ? routeOptions.safeMessage
+            : 'Capability routes unavailable',
+    }
   }
 
   if (routes.status !== 'ready' || routeOptions.status !== 'ready') {
-    return { status: 'unavailable' }
+    return { status: 'loading' }
   }
 
   return {
     status: 'ready',
-    data: buildCapabilityRouteRows(routeOptions.data.options, routes.data.routes, settings),
+    data: buildCapabilityRouteRows(routeOptions.data.options, routes.data.routes, settings, rows),
   }
 }
 
@@ -570,6 +613,7 @@ function buildCapabilityRouteRows(
   options: ProviderCapabilityRouteOption[],
   routes: ProviderCapabilityRoute[],
   settings: ListProviderSettingsResponse,
+  rows: ModelAssetRow[],
 ): CapabilityRouteRow[] {
   const kinds = new Set<CapabilityRouteKind>([
     ...options.map((option) => option.kind),
@@ -580,33 +624,121 @@ function buildCapabilityRouteRows(
     .sort((left, right) => capabilityRouteKindSortValue(left) - capabilityRouteKindSortValue(right))
     .map((kind) => {
       const kindOptions = options.filter((option) => option.kind === kind)
+      const eligibleTargets = buildCapabilityRouteTargets(kindOptions, settings, rows)
       const unavailableTargets = kindOptions
         .filter((option) => !option.runtimeSupported && option.unavailableReason)
-        .map((option) => ({
-          configId: option.configId,
-          providerId: option.providerId,
-          operationId: option.operationId,
-          reason: option.unavailableReason ?? 'Unavailable',
-        }))
-      const eligibleTargetCount = new Set(
-        kindOptions
-          .filter((option) => option.runtimeSupported)
-          .map((option) => `${option.configId}::${option.providerId}`),
-      ).size
+        .map((option) => {
+          const config = settings.configs.find((candidate) => candidate.id === option.configId)
+          return {
+            configId: option.configId,
+            providerId: option.providerId,
+            modelId: config?.modelId ?? '',
+            displayName: config?.displayName ?? option.configId,
+            operationId: option.operationId,
+            reason: option.unavailableReason ?? 'Unavailable',
+          }
+        })
+      const savedRoute =
+        routes.find(
+          (route) =>
+            route.kind === kind &&
+            route.enabled &&
+            settings.configs.some((config) => config.id === route.configId),
+        ) ?? null
 
       return {
         kind,
-        savedRoute:
-          routes.find(
-            (route) =>
-              route.kind === kind &&
-              route.enabled &&
-              settings.configs.some((config) => config.id === route.configId),
-          ) ?? null,
-        eligibleTargetCount,
+        savedRoute,
+        selectedTarget: savedRoute
+          ? (eligibleTargets.find((target) => target.configId === savedRoute.configId) ??
+            buildCapabilityRouteTarget(
+              kindOptions.filter((option) => option.configId === savedRoute.configId),
+              settings,
+              rows,
+              savedRoute.operationIds,
+            ))
+          : null,
+        eligibleTargets,
         unavailableTargets,
       }
     })
+}
+
+function buildCapabilityRouteTargets(
+  options: ProviderCapabilityRouteOption[],
+  settings: ListProviderSettingsResponse,
+  rows: ModelAssetRow[],
+): CapabilityRouteTarget[] {
+  const optionsByConfigId = new Map<string, ProviderCapabilityRouteOption[]>()
+  for (const option of options) {
+    if (!option.runtimeSupported) {
+      continue
+    }
+
+    optionsByConfigId.set(option.configId, [
+      ...(optionsByConfigId.get(option.configId) ?? []),
+      option,
+    ])
+  }
+
+  return [...optionsByConfigId.entries()]
+    .map(([, configOptions]) => buildCapabilityRouteTarget(configOptions, settings, rows))
+    .filter((target): target is CapabilityRouteTarget => target !== null)
+    .sort((left, right) => left.displayName.localeCompare(right.displayName))
+}
+
+function buildCapabilityRouteTarget(
+  options: ProviderCapabilityRouteOption[],
+  settings: ListProviderSettingsResponse,
+  rows: ModelAssetRow[],
+  operationIds = options.map((option) => option.operationId),
+): CapabilityRouteTarget | null {
+  const firstOption = options[0]
+  const config = firstOption
+    ? settings.configs.find((candidate) => candidate.id === firstOption.configId)
+    : null
+  const row = firstOption
+    ? rows.find((candidate) => candidate.configId === firstOption.configId)
+    : null
+  if (!firstOption || !config || !row) {
+    return null
+  }
+
+  return {
+    configId: firstOption.configId,
+    providerId: firstOption.providerId,
+    modelId: config.modelId,
+    displayName: config.displayName,
+    providerDisplayName: row.providerDisplayName,
+    operationIds,
+    execution: pickExecution(options),
+    costRisk: pickHighestCostRisk(options),
+    health: row.connectivity,
+  }
+}
+
+function pickExecution(
+  options: ProviderCapabilityRouteOption[],
+): ProviderCapabilityRouteOption['execution'] {
+  if (options.some((option) => option.execution === 'async_job')) {
+    return 'async_job'
+  }
+  if (options.some((option) => option.execution === 'websocket')) {
+    return 'websocket'
+  }
+  return 'sync'
+}
+
+function pickHighestCostRisk(
+  options: ProviderCapabilityRouteOption[],
+): ProviderCapabilityRouteOption['costRisk'] {
+  if (options.some((option) => option.costRisk === 'high')) {
+    return 'high'
+  }
+  if (options.some((option) => option.costRisk === 'medium')) {
+    return 'medium'
+  }
+  return 'low'
 }
 
 function capabilityRouteKindSortValue(kind: CapabilityRouteKind): number {
@@ -624,6 +756,25 @@ export function isFailingConnectivity(connectivity: ConnectivityDisplayState): b
 
 export function isModelScopedQuota(scope: OfficialQuotaScope): boolean {
   return scope === 'model'
+}
+
+function attachRouteBindingsToRows(
+  rows: ModelAssetRow[],
+  capabilityRoutes: SectionState<CapabilityRouteRow[]>,
+): ModelAssetRow[] {
+  if (capabilityRoutes.status !== 'ready') {
+    return rows
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    routeBindings: capabilityRoutes.data
+      .filter((route) => route.savedRoute?.configId === row.configId)
+      .map((route) => ({
+        kind: route.kind,
+        operationIds: route.savedRoute?.operationIds ?? [],
+      })),
+  }))
 }
 
 export function emptyUsageSummary(): GetModelUsageSummaryResponse {

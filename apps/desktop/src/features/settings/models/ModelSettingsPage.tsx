@@ -3,13 +3,20 @@ import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/shared/ui/button'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 
+import { CapabilityRouteEditorDrawer } from './CapabilityRouteEditorDrawer'
+import { CapabilityRoutesPanel } from './CapabilityRoutesPanel'
 import { ModelConfigDialog } from './ModelConfigDialog'
 import { ModelDetailsDrawer } from './ModelDetailsDrawer'
 import { ModelMatrix } from './ModelMatrix'
 import { ModelSummaryBand } from './ModelSummaryBand'
 import { useModelSettingsViewModel } from './model-settings-queries'
-import { isFailingConnectivity, type ModelAssetRow } from './model-settings-view-model'
+import {
+  type CapabilityRouteRow,
+  isFailingConnectivity,
+  type ModelAssetRow,
+} from './model-settings-view-model'
 
 type HealthFilter = 'all' | 'online' | 'failing' | 'never_checked' | 'unavailable'
 
@@ -22,7 +29,10 @@ export function ModelSettingsPage() {
     probeConfig,
     refreshQuota,
     refetchAll,
+    deleteCapabilityRoute,
+    saveCapabilityRoute,
   } = useModelSettingsViewModel()
+  const [activeSurface, setActiveSurface] = useState('models')
   const [providerFilter, setProviderFilter] = useState('all')
   const [healthFilter, setHealthFilter] = useState<HealthFilter>('all')
   const [defaultOnly, setDefaultOnly] = useState(false)
@@ -31,6 +41,7 @@ export function ModelSettingsPage() {
   const [detailsConfigId, setDetailsConfigId] = useState<string | null>(null)
   const [editConfigId, setEditConfigId] = useState<string | null>(null)
   const [createConfigOpen, setCreateConfigOpen] = useState(false)
+  const [routeEditorRoute, setRouteEditorRoute] = useState<CapabilityRouteRow | null>(null)
 
   const filteredRows = useMemo(() => {
     if (pageState.kind !== 'ready') {
@@ -95,89 +106,124 @@ export function ModelSettingsPage() {
         </Button>
       </div>
 
-      <ModelSummaryBand summary={pageState.viewModel.summary} />
-
-      <search
-        aria-label={t('models.filters.label')}
-        className="flex flex-wrap items-end gap-3 rounded-md border border-border bg-surface p-3"
-      >
-        <label className="grid gap-1 text-sm">
-          <span className="font-medium text-xs">{t('models.filters.provider')}</span>
-          <select
-            className="h-9 min-w-40 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onChange={(event) => setProviderFilter(event.target.value)}
-            value={providerFilter}
+      <Tabs onValueChange={setActiveSurface} value={activeSurface}>
+        <TabsList>
+          <TabsTrigger onClick={() => setActiveSurface('models')} value="models">
+            {t('models.tabs.models')}
+          </TabsTrigger>
+          <TabsTrigger
+            onClick={() => setActiveSurface('capabilityRoutes')}
+            value="capabilityRoutes"
           >
-            <option value="all">{t('models.filters.allProviders')}</option>
-            {providerOptions.map((provider) => (
-              <option key={provider.id} value={provider.id}>
-                {provider.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="grid gap-1 text-sm">
-          <span className="font-medium text-xs">{t('models.filters.health')}</span>
-          <select
-            className="h-9 min-w-36 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onChange={(event) => setHealthFilter(event.target.value as HealthFilter)}
-            value={healthFilter}
-          >
-            <option value="all">{t('models.filters.allHealth')}</option>
-            <option value="online">{t('models.connectivity.online')}</option>
-            <option value="failing">{t('models.filters.failing')}</option>
-            <option value="never_checked">{t('models.connectivity.neverChecked')}</option>
-            <option value="unavailable">{t('models.unavailable')}</option>
-          </select>
-        </label>
-        <label className="grid min-w-52 flex-1 gap-1 text-sm">
-          <span className="font-medium text-xs">{t('models.filters.search')}</span>
-          <input
-            className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder={t('models.filters.searchPlaceholder')}
-            type="search"
-            value={search}
-          />
-        </label>
-        <label className="flex h-9 items-center gap-2 text-sm">
-          <input
-            checked={defaultOnly}
-            className="size-4 accent-primary"
-            onChange={(event) => setDefaultOnly(event.target.checked)}
-            type="checkbox"
-          />
-          {t('models.filters.defaultOnly')}
-        </label>
-        <label className="flex h-9 items-center gap-2 text-sm">
-          <input
-            checked={failingOnly}
-            className="size-4 accent-primary"
-            onChange={(event) => setFailingOnly(event.target.checked)}
-            type="checkbox"
-          />
-          {t('models.filters.failingOnly')}
-        </label>
-      </search>
+            {t('models.tabs.capabilityRoutes')}
+          </TabsTrigger>
+        </TabsList>
 
-      <ModelMatrix
-        isProbePending={isProbePending}
-        isQuotaRefreshPending={isQuotaRefreshPending}
-        onDetails={setDetailsConfigId}
-        onEdit={setEditConfigId}
-        onProbe={(configId) => {
-          void probeConfig(configId, 10_000).catch(() => undefined)
-        }}
-        onRefreshQuota={(configId) => {
-          void refreshQuota(configId).catch(() => undefined)
-        }}
-        rows={filteredRows}
-      />
+        <TabsContent className="space-y-4" value="models">
+          <ModelSummaryBand summary={pageState.viewModel.summary} />
+
+          <search
+            aria-label={t('models.filters.label')}
+            className="flex flex-wrap items-end gap-3 rounded-md border border-border bg-surface p-3"
+          >
+            <label className="grid gap-1 text-sm">
+              <span className="font-medium text-xs">{t('models.filters.provider')}</span>
+              <select
+                className="h-9 min-w-40 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onChange={(event) => setProviderFilter(event.target.value)}
+                value={providerFilter}
+              >
+                <option value="all">{t('models.filters.allProviders')}</option>
+                {providerOptions.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="grid gap-1 text-sm">
+              <span className="font-medium text-xs">{t('models.filters.health')}</span>
+              <select
+                className="h-9 min-w-36 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onChange={(event) => setHealthFilter(event.target.value as HealthFilter)}
+                value={healthFilter}
+              >
+                <option value="all">{t('models.filters.allHealth')}</option>
+                <option value="online">{t('models.connectivity.online')}</option>
+                <option value="failing">{t('models.filters.failing')}</option>
+                <option value="never_checked">{t('models.connectivity.neverChecked')}</option>
+                <option value="unavailable">{t('models.unavailable')}</option>
+              </select>
+            </label>
+            <label className="grid min-w-52 flex-1 gap-1 text-sm">
+              <span className="font-medium text-xs">{t('models.filters.search')}</span>
+              <input
+                className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder={t('models.filters.searchPlaceholder')}
+                type="search"
+                value={search}
+              />
+            </label>
+            <label className="flex h-9 items-center gap-2 text-sm">
+              <input
+                checked={defaultOnly}
+                className="size-4 accent-primary"
+                onChange={(event) => setDefaultOnly(event.target.checked)}
+                type="checkbox"
+              />
+              {t('models.filters.defaultOnly')}
+            </label>
+            <label className="flex h-9 items-center gap-2 text-sm">
+              <input
+                checked={failingOnly}
+                className="size-4 accent-primary"
+                onChange={(event) => setFailingOnly(event.target.checked)}
+                type="checkbox"
+              />
+              {t('models.filters.failingOnly')}
+            </label>
+          </search>
+
+          <ModelMatrix
+            isProbePending={isProbePending}
+            isQuotaRefreshPending={isQuotaRefreshPending}
+            onDetails={setDetailsConfigId}
+            onEdit={setEditConfigId}
+            onProbe={(configId) => {
+              void probeConfig(configId, 10_000).catch(() => undefined)
+            }}
+            onRefreshQuota={(configId) => {
+              void refreshQuota(configId).catch(() => undefined)
+            }}
+            rows={filteredRows}
+          />
+        </TabsContent>
+
+        <TabsContent value="capabilityRoutes">
+          <CapabilityRoutesPanel
+            onConfigure={setRouteEditorRoute}
+            routeSection={pageState.viewModel.capabilityRoutes}
+          />
+        </TabsContent>
+      </Tabs>
 
       <ModelDetailsDrawer
         onEdit={(row) => {
           setDetailsConfigId(null)
           setEditConfigId(row.configId)
+        }}
+        onUseForRoute={(kind) => {
+          if (pageState.viewModel.capabilityRoutes.status !== 'ready') {
+            return
+          }
+          const route =
+            pageState.viewModel.capabilityRoutes.data.find(
+              (candidate) => candidate.kind === kind,
+            ) ?? null
+          setDetailsConfigId(null)
+          setActiveSurface('capabilityRoutes')
+          setRouteEditorRoute(route)
         }}
         onOpenChange={(open) => {
           if (!open) {
@@ -200,6 +246,25 @@ export function ModelSettingsPage() {
         }}
         open={createConfigOpen || editProfile !== null}
         profile={editProfile}
+      />
+      <CapabilityRouteEditorDrawer
+        onClear={async (request) => {
+          await deleteCapabilityRoute(request)
+          setRouteEditorRoute(null)
+          await refetchAll()
+        }}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRouteEditorRoute(null)
+          }
+        }}
+        onSave={async (route) => {
+          await saveCapabilityRoute({ route })
+          setRouteEditorRoute(null)
+          await refetchAll()
+        }}
+        open={routeEditorRoute !== null}
+        route={routeEditorRoute}
       />
     </section>
   )

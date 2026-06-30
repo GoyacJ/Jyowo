@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useRef } from 'react'
 
 import {
+  type DeleteProviderCapabilityRouteRequest,
+  deleteProviderCapabilityRoute,
   getModelUsageSummary,
   listModelProviderCatalog,
   listOfficialQuotaSnapshots,
@@ -11,6 +13,8 @@ import {
   listProviderSettings,
   probeProviderConfig,
   refreshOfficialQuota,
+  type SaveProviderCapabilityRouteRequest,
+  saveProviderCapabilityRoute,
 } from '@/shared/tauri/commands'
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { useCommandClient } from '@/shared/tauri/react'
@@ -141,6 +145,7 @@ export function useModelSettingsViewModel() {
   const routeOptionsQuery = useProviderCapabilityRouteOptions()
   const probeMutation = useProbeProviderConfig()
   const quotaMutation = useRefreshOfficialQuota()
+  const routeMutation = useCapabilityRouteMutations()
 
   const inputs: ModelSettingsQueryInputs = {
     catalog: toQuerySlice(catalogQuery),
@@ -160,6 +165,8 @@ export function useModelSettingsViewModel() {
     isProbePending: probeMutation.isPendingForConfig,
     refreshQuota: quotaMutation.refreshQuota,
     isQuotaRefreshPending: quotaMutation.isPendingForConfig,
+    saveCapabilityRoute: routeMutation.saveCapabilityRoute,
+    deleteCapabilityRoute: routeMutation.deleteCapabilityRoute,
     refetchAll: async () => {
       await Promise.all([
         catalogQuery.refetch(),
@@ -171,6 +178,34 @@ export function useModelSettingsViewModel() {
         routeOptionsQuery.refetch(),
       ])
     },
+  }
+}
+
+function useCapabilityRouteMutations() {
+  const commandClient = useCommandClient()
+  const queryClient = useQueryClient()
+
+  const saveMutation = useMutation({
+    mutationFn: (request: SaveProviderCapabilityRouteRequest) =>
+      saveProviderCapabilityRoute(request, commandClient),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.capabilityRoutes() })
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (request: DeleteProviderCapabilityRouteRequest) =>
+      deleteProviderCapabilityRoute(request, commandClient),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.capabilityRoutes() })
+    },
+  })
+
+  return {
+    saveCapabilityRoute: (request: SaveProviderCapabilityRouteRequest) =>
+      saveMutation.mutateAsync(request),
+    deleteCapabilityRoute: (request: DeleteProviderCapabilityRouteRequest) =>
+      deleteMutation.mutateAsync(request),
   }
 }
 

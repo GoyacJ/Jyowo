@@ -12,6 +12,8 @@ import type {
   ConversationModelCapability,
   GetModelUsageSummaryResponse,
   ListOfficialQuotaSnapshotsResponse,
+  ListProviderCapabilityRouteOptionsResponse,
+  ListProviderCapabilityRoutesResponse,
   ListProviderProbeSnapshotsResponse,
   ListProviderSettingsResponse,
   ModelProviderCatalogResponse,
@@ -226,6 +228,75 @@ const quotaSnapshots: ListOfficialQuotaSnapshotsResponse = {
   ],
 }
 
+const capabilityRoutes: ListProviderCapabilityRoutesResponse = {
+  version: 1,
+  routes: [
+    {
+      kind: 'image_generation',
+      configId: 'cfg-openai',
+      providerId: 'openai',
+      operationIds: ['images.generate'],
+      enabled: true,
+    },
+  ],
+}
+
+const capabilityRouteOptions: ListProviderCapabilityRouteOptionsResponse = {
+  options: [
+    {
+      kind: 'image_generation',
+      configId: 'cfg-openai',
+      providerId: 'openai',
+      operationId: 'images.generate',
+      outputArtifact: 'image',
+      execution: 'sync',
+      costRisk: 'medium',
+      runtimeSupported: true,
+    },
+    {
+      kind: 'video_generation',
+      configId: 'cfg-openai',
+      providerId: 'openai',
+      operationId: 'videos.generate',
+      outputArtifact: 'video',
+      execution: 'async_job',
+      costRisk: 'high',
+      runtimeSupported: true,
+    },
+    {
+      kind: 'speech_to_text',
+      configId: 'cfg-anthropic',
+      providerId: 'anthropic',
+      operationId: 'audio.transcriptions',
+      outputArtifact: 'text',
+      execution: 'sync',
+      costRisk: 'low',
+      runtimeSupported: false,
+      unavailableReason: 'Backend rejected this route for the selected profile',
+    },
+    {
+      kind: 'text_to_speech',
+      configId: 'cfg-openai',
+      providerId: 'openai',
+      operationId: 'audio.speech',
+      outputArtifact: 'audio',
+      execution: 'sync',
+      costRisk: 'medium',
+      runtimeSupported: true,
+    },
+    {
+      kind: 'music_generation',
+      configId: 'cfg-openai-backup',
+      providerId: 'openai',
+      operationId: 'music.generate',
+      outputArtifact: 'audio',
+      execution: 'async_job',
+      costRisk: 'high',
+      runtimeSupported: true,
+    },
+  ],
+}
+
 function usage(inputTokens: number, outputTokens: number) {
   return {
     cacheReadTokens: 0,
@@ -267,6 +338,8 @@ function readyClient(overrides: Parameters<typeof createTestCommandClient>[0] = 
     providerProbeSnapshots: probeSnapshots,
     modelUsageSummary: usageSummary,
     officialQuotaSnapshots: quotaSnapshots,
+    providerCapabilityRoutes: capabilityRoutes,
+    providerCapabilityRouteOptions: capabilityRouteOptions,
     ...overrides,
   })
 }
@@ -447,5 +520,31 @@ describe('ModelSettingsPage', () => {
     expect(container).not.toHaveTextContent('sk-live-secret')
     expect(container).not.toHaveTextContent('Authorization')
     expect(container).not.toHaveTextContent('raw_provider_payload')
+  })
+
+  it('has Models and Capability Routes sub-tabs and keeps routes out of the model matrix', async () => {
+    renderModelSettingsPage()
+
+    expect(await screen.findByRole('tab', { name: 'Models' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Capability Routes' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Model matrix')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Capability Routes' }))
+
+    expect(screen.getByRole('table', { name: 'Capability route table' })).toBeInTheDocument()
+    expect(
+      screen.getByRole('row', {
+        name: /Image generation.*Primary OpenAI.*Online.*Sync.*Medium/,
+      }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('row', { name: /Video generation.*Not configured/ }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('row', { name: /Speech to text.*Not configured/ })).toBeInTheDocument()
+    expect(screen.getByRole('row', { name: /Text to speech.*Not configured/ })).toBeInTheDocument()
+    expect(
+      screen.getByRole('row', { name: /Music generation.*Not configured/ }),
+    ).toBeInTheDocument()
+    expect(screen.queryByLabelText('Model matrix')).not.toBeInTheDocument()
   })
 })

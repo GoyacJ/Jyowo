@@ -398,7 +398,55 @@ describe('ModelDetailsDrawer', () => {
     expect(dialog).toHaveTextContent('128,000')
     expect(dialog).toHaveTextContent('8,192')
   })
+
+  it('shows read-only route bindings and shortcuts without the full route editor table', () => {
+    const onUseForRoute = vi.fn()
+    render(
+      <ModelDetailsDrawer
+        onOpenChange={vi.fn()}
+        onUseForRoute={onUseForRoute}
+        open
+        row={{
+          ...sharedUsageRow,
+          routeBindings: [
+            {
+              kind: 'image_generation',
+              operationIds: ['images.generate'],
+            },
+          ],
+        }}
+      />,
+      { wrapper: DrawerWrapper },
+    )
+
+    const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Capabilities' }))
+
+    expect(dialog).toHaveTextContent('Image generation')
+    expect(dialog).toHaveTextContent('images.generate')
+    expect(
+      within(dialog).queryByRole('table', { name: 'Capability route table' }),
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Use for image generation' }))
+    expect(onUseForRoute).toHaveBeenCalledWith('image_generation', sharedUsageRow.configId)
+  })
 })
+
+function DrawerWrapper({ children }: { children: ReactNode }) {
+  uiStore.getState().setLocale('en-US')
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+
+  return (
+    <CommandClientProvider client={createTestCommandClient()}>
+      <QueryClientProvider client={queryClient}>
+        <AppI18nProvider>{children}</AppI18nProvider>
+      </QueryClientProvider>
+    </CommandClientProvider>
+  )
+}
 
 const sharedUsageRow: ModelAssetRow = {
   configId: 'cfg-openai',
@@ -454,6 +502,7 @@ const sharedUsageRow: ModelAssetRow = {
     quotaRemaining: 90,
     unit: 'usd',
   },
+  routeBindings: [],
 }
 
 const failingRow: ModelAssetRow = {

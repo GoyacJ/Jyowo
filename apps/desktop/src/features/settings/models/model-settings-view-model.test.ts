@@ -224,6 +224,47 @@ const routeOptions: ListProviderCapabilityRouteOptionsResponse = {
       runtimeSupported: false,
       unavailableReason: 'Missing image capability on selected model',
     },
+    {
+      kind: 'video_generation',
+      configId: 'cfg-primary',
+      providerId: 'openai',
+      operationId: 'videos.generate',
+      outputArtifact: 'video',
+      execution: 'async_job',
+      costRisk: 'high',
+      runtimeSupported: true,
+    },
+    {
+      kind: 'speech_to_text',
+      configId: 'cfg-backup',
+      providerId: 'openai',
+      operationId: 'audio.transcriptions',
+      outputArtifact: 'text',
+      execution: 'sync',
+      costRisk: 'low',
+      runtimeSupported: false,
+      unavailableReason: 'Backend route option rejected this profile',
+    },
+    {
+      kind: 'text_to_speech',
+      configId: 'cfg-primary',
+      providerId: 'openai',
+      operationId: 'audio.speech',
+      outputArtifact: 'audio',
+      execution: 'sync',
+      costRisk: 'medium',
+      runtimeSupported: true,
+    },
+    {
+      kind: 'music_generation',
+      configId: 'cfg-primary',
+      providerId: 'openai',
+      operationId: 'music.generate',
+      outputArtifact: 'audio',
+      execution: 'async_job',
+      costRisk: 'high',
+      runtimeSupported: true,
+    },
   ],
 }
 
@@ -387,13 +428,84 @@ describe('model-settings-view-model', () => {
       (row) => row.kind === 'image_generation',
     )
     expect(imageRoute?.savedRoute?.configId).toBe('cfg-primary')
+    expect(imageRoute?.selectedTarget).toMatchObject({
+      configId: 'cfg-primary',
+      displayName: 'Primary',
+      execution: 'sync',
+      costRisk: 'medium',
+      health: { status: 'online' },
+    })
+    expect(imageRoute?.eligibleTargets).toEqual([
+      expect.objectContaining({
+        configId: 'cfg-primary',
+        displayName: 'Primary',
+        operationIds: ['images.generate'],
+      }),
+    ])
     expect(imageRoute?.unavailableTargets).toEqual([
       {
         configId: 'cfg-backup',
+        displayName: 'Backup',
         providerId: 'openai',
+        modelId: 'gpt-4.1',
         operationId: 'images.generate',
         reason: 'Missing image capability on selected model',
       },
+    ])
+    expect(viewModel.capabilityRoutes.data.map((row) => row.kind)).toEqual([
+      'image_generation',
+      'video_generation',
+      'speech_to_text',
+      'text_to_speech',
+      'music_generation',
+    ])
+    expect(viewModel.rows[0]?.routeBindings).toEqual([
+      expect.objectContaining({ kind: 'image_generation', operationIds: ['images.generate'] }),
+    ])
+  })
+
+  it('keeps an existing saved route visible when its target becomes unavailable', () => {
+    const viewModel = buildModelSettingsViewModel(
+      baseInput({
+        routes: ready({
+          version: 1,
+          routes: [
+            {
+              kind: 'image_generation',
+              configId: 'cfg-backup',
+              providerId: 'openai',
+              operationIds: ['images.generate'],
+              enabled: true,
+            },
+          ],
+        }),
+      }),
+    )
+
+    expect(viewModel.capabilityRoutes.status).toBe('ready')
+    if (viewModel.capabilityRoutes.status !== 'ready') {
+      return
+    }
+
+    const imageRoute = viewModel.capabilityRoutes.data.find(
+      (row) => row.kind === 'image_generation',
+    )
+    expect(imageRoute?.savedRoute?.configId).toBe('cfg-backup')
+    expect(imageRoute?.selectedTarget).toMatchObject({
+      configId: 'cfg-backup',
+      displayName: 'Backup',
+      execution: 'sync',
+      costRisk: 'medium',
+      health: { status: 'timeout' },
+    })
+    expect(imageRoute?.eligibleTargets).toEqual([
+      expect.objectContaining({ configId: 'cfg-primary' }),
+    ])
+    expect(imageRoute?.unavailableTargets).toEqual([
+      expect.objectContaining({
+        configId: 'cfg-backup',
+        reason: 'Missing image capability on selected model',
+      }),
     ])
   })
 
@@ -415,13 +527,12 @@ describe('model-settings-view-model', () => {
     })
   })
 
-  it('returns partial unavailable sections when usage, probe, quota, or route queries fail', () => {
+  it('returns partial unavailable sections when usage, probe, or quota queries fail', () => {
     const viewModel = buildModelSettingsViewModel(
       baseInput({
         usageSummary: errorSlice('Usage unavailable'),
         probeSnapshots: errorSlice('Probe unavailable'),
         quotaSnapshots: errorSlice('Quota unavailable'),
-        routeOptions: errorSlice('Route options unavailable'),
       }),
     )
 
@@ -430,7 +541,19 @@ describe('model-settings-view-model', () => {
     expect(viewModel.rows.every((row) => row.usage.status === 'unavailable')).toBe(true)
     expect(viewModel.rows.every((row) => row.connectivity.status === 'unavailable')).toBe(true)
     expect(viewModel.rows.every((row) => row.quota.status === 'unavailable')).toBe(true)
-    expect(viewModel.capabilityRoutes).toEqual({ status: 'unavailable' })
+  })
+
+  it('returns distinct route loading and error states for the capability route surface', () => {
+    expect(
+      buildModelSettingsViewModel(baseInput({ routeOptions: { status: 'loading' } }))
+        .capabilityRoutes,
+    ).toEqual({ status: 'loading' })
+
+    expect(
+      buildModelSettingsViewModel(
+        baseInput({ routeOptions: errorSlice('Route options unavailable') }),
+      ).capabilityRoutes,
+    ).toEqual({ status: 'error', safeMessage: 'Route options unavailable' })
   })
 
   it('returns empty rows and explicit empty summary for empty backend state', () => {

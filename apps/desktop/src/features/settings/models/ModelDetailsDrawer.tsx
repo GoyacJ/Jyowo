@@ -15,6 +15,7 @@ import {
 } from '@/shared/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 
+import { routeKindLabel } from './CapabilityRoutesPanel'
 import type {
   ModelAssetRow,
   QuotaDisplayState,
@@ -26,6 +27,7 @@ type ModelDetailsDrawerProps = {
   row: ModelAssetRow | null
   onOpenChange: (open: boolean) => void
   onEdit?: (row: ModelAssetRow) => void
+  onUseForRoute?: (kind: ModelAssetRow['routeBindings'][number]['kind'], configId: string) => void
 }
 
 type RevealedApiKeyState = {
@@ -34,7 +36,13 @@ type RevealedApiKeyState = {
   generation: number
 }
 
-export function ModelDetailsDrawer({ onEdit, onOpenChange, open, row }: ModelDetailsDrawerProps) {
+export function ModelDetailsDrawer({
+  onEdit,
+  onOpenChange,
+  onUseForRoute,
+  open,
+  row,
+}: ModelDetailsDrawerProps) {
   const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
   const [activeTab, setActiveTab] = useState('overview')
@@ -242,7 +250,7 @@ export function ModelDetailsDrawer({ onEdit, onOpenChange, open, row }: ModelDet
             </TabsContent>
 
             <TabsContent value="capabilities">
-              <CapabilitiesDetails row={row} />
+              <CapabilitiesDetails onUseForRoute={onUseForRoute} row={row} />
             </TabsContent>
           </Tabs>
         </DialogContent>
@@ -251,7 +259,13 @@ export function ModelDetailsDrawer({ onEdit, onOpenChange, open, row }: ModelDet
   )
 }
 
-function CapabilitiesDetails({ row }: { row: ModelAssetRow }) {
+function CapabilitiesDetails({
+  onUseForRoute,
+  row,
+}: {
+  row: ModelAssetRow
+  onUseForRoute?: ModelDetailsDrawerProps['onUseForRoute']
+}) {
   const { t } = useTranslation('settings')
   const capability = row.modelDescriptor?.conversationCapability
 
@@ -260,23 +274,60 @@ function CapabilitiesDetails({ row }: { row: ModelAssetRow }) {
   }
 
   return (
-    <DetailGrid>
-      <DetailRow label={t('provider.capability.streaming')}>
-        {formatBoolean(capability.streaming, t('yes'), t('no'))}
-      </DetailRow>
-      <DetailRow label={t('provider.capability.tools')}>
-        {formatBoolean(capability.toolCalling, t('yes'), t('no'))}
-      </DetailRow>
-      <DetailRow label={t('provider.capability.structuredOutput')}>
-        {formatBoolean(capability.structuredOutput, t('yes'), t('no'))}
-      </DetailRow>
-      <DetailRow label={t('models.details.capabilities.contextWindow')}>
-        {capability.contextWindow.toLocaleString()}
-      </DetailRow>
-      <DetailRow label={t('models.details.capabilities.maxOutputTokens')}>
-        {capability.maxOutputTokens.toLocaleString()}
-      </DetailRow>
-    </DetailGrid>
+    <div className="space-y-4">
+      <DetailGrid>
+        <DetailRow label={t('provider.capability.streaming')}>
+          {formatBoolean(capability.streaming, t('yes'), t('no'))}
+        </DetailRow>
+        <DetailRow label={t('provider.capability.tools')}>
+          {formatBoolean(capability.toolCalling, t('yes'), t('no'))}
+        </DetailRow>
+        <DetailRow label={t('provider.capability.structuredOutput')}>
+          {formatBoolean(capability.structuredOutput, t('yes'), t('no'))}
+        </DetailRow>
+        <DetailRow label={t('models.details.capabilities.contextWindow')}>
+          {capability.contextWindow.toLocaleString()}
+        </DetailRow>
+        <DetailRow label={t('models.details.capabilities.maxOutputTokens')}>
+          {capability.maxOutputTokens.toLocaleString()}
+        </DetailRow>
+      </DetailGrid>
+
+      <section className="space-y-2">
+        <h3 className="font-medium text-sm">{t('models.details.capabilities.routeBindings')}</h3>
+        {row.routeBindings.length > 0 ? (
+          <div className="space-y-2">
+            {row.routeBindings.map((binding) => (
+              <div className="rounded-md border border-border bg-background p-3" key={binding.kind}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="font-medium text-sm">{routeKindLabel(binding.kind, t)}</div>
+                    <div className="mt-1 text-muted-foreground text-xs">
+                      {binding.operationIds.join(', ')}
+                    </div>
+                  </div>
+                  {onUseForRoute ? (
+                    <Button
+                      onClick={() => onUseForRoute(binding.kind, row.configId)}
+                      type="button"
+                      variant="outline"
+                    >
+                      {t('models.details.capabilities.useForRoute', {
+                        kind: routeKindLabel(binding.kind, t).toLowerCase(),
+                      })}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            {t('models.details.capabilities.noRouteBindings')}
+          </p>
+        )}
+      </section>
+    </div>
   )
 }
 
