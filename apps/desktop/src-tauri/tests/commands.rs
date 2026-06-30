@@ -57,8 +57,9 @@ use jyowo_desktop_shell::commands::{
     save_provider_capability_route_with_store, save_provider_settings_with_runtime_state,
     save_provider_settings_with_store, set_conversation_model_config_with_runtime_state,
     set_execution_settings_with_store, set_mcp_server_enabled_with_runtime_state,
-    set_skill_enabled_with_runtime_state, spawn_automation_scheduler, start_run_payload,
-    start_run_with_runtime_state, subscribe_conversation_events_for_window_with_runtime_state,
+    set_skill_enabled_with_runtime_state, spawn_automation_scheduler,
+    spawn_automation_scheduler_on_tauri_runtime, start_run_payload, start_run_with_runtime_state,
+    subscribe_conversation_events_for_window_with_runtime_state,
     unsubscribe_conversation_events_for_window_with_runtime_state,
     update_memory_item_with_runtime_state, validate_provider_settings_payload,
     ArtifactSummaryPayload, AttachmentBlobRefPayload, AttachmentReferencePayload,
@@ -7460,6 +7461,18 @@ async fn automation_scheduler_task_runs_due_automations_in_process() {
 
     assert_eq!(runs.runs.len(), 1);
     assert_eq!(runs.runs[0].status, AutomationRunStatus::Rejected);
+}
+
+#[test]
+fn automation_scheduler_can_start_from_sync_tauri_setup_context() {
+    let workspace = unique_workspace("automation-scheduler-sync-setup");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    let runtime = Arc::new(tokio::sync::RwLock::new(state));
+
+    let task = spawn_automation_scheduler_on_tauri_runtime(runtime);
+    task.abort();
 }
 
 #[tokio::test]

@@ -3896,14 +3896,22 @@ pub fn managed_runtime_state() -> ManagedDesktopRuntime {
 }
 
 pub fn spawn_automation_scheduler(runtime: ManagedDesktopRuntime) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(AUTOMATION_SCHEDULER_INTERVAL);
-        loop {
-            interval.tick().await;
-            let state = runtime.read().await.clone();
-            let _ = run_due_automations_once_with_runtime_state(Utc::now(), &state).await;
-        }
-    })
+    tokio::spawn(run_automation_scheduler(runtime))
+}
+
+pub fn spawn_automation_scheduler_on_tauri_runtime(
+    runtime: ManagedDesktopRuntime,
+) -> tauri::async_runtime::JoinHandle<()> {
+    tauri::async_runtime::spawn(run_automation_scheduler(runtime))
+}
+
+async fn run_automation_scheduler(runtime: ManagedDesktopRuntime) {
+    let mut interval = tokio::time::interval(AUTOMATION_SCHEDULER_INTERVAL);
+    loop {
+        interval.tick().await;
+        let state = runtime.read().await.clone();
+        let _ = run_due_automations_once_with_runtime_state(Utc::now(), &state).await;
+    }
 }
 
 fn initial_managed_runtime_state() -> DesktopRuntimeState {

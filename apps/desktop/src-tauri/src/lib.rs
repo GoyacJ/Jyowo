@@ -15,7 +15,8 @@ pub fn run() {
         )
         .manage(managed_runtime.clone())
         .setup(move |_app| {
-            commands::spawn_automation_scheduler(managed_runtime.clone());
+            let _scheduler =
+                commands::spawn_automation_scheduler_on_tauri_runtime(managed_runtime.clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
