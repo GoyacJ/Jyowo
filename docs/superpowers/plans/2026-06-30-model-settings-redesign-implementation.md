@@ -1175,7 +1175,7 @@ git commit -m "feat: add model settings view model"
 - Modify: `apps/desktop/src/shared/i18n/locales/en-US.ts`
 - Modify: `apps/desktop/src/shared/i18n/locales/zh-CN.ts`
 
-- [ ] **Step 1: Write failing UI tests**
+- [x] **Step 1: Write failing UI tests**
 
 Tests must cover:
 
@@ -1193,7 +1193,7 @@ Tests must cover:
 
 Expected: tests fail because the new page does not exist and Settings still renders `ProviderSettingsForm`.
 
-- [ ] **Step 2: Build the matrix-centered page**
+- [x] **Step 2: Build the matrix-centered page**
 
 Rules:
 
@@ -1207,7 +1207,7 @@ Rules:
 - Cover loading, empty, error, and ready states.
 - Use restrained settings-page styling. No landing-page hero, decorative gradients, nested cards, or explanatory marketing copy.
 
-- [ ] **Step 3: Wire Settings tab**
+- [x] **Step 3: Wire Settings tab**
 
 Replace the active Models tab content with `ModelSettingsPage`.
 
@@ -1217,7 +1217,7 @@ Rules:
 - Do not retain `ProviderSettingsForm` as an active page.
 - If `ProviderSettingsForm` is partially reused, rename/split it into focused components in `features/settings/models`.
 
-- [ ] **Step 4: Add Storybook states and visual checks**
+- [x] **Step 4: Add Storybook states and visual checks**
 
 Stories must cover loading, empty, ready with mixed statuses, error, unsupported quota, and narrow layout.
 
@@ -1231,7 +1231,7 @@ Add a Playwright Storybook spec that:
 
 Update `apps/desktop/playwright.storybook.config.ts` so `testMatch` includes both the existing `conversation-evidence-storybook.spec.ts` and the new `model-settings-storybook.spec.ts`. `pnpm -C apps/desktop test:e2e:storybook` must execute the new spec; do not rely on a file that is outside the configured match pattern.
 
-- [ ] **Step 5: Run tests and gates**
+- [x] **Step 5: Run tests and gates**
 
 Run:
 
@@ -1245,7 +1245,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 6: Audit and commit**
+- [x] **Step 6: Audit and commit**
 
 Code-review subagent is required. Security-review subagent is required because the page renders provider configuration state.
 

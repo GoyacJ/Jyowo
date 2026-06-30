@@ -209,11 +209,9 @@ describe('App', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Models' }))
 
-    expect(
-      await screen.findByRole('heading', {
-        name: 'Select a saved configuration to inspect details.',
-      }),
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Models' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'No configured models' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Model configuration' })).not.toBeInTheDocument()
 
     window.history.pushState(null, '', '/evals')
     rerender(<App commandClient={commandClient} queryClient={queryClient} />)

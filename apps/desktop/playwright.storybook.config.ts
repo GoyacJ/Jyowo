@@ -10,7 +10,7 @@ const storybookUrl = `http://127.0.0.1:${storybookPort}`
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /conversation-evidence-storybook\.spec\.ts/,
+  testMatch: /(conversation-evidence-storybook|model-settings-storybook)\.spec\.ts/,
   fullyParallel: false,
   reporter: [['list']],
   use: {

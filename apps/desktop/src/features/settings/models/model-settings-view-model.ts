@@ -35,7 +35,7 @@ export type ModelSettingsQueryInputs = {
   routeOptions: QuerySlice<ListProviderCapabilityRouteOptionsResponse>
 }
 
-type ConnectivityDisplayState =
+export type ConnectivityDisplayState =
   | { status: 'never_checked' }
   | { status: 'unavailable' }
   | {
@@ -47,7 +47,7 @@ type ConnectivityDisplayState =
       safeMessage?: string
     }
 
-type UsageDisplayState =
+export type UsageDisplayState =
   | { status: 'unavailable' }
   | {
       status: 'ready'
@@ -57,7 +57,7 @@ type UsageDisplayState =
       allTime: UsageSnapshot
     }
 
-type QuotaDisplayState =
+export type QuotaDisplayState =
   | { status: 'unavailable' }
   | ({
       scope: OfficialQuotaScope
@@ -74,7 +74,7 @@ type QuotaDisplayState =
       unit?: string
     } & Pick<OfficialQuotaSnapshot, 'status'>)
 
-type ModelAssetRow = {
+export type ModelAssetRow = {
   configId: string
   providerId: ProviderConfig['providerId']
   modelId: string
@@ -89,7 +89,7 @@ type ModelAssetRow = {
 
 type ModelSettingsSummaryMetric<T> = SectionState<T>
 
-type ModelSettingsSummaryView = {
+export type ModelSettingsSummaryView = {
   defaultModel: ModelSettingsSummaryMetric<{
     configId: string
     displayName: string
@@ -128,7 +128,7 @@ type CapabilityRouteRow = {
   unavailableTargets: CapabilityRouteUnavailableTarget[]
 }
 
-type ModelSettingsViewModel = {
+export type ModelSettingsViewModel = {
   summary: ModelSettingsSummaryView
   rows: ModelAssetRow[]
   capabilityRoutes: SectionState<CapabilityRouteRow[]>

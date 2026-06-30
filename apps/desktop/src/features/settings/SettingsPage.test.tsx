@@ -88,9 +88,9 @@ describe('SettingsPage', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '模型' }))
 
-    expect(
-      await screen.findByRole('heading', { name: '选择一个已保存配置查看详情。' }),
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '模型' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '暂无已配置模型' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '模型配置' })).not.toBeInTheDocument()
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '关于' }))
 

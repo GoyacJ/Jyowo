@@ -9,8 +9,8 @@ import { AboutSettings } from './AboutSettings'
 import { AutomationSettings } from './AutomationSettings'
 import { ExecutionSettings } from './ExecutionSettings'
 import { MCPManager } from './MCPManager'
+import { ModelSettingsPage } from './models/ModelSettingsPage'
 import { type PluginOpenRequest, PluginsManager } from './PluginsManager'
-import { ProviderSettingsForm } from './ProviderSettingsForm'
 import { BuiltinToolsList, SkillsManager } from './SkillSettings'
 
 type SettingsTab =
@@ -38,7 +38,7 @@ export function SettingsPage() {
 
   return (
     <section aria-label={t('pageTitle')} className="h-full min-h-0 overflow-y-auto pr-1">
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 pb-6">
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 pb-6">
         <Tabs
           className="min-h-0"
           onValueChange={(value) => setActiveTab(value as SettingsTab)}
@@ -75,7 +75,7 @@ export function SettingsPage() {
             <PluginsManager openPluginRequest={openPluginRequest} />
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="models">
-            <ProviderSettingsForm />
+            <ModelSettingsPage />
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="about">
             <AboutSettings />
