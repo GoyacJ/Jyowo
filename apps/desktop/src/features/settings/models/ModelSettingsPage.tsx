@@ -1,8 +1,11 @@
+import { Plus } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/shared/ui/button'
 
+import { ModelConfigDialog } from './ModelConfigDialog'
+import { ModelDetailsDrawer } from './ModelDetailsDrawer'
 import { ModelMatrix } from './ModelMatrix'
 import { ModelSummaryBand } from './ModelSummaryBand'
 import { useModelSettingsViewModel } from './model-settings-queries'
@@ -25,6 +28,9 @@ export function ModelSettingsPage() {
   const [defaultOnly, setDefaultOnly] = useState(false)
   const [failingOnly, setFailingOnly] = useState(false)
   const [search, setSearch] = useState('')
+  const [detailsConfigId, setDetailsConfigId] = useState<string | null>(null)
+  const [editConfigId, setEditConfigId] = useState<string | null>(null)
+  const [createConfigOpen, setCreateConfigOpen] = useState(false)
 
   const filteredRows = useMemo(() => {
     if (pageState.kind !== 'ready') {
@@ -74,11 +80,19 @@ export function ModelSettingsPage() {
   }
 
   const providerOptions = buildProviderOptions(pageState.viewModel.rows)
+  const detailsRow =
+    pageState.viewModel.rows.find((row) => row.configId === detailsConfigId) ?? null
+  const editProfile =
+    pageState.viewModel.configs.find((config) => config.id === editConfigId) ?? null
 
   return (
     <section className="space-y-4" data-testid="model-settings-page">
-      <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-semibold text-xl">{t('models.title')}</h1>
+        <Button onClick={() => setCreateConfigOpen(true)} type="button">
+          <Plus aria-hidden="true" className="size-4" data-icon />
+          {t('provider.newConfig')}
+        </Button>
       </div>
 
       <ModelSummaryBand summary={pageState.viewModel.summary} />
@@ -149,6 +163,8 @@ export function ModelSettingsPage() {
       <ModelMatrix
         isProbePending={isProbePending}
         isQuotaRefreshPending={isQuotaRefreshPending}
+        onDetails={setDetailsConfigId}
+        onEdit={setEditConfigId}
         onProbe={(configId) => {
           void probeConfig(configId, 10_000).catch(() => undefined)
         }}
@@ -156,6 +172,34 @@ export function ModelSettingsPage() {
           void refreshQuota(configId).catch(() => undefined)
         }}
         rows={filteredRows}
+      />
+
+      <ModelDetailsDrawer
+        onEdit={(row) => {
+          setDetailsConfigId(null)
+          setEditConfigId(row.configId)
+        }}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDetailsConfigId(null)
+          }
+        }}
+        open={detailsRow !== null}
+        row={detailsRow}
+      />
+      <ModelConfigDialog
+        catalog={pageState.viewModel.catalog}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditConfigId(null)
+            setCreateConfigOpen(false)
+          }
+        }}
+        onSaved={() => {
+          void refetchAll()
+        }}
+        open={createConfigOpen || editProfile !== null}
+        profile={editProfile}
       />
     </section>
   )

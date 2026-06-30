@@ -76,8 +76,10 @@ export type QuotaDisplayState =
 
 export type ModelAssetRow = {
   configId: string
+  baseUrl?: string
   providerId: ProviderConfig['providerId']
   modelId: string
+  modelDescriptor?: ProviderConfig['modelDescriptor']
   displayName: string
   providerDisplayName: string
   isDefault: boolean
@@ -131,6 +133,8 @@ type CapabilityRouteRow = {
 export type ModelSettingsViewModel = {
   summary: ModelSettingsSummaryView
   rows: ModelAssetRow[]
+  catalog: ModelProviderCatalogResponse
+  configs: ProviderConfig[]
   capabilityRoutes: SectionState<CapabilityRouteRow[]>
 }
 
@@ -235,6 +239,8 @@ export function buildModelSettingsViewModel(
       quotaSnapshots: input.quotaSnapshots,
     }),
     rows,
+    catalog,
+    configs: settings.configs,
     capabilityRoutes: buildCapabilityRoutesSection(input.routes, input.routeOptions, settings),
   }
 }
@@ -248,6 +254,8 @@ function emptyModelSettingsViewModel(): ModelSettingsViewModel {
       officialQuota: { status: 'unavailable' },
     },
     rows: [],
+    catalog: { providers: [] },
+    configs: [],
     capabilityRoutes: { status: 'unavailable' },
   }
 }
@@ -358,8 +366,10 @@ function buildModelAssetRow({
 
   return {
     configId: config.id,
+    baseUrl: config.baseUrl,
     providerId: config.providerId,
     modelId: config.modelId,
+    modelDescriptor: config.modelDescriptor,
     displayName: config.displayName,
     providerDisplayName,
     isDefault: config.isDefault,

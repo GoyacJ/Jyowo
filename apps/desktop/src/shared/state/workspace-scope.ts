@@ -1,11 +1,11 @@
 import type { QueryClient } from '@tanstack/react-query'
 
 export const providerSettingsQueryKey = ['provider-settings'] as const
-export const providerSettingsSaveMutationKey = ['provider-settings', 'save'] as const
+const providerSettingsSaveMutationKey = ['provider-settings', 'save'] as const
 
 const workspaceScopeGenerationQueryKey = ['workspace-scope-generation'] as const
 
-export function getWorkspaceScopeGeneration(queryClient: QueryClient) {
+function getWorkspaceScopeGeneration(queryClient: QueryClient) {
   return queryClient.getQueryData<number>(workspaceScopeGenerationQueryKey) ?? 0
 }
 

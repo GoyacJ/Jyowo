@@ -428,6 +428,18 @@ describe('ModelSettingsPage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('opens the configuration dialog for new provider profiles', async () => {
+    renderModelSettingsPage()
+
+    await screen.findByRole('row', { name: /Primary OpenAI/ })
+    fireEvent.click(screen.getByRole('button', { name: 'New configuration' }))
+
+    const dialog = screen.getByRole('dialog', { name: 'Create model configuration' })
+    expect(within(dialog).getByLabelText('Provider')).toHaveValue('openai')
+    expect(within(dialog).getByLabelText('Model')).toHaveValue('gpt-4.1')
+    expect(within(dialog).getByLabelText('API key')).toHaveValue('')
+  })
+
   it('does not render API keys or raw provider payloads', async () => {
     const { container } = renderModelSettingsPage()
 

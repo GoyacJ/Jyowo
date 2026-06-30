@@ -453,6 +453,58 @@ export const enUS = {
         refreshingQuota: 'Refreshing quota for {{name}}',
         refreshQuotaShort: 'Refresh official quota',
         refreshingQuotaShort: 'Refreshing quota',
+        details: 'View details for {{name}}',
+        detailsShort: 'View details',
+        edit: 'Edit {{name}}',
+        editShort: 'Edit configuration',
+      },
+      details: {
+        notDefault: 'Not default',
+        safeMessage: 'Safe message',
+        tabs: {
+          overview: 'Overview',
+          connectivity: 'Connectivity',
+          usage: 'Usage',
+          quota: 'Official quota',
+          configuration: 'Configuration',
+          capabilities: 'Capabilities',
+        },
+        connectivity: {
+          status: 'Status',
+          checkedAt: 'Checked time',
+        },
+        usage: {
+          modelLevel: 'Model-level usage',
+          sharedModelUsage: 'Shared model usage',
+        },
+        quota: {
+          scope: 'Scope',
+          source: 'Source',
+          fetchedAt: 'Fetched time',
+          expiresAt: 'Expires time',
+          amount: 'Amount',
+        },
+        configuration: {
+          apiKeySaved: 'API key saved',
+          apiKeyMissing: 'API key missing',
+          edit: 'Edit configuration',
+        },
+        capabilities: {
+          backendOwned: 'Reported by backend policy',
+          contextWindow: 'Context window',
+          maxOutputTokens: 'Max output tokens',
+        },
+      },
+      quotaScope: {
+        account: 'Account quota',
+        project: 'Project quota',
+        provider: 'Provider quota',
+        model: 'Model quota',
+      },
+      configDialog: {
+        editTitle: 'Edit model configuration',
+        editDescription: 'Change provider, model, endpoint, display name, or API key.',
+        cancel: 'Cancel',
       },
       empty: {
         title: 'No configured models',

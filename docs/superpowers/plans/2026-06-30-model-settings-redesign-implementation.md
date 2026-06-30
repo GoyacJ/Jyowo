@@ -1280,7 +1280,7 @@ git commit -m "feat: add model matrix settings page"
 - Modify: `apps/desktop/src/shared/i18n/locales/en-US.ts`
 - Modify: `apps/desktop/src/shared/i18n/locales/zh-CN.ts`
 
-- [ ] **Step 1: Write failing drawer/dialog tests**
+- [x] **Step 1: Write failing drawer/dialog tests**
 
 Tests must cover:
 
@@ -1295,7 +1295,7 @@ Tests must cover:
 
 Expected: tests fail because components do not exist.
 
-- [ ] **Step 2: Build drawer and dialog**
+- [x] **Step 2: Build drawer and dialog**
 
 Rules:
 
@@ -1305,11 +1305,11 @@ Rules:
 - Do not store revealed key outside the reveal component state.
 - Clearing or switching selected model must clear revealed key state.
 
-- [ ] **Step 3: Remove or reduce old form**
+- [x] **Step 3: Remove or reduce old form**
 
 Delete `ProviderSettingsForm.tsx` if all behavior moved into focused components. If a smaller form component remains, it must not own data fetching, matrix layout, capability routing, or query orchestration.
 
-- [ ] **Step 4: Run tests and gates**
+- [x] **Step 4: Run tests and gates**
 
 Run:
 
@@ -1321,7 +1321,7 @@ git diff --check
 
 Expected: all commands exit 0. If `ProviderSettingsForm.test.tsx` is deleted because the file is deleted, run the replacement tests and document that deletion in Task 7 exit analysis.
 
-- [ ] **Step 5: Audit and commit**
+- [x] **Step 5: Audit and commit**
 
 Code-review and security-review subagents are required.
 

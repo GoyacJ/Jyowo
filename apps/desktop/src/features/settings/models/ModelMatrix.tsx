@@ -1,4 +1,4 @@
-import { Gauge, RefreshCw, Wifi } from 'lucide-react'
+import { Eye, Gauge, Pencil, RefreshCw, Wifi } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -16,6 +16,8 @@ import {
 type ModelMatrixProps = {
   isProbePending: (configId: string) => boolean
   isQuotaRefreshPending: (configId: string) => boolean
+  onDetails: (configId: string) => void
+  onEdit: (configId: string) => void
   onProbe: (configId: string) => void
   onRefreshQuota: (configId: string) => void
   rows: ModelAssetRow[]
@@ -24,6 +26,8 @@ type ModelMatrixProps = {
 export function ModelMatrix({
   isProbePending,
   isQuotaRefreshPending,
+  onDetails,
+  onEdit,
   onProbe,
   onRefreshQuota,
   rows,
@@ -101,6 +105,14 @@ export function ModelMatrix({
                   </BodyCell>
                   <BodyCell className="rounded-r-md border-r">
                     <div className="flex items-center gap-1.5">
+                      <DetailsButton
+                        displayName={row.displayName}
+                        onDetails={() => onDetails(row.configId)}
+                      />
+                      <EditButton
+                        displayName={row.displayName}
+                        onEdit={() => onEdit(row.configId)}
+                      />
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <Button
@@ -183,6 +195,11 @@ export function ModelMatrix({
                     </div>
                   </div>
                   <div className="flex shrink-0 items-start gap-1.5">
+                    <DetailsButton
+                      displayName={row.displayName}
+                      onDetails={() => onDetails(row.configId)}
+                    />
+                    <EditButton displayName={row.displayName} onEdit={() => onEdit(row.configId)} />
                     <ProbeButton
                       displayName={row.displayName}
                       isPending={probePending}
@@ -232,6 +249,48 @@ export function ModelMatrix({
         </ul>
       </section>
     </TooltipProvider>
+  )
+}
+
+function DetailsButton({ displayName, onDetails }: { displayName: string; onDetails: () => void }) {
+  const { t } = useTranslation('settings')
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={t('models.actions.details', { name: displayName })}
+          onClick={onDetails}
+          size="icon"
+          type="button"
+          variant="outline"
+        >
+          <Eye aria-hidden="true" className="size-4" data-icon />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{t('models.actions.detailsShort')}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+function EditButton({ displayName, onEdit }: { displayName: string; onEdit: () => void }) {
+  const { t } = useTranslation('settings')
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={t('models.actions.edit', { name: displayName })}
+          onClick={onEdit}
+          size="icon"
+          type="button"
+          variant="outline"
+        >
+          <Pencil aria-hidden="true" className="size-4" data-icon />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{t('models.actions.editShort')}</TooltipContent>
+    </Tooltip>
   )
 }
 

@@ -451,6 +451,58 @@ export const zhCN = {
         refreshingQuota: '正在刷新 {{name}} 的配额',
         refreshQuotaShort: '刷新官方配额',
         refreshingQuotaShort: '正在刷新配额',
+        details: '查看 {{name}} 的详情',
+        detailsShort: '查看详情',
+        edit: '编辑 {{name}}',
+        editShort: '编辑配置',
+      },
+      details: {
+        notDefault: '非默认',
+        safeMessage: '安全消息',
+        tabs: {
+          overview: '概览',
+          connectivity: '连接状态',
+          usage: '用量',
+          quota: '官方配额',
+          configuration: '配置',
+          capabilities: '能力',
+        },
+        connectivity: {
+          status: '状态',
+          checkedAt: '检查时间',
+        },
+        usage: {
+          modelLevel: '模型级用量',
+          sharedModelUsage: '共享模型用量',
+        },
+        quota: {
+          scope: '范围',
+          source: '来源',
+          fetchedAt: '获取时间',
+          expiresAt: '过期时间',
+          amount: '数量',
+        },
+        configuration: {
+          apiKeySaved: 'API key 已保存',
+          apiKeyMissing: 'API key 未保存',
+          edit: '编辑配置',
+        },
+        capabilities: {
+          backendOwned: '由后端策略返回',
+          contextWindow: '上下文窗口',
+          maxOutputTokens: '最大输出 token',
+        },
+      },
+      quotaScope: {
+        account: '账号配额',
+        project: '项目配额',
+        provider: '厂商配额',
+        model: '模型配额',
+      },
+      configDialog: {
+        editTitle: '编辑模型配置',
+        editDescription: '修改厂商、模型、请求地址、显示名称或 API key。',
+        cancel: '取消',
       },
       empty: {
         title: '暂无已配置模型',
