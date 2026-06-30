@@ -54,6 +54,17 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         ProviderServiceCapability
     );
     insert_schema!(schemas, "capability_route_kind", CapabilityRouteKind);
+    insert_schema!(schemas, "provider_probe_status", ProviderProbeStatus);
+    insert_schema!(schemas, "provider_probe_error_kind", ProviderProbeErrorKind);
+    insert_schema!(schemas, "provider_probe_snapshot", ProviderProbeSnapshot);
+    insert_schema!(schemas, "model_usage_bucket", ModelUsageBucket);
+    insert_schema!(schemas, "model_usage_period", ModelUsagePeriod);
+    insert_schema!(schemas, "model_usage_window", ModelUsageWindow);
+    insert_schema!(schemas, "model_usage_summary", ModelUsageSummary);
+    insert_schema!(schemas, "official_quota_scope", OfficialQuotaScope);
+    insert_schema!(schemas, "official_quota_status", OfficialQuotaStatus);
+    insert_schema!(schemas, "official_quota_snapshot", OfficialQuotaSnapshot);
+    insert_schema!(schemas, "capability_route_health", CapabilityRouteHealth);
     insert_schema!(
         schemas,
         "provider_capability_route",

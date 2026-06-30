@@ -592,7 +592,7 @@ Do not keep `ProviderSettingsForm` as the active model page after the redesign. 
 - Modify: `crates/jyowo-harness-contracts/src/lib.rs`
 - Modify: `crates/jyowo-harness-contracts/src/schema_export.rs`
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 Add tests that serialize and deserialize:
 
@@ -631,7 +631,7 @@ Additional contract test requirements:
 - Missing or empty `source_url` fails for `OfficialQuotaSnapshot` statuses other than `not_configured`.
 - Missing `safe_message` fails for `OfficialQuotaSnapshot` statuses `unsupported`, `auth_required`, and `failed`.
 
-- [ ] **Step 2: Add contract types**
+- [x] **Step 2: Add contract types**
 
 Add the target backend contract types from the "Target Backend Contracts" section.
 
@@ -645,11 +645,11 @@ Rules:
 - `OfficialQuotaSnapshot` must include a safe message for `unsupported`, `auth_required`, and `failed`.
 - Do not expose these shared structs directly as Tauri IPC payloads unless the command wrapper explicitly converts to camelCase and tests prove the final IPC shape.
 
-- [ ] **Step 3: Export schemas**
+- [x] **Step 3: Export schemas**
 
 Register the new contract types in `schema_export.rs` so docs/schema gates cover them.
 
-- [ ] **Step 4: Run tests and gates**
+- [x] **Step 4: Run tests and gates**
 
 Run:
 
@@ -662,7 +662,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 5: Audit and commit**
+- [x] **Step 5: Audit and commit**
 
 Security review is not required unless the task also changes IPC command exposure.
 
