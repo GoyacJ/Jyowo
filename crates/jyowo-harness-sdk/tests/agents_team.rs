@@ -1115,6 +1115,18 @@ impl EventStore for RecordingEventStore {
         Ok(())
     }
 
+    async fn delete_session(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+    ) -> Result<bool, JournalError> {
+        let mut events = self.events.lock().await;
+        let before = events.len();
+        events.retain(|event| !(event.tenant_id == tenant && event.session_id == session_id));
+        self.snapshots.lock().await.remove(&(tenant, session_id));
+        Ok(events.len() != before)
+    }
+
     async fn list_sessions(
         &self,
         _tenant: TenantId,
