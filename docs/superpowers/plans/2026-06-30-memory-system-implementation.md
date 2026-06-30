@@ -22,7 +22,9 @@ Use these external behaviors as design constraints, not as copied implementation
 
 ## Current Jyowo Facts
 
-- Desktop currently wires `InMemoryMemoryProvider::new("desktop-memory")`, so default memory does not persist across restart: `apps/desktop/src-tauri/src/commands.rs`.
+- Desktop currently wires `InMemoryMemoryProvider::new("desktop-memory")` in `build_desktop_harness`, so default memory does not persist across restart: `apps/desktop/src-tauri/src/commands/runtime.rs`.
+- Desktop Tauri commands are split by domain. Memory command wrappers live in `apps/desktop/src-tauri/src/commands/mod.rs`; memory command logic lives in `apps/desktop/src-tauri/src/commands/memory.rs`; desktop runtime assembly lives in `apps/desktop/src-tauri/src/commands/runtime.rs`.
+- SDK harness facade code is split by concern. Memory facade methods and memory-manager construction live in `crates/jyowo-harness-sdk/src/harness/memory.rs`; session-end memory summary handling lives in `crates/jyowo-harness-sdk/src/harness/events.rs`; `HarnessInner` still lives in `crates/jyowo-harness-sdk/src/harness.rs`; `HarnessOptions` lives in `crates/jyowo-harness-sdk/src/harness/types.rs`.
 - `InMemoryMemoryProvider::recall` filters by tenant/kind/visibility and returns first N; it does not rank semantically: `crates/jyowo-harness-memory/src/in_memory.rs`.
 - `MemoryStore::get` defaults to `NotFound`; browser flows require providers to implement it: `crates/jyowo-harness-memory/src/store.rs`.
 - `MemoryManager` already has lifecycle, audit sink, metrics, threat scanner, recall policy, external slot, optional builtin memory, and optional consolidation hook: `crates/jyowo-harness-memory/src/external.rs`.
@@ -115,8 +117,9 @@ If audit returns FAIL, fix the findings, rerun tests/gates, and run the same aud
 ```text
 React Memory UI
   -> shared/tauri/commands.ts Zod validated IPC
-  -> apps/desktop/src-tauri/src/commands.rs
-  -> jyowo-harness-sdk facade
+  -> apps/desktop/src-tauri/src/commands/mod.rs Tauri command wrappers
+  -> apps/desktop/src-tauri/src/commands/memory.rs IPC adapter logic
+  -> jyowo-harness-sdk facade in crates/jyowo-harness-sdk/src/harness/memory.rs
   -> MemoryManager
   -> SqliteMemoryProvider
   -> <workspace>/.jyowo/runtime/memory/memory.sqlite
@@ -313,13 +316,21 @@ Modify:
 - `crates/jyowo-harness-contracts/src/lib.rs`
 - `crates/jyowo-harness-sdk/Cargo.toml`
 - `crates/jyowo-harness-sdk/src/builder.rs`
-- `crates/jyowo-harness-sdk/src/harness.rs`
+- `crates/jyowo-harness-sdk/src/harness.rs` only for `HarnessInner` field wiring; keep memory behavior in split `harness/` modules.
+- `crates/jyowo-harness-sdk/src/harness/events.rs`
+- `crates/jyowo-harness-sdk/src/harness/memory.rs`
+- `crates/jyowo-harness-sdk/src/harness/session_runtime.rs`
+- `crates/jyowo-harness-sdk/src/harness/types.rs`
 - `crates/jyowo-harness-sdk/src/options.rs`
 - `crates/jyowo-harness-sdk/src/system_prompt.rs`
 - `crates/jyowo-harness-context/src/engine.rs`
 - `apps/desktop/src-tauri/Cargo.toml`
-- `apps/desktop/src-tauri/src/commands.rs`
-- `apps/desktop/src-tauri/tests/commands.rs`
+- `apps/desktop/src-tauri/src/commands/contracts.rs`
+- `apps/desktop/src-tauri/src/commands/memory.rs`
+- `apps/desktop/src-tauri/src/commands/mod.rs`
+- `apps/desktop/src-tauri/src/commands/runtime.rs`
+- `apps/desktop/src-tauri/tests/commands.rs` only for shared helpers, imports, or module registration; memory tests live in `apps/desktop/src-tauri/tests/commands/memory.rs`.
+- `apps/desktop/src-tauri/tests/commands/memory.rs`
 - `apps/desktop/src/shared/tauri/commands.ts`
 - `apps/desktop/src/shared/tauri/commands.test.ts`
 - `apps/desktop/src/testing/command-client.ts`
@@ -676,9 +687,12 @@ git commit -m "feat(memory): rank sqlite recall results"
 - Create: `crates/jyowo-harness-memory/src/config.rs`
 - Modify: `crates/jyowo-harness-memory/src/lib.rs`
 - Modify: `crates/jyowo-harness-memory/src/sqlite.rs`
-- Modify: `crates/jyowo-harness-sdk/src/options.rs`
 - Modify: `crates/jyowo-harness-sdk/src/builder.rs`
-- Modify: `crates/jyowo-harness-sdk/src/harness.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness.rs` only for `HarnessInner` field wiring.
+- Modify: `crates/jyowo-harness-sdk/src/harness/memory.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/session_runtime.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/types.rs`
+- Modify: `crates/jyowo-harness-sdk/src/options.rs`
 - Modify: `crates/jyowo-harness-sdk/src/system_prompt.rs`
 - Test: `crates/jyowo-harness-memory/tests/config.rs`
 - Test: `crates/jyowo-harness-memory/tests/settings_store.rs`
@@ -847,7 +861,8 @@ git commit -m "feat(memory): add runtime controls"
 - Modify: `crates/jyowo-harness-memory/src/external.rs`
 - Modify: `crates/jyowo-harness-context/src/engine.rs`
 - Modify: `crates/jyowo-harness-contracts/src/events/memory.rs`
-- Modify: `crates/jyowo-harness-sdk/src/harness.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/events.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/memory.rs`
 - Test: `crates/jyowo-harness-context/tests/memory_recall.rs`
 - Test: `crates/jyowo-harness-memory/tests/config.rs`
 - Test: `crates/jyowo-harness-sdk/tests/memory_runtime_config.rs`
@@ -913,7 +928,11 @@ Do not store full URLs with secrets. Store host or redacted label.
   - Ignore unknown fields.
   - Do not treat plain text as a control channel.
 
-- [ ] Add the SDK taint bridge in `crates/jyowo-harness-sdk/src/harness.rs`. Extend the existing memory session summary state with `MemoryContextTaint`, merge sanitized taint from tool/MCP/web/imported context events while events are recorded, and make Task 6 read this stored state. Do not recompute generation eligibility from raw transcript text.
+- [ ] Add the SDK taint bridge in the split harness modules:
+  - Extend `MemorySessionSummaryState` in `crates/jyowo-harness-sdk/src/harness/events.rs` with `MemoryContextTaint`.
+  - Update `record_memory_summary_event` in `crates/jyowo-harness-sdk/src/harness/memory.rs` to merge sanitized taint from tool/MCP/web/imported context events.
+  - Keep session-end summary loading in `crates/jyowo-harness-sdk/src/harness/events.rs`.
+  - Make Task 6 read this stored state. Do not recompute generation eligibility from raw transcript text.
 - [ ] Emit memory recall skipped/degraded events without raw query text.
 - [ ] Run:
 
@@ -942,7 +961,10 @@ git commit -m "feat(memory): track external taint and structured recall"
 - Modify: `crates/jyowo-harness-memory/src/external.rs`
 - Modify: `crates/jyowo-harness-memory/src/lifecycle.rs`
 - Modify: `crates/jyowo-harness-memory/src/in_memory.rs`
-- Modify: `crates/jyowo-harness-sdk/src/harness.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness.rs` only for `HarnessInner` field wiring.
+- Modify: `crates/jyowo-harness-sdk/src/harness/events.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/memory.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/session_runtime.rs`
 - Test: `crates/jyowo-harness-memory/tests/generation_candidates.rs`
 - Test: `crates/jyowo-harness-sdk/tests/memory_generation_worker.rs`
 
@@ -1151,12 +1173,16 @@ git commit -m "feat(memory): add generation candidates"
 **Files:**
 
 - Modify: `apps/desktop/src-tauri/Cargo.toml`
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
-- Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/memory.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/mod.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands.rs` only if shared helpers, imports, or module registration change.
+- Modify: `apps/desktop/src-tauri/tests/commands/memory.rs`
 - Modify: `crates/jyowo-harness-sdk/Cargo.toml`
 - Modify: `crates/jyowo-harness-sdk/src/builder.rs`
-- Modify: `crates/jyowo-harness-sdk/src/harness.rs`
-- Test: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness.rs` only for `HarnessInner` field wiring.
+- Modify: `crates/jyowo-harness-sdk/src/harness/memory.rs`
+- Test: `apps/desktop/src-tauri/tests/commands/memory.rs`
 
 - [ ] Write failing desktop tests.
 
@@ -1179,7 +1205,7 @@ cargo test -p jyowo-desktop-shell commands::desktop_uses_sqlite_memory_provider_
 Expected: fail because desktop still wires `InMemoryMemoryProvider`.
 
 - [ ] Enable SDK feature `memory-sqlite` in desktop Cargo features.
-- [ ] Replace:
+- [ ] In `apps/desktop/src-tauri/src/commands/runtime.rs`, replace:
 
 ```rust
 .with_memory_provider(InMemoryMemoryProvider::new("desktop-memory"))
@@ -1195,6 +1221,7 @@ Use `SqliteMemoryProvider::open_with_provider_id(path, "desktop-memory")` only i
 
 - [ ] Add a desktop storage helper if necessary. Keep path construction in Tauri shell, not inside lower crates.
 - [ ] Reuse one SQLite provider instance per desktop runtime. Pass the same concrete `Arc<SqliteMemoryProvider>` into the SDK as `MemoryProvider`, `MemoryCandidateStore`, and `MemorySettingsStore`. Do not create a new provider per browser command.
+- [ ] Keep Tauri command wrappers in `apps/desktop/src-tauri/src/commands/mod.rs`. Memory command business logic belongs in `apps/desktop/src-tauri/src/commands/memory.rs`; runtime provider assembly belongs in `apps/desktop/src-tauri/src/commands/runtime.rs`.
 - [ ] Ensure exports use redacted payloads and do not include full private absolute paths in frontend response.
 - [ ] Run:
 
@@ -1217,12 +1244,16 @@ git commit -m "feat(memory): persist desktop memory"
 
 **Files:**
 
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
-- Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/contracts.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/memory.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/mod.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands.rs` only if shared helpers, imports, or module registration change.
+- Modify: `apps/desktop/src-tauri/tests/commands/memory.rs`
 - Modify: `crates/jyowo-harness-memory/src/types.rs`
 - Modify: `crates/jyowo-harness-memory/src/generation.rs`
 - Modify: `crates/jyowo-harness-memory/src/config.rs`
-- Modify: `crates/jyowo-harness-sdk/src/harness.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness.rs` only for `HarnessInner` field wiring.
+- Modify: `crates/jyowo-harness-sdk/src/harness/memory.rs`
 - Modify: `crates/jyowo-harness-sdk/src/ext.rs`
 - Test: `crates/jyowo-harness-sdk/tests/memory_management.rs`
 - Modify: `apps/desktop/src/shared/tauri/commands.ts`
@@ -1286,7 +1317,7 @@ pnpm --dir apps/desktop vitest run src/shared/tauri/commands.test.ts src/feature
 Expected: fail because create/candidate APIs and UI do not exist.
 
 - [ ] Add Rust IPC request/response types with `#[serde(deny_unknown_fields, rename_all = "camelCase")]`.
-- [ ] Add SDK facade methods in `crates/jyowo-harness-sdk/src/harness.rs`. Tauri commands must call these methods and must not create, accept, reject, filter, or persist memory directly.
+- [ ] Add SDK facade methods in `crates/jyowo-harness-sdk/src/harness/memory.rs`. If `HarnessInner` needs new fields, add only those fields in `crates/jyowo-harness-sdk/src/harness.rs`; keep memory facade behavior in `harness/memory.rs`. Tauri commands must call these methods and must not create, accept, reject, filter, or persist memory directly.
 
 Canonical Rust DTO ownership:
 
@@ -1307,7 +1338,7 @@ crates/jyowo-harness-memory/src/config.rs
   - memory settings request/response DTOs if wrappers are needed
 ```
 
-`crates/jyowo-harness-sdk/src/ext.rs` must re-export these canonical memory DTOs. `apps/desktop/src-tauri` may import them through `jyowo_harness_sdk::ext`, but must not define duplicate Rust structs or enums with the same wire shape.
+`crates/jyowo-harness-sdk/src/ext.rs` must re-export these canonical memory DTOs. `apps/desktop/src-tauri/src/commands/contracts.rs` may define thin IPC envelopes, and `apps/desktop/src-tauri/src/commands/memory.rs` may map payloads. They must import canonical DTOs through `jyowo_harness_sdk::ext` and must not define duplicate Rust structs or enums with the same wire shape.
 
 Required SDK DTO shapes in `jyowo-harness-memory`:
 

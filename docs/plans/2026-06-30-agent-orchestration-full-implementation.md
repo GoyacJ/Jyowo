@@ -94,15 +94,16 @@ Use these facts as the baseline. Do not invent a different starting state.
 - `crates/jyowo-harness-sdk/Cargo.toml` already has `agents-subagent` and `agents-team` features.
 - `crates/jyowo-harness-sdk/src/builder.rs` already has `with_subagent_runner(...)` behind `agents-subagent`.
 - `crates/jyowo-harness-engine/src/engine.rs` already has `with_subagent_tool()`.
-- `crates/jyowo-harness-sdk/src/harness.rs` already exposes `create_team(...)` behind `agents-team`.
+- `crates/jyowo-harness-sdk/src/harness/team_runtime.rs` already exposes `Harness::create_team(...)` behind `agents-team`; do not move team runtime logic back into the `harness.rs` module root.
 - There is no `crates/jyowo-harness-agent-runtime` crate yet. This plan must add it as an L3 workspace member.
 - `crates/jyowo-harness-contracts/src/capability.rs` already has `AgentCapabilityKind::{Subagents, AgentTeams, BackgroundAgents}` and `AgentCapabilityUnavailableReason::NotCompiled`.
 - `crates/jyowo-harness-contracts/src/events/subagent.rs` and `crates/jyowo-harness-contracts/src/events/team.rs` already define public event shapes.
 - `crates/jyowo-harness-contracts/src/schema_export.rs` already exports subagent and team event schemas.
 - `apps/desktop/src-tauri/Cargo.toml` does not enable `agents-subagent` or `agents-team` for `jyowo-harness-sdk`.
-- `apps/desktop/src-tauri/src/commands.rs` stores `ExecutionSettingsRecord::{subagents_enabled, agent_teams_enabled, background_agents_enabled}`.
-- `apps/desktop/src-tauri/src/commands.rs` currently hardcodes all agent capability availability to false in `agent_capabilities_available()`.
-- `apps/desktop/src-tauri/src/commands.rs` `StartRunRequest` does not include agent orchestration options.
+- Desktop Tauri commands are split by domain under `apps/desktop/src-tauri/src/commands/`; `commands/mod.rs` owns command wrappers and re-exports, not domain business logic.
+- `apps/desktop/src-tauri/src/commands/contracts.rs` defines IPC request/response structs including `StartRunRequest` and execution settings responses.
+- `apps/desktop/src-tauri/src/commands/providers.rs` stores `ExecutionSettingsRecord::{subagents_enabled, agent_teams_enabled, background_agents_enabled}` and currently hardcodes agent capability availability to false in `agent_capabilities_available()`.
+- `apps/desktop/src-tauri/src/commands/conversations.rs` owns `start_run_payload(...)` and `start_run_with_runtime_state(...)`; `StartRunRequest` does not include agent orchestration options.
 - `apps/desktop/src-tauri/src/lib.rs` registers no Tauri commands for agent profile, team, or background agent management.
 - `apps/desktop/src/shared/tauri/commands.ts` has current Zod settings schema for agent capabilities but no agent runtime IPC schemas.
 - `apps/desktop/src/features/settings/ExecutionSettings.tsx` reads agent capability settings but does not expose complete General settings switches.
@@ -490,10 +491,18 @@ crates/jyowo-harness-agent-runtime/tests/agents_team.rs
 
 ### SDK Facade and Runtime Assembly
 
+Use the existing split `harness/` modules. Keep `harness.rs` as the module root and core `Harness` definition; do not add new agent orchestration business logic to the root file when a focused module exists.
+
 ```text
 crates/jyowo-harness-sdk/Cargo.toml
 crates/jyowo-harness-sdk/src/lib.rs
 crates/jyowo-harness-sdk/src/harness.rs
+crates/jyowo-harness-sdk/src/harness/accessors.rs
+crates/jyowo-harness-sdk/src/harness/conversation.rs
+crates/jyowo-harness-sdk/src/harness/session_runtime.rs
+crates/jyowo-harness-sdk/src/harness/team_runtime.rs
+crates/jyowo-harness-sdk/src/harness/tool_pool.rs
+crates/jyowo-harness-sdk/src/harness/types.rs
 crates/jyowo-harness-sdk/src/builder.rs
 crates/jyowo-harness-sdk/tests/facade.rs
 crates/jyowo-harness-sdk/tests/runtime_assembly.rs
@@ -513,10 +522,13 @@ crates/jyowo-harness-team/tests/routing.rs
 
 ### Desktop Backend
 
+Use the existing split `commands/` modules. `commands/mod.rs` is the command wrapper and re-export layer; request/response structs belong in `commands/contracts.rs`, settings and capability availability in `commands/providers.rs`, run start flow in `commands/conversations.rs`, runtime assembly in `commands/runtime.rs`, and new agent/background command domains in focused modules.
+
 ```text
 apps/desktop/src-tauri/Cargo.toml
-apps/desktop/src-tauri/src/commands.rs
 apps/desktop/src-tauri/src/lib.rs
+apps/desktop/src-tauri/src/commands/**
+apps/desktop/src-tauri/src/commands/stores/mod.rs
 apps/desktop/src-tauri/src/agent_supervisor.rs
 apps/desktop/src-tauri/src/bin/jyowo-agent-supervisor.rs
 apps/desktop/src-tauri/build.rs
@@ -524,6 +536,11 @@ apps/desktop/src-tauri/binaries/README.md
 apps/desktop/src-tauri/capabilities/default.json
 apps/desktop/src-tauri/tauri.conf.json
 apps/desktop/src-tauri/tests/commands.rs
+apps/desktop/src-tauri/tests/commands/agents.rs
+apps/desktop/src-tauri/tests/commands/background_agents.rs
+apps/desktop/src-tauri/tests/commands/automations.rs
+apps/desktop/src-tauri/tests/commands/runs_permissions.rs
+apps/desktop/src-tauri/tests/commands/conversations.rs
 apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs
 ```
 
@@ -634,7 +651,7 @@ Create the anti-fake gate before any production implementation task. Later tasks
 The initial gate scans only agent-orchestration production surfaces:
 
 ```text
-apps/desktop/src-tauri/src/commands.rs
+apps/desktop/src-tauri/src/commands/**
 apps/desktop/src/features/settings/ExecutionSettings.tsx
 apps/desktop/src/features/conversation/Composer.tsx
 apps/desktop/src/features/conversation/AgentActivitySegment.tsx
@@ -779,8 +796,11 @@ all commands exit 0
 - Create: `crates/jyowo-harness-agent-runtime/tests/agent_orchestration_profiles.rs`
 - Modify: `crates/jyowo-harness-sdk/src/lib.rs`
 - Modify: `crates/jyowo-harness-sdk/Cargo.toml`
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/mod.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/contracts.rs`
+- Create: `apps/desktop/src-tauri/src/commands/agents.rs`
 - Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Create: `apps/desktop/src-tauri/tests/commands/agents.rs`
 - Modify: `apps/desktop/src/shared/tauri/commands.ts`
 - Modify: `apps/desktop/src/shared/tauri/commands.test.ts`
 - Modify: `docs/backend/backend-engineering.md`
@@ -864,18 +884,22 @@ all commands exit 0
 
 - Create: `crates/jyowo-harness-agent-runtime/src/policy.rs`
 - Create: `crates/jyowo-harness-agent-runtime/tests/agent_orchestration_policy.rs`
-- Modify: `crates/jyowo-harness-sdk/src/harness.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/accessors.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/types.rs`
 - Modify: `crates/jyowo-harness-sdk/tests/runtime_assembly.rs`
 - Modify: `apps/desktop/src-tauri/Cargo.toml`
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/contracts.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/providers.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
 - Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/automations.rs`
 - Modify: `scripts/check-agent-orchestration-no-fakes.mjs`
 - Modify: `scripts/check-agent-orchestration-no-fakes.test.mjs`
 
 **Required behavior:**
 
 - Enable `agents-subagent` and `agents-team` for desktop `jyowo-harness-sdk` dependency.
-- Remove the bare hardcoded `agent_capabilities_available()` implementation. The desktop command must delegate to `AgentCapabilityResolver`.
+- Remove the bare hardcoded `agent_capabilities_available()` implementation from `commands/providers.rs`. The desktop settings command must delegate to `AgentCapabilityResolver`.
 - Subagents available when:
   - desktop is compiled with `agents-subagent`
   - execution settings store can load
@@ -900,7 +924,7 @@ all commands exit 0
 
 - [ ] Add `ResolvedAgentCapabilityPolicy` and `AgentCapabilityResolver` in `jyowo-harness-agent-runtime`.
 - [ ] Add SDK facade wiring that delegates capability resolution to `jyowo-harness-agent-runtime`.
-- [ ] Wire desktop settings validation to the resolver.
+- [ ] Wire desktop settings validation in `commands/providers.rs` to the resolver.
 - [ ] Add tests for each unavailable reason.
 - [ ] Add tests that enabling unavailable capabilities returns `invalid_payload`.
 - [ ] Add tests that settings toggles persist only after backend validation.
@@ -930,8 +954,10 @@ all commands exit 0
 
 - Modify: `crates/jyowo-harness-agent-runtime/src/policy.rs`
 - Modify: `crates/jyowo-harness-agent-runtime/tests/agent_orchestration_policy.rs`
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/contracts.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/conversations.rs`
 - Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/runs_permissions.rs`
 - Modify: `apps/desktop/src/shared/tauri/commands.ts`
 - Modify: `apps/desktop/src/shared/tauri/commands.test.ts`
 - Create: `apps/desktop/src/features/conversation/use-agent-profiles.ts`
@@ -958,8 +984,8 @@ all commands exit 0
 
 **Steps:**
 
-- [ ] Add `agent_options: Option<AgentRunOptions>` to Rust `StartRunRequest`.
-- [ ] Add backend merge function in `jyowo-harness-agent-runtime` and call it from the desktop command boundary:
+- [ ] Add `agent_options: Option<AgentRunOptions>` to Rust `StartRunRequest` in `commands/contracts.rs`.
+- [ ] Add backend merge function in `jyowo-harness-agent-runtime` and call it from `commands/conversations.rs` before run execution:
 
 ```text
 ExecutionSettingsRecord + optional AgentRunOptions + AgentCapabilitiesPayload
@@ -1003,9 +1029,10 @@ all commands exit 0
 - Create: `crates/jyowo-harness-agent-runtime/src/isolation.rs`
 - Modify: `crates/jyowo-harness-agent-runtime/tests/agent_runtime_store.rs`
 - Create: `crates/jyowo-harness-agent-runtime/tests/agent_orchestration_isolation.rs`
-- Modify: `crates/jyowo-harness-sdk/src/harness.rs`
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/session_runtime.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/conversations.rs`
 - Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/runs_permissions.rs`
 
 **Required behavior:**
 
@@ -1069,11 +1096,14 @@ all commands exit 0
 
 - Create: `crates/jyowo-harness-agent-runtime/src/subagents.rs`
 - Modify: `crates/jyowo-harness-sdk/src/builder.rs`
-- Modify: `crates/jyowo-harness-sdk/src/harness.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/session_runtime.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/tool_pool.rs`
 - Modify: `crates/jyowo-harness-sdk/tests/facade.rs`
 - Modify: `crates/jyowo-harness-sdk/tests/runtime_assembly.rs`
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/conversations.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
 - Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/runs_permissions.rs`
 
 **Required behavior:**
 
@@ -1192,13 +1222,16 @@ all commands exit 0
 - Modify: `crates/jyowo-harness-subagent/tests/permission_bridge.rs`
 - Create: `crates/jyowo-harness-agent-runtime/src/teams.rs`
 - Create: `crates/jyowo-harness-agent-runtime/tests/agents_team.rs`
-- Modify: `crates/jyowo-harness-sdk/src/harness.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/team_runtime.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/session_runtime.rs`
 - Modify: `crates/jyowo-harness-sdk/tests/runtime_assembly.rs`
 - Modify: `crates/jyowo-harness-team/src/lib.rs`
 - Modify: `crates/jyowo-harness-team/tests/contract.rs`
 - Modify: `crates/jyowo-harness-team/tests/routing.rs`
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/contracts.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/conversations.rs`
 - Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/runs_permissions.rs`
 
 **Required behavior:**
 
@@ -1231,7 +1264,7 @@ all commands exit 0
 
 **Steps:**
 
-- [ ] Add L3 run-scoped team coordinator that wraps existing `create_team(...)`.
+- [ ] Add L3 run-scoped team coordinator that wraps existing `Harness::create_team(...)` from `crates/jyowo-harness-sdk/src/harness/team_runtime.rs`.
 - [ ] Add SDK assembly code that delegates team startup to `jyowo-harness-agent-runtime`.
 - [ ] Persist team task list and mailbox through `AgentRuntimeStore` before dispatch.
 - [ ] Add missing contract events for task updates if they do not already exist.
@@ -1334,8 +1367,10 @@ all commands exit 0
 - Create: `crates/jyowo-harness-contracts/src/events/background_agent.rs`
 - Modify: `crates/jyowo-harness-contracts/src/events/mod.rs`
 - Modify: `crates/jyowo-harness-contracts/src/schema_export.rs`
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/contracts.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/conversations.rs`
 - Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Create: `apps/desktop/src-tauri/tests/commands/background_agents.rs`
 
 **Required behavior:**
 
@@ -1406,9 +1441,12 @@ all commands exit 0
 
 **Files:**
 
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/mod.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/contracts.rs`
+- Create: `apps/desktop/src-tauri/src/commands/background_agents.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 - Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/background_agents.rs`
 - Modify: `apps/desktop/src/shared/tauri/commands.ts`
 - Modify: `apps/desktop/src/shared/tauri/commands.test.ts`
 - Create: `apps/desktop/src/features/background-agents/use-background-agents.ts`
@@ -1440,9 +1478,9 @@ all commands exit 0
 
 **Steps:**
 
-- [ ] Add command request/response contracts and Zod schemas.
-- [ ] Register commands in `generate_handler!`.
-- [ ] Add command tests for each command and each invalid state.
+- [ ] Add command request/response contracts in `commands/contracts.rs`, command implementations in `commands/background_agents.rs`, and Zod schemas in `shared/tauri`.
+- [ ] Re-export command handlers from `commands/mod.rs` and register them in `generate_handler!`.
+- [ ] Add command tests in `apps/desktop/src-tauri/tests/commands/background_agents.rs` for each command and each invalid state.
 - [ ] Add command tests proving `start_run` is the only public background start path.
 - [ ] Add delete tests for archived and non-archived records.
 - [ ] Add TanStack Query hooks for list/detail/mutations.
@@ -1478,8 +1516,11 @@ all commands exit 0
 - Create: `apps/desktop/src-tauri/binaries/README.md`
 - Modify: `apps/desktop/src-tauri/capabilities/default.json`
 - Modify: `apps/desktop/src-tauri/tauri.conf.json`
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/mod.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/background_agents.rs`
 - Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/background_agents.rs`
 - Modify: `crates/jyowo-harness-agent-runtime/src/background.rs`
 - Modify: `crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs`
 - Modify: `scripts/check-agent-orchestration-no-fakes.mjs`
@@ -1521,7 +1562,7 @@ all commands exit 0
 
 - [ ] Add supervisor binary entrypoint that opens workspace runtime, background registry, permission broker, event store, and SDK harness.
 - [ ] Add local control channel with authenticated requests. Use local-only transport and reject non-local origin.
-- [ ] Add supervisor lifecycle command in desktop backend, not frontend.
+- [ ] Add supervisor lifecycle command in the desktop backend command modules, not frontend; keep process assembly in `commands/runtime.rs` and background-agent control in `commands/background_agents.rs`.
 - [ ] Add Tauri sidecar packaging config in `tauri.conf.json` using `bundle.externalBin`, for example `binaries/jyowo-agent-supervisor`.
 - [ ] Add `scripts/build-agent-supervisor-sidecar.mjs` and root `build:agent-supervisor-sidecar` package script so the supervisor sidecar is built and copied before desktop shell cargo tests, rust gates, desktop full checks, and Tauri bundling.
 - [ ] Add `build.rs` validation for the expected `jyowo-agent-supervisor-$TARGET` sidecar filename, including `.exe` on Windows.
@@ -1625,8 +1666,12 @@ all commands exit 0
 - Modify if replay safety needs extension: `crates/jyowo-harness-observability/src/replay.rs`
 - Modify tests if observability crate changes: `crates/jyowo-harness-observability/tests/redactor.rs`
 - Modify tests if observability crate changes: `crates/jyowo-harness-observability/tests/replay.rs`
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/contracts.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/conversations.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/background_agents.rs`
 - Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/runs_permissions.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/background_agents.rs`
 
 **Required behavior:**
 
@@ -1698,7 +1743,7 @@ The Task 0 gate already exists. Harden it so it fails production code if it find
 The final gate replaces the Task 0 initial path list with this final scoped agent-orchestration production path list:
 
 ```text
-apps/desktop/src-tauri/src/commands.rs
+apps/desktop/src-tauri/src/commands/**
 apps/desktop/src-tauri/src/lib.rs
 apps/desktop/src-tauri/src/agent_supervisor.rs
 apps/desktop/src-tauri/src/bin/jyowo-agent-supervisor.rs
@@ -1772,6 +1817,9 @@ all commands exit 0
 **Files:**
 
 - Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/agents.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/background_agents.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/runs_permissions.rs`
 - Create: `apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs`
 - Modify: `apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx`
 - Modify: `apps/desktop/src/features/background-agents/BackgroundAgentsPanel.test.tsx`

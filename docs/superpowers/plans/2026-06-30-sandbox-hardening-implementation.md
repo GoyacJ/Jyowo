@@ -577,9 +577,16 @@ Modify:
 - `crates/jyowo-harness-sdk/src/builder.rs`
 - `crates/jyowo-harness-sdk/src/builtin.rs`
 - `crates/jyowo-harness-sdk/src/ext.rs`
+- `crates/jyowo-harness-sdk/src/harness/session_runtime.rs`
 - `crates/jyowo-harness-sdk/tests/runtime_assembly.rs`
-- `apps/desktop/src-tauri/src/commands.rs`
+- `apps/desktop/src-tauri/src/commands/mod.rs`
+- `apps/desktop/src-tauri/src/commands/runtime.rs`
+- `apps/desktop/src-tauri/src/commands/conversations.rs`
+- `apps/desktop/src-tauri/src/commands/providers.rs`
+- `apps/desktop/src-tauri/src/lib.rs`
 - `apps/desktop/src-tauri/tests/commands.rs`
+- `apps/desktop/src-tauri/tests/commands/runs_permissions.rs`
+- `apps/desktop/src-tauri/tests/commands/automations.rs`
 - `apps/desktop/src/shared/tauri/commands.ts`
 - `apps/desktop/src/shared/tauri/commands.test.ts`
 - `apps/desktop/src/testing/command-client.ts`
@@ -593,6 +600,25 @@ Modify:
 - `scripts/check-backend-docs.mjs`
 
 Do not create a new crate unless a task's entry analysis proves the existing L1 sandbox crate cannot own the code without circular dependencies.
+
+## Current Refactored Module Layout
+
+The desktop command design is modular. Do not recreate or target the old monolithic `apps/desktop/src-tauri/src/commands.rs` file.
+
+- `apps/desktop/src-tauri/src/commands/mod.rs` owns public `#[tauri::command]` wrappers, command re-exports, and IPC boundary validation that remains in the shell.
+- `apps/desktop/src-tauri/src/commands/runtime.rs` owns `build_desktop_harness`, desktop sandbox construction, diagnostics runner assembly, and plugin sidecar sandbox assembly.
+- `apps/desktop/src-tauri/src/commands/conversations.rs` owns `start_run_with_runtime_state`, conversation run validation, permission resolution routing, and conversation runtime calls.
+- `apps/desktop/src-tauri/src/commands/providers.rs` owns execution settings persistence, provider settings, provider capability routes, and `GetExecutionSettingsResponse` / `SetExecutionSettingsResponse` construction.
+- `apps/desktop/src-tauri/src/lib.rs` owns `tauri::generate_handler!` registration when a new command is exposed.
+- command tests are split under `apps/desktop/src-tauri/tests/commands/*.rs`; edit root `apps/desktop/src-tauri/tests/commands.rs` only for shared test helpers, imports, or registering a new test module.
+
+The SDK facade design is also modular. Do not push new implementation into a monolithic `crates/jyowo-harness-sdk/src/harness.rs`; that file is now the module root.
+
+- `crates/jyowo-harness-sdk/src/harness/session_runtime.rs` owns session engine assembly, `Engine::builder()`, `.with_sandbox(...)`, and `EngineSessionTurnRunner`.
+- `crates/jyowo-harness-sdk/src/harness/conversation.rs` owns conversation-session facade methods such as `submit_conversation_turn`.
+- `crates/jyowo-harness-sdk/src/harness/permissions.rs` owns stream permission facade wiring.
+- `crates/jyowo-harness-sdk/src/harness/accessors.rs` owns facade accessors and feature availability reporting.
+- `crates/jyowo-harness-sdk/src/harness/tool_pool.rs` owns tool filtering and ToolPool assembly helpers.
 
 ---
 
@@ -894,8 +920,8 @@ git commit -m "refactor(sandbox): centralize filesystem policy"
 - Modify: `crates/jyowo-harness-sandbox/src/local/exec.rs`
 - Modify: `crates/jyowo-harness-sandbox/src/backend.rs`
 - Modify: `crates/jyowo-harness-sandbox/tests/local.rs`
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
-- Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
+- Test: `apps/desktop/src-tauri/tests/commands/runs_permissions.rs`
 
 - [ ] **Step 1: Task intent check**
 
@@ -1097,10 +1123,10 @@ Rules:
 
 - [ ] **Step 7: Wire desktop main Harness**
 
-Replace:
+In `apps/desktop/src-tauri/src/commands/runtime.rs`, replace the current main harness sandbox construction:
 
 ```rust
-.with_sandbox(LocalSandbox::new(workspace_root))
+let sandbox = Arc::new(LocalSandbox::new(workspace_root)) as Arc<dyn SandboxBackend>;
 ```
 
 with a helper:
@@ -1109,7 +1135,7 @@ with a helper:
 let (main_sandbox, main_sandbox_mode) = desktop_required_local_sandbox(workspace_root)?;
 ```
 
-The helper must return `CommandErrorPayload` on unavailable isolation. The user-facing message must be safe and must not include private absolute paths.
+The helper must return `CommandErrorPayload` on unavailable isolation. Pass `main_sandbox` into `.with_sandbox_arc(main_sandbox)`. Use `main_sandbox_mode` for diagnostics/explain payloads or an explicitly named runtime state field; do not compute a second sandbox mode through a parallel path. The user-facing message must be safe and must not include private absolute paths.
 
 - [ ] **Step 8: Run gates**
 
@@ -1472,9 +1498,11 @@ git commit -m "fix(tool): execute Bash input through explicit shell"
 - Modify: `crates/jyowo-harness-sandbox/tests/phase_policy.rs`
 - Test: `crates/jyowo-harness-sandbox/tests/setup_plan.rs`
 - Modify: `crates/jyowo-harness-sdk/src/builder.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/session_runtime.rs`
 - Modify: `crates/jyowo-harness-sdk/tests/runtime_assembly.rs`
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
-- Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/conversations.rs`
+- Test: `apps/desktop/src-tauri/tests/commands/runs_permissions.rs`
 
 - [ ] **Step 1: Task intent check**
 
@@ -1582,7 +1610,7 @@ pub fn setup_workspace_write_with_network(
 
 - [ ] **Step 6: Wire desktop agent phase**
 
-Desktop default run assembly must use `SetupPlan::empty()` and `SandboxPolicy::default_agent_workspace_write()` for Bash and plugin sidecar agent commands. There must be no setup secret path in normal `start_run`.
+Desktop default run assembly must use `SetupPlan::empty()` and `SandboxPolicy::default_agent_workspace_write()` for Bash and plugin sidecar agent commands. In the current layout, default harness assembly belongs in `apps/desktop/src-tauri/src/commands/runtime.rs`, start-run request orchestration belongs in `apps/desktop/src-tauri/src/commands/conversations.rs`, and session engine wiring belongs in `crates/jyowo-harness-sdk/src/harness/session_runtime.rs`. There must be no setup secret path in normal `start_run`.
 
 - [ ] **Step 7: Run gates**
 
@@ -1797,8 +1825,11 @@ git commit -m "feat(sandbox): harden ssh workspace policy"
 - Create: `crates/jyowo-harness-sandbox/src/explain.rs`
 - Modify: `crates/jyowo-harness-sandbox/src/lib.rs`
 - Test: `crates/jyowo-harness-sandbox/tests/explain.rs`
-- Modify: `apps/desktop/src-tauri/src/commands.rs`
-- Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/mod.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/providers.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
+- Modify: `apps/desktop/src-tauri/src/lib.rs` only if adding `get_sandbox_status`
+- Test: `apps/desktop/src-tauri/tests/commands/automations.rs`
 - Modify: `apps/desktop/src/shared/tauri/commands.ts`
 - Modify: `apps/desktop/src/shared/tauri/commands.test.ts`
 - Modify: `apps/desktop/src/testing/command-client.ts`
@@ -1858,13 +1889,15 @@ Add to `GetExecutionSettingsResponse`:
 pub sandbox: SandboxExplainPayload,
 ```
 
-The desktop command must compute this from the same sandbox assembly path used for real harness startup. Do not build a separate fake payload.
+`get_execution_settings` is exposed from `apps/desktop/src-tauri/src/commands/mod.rs`, but the response helper lives in `apps/desktop/src-tauri/src/commands/providers.rs`. Compute this payload through a helper in `apps/desktop/src-tauri/src/commands/runtime.rs` that reuses the same sandbox assembly facts as `build_desktop_harness` and `desktop_plugin_sidecar_sandbox`. Do not build a separate fake payload.
 
 Do not add a live sandbox probe to `SetExecutionSettingsResponse`. If frontend needs a refreshed status after save, add a separate read-only command:
 
 ```rust
 pub async fn get_sandbox_status(...) -> Result<SandboxExplainPayload, CommandErrorPayload>
 ```
+
+If this command is added, expose its wrapper from `commands/mod.rs`, register it in `apps/desktop/src-tauri/src/lib.rs`, and add command tests in the split command test module that owns sandbox/execution-settings behavior.
 
 `set_execution_settings` may validate settings shape and persist config, but it must not fail only because `sandbox-exec`, `bwrap`, Docker, or SSH is unavailable.
 
