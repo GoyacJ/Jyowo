@@ -1077,7 +1077,7 @@ git commit -m "feat: add official quota framework"
 - Create: `apps/desktop/src/features/settings/models/model-settings-view-model.test.ts`
 - Create: `apps/desktop/src/features/settings/models/model-settings-queries.ts`
 
-- [ ] **Step 1: Write failing view-model tests**
+- [x] **Step 1: Write failing view-model tests**
 
 Tests must prove:
 
@@ -1099,7 +1099,7 @@ Tests must prove:
 
 Expected: tests fail because the module does not exist.
 
-- [ ] **Step 2: Implement pure view-model builders**
+- [x] **Step 2: Implement pure view-model builders**
 
 Rules:
 
@@ -1110,7 +1110,7 @@ Rules:
 - Empty usage summary must preserve the three real windows with zero totals.
 - Partial query errors must be represented as typed view-model states, not thrown from render components.
 
-- [ ] **Step 3: Implement query hooks**
+- [x] **Step 3: Implement query hooks**
 
 Use TanStack Query wrappers for:
 
@@ -1135,7 +1135,7 @@ Rules:
 - Feature leaf components do not import `CommandClient`.
 - Query composition must preserve partial-data behavior from the pure view-model builder.
 
-- [ ] **Step 4: Run tests and gates**
+- [x] **Step 4: Run tests and gates**
 
 Run:
 
@@ -1147,7 +1147,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 5: Audit and commit**
+- [x] **Step 5: Audit and commit**
 
 Security review is required because the view model handles credential-adjacent provider state.
 
