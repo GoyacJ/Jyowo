@@ -2866,6 +2866,7 @@ dependencies = [
  "futures",
  "image",
  "jyowo-harness-contracts",
+ "jyowo-harness-model",
  "jyowo-harness-plugin",
  "jyowo-harness-sandbox",
  "jyowo-harness-sdk",

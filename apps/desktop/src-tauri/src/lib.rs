@@ -105,6 +105,8 @@ pub fn run() {
             commands::update_plugin_config,
             commands::validate_plugin_from_path,
             commands::validate_provider_settings,
+            commands::list_provider_probe_snapshots,
+            commands::probe_provider_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

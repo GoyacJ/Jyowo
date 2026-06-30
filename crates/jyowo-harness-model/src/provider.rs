@@ -66,6 +66,7 @@ pub struct InferContext {
     pub tracing: Option<TraceContext>,
     pub middlewares: Vec<Arc<dyn InferMiddleware>>,
     pub blob_store: Option<Arc<dyn BlobStore>>,
+    pub suppress_usage_accounting: bool,
 }
 
 impl InferContext {
@@ -81,6 +82,7 @@ impl InferContext {
             tracing: None,
             middlewares: Vec::new(),
             blob_store: None,
+            suppress_usage_accounting: false,
         }
     }
 }

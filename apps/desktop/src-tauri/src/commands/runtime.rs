@@ -27,6 +27,8 @@ use super::skills::*;
 #[allow(unused_imports)]
 use super::stores::*;
 #[allow(unused_imports)]
+use super::model_settings::*;
+#[allow(unused_imports)]
 use super::validation::*;
 use super::*;
 
@@ -87,6 +89,10 @@ impl DesktopRuntimeState {
             provider_settings_store: Arc::new(DesktopProviderSettingsStore::new(
                 workspace_root.clone(),
             )),
+            provider_diagnostics_store: Arc::new(DesktopProviderDiagnosticsStore::new(
+                workspace_root.clone(),
+            )),
+            provider_probe_flights: new_provider_probe_flights(),
             provider_capability_route_store: Arc::new(DesktopProviderCapabilityRouteStore::new(
                 workspace_root.clone(),
             )),
@@ -206,6 +212,10 @@ impl DesktopRuntimeState {
             provider_settings_store: Arc::new(DesktopProviderSettingsStore::new(
                 workspace_root.clone(),
             )),
+            provider_diagnostics_store: Arc::new(DesktopProviderDiagnosticsStore::new(
+                workspace_root.clone(),
+            )),
+            provider_probe_flights: new_provider_probe_flights(),
             provider_capability_route_store: Arc::new(DesktopProviderCapabilityRouteStore::new(
                 workspace_root.clone(),
             )),

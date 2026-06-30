@@ -28,6 +28,7 @@ use super::runtime::*;
 use super::skills::*;
 #[allow(unused_imports)]
 use super::validation::*;
+use super::model_settings::ProviderProbeFlights;
 use super::*;
 
 mod automation;
@@ -936,6 +937,98 @@ pub(crate) fn normalize_skill_relative_path(value: &str) -> Result<PathBuf, Comm
 }
 
 #[derive(Clone)]
+pub struct DesktopProviderDiagnosticsStore {
+    workspace_root: PathBuf,
+}
+
+impl DesktopProviderDiagnosticsStore {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root }
+    }
+
+    fn diagnostics_path(&self) -> PathBuf {
+        self.workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("provider-diagnostics.json")
+    }
+}
+
+impl ProviderDiagnosticsStore for DesktopProviderDiagnosticsStore {
+    fn load_record(&self) -> Result<ProviderDiagnosticsRecord, CommandErrorPayload> {
+        let diagnostics_path = self.diagnostics_path();
+        ensure_no_symlink_components(&diagnostics_path, "provider diagnostics file")?;
+        match std::fs::read(&diagnostics_path) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(record) => Ok(record),
+                Err(_) => {
+                    remove_invalid_provider_diagnostics_file(&diagnostics_path)?;
+                    Ok(ProviderDiagnosticsRecord {
+                        snapshots: Vec::new(),
+                    })
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(ProviderDiagnosticsRecord {
+                    snapshots: Vec::new(),
+                })
+            }
+            Err(error) => Err(runtime_operation_failed(format!(
+                "provider diagnostics read failed: {error}"
+            ))),
+        }
+    }
+
+    fn upsert_snapshot(
+        &self,
+        snapshot: &ProviderProbeSnapshot,
+    ) -> Result<(), CommandErrorPayload> {
+        let diagnostics_path = self.diagnostics_path();
+        let mut record = self.load_record()?;
+        if let Some(existing) = record
+            .snapshots
+            .iter_mut()
+            .find(|entry| entry.config_id == snapshot.config_id)
+        {
+            *existing = snapshot.clone();
+        } else {
+            record.snapshots.push(snapshot.clone());
+        }
+        let parent = diagnostics_path.parent().ok_or_else(|| {
+            runtime_operation_failed("provider diagnostics path has no parent".to_owned())
+        })?;
+        ensure_no_symlink_components(parent, "provider diagnostics directory")?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            runtime_operation_failed(format!(
+                "provider diagnostics directory unavailable: {error}"
+            ))
+        })?;
+        ensure_no_symlink_components(parent, "provider diagnostics directory")?;
+        let bytes = serde_json::to_vec_pretty(&record).map_err(|error| {
+            runtime_operation_failed(format!("provider diagnostics serialization failed: {error}"))
+        })?;
+        write_atomic_runtime_file(
+            &diagnostics_path,
+            "provider-diagnostics.json",
+            "provider diagnostics",
+            &bytes,
+        )
+    }
+}
+
+pub(crate) fn remove_invalid_provider_diagnostics_file(
+    diagnostics_path: &Path,
+) -> Result<(), CommandErrorPayload> {
+    match std::fs::remove_file(diagnostics_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(runtime_operation_failed(format!(
+            "provider diagnostics cleanup failed: {error}"
+        ))),
+    }
+}
+
+#[derive(Clone)]
 pub struct DesktopRuntimeState {
     pub(crate) active_runtime: Arc<RwLock<DesktopActiveRuntime>>,
     pub(crate) automation_lock: Arc<tokio::sync::Mutex<()>>,
@@ -959,6 +1052,8 @@ pub struct DesktopRuntimeState {
     pub(crate) plugin_store_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) provider_settings_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) provider_settings_store: Arc<dyn ProviderSettingsStore>,
+    pub(crate) provider_diagnostics_store: Arc<dyn ProviderDiagnosticsStore>,
+    pub(crate) provider_probe_flights: ProviderProbeFlights,
     pub(crate) provider_capability_route_store: Arc<DesktopProviderCapabilityRouteStore>,
     pub(crate) provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
     pub(crate) execution_settings_lock: Arc<tokio::sync::Mutex<()>>,

@@ -45,6 +45,7 @@ import type {
   ListProjectsResponse,
   ListProviderCapabilityRouteOptionsResponse,
   ListProviderCapabilityRoutesResponse,
+  ListProviderProbeSnapshotsResponse,
   ListProviderSettingsResponse,
   ListReferenceCandidatesResponse,
   ListSkillCatalogEntriesResponse,
@@ -56,6 +57,7 @@ import type {
   PageConversationWorktreeResponse,
   PluginInstallReport,
   PluginOperationResult,
+  ProbeProviderConfigResponse,
   ReplayTimelineResponse,
   RequestProviderConfigApiKeyRevealResponse,
   ResolvePermissionResponse,
@@ -307,6 +309,22 @@ const fixtureValidateProviderSettings: ValidateProviderSettingsResponse = {
   modelId: 'gpt-4o-mini',
   providerId: 'openai',
   status: 'accepted',
+}
+
+const fixtureListProviderProbeSnapshots: ListProviderProbeSnapshotsResponse = {
+  snapshots: [],
+}
+
+const fixtureProbeProviderConfig: ProbeProviderConfigResponse = {
+  snapshot: {
+    checkedAt: '2026-06-30T12:00:00+00:00',
+    configId: 'openai-work',
+    latencyMs: 120,
+    modelId: 'gpt-4o-mini',
+    providerId: 'openai',
+    status: 'online',
+    timeoutMs: 10_000,
+  },
 }
 
 const textCapability: ConversationModelCapability = {
@@ -1150,6 +1168,8 @@ export interface TestCommandClientOptions {
   providerSettingsList?: ListProviderSettingsResponse
   providerCapabilityRoutes?: ListProviderCapabilityRoutesResponse
   providerCapabilityRouteOptions?: ListProviderCapabilityRouteOptionsResponse
+  providerProbeSnapshots?: ListProviderProbeSnapshotsResponse
+  providerProbe?: ProbeProviderConfigResponse
   projects?: ListProjectsResponse
   providerSettings?: SaveProviderSettingsResponse
   providerValidation?: ValidateProviderSettingsResponse
@@ -1489,6 +1509,10 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
         ),
       }
     },
+    async probeProviderConfig() {
+      await wait(options.delayMs)
+      return cloneResponse(options.providerProbe ?? fixtureProbeProviderConfig)
+    },
     async getSkillDetail(id) {
       await wait(options.delayMs)
       if (options.skillDetail) {
@@ -1634,6 +1658,10 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
     async listProviderCapabilityRouteOptions() {
       await wait(options.delayMs)
       return cloneResponse(providerCapabilityRouteOptions)
+    },
+    async listProviderProbeSnapshots() {
+      await wait(options.delayMs)
+      return cloneResponse(options.providerProbeSnapshots ?? fixtureListProviderProbeSnapshots)
     },
     async listProjects() {
       await wait(options.delayMs)
@@ -2340,6 +2368,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     getSkillCatalogFile: () => Promise.reject(error),
     pageConversationTimeline: () => Promise.reject(error),
     pageConversationWorktree: () => Promise.reject(error),
+    probeProviderConfig: () => Promise.reject(error),
     getSkillDetail: () => Promise.reject(error),
     getSkillFile: () => Promise.reject(error),
     importSkill: () => Promise.reject(error),
@@ -2362,6 +2391,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     listProviderSettings: () => Promise.reject(error),
     listProviderCapabilityRoutes: () => Promise.reject(error),
     listProviderCapabilityRouteOptions: () => Promise.reject(error),
+    listProviderProbeSnapshots: () => Promise.reject(error),
     listProjects: () => Promise.reject(error),
     addProject: () => Promise.reject(error),
     switchProject: () => Promise.reject(error),

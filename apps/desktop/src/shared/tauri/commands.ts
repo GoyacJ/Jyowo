@@ -1243,6 +1243,72 @@ const setExecutionSettingsResponseSchema = z
   .strict()
 
 const isoDateTimeSchema = z.string().datetime({ offset: true })
+
+const providerProbeStatusSchema = z.enum([
+  'online',
+  'timeout',
+  'unauthenticated',
+  'rate_limited',
+  'unsupported',
+  'failed',
+])
+
+const providerProbeErrorKindSchema = z.enum([
+  'timeout',
+  'auth',
+  'rate_limit',
+  'network',
+  'provider',
+  'unsupported',
+  'invalid_config',
+  'unknown',
+])
+
+const usageSnapshotSchema = z
+  .object({
+    cacheReadTokens: z.number().int().nonnegative(),
+    cacheWriteTokens: z.number().int().nonnegative(),
+    costMicros: z.number().int().nonnegative(),
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    toolCalls: z.number().int().nonnegative(),
+  })
+  .strict()
+
+const providerProbeSnapshotSchema = z
+  .object({
+    checkedAt: isoDateTimeSchema,
+    configId: z.string().min(1),
+    errorKind: providerProbeErrorKindSchema.optional(),
+    latencyMs: z.number().int().nonnegative().optional(),
+    modelId: z.string().min(1),
+    providerId: providerIdSchema,
+    safeMessage: z.string().min(1).optional(),
+    status: providerProbeStatusSchema,
+    timeoutMs: z.number().int().positive(),
+  })
+  .strict()
+
+const probeProviderConfigRequestSchema = z
+  .object({
+    configId: z.string().trim().min(1),
+    timeoutMs: z.number().int().positive().optional(),
+  })
+  .strict()
+
+const probeProviderConfigResponseSchema = z
+  .object({
+    diagnosticUsage: usageSnapshotSchema.optional(),
+    snapshot: providerProbeSnapshotSchema,
+  })
+  .strict()
+
+const listProviderProbeSnapshotsResponseSchema = z
+  .object({
+    snapshots: z.array(providerProbeSnapshotSchema),
+  })
+  .strict()
+
 const automationIdSchema = z
   .string()
   .trim()
@@ -2608,6 +2674,11 @@ export type ValidateProviderSettingsRequest = z.infer<typeof validateProviderSet
 export type ValidateProviderSettingsResponse = z.infer<
   typeof validateProviderSettingsResponseSchema
 >
+export type ProbeProviderConfigRequest = z.infer<typeof probeProviderConfigRequestSchema>
+export type ProbeProviderConfigResponse = z.infer<typeof probeProviderConfigResponseSchema>
+export type ListProviderProbeSnapshotsResponse = z.infer<
+  typeof listProviderProbeSnapshotsResponseSchema
+>
 export type ModelProviderCatalogResponse = z.infer<typeof modelProviderCatalogResponseSchema>
 export type ProviderConfig = z.infer<typeof providerConfigSchema>
 export type ListProviderSettingsResponse = z.infer<typeof listProviderSettingsResponseSchema>
@@ -2786,6 +2857,7 @@ export interface CommandClient {
   listProviderSettings: () => Promise<ListProviderSettingsResponse>
   listProviderCapabilityRoutes: () => Promise<ListProviderCapabilityRoutesResponse>
   listProviderCapabilityRouteOptions: () => Promise<ListProviderCapabilityRouteOptionsResponse>
+  listProviderProbeSnapshots: () => Promise<ListProviderProbeSnapshotsResponse>
   listProjects: () => Promise<ListProjectsResponse>
   addProject: (path: string) => Promise<SwitchProjectResponse>
   switchProject: (path: string) => Promise<SwitchProjectResponse>
@@ -2796,6 +2868,7 @@ export interface CommandClient {
   pageConversationWorktree: (
     request: PageConversationWorktreeRequest,
   ) => Promise<PageConversationWorktreeResponse>
+  probeProviderConfig: (request: ProbeProviderConfigRequest) => Promise<ProbeProviderConfigResponse>
   listReferenceCandidates: (
     request: ListReferenceCandidatesRequest,
   ) => Promise<ListReferenceCandidatesResponse>
@@ -3025,6 +3098,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         await invoke(command, args),
       )
     },
+    async probeProviderConfig(request) {
+      const command = 'probe_provider_config'
+      const args = parseArgs(command, probeProviderConfigRequestSchema, request)
+      return parsePayload(command, probeProviderConfigResponseSchema, await invoke(command, args))
+    },
     async getSkillDetail(id) {
       const command = 'get_skill_detail'
       const args = parseArgs(command, getSkillDetailRequestSchema, {
@@ -3203,6 +3281,10 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         listProviderCapabilityRouteOptionsResponseSchema,
         await invoke(command),
       )
+    },
+    async listProviderProbeSnapshots() {
+      const command = 'list_provider_probe_snapshots'
+      return parsePayload(command, listProviderProbeSnapshotsResponseSchema, await invoke(command))
     },
     async listProjects() {
       const command = 'list_projects'
@@ -3922,6 +4004,12 @@ export function listProviderCapabilityRouteOptions(
   return client.listProviderCapabilityRouteOptions()
 }
 
+export function listProviderProbeSnapshots(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListProviderProbeSnapshotsResponse> {
+  return client.listProviderProbeSnapshots()
+}
+
 export function saveProviderCapabilityRoute(
   request: SaveProviderCapabilityRouteRequest,
   client: CommandClient = tauriCommandClient,
@@ -3997,6 +4085,13 @@ export function validateProviderSettings(
   client: CommandClient = tauriCommandClient,
 ): Promise<ValidateProviderSettingsResponse> {
   return client.validateProviderSettings(request)
+}
+
+export function probeProviderConfig(
+  request: ProbeProviderConfigRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<ProbeProviderConfigResponse> {
+  return client.probeProviderConfig(request)
 }
 
 export function listActivity(

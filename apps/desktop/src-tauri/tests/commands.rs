@@ -141,6 +141,8 @@ mod mcp;
 mod memory;
 #[path = "commands/providers.rs"]
 mod providers;
+#[path = "commands/provider_probe.rs"]
+mod provider_probe;
 #[path = "commands/runs_permissions.rs"]
 mod runs_permissions;
 #[path = "commands/skills.rs"]

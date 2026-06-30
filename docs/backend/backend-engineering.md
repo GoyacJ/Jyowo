@@ -241,11 +241,13 @@ list_memory_items
 list_plugins
 list_provider_capability_route_options
 list_provider_capability_routes
+list_provider_probe_snapshots
 list_provider_settings
 list_projects
 list_skills
 page_conversation_timeline
 page_conversation_worktree
+probe_provider_config
 resolve_permission
 request_provider_config_api_key_reveal
 restart_mcp_server
@@ -388,6 +390,7 @@ list_memory_items() -> Result<ListMemoryItemsResponse, CommandErrorPayload>
 list_plugins() -> Result<ListPluginsResponse, CommandErrorPayload>
 list_provider_capability_route_options() -> Result<ListProviderCapabilityRouteOptionsResponse, CommandErrorPayload>
 list_provider_capability_routes() -> Result<ListProviderCapabilityRoutesResponse, CommandErrorPayload>
+list_provider_probe_snapshots() -> Result<ListProviderProbeSnapshotsResponse, CommandErrorPayload>
 list_provider_settings() -> Result<ListProviderSettingsResponse, CommandErrorPayload>
 list_projects() -> ListProjectsResponse
 list_skills() -> Result<ListSkillsResponse, CommandErrorPayload>
@@ -402,6 +405,10 @@ page_conversation_worktree(
   direction: Option<PageConversationWorktreeDirection>,
   limit: Option<u32>
 ) -> Result<ConversationWorktreePage, CommandErrorPayload>
+probe_provider_config(
+  config_id: String,
+  timeout_ms: Option<u64>
+) -> Result<ProbeProviderConfigResponse, CommandErrorPayload>
 resolve_permission(
   decision: PermissionDecision,
   request_id: String
@@ -521,6 +528,13 @@ validate_provider_settings(
 `validate_provider_settings` validates payload shape, provider id, and model
 metadata support. It must not claim remote API availability unless the runtime
 provider implements a policy-governed network health check.
+
+`probe_provider_config` runs a real provider inference against a saved provider
+config. It persists the last safe snapshot in
+`.jyowo/runtime/provider-diagnostics.json`, uses per-`configId` single-flight
+deduplication, and must not merge diagnostic probe usage into normal usage
+totals. `list_provider_probe_snapshots` returns persisted snapshots only; a
+never-checked config is represented by the absence of a snapshot row.
 
 `save_provider_settings` stores provider credentials in the workspace provider
 settings record. `api_key` is required for new provider configs and optional

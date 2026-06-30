@@ -2161,6 +2161,38 @@ pub(crate) fn url_targets_loopback(url: &reqwest::Url) -> bool {
             .is_ok_and(|address| address.is_loopback())
 }
 
+pub(crate) fn build_provider_for_config(
+    config: &ProviderConfigRecord,
+) -> Result<(Arc<dyn ModelProvider>, ModelProtocol), CommandErrorPayload> {
+    let descriptor = provider_config_descriptor(config)?;
+    let api_key = config.api_key.trim();
+    if api_key.is_empty() {
+        return Err(runtime_init_failed(
+            "provider config has no api key".to_owned(),
+        ));
+    }
+    let base_url = normalized_base_url(config.base_url.as_deref())?;
+    let provider = build_provider(ProviderBuildConfig {
+        provider_id: config.provider_id.clone(),
+        api_key: api_key.to_owned(),
+        base_url,
+        model_descriptor: Some(descriptor.clone()),
+    })
+    .map_err(provider_registry_init_error)?;
+    Ok((Arc::from(provider), descriptor.protocol))
+}
+
+pub(crate) fn provider_config_by_id<'a>(
+    record: &'a ProviderSettingsRecord,
+    config_id: &str,
+) -> Result<&'a ProviderConfigRecord, CommandErrorPayload> {
+    record
+        .configs
+        .iter()
+        .find(|config| config.id == config_id)
+        .ok_or_else(|| invalid_payload("provider config was not found".to_owned()))
+}
+
 pub(crate) fn model_from_provider_settings(
     store: &dyn ProviderSettingsStore,
     selected_config_id: Option<&str>,

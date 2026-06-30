@@ -1172,6 +1172,18 @@ exit 2
         }
     }
 
+    #[test]
+    fn normalize_probe_timeout_ms_uses_default_and_clamps_bounds() {
+        use crate::commands::model_settings::{
+            normalize_probe_timeout_ms, DEFAULT_PROBE_TIMEOUT_MS, MAX_PROBE_TIMEOUT_MS,
+            MIN_PROBE_TIMEOUT_MS,
+        };
+
+        assert_eq!(normalize_probe_timeout_ms(None), DEFAULT_PROBE_TIMEOUT_MS);
+        assert_eq!(normalize_probe_timeout_ms(Some(500)), MIN_PROBE_TIMEOUT_MS);
+        assert_eq!(normalize_probe_timeout_ms(Some(120_000)), MAX_PROBE_TIMEOUT_MS);
+    }
+
     #[derive(Clone)]
     struct FailingSavePluginStore {
         deleted_packages: Arc<std::sync::Mutex<Vec<String>>>,

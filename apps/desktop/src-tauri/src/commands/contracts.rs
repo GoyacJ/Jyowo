@@ -29,6 +29,9 @@ use super::stores::*;
 #[allow(unused_imports)]
 use super::validation::*;
 use super::*;
+use harness_contracts::{
+    ProviderProbeErrorKind, ProviderProbeSnapshot, ProviderProbeStatus, UsageSnapshot,
+};
 
 pub type ConversationEventBatchEmitter =
     Arc<dyn Fn(ConversationEventBatchPayload) -> Result<(), String> + Send + Sync>;
@@ -1795,4 +1798,150 @@ pub struct RunEvalCaseRequest {
 pub struct RunEvalCaseResponse {
     pub case: EvalCasePayload,
     pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProbeProviderConfigRequest {
+    pub config_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSnapshotPayload {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub cost_micros: u64,
+    pub tool_calls: u64,
+}
+
+impl From<UsageSnapshot> for UsageSnapshotPayload {
+    fn from(value: UsageSnapshot) -> Self {
+        Self {
+            input_tokens: value.input_tokens,
+            output_tokens: value.output_tokens,
+            cache_read_tokens: value.cache_read_tokens,
+            cache_write_tokens: value.cache_write_tokens,
+            cost_micros: value.cost_micros,
+            tool_calls: value.tool_calls,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderProbeSnapshotPayload {
+    pub config_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub status: ProviderProbeStatusPayload,
+    pub timeout_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    pub checked_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<ProviderProbeErrorKindPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safe_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProbeStatusPayload {
+    Online,
+    Timeout,
+    Unauthenticated,
+    RateLimited,
+    Unsupported,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProbeErrorKindPayload {
+    Timeout,
+    Auth,
+    RateLimit,
+    Network,
+    Provider,
+    Unsupported,
+    InvalidConfig,
+    Unknown,
+}
+
+impl From<ProviderProbeStatus> for ProviderProbeStatusPayload {
+    fn from(value: ProviderProbeStatus) -> Self {
+        match value {
+            ProviderProbeStatus::Online => Self::Online,
+            ProviderProbeStatus::Timeout => Self::Timeout,
+            ProviderProbeStatus::Unauthenticated => Self::Unauthenticated,
+            ProviderProbeStatus::RateLimited => Self::RateLimited,
+            ProviderProbeStatus::Unsupported => Self::Unsupported,
+            ProviderProbeStatus::Failed => Self::Failed,
+            _ => Self::Failed,
+        }
+    }
+}
+
+impl From<ProviderProbeErrorKind> for ProviderProbeErrorKindPayload {
+    fn from(value: ProviderProbeErrorKind) -> Self {
+        match value {
+            ProviderProbeErrorKind::Timeout => Self::Timeout,
+            ProviderProbeErrorKind::Auth => Self::Auth,
+            ProviderProbeErrorKind::RateLimit => Self::RateLimit,
+            ProviderProbeErrorKind::Network => Self::Network,
+            ProviderProbeErrorKind::Provider => Self::Provider,
+            ProviderProbeErrorKind::Unsupported => Self::Unsupported,
+            ProviderProbeErrorKind::InvalidConfig => Self::InvalidConfig,
+            ProviderProbeErrorKind::Unknown => Self::Unknown,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl From<ProviderProbeSnapshot> for ProviderProbeSnapshotPayload {
+    fn from(snapshot: ProviderProbeSnapshot) -> Self {
+        Self {
+            config_id: snapshot.config_id,
+            provider_id: snapshot.provider_id,
+            model_id: snapshot.model_id,
+            status: snapshot.status.into(),
+            timeout_ms: snapshot.timeout_ms,
+            latency_ms: snapshot.latency_ms,
+            checked_at: snapshot.checked_at.to_rfc3339(),
+            error_kind: snapshot.error_kind.map(Into::into),
+            safe_message: snapshot.safe_message,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeProviderConfigResponse {
+    pub snapshot: ProviderProbeSnapshotPayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic_usage: Option<UsageSnapshotPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListProviderProbeSnapshotsResponse {
+    pub snapshots: Vec<ProviderProbeSnapshotPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderDiagnosticsRecord {
+    pub snapshots: Vec<ProviderProbeSnapshot>,
+}
+
+pub trait ProviderDiagnosticsStore: Send + Sync {
+    fn load_record(&self) -> Result<ProviderDiagnosticsRecord, CommandErrorPayload>;
+    fn upsert_snapshot(
+        &self,
+        snapshot: &ProviderProbeSnapshot,
+    ) -> Result<(), CommandErrorPayload>;
 }

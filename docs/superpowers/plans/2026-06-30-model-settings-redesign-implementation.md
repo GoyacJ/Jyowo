@@ -692,7 +692,7 @@ git commit -m "feat: add model settings contracts"
 - Modify: `apps/desktop/src/shared/tauri/commands.ts`
 - Modify: `apps/desktop/src/shared/tauri/commands.test.ts`
 
-- [ ] **Step 1: Write failing backend tests**
+- [x] **Step 1: Write failing backend tests**
 
 Test requirements:
 
@@ -711,7 +711,7 @@ Test requirements:
 
 Expected: tests fail because the command and store do not exist.
 
-- [ ] **Step 2: Add probe runner in model crate**
+- [x] **Step 2: Add probe runner in model crate**
 
 Add `ProviderProbeRunner` to `crates/jyowo-harness-model/src/diagnostics.rs`.
 
@@ -734,7 +734,7 @@ Required behavior:
 - Run the request in a diagnostic context. The diagnostic context must suppress normal product usage accounting.
 - Expose a safe boolean or safe usage summary only if needed to tell the UI that the probe consumed provider quota. Do not merge this into usage totals.
 
-- [ ] **Step 3: Add desktop probe command**
+- [x] **Step 3: Add desktop probe command**
 
 Add Tauri command:
 
@@ -758,7 +758,7 @@ Rules:
 - Add `probe_provider_config` and `list_provider_probe_snapshots` to `commands/mod.rs` and the `tauri::generate_handler!` list in `apps/desktop/src-tauri/src/lib.rs`.
 - The command response structs live in `commands/contracts.rs`, use camelCase IPC serde, and convert from the shared snake_case contract types.
 
-- [ ] **Step 4: Add frontend command schema**
+- [x] **Step 4: Add frontend command schema**
 
 In `apps/desktop/src/shared/tauri/commands.ts` add:
 
@@ -769,7 +769,7 @@ listProviderProbeSnapshots()
 
 Zod must validate exact camelCase IPC payloads. Tests must reject malformed status, negative latency, empty config id, missing `checkedAt`, unknown error kind, persisted `never_checked`, and snake_case backend-only field names.
 
-- [ ] **Step 5: Run tests and gates**
+- [x] **Step 5: Run tests and gates**
 
 Run:
 

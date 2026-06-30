@@ -21,6 +21,7 @@ use harness_contracts::{
     MissedRunPolicy, PluginCapabilitiesSummary, PluginConfigUpdate, PluginDetail, PluginId,
     PluginInstallReport, PluginOperationResult, PluginOperationStatus, PluginSummary,
     ProviderCapabilityRoute, ProviderCapabilityRouteOption, ProviderCapabilityRouteSettings,
+    ProviderProbeErrorKind, ProviderProbeSnapshot, ProviderProbeStatus,
     ProviderServiceAdapterAvailability, RejectionReason, SandboxError, SandboxMode, ToolGroup,
     TrustLevel, UiSafeText, WorkspaceAccess,
 };
@@ -50,8 +51,9 @@ use jyowo_harness_sdk::ext::{
     MemoryRecord, MemorySource, MemorySummary, MemoryVisibility, MessageContent, MessagePart,
     ModelDescriptor, ModelInventoryEntry, ModelLifecycle, ModelModality, ModelProtocol,
     ModelProvider, ModelRuntimeStatus, PendingPermissionRequest, PermissionMode, PermissionSubject,
-    ProviderAuthScheme, ProviderBaseUrlRegion, ProviderBuildConfig, ProviderCredential,
-    ProviderCredentialResolveContext, ProviderCredentialResolverCap, ProviderRegistryError,
+    ProviderAuthScheme, ProviderBaseUrlRegion,     ProviderBuildConfig, ProviderCredential,
+    ProviderCredentialResolveContext, ProviderCredentialResolverCap, ProviderProbeInput,
+    ProviderProbeOutcome, ProviderProbeRunner, ProviderRegistryError,
     ProviderRuntimeCapability, ProviderServiceCapability, ProviderServiceCategory,
     ProviderServiceCostRisk, ProviderServiceExecution, RedactPatternSet, RedactRules, RedactScope,
     Redactor, RequestId, RunId, SessionId, Severity, SkillLoader, SkillSourceConfig, StdioEnv,
@@ -93,6 +95,7 @@ mod error;
 mod evals;
 mod mcp;
 mod memory;
+mod model_settings;
 mod plugins;
 mod projects;
 mod providers;
@@ -153,7 +156,8 @@ pub use contracts::{
     ListAutomationRunsResponse, ListAutomationsResponse, ListBrowserMcpPresetsResponse,
     ListConversationsResponse, ListEvalCasesResponse, ListMcpDiagnosticsRequest,
     ListMcpDiagnosticsResponse, ListMcpServersResponse, ListMemoryItemsResponse,
-    ListPluginsResponse, ListProviderCapabilityRoutesResponse, ListProviderSettingsResponse,
+    ListPluginsResponse, ListProviderCapabilityRoutesResponse, ListProviderProbeSnapshotsResponse,
+    ListProviderSettingsResponse,
     ListReferenceCandidatesRequest, ListReferenceCandidatesResponse,
     ListSkillCatalogInstallTasksResponse, ListSkillsResponse, McpDiagnosticBatchEmitter,
     McpDiagnosticBatchPayload, McpDiagnosticRecord, McpDiagnosticSeverity, McpDiagnosticStore,
@@ -164,11 +168,13 @@ pub use contracts::{
     PageConversationTimelineResponse, PageConversationWorktreeDirection,
     PageConversationWorktreeRequest, PermissionDecision, PermissionRequestedRunEventPayload,
     PermissionResolver, PluginSettingsRecord, PluginStore, PluginStoreRecord,
-    ProviderBaseUrlRegionPayload, ProviderCapabilityRouteStore,
-    ProviderCapabilityRouteValidationToken, ProviderConfigPayload, ProviderConfigRecord,
+    ProbeProviderConfigRequest, ProbeProviderConfigResponse, ProviderBaseUrlRegionPayload,
+    ProviderCapabilityRouteStore, ProviderCapabilityRouteValidationToken, ProviderConfigPayload, ProviderConfigRecord,
     ProviderModelDescriptorRecord, ProviderModelLifecycleRecord, ProviderModelModalityRecord,
+    ProviderProbeSnapshotPayload, ProviderProbeErrorKindPayload, ProviderProbeStatusPayload,
     ProviderRuntimeCapabilityPayload, ProviderServiceCapabilityPayload, ProviderSettingsRecord,
     ProviderSettingsRequest, ProviderSettingsStore, ReferenceCandidatePayload, ReloadPluginRequest,
+    ProviderDiagnosticsStore,
     ReplayTimelineRequest, ReplayTimelineResponse, RequestProviderConfigApiKeyRevealRequest,
     RequestProviderConfigApiKeyRevealResponse, ResolvePermissionRequest, ResolvePermissionResponse,
     RestartMcpServerRequest, RestartMcpServerResponse, RunAutomationNowRequest,
@@ -255,6 +261,10 @@ pub use providers::{
     AgentCapabilitiesPayload, DesktopConversationModelConfigStore, DesktopExecutionSettingsStore,
     DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore, ExecutionSettingsRecord,
 };
+pub use model_settings::probe_provider_config_with_provider;
+pub use model_settings::{
+    list_provider_probe_snapshots_with_runtime_state, probe_provider_config_with_runtime_state,
+};
 pub use runtime::{
     managed_runtime_state, runtime_state, runtime_state_async, runtime_state_for_workspace,
     spawn_automation_scheduler, spawn_automation_scheduler_on_tauri_runtime, ManagedDesktopRuntime,
@@ -271,7 +281,7 @@ pub use skills::{
     set_skill_enabled_with_runtime_state, start_skill_catalog_install_task_with_runtime_state,
 };
 pub use stores::{
-    DesktopAutomationStore, DesktopMcpDiagnosticStore, DesktopPluginStore, DesktopRuntimeState,
+    DesktopAutomationStore, DesktopMcpDiagnosticStore, DesktopPluginStore, DesktopProviderDiagnosticsStore, DesktopRuntimeState,
     DesktopSkillStore,
 };
 
@@ -556,6 +566,31 @@ pub async fn validate_provider_settings(
         provider_id,
     })
     .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn probe_provider_config(
+    config_id: String,
+    timeout_ms: Option<u64>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ProbeProviderConfigResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    model_settings::probe_provider_config_with_runtime_state(
+        ProbeProviderConfigRequest {
+            config_id,
+            timeout_ms,
+        },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_provider_probe_snapshots(
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListProviderProbeSnapshotsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    model_settings::list_provider_probe_snapshots_with_runtime_state(&*runtime_state)
 }
 
 #[tauri::command(rename_all = "camelCase")]

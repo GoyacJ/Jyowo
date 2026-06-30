@@ -167,6 +167,7 @@ import {
   listPlugins,
   listProviderCapabilityRouteOptions,
   listProviderCapabilityRoutes,
+  listProviderProbeSnapshots,
   listProviderSettings,
   listReferenceCandidates,
   listSkillCatalogEntries,
@@ -175,6 +176,7 @@ import {
   listSkills,
   type PageConversationWorktreeResponse,
   pageConversationWorktree,
+  probeProviderConfig,
   reloadPlugin,
   requestProviderConfigApiKeyReveal,
   resolvePermission,
@@ -2882,6 +2884,129 @@ describe('CommandClient', () => {
         client,
       ),
     ).rejects.toThrow(TauriCommandPayloadError)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('parses provider probe responses and rejects malformed probe payloads', async () => {
+    const validSnapshot = {
+      checkedAt: '2026-06-30T12:00:00+00:00',
+      configId: 'openai-work',
+      modelId: 'gpt-5.4-mini',
+      providerId: 'openai',
+      status: 'online',
+      timeoutMs: 10_000,
+      latencyMs: 120,
+    }
+    const invoke = vi.fn().mockResolvedValue({
+      snapshot: validSnapshot,
+      diagnosticUsage: {
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costMicros: 0,
+        inputTokens: 12,
+        outputTokens: 3,
+        toolCalls: 0,
+      },
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      probeProviderConfig({ configId: 'openai-work', timeoutMs: 10_000 }, client),
+    ).resolves.toEqual({
+      snapshot: validSnapshot,
+      diagnosticUsage: {
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costMicros: 0,
+        inputTokens: 12,
+        outputTokens: 3,
+        toolCalls: 0,
+      },
+    })
+    expect(invoke).toHaveBeenCalledWith('probe_provider_config', {
+      configId: 'openai-work',
+      timeoutMs: 10_000,
+    })
+
+    invoke.mockResolvedValueOnce({
+      snapshots: [validSnapshot],
+    })
+    await expect(listProviderProbeSnapshots(client)).resolves.toEqual({
+      snapshots: [validSnapshot],
+    })
+    expect(invoke).toHaveBeenCalledWith('list_provider_probe_snapshots')
+
+    const rejectClient = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        snapshot: {
+          ...validSnapshot,
+          config_id: 'openai-work',
+        },
+      }),
+    )
+    await expect(probeProviderConfig({ configId: 'openai-work' }, rejectClient)).rejects.toThrow(
+      TauriCommandPayloadError,
+    )
+
+    const neverCheckedClient = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        snapshot: {
+          ...validSnapshot,
+          status: 'never_checked',
+        },
+      }),
+    )
+    await expect(
+      probeProviderConfig({ configId: 'openai-work' }, neverCheckedClient),
+    ).rejects.toThrow(TauriCommandPayloadError)
+
+    const missingCheckedAtClient = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        snapshot: {
+          configId: 'openai-work',
+          modelId: 'gpt-5.4-mini',
+          providerId: 'openai',
+          status: 'online',
+          timeoutMs: 10_000,
+        },
+      }),
+    )
+    await expect(
+      probeProviderConfig({ configId: 'openai-work' }, missingCheckedAtClient),
+    ).rejects.toThrow(TauriCommandPayloadError)
+
+    const negativeLatencyClient = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        snapshot: {
+          ...validSnapshot,
+          latencyMs: -1,
+        },
+      }),
+    )
+    await expect(
+      probeProviderConfig({ configId: 'openai-work' }, negativeLatencyClient),
+    ).rejects.toThrow(TauriCommandPayloadError)
+
+    const unknownErrorKindClient = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        snapshot: {
+          ...validSnapshot,
+          errorKind: 'secret_leak',
+        },
+      }),
+    )
+    await expect(
+      probeProviderConfig({ configId: 'openai-work' }, unknownErrorKindClient),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects invalid provider probe requests before invoking Tauri', async () => {
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(probeProviderConfig({ configId: '   ' }, client)).rejects.toThrow(
+      TauriCommandPayloadError,
+    )
     expect(invoke).not.toHaveBeenCalled()
   })
 

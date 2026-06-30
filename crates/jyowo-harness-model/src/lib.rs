@@ -18,6 +18,7 @@ pub mod cassette;
 pub mod codex;
 pub mod credential;
 pub mod credential_pool;
+pub mod diagnostics;
 #[cfg(feature = "deepseek")]
 pub mod deepseek;
 #[cfg(feature = "doubao")]
@@ -63,6 +64,7 @@ pub use cassette::*;
 pub use codex::*;
 pub use credential::*;
 pub use credential_pool::*;
+pub use diagnostics::*;
 #[cfg(feature = "deepseek")]
 pub use deepseek::*;
 #[cfg(feature = "doubao")]
