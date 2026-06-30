@@ -7,7 +7,8 @@ use harness_contracts::{
     ConfigHash, ContextPatchRequest, ContextPatchSinkCap, ConversationAttachmentReference,
     DeferredToolsDeltaAttachment, EndReason, Event, InteractivityLevel, Message, MessageId,
     MessagePart, PermissionMode, RunId, SessionCreatedEvent, SessionEndedEvent, SessionError,
-    SessionId, SnapshotId, TeamId, TenantId, ToolSearchMode, UsageSnapshot, WorkspaceId,
+    SessionId, SnapshotId, TeamId, TenantId, ToolProfile, ToolSearchMode, UsageSnapshot,
+    WorkspaceId,
 };
 use harness_journal::EventStore;
 use harness_model::ModelProtocol;
@@ -93,6 +94,8 @@ pub struct SessionOptions {
     #[serde(default)]
     pub tool_search: ToolSearchMode,
     #[serde(default)]
+    pub tool_profile: ToolProfile,
+    #[serde(default)]
     pub model_id: Option<String>,
     #[serde(default)]
     pub protocol: Option<ModelProtocol>,
@@ -123,6 +126,7 @@ impl SessionOptions {
             tenant_id: TenantId::SINGLE,
             session_id: SessionId::new(),
             tool_search: ToolSearchMode::default(),
+            tool_profile: ToolProfile::default(),
             model_id: None,
             protocol: None,
             model_extra: Value::Null,
@@ -163,6 +167,12 @@ impl SessionOptions {
     #[must_use]
     pub fn with_tool_search_mode(mut self, tool_search: ToolSearchMode) -> Self {
         self.tool_search = tool_search;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_profile(mut self, tool_profile: ToolProfile) -> Self {
+        self.tool_profile = tool_profile;
         self
     }
 
@@ -682,6 +692,7 @@ pub fn session_options_hash(options: &SessionOptions) -> [u8; 32] {
         "tenant_id": options.tenant_id,
         "session_id": options.session_id,
         "tool_search": options.tool_search,
+        "tool_profile": options.tool_profile,
         "model_id": options.model_id,
         "protocol": options.protocol.map(protocol_name),
         "model_extra": options.model_extra,

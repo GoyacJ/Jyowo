@@ -6,13 +6,22 @@ import { APP_LOCALES, type AppLocale } from '@/shared/i18n/locales'
 import { useUiStore } from '@/shared/state/ui-store'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 import { AboutSettings } from './AboutSettings'
+import { AutomationSettings } from './AutomationSettings'
 import { ExecutionSettings } from './ExecutionSettings'
 import { MCPManager } from './MCPManager'
 import { type PluginOpenRequest, PluginsManager } from './PluginsManager'
 import { ProviderSettingsForm } from './ProviderSettingsForm'
 import { BuiltinToolsList, SkillsManager } from './SkillSettings'
 
-type SettingsTab = 'general' | 'skills' | 'tools' | 'mcp' | 'plugins' | 'models'
+type SettingsTab =
+  | 'general'
+  | 'skills'
+  | 'tools'
+  | 'automations'
+  | 'mcp'
+  | 'plugins'
+  | 'models'
+  | 'about'
 
 export function SettingsPage() {
   const { t } = useTranslation('settings')
@@ -39,6 +48,7 @@ export function SettingsPage() {
             <TabsTrigger value="general">{t('tabs.general')}</TabsTrigger>
             <TabsTrigger value="skills">{t('tabs.skills')}</TabsTrigger>
             <TabsTrigger value="tools">{t('tabs.tools')}</TabsTrigger>
+            <TabsTrigger value="automations">{t('tabs.automations')}</TabsTrigger>
             <TabsTrigger value="mcp">{t('tabs.mcp')}</TabsTrigger>
             <TabsTrigger value="plugins">{t('tabs.plugins')}</TabsTrigger>
             <TabsTrigger value="models">{t('tabs.models')}</TabsTrigger>
@@ -54,6 +64,9 @@ export function SettingsPage() {
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="tools">
             <BuiltinToolsList />
+          </TabsContent>
+          <TabsContent className="space-y-5 pt-3" value="automations">
+            <AutomationSettings />
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="mcp">
             <MCPManager onOpenPlugin={openPlugin} />

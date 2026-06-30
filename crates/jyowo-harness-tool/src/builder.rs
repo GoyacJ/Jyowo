@@ -58,6 +58,16 @@ impl ToolRegistryBuilder {
                     registry.register(Box::<crate::builtin::WebFetchTool>::default())?;
                     registry.register(Box::<crate::builtin::WebSearchTool>::default())?;
                     registry.register_with_journal_authority(
+                        Box::<crate::builtin::DiagnosticsTool>::default(),
+                        ToolJournalAuthority::Sandbox,
+                    )?;
+                    registry.register_with_journal_authority(
+                        Box::<crate::builtin::ProcessStartTool>::default(),
+                        ToolJournalAuthority::Sandbox,
+                    )?;
+                    registry.register(Box::<crate::builtin::ProcessReadTool>::default())?;
+                    registry.register(Box::<crate::builtin::ProcessStopTool>::default())?;
+                    registry.register_with_journal_authority(
                         Box::<crate::builtin::ClarifyTool>::default(),
                         ToolJournalAuthority::Clarification,
                     )?;

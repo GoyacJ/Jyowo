@@ -123,6 +123,7 @@ import {
   createAttachmentFromPath,
   createConversation,
   createInvokeCommandClient,
+  deleteAutomation,
   deleteConversation,
   deleteMcpServer,
   deleteMemoryItem,
@@ -152,6 +153,9 @@ import {
   installSkillFromCatalog,
   listActivity,
   listArtifacts,
+  listAutomationRuns,
+  listAutomations,
+  listBrowserMcpPresets,
   listConversations,
   listEvalCases,
   listenMcpDiagnosticBatches,
@@ -175,10 +179,15 @@ import {
   requestProviderConfigApiKeyReveal,
   resolvePermission,
   restartMcpServer,
+  runAutomationNow,
   runEvalCase,
+  type SaveAutomationRequest,
+  saveAutomation,
+  saveBrowserMcpPreset,
   saveMcpServer,
   saveProviderCapabilityRoute,
   saveProviderSettings,
+  setAutomationEnabled,
   setExecutionSettings,
   setMcpServerEnabled,
   setPluginEnabled,
@@ -187,6 +196,7 @@ import {
   startRun,
   subscribeMcpDiagnostics,
   TauriCommandPayloadError,
+  type ToolProfile,
   uninstallPlugin,
   unsubscribeMcpDiagnostics,
   updateMemoryItem,
@@ -280,6 +290,7 @@ describe('CommandClient', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'default',
+      toolProfile: 'coding',
     })
     const client = createInvokeCommandClient(invoke)
 
@@ -288,6 +299,7 @@ describe('CommandClient', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'default',
+      toolProfile: 'coding',
     })
     expect(invoke).toHaveBeenCalledWith('get_execution_settings')
   })
@@ -307,6 +319,7 @@ describe('CommandClient', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'default',
+      toolProfile: 'full',
     })
     const client = createInvokeCommandClient(invoke)
 
@@ -318,6 +331,7 @@ describe('CommandClient', () => {
           contextCompressionTriggerRatio: 0.49,
           permissionMode: 'default',
           subagentsEnabled: false,
+          toolProfile: 'full',
         },
         client,
       ),
@@ -330,6 +344,16 @@ describe('CommandClient', () => {
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'default',
         subagentsEnabled: false,
+        toolProfile: {
+          custom: {
+            allowlist: ['read'],
+            denylist: ['bash'],
+            group_allowlist: ['file_system'],
+            group_denylist: ['network'],
+            mcp_included: false,
+            plugin_included: false,
+          },
+        },
       },
       client,
     )
@@ -339,7 +363,168 @@ describe('CommandClient', () => {
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'default',
       subagentsEnabled: false,
+      toolProfile: {
+        custom: {
+          allowlist: ['read'],
+          denylist: ['bash'],
+          group_allowlist: ['file_system'],
+          group_denylist: ['network'],
+          mcp_included: false,
+          plugin_included: false,
+        },
+      },
     })
+  })
+
+  it('rejects unknown execution tool profiles before invoking IPC', async () => {
+    const client = createInvokeCommandClient(vi.fn())
+
+    await expect(
+      setExecutionSettings(
+        {
+          agentTeamsEnabled: false,
+          backgroundAgentsEnabled: false,
+          contextCompressionTriggerRatio: 0.8,
+          permissionMode: 'default',
+          subagentsEnabled: false,
+          toolProfile: 'unknown' as unknown as ToolProfile,
+        },
+        client,
+      ),
+    ).rejects.toBeInstanceOf(TauriCommandPayloadError)
+  })
+
+  it('models automation commands through strict IPC schemas', async () => {
+    const automation = {
+      id: 'checks',
+      enabled: false,
+      prompt: 'Run checks',
+      schedule: { intervalMinutes: 30 },
+      toolProfile: 'coding',
+      permissionMode: 'default',
+      sandboxMode: 'none',
+      workspaceScope: 'current_workspace',
+      workspaceAccess: 'read_only',
+      missedRunPolicy: 'skip',
+      createdAt: '2026-06-30T01:00:00Z',
+      updatedAt: '2026-06-30T01:00:00Z',
+    } as const
+    const runRecord = {
+      automationId: 'checks',
+      completedAt: '2026-06-30T01:01:00Z',
+      id: 'automation-run-001',
+      message: 'Starting automation runs requires the runtime conversation facade.',
+      runId: undefined,
+      startedAt: '2026-06-30T01:00:00Z',
+      status: 'rejected',
+    } as const
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'list_automations') {
+        return { automations: [automation] }
+      }
+      if (command === 'save_automation') {
+        return { automation, status: 'saved' }
+      }
+      if (command === 'set_automation_enabled') {
+        return { automation: { ...automation, enabled: true }, status: 'saved' }
+      }
+      if (command === 'run_automation_now') {
+        return { record: runRecord }
+      }
+      if (command === 'list_automation_runs') {
+        return { runs: [runRecord] }
+      }
+      if (command === 'delete_automation') {
+        return { id: 'checks', status: 'deleted' }
+      }
+      throw new Error(`unexpected command: ${command}`)
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listAutomations(client)).resolves.toEqual({ automations: [automation] })
+    await expect(saveAutomation({ automation }, client)).resolves.toEqual({
+      automation,
+      status: 'saved',
+    })
+    await expect(setAutomationEnabled('checks', true, client)).resolves.toEqual({
+      automation: { ...automation, enabled: true },
+      status: 'saved',
+    })
+    await expect(runAutomationNow('checks', client)).resolves.toEqual({ record: runRecord })
+    await expect(listAutomationRuns('checks', client)).resolves.toEqual({ runs: [runRecord] })
+    await expect(deleteAutomation('checks', client)).resolves.toEqual({
+      id: 'checks',
+      status: 'deleted',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('list_automations')
+    expect(invoke).toHaveBeenCalledWith('save_automation', { automation })
+    expect(invoke).toHaveBeenCalledWith('set_automation_enabled', {
+      enabled: true,
+      id: 'checks',
+    })
+    expect(invoke).toHaveBeenCalledWith('run_automation_now', { id: 'checks' })
+    expect(invoke).toHaveBeenCalledWith('list_automation_runs', { automationId: 'checks' })
+    expect(invoke).toHaveBeenCalledWith('delete_automation', { id: 'checks' })
+    expect(JSON.stringify(runRecord)).not.toContain('rawToolOutput')
+  })
+
+  it('rejects unsupported automation snapshots before invoking IPC', async () => {
+    const client = createInvokeCommandClient(vi.fn())
+    const automation = {
+      id: 'checks',
+      enabled: false,
+      prompt: 'Run checks',
+      schedule: { intervalMinutes: 30 },
+      toolProfile: 'unknown',
+      permissionMode: 'default',
+      sandboxMode: 'none',
+      workspaceScope: 'current_workspace',
+      workspaceAccess: 'read_only',
+      missedRunPolicy: 'skip',
+      createdAt: '2026-06-30T01:00:00Z',
+      updatedAt: '2026-06-30T01:00:00Z',
+    } as unknown as SaveAutomationRequest['automation']
+
+    await expect(saveAutomation({ automation }, client)).rejects.toBeInstanceOf(
+      TauriCommandPayloadError,
+    )
+    await expect(
+      saveAutomation(
+        {
+          automation: {
+            ...automation,
+            toolProfile: 'coding',
+            missedRunPolicy: 'catch_up_all',
+          } as unknown as SaveAutomationRequest['automation'],
+        },
+        client,
+      ),
+    ).rejects.toBeInstanceOf(TauriCommandPayloadError)
+  })
+
+  it('rejects secret-like automation prompts before invoking IPC', async () => {
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+    const automation = {
+      id: 'checks',
+      enabled: false,
+      prompt: 'Use token=automation-secret-123456',
+      schedule: { intervalMinutes: 30 },
+      toolProfile: 'coding',
+      permissionMode: 'default',
+      sandboxMode: 'none',
+      workspaceScope: 'current_workspace',
+      workspaceAccess: 'read_only',
+      missedRunPolicy: 'skip',
+      createdAt: '2026-06-30T01:00:00Z',
+      updatedAt: '2026-06-30T01:00:00Z',
+    } as const
+
+    await expect(saveAutomation({ automation }, client)).rejects.toBeInstanceOf(
+      TauriCommandPayloadError,
+    )
+    expect(invoke).not.toHaveBeenCalled()
   })
 
   it('throws a schema error for invalid IPC payloads', async () => {
@@ -2957,6 +3142,83 @@ describe('CommandClient', () => {
       },
     })
     expect(invoke).toHaveBeenCalledWith('delete_mcp_server', { id: 'github' })
+  })
+
+  it('models browser MCP presets as disabled explicit MCP server configs', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'list_browser_mcp_presets') {
+        return {
+          presets: [
+            {
+              description: 'Browser automation through Playwright MCP.',
+              displayName: 'Playwright Browser',
+              enabled: false,
+              id: 'playwright',
+              serverId: 'browser-playwright',
+            },
+            {
+              description: 'Browser inspection through Chrome DevTools MCP.',
+              displayName: 'Chrome DevTools Browser',
+              enabled: false,
+              id: 'chrome-devtools',
+              serverId: 'browser-chrome-devtools',
+            },
+          ],
+        }
+      }
+
+      return {
+        preset: {
+          description: 'Browser automation through Playwright MCP.',
+          displayName: 'Playwright Browser',
+          enabled: false,
+          id: 'playwright',
+          serverId: 'browser-playwright',
+        },
+        server: {
+          displayName: 'Playwright Browser',
+          enabled: false,
+          exposedToolCount: 0,
+          id: 'browser-playwright',
+          manageable: true,
+          origin: 'workspace',
+          scope: 'global',
+          status: 'disabled',
+          transport: 'stdio',
+        },
+      }
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listBrowserMcpPresets(client)).resolves.toEqual({
+      presets: [
+        {
+          description: 'Browser automation through Playwright MCP.',
+          displayName: 'Playwright Browser',
+          enabled: false,
+          id: 'playwright',
+          serverId: 'browser-playwright',
+        },
+        {
+          description: 'Browser inspection through Chrome DevTools MCP.',
+          displayName: 'Chrome DevTools Browser',
+          enabled: false,
+          id: 'chrome-devtools',
+          serverId: 'browser-chrome-devtools',
+        },
+      ],
+    })
+    await expect(
+      saveBrowserMcpPreset({ enabled: false, presetId: 'playwright' }, client),
+    ).resolves.toHaveProperty('server.status', 'disabled')
+
+    expect(invoke).toHaveBeenCalledWith('list_browser_mcp_presets')
+    expect(invoke).toHaveBeenCalledWith('save_browser_mcp_preset', {
+      enabled: false,
+      presetId: 'playwright',
+    })
+    expect(JSON.stringify(invoke.mock.calls)).not.toContain('token')
+    expect(JSON.stringify(invoke.mock.calls)).not.toContain('cookie')
   })
 
   it('accepts MCP stdio and HTTP request shapes without storing raw secret values', async () => {

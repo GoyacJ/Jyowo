@@ -4,6 +4,7 @@ pub mod skill_catalog;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let managed_runtime = commands::managed_runtime_state();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
@@ -12,7 +13,11 @@ pub fn run() {
         .manage(
             project_registry::ProjectRegistry::load().expect("project registry should initialize"),
         )
-        .manage(commands::managed_runtime_state())
+        .manage(managed_runtime.clone())
+        .setup(move |_app| {
+            commands::spawn_automation_scheduler(managed_runtime.clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::add_project,
             commands::cancel_run,
@@ -20,6 +25,7 @@ pub fn run() {
             commands::create_attachment_from_path,
             commands::create_conversation,
             commands::delete_conversation,
+            commands::delete_automation,
             commands::delete_mcp_server,
             commands::delete_memory_item,
             commands::delete_project,
@@ -48,6 +54,9 @@ pub fn run() {
             commands::list_skill_catalog_install_tasks,
             commands::list_activity,
             commands::list_artifacts,
+            commands::list_automation_runs,
+            commands::list_automations,
+            commands::list_browser_mcp_presets,
             commands::list_conversations,
             commands::list_eval_cases,
             commands::list_reference_candidates,
@@ -68,12 +77,16 @@ pub fn run() {
             commands::page_conversation_worktree,
             commands::resolve_permission,
             commands::request_provider_config_api_key_reveal,
+            commands::run_automation_now,
             commands::run_eval_case,
+            commands::save_automation,
+            commands::save_browser_mcp_preset,
             commands::save_mcp_server,
             commands::save_provider_settings,
             commands::save_provider_capability_route,
             commands::delete_provider_capability_route,
             commands::set_mcp_server_enabled,
+            commands::set_automation_enabled,
             commands::set_execution_settings,
             commands::set_conversation_model_config,
             commands::set_skill_enabled,

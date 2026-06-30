@@ -3,6 +3,8 @@ mod bash;
 #[cfg(feature = "builtin-toolset")]
 mod clarify;
 #[cfg(feature = "builtin-toolset")]
+mod diagnostics;
+#[cfg(feature = "builtin-toolset")]
 mod edit;
 #[cfg(feature = "programmatic-tool-calling")]
 mod execute_code;
@@ -14,6 +16,8 @@ mod grep;
 mod list_dir;
 #[cfg(feature = "minimax-tools")]
 mod minimax;
+#[cfg(feature = "builtin-toolset")]
+mod process_monitor;
 #[cfg(feature = "builtin-toolset")]
 mod read;
 #[cfg(feature = "builtin-toolset")]
@@ -41,6 +45,8 @@ pub use bash::BashTool;
 #[cfg(feature = "builtin-toolset")]
 pub use clarify::ClarifyTool;
 #[cfg(feature = "builtin-toolset")]
+pub use diagnostics::{parse_cargo_diagnostics, parse_typescript_diagnostics, DiagnosticsTool};
+#[cfg(feature = "builtin-toolset")]
 pub use edit::FileEditTool;
 #[cfg(feature = "programmatic-tool-calling")]
 pub use execute_code::ExecuteCodeTool;
@@ -64,6 +70,8 @@ pub use minimax::{
     MiniMaxVideoTemplateQueryTool, MiniMaxVideoTemplateTool, MiniMaxVoiceCloneTool,
     MiniMaxVoiceDesignTool,
 };
+#[cfg(feature = "builtin-toolset")]
+pub use process_monitor::{ProcessReadTool, ProcessStartTool, ProcessStopTool};
 #[cfg(feature = "builtin-toolset")]
 pub use read::FileReadTool;
 #[cfg(feature = "builtin-toolset")]

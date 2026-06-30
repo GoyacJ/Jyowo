@@ -6,6 +6,37 @@ import { runEventsSchema } from '@/shared/events/run-event-schema'
 
 const uuidV4Pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const permissionModeSchema = z.enum(['default', 'auto', 'bypass_permissions'])
+const toolGroupSchema = z.union([
+  z.enum([
+    'file_system',
+    'search',
+    'network',
+    'shell',
+    'agent',
+    'coordinator',
+    'memory',
+    'clarification',
+    'meta',
+  ]),
+  z.object({ custom: z.string().min(1) }).strict(),
+])
+const toolProfileSchema = z.union([
+  z.enum(['minimal', 'coding', 'full']),
+  z
+    .object({
+      custom: z
+        .object({
+          allowlist: z.array(z.string().min(1)),
+          denylist: z.array(z.string().min(1)),
+          group_allowlist: z.array(toolGroupSchema),
+          group_denylist: z.array(toolGroupSchema),
+          mcp_included: z.boolean(),
+          plugin_included: z.boolean(),
+        })
+        .strict(),
+    })
+    .strict(),
+])
 const unredactedSecretPatterns = [
   /\bAuthorization:?\s*Bearer\s+\S+/i,
   /\bAuthorization:?\s*Basic\s+\S+/i,
@@ -27,7 +58,7 @@ const unredactedSecretPatterns = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}\b/,
 ]
 
-function hasObviousUnredactedSecret(value: string): boolean {
+export function hasObviousUnredactedSecret(value: string): boolean {
   return unredactedSecretPatterns.some((pattern) => pattern.test(value))
 }
 
@@ -1180,6 +1211,7 @@ const getExecutionSettingsResponseSchema = z
     autoModeAvailable: z.boolean(),
     contextCompressionTriggerRatio: contextCompressionTriggerRatioSchema,
     permissionMode: permissionModeSchema,
+    toolProfile: toolProfileSchema,
   })
   .strict()
 
@@ -1196,6 +1228,7 @@ const setExecutionSettingsRequestSchema = z
     contextCompressionTriggerRatio: contextCompressionTriggerRatioSchema,
     permissionMode: permissionModeSchema,
     subagentsEnabled: z.boolean(),
+    toolProfile: toolProfileSchema,
   })
   .strict()
 
@@ -1205,6 +1238,128 @@ const setExecutionSettingsResponseSchema = z
     autoModeAvailable: z.boolean(),
     contextCompressionTriggerRatio: contextCompressionTriggerRatioSchema,
     permissionMode: permissionModeSchema,
+    toolProfile: toolProfileSchema,
+  })
+  .strict()
+
+const isoDateTimeSchema = z.string().datetime({ offset: true })
+const automationIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(96)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/)
+const localIsolationTagSchema = z.enum(['none', 'bubblewrap', 'seatbelt', 'job_object'])
+const sandboxModeSchema = z.union([
+  z.enum(['none', 'container', 'remote']),
+  z.object({ os_level: localIsolationTagSchema }).strict(),
+])
+const workspaceAccessSchema = z.union([
+  z.enum(['none', 'read_only']),
+  z
+    .object({
+      read_write: z
+        .object({
+          allowed_writable_subpaths: z.array(z.string().min(1)).default([]),
+        })
+        .strict(),
+    })
+    .strict(),
+])
+const missedRunPolicySchema = z.enum(['skip', 'run_once'])
+const automationScheduleSchema = z
+  .object({
+    intervalMinutes: z.number().int().positive(),
+  })
+  .strict()
+const automationSpecSchema = z
+  .object({
+    createdAt: isoDateTimeSchema,
+    enabled: z.boolean().default(false),
+    id: automationIdSchema,
+    missedRunPolicy: missedRunPolicySchema.default('skip'),
+    permissionMode: permissionModeSchema,
+    prompt: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64 * 1024)
+      .refine((value) => !hasObviousUnredactedSecret(value), {
+        message: 'automation prompt must not contain obvious unredacted secrets',
+      }),
+    sandboxMode: sandboxModeSchema,
+    schedule: automationScheduleSchema,
+    toolProfile: toolProfileSchema,
+    updatedAt: isoDateTimeSchema,
+    workspaceAccess: workspaceAccessSchema,
+    workspaceScope: z.literal('current_workspace'),
+  })
+  .strict()
+const automationRunStatusSchema = z.enum(['started', 'rejected', 'failed'])
+const automationRunRecordSchema = z
+  .object({
+    automationId: automationIdSchema,
+    completedAt: isoDateTimeSchema.optional(),
+    id: z.string().min(1).max(128),
+    message: z.string().max(4096).optional(),
+    runId: z.string().min(1).optional(),
+    startedAt: isoDateTimeSchema,
+    status: automationRunStatusSchema,
+  })
+  .strict()
+const listAutomationsResponseSchema = z
+  .object({
+    automations: z.array(automationSpecSchema),
+  })
+  .strict()
+const saveAutomationRequestSchema = z
+  .object({
+    automation: automationSpecSchema,
+  })
+  .strict()
+const saveAutomationResponseSchema = z
+  .object({
+    automation: automationSpecSchema,
+    status: z.literal('saved'),
+  })
+  .strict()
+const deleteAutomationRequestSchema = z
+  .object({
+    id: automationIdSchema,
+  })
+  .strict()
+const deleteAutomationResponseSchema = z
+  .object({
+    id: automationIdSchema,
+    status: z.literal('deleted'),
+  })
+  .strict()
+const setAutomationEnabledRequestSchema = z
+  .object({
+    enabled: z.boolean(),
+    id: automationIdSchema,
+  })
+  .strict()
+const setAutomationEnabledResponseSchema = z
+  .object({
+    automation: automationSpecSchema,
+    status: z.literal('saved'),
+  })
+  .strict()
+const runAutomationNowRequestSchema = deleteAutomationRequestSchema
+const runAutomationNowResponseSchema = z
+  .object({
+    record: automationRunRecordSchema,
+  })
+  .strict()
+const listAutomationRunsRequestSchema = z
+  .object({
+    automationId: automationIdSchema.optional(),
+  })
+  .strict()
+const listAutomationRunsResponseSchema = z
+  .object({
+    runs: z.array(automationRunRecordSchema),
   })
   .strict()
 
@@ -1393,6 +1548,38 @@ const mcpServerSummarySchema = z
 const listMcpServersResponseSchema = z
   .object({
     servers: z.array(mcpServerSummarySchema),
+  })
+  .strict()
+
+const browserMcpPresetIdSchema = z.enum(['playwright', 'chrome-devtools'])
+
+const browserMcpPresetSchema = z
+  .object({
+    description: z.string().min(1),
+    displayName: z.string().min(1),
+    enabled: z.boolean(),
+    id: browserMcpPresetIdSchema,
+    serverId: mcpServerIdSchema,
+  })
+  .strict()
+
+const listBrowserMcpPresetsResponseSchema = z
+  .object({
+    presets: z.array(browserMcpPresetSchema),
+  })
+  .strict()
+
+const saveBrowserMcpPresetRequestSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    presetId: browserMcpPresetIdSchema,
+  })
+  .strict()
+
+const saveBrowserMcpPresetResponseSchema = z
+  .object({
+    preset: browserMcpPresetSchema,
+    server: mcpServerSummarySchema,
   })
   .strict()
 
@@ -2444,10 +2631,20 @@ export type DeleteProviderCapabilityRouteResponse = z.infer<
   typeof deleteProviderCapabilityRouteResponseSchema
 >
 export type PermissionMode = z.infer<typeof permissionModeSchema>
+export type ToolProfile = z.infer<typeof toolProfileSchema>
 export type GetExecutionSettingsResponse = z.infer<typeof getExecutionSettingsResponseSchema>
 export type GetExecutionSettingsRequest = z.infer<typeof getExecutionSettingsRequestSchema>
 export type SetExecutionSettingsRequest = z.infer<typeof setExecutionSettingsRequestSchema>
 export type SetExecutionSettingsResponse = z.infer<typeof setExecutionSettingsResponseSchema>
+export type AutomationSpec = z.infer<typeof automationSpecSchema>
+export type AutomationRunRecord = z.infer<typeof automationRunRecordSchema>
+export type ListAutomationsResponse = z.infer<typeof listAutomationsResponseSchema>
+export type SaveAutomationRequest = z.input<typeof saveAutomationRequestSchema>
+export type SaveAutomationResponse = z.infer<typeof saveAutomationResponseSchema>
+export type DeleteAutomationResponse = z.infer<typeof deleteAutomationResponseSchema>
+export type SetAutomationEnabledResponse = z.infer<typeof setAutomationEnabledResponseSchema>
+export type RunAutomationNowResponse = z.infer<typeof runAutomationNowResponseSchema>
+export type ListAutomationRunsResponse = z.infer<typeof listAutomationRunsResponseSchema>
 export type RequestProviderConfigApiKeyRevealResponse = z.infer<
   typeof requestProviderConfigApiKeyRevealResponseSchema
 >
@@ -2458,6 +2655,10 @@ export type SetConversationModelConfigResponse = z.infer<
 export type McpServerSummary = z.infer<typeof mcpServerSummarySchema>
 export type McpServerConfig = z.infer<typeof mcpServerConfigSchema>
 export type ListMcpServersResponse = z.infer<typeof listMcpServersResponseSchema>
+export type BrowserMcpPreset = z.infer<typeof browserMcpPresetSchema>
+export type ListBrowserMcpPresetsResponse = z.infer<typeof listBrowserMcpPresetsResponseSchema>
+export type SaveBrowserMcpPresetRequest = z.input<typeof saveBrowserMcpPresetRequestSchema>
+export type SaveBrowserMcpPresetResponse = z.infer<typeof saveBrowserMcpPresetResponseSchema>
 export type GetMcpServerConfigResponse = z.infer<typeof getMcpServerConfigResponseSchema>
 export type SaveMcpServerRequest = z.input<typeof saveMcpServerRequestSchema>
 export type SaveMcpServerResponse = z.infer<typeof saveMcpServerResponseSchema>
@@ -2526,6 +2727,7 @@ export interface CommandClient {
   cancelRun: (runId: string) => Promise<CancelRunResponse>
   createAttachmentFromPath: (path: string) => Promise<CreateAttachmentFromPathResponse>
   createConversation: () => Promise<CreateConversationResponse>
+  deleteAutomation: (id: string) => Promise<DeleteAutomationResponse>
   deleteConversation: (conversationId: string) => Promise<DeleteConversationResponse>
   deleteMcpServer: (id: string) => Promise<DeleteMcpServerResponse>
   deleteMemoryItem: (id: string) => Promise<DeleteMemoryItemResponse>
@@ -2571,8 +2773,11 @@ export interface CommandClient {
   getAttachmentMediaPreview: (
     request: GetAttachmentMediaPreviewRequest,
   ) => Promise<GetAttachmentMediaPreviewResponse>
+  listAutomationRuns: (automationId?: string) => Promise<ListAutomationRunsResponse>
+  listAutomations: () => Promise<ListAutomationsResponse>
   listConversations: () => Promise<ListConversationsResponse>
   listEvalCases: () => Promise<ListEvalCasesResponse>
+  listBrowserMcpPresets: () => Promise<ListBrowserMcpPresetsResponse>
   listModelProviderCatalog: () => Promise<ModelProviderCatalogResponse>
   listMcpDiagnostics: (serverId?: string) => Promise<ListMcpDiagnosticsResponse>
   listMcpServers: () => Promise<ListMcpServersResponse>
@@ -2604,7 +2809,12 @@ export interface CommandClient {
   requestProviderConfigApiKeyReveal: (
     configId: string,
   ) => Promise<RequestProviderConfigApiKeyRevealResponse>
+  runAutomationNow: (id: string) => Promise<RunAutomationNowResponse>
   runEvalCase: (caseId: string) => Promise<RunEvalCaseResponse>
+  saveAutomation: (request: SaveAutomationRequest) => Promise<SaveAutomationResponse>
+  saveBrowserMcpPreset: (
+    request: SaveBrowserMcpPresetRequest,
+  ) => Promise<SaveBrowserMcpPresetResponse>
   saveMcpServer: (request: SaveMcpServerRequest) => Promise<SaveMcpServerResponse>
   setMcpServerEnabled: (id: string, enabled: boolean) => Promise<SetMcpServerEnabledResponse>
   setPluginEnabled: (pluginId: string, enabled: boolean) => Promise<PluginOperationResult>
@@ -2621,6 +2831,7 @@ export interface CommandClient {
   setExecutionSettings: (
     request: SetExecutionSettingsRequest,
   ) => Promise<SetExecutionSettingsResponse>
+  setAutomationEnabled: (id: string, enabled: boolean) => Promise<SetAutomationEnabledResponse>
   setConversationModelConfig: (
     conversationId: string,
     modelConfigId: string,
@@ -2697,6 +2908,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         createAttachmentFromPathResponseSchema,
         await invoke(command, args),
       )
+    },
+    async deleteAutomation(id) {
+      const command = 'delete_automation'
+      const args = parseArgs(command, deleteAutomationRequestSchema, { id })
+      return parsePayload(command, deleteAutomationResponseSchema, await invoke(command, args))
     },
     async deleteMcpServer(id) {
       const command = 'delete_mcp_server'
@@ -2891,6 +3107,15 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'list_conversations'
       return parsePayload(command, listConversationsResponseSchema, await invoke(command))
     },
+    async listAutomations() {
+      const command = 'list_automations'
+      return parsePayload(command, listAutomationsResponseSchema, await invoke(command))
+    },
+    async listAutomationRuns(automationId) {
+      const command = 'list_automation_runs'
+      const args = parseArgs(command, listAutomationRunsRequestSchema, { automationId })
+      return parsePayload(command, listAutomationRunsResponseSchema, await invoke(command, args))
+    },
     async createConversation() {
       const command = 'create_conversation'
       return parsePayload(command, createConversationResponseSchema, await invoke(command))
@@ -2905,6 +3130,10 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     async listEvalCases() {
       const command = 'list_eval_cases'
       return parsePayload(command, listEvalCasesResponseSchema, await invoke(command))
+    },
+    async listBrowserMcpPresets() {
+      const command = 'list_browser_mcp_presets'
+      return parsePayload(command, listBrowserMcpPresetsResponseSchema, await invoke(command))
     },
     async listModelProviderCatalog() {
       const command = 'list_model_provider_catalog'
@@ -3028,6 +3257,16 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, runEvalCaseRequestSchema, { caseId })
       return parsePayload(command, runEvalCaseResponseSchema, await invoke(command, args))
     },
+    async runAutomationNow(id) {
+      const command = 'run_automation_now'
+      const args = parseArgs(command, runAutomationNowRequestSchema, { id })
+      return parsePayload(command, runAutomationNowResponseSchema, await invoke(command, args))
+    },
+    async saveAutomation(request) {
+      const command = 'save_automation'
+      const args = parseArgs(command, saveAutomationRequestSchema, request)
+      return parsePayload(command, saveAutomationResponseSchema, await invoke(command, args))
+    },
     async saveProviderSettings(request) {
       const command = 'save_provider_settings'
       const args = parseArgs(command, providerSettingsRequestSchema, request)
@@ -3055,6 +3294,16 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'set_execution_settings'
       const args = parseArgs(command, setExecutionSettingsRequestSchema, request)
       return parsePayload(command, setExecutionSettingsResponseSchema, await invoke(command, args))
+    },
+    async setAutomationEnabled(id, enabled) {
+      const command = 'set_automation_enabled'
+      const args = parseArgs(command, setAutomationEnabledRequestSchema, { enabled, id })
+      return parsePayload(command, setAutomationEnabledResponseSchema, await invoke(command, args))
+    },
+    async saveBrowserMcpPreset(request) {
+      const command = 'save_browser_mcp_preset'
+      const args = parseArgs(command, saveBrowserMcpPresetRequestSchema, request)
+      return parsePayload(command, saveBrowserMcpPresetResponseSchema, await invoke(command, args))
     },
     async saveMcpServer(request) {
       const command = 'save_mcp_server'
@@ -3322,10 +3571,58 @@ export function runEvalCase(
   return client.runEvalCase(caseId)
 }
 
+export function listAutomations(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListAutomationsResponse> {
+  return client.listAutomations()
+}
+
+export function saveAutomation(
+  request: SaveAutomationRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<SaveAutomationResponse> {
+  return client.saveAutomation(request)
+}
+
+export function deleteAutomation(
+  id: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<DeleteAutomationResponse> {
+  return client.deleteAutomation(id)
+}
+
+export function setAutomationEnabled(
+  id: string,
+  enabled: boolean,
+  client: CommandClient = tauriCommandClient,
+): Promise<SetAutomationEnabledResponse> {
+  return client.setAutomationEnabled(id, enabled)
+}
+
+export function runAutomationNow(
+  id: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<RunAutomationNowResponse> {
+  return client.runAutomationNow(id)
+}
+
+export function listAutomationRuns(
+  automationId?: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<ListAutomationRunsResponse> {
+  return client.listAutomationRuns(automationId)
+}
+
 export function listMcpServers(
   client: CommandClient = tauriCommandClient,
 ): Promise<ListMcpServersResponse> {
   return client.listMcpServers()
+}
+
+export function listBrowserMcpPresets(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListBrowserMcpPresetsResponse> {
+  return client.listBrowserMcpPresets()
 }
 
 export function getMcpServerConfig(
@@ -3347,6 +3644,13 @@ export function saveMcpServer(
   client: CommandClient = tauriCommandClient,
 ): Promise<SaveMcpServerResponse> {
   return client.saveMcpServer(request)
+}
+
+export function saveBrowserMcpPreset(
+  request: SaveBrowserMcpPresetRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<SaveBrowserMcpPresetResponse> {
+  return client.saveBrowserMcpPreset(request)
 }
 
 export function setMcpServerEnabled(

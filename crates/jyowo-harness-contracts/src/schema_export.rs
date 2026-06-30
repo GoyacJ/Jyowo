@@ -162,6 +162,18 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "tool_properties", ToolProperties);
     insert_schema!(schemas, "tool_descriptor", ToolDescriptor);
     insert_schema!(schemas, "tool_service_binding", ToolServiceBinding);
+    insert_schema!(schemas, "tool_profile", ToolProfile);
+    insert_schema!(schemas, "diagnostics_request", DiagnosticsRequest);
+    insert_schema!(schemas, "diagnostics_result", DiagnosticsResult);
+    insert_schema!(schemas, "process_start_request", ProcessStartRequest);
+    insert_schema!(schemas, "process_read_request", ProcessReadRequest);
+    insert_schema!(schemas, "process_stop_request", ProcessStopRequest);
+    insert_schema!(schemas, "process_start_result", ProcessStartResult);
+    insert_schema!(schemas, "process_read_result", ProcessReadResult);
+    insert_schema!(schemas, "process_stop_result", ProcessStopResult);
+    insert_schema!(schemas, "diagnostic_item", DiagnosticItem);
+    insert_schema!(schemas, "automation_spec", AutomationSpec);
+    insert_schema!(schemas, "automation_run_record", AutomationRunRecord);
     insert_schema!(
         schemas,
         "provider_service_adapter_availability",

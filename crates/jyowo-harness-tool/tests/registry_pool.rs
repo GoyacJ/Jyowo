@@ -9,7 +9,7 @@ use futures::stream;
 use harness_contracts::{
     DeferPolicy, McpOrigin, McpServerId, McpServerSource, ModelProvider, PluginId,
     ProviderRestriction, ShadowReason, SkillId, SkillOrigin, SkillSourceKind, ToolDescriptor,
-    ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, TrustLevel,
+    ToolError, ToolGroup, ToolOrigin, ToolProfile, ToolProperties, ToolResult, TrustLevel,
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
@@ -297,6 +297,36 @@ async fn append_runtime_tool_preserves_existing_journal_authority_for_same_name(
 }
 
 #[tokio::test]
+#[cfg(feature = "builtin-toolset")]
+async fn default_builtin_sandbox_tools_use_sandbox_journal_authority() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Default)
+        .build()
+        .unwrap();
+    let pool = ToolPool::assemble(
+        &registry.snapshot(),
+        &ToolPoolFilter::default(),
+        &ToolSearchMode::Disabled,
+        &ToolPoolModelProfile {
+            provider: ModelProvider("anthropic".to_owned()),
+            max_context_tokens: Some(200_000),
+        },
+        &schema_ctx(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        pool.journal_authority("Diagnostics"),
+        harness_tool::ToolJournalAuthority::Sandbox
+    );
+    assert_eq!(
+        pool.journal_authority("ProcessStart"),
+        harness_tool::ToolJournalAuthority::Sandbox
+    );
+}
+
+#[tokio::test]
 async fn prompt_visible_descriptors_preserve_deferred_descriptor_for_runtime_same_name() {
     let registry = ToolRegistry::builder()
         .with_builtin_toolset(BuiltinToolset::Empty)
@@ -476,6 +506,79 @@ async fn pool_applies_allowlists_origin_filters_and_provider_denylists() {
     .unwrap();
 
     assert_eq!(names(pool.always_loaded()), ["mcp_tool"]);
+}
+
+#[tokio::test]
+async fn tool_profile_custom_maps_to_pool_filter_and_preserves_deny_priority() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .with_tool(Box::new(tool_with_origin(
+            "read",
+            DeferPolicy::AlwaysLoad,
+            ToolGroup::FileSystem,
+            ProviderRestriction::All,
+            false,
+            ToolOrigin::Builtin,
+        )))
+        .with_tool(Box::new(tool_with_origin(
+            "bash",
+            DeferPolicy::AlwaysLoad,
+            ToolGroup::Shell,
+            ProviderRestriction::All,
+            false,
+            ToolOrigin::Builtin,
+        )))
+        .with_tool(Box::new(tool_with_origin(
+            "web_fetch",
+            DeferPolicy::AlwaysLoad,
+            ToolGroup::Network,
+            ProviderRestriction::All,
+            false,
+            ToolOrigin::Builtin,
+        )))
+        .with_tool(Box::new(tool_with_origin(
+            "mcp_browser",
+            DeferPolicy::AlwaysLoad,
+            ToolGroup::Network,
+            ProviderRestriction::All,
+            false,
+            mcp_origin("browser", TrustLevel::AdminTrusted),
+        )))
+        .build()
+        .unwrap();
+    let profile = ToolProfile::Custom {
+        allowlist: BTreeSet::from([
+            "read".to_owned(),
+            "bash".to_owned(),
+            "mcp_browser".to_owned(),
+        ]),
+        denylist: BTreeSet::from(["bash".to_owned()]),
+        group_allowlist: vec![ToolGroup::FileSystem, ToolGroup::Shell, ToolGroup::Network],
+        group_denylist: vec![ToolGroup::Network],
+        mcp_included: true,
+        plugin_included: false,
+    };
+
+    let filter = ToolPoolFilter::from_profile(&profile);
+    let pool = ToolPool::assemble(
+        &registry.snapshot(),
+        &filter,
+        &ToolSearchMode::Disabled,
+        &ToolPoolModelProfile::default(),
+        &schema_ctx(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(names(pool.always_loaded()), ["read"]);
+}
+
+#[test]
+fn tool_profile_full_maps_to_default_pool_filter() {
+    assert_eq!(
+        ToolPoolFilter::from_profile(&ToolProfile::Full),
+        ToolPoolFilter::default()
+    );
 }
 
 #[tokio::test]

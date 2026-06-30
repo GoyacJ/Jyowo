@@ -56,6 +56,7 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('tab', { name: '通用' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('tab', { name: '技能' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '工具' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '自动化' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'MCP' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '插件' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '模型' })).toBeInTheDocument()
@@ -72,6 +73,10 @@ describe('SettingsPage', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: '工具' }))
 
     expect(screen.getByRole('heading', { name: '内置工具' })).toBeInTheDocument()
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '自动化' }))
+
+    expect(await screen.findByRole('heading', { name: '自动化任务' })).toBeInTheDocument()
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'MCP' }))
 

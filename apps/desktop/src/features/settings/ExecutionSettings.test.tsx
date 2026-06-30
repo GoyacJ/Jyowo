@@ -42,6 +42,7 @@ describe('ExecutionSettings', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'bypass_permissions' as const,
+      toolProfile: 'full' as const,
     }))
     const commandClient = {
       ...createTestCommandClient(),
@@ -50,6 +51,7 @@ describe('ExecutionSettings', () => {
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'default' as const,
+        toolProfile: 'full' as const,
       }),
       setExecutionSettings,
     } satisfies CommandClient
@@ -67,6 +69,7 @@ describe('ExecutionSettings', () => {
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'bypass_permissions',
         subagentsEnabled: false,
+        toolProfile: 'full',
       })
     })
     expect(screen.queryByText('默认授权模式已保存。')).not.toBeInTheDocument()
@@ -78,6 +81,7 @@ describe('ExecutionSettings', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.75,
       permissionMode: 'default' as const,
+      toolProfile: 'full' as const,
     }))
     const commandClient = {
       ...createTestCommandClient(),
@@ -86,6 +90,7 @@ describe('ExecutionSettings', () => {
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'default' as const,
+        toolProfile: 'full' as const,
       }),
       setExecutionSettings,
     } satisfies CommandClient
@@ -105,6 +110,47 @@ describe('ExecutionSettings', () => {
         contextCompressionTriggerRatio: 0.75,
         permissionMode: 'default',
         subagentsEnabled: false,
+        toolProfile: 'full',
+      })
+    })
+  })
+
+  it('loads and saves tool profile', async () => {
+    uiStore.getState().setLocale('en-US')
+
+    const setExecutionSettings = vi.fn(async () => ({
+      agentCapabilities,
+      autoModeAvailable: false,
+      contextCompressionTriggerRatio: 0.8,
+      permissionMode: 'default' as const,
+      toolProfile: 'minimal' as const,
+    }))
+    const commandClient = {
+      ...createTestCommandClient(),
+      getExecutionSettings: async () => ({
+        agentCapabilities,
+        autoModeAvailable: false,
+        contextCompressionTriggerRatio: 0.8,
+        permissionMode: 'default' as const,
+        toolProfile: 'full' as const,
+      }),
+      setExecutionSettings,
+    } satisfies CommandClient
+
+    renderExecutionSettings(commandClient)
+
+    expect(await screen.findByLabelText(/Full/i)).toBeChecked()
+
+    fireEvent.click(screen.getByLabelText(/Minimal/i))
+
+    await waitFor(() => {
+      expect(setExecutionSettings).toHaveBeenCalledWith({
+        agentTeamsEnabled: false,
+        backgroundAgentsEnabled: false,
+        contextCompressionTriggerRatio: 0.8,
+        permissionMode: 'default',
+        subagentsEnabled: false,
+        toolProfile: 'minimal',
       })
     })
   })
@@ -119,6 +165,7 @@ describe('ExecutionSettings', () => {
           autoModeAvailable: false,
           contextCompressionTriggerRatio: 0.8,
           permissionMode: 'default',
+          toolProfile: 'full',
         },
       }),
     )
@@ -137,6 +184,7 @@ describe('ExecutionSettings', () => {
           autoModeAvailable: false,
           contextCompressionTriggerRatio: 0.8,
           permissionMode: 'default',
+          toolProfile: 'full',
         },
       }),
     )

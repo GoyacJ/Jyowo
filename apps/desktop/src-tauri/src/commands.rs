@@ -10,22 +10,28 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
-use chrono::{NaiveDate, Utc};
-use futures::StreamExt;
+use chrono::{DateTime, NaiveDate, Utc};
+use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
 use harness_contracts::{
     validate_provider_capability_route, AgentCapabilityKind, AgentCapabilityUnavailableReason,
+    AutomationRunRecord, AutomationRunStatus, AutomationSpec, AutomationWorkspaceScope,
     CapabilityRouteKind, ConversationCursor, ConversationMessageAuthor, ConversationTurnCursor,
-    ConversationWorktreePage, ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag,
-    PluginCapabilitiesSummary, PluginConfigUpdate, PluginDetail, PluginId, PluginInstallReport,
-    PluginOperationResult, PluginOperationStatus, PluginSummary, ProviderCapabilityRoute,
-    ProviderCapabilityRouteOption, ProviderCapabilityRouteSettings,
-    ProviderServiceAdapterAvailability, RejectionReason, SandboxMode, TrustLevel, UiSafeText,
+    ConversationWorktreePage, DiagnosticsRawOutput, DiagnosticsRunRequest, DiagnosticsRunnerCap,
+    DiagnosticsRunnerKind, ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag,
+    MissedRunPolicy, PluginCapabilitiesSummary, PluginConfigUpdate, PluginDetail, PluginId,
+    PluginInstallReport, PluginOperationResult, PluginOperationStatus, PluginSummary,
+    ProviderCapabilityRoute, ProviderCapabilityRouteOption, ProviderCapabilityRouteSettings,
+    ProviderServiceAdapterAvailability, RejectionReason, SandboxError, SandboxMode, ToolGroup,
+    TrustLevel, UiSafeText, WorkspaceAccess,
 };
 use harness_plugin::{
     CargoExtensionManifestLoader, CargoExtensionRuntimeLoader, DiscoverySource, FileManifestLoader,
     InlineManifestLoader, ManifestOrigin, PluginConfig, PluginName, PluginRegistry,
 };
-use harness_sandbox::{LocalIsolation, SandboxBackend};
+use harness_sandbox::{
+    execute_with_lifecycle, EventSink, ExecContext, ExecSpec, LocalIsolation, SandboxBackend,
+    StdioSpec,
+};
 use harness_tool::{
     provider_service_adapter_availability_from_snapshot, BuiltinToolset, ToolRegistryBuilder,
 };
@@ -49,14 +55,15 @@ use jyowo_harness_sdk::ext::{
     ProviderRuntimeCapability, ProviderServiceCapability, ProviderServiceCategory,
     ProviderServiceCostRisk, ProviderServiceExecution, RedactPatternSet, RedactRules, RedactScope,
     Redactor, RequestId, RunId, SessionId, Severity, SkillLoader, SkillSourceConfig, StdioEnv,
-    StdioPolicy, StdioTransport, TenantId, ToolCapability, ToolError, ToolUseId, TransportChoice,
+    StdioPolicy, StdioTransport, TenantId, ToolCapability, ToolError, ToolProfile, ToolUseId,
+    TransportChoice,
 };
 use jyowo_harness_sdk::{
     ConversationAttachmentReference, ConversationContextReference, ConversationEventsPageRequest,
     ConversationTurnInput, ConversationTurnPageDirection, ConversationTurnRequest, Harness,
     McpConfig, RuntimeSkillSummary, RuntimeSkillView, SessionOptions, StreamPermissionRuntime,
 };
-use parking_lot::RwLock as ParkingRwLock;
+use parking_lot::{Mutex as ParkingMutex, RwLock as ParkingRwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::Emitter;
@@ -99,6 +106,8 @@ const CONVERSATION_SUBSCRIPTION_BATCH_LIMIT: usize = 50;
 const MCP_DIAGNOSTIC_RETENTION_LIMIT: usize = 500;
 const MCP_DIAGNOSTIC_SUBSCRIPTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MCP_DIAGNOSTIC_SUBSCRIPTION_BATCH_LIMIT: usize = 50;
+const AUTOMATION_RUN_RETENTION_LIMIT: usize = 1000;
+const AUTOMATION_SCHEDULER_INTERVAL: Duration = Duration::from_secs(60);
 const PROVIDER_API_KEY_REVEAL_TTL: Duration = Duration::from_secs(60);
 const PLUGIN_RUNTIME_RUN_ID: &str = "plugin-runtime";
 const PLUGIN_FAILURE_WITHHELD_MESSAGE: &str = "Plugin failure withheld from conversation timeline.";
@@ -715,6 +724,44 @@ pub struct McpDiagnosticBatchPayload {
     pub phase: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BrowserMcpPresetId {
+    Playwright,
+    ChromeDevtools,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SaveBrowserMcpPresetRequest {
+    pub preset_id: BrowserMcpPresetId,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserMcpPresetSummaryPayload {
+    pub description: &'static str,
+    pub display_name: &'static str,
+    pub enabled: bool,
+    pub id: BrowserMcpPresetId,
+    pub server_id: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListBrowserMcpPresetsResponse {
+    pub presets: Vec<BrowserMcpPresetSummaryPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveBrowserMcpPresetResponse {
+    pub preset: BrowserMcpPresetSummaryPayload,
+    pub server: McpServerSummaryPayload,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ImportSkillRequest {
@@ -1161,6 +1208,13 @@ pub trait McpDiagnosticStore: Send + Sync {
     fn clear_records(&self, server_id: Option<&str>) -> Result<(), CommandErrorPayload>;
 }
 
+pub trait AutomationStore: Send + Sync {
+    fn load_automations(&self) -> Result<Vec<AutomationSpec>, CommandErrorPayload>;
+    fn save_automations(&self, records: &[AutomationSpec]) -> Result<(), CommandErrorPayload>;
+    fn load_run_records(&self) -> Result<Vec<AutomationRunRecord>, CommandErrorPayload>;
+    fn append_run_record(&self, record: &AutomationRunRecord) -> Result<(), CommandErrorPayload>;
+}
+
 pub trait SkillStore: Send + Sync {
     fn enabled_dir(&self) -> PathBuf;
     fn load_records(&self) -> Result<Vec<SkillStoreRecord>, CommandErrorPayload>;
@@ -1505,11 +1559,13 @@ impl ProviderSettingsStore for DesktopProviderSettingsStore {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ExecutionSettingsRecord {
     #[serde(default = "default_permission_mode")]
     pub permission_mode: PermissionMode,
+    #[serde(default)]
+    pub tool_profile: ToolProfile,
     #[serde(default = "default_context_compression_trigger_ratio")]
     pub context_compression_trigger_ratio: f32,
     #[serde(default)]
@@ -1532,6 +1588,7 @@ impl Default for ExecutionSettingsRecord {
     fn default() -> Self {
         Self {
             permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
             context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
             subagents_enabled: false,
             agent_teams_enabled: false,
@@ -2165,6 +2222,114 @@ impl McpDiagnosticStore for DesktopMcpDiagnosticStore {
 }
 
 #[derive(Clone)]
+pub struct DesktopAutomationStore {
+    retention_limit: usize,
+    workspace_root: PathBuf,
+}
+
+impl DesktopAutomationStore {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self::new_with_limit(workspace_root, AUTOMATION_RUN_RETENTION_LIMIT)
+    }
+
+    pub fn new_with_limit(workspace_root: PathBuf, retention_limit: usize) -> Self {
+        Self {
+            retention_limit,
+            workspace_root,
+        }
+    }
+
+    fn automations_path(&self) -> PathBuf {
+        self.workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("automations.json")
+    }
+
+    fn runs_path(&self) -> PathBuf {
+        self.workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("automation-runs.jsonl")
+    }
+}
+
+impl AutomationStore for DesktopAutomationStore {
+    fn load_automations(&self) -> Result<Vec<AutomationSpec>, CommandErrorPayload> {
+        let automations_path = self.automations_path();
+        ensure_no_symlink_components(&automations_path, "automation settings file")?;
+        let bytes = match std::fs::read(&automations_path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(runtime_operation_failed(format!(
+                    "automation settings read failed: {error}"
+                )));
+            }
+        };
+        if bytes.iter().all(u8::is_ascii_whitespace) {
+            return Ok(Vec::new());
+        }
+        let mut records =
+            serde_json::from_slice::<Vec<AutomationSpec>>(&bytes).map_err(|error| {
+                invalid_payload(format!("automation settings parse failed: {error}"))
+            })?;
+        for record in &records {
+            ensure_automation_spec(record)?;
+        }
+        records.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(records)
+    }
+
+    fn save_automations(&self, records: &[AutomationSpec]) -> Result<(), CommandErrorPayload> {
+        for record in records {
+            ensure_automation_spec(record)?;
+        }
+        let mut records = records.to_vec();
+        records.sort_by(|left, right| left.id.cmp(&right.id));
+        write_automation_specs(&self.automations_path(), &records)
+    }
+
+    fn load_run_records(&self) -> Result<Vec<AutomationRunRecord>, CommandErrorPayload> {
+        let runs_path = self.runs_path();
+        ensure_no_symlink_components(&runs_path, "automation run ledger file")?;
+        let content = match std::fs::read_to_string(&runs_path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(runtime_operation_failed(format!(
+                    "automation run ledger read failed: {error}"
+                )));
+            }
+        };
+
+        content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let record =
+                    serde_json::from_str::<AutomationRunRecord>(line).map_err(|error| {
+                        invalid_payload(format!("automation run ledger parse failed: {error}"))
+                    })?;
+                ensure_automation_run_record(&record)?;
+                Ok(record)
+            })
+            .collect()
+    }
+
+    fn append_run_record(&self, record: &AutomationRunRecord) -> Result<(), CommandErrorPayload> {
+        ensure_automation_run_record(record)?;
+        let mut records = self.load_run_records()?;
+        records.push(record.clone());
+        let keep_from = records.len().saturating_sub(self.retention_limit);
+        if keep_from > 0 {
+            records.drain(0..keep_from);
+        }
+        write_automation_run_records(&self.runs_path(), &records)
+    }
+}
+
+#[derive(Clone)]
 pub struct DesktopPluginStore {
     workspace_root: PathBuf,
 }
@@ -2606,6 +2771,108 @@ fn write_mcp_diagnostic_records(
     std::fs::rename(&temp_path, diagnostics_path).map_err(|error| {
         let _ = std::fs::remove_file(&temp_path);
         runtime_operation_failed(format!("mcp diagnostics commit failed: {error}"))
+    })
+}
+
+fn write_automation_specs(
+    automations_path: &Path,
+    records: &[AutomationSpec],
+) -> Result<(), CommandErrorPayload> {
+    let parent = automations_path.parent().ok_or_else(|| {
+        runtime_operation_failed("automation settings path has no parent".to_owned())
+    })?;
+    ensure_no_symlink_components(parent, "automation settings directory")?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        runtime_operation_failed(format!(
+            "automation settings directory unavailable: {error}"
+        ))
+    })?;
+    ensure_no_symlink_components(parent, "automation settings directory")?;
+    let bytes = serde_json::to_vec_pretty(records).map_err(|error| {
+        runtime_operation_failed(format!("automation settings serialization failed: {error}"))
+    })?;
+    write_atomic_runtime_file(
+        automations_path,
+        "automations.json",
+        "automation settings",
+        &bytes,
+    )
+}
+
+fn write_automation_run_records(
+    runs_path: &Path,
+    records: &[AutomationRunRecord],
+) -> Result<(), CommandErrorPayload> {
+    let parent = runs_path.parent().ok_or_else(|| {
+        runtime_operation_failed("automation run ledger path has no parent".to_owned())
+    })?;
+    ensure_no_symlink_components(parent, "automation run ledger directory")?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        runtime_operation_failed(format!(
+            "automation run ledger directory unavailable: {error}"
+        ))
+    })?;
+    ensure_no_symlink_components(parent, "automation run ledger directory")?;
+    let mut bytes = Vec::new();
+    for record in records {
+        serde_json::to_writer(&mut bytes, record).map_err(|error| {
+            runtime_operation_failed(format!(
+                "automation run ledger serialization failed: {error}"
+            ))
+        })?;
+        bytes.push(b'\n');
+    }
+    write_atomic_runtime_file(
+        runs_path,
+        "automation-runs.jsonl",
+        "automation run ledger",
+        &bytes,
+    )
+}
+
+fn write_atomic_runtime_file(
+    target_path: &Path,
+    fallback_name: &str,
+    label: &str,
+    bytes: &[u8],
+) -> Result<(), CommandErrorPayload> {
+    let temp_path = target_path.with_file_name(format!(
+        "{}.{}.tmp",
+        target_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(fallback_name),
+        RunId::new()
+    ));
+    ensure_no_symlink_components(&temp_path, &format!("{label} temp file"))?;
+    let mut open_options = std::fs::OpenOptions::new();
+    open_options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        open_options.mode(0o600);
+    }
+    let mut temp_file = open_options
+        .open(&temp_path)
+        .map_err(|error| runtime_operation_failed(format!("{label} temp open failed: {error}")))?;
+    if let Err(error) = temp_file.write_all(bytes) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(runtime_operation_failed(format!(
+            "{label} write failed: {error}"
+        )));
+    }
+    if let Err(error) = temp_file.sync_all() {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(runtime_operation_failed(format!(
+            "{label} sync failed: {error}"
+        )));
+    }
+    drop(temp_file);
+    ensure_no_symlink_components(target_path, &format!("{label} file"))?;
+    std::fs::rename(&temp_path, target_path).map_err(|error| {
+        let _ = std::fs::remove_file(&temp_path);
+        runtime_operation_failed(format!("{label} commit failed: {error}"))
     })
 }
 
@@ -3289,6 +3556,8 @@ fn normalize_skill_relative_path(value: &str) -> Result<PathBuf, CommandErrorPay
 #[derive(Clone)]
 pub struct DesktopRuntimeState {
     active_runtime: Arc<RwLock<DesktopActiveRuntime>>,
+    automation_lock: Arc<tokio::sync::Mutex<()>>,
+    automation_store: Arc<dyn AutomationStore>,
     conversation_model_config_lock: Arc<tokio::sync::Mutex<()>>,
     conversation_model_config_store: Arc<dyn ConversationModelConfigStore>,
     conversation_event_subscriptions:
@@ -3356,6 +3625,8 @@ impl DesktopRuntimeState {
                 default_protocol: ModelProtocol::ChatCompletions,
                 harness: None,
             })),
+            automation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            automation_store: Arc::new(DesktopAutomationStore::new(workspace_root.clone())),
             conversation_model_config_lock: Arc::new(tokio::sync::Mutex::new(())),
             conversation_model_config_store: Arc::new(DesktopConversationModelConfigStore::new(
                 workspace_root.clone(),
@@ -3473,6 +3744,8 @@ impl DesktopRuntimeState {
                 default_protocol,
                 harness: Some(harness),
             })),
+            automation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            automation_store: Arc::new(DesktopAutomationStore::new(workspace_root.clone())),
             conversation_model_config_lock: Arc::new(tokio::sync::Mutex::new(())),
             conversation_model_config_store: Arc::new(DesktopConversationModelConfigStore::new(
                 workspace_root.clone(),
@@ -3546,12 +3819,11 @@ impl DesktopRuntimeState {
             .read()
             .expect("desktop active runtime lock should not be poisoned");
         let harness = active_runtime.harness.as_ref().map(Arc::clone)?;
-        let options = SessionOptions::new(&self.workspace_root)
-            .with_tenant_id(TenantId::SINGLE)
-            .with_session_id(session_id)
-            .with_interactivity(InteractivityLevel::FullyInteractive)
-            .with_model_id(active_runtime.default_model_id.clone())
-            .with_protocol(active_runtime.default_protocol);
+        let options = self.conversation_session_options_for_model(
+            session_id,
+            active_runtime.default_model_id.clone(),
+            active_runtime.default_protocol,
+        );
         Some((harness, options))
     }
 
@@ -3587,6 +3859,7 @@ impl DesktopRuntimeState {
                 .load_record()
                 .unwrap_or(ExecutionSettingsRecord {
                     permission_mode: PermissionMode::Default,
+                    tool_profile: ToolProfile::Full,
                     context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
                     subagents_enabled: false,
                     agent_teams_enabled: false,
@@ -3598,6 +3871,7 @@ impl DesktopRuntimeState {
             .with_interactivity(InteractivityLevel::FullyInteractive)
             .with_model_id(model_id)
             .with_protocol(protocol)
+            .with_tool_profile(execution_settings.tool_profile)
             .with_context_compression_trigger_ratio(
                 execution_settings.context_compression_trigger_ratio,
             )
@@ -3619,6 +3893,17 @@ pub type ManagedDesktopRuntime = Arc<AsyncRwLock<DesktopRuntimeState>>;
 #[must_use]
 pub fn managed_runtime_state() -> ManagedDesktopRuntime {
     Arc::new(AsyncRwLock::new(initial_managed_runtime_state()))
+}
+
+pub fn spawn_automation_scheduler(runtime: ManagedDesktopRuntime) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(AUTOMATION_SCHEDULER_INTERVAL);
+        loop {
+            interval.tick().await;
+            let state = runtime.read().await.clone();
+            let _ = run_due_automations_once_with_runtime_state(Utc::now(), &state).await;
+        }
+    })
 }
 
 fn initial_managed_runtime_state() -> DesktopRuntimeState {
@@ -3740,6 +4025,9 @@ async fn build_desktop_harness(
         Arc::new(DesktopPluginStore::new(workspace_root.to_path_buf()));
     let plugin_registry = build_plugin_registry(workspace_root, plugin_store.as_ref())?;
 
+    let sandbox = Arc::new(LocalSandbox::new(workspace_root)) as Arc<dyn SandboxBackend>;
+    let diagnostics_runner: Arc<dyn DiagnosticsRunnerCap> =
+        Arc::new(DesktopDiagnosticsRunner::new(Arc::clone(&sandbox)));
     let harness = Harness::builder()
         .with_workspace_root(workspace_root)
         .with_model_arc(model_provider)
@@ -3751,11 +4039,15 @@ async fn build_desktop_harness(
                 .with_protocol(protocol),
         )
         .with_store(event_store)
-        .with_sandbox(LocalSandbox::new(workspace_root))
+        .with_sandbox_arc(sandbox)
         .with_blob_store(blob_store)
         .with_capability(
             ToolCapability::ProviderCredentialResolver,
             provider_credential_resolver,
+        )
+        .with_capability(
+            ToolCapability::Custom("diagnostics_runner".to_owned()),
+            diagnostics_runner,
         )
         .with_mcp_config(mcp_config)
         .with_plugin_registry(plugin_registry)
@@ -3770,6 +4062,139 @@ async fn build_desktop_harness(
         .map_err(|error| runtime_init_failed(format!("harness initialization failed: {error}")))?;
 
     Ok((harness, model_id, protocol))
+}
+
+struct DesktopDiagnosticsRunner {
+    sandbox: Arc<dyn SandboxBackend>,
+}
+
+impl DesktopDiagnosticsRunner {
+    fn new(sandbox: Arc<dyn SandboxBackend>) -> Self {
+        Self { sandbox }
+    }
+}
+
+impl DiagnosticsRunnerCap for DesktopDiagnosticsRunner {
+    fn run_diagnostics(
+        &self,
+        request: DiagnosticsRunRequest,
+    ) -> BoxFuture<'_, Result<DiagnosticsRawOutput, ToolError>> {
+        Box::pin(async move {
+            let spec =
+                diagnostics_exec_spec(request.runner, &request.workspace_root, request.run_id);
+            let event_sink = Arc::new(RecordingSandboxEventSink::default());
+            let ctx = ExecContext {
+                session_id: request.session_id,
+                run_id: request.run_id,
+                tool_use_id: None,
+                tenant_id: request.tenant_id,
+                workspace_root: request.workspace_root.clone(),
+                correlation_id: harness_contracts::CorrelationId::new(),
+                event_sink: event_sink.clone(),
+                redactor: Arc::new(DefaultRedactor::default()),
+                blob_store: None,
+            };
+            let mut handle = execute_with_lifecycle(Arc::clone(&self.sandbox), spec, ctx)
+                .await
+                .map_err(ToolError::Sandbox)?;
+            let stdout_stream = handle.stdout.take();
+            let stderr_stream = handle.stderr.take();
+            let (stdout, stderr, outcome) = tokio::join!(
+                collect_diagnostics_output(stdout_stream),
+                collect_diagnostics_output(stderr_stream),
+                handle.activity.wait()
+            );
+            outcome.map_err(ToolError::Sandbox)?;
+            Ok(DiagnosticsRawOutput {
+                runner: request.runner,
+                stdout,
+                stderr,
+                sandbox_events: event_sink.events(),
+            })
+        })
+    }
+}
+
+fn diagnostics_exec_spec(
+    runner: DiagnosticsRunnerKind,
+    workspace_root: &Path,
+    run_id: RunId,
+) -> ExecSpec {
+    let (command, args) = match runner {
+        DiagnosticsRunnerKind::Rust => (
+            "cargo".to_owned(),
+            vec![
+                "check".to_owned(),
+                "--message-format=json".to_owned(),
+                "--target-dir".to_owned(),
+                std::env::temp_dir()
+                    .join(format!("jyowo-diagnostics-target-{run_id}"))
+                    .display()
+                    .to_string(),
+            ],
+        ),
+        DiagnosticsRunnerKind::DesktopTs => (
+            "pnpm".to_owned(),
+            vec![
+                "--dir".to_owned(),
+                "apps/desktop".to_owned(),
+                "exec".to_owned(),
+                "tsc".to_owned(),
+                "--noEmit".to_owned(),
+                "--pretty".to_owned(),
+                "false".to_owned(),
+            ],
+        ),
+        _ => ("true".to_owned(), Vec::new()),
+    };
+    ExecSpec {
+        command,
+        args,
+        cwd: Some(workspace_root.to_path_buf()),
+        stdin: StdioSpec::Null,
+        stdout: StdioSpec::Piped,
+        stderr: StdioSpec::Piped,
+        timeout: Some(Duration::from_secs(180)),
+        workspace_access: WorkspaceAccess::ReadWrite {
+            allowed_writable_subpaths: Vec::new(),
+        },
+        ..ExecSpec::default()
+    }
+}
+
+async fn collect_diagnostics_output(stream: Option<BoxStream<'static, Bytes>>) -> String {
+    const MAX_DIAGNOSTICS_OUTPUT_BYTES: usize = 1_048_576;
+    let mut stream = match stream {
+        Some(stream) => stream,
+        None => return String::new(),
+    };
+    let mut output = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        if output.len() >= MAX_DIAGNOSTICS_OUTPUT_BYTES {
+            break;
+        }
+        let remaining = MAX_DIAGNOSTICS_OUTPUT_BYTES - output.len();
+        output.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+    String::from_utf8_lossy(&output).into_owned()
+}
+
+#[derive(Default)]
+struct RecordingSandboxEventSink {
+    events: ParkingMutex<Vec<Event>>,
+}
+
+impl RecordingSandboxEventSink {
+    fn events(&self) -> Vec<Event> {
+        self.events.lock().clone()
+    }
+}
+
+impl EventSink for RecordingSandboxEventSink {
+    fn emit(&self, event: Event) -> Result<(), SandboxError> {
+        self.events.lock().push(event);
+        Ok(())
+    }
 }
 
 fn build_plugin_registry(
@@ -4451,6 +4876,7 @@ pub struct GetContextSnapshotResponse {
 #[serde(rename_all = "camelCase")]
 pub struct GetExecutionSettingsResponse {
     pub permission_mode: PermissionMode,
+    pub tool_profile: ToolProfile,
     pub context_compression_trigger_ratio: f32,
     pub auto_mode_available: bool,
     pub agent_capabilities: AgentCapabilitiesPayload,
@@ -4462,10 +4888,11 @@ pub struct GetExecutionSettingsRequest {
     pub workspace_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetExecutionSettingsRequest {
     pub permission_mode: PermissionMode,
+    pub tool_profile: ToolProfile,
     pub context_compression_trigger_ratio: f32,
     pub subagents_enabled: bool,
     pub agent_teams_enabled: bool,
@@ -4476,9 +4903,81 @@ pub struct SetExecutionSettingsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SetExecutionSettingsResponse {
     pub permission_mode: PermissionMode,
+    pub tool_profile: ToolProfile,
     pub context_compression_trigger_ratio: f32,
     pub auto_mode_available: bool,
     pub agent_capabilities: AgentCapabilitiesPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SaveAutomationRequest {
+    pub automation: AutomationSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveAutomationResponse {
+    pub automation: AutomationSpec,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SetAutomationEnabledRequest {
+    pub id: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAutomationEnabledResponse {
+    pub automation: AutomationSpec,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DeleteAutomationRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAutomationResponse {
+    pub id: String,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAutomationsResponse {
+    pub automations: Vec<AutomationSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RunAutomationNowRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAutomationNowResponse {
+    pub record: AutomationRunRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ListAutomationRunsRequest {
+    #[serde(default)]
+    pub automation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAutomationRunsResponse {
+    pub runs: Vec<AutomationRunRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -5697,6 +6196,7 @@ pub fn get_execution_settings_with_store(
     let permission_mode = effective_execution_settings_permission_mode(record.permission_mode);
     Ok(GetExecutionSettingsResponse {
         permission_mode,
+        tool_profile: record.tool_profile.clone(),
         context_compression_trigger_ratio: record.context_compression_trigger_ratio,
         auto_mode_available: auto_mode_available(),
         agent_capabilities: agent_capabilities_payload(&record),
@@ -5731,6 +6231,7 @@ pub fn set_execution_settings_with_store(
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
     ensure_execution_settings_record(&ExecutionSettingsRecord {
         permission_mode: request.permission_mode,
+        tool_profile: request.tool_profile.clone(),
         context_compression_trigger_ratio: request.context_compression_trigger_ratio,
         subagents_enabled: request.subagents_enabled,
         agent_teams_enabled: request.agent_teams_enabled,
@@ -5743,6 +6244,7 @@ pub fn set_execution_settings_with_store(
     }
     let record = ExecutionSettingsRecord {
         permission_mode: request.permission_mode,
+        tool_profile: request.tool_profile,
         context_compression_trigger_ratio: request.context_compression_trigger_ratio,
         subagents_enabled: request.subagents_enabled,
         agent_teams_enabled: request.agent_teams_enabled,
@@ -5751,10 +6253,335 @@ pub fn set_execution_settings_with_store(
     store.save_record(&record)?;
     Ok(SetExecutionSettingsResponse {
         permission_mode: record.permission_mode,
+        tool_profile: record.tool_profile.clone(),
         context_compression_trigger_ratio: record.context_compression_trigger_ratio,
         auto_mode_available: auto_mode_available(),
         agent_capabilities: agent_capabilities_payload(&record),
     })
+}
+
+pub async fn list_automations_with_runtime_state(
+    state: &DesktopRuntimeState,
+) -> Result<ListAutomationsResponse, CommandErrorPayload> {
+    let _guard = state.automation_lock.lock().await;
+    Ok(ListAutomationsResponse {
+        automations: state.automation_store.load_automations()?,
+    })
+}
+
+pub async fn save_automation_with_runtime_state(
+    request: SaveAutomationRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SaveAutomationResponse, CommandErrorPayload> {
+    ensure_automation_spec(&request.automation)?;
+    let _guard = state.automation_lock.lock().await;
+    let mut automations = state.automation_store.load_automations()?;
+    automations.retain(|record| record.id != request.automation.id);
+    automations.push(request.automation.clone());
+    state.automation_store.save_automations(&automations)?;
+
+    Ok(SaveAutomationResponse {
+        automation: request.automation,
+        status: "saved",
+    })
+}
+
+pub async fn set_automation_enabled_with_runtime_state(
+    request: SetAutomationEnabledRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SetAutomationEnabledResponse, CommandErrorPayload> {
+    ensure_automation_id(&request.id)?;
+    let _guard = state.automation_lock.lock().await;
+    let mut automations = state.automation_store.load_automations()?;
+    let Some(automation) = automations
+        .iter_mut()
+        .find(|automation| automation.id == request.id)
+    else {
+        return Err(not_found(format!("automation not found: {}", request.id)));
+    };
+    automation.enabled = request.enabled;
+    automation.updated_at = Utc::now();
+    let automation = automation.clone();
+    state.automation_store.save_automations(&automations)?;
+
+    Ok(SetAutomationEnabledResponse {
+        automation,
+        status: "saved",
+    })
+}
+
+pub async fn delete_automation_with_runtime_state(
+    id: String,
+    state: &DesktopRuntimeState,
+) -> Result<DeleteAutomationResponse, CommandErrorPayload> {
+    ensure_automation_id(&id)?;
+    let _guard = state.automation_lock.lock().await;
+    let mut automations = state.automation_store.load_automations()?;
+    automations.retain(|automation| automation.id != id);
+    state.automation_store.save_automations(&automations)?;
+
+    Ok(DeleteAutomationResponse {
+        id,
+        status: "deleted",
+    })
+}
+
+pub async fn run_automation_now_with_runtime_state(
+    id: String,
+    state: &DesktopRuntimeState,
+) -> Result<RunAutomationNowResponse, CommandErrorPayload> {
+    ensure_automation_id(&id)?;
+    let automation = {
+        let _guard = state.automation_lock.lock().await;
+        let automations = state.automation_store.load_automations()?;
+        automations
+            .iter()
+            .find(|automation| automation.id == id)
+            .cloned()
+            .ok_or_else(|| not_found(format!("automation not found: {id}")))?
+    };
+    let record = run_automation_spec(&automation, state).await?;
+
+    Ok(RunAutomationNowResponse { record })
+}
+
+pub async fn run_due_automations_once_with_runtime_state(
+    now: DateTime<Utc>,
+    state: &DesktopRuntimeState,
+) -> Result<Vec<AutomationRunRecord>, CommandErrorPayload> {
+    let due_automations = {
+        let _guard = state.automation_lock.lock().await;
+        let automations = state.automation_store.load_automations()?;
+        let existing_runs = state.automation_store.load_run_records()?;
+        automations
+            .into_iter()
+            .filter_map(|automation| {
+                if !automation.enabled {
+                    return None;
+                }
+                match automation_is_due(&automation, &existing_runs, now) {
+                    Ok(true) => Some(Ok(automation)),
+                    Ok(false) => None,
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let mut new_records = Vec::new();
+
+    for automation in due_automations {
+        new_records.push(run_automation_spec(&automation, state).await?);
+    }
+
+    Ok(new_records)
+}
+
+pub async fn list_automation_runs_with_runtime_state(
+    automation_id: Option<String>,
+    state: &DesktopRuntimeState,
+) -> Result<ListAutomationRunsResponse, CommandErrorPayload> {
+    if let Some(automation_id) = automation_id.as_deref() {
+        ensure_automation_id(automation_id)?;
+    }
+    let _guard = state.automation_lock.lock().await;
+    let mut runs = state.automation_store.load_run_records()?;
+    if let Some(automation_id) = automation_id {
+        runs.retain(|record| record.automation_id == automation_id);
+    }
+    runs.sort_by(|left, right| right.started_at.cmp(&left.started_at));
+    Ok(ListAutomationRunsResponse { runs })
+}
+
+async fn run_automation_spec(
+    automation: &AutomationSpec,
+    state: &DesktopRuntimeState,
+) -> Result<AutomationRunRecord, CommandErrorPayload> {
+    ensure_automation_spec(automation)?;
+    let started_at = Utc::now();
+    let run_result = start_automation_conversation_run(automation, state).await;
+    let record = match run_result {
+        Ok(response) => AutomationRunRecord {
+            automation_id: automation.id.clone(),
+            completed_at: None,
+            id: format!("automation-run-{}", RunId::new()),
+            message: Some("Started".to_owned()),
+            run_id: Some(response.run_id),
+            started_at,
+            status: AutomationRunStatus::Started,
+        },
+        Err(error) => {
+            let redactor = DefaultRedactor::default();
+            AutomationRunRecord {
+                automation_id: automation.id.clone(),
+                completed_at: Some(Utc::now()),
+                id: format!("automation-run-{}", RunId::new()),
+                message: Some(redacted_display(error.message, &redactor)),
+                run_id: None,
+                started_at,
+                status: automation_run_status_for_error(&error.code),
+            }
+        }
+    };
+    {
+        let _guard = state.automation_lock.lock().await;
+        state.automation_store.append_run_record(&record)?;
+    }
+    Ok(record)
+}
+
+fn automation_run_status_for_error(code: &str) -> AutomationRunStatus {
+    match code {
+        "INVALID_PAYLOAD" | "RUNTIME_UNAVAILABLE" | "NOT_FOUND" => AutomationRunStatus::Rejected,
+        _ => AutomationRunStatus::Failed,
+    }
+}
+
+fn automation_is_due(
+    automation: &AutomationSpec,
+    existing_runs: &[AutomationRunRecord],
+    now: DateTime<Utc>,
+) -> Result<bool, CommandErrorPayload> {
+    if automation.schedule.interval_minutes == 0 {
+        return Err(invalid_payload(
+            "automation schedule intervalMinutes must be greater than zero".to_owned(),
+        ));
+    }
+    let last_started_at = existing_runs
+        .iter()
+        .filter(|record| record.automation_id == automation.id)
+        .map(|record| record.started_at)
+        .max();
+    let base = last_started_at.unwrap_or(automation.created_at);
+    if now <= base {
+        return Ok(false);
+    }
+    let elapsed_minutes = now.signed_duration_since(base).num_minutes();
+    let interval = i64::from(automation.schedule.interval_minutes);
+    let elapsed_intervals = elapsed_minutes / interval;
+    if elapsed_intervals <= 0 {
+        return Ok(false);
+    }
+    if last_started_at.is_none()
+        && elapsed_intervals > 1
+        && automation.missed_run_policy == MissedRunPolicy::Skip
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+async fn start_automation_conversation_run(
+    automation: &AutomationSpec,
+    state: &DesktopRuntimeState,
+) -> Result<StartRunResponse, CommandErrorPayload> {
+    let permission_mode = automation.permission_mode;
+    ensure_start_run_permission_mode(permission_mode)?;
+    let conversation_id = state.default_conversation_id().to_string();
+    let request = StartRunRequest {
+        attachments: None,
+        client_message_id: None,
+        context_references: None,
+        conversation_id: conversation_id.clone(),
+        permission_mode: Some(permission_mode),
+        prompt: automation.prompt.clone(),
+    };
+    let session_id = parse_session_id(&conversation_id)?;
+    let input = build_conversation_turn_input(&request, state).await?;
+    let _start_run_guard = state.start_run_lock.lock().await;
+    let (harness, mut options) =
+        if let Some(model_config_id) = conversation_model_config_id(&session_id, state)? {
+            let stream_permission_runtime =
+                state.stream_permission_runtime.as_ref().ok_or_else(|| {
+                    runtime_unavailable("Starting automation runs requires the desktop runtime.")
+                })?;
+            let (harness, model_id, protocol) = build_desktop_harness(
+                &state.workspace_root,
+                Arc::clone(stream_permission_runtime),
+                Some(&model_config_id),
+                Arc::clone(&state.provider_capability_routes),
+            )
+            .await?;
+            (
+                Arc::new(harness),
+                state.conversation_session_options_for_model(session_id, model_id, protocol),
+            )
+        } else {
+            let Some(runtime) = state.active_conversation_runtime(session_id) else {
+                return Err(runtime_unavailable(
+                    "Starting automation runs requires the runtime conversation facade.",
+                ));
+            };
+            runtime
+        };
+    options = options
+        .with_tool_profile(automation_effective_tool_profile(automation))
+        .with_permission_mode(permission_mode);
+    harness
+        .open_or_create_conversation_session(options.clone())
+        .await
+        .map_err(|error| runtime_operation_failed(format!("conversation open failed: {error}")))?;
+    let after_event_id = conversation_tail_event_id(&harness, options.clone()).await?;
+    let run_harness = Arc::clone(&harness);
+    let run_options = options.clone();
+    let mut run_task = tokio::spawn(async move {
+        run_harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: run_options,
+                input,
+                permission_mode_override: Some(permission_mode),
+            })
+            .await
+    });
+    let run_id =
+        match wait_for_started_conversation_run(&harness, options, after_event_id, &mut run_task)
+            .await
+        {
+            Ok(run_id) => run_id,
+            Err(error) => {
+                run_task.abort();
+                return Err(error);
+            }
+        };
+    drop(run_task);
+
+    Ok(StartRunResponse {
+        run_id: run_id.to_string(),
+        status: "started",
+    })
+}
+
+fn automation_effective_tool_profile(automation: &AutomationSpec) -> ToolProfile {
+    let mut denylist = BTreeSet::from([
+        "Bash".to_owned(),
+        "FileEdit".to_owned(),
+        "FileWrite".to_owned(),
+        "ProcessRead".to_owned(),
+        "ProcessStart".to_owned(),
+        "ProcessStop".to_owned(),
+    ]);
+    if let ToolProfile::Custom {
+        denylist: configured,
+        ..
+    } = &automation.tool_profile
+    {
+        denylist.extend(configured.iter().cloned());
+    }
+
+    ToolProfile::Custom {
+        allowlist: BTreeSet::new(),
+        denylist,
+        group_allowlist: vec![
+            ToolGroup::Clarification,
+            ToolGroup::Coordinator,
+            ToolGroup::FileSystem,
+            ToolGroup::Memory,
+            ToolGroup::Meta,
+            ToolGroup::Search,
+        ],
+        group_denylist: vec![ToolGroup::Network, ToolGroup::Shell],
+        mcp_included: false,
+        plugin_included: false,
+    }
 }
 
 pub async fn list_provider_settings_with_store(
@@ -6453,6 +7280,62 @@ pub async fn save_mcp_server_with_runtime_state(
             .await?;
 
     Ok(SaveMcpServerResponse { server })
+}
+
+pub async fn list_browser_mcp_presets_with_store(
+    store: &dyn McpServerStore,
+) -> Result<ListBrowserMcpPresetsResponse, CommandErrorPayload> {
+    let records = store.load_records()?;
+    let presets = browser_mcp_preset_ids()
+        .iter()
+        .map(|preset_id| browser_mcp_preset_summary(*preset_id, &records))
+        .collect();
+
+    Ok(ListBrowserMcpPresetsResponse { presets })
+}
+
+pub async fn list_browser_mcp_presets_with_runtime_state(
+    state: &DesktopRuntimeState,
+) -> Result<ListBrowserMcpPresetsResponse, CommandErrorPayload> {
+    list_browser_mcp_presets_with_store(state.mcp_server_store.as_ref()).await
+}
+
+pub async fn save_browser_mcp_preset_with_store(
+    request: SaveBrowserMcpPresetRequest,
+    store: &dyn McpServerStore,
+) -> Result<SaveBrowserMcpPresetResponse, CommandErrorPayload> {
+    let record = browser_mcp_preset_record(request.preset_id, request.enabled);
+    ensure_mcp_server_record(&record)?;
+    store.save_record(&record)?;
+
+    Ok(SaveBrowserMcpPresetResponse {
+        preset: browser_mcp_preset_summary(request.preset_id, &[record.clone()]),
+        server: mcp_server_summary_from_record(&record),
+    })
+}
+
+pub async fn save_browser_mcp_preset_with_runtime_state(
+    request: SaveBrowserMcpPresetRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SaveBrowserMcpPresetResponse, CommandErrorPayload> {
+    let record = browser_mcp_preset_record(request.preset_id, request.enabled);
+    let preset_id = request.preset_id;
+    let response = save_mcp_server_with_runtime_state(
+        SaveMcpServerRequest {
+            enabled: record.enabled,
+            display_name: record.display_name,
+            id: record.id,
+            scope: record.scope,
+            transport: record.transport,
+        },
+        state,
+    )
+    .await?;
+
+    Ok(SaveBrowserMcpPresetResponse {
+        preset: browser_mcp_preset_summary_from_enabled(preset_id, response.server.enabled),
+        server: response.server,
+    })
 }
 
 pub async fn get_mcp_server_config_with_store(
@@ -8757,10 +9640,7 @@ fn mcp_stdio_env(env: &[McpNameValueRecord], inherit_env: &[String]) -> StdioEnv
         .map(|record| (record.key.clone(), record.value.clone()))
         .collect::<BTreeMap<_, _>>();
     if inherit_env.is_empty() {
-        StdioEnv::InheritWithDeny {
-            deny: StdioEnv::default_deny_envs(),
-            extra,
-        }
+        StdioEnv::Empty { extra }
     } else {
         StdioEnv::Allowlist {
             inherit: inherit_env.iter().cloned().collect::<BTreeSet<_>>(),
@@ -9015,6 +9895,84 @@ fn mcp_server_summary_from_record(record: &McpServerConfigRecord) -> McpServerSu
         },
         source_plugin_id: None,
         transport: mcp_transport_config_payload(&record.transport),
+    }
+}
+
+fn browser_mcp_preset_ids() -> &'static [BrowserMcpPresetId; 2] {
+    &[
+        BrowserMcpPresetId::Playwright,
+        BrowserMcpPresetId::ChromeDevtools,
+    ]
+}
+
+fn browser_mcp_preset_summary(
+    preset_id: BrowserMcpPresetId,
+    records: &[McpServerConfigRecord],
+) -> BrowserMcpPresetSummaryPayload {
+    let enabled = records
+        .iter()
+        .find(|record| record.id == browser_mcp_preset_server_id(preset_id))
+        .is_some_and(|record| record.enabled);
+    browser_mcp_preset_summary_from_enabled(preset_id, enabled)
+}
+
+fn browser_mcp_preset_summary_from_enabled(
+    preset_id: BrowserMcpPresetId,
+    enabled: bool,
+) -> BrowserMcpPresetSummaryPayload {
+    BrowserMcpPresetSummaryPayload {
+        description: browser_mcp_preset_description(preset_id),
+        display_name: browser_mcp_preset_display_name(preset_id),
+        enabled,
+        id: preset_id,
+        server_id: browser_mcp_preset_server_id(preset_id),
+    }
+}
+
+fn browser_mcp_preset_record(
+    preset_id: BrowserMcpPresetId,
+    enabled: bool,
+) -> McpServerConfigRecord {
+    McpServerConfigRecord {
+        enabled,
+        display_name: browser_mcp_preset_display_name(preset_id).to_owned(),
+        id: browser_mcp_preset_server_id(preset_id).to_owned(),
+        scope: "global".to_owned(),
+        transport: McpServerTransportConfig::Stdio {
+            command: "npx".to_owned(),
+            args: vec![browser_mcp_preset_package_arg(preset_id).to_owned()],
+            env: Vec::new(),
+            inherit_env: Vec::new(),
+            working_dir: None,
+        },
+    }
+}
+
+fn browser_mcp_preset_server_id(preset_id: BrowserMcpPresetId) -> &'static str {
+    match preset_id {
+        BrowserMcpPresetId::Playwright => "browser-playwright",
+        BrowserMcpPresetId::ChromeDevtools => "browser-chrome-devtools",
+    }
+}
+
+fn browser_mcp_preset_display_name(preset_id: BrowserMcpPresetId) -> &'static str {
+    match preset_id {
+        BrowserMcpPresetId::Playwright => "Playwright Browser",
+        BrowserMcpPresetId::ChromeDevtools => "Chrome DevTools Browser",
+    }
+}
+
+fn browser_mcp_preset_description(preset_id: BrowserMcpPresetId) -> &'static str {
+    match preset_id {
+        BrowserMcpPresetId::Playwright => "Browser automation through Playwright MCP.",
+        BrowserMcpPresetId::ChromeDevtools => "Browser inspection through Chrome DevTools MCP.",
+    }
+}
+
+fn browser_mcp_preset_package_arg(preset_id: BrowserMcpPresetId) -> &'static str {
+    match preset_id {
+        BrowserMcpPresetId::Playwright => "@playwright/mcp@latest",
+        BrowserMcpPresetId::ChromeDevtools => "chrome-devtools-mcp@latest",
     }
 }
 
@@ -10500,6 +11458,122 @@ fn ensure_start_run_permission_mode(
     Ok(())
 }
 
+fn ensure_automation_spec(automation: &AutomationSpec) -> Result<(), CommandErrorPayload> {
+    ensure_automation_id(&automation.id)?;
+    ensure_non_empty("prompt", &automation.prompt)?;
+    ensure_max_bytes("prompt", &automation.prompt, 64 * 1024)?;
+    if contains_obvious_secret(&automation.prompt) || looks_like_raw_secret(&automation.prompt) {
+        return Err(invalid_payload(
+            "automation prompt must not contain raw secret-like values".to_owned(),
+        ));
+    }
+    if automation.schedule.interval_minutes == 0 {
+        return Err(invalid_payload(
+            "automation schedule intervalMinutes must be greater than zero".to_owned(),
+        ));
+    }
+    ensure_start_run_permission_mode(automation.permission_mode)?;
+    ensure_automation_tool_profile(&automation.tool_profile)?;
+    match automation.workspace_scope {
+        AutomationWorkspaceScope::CurrentWorkspace => {}
+    }
+    if automation.sandbox_mode != SandboxMode::None {
+        return Err(invalid_payload(
+            "automation sandboxMode must be none for the MVP scheduler".to_owned(),
+        ));
+    }
+    match &automation.workspace_access {
+        WorkspaceAccess::ReadOnly => {}
+        _ => {
+            return Err(invalid_payload(
+                "automation workspaceAccess must be read_only for the MVP scheduler".to_owned(),
+            ));
+        }
+    }
+    match automation.missed_run_policy {
+        MissedRunPolicy::Skip | MissedRunPolicy::RunOnce => {}
+    }
+    Ok(())
+}
+
+fn ensure_automation_run_record(record: &AutomationRunRecord) -> Result<(), CommandErrorPayload> {
+    ensure_automation_id(&record.automation_id)?;
+    ensure_non_empty("id", &record.id)?;
+    ensure_max_bytes("id", &record.id, 128)?;
+    if let Some(message) = record.message.as_deref() {
+        ensure_max_bytes("message", message, 4096)?;
+        if looks_like_raw_secret(message) {
+            return Err(invalid_payload(
+                "automation run message must not contain raw secret-like values".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_automation_tool_profile(tool_profile: &ToolProfile) -> Result<(), CommandErrorPayload> {
+    match tool_profile {
+        ToolProfile::Minimal | ToolProfile::Coding | ToolProfile::Full => Ok(()),
+        ToolProfile::Custom {
+            allowlist,
+            denylist,
+            group_allowlist,
+            group_denylist,
+            ..
+        } => {
+            if allowlist.len() > 256
+                || denylist.len() > 256
+                || group_allowlist.len() > 64
+                || group_denylist.len() > 64
+            {
+                return Err(invalid_payload(
+                    "automation custom toolProfile is too large".to_owned(),
+                ));
+            }
+            for name in allowlist.iter().chain(denylist.iter()) {
+                ensure_tool_name_fragment("toolProfile", name)?;
+            }
+            Ok(())
+        }
+        _ => Err(invalid_payload(
+            "automation toolProfile is unsupported".to_owned(),
+        )),
+    }
+}
+
+fn ensure_tool_name_fragment(field: &'static str, value: &str) -> Result<(), CommandErrorPayload> {
+    ensure_non_empty(field, value)?;
+    if value.len() > 128
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':'))
+    {
+        return Err(invalid_payload(format!(
+            "{field} contains an invalid tool name"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_automation_id(id: &str) -> Result<(), CommandErrorPayload> {
+    ensure_non_empty("id", id)?;
+    let valid = id.len() <= 96
+        && id
+            .chars()
+            .enumerate()
+            .all(|(index, character)| match character {
+                'A'..='Z' | 'a'..='z' | '0'..='9' => true,
+                '.' | '-' | '_' if index > 0 => true,
+                _ => false,
+            });
+    if !valid {
+        return Err(invalid_payload(
+            "automation id must use letters, numbers, dot, dash, or underscore".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 async fn validate_context_references(
     references: &[ContextReferencePayload],
     session_id: SessionId,
@@ -10847,6 +11921,11 @@ fn ensure_mcp_server_transport(
             }
             for item in inherit_env {
                 ensure_env_var_name("transport.inheritEnv", item)?;
+                if mcp_env_key_looks_secret_bearing(item) {
+                    return Err(invalid_payload(
+                        "transport.inheritEnv must not contain secret-bearing env names".to_owned(),
+                    ));
+                }
             }
             if let Some(working_dir) = working_dir {
                 ensure_non_empty("transport.workingDir", working_dir)?;
@@ -13305,6 +14384,7 @@ pub fn get_execution_settings(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn set_execution_settings(
     permission_mode: PermissionMode,
+    tool_profile: ToolProfile,
     context_compression_trigger_ratio: f32,
     subagents_enabled: bool,
     agent_teams_enabled: bool,
@@ -13316,6 +14396,7 @@ pub async fn set_execution_settings(
     set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode,
+            tool_profile,
             context_compression_trigger_ratio,
             subagents_enabled,
             agent_teams_enabled,
@@ -13323,6 +14404,64 @@ pub async fn set_execution_settings(
         },
         runtime_state.execution_settings_store.as_ref(),
     )
+}
+
+#[tauri::command]
+pub async fn list_automations(
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListAutomationsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    list_automations_with_runtime_state(&runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn save_automation(
+    automation: AutomationSpec,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<SaveAutomationResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    save_automation_with_runtime_state(SaveAutomationRequest { automation }, &runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn delete_automation(
+    id: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<DeleteAutomationResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    delete_automation_with_runtime_state(id, &runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn set_automation_enabled(
+    id: String,
+    enabled: bool,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<SetAutomationEnabledResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    set_automation_enabled_with_runtime_state(
+        SetAutomationEnabledRequest { id, enabled },
+        &runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn run_automation_now(
+    id: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<RunAutomationNowResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    run_automation_now_with_runtime_state(id, &runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_automation_runs(
+    automation_id: Option<String>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListAutomationRunsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    list_automation_runs_with_runtime_state(automation_id, &runtime_state).await
 }
 
 #[tauri::command]
@@ -13512,6 +14651,32 @@ pub async fn list_mcp_servers(
 ) -> Result<ListMcpServersResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     list_mcp_servers_with_runtime_state(&*runtime_state).await
+}
+
+#[tauri::command]
+pub async fn list_browser_mcp_presets(
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListBrowserMcpPresetsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    list_browser_mcp_presets_with_runtime_state(&*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn save_browser_mcp_preset(
+    preset_id: BrowserMcpPresetId,
+    enabled: Option<bool>,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<SaveBrowserMcpPresetResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let _mcp_server_guard = runtime_state.mcp_server_lock.lock().await;
+    save_browser_mcp_preset_with_runtime_state(
+        SaveBrowserMcpPresetRequest {
+            preset_id,
+            enabled: enabled.unwrap_or(false),
+        },
+        &*runtime_state,
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -14464,6 +15629,27 @@ mod tests {
             })
         );
         assert_eq!(skill_catalog_install_stage("unknown"), "preparing");
+    }
+
+    #[test]
+    fn mcp_stdio_empty_inherit_env_uses_empty_environment() {
+        let env = mcp_stdio_env(&[], &[]);
+
+        assert!(matches!(env, StdioEnv::Empty { extra } if extra.is_empty()));
+    }
+
+    #[test]
+    fn mcp_stdio_inherit_env_rejects_secret_bearing_names() {
+        let error = ensure_mcp_server_transport(&McpServerTransportConfig::Stdio {
+            command: "npx".to_owned(),
+            args: vec!["@playwright/mcp@latest".to_owned()],
+            env: Vec::new(),
+            inherit_env: vec!["LINEAR_API_KEY".to_owned()],
+            working_dir: None,
+        })
+        .expect_err("secret-bearing inherited env names should be rejected");
+
+        assert_eq!(error.code, "INVALID_PAYLOAD");
     }
 
     #[test]

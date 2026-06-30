@@ -6,7 +6,7 @@ use harness_context::ContextEngine;
 use harness_contracts::{
     CapabilityRegistry, Decision, EndReason, Event, EventId, ForkReason, JournalError,
     JournalOffset, ModelError, ModelProvider as ModelProviderId, RunId, SessionError, SessionId,
-    SnapshotId, TenantId, ToolSearchMode,
+    SnapshotId, TenantId, ToolProfile, ToolSearchMode,
 };
 use harness_hook::{HookDispatcher, HookRegistry};
 use harness_journal::{
@@ -127,6 +127,7 @@ async fn ended_session_rejects_run_turn() {
 async fn session_options_exposes_creation_time_tool_search_mode() {
     let default_options = SessionOptions::new(tempfile::tempdir().unwrap().path());
     assert_eq!(default_options.tool_search, ToolSearchMode::default());
+    assert_eq!(default_options.tool_profile, ToolProfile::Full);
 
     let root = tempfile::tempdir().unwrap();
     let options = SessionOptions::new(root.path()).with_tool_search_mode(ToolSearchMode::Always);
@@ -138,6 +139,19 @@ async fn session_options_exposes_creation_time_tool_search_mode() {
         .build()
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn session_options_hash_changes_when_tool_profile_changes() {
+    let root = tempfile::tempdir().unwrap();
+    let base = SessionOptions::new(root.path()).with_session_id(SessionId::new());
+    let minimal = base.clone().with_tool_profile(ToolProfile::Minimal);
+    let coding = base.with_tool_profile(ToolProfile::Coding);
+
+    assert_ne!(
+        harness_session::session_options_hash(&minimal),
+        harness_session::session_options_hash(&coding)
+    );
 }
 
 #[tokio::test]
