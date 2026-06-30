@@ -5,9 +5,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use futures::stream::BoxStream;
 use harness_contracts::{
-    BlobStore, ConversationModelCapability, Message, MessageId, ModelError, ModelModality,
-    ModelProtocol, ModelRef, PricingId, PricingSnapshotId, RequestId, RunId, SessionId, StopReason,
-    TenantId, ToolDescriptor, ToolUseId, UsageSnapshot,
+    BlobStore, ConversationModelCapability, Message, MessageId, ModelError, ModelProtocol,
+    ModelRef, PricingId, PricingSnapshotId, RequestId, RunId, SessionId, StopReason, TenantId,
+    ToolDescriptor, ToolUseId, UsageSnapshot,
 };
 use http::HeaderMap;
 use rust_decimal::Decimal;
@@ -30,40 +30,19 @@ pub trait ModelProvider: Send + Sync + 'static {
         ModelProtocol::Messages
     }
 
-    fn snapshot_for_model(&self, model_id: &str) -> ModelRuntimeSnapshot {
+    fn snapshot_for_model(&self, model_id: &str) -> Result<ModelRuntimeSnapshot, ModelError> {
         let provider_id = self.provider_id().to_owned();
-        if let Some(descriptor) = self.supported_models().into_iter().find(|descriptor| {
-            descriptor.provider_id == provider_id && descriptor.model_id == model_id
-        }) {
-            return ModelRuntimeSnapshot {
-                provider_id: descriptor.provider_id,
-                model_id: descriptor.model_id,
-                protocol: descriptor.protocol,
-                context_window: descriptor.context_window,
-                conversation_capability: descriptor.conversation_capability,
-                lifecycle: descriptor.lifecycle,
-                pricing: descriptor.pricing,
-            };
-        }
-        ModelRuntimeSnapshot {
-            provider_id,
-            model_id: model_id.to_owned(),
-            protocol: self.default_protocol(),
-            context_window: 0,
-            conversation_capability: ConversationModelCapability {
-                input_modalities: vec![ModelModality::Text],
-                output_modalities: vec![ModelModality::Text],
-                context_window: 0,
-                max_output_tokens: 0,
-                streaming: true,
-                tool_calling: true,
-                reasoning: false,
-                prompt_cache: !matches!(self.prompt_cache_style(), PromptCacheStyle::None),
-                structured_output: false,
-            },
-            lifecycle: ModelLifecycle::Stable,
-            pricing: None,
-        }
+        self.supported_models()
+            .into_iter()
+            .find(|descriptor| {
+                descriptor.provider_id == provider_id && descriptor.model_id == model_id
+            })
+            .map(ModelRuntimeSnapshot::from_descriptor)
+            .ok_or_else(|| {
+                ModelError::InvalidRequest(format!(
+                    "unsupported model id for provider {provider_id}: {model_id}"
+                ))
+            })
     }
 
     fn prompt_cache_style(&self) -> PromptCacheStyle {
@@ -188,6 +167,19 @@ pub struct ModelRuntimeSnapshot {
 }
 
 impl ModelRuntimeSnapshot {
+    #[must_use]
+    pub fn from_descriptor(descriptor: ModelDescriptor) -> Self {
+        Self {
+            provider_id: descriptor.provider_id,
+            model_id: descriptor.model_id,
+            protocol: descriptor.protocol,
+            context_window: descriptor.context_window,
+            conversation_capability: descriptor.conversation_capability,
+            lifecycle: descriptor.lifecycle,
+            pricing: descriptor.pricing,
+        }
+    }
+
     #[must_use]
     pub fn pricing_snapshot_id(&self) -> Option<harness_contracts::PricingSnapshotId> {
         self.pricing

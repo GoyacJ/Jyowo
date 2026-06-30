@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::NaiveDate;
 use harness_contracts::ModelError;
 
 use crate::openai_compatible::{OpenAiCompatibleClient, OpenAiCompatibleProviderExt};
@@ -58,8 +57,6 @@ impl ModelProvider for DeepSeekProvider {
         vec![
             descriptor("deepseek-v4-flash", "DeepSeek V4 Flash", 1_000_000, 384_000),
             descriptor("deepseek-v4-pro", "DeepSeek V4 Pro", 1_000_000, 384_000),
-            deprecated_descriptor("deepseek-chat", "DeepSeek Chat", 64_000, 8192),
-            deprecated_descriptor("deepseek-reasoner", "DeepSeek Reasoner", 64_000, 8192),
         ]
     }
 
@@ -99,17 +96,4 @@ fn descriptor(
         lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }
-}
-
-fn deprecated_descriptor(
-    model_id: &str,
-    display_name: &str,
-    context_window: u32,
-    max_output_tokens: u32,
-) -> ModelDescriptor {
-    let mut descriptor = descriptor(model_id, display_name, context_window, max_output_tokens);
-    descriptor.lifecycle = ModelLifecycle::Deprecated {
-        retirement_date: NaiveDate::from_ymd_opt(2026, 7, 24).expect("valid retirement date"),
-    };
-    descriptor
 }

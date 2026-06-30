@@ -169,7 +169,7 @@ pub fn provider_inventory_entries() -> Vec<ProviderInventoryEntry> {
                 .into_iter()
                 .map(ModelInventoryEntry::runnable)
                 .collect::<Vec<_>>();
-            models.extend(unsupported_inventory_models(&entry.provider_id));
+            models.extend(inventory_only_models(&entry.provider_id));
             models.sort_by(|left, right| left.model_id.cmp(&right.model_id));
             ProviderInventoryEntry {
                 provider_id: entry.provider_id,
@@ -730,7 +730,7 @@ fn provider_source(provider_id: &str) -> (&'static str, NaiveDate) {
     (source_url, verified_date)
 }
 
-fn unsupported_inventory_models(provider_id: &str) -> Vec<ModelInventoryEntry> {
+fn inventory_only_models(provider_id: &str) -> Vec<ModelInventoryEntry> {
     match provider_id {
         "openai" => vec![
             unsupported_model(

@@ -160,13 +160,15 @@ pub(crate) async fn run_turn(
             return finalize_run_error(session, run_id, &mut projection_events, error).await
         }
     };
+    let model_snapshot = match runtime.model.snapshot_for_model(&runtime.model_id) {
+        Ok(model_snapshot) => model_snapshot,
+        Err(error) => {
+            return finalize_run_error(session, run_id, &mut projection_events, error).await
+        }
+    };
     if let Err(error) = validate_model_input_modalities(
         &assembled.messages,
-        &runtime
-            .model
-            .snapshot_for_model(&runtime.model_id)
-            .conversation_capability
-            .input_modalities,
+        &model_snapshot.conversation_capability.input_modalities,
     ) {
         return finalize_run_error(session, run_id, &mut projection_events, error).await;
     }

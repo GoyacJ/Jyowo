@@ -443,9 +443,12 @@ impl EngineBuilder {
         let model_id = self.model_id.ok_or_else(|| {
             harness_contracts::EngineError::Message("model id missing".to_owned())
         })?;
-        let model_snapshot = self
-            .model_snapshot
-            .unwrap_or_else(|| model.snapshot_for_model(&model_id));
+        let model_snapshot = match self.model_snapshot {
+            Some(model_snapshot) => model_snapshot,
+            None => model
+                .snapshot_for_model(&model_id)
+                .map_err(|error| harness_contracts::EngineError::Message(error.to_string()))?,
+        };
         let assembled_cap_registry = crate::capability_assembly::assemble_capability_registry(
             self.cap_registry.as_ref(),
             &event_store,

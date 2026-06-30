@@ -23,6 +23,7 @@ minimax-tools = [
   "dep:base64",
   "dep:jyowo-harness-model",
   "dep:reqwest",
+  "dep:secrecy",
   "jyowo-harness-model/minimax",
 ]
 seedance-tools = [
@@ -48,6 +49,7 @@ globset = { workspace = true }
 parking_lot = "0.12.5"
 regex = { workspace = true }
 reqwest = { workspace = true, optional = true }
+secrecy = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

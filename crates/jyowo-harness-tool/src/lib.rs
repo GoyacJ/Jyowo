@@ -15,6 +15,8 @@ pub mod error;
 pub mod orchestrator;
 pub mod pool;
 pub mod provider_media;
+#[cfg(feature = "minimax-tools")]
+mod provider_minimax;
 pub mod registry;
 pub mod result_budget;
 pub mod skill_script;

@@ -34,14 +34,6 @@ impl OpenAiProvider {
     }
 
     #[must_use]
-    pub fn with_chat_completions_api(mut self) -> Self {
-        self.client = self
-            .client
-            .with_chat_completions_path("/v1/chat/completions");
-        self
-    }
-
-    #[must_use]
     pub fn with_credential_resolver(mut self, resolver: Arc<dyn ModelCredentialResolver>) -> Self {
         self.client = self.client.with_credential_resolver(resolver);
         self

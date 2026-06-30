@@ -229,7 +229,7 @@ fn part(part: &MessagePart) -> Result<Value, ModelError> {
         | MessagePart::Video { .. }
         | MessagePart::File { .. }
         | MessagePart::Thinking(_) => Err(ModelError::InvalidRequest(
-            "GeminiProvider only supports text and tool parts in M2-T04.7".to_owned(),
+            "GeminiProvider only supports text and tool parts".to_owned(),
         )),
         _ => Err(ModelError::InvalidRequest(
             "unsupported Gemini message part".to_owned(),
@@ -245,7 +245,7 @@ fn tool_result(content: &ToolResult) -> Result<Value, ModelError> {
             "content": parts.iter().map(tool_result_part).collect::<Result<Vec<_>, _>>()?,
         })),
         ToolResult::Blob { .. } => Err(ModelError::InvalidRequest(
-            "GeminiProvider does not inline blob tool results in M2-T04.7".to_owned(),
+            "GeminiProvider does not inline blob tool results".to_owned(),
         )),
         _ => Err(ModelError::InvalidRequest(
             "unsupported Gemini tool result".to_owned(),
@@ -261,7 +261,7 @@ fn tool_result_part(part: &ToolResultPart) -> Result<Value, ModelError> {
         }
         ToolResultPart::Reference { summary, .. } => Ok(json!({ "text": summary })),
         ToolResultPart::Blob { .. } => Err(ModelError::InvalidRequest(
-            "GeminiProvider does not inline blob tool result parts in M2-T04.7".to_owned(),
+            "GeminiProvider does not inline blob tool result parts".to_owned(),
         )),
         ToolResultPart::Artifact { title, preview, .. } => Ok(json!({
             "text": preview

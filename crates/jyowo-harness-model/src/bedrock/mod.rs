@@ -34,6 +34,7 @@ impl BedrockProvider {
 
     #[doc(hidden)]
     #[must_use]
+    #[cfg(any(test, feature = "testing"))]
     pub fn from_events(events: Vec<ModelStreamEvent>) -> Self {
         Self {
             transport: Arc::new(StaticBedrockTransport { events }),
@@ -89,10 +90,12 @@ impl BedrockTransport for AwsBedrockTransport {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
 struct StaticBedrockTransport {
     events: Vec<ModelStreamEvent>,
 }
 
+#[cfg(any(test, feature = "testing"))]
 #[async_trait]
 impl BedrockTransport for StaticBedrockTransport {
     async fn infer(
@@ -156,7 +159,7 @@ fn bedrock_content_block(part: &MessagePart) -> Result<br::ContentBlock, ModelEr
             thinking.text.clone().unwrap_or_default(),
         )),
         MessagePart::Image { .. } => Err(ModelError::InvalidRequest(
-            "BedrockProvider image blocks require blob materialization outside M2-T04.8".to_owned(),
+            "BedrockProvider image blocks require blob materialization before inference".to_owned(),
         )),
         MessagePart::Video { .. } | MessagePart::File { .. } => Err(ModelError::InvalidRequest(
             "BedrockProvider does not inline file or video message parts yet".to_owned(),
@@ -421,7 +424,7 @@ fn validate_request(req: &ModelRequest, ctx: &InferContext) -> Result<(), ModelE
             return Err(ModelError::DeadlineExceeded(Duration::ZERO));
         }
     }
-    Ok(())
+    bedrock_messages(req).map(|_| ())
 }
 
 fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {

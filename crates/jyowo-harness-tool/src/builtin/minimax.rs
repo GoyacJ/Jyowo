@@ -14,11 +14,11 @@ use harness_contracts::{
     ProviderCredentialResolverCap, ToolCapability, ToolDescriptor, ToolError, ToolGroup,
     ToolResult, ToolResultPart, ToolServiceBinding,
 };
-use harness_model::MinimaxApiClient;
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 use url::Url;
 
+use crate::provider_minimax::{MinimaxApiClient, MinimaxProviderClientError};
 use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 
 const DEFAULT_BASE_URL: &str = "https://api.minimaxi.com";
@@ -78,7 +78,10 @@ macro_rules! minimax_tool {
                     ctx,
                     &self.descriptor,
                     |client, request| async move {
-                        client.$operation(request).await.map_err(model_error)
+                        client
+                            .$operation(request)
+                            .await
+                            .map_err(provider_client_error)
                     },
                 ))
             }
@@ -188,7 +191,10 @@ macro_rules! minimax_async_create_tool {
                     artifact_kind,
                     $display_name,
                     |client, request| async move {
-                        client.$operation(request).await.map_err(model_error)
+                        client
+                            .$operation(request)
+                            .await
+                            .map_err(provider_client_error)
                     },
                 ))
             }
@@ -248,7 +254,10 @@ macro_rules! minimax_sync_media_tool {
                     artifact_kind,
                     $artifact_title,
                     |client, request| async move {
-                        client.$operation(request).await.map_err(model_error)
+                        client
+                            .$operation(request)
+                            .await
+                            .map_err(provider_client_error)
                     },
                 ))
             }
@@ -311,7 +320,10 @@ macro_rules! minimax_media_query_tool {
                     |client, request| async move {
                         let task_id =
                             required_string(&request, "task_id").map_err(validation_error)?;
-                        client.$operation(&task_id).await.map_err(model_error)
+                        client
+                            .$operation(&task_id)
+                            .await
+                            .map_err(provider_client_error)
                     },
                 ))
             }
@@ -365,7 +377,10 @@ macro_rules! minimax_string_arg_tool {
                     &self.descriptor,
                     |client, request| async move {
                         let value = required_string(&request, $field).map_err(validation_error)?;
-                        client.$operation(&value).await.map_err(model_error)
+                        client
+                            .$operation(&value)
+                            .await
+                            .map_err(provider_client_error)
                     },
                 ))
             }
@@ -688,7 +703,7 @@ impl Tool for MiniMaxFileUploadTool {
                         upload.group_id.as_deref(),
                     )
                     .await
-                    .map_err(model_error)
+                    .map_err(provider_client_error)
             },
         ))
     }
@@ -770,7 +785,7 @@ impl Tool for MiniMaxFileListTool {
                 client
                     .file_list(purpose.as_deref())
                     .await
-                    .map_err(model_error)
+                    .map_err(provider_client_error)
             },
         ))
     }
@@ -814,7 +829,7 @@ impl Tool for MiniMaxModelsListTool {
             input,
             ctx,
             &self.descriptor,
-            |client, _request| async move { client.list_models().await.map_err(model_error) },
+            |client, _request| async move { client.list_models().await.map_err(provider_client_error) },
         ))
     }
 }
@@ -864,7 +879,7 @@ impl Tool for MiniMaxAnthropicModelsListTool {
                 client
                     .list_anthropic_models(limit, after_id.as_deref(), before_id.as_deref())
                     .await
-                    .map_err(model_error)
+                    .map_err(provider_client_error)
             },
         ))
     }
@@ -1043,7 +1058,7 @@ fn execute_image_request(
             let response = client
                 .image_generation(request)
                 .await
-                .map_err(model_error)?;
+                .map_err(provider_client_error)?;
             let media_operation_id = media_operation_id.as_deref().ok_or_else(|| {
                 ToolError::PermissionDenied(
                     "MiniMax media operation credential context is incomplete".to_owned(),
@@ -1699,7 +1714,7 @@ async fn minimax_credential(
     Ok(credential)
 }
 
-fn model_error(error: harness_contracts::ModelError) -> ToolError {
+fn provider_client_error(error: MinimaxProviderClientError) -> ToolError {
     ToolError::Message(error.to_string())
 }
 

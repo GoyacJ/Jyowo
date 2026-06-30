@@ -66,16 +66,21 @@ fn model_provider_is_dyn_safe_with_prompt_cache_default() {
 }
 
 #[test]
-fn snapshot_for_model_uses_descriptor_protocol_and_default_fallback() {
+fn snapshot_for_model_uses_descriptor_protocol_and_rejects_unknown_models() {
     let provider = TestProvider;
 
-    let known = provider.snapshot_for_model("test-model");
+    let known = provider
+        .snapshot_for_model("test-model")
+        .expect("known model should produce snapshot");
     assert_eq!(known.protocol, ModelProtocol::Messages);
     assert_eq!(known.lifecycle, ModelLifecycle::Stable);
 
-    let fallback = provider.snapshot_for_model("unknown-model");
-    assert_eq!(fallback.protocol, ModelProtocol::Responses);
-    assert_eq!(fallback.lifecycle, ModelLifecycle::Stable);
+    let error = provider
+        .snapshot_for_model("unknown-model")
+        .expect_err("unknown model should fail closed");
+    assert!(
+        matches!(error, ModelError::InvalidRequest(message) if message.contains("unsupported model id for provider test: unknown-model"))
+    );
 }
 
 #[test]

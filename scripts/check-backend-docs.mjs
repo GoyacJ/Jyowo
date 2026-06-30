@@ -29,6 +29,7 @@ const requiredDocs = [
 ]
 
 const requiredArchitectureDocs = [
+  'docs/architecture/harness/crates/harness-model.md',
   'docs/architecture/harness/crates/harness-plugin.md',
 ]
 

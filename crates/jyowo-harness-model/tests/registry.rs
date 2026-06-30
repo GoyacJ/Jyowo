@@ -1,6 +1,6 @@
 use harness_model::{
-    build_provider, provider_inventory_entries, resolve_model_descriptor, ProviderAuthScheme,
-    ProviderBuildConfig, ProviderRegistryError, ProviderServiceExecution,
+    build_provider, provider_inventory_entries, resolve_model_descriptor, ProviderBuildConfig,
+    ProviderRegistryError,
 };
 
 #[test]
@@ -39,6 +39,13 @@ fn provider_inventory_includes_source_metadata() {
         .all(|entry| entry.verified_date.to_string() == "2026-06-21"));
 }
 
+#[cfg(any(
+    feature = "openai",
+    feature = "openrouter",
+    feature = "anthropic",
+    feature = "gemini",
+    feature = "local-llama"
+))]
 #[test]
 fn provider_catalog_auth_schemes_match_runtime_adapters() {
     let entries = harness_model::provider_catalog_entries();
@@ -46,27 +53,27 @@ fn provider_catalog_auth_schemes_match_runtime_adapters() {
     #[cfg(feature = "openai")]
     assert_eq!(
         catalog_auth_scheme(&entries, "openai"),
-        ProviderAuthScheme::Bearer
+        harness_model::ProviderAuthScheme::Bearer
     );
     #[cfg(feature = "openrouter")]
     assert_eq!(
         catalog_auth_scheme(&entries, "openrouter"),
-        ProviderAuthScheme::Bearer
+        harness_model::ProviderAuthScheme::Bearer
     );
     #[cfg(feature = "anthropic")]
     assert_eq!(
         catalog_auth_scheme(&entries, "anthropic"),
-        ProviderAuthScheme::XApiKey
+        harness_model::ProviderAuthScheme::XApiKey
     );
     #[cfg(feature = "gemini")]
     assert_eq!(
         catalog_auth_scheme(&entries, "gemini"),
-        ProviderAuthScheme::ApiKey
+        harness_model::ProviderAuthScheme::ApiKey
     );
     #[cfg(feature = "local-llama")]
     assert_eq!(
         catalog_auth_scheme(&entries, "local-llama"),
-        ProviderAuthScheme::None
+        harness_model::ProviderAuthScheme::None
     );
 }
 
@@ -97,15 +104,14 @@ fn minimax_provider_catalog_exposes_runtime_and_service_capabilities() {
         .service_capabilities
         .iter()
         .any(|capability| capability.operation_id == "minimax.text_to_speech.websocket"));
-    assert!(!minimax
-        .service_capabilities
-        .iter()
-        .any(|capability| capability.execution == ProviderServiceExecution::Websocket));
+    assert!(!minimax.service_capabilities.iter().any(
+        |capability| capability.execution == harness_model::ProviderServiceExecution::Websocket
+    ));
 }
 
 #[cfg(feature = "openai")]
 #[test]
-fn unsupported_inventory_models_cannot_be_resolved_for_runtime() {
+fn inventory_only_models_are_not_runtime_resolvable() {
     let openai = provider_inventory_entries()
         .into_iter()
         .find(|entry| entry.provider_id == "openai")
@@ -130,10 +136,17 @@ fn unsupported_inventory_models_cannot_be_resolved_for_runtime() {
     ));
 }
 
+#[cfg(any(
+    feature = "openai",
+    feature = "openrouter",
+    feature = "anthropic",
+    feature = "gemini",
+    feature = "local-llama"
+))]
 fn catalog_auth_scheme(
     entries: &[harness_model::ProviderCatalogEntry],
     provider_id: &str,
-) -> ProviderAuthScheme {
+) -> harness_model::ProviderAuthScheme {
     entries
         .iter()
         .find(|entry| entry.provider_id == provider_id)

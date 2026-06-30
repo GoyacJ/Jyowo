@@ -46,6 +46,22 @@ async fn engine_runner_is_object_safe_and_uses_engine_id() {
 }
 
 #[test]
+fn engine_builder_rejects_unknown_model_without_snapshot() {
+    let error = match EngineBuilder::default()
+        .with_required_test_dependencies()
+        .with_model_id("unknown-model")
+        .build()
+    {
+        Ok(_) => panic!("unknown model should fail closed"),
+        Err(error) => error,
+    };
+
+    assert!(error
+        .to_string()
+        .contains("unsupported model id for provider dummy: unknown-model"));
+}
+
+#[test]
 fn loop_state_exposes_m5_five_state_contract() {
     let tool_call = harness_tool::ToolCall {
         tool_use_id: harness_contracts::ToolUseId::new(),

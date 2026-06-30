@@ -3434,7 +3434,10 @@ impl DesktopRuntimeState {
                 default_model_id = model.model_id.clone();
             }
         }
-        let default_protocol = provider.snapshot_for_model(&default_model_id).protocol;
+        let default_protocol = provider
+            .snapshot_for_model(&default_model_id)
+            .map_err(|error| runtime_init_failed(error.to_string()))?
+            .protocol;
         Self::with_harness_stream_permission_runtime_and_model_for_workspace(
             workspace_root,
             harness,

@@ -1,8 +1,10 @@
-#![cfg(feature = "bedrock")]
+#![cfg(all(feature = "bedrock", feature = "testing"))]
 
 use chrono::Utc;
 use futures::StreamExt;
-use harness_contracts::{Message, MessageId, MessagePart, MessageRole, ModelError};
+use harness_contracts::{
+    BlobId, BlobRef, Message, MessageId, MessagePart, MessageRole, ModelError,
+};
 use harness_model::{bedrock::BedrockProvider, *};
 use serde_json::Value;
 
@@ -35,10 +37,7 @@ fn bedrock_provider_metadata_is_stable() {
         model.provider_id == "bedrock"
             && model.model_id == "anthropic.claude-3-5-sonnet-20241022-v2:0"
             && model.conversation_capability.tool_calling
-            && model
-                .conversation_capability
-                .input_modalities
-                .contains(&ModelModality::Image)
+            && model.conversation_capability.input_modalities == vec![ModelModality::Text]
             && model.conversation_capability.reasoning
     }));
 }
@@ -78,4 +77,30 @@ async fn bedrock_rejects_non_messages_mode() {
     };
 
     assert!(matches!(error, ModelError::InvalidRequest(_)));
+}
+
+#[tokio::test]
+async fn bedrock_rejects_image_parts_until_blob_materialization_exists() {
+    let mut req = request();
+    req.messages[0].parts = vec![MessagePart::Image {
+        mime_type: "image/png".to_owned(),
+        blob_ref: BlobRef {
+            id: BlobId::new(),
+            size: 12,
+            content_hash: [7; 32],
+            content_type: Some("image/png".to_owned()),
+        },
+    }];
+
+    let error = match BedrockProvider::from_events(vec![ModelStreamEvent::MessageStop])
+        .infer(req, InferContext::for_test())
+        .await
+    {
+        Ok(_) => panic!("image parts should fail"),
+        Err(error) => error,
+    };
+
+    assert!(
+        matches!(error, ModelError::InvalidRequest(message) if message.contains("image blocks require blob materialization"))
+    );
 }
