@@ -977,7 +977,7 @@ Rules:
 - `listProviderCapabilityRouteOptions` is the only frontend source for runtime support eligibility.
 - Provider catalog service capabilities are read-only context and must not authorize route selection.
 - Route payloads must not include API keys.
-- `ProviderSettingsForm` may hide `runtimeSupported = false` options for UX, but backend validation remains authoritative.
+- `CapabilityRouteEditorDrawer` may display `runtimeSupported = false` options as disabled with backend reasons, but backend validation remains authoritative.
 
 Capability route schema fields:
 

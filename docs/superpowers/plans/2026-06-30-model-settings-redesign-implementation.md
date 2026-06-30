@@ -1434,7 +1434,7 @@ git commit -m "feat: separate capability route management"
 - Modify: `docs/backend/backend-engineering.md`
 - Modify: `docs/backend/backend-quality.md`
 
-- [ ] **Step 1: Write failing regression tests**
+- [x] **Step 1: Write failing regression tests**
 
 Tests must prove:
 
@@ -1444,7 +1444,7 @@ Tests must prove:
 - No old route section remains below the model matrix.
 - Storybook and tests reference the new component names.
 
-- [ ] **Step 2: Delete or rewrite old paths**
+- [x] **Step 2: Delete or rewrite old paths**
 
 Rules:
 
@@ -1453,7 +1453,7 @@ Rules:
 - Remove unused imports, old query keys, stale translation strings, and orphan tests.
 - Do not keep old UI behind a flag.
 
-- [ ] **Step 3: Update active docs**
+- [x] **Step 3: Update active docs**
 
 Update docs only where the project docs require it:
 
@@ -1461,7 +1461,7 @@ Update docs only where the project docs require it:
 - `docs/backend/backend-engineering.md`: document new commands and clarify `validate_provider_settings` remains metadata-only.
 - `docs/backend/backend-quality.md`: document tests for provider probe, model usage summary, and official quota command behavior.
 
-- [ ] **Step 4: Run tests and gates**
+- [x] **Step 4: Run tests and gates**
 
 Run:
 
@@ -1476,7 +1476,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 5: Audit and commit**
+- [x] **Step 5: Audit and commit**
 
 Code-review and security-review subagents are required.
 

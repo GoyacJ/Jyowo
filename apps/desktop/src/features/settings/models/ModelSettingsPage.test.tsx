@@ -392,6 +392,17 @@ describe('ModelSettingsPage', () => {
     expect(screen.getByRole('row', { name: /Backup OpenAI.*Failed/ })).toBeInTheDocument()
   })
 
+  it('does not present metadata validation as a connectivity check', async () => {
+    renderModelSettingsPage()
+
+    await screen.findByRole('row', { name: /Primary OpenAI/ })
+
+    expect(screen.queryByRole('button', { name: 'Check' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Provider metadata accepted.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Check accepted')).not.toBeInTheDocument()
+    expect(screen.queryByText('Check failed')).not.toBeInTheDocument()
+  })
+
   it('filters by provider, health, default state, failing state, and search', async () => {
     renderModelSettingsPage()
     await screen.findByRole('row', { name: /Primary OpenAI/ })
@@ -461,10 +472,12 @@ describe('ModelSettingsPage', () => {
             })
         }),
     )
+    const validateProviderSettings = vi.fn()
     const client = {
       ...baseClient,
       probeProviderConfig,
       refreshOfficialQuota,
+      validateProviderSettings,
     } satisfies CommandClient
 
     renderModelSettingsPage(client)
@@ -475,6 +488,7 @@ describe('ModelSettingsPage', () => {
     fireEvent.click(row.getByRole('button', { name: 'Probing Primary OpenAI' }))
     expect(probeProviderConfig).toHaveBeenCalledTimes(1)
     expect(probeProviderConfig).toHaveBeenCalledWith({ configId: 'cfg-openai', timeoutMs: 10000 })
+    expect(validateProviderSettings).not.toHaveBeenCalled()
     resolveProbe?.()
 
     fireEvent.click(row.getByRole('button', { name: 'Refresh quota for Primary OpenAI' }))

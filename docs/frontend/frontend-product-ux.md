@@ -478,9 +478,15 @@ Agent domain components:
 - `PermissionDialog`
 - `MCPToolCard`
 - `MemoryHitCard`
-- `ProviderSettingsForm`
+- `ModelSettingsPage`
+- `ModelMatrix`
+- `ModelDetailsDrawer`
+- `CapabilityRoutesPanel`
 
-`ProviderSettingsForm` includes a capability routing section under provider and model settings.
+`ModelSettingsPage` is model-matrix centered. `CapabilityRoutesPanel` is the
+only full editor for provider capability routes. `ModelDetailsDrawer` may show
+read-only route bindings and shortcuts, but it must not contain the full route
+table or editor.
 
 Capability routing UX rules:
 
@@ -488,13 +494,14 @@ Capability routing UX rules:
 - Image input describes the main model accepting image attachments.
 - Image generation describes a routed provider service for creating images.
 - Video input and video generation follow the same distinction.
-- Route rows are grouped by `CapabilityRouteKind` returned from `listProviderCapabilityRouteOptions`.
-- Only options with `runtimeSupported = true` are selectable.
+- Route rows are grouped by `CapabilityRouteKind` returned from
+  `listProviderCapabilityRouteOptions`.
+- Only options with `runtimeSupported = true` are selectable. Unsupported
+  options may be displayed as disabled with backend reasons.
 - The frontend must not infer runtime support from provider catalog data.
 - `speech_to_text` appears only when the backend returns an eligible option.
 - Each row shows current route status, selected provider profile, operation id, output artifact, execution mode, and cost risk.
 - Save uses `saveProviderCapabilityRoute`. Delete or disable uses `deleteProviderCapabilityRoute`.
-- Show a warning when the selected main model lacks tool calling.
 - Capability routing must cover loading, empty, error, and ready states.
 
 `ToolCallCard` must show:

@@ -534,8 +534,8 @@ validate_provider_settings(
 ```
 
 `validate_provider_settings` validates payload shape, provider id, and model
-metadata support. It must not claim remote API availability unless the runtime
-provider implements a policy-governed network health check.
+metadata support only. It is not a provider connectivity check and must not be
+used by Settings > Models health actions.
 
 `probe_provider_config` runs a real provider inference against a saved provider
 config. It persists the last safe snapshot in
@@ -560,6 +560,19 @@ persisted with safe messages and official source URLs. Cache entries must not
 contain API keys, account ids, provider-native payloads, headers, or request
 bodies. `list_official_quota_snapshots` returns cached snapshots and recomputes
 `isStale` from command time and cached freshness fields.
+
+Model settings command behavior:
+
+| Command | Behavior |
+|---|---|
+| `validate_provider_settings` | Metadata validation only; no provider network I/O. |
+| `probe_provider_config` | Provider network I/O by saved `configId`, per-config single-flight. |
+| `list_provider_probe_snapshots` | Diagnostic metadata read. |
+| `get_model_usage_summary` | Backend usage read from journal events. |
+| `refresh_official_quota` | Provider account quota network I/O by saved `configId`, per-config single-flight. |
+| `list_official_quota_snapshots` | Quota cache read with backend freshness recomputation. |
+| `list_provider_capability_route_options` | Route policy metadata read; backend-owned runtime eligibility. |
+| `save_provider_capability_route` / `delete_provider_capability_route` | Route policy mutation validated by backend. |
 
 `save_provider_settings` stores provider credentials in the workspace provider
 settings record. `api_key` is required for new provider configs and optional

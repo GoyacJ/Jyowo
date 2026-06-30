@@ -42,8 +42,13 @@ Must test:
 - Zustand stores as UI-only state
 - system status page loading, ready, and error
 - PermissionDialog decision flow
-- ProviderSettingsForm validation
-- ProviderSettingsForm capability routing loading, empty, error, ready, save, and delete flows
+- `ModelSettingsPage` loading, empty, safe error, partial-data, and ready states
+- `ModelMatrix` probe and quota row actions, pending suppression, filtering, and
+  backend-owned usage/quota/connectivity rendering
+- `ModelDetailsDrawer` overview, connectivity, usage, official quota,
+  configuration, capabilities, and explicit API key reveal flow
+- `CapabilityRoutesPanel` loading, empty, error, ready, save, clear, unavailable
+  target, and backend route option flows
 - About settings version display, update check, update available, download
   progress, installed pending restart, failure, and release notes rendering
 - MCP server config validation
@@ -69,7 +74,10 @@ PermissionInlinePanel
 DiffViewer
 MCPServerCard
 MemoryItemCard
-ProviderSettingsForm
+ModelSettingsPage
+ModelMatrix
+ModelDetailsDrawer
+CapabilityRoutesPanel
 ```
 
 Storybook stories should cover loading, empty, success, failure, permission pending, high risk, redacted, and large output states.
@@ -83,7 +91,8 @@ Component acceptance matrix:
 | Context components | no context, selected context, long lists, missing files, stale references |
 | Activity components | queued, running, success, failed, blocked, redacted, drill-down |
 | Execution components | permission pending, approved, denied, high risk, large output, Raw JSON |
-| Form components | invalid input, pending submit, backend error, saved, secret masking, capability route empty state, unsupported runtime option hidden |
+| Form components | invalid input, pending submit, backend error, saved, secret masking |
+| Model settings components | matrix loading, empty, safe error, partial-data, ready, probe pending, quota pending, route loading, route empty, route error, route save, route clear, unsupported runtime option disabled with backend reason |
 
 Playwright:
 
