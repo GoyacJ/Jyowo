@@ -3,20 +3,17 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use harness_contracts::{Event, TenantId, UsageAccumulatedEvent};
-use harness_model::{
-    default_account_usage_registry, fetch_official_quota, with_staleness, ProviderAccountUsageRegistry,
-    ProviderAccountUsageRequest,
-};
+use harness_model::{fetch_official_quota, with_staleness, ProviderAccountUsageRequest};
 use harness_observability::{
     summarize_model_usage, IanaTimezoneResolver, LocalTimezoneResolver, WorkspaceTimezoneResolver,
 };
 
 use jyowo_harness_sdk::ext::EventStore;
 
-use super::contracts::{
-    ProviderProbeSnapshotPayload, RefreshOfficialQuotaResponse,
+use super::contracts::{ProviderProbeSnapshotPayload, RefreshOfficialQuotaResponse};
+use super::error::{
+    invalid_payload, runtime_operation_failed, runtime_unavailable, CommandErrorPayload,
 };
-use super::error::{invalid_payload, runtime_operation_failed, runtime_unavailable, CommandErrorPayload};
 use super::providers::{build_provider_for_config, provider_config_by_id};
 use super::{
     DesktopRuntimeState, GetModelUsageSummaryResponse, ListOfficialQuotaSnapshotsResponse,
@@ -35,17 +32,16 @@ pub(crate) fn normalize_probe_timeout_ms(timeout_ms: Option<u64>) -> u64 {
         .clamp(MIN_PROBE_TIMEOUT_MS, MAX_PROBE_TIMEOUT_MS)
 }
 
-pub(crate) type ProviderProbeFlights =
-    Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::OnceCell<ProbeProviderConfigResponse>>>>>;
+pub(crate) type ProviderProbeFlights = Arc<
+    tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::OnceCell<ProbeProviderConfigResponse>>>>,
+>;
 
 pub(crate) fn new_provider_probe_flights() -> ProviderProbeFlights {
     Arc::new(tokio::sync::Mutex::new(HashMap::new()))
 }
 
 pub(crate) type OfficialQuotaFlights = Arc<
-    tokio::sync::Mutex<
-        HashMap<String, Arc<tokio::sync::OnceCell<RefreshOfficialQuotaResponse>>>,
-    >,
+    tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::OnceCell<RefreshOfficialQuotaResponse>>>>,
 >;
 
 pub(crate) fn new_official_quota_flights() -> OfficialQuotaFlights {
@@ -289,19 +285,15 @@ pub async fn collect_persisted_usage_events(
 pub async fn get_model_usage_summary_with_runtime_state(
     runtime_state: &DesktopRuntimeState,
 ) -> Result<GetModelUsageSummaryResponse, CommandErrorPayload> {
-    let harness = runtime_state
-        .harness()
-        .ok_or_else(|| runtime_unavailable("Model usage summary requires an active harness runtime."))?;
-    let events = collect_persisted_usage_events(harness.event_store().as_ref(), TenantId::SINGLE)
-        .await?;
+    let harness = runtime_state.harness().ok_or_else(|| {
+        runtime_unavailable("Model usage summary requires an active harness runtime.")
+    })?;
+    let events =
+        collect_persisted_usage_events(harness.event_store().as_ref(), TenantId::SINGLE).await?;
     let now = Utc::now();
     let timezone = workspace_timezone_resolver();
     let summary = summarize_model_usage(events.iter(), now, &timezone);
     Ok(summary.into())
-}
-
-pub(crate) fn account_usage_registry() -> ProviderAccountUsageRegistry {
-    default_account_usage_registry()
 }
 
 pub async fn refresh_official_quota_with_runtime_state(
@@ -316,6 +308,7 @@ pub async fn refresh_official_quota_with_runtime_state(
     let quota_store = Arc::clone(&runtime_state.provider_quota_cache_store);
     let settings_store = Arc::clone(&runtime_state.provider_settings_store);
     let flights = Arc::clone(&runtime_state.official_quota_flights);
+    let account_usage_registry = Arc::clone(&runtime_state.account_usage_registry);
     let config_id_key = config_id.to_owned();
 
     let config_id_lookup = config_id_key.clone();
@@ -325,14 +318,14 @@ pub async fn refresh_official_quota_with_runtime_state(
             .load_record()?
             .ok_or_else(|| invalid_payload("provider config was not found".to_owned()))?;
         let config = provider_config_by_id(&record, &config_id_lookup)?;
-        let registry = account_usage_registry();
         let snapshot = fetch_official_quota(
-            &registry,
+            account_usage_registry.as_ref(),
             ProviderAccountUsageRequest {
                 config_id: config.id.clone(),
                 provider_id: config.provider_id.clone(),
                 model_id: Some(config.model_id.clone()),
                 api_key: config.api_key.clone(),
+                official_quota_api_key: config.official_quota_api_key.clone(),
                 base_url: config.base_url.clone(),
             },
         )

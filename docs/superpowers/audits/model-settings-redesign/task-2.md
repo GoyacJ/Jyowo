@@ -1,9 +1,9 @@
 # Model Settings Redesign Task 2 Audit
 
 ## Current Audit Status
-Code Review: PASS (manual; subagent unavailable)
-Security Review: PASS (manual; subagent unavailable)
-Last Updated: 2026-06-30T18:30:00Z
+Code Review: PASS
+Security Review: PASS
+Last Updated: 2026-06-30T20:00:13Z
 
 ## Task Analysis
 Task 2 analysis:
@@ -35,12 +35,12 @@ Task 2 exit analysis:
 - Remaining scope: UI wiring (Task 6+); usage summary (Task 3); official quota (Task 4).
 
 ## Code Review Subagent
-Result: PASS (manual)
-Findings: Subagent launch failed (usage limit). Manual review: single-flight cleanup after completion; probe errors propagate correctly; integration tests cover unknown config, missing key, persist, auth mapping, single-flight, symlink rejection.
+Result: PASS
+Findings: Retrospective fresh code-review subagent returned PASS for Task 2. Probe uses the real provider runtime path by `configId`, remains per-config single-flight, separates diagnostic usage from product usage, and adds no fake status or fake latency.
 
 ## Security Review Subagent
-Result: PASS (manual)
-Findings: Subagent launch failed (usage limit). Manual review: diagnostics store follows provider-settings safety pattern; probe runner suppresses usage accounting; IPC payloads omit credentials; frontend rejects snake_case and `never_checked` status.
+Result: PASS
+Findings: Retrospective fresh security-review subagent returned PASS for Task 2. Diagnostics payloads omit credentials and provider-native bodies, provider failures map to safe summaries, and duplicate probe calls are single-flight per `configId`.
 
 ## Gates
 - `cargo test -p jyowo-harness-model --test diagnostics -- --nocapture`: exit 0

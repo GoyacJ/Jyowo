@@ -986,6 +986,7 @@ exit 0
                     display_name: "OpenAI Work".to_owned(),
                     id: "openai-work".to_owned(),
                     model_id: "gpt-5.4-mini".to_owned(),
+                    official_quota_api_key: None,
                     provider_id: "openai".to_owned(),
                     model_descriptor: ProviderModelDescriptorRecord {
                         protocol: ModelProtocol::Responses,
@@ -1181,7 +1182,10 @@ exit 2
 
         assert_eq!(normalize_probe_timeout_ms(None), DEFAULT_PROBE_TIMEOUT_MS);
         assert_eq!(normalize_probe_timeout_ms(Some(500)), MIN_PROBE_TIMEOUT_MS);
-        assert_eq!(normalize_probe_timeout_ms(Some(120_000)), MAX_PROBE_TIMEOUT_MS);
+        assert_eq!(
+            normalize_probe_timeout_ms(Some(120_000)),
+            MAX_PROBE_TIMEOUT_MS
+        );
     }
 
     #[derive(Clone)]

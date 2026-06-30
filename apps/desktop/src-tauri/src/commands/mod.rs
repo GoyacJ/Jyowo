@@ -21,9 +21,8 @@ use harness_contracts::{
     MissedRunPolicy, PluginCapabilitiesSummary, PluginConfigUpdate, PluginDetail, PluginId,
     PluginInstallReport, PluginOperationResult, PluginOperationStatus, PluginSummary,
     ProviderCapabilityRoute, ProviderCapabilityRouteOption, ProviderCapabilityRouteSettings,
-    ProviderProbeErrorKind, ProviderProbeSnapshot, ProviderProbeStatus,
-    ProviderServiceAdapterAvailability, RejectionReason, SandboxError, SandboxMode, ToolGroup,
-    TrustLevel, UiSafeText, WorkspaceAccess,
+    ProviderProbeSnapshot, ProviderServiceAdapterAvailability, RejectionReason, SandboxError,
+    SandboxMode, ToolGroup, TrustLevel, UiSafeText, WorkspaceAccess,
 };
 use harness_plugin::{
     CargoExtensionManifestLoader, CargoExtensionRuntimeLoader, DiscoverySource, FileManifestLoader,
@@ -51,14 +50,13 @@ use jyowo_harness_sdk::ext::{
     MemoryRecord, MemorySource, MemorySummary, MemoryVisibility, MessageContent, MessagePart,
     ModelDescriptor, ModelInventoryEntry, ModelLifecycle, ModelModality, ModelProtocol,
     ModelProvider, ModelRuntimeStatus, PendingPermissionRequest, PermissionMode, PermissionSubject,
-    ProviderAuthScheme, ProviderBaseUrlRegion,     ProviderBuildConfig, ProviderCredential,
+    ProviderAuthScheme, ProviderBaseUrlRegion, ProviderBuildConfig, ProviderCredential,
     ProviderCredentialResolveContext, ProviderCredentialResolverCap, ProviderProbeInput,
-    ProviderProbeOutcome, ProviderProbeRunner, ProviderRegistryError,
-    ProviderRuntimeCapability, ProviderServiceCapability, ProviderServiceCategory,
-    ProviderServiceCostRisk, ProviderServiceExecution, RedactPatternSet, RedactRules, RedactScope,
-    Redactor, RequestId, RunId, SessionId, Severity, SkillLoader, SkillSourceConfig, StdioEnv,
-    StdioPolicy, StdioTransport, TenantId, ToolCapability, ToolError, ToolProfile, ToolUseId,
-    TransportChoice,
+    ProviderProbeRunner, ProviderRegistryError, ProviderRuntimeCapability,
+    ProviderServiceCapability, ProviderServiceCategory, ProviderServiceCostRisk,
+    ProviderServiceExecution, RedactPatternSet, RedactRules, RedactScope, Redactor, RequestId,
+    RunId, SessionId, Severity, SkillLoader, SkillSourceConfig, StdioEnv, StdioPolicy,
+    StdioTransport, TenantId, ToolCapability, ToolError, ToolProfile, ToolUseId, TransportChoice,
 };
 use jyowo_harness_sdk::{
     ConversationAttachmentReference, ConversationContextReference, ConversationEventsPageRequest,
@@ -107,12 +105,13 @@ mod tests;
 mod validation;
 
 use contracts::default_worktree_direction;
-use error::runtime_unavailable;
+use error::{invalid_payload, runtime_unavailable};
 use providers::{
     provider_capability_route_runtime_context, save_provider_settings_with_runtime_state_unlocked,
     sync_runtime_provider_capability_routes,
 };
 use runtime::build_desktop_harness;
+use validation::{ensure_non_empty, ensure_provider_settings};
 
 pub use app::{
     get_app_info_payload, harness_healthcheck_payload, list_eval_cases_payload,
@@ -147,43 +146,42 @@ pub use contracts::{
     GetContextSnapshotResponse, GetConversationRequest, GetConversationResponse,
     GetExecutionSettingsRequest, GetExecutionSettingsResponse, GetMcpServerConfigRequest,
     GetMcpServerConfigResponse, GetMemoryItemRequest, GetMemoryItemResponse,
-    GetModelUsageSummaryResponse,
-    GetPluginDetailRequest, GetPluginDetailResponse, GetProviderConfigApiKeyRequest,
-    GetProviderConfigApiKeyResponse, GetSkillDetailRequest, GetSkillDetailResponse,
-    GetSkillFileRequest, GetSkillFileResponse, HarnessHealthcheckPayload, HarnessInfoPayload,
-    ImportSkillRequest, ImportSkillResponse, InstallPluginFromPathRequest,
+    GetModelUsageSummaryResponse, GetPluginDetailRequest, GetPluginDetailResponse,
+    GetProviderConfigApiKeyRequest, GetProviderConfigApiKeyResponse, GetSkillDetailRequest,
+    GetSkillDetailResponse, GetSkillFileRequest, GetSkillFileResponse, HarnessHealthcheckPayload,
+    HarnessInfoPayload, ImportSkillRequest, ImportSkillResponse, InstallPluginFromPathRequest,
     InstallSkillFromCatalogResponse, ListActivityRequest, ListActivityResponse,
     ListArtifactsRequest, ListArtifactsResponse, ListAutomationRunsRequest,
     ListAutomationRunsResponse, ListAutomationsResponse, ListBrowserMcpPresetsResponse,
     ListConversationsResponse, ListEvalCasesResponse, ListMcpDiagnosticsRequest,
     ListMcpDiagnosticsResponse, ListMcpServersResponse, ListMemoryItemsResponse,
-    ListPluginsResponse, ListProviderCapabilityRoutesResponse, ListProviderProbeSnapshotsResponse,
-    ListOfficialQuotaSnapshotsResponse,
-    ListProviderSettingsResponse,
+    ListOfficialQuotaSnapshotsResponse, ListPluginsResponse, ListProviderCapabilityRoutesResponse,
+    ListProviderProbeSnapshotsResponse, ListProviderSettingsResponse,
     ListReferenceCandidatesRequest, ListReferenceCandidatesResponse,
     ListSkillCatalogInstallTasksResponse, ListSkillsResponse, McpDiagnosticBatchEmitter,
     McpDiagnosticBatchPayload, McpDiagnosticRecord, McpDiagnosticSeverity, McpDiagnosticStore,
     McpHeaderEnvRecord, McpNameValueRecord, McpServerConfigRecord, McpServerStore,
     McpServerSummaryPayload, McpServerTransportConfig, MemoryItemPayload, MemoryItemSummaryPayload,
     ModelCatalogEntry, ModelLifecyclePayload, ModelProviderCatalogEntry,
-    ModelProviderCatalogResponse, ModelRuntimeStatusPayload, PageConversationTimelineRequest,
+    ModelProviderCatalogResponse, ModelRuntimeStatusPayload, OfficialQuotaScopePayload,
+    OfficialQuotaSnapshotPayload, OfficialQuotaStatusPayload, PageConversationTimelineRequest,
     PageConversationTimelineResponse, PageConversationWorktreeDirection,
     PageConversationWorktreeRequest, PermissionDecision, PermissionRequestedRunEventPayload,
     PermissionResolver, PluginSettingsRecord, PluginStore, PluginStoreRecord,
     ProbeProviderConfigRequest, ProbeProviderConfigResponse, ProviderBaseUrlRegionPayload,
-    OfficialQuotaSnapshotPayload, OfficialQuotaScopePayload, OfficialQuotaStatusPayload,
-    ProviderCapabilityRouteStore,     ProviderCapabilityRouteValidationToken, ProviderConfigPayload, ProviderConfigRecord,
-    ProviderModelDescriptorRecord, ProviderModelLifecycleRecord, ProviderModelModalityRecord,
-    ProviderProbeSnapshotPayload, ProviderProbeErrorKindPayload, ProviderProbeStatusPayload,
-    ProviderRuntimeCapabilityPayload, ProviderServiceCapabilityPayload, ProviderSettingsRecord,
-    ProviderSettingsRequest, ProviderSettingsStore, ReferenceCandidatePayload, ReloadPluginRequest,
-    ProviderDiagnosticsStore, ProviderQuotaCacheRecord, ProviderQuotaCacheStore, RefreshOfficialQuotaRequest,
-    RefreshOfficialQuotaResponse,
-    ReplayTimelineRequest, ReplayTimelineResponse, RequestProviderConfigApiKeyRevealRequest,
-    RequestProviderConfigApiKeyRevealResponse, ResolvePermissionRequest, ResolvePermissionResponse,
-    RestartMcpServerRequest, RestartMcpServerResponse, RunAutomationNowRequest,
-    RunAutomationNowResponse, RunEvalCaseRequest, RunEvalCaseResponse, RunEventBodyPayload,
-    RunEventPayload, SaveAutomationRequest, SaveAutomationResponse, SaveBrowserMcpPresetRequest,
+    ProviderCapabilityRouteStore, ProviderCapabilityRouteValidationToken, ProviderConfigPayload,
+    ProviderConfigRecord, ProviderDiagnosticsStore, ProviderModelDescriptorRecord,
+    ProviderModelLifecycleRecord, ProviderModelModalityRecord, ProviderProbeErrorKindPayload,
+    ProviderProbeSnapshotPayload, ProviderProbeStatusPayload, ProviderQuotaCacheRecord,
+    ProviderQuotaCacheStore, ProviderRuntimeCapabilityPayload, ProviderServiceCapabilityPayload,
+    ProviderSettingsRecord, ProviderSettingsRequest, ProviderSettingsStore,
+    ReferenceCandidatePayload, RefreshOfficialQuotaRequest, RefreshOfficialQuotaResponse,
+    ReloadPluginRequest, ReplayTimelineRequest, ReplayTimelineResponse,
+    RequestProviderConfigApiKeyRevealRequest, RequestProviderConfigApiKeyRevealResponse,
+    ResolvePermissionRequest, ResolvePermissionResponse, RestartMcpServerRequest,
+    RestartMcpServerResponse, RunAutomationNowRequest, RunAutomationNowResponse,
+    RunEvalCaseRequest, RunEvalCaseResponse, RunEventBodyPayload, RunEventPayload,
+    SaveAutomationRequest, SaveAutomationResponse, SaveBrowserMcpPresetRequest,
     SaveBrowserMcpPresetResponse, SaveMcpServerRequest, SaveMcpServerResponse,
     SaveProviderCapabilityRouteRequest, SaveProviderCapabilityRouteResponse,
     SaveProviderSettingsResponse, SetAutomationEnabledRequest, SetAutomationEnabledResponse,
@@ -240,6 +238,12 @@ pub use memory::{
     get_memory_item_with_runtime_state, list_memory_items_with_runtime_state,
     update_memory_item_with_runtime_state,
 };
+pub use model_settings::{
+    collect_persisted_usage_events, get_model_usage_summary_with_runtime_state,
+    list_official_quota_snapshots_with_runtime_state,
+    list_provider_probe_snapshots_with_runtime_state, probe_provider_config_with_provider,
+    probe_provider_config_with_runtime_state, refresh_official_quota_with_runtime_state,
+};
 pub use plugins::{
     get_plugin_detail_with_runtime_state, install_plugin_from_path_with_runtime_state,
     list_plugins_with_runtime_state, reload_plugin_with_runtime_state,
@@ -264,12 +268,6 @@ pub use providers::{
     set_execution_settings_with_store, validate_provider_settings_payload,
     AgentCapabilitiesPayload, DesktopConversationModelConfigStore, DesktopExecutionSettingsStore,
     DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore, ExecutionSettingsRecord,
-};
-pub use model_settings::{
-    collect_persisted_usage_events, get_model_usage_summary_with_runtime_state,
-    list_official_quota_snapshots_with_runtime_state,
-    list_provider_probe_snapshots_with_runtime_state, probe_provider_config_with_provider,
-    probe_provider_config_with_runtime_state, refresh_official_quota_with_runtime_state,
 };
 pub use runtime::{
     managed_runtime_state, runtime_state, runtime_state_async, runtime_state_for_workspace,
@@ -480,6 +478,7 @@ pub async fn save_provider_capability_route(
     route: ProviderCapabilityRoute,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SaveProviderCapabilityRouteResponse, CommandErrorPayload> {
+    validate_provider_capability_route(&route).map_err(invalid_payload)?;
     let runtime_state = runtime_handle.read().await;
     let (store, provider_settings, provider_catalog, adapter_availability) =
         provider_capability_route_runtime_context(&runtime_state).await?;
@@ -508,6 +507,8 @@ pub async fn delete_provider_capability_route(
     provider_id: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<DeleteProviderCapabilityRouteResponse, CommandErrorPayload> {
+    ensure_non_empty("configId", &config_id)?;
+    ensure_non_empty("providerId", &provider_id)?;
     let runtime_state = runtime_handle.read().await;
     let (store, provider_settings, provider_catalog, adapter_availability) =
         provider_capability_route_runtime_context(&runtime_state).await?;
@@ -538,6 +539,7 @@ pub async fn request_provider_config_api_key_reveal(
     config_id: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<RequestProviderConfigApiKeyRevealResponse, CommandErrorPayload> {
+    ensure_non_empty("configId", &config_id)?;
     let runtime_state = runtime_handle.read().await;
     request_provider_config_api_key_reveal_with_runtime_state(
         RequestProviderConfigApiKeyRevealRequest { config_id },
@@ -552,6 +554,8 @@ pub async fn get_provider_config_api_key(
     reveal_token: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetProviderConfigApiKeyResponse, CommandErrorPayload> {
+    ensure_non_empty("configId", &config_id)?;
+    ensure_non_empty("revealToken", &reveal_token)?;
     let runtime_state = runtime_handle.read().await;
     get_provider_config_api_key_with_runtime_state(
         GetProviderConfigApiKeyRequest {
@@ -581,6 +585,7 @@ pub async fn probe_provider_config(
     timeout_ms: Option<u64>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ProbeProviderConfigResponse, CommandErrorPayload> {
+    ensure_non_empty("configId", &config_id)?;
     let runtime_state = runtime_handle.read().await;
     model_settings::probe_provider_config_with_runtime_state(
         ProbeProviderConfigRequest {
@@ -613,6 +618,7 @@ pub async fn refresh_official_quota(
     config_id: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<RefreshOfficialQuotaResponse, CommandErrorPayload> {
+    ensure_non_empty("configId", &config_id)?;
     let runtime_state = runtime_handle.read().await;
     model_settings::refresh_official_quota_with_runtime_state(&config_id, &*runtime_state).await
 }
@@ -632,21 +638,24 @@ pub async fn save_provider_settings(
     config_id: Option<String>,
     display_name: Option<String>,
     model_id: String,
+    official_quota_api_key: Option<String>,
     provider_id: String,
     set_default: Option<bool>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SaveProviderSettingsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    let _provider_settings_guard = runtime_state.provider_settings_lock.lock().await;
     let request = ProviderSettingsRequest {
         api_key,
         base_url,
         config_id,
         display_name,
         model_id,
+        official_quota_api_key,
         provider_id,
         set_default: set_default.unwrap_or(true),
     };
+    ensure_provider_settings(&request)?;
+    let runtime_state = runtime_handle.read().await;
+    let _provider_settings_guard = runtime_state.provider_settings_lock.lock().await;
     let response =
         save_provider_settings_with_runtime_state_unlocked(request, &runtime_state).await?;
     if response.config.is_default {

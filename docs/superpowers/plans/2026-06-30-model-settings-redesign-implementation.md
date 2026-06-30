@@ -784,7 +784,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 6: Audit and commit**
+- [x] **Step 6: Audit and commit**
 
 Code-review and security-review subagents are required.
 
@@ -1501,7 +1501,7 @@ git commit -m "refactor: remove legacy model settings form flow"
 
 - Modify: only files needed to fix findings from full verification.
 
-- [ ] **Step 1: Run full gates**
+- [x] **Step 1: Run full gates**
 
 Run:
 
@@ -1520,7 +1520,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 2: Run targeted searches**
+- [x] **Step 2: Run targeted searches**
 
 Run:
 
@@ -1544,7 +1544,7 @@ Expected:
 - Storybook Playwright `testMatch` includes both existing and model-settings storybook specs.
 - Single-flight, pending-state, quota source URL, quota staleness, and timezone identity code paths are present and covered by tests.
 
-- [ ] **Step 3: Manual product verification**
+- [x] **Step 3: Manual product verification**
 
 Start desktop dev environment through the repo's existing desktop workflow. Verify:
 
@@ -1565,7 +1565,7 @@ Start desktop dev environment through the repo's existing desktop workflow. Veri
 - Stale official quota cache is visibly distinct from current fetched quota.
 - Account/project/provider scoped quota is not labeled as model-specific quota.
 
-- [ ] **Step 4: Final subagent audit**
+- [x] **Step 4: Final subagent audit**
 
 Dispatch a fresh review subagent with this exact prompt:
 
@@ -1598,7 +1598,7 @@ For FAIL, include file path and line-level findings.
 
 Dispatch security-review subagent with the Task security prompt, scoped to the full branch.
 
-- [ ] **Step 5: Final commit**
+- [x] **Step 5: Final commit**
 
 If full verification required fixes after Task 9, commit them:
 

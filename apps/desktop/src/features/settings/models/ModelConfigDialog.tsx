@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
@@ -29,7 +29,6 @@ type ModelConfigDialogProps = {
 }
 
 type ModelConfigFormValues = {
-  apiKey: string
   baseUrl: string
   displayName: string
   modelId: string
@@ -45,6 +44,7 @@ export function ModelConfigDialog({
 }: ModelConfigDialogProps) {
   const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
+  const formRef = useRef<HTMLFormElement>(null)
   const providers = catalog.providers
   const defaultProvider = providers[0]
   const defaultModel = defaultProvider?.models[0]
@@ -101,19 +101,21 @@ export function ModelConfigDialog({
 
   function changeOpen(nextOpen: boolean) {
     if (!nextOpen) {
+      clearSecretFormFields(formRef.current)
       reset(formValuesFromProfile(profile, defaultProvider, defaultModel))
     }
     onOpenChange(nextOpen)
   }
 
-  async function submit(values: ModelConfigFormValues) {
+  async function submit(values: ModelConfigFormValues, form: HTMLFormElement) {
     const request: ProviderSettingsRequest = {
       modelId: values.modelId,
       providerId: values.providerId,
     }
     const displayName = values.displayName.trim()
     const baseUrl = values.baseUrl.trim()
-    const apiKey = values.apiKey.trim()
+    const apiKey = readSecretFormValue(form, 'apiKey')
+    const officialQuotaApiKey = readSecretFormValue(form, 'officialQuotaApiKey')
 
     if (profile) {
       request.configId = profile.id
@@ -128,18 +130,22 @@ export function ModelConfigDialog({
     if (apiKey) {
       request.apiKey = apiKey
     }
+    if (officialQuotaApiKey) {
+      request.officialQuotaApiKey = officialQuotaApiKey
+    }
     if (!profile?.hasApiKey && !apiKey) {
-      setError('apiKey', { message: t('provider.errors.apiKeyRequired') })
+      setError('root', { message: t('provider.errors.apiKeyRequired') })
       return
     }
 
     try {
       const response = await saveProviderSettings(request, commandClient)
-      reset({ ...values, apiKey: '' })
+      clearSecretFormFields(form)
+      reset(values)
       onSaved?.(response.config)
       changeOpen(false)
     } catch (error) {
-      setValue('apiKey', '')
+      clearSecretFormFields(form)
       setError('root', { message: getCommandErrorMessage(error) })
     }
   }
@@ -156,7 +162,14 @@ export function ModelConfigDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <form className="grid gap-4" onSubmit={(event) => void handleSubmit(submit)(event)}>
+        <form
+          className="grid gap-4"
+          ref={formRef}
+          onSubmit={(event) => {
+            const form = event.currentTarget
+            void handleSubmit((values) => submit(values, form))(event)
+          }}
+        >
           <label className="grid gap-1 text-sm">
             <span className="font-medium">{t('provider.profileName')}</span>
             <input
@@ -212,11 +225,22 @@ export function ModelConfigDialog({
                   : t('provider.apiKeyPlaceholder')
               }
               type="password"
-              {...register('apiKey')}
+              name="apiKey"
             />
-            {errors.apiKey?.message ? (
-              <span className="text-destructive text-xs">{errors.apiKey.message}</span>
-            ) : null}
+          </label>
+
+          <label className="grid gap-1 text-sm">
+            <span className="font-medium">{t('provider.officialQuotaApiKey')}</span>
+            <input
+              className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              placeholder={
+                profile?.hasOfficialQuotaApiKey
+                  ? t('provider.officialQuotaApiKeyExistingPlaceholder')
+                  : t('provider.officialQuotaApiKeyPlaceholder')
+              }
+              type="password"
+              name="officialQuotaApiKey"
+            />
           </label>
 
           {errors.root?.message ? (
@@ -250,10 +274,26 @@ function formValuesFromProfile(
   defaultModel: ModelProviderCatalogResponse['providers'][number]['models'][number] | undefined,
 ): ModelConfigFormValues {
   return {
-    apiKey: '',
     baseUrl: profile?.baseUrl ?? defaultProvider?.defaultBaseUrl ?? '',
     displayName: profile?.displayName ?? '',
     modelId: profile?.modelId ?? defaultModel?.modelId ?? '',
     providerId: profile?.providerId ?? defaultProvider?.providerId ?? '',
+  }
+}
+
+function readSecretFormValue(form: HTMLFormElement, name: string): string {
+  const value = new FormData(form).get(name)
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function clearSecretFormFields(form: HTMLFormElement | null) {
+  if (!form) {
+    return
+  }
+  for (const name of ['apiKey', 'officialQuotaApiKey']) {
+    const field = form.elements.namedItem(name)
+    if (field instanceof HTMLInputElement) {
+      field.value = ''
+    }
   }
 }

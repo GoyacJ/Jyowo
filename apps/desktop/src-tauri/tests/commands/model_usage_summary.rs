@@ -66,10 +66,9 @@ async fn get_model_usage_summary_aggregates_persisted_usage_events() {
 async fn get_model_usage_summary_requires_active_harness() {
     let workspace = super::unique_workspace("usage-summary-no-harness");
     std::fs::create_dir_all(&workspace).unwrap();
-    let state = jyowo_desktop_shell::commands::DesktopRuntimeState::with_workspace_for_test(
-        workspace,
-    )
-    .unwrap();
+    let state =
+        jyowo_desktop_shell::commands::DesktopRuntimeState::with_workspace_for_test(workspace)
+            .unwrap();
 
     let error = get_model_usage_summary_with_runtime_state(&state)
         .await
@@ -97,11 +96,7 @@ async fn collect_persisted_usage_events_reads_all_tenant_events() {
         .await
         .unwrap();
     store
-        .append(
-            TenantId::SINGLE,
-            session_b,
-            &[usage_event(model, 5, false)],
-        )
+        .append(TenantId::SINGLE, session_b, &[usage_event(model, 5, false)])
         .await
         .unwrap();
 

@@ -53,10 +53,10 @@ pub use harness_model::{
     ModelModality, ModelPricing, ModelProtocol, ModelProvider, ModelRequest, ModelRuntimeStatus,
     ModelStream, ModelStreamEvent, PickedCredential, PoolStrategy, PricingSnapshotResolveContext,
     PricingSnapshotResolver, PricingSource, ProviderAuthScheme, ProviderBaseUrlRegion,
-    ProviderBuildConfig, ProviderCatalogEntry, ProviderInventoryEntry, ProviderRegistryError,
-    ProviderRuntimeCapability, ProviderServiceCapability, ProviderServiceCategory,
-    ProviderServiceCostRisk, ProviderServiceExecution, ProviderProbeInput, ProviderProbeOutcome,
-    ProviderProbeRunner, ThinkingDelta,
+    ProviderBuildConfig, ProviderCatalogEntry, ProviderInventoryEntry, ProviderProbeInput,
+    ProviderProbeOutcome, ProviderProbeRunner, ProviderRegistryError, ProviderRuntimeCapability,
+    ProviderServiceCapability, ProviderServiceCategory, ProviderServiceCostRisk,
+    ProviderServiceExecution, ThinkingDelta,
 };
 pub use harness_observability::{Observer, ObserverBuilder, Tracer, UsageAccumulator, UsageScope};
 pub use harness_permission::{

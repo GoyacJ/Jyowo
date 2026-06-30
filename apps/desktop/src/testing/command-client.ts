@@ -483,6 +483,7 @@ const fixtureSaveProviderSettings: SaveProviderSettingsResponse = {
     baseUrl: 'https://api.openai.com',
     displayName: 'OpenAI',
     hasApiKey: true,
+    hasOfficialQuotaApiKey: false,
     id: 'openai',
     isDefault: true,
     modelId: 'gpt-4o-mini',

@@ -126,7 +126,10 @@ describe('ModelDetailsDrawer', () => {
     expect(dialog).not.toHaveTextContent(rawKey)
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'View key' }))
-    expect(await within(dialog).findByText(rawKey)).toBeInTheDocument()
+    expect(
+      await within(dialog).findByText('API key reveal was verified without displaying the secret.'),
+    ).toBeInTheDocument()
+    expect(dialog).not.toHaveTextContent(rawKey)
     expect(requestProviderConfigApiKeyReveal).toHaveBeenCalledWith('cfg-openai')
     expect(getProviderConfigApiKey).toHaveBeenCalledWith('cfg-openai', 'reveal-token')
   })
@@ -251,7 +254,10 @@ describe('ModelDetailsDrawer', () => {
     const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
     fireEvent.click(within(dialog).getByRole('tab', { name: 'Configuration' }))
     fireEvent.click(within(dialog).getByRole('button', { name: 'View key' }))
-    expect(await within(dialog).findByText(rawKey)).toBeInTheDocument()
+    expect(
+      await within(dialog).findByText('API key reveal was verified without displaying the secret.'),
+    ).toBeInTheDocument()
+    expect(dialog).not.toHaveTextContent(rawKey)
 
     rerender(
       <ModelDetailsDrawer onOpenChange={vi.fn()} open row={{ ...failingRow, hasApiKey: true }} />,
@@ -376,13 +382,20 @@ describe('ModelDetailsDrawer', () => {
       secondKey.resolve({ apiKey: 'sk-second-session', configId: 'cfg-openai' })
     })
 
-    expect(await within(reopenedDialog).findByText('sk-second-session')).toBeInTheDocument()
+    expect(
+      await within(reopenedDialog).findByText(
+        'API key reveal was verified without displaying the secret.',
+      ),
+    ).toBeInTheDocument()
+    expect(reopenedDialog).not.toHaveTextContent('sk-second-session')
 
     await act(async () => {
       firstKey.resolve({ apiKey: 'sk-first-session', configId: 'cfg-openai' })
     })
 
-    expect(reopenedDialog).toHaveTextContent('sk-second-session')
+    expect(reopenedDialog).toHaveTextContent(
+      'API key reveal was verified without displaying the secret.',
+    )
     expect(reopenedDialog).not.toHaveTextContent('sk-first-session')
   })
 

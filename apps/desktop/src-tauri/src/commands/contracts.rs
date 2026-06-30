@@ -30,8 +30,8 @@ use super::stores::*;
 use super::validation::*;
 use super::*;
 use harness_contracts::{
-    ModelUsageBucket, ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow, ProviderProbeErrorKind,
-    ProviderProbeSnapshot, ProviderProbeStatus, UsageSnapshot,
+    ModelUsageBucket, ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow,
+    ProviderProbeErrorKind, ProviderProbeSnapshot, ProviderProbeStatus, UsageSnapshot,
 };
 
 pub type ConversationEventBatchEmitter =
@@ -74,6 +74,8 @@ pub struct ProviderSettingsRequest {
     #[serde(default)]
     pub display_name: Option<String>,
     pub model_id: String,
+    #[serde(default)]
+    pub official_quota_api_key: Option<String>,
     pub provider_id: String,
     #[serde(default = "default_true")]
     pub set_default: bool,
@@ -177,6 +179,8 @@ pub struct ProviderConfigRecord {
     pub display_name: String,
     pub id: String,
     pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub official_quota_api_key: Option<String>,
     pub provider_id: String,
     pub model_descriptor: ProviderModelDescriptorRecord,
 }
@@ -305,6 +309,7 @@ pub struct ProviderConfigPayload {
     pub base_url: Option<String>,
     pub display_name: String,
     pub has_api_key: bool,
+    pub has_official_quota_api_key: bool,
     pub id: String,
     pub is_default: bool,
     pub model_id: String,
@@ -2032,10 +2037,7 @@ pub struct ProviderDiagnosticsRecord {
 
 pub trait ProviderDiagnosticsStore: Send + Sync {
     fn load_record(&self) -> Result<ProviderDiagnosticsRecord, CommandErrorPayload>;
-    fn upsert_snapshot(
-        &self,
-        snapshot: &ProviderProbeSnapshot,
-    ) -> Result<(), CommandErrorPayload>;
+    fn upsert_snapshot(&self, snapshot: &ProviderProbeSnapshot) -> Result<(), CommandErrorPayload>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2048,7 +2050,7 @@ pub enum OfficialQuotaScopePayload {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub enum OfficialQuotaStatusPayload {
     Supported,
     Unsupported,

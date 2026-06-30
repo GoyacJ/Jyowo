@@ -272,17 +272,9 @@ fn summarize_from_events_reads_usage_accumulated_events_only() {
     let timezone = IanaTimezoneResolver::try_from_iana("UTC").expect("UTC timezone");
     let now = Utc.with_ymd_and_hms(2026, 6, 30, 12, 0, 0).unwrap();
     let model = sample_model_ref("openai", "gpt-4.1");
-    let usage = usage_event(
-        now,
-        Some(model),
-        usage_delta(7, 0, 0, 0, 0, 0),
-    );
+    let usage = usage_event(now, Some(model), usage_delta(7, 0, 0, 0, 0, 0));
 
-    let summary = summarize_from_events(
-        [Event::UsageAccumulated(usage)].iter(),
-        now,
-        &timezone,
-    );
+    let summary = summarize_from_events([Event::UsageAccumulated(usage)].iter(), now, &timezone);
 
     assert_eq!(summary.all_time.total.input_tokens, 7);
 }

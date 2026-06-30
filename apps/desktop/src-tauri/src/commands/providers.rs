@@ -1666,6 +1666,20 @@ pub async fn save_provider_settings_with_store(
             "apiKey is required for new provider configs".to_owned(),
         ));
     };
+    let official_quota_api_key = request
+        .official_quota_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            previous_config
+                .as_ref()
+                .filter(|config| {
+                    config.provider_id == request.provider_id && config.base_url == base_url
+                })
+                .and_then(|config| config.official_quota_api_key.clone())
+        });
     let config = ProviderConfigRecord {
         api_key: config_api_key,
         protocol: descriptor.protocol,
@@ -1679,6 +1693,7 @@ pub async fn save_provider_settings_with_store(
             .unwrap_or_else(|| provider_display_name(&request.provider_id)),
         id: config_id.clone(),
         model_id: request.model_id.clone(),
+        official_quota_api_key,
         provider_id: request.provider_id.clone(),
         model_descriptor: model_descriptor_record(&descriptor),
     };
@@ -2041,6 +2056,7 @@ pub(crate) fn provider_config_payload(
         base_url: config.base_url.clone(),
         display_name: config.display_name.clone(),
         has_api_key: provider_config_has_api_key(config),
+        has_official_quota_api_key: provider_config_has_official_quota_api_key(config),
         id: config.id.clone(),
         is_default: default_config_id.is_some_and(|id| id == config.id),
         model_id: config.model_id.clone(),
@@ -2051,6 +2067,13 @@ pub(crate) fn provider_config_payload(
 
 pub(crate) fn provider_config_has_api_key(config: &ProviderConfigRecord) -> bool {
     !config.api_key.trim().is_empty()
+}
+
+pub(crate) fn provider_config_has_official_quota_api_key(config: &ProviderConfigRecord) -> bool {
+    config
+        .official_quota_api_key
+        .as_deref()
+        .is_some_and(|api_key| !api_key.trim().is_empty())
 }
 
 pub(crate) fn ensure_provider_config_has_api_key(

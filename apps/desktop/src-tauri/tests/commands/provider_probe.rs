@@ -4,18 +4,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream;
-use harness_contracts::{ConversationModelCapability, ModelError, ModelProtocol, UsageSnapshot};
+use harness_contracts::{ConversationModelCapability, ModelError, ModelProtocol};
 use harness_model::{ErrorClass, ErrorHints, ModelStreamEvent};
-use jyowo_harness_sdk::ext::{
-    HealthStatus, InferContext, ModelDescriptor, ModelLifecycle, ModelProvider, ModelRequest,
-    ModelStream,
-};
 use jyowo_desktop_shell::commands::{
     list_provider_probe_snapshots_with_runtime_state, probe_provider_config_with_provider,
     probe_provider_config_with_runtime_state, DesktopProviderDiagnosticsStore,
     DesktopProviderSettingsStore, DesktopRuntimeState, ProbeProviderConfigRequest,
     ProviderConfigRecord, ProviderDiagnosticsStore, ProviderProbeErrorKindPayload,
     ProviderProbeStatusPayload, ProviderSettingsRecord, ProviderSettingsStore,
+};
+use jyowo_harness_sdk::ext::{
+    HealthStatus, InferContext, ModelDescriptor, ModelLifecycle, ModelProvider, ModelRequest,
+    ModelStream,
 };
 
 struct ProbeCountingProvider {
@@ -43,7 +43,11 @@ impl ModelProvider for ProbeCountingProvider {
         }]
     }
 
-    async fn infer(&self, _req: ModelRequest, _ctx: InferContext) -> Result<ModelStream, ModelError> {
+    async fn infer(
+        &self,
+        _req: ModelRequest,
+        _ctx: InferContext,
+    ) -> Result<ModelStream, ModelError> {
         self.infer_calls.fetch_add(1, Ordering::SeqCst);
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         Ok(Box::pin(stream::iter(self.events.clone())))
@@ -62,6 +66,7 @@ fn sample_provider_config(api_key: &str) -> ProviderConfigRecord {
         display_name: "OpenAI Work".to_owned(),
         id: "openai-work".to_owned(),
         model_id: "gpt-5.4-mini".to_owned(),
+        official_quota_api_key: None,
         provider_id: "openai".to_owned(),
         model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
     }
@@ -249,12 +254,12 @@ fn desktop_provider_diagnostics_store_rejects_symlink_file() {
         .join(".jyowo")
         .join("runtime")
         .join("provider-diagnostics.json");
-    std::fs::write(external.join("provider-diagnostics.json"), r#"{"snapshots":[]}"#).unwrap();
-    std::os::unix::fs::symlink(
+    std::fs::write(
         external.join("provider-diagnostics.json"),
-        &settings_path,
+        r#"{"snapshots":[]}"#,
     )
     .unwrap();
+    std::os::unix::fs::symlink(external.join("provider-diagnostics.json"), &settings_path).unwrap();
 
     let error = DesktopProviderDiagnosticsStore::new(workspace)
         .load_record()

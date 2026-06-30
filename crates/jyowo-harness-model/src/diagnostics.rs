@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
-    Message, MessageId, MessagePart, MessageRole, ModelError, ModelProtocol, ProviderProbeErrorKind,
-    ProviderProbeSnapshot, ProviderProbeStatus, RequestId, TenantId, UsageSnapshot,
+    Message, MessageId, MessagePart, MessageRole, ModelError, ModelProtocol,
+    ProviderProbeErrorKind, ProviderProbeSnapshot, ProviderProbeStatus, RequestId, TenantId,
+    UsageSnapshot,
 };
 use tokio::time::timeout;
 
@@ -123,12 +124,7 @@ impl ProviderProbeRunner {
                 diagnostic_usage: None,
             },
             Ok(Err(failure)) => ProviderProbeOutcome {
-                snapshot: failure.snapshot(
-                    &input,
-                    input.timeout_ms,
-                    Some(latency_ms),
-                    checked_at,
-                ),
+                snapshot: failure.snapshot(&input, input.timeout_ms, Some(latency_ms), checked_at),
                 diagnostic_usage: None,
             },
             Err(_) => ProviderProbeOutcome {

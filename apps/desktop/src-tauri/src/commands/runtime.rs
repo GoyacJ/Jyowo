@@ -19,6 +19,8 @@ use super::mcp::*;
 #[allow(unused_imports)]
 use super::memory::*;
 #[allow(unused_imports)]
+use super::model_settings::*;
+#[allow(unused_imports)]
 use super::plugins::*;
 #[allow(unused_imports)]
 use super::providers::*;
@@ -27,10 +29,9 @@ use super::skills::*;
 #[allow(unused_imports)]
 use super::stores::*;
 #[allow(unused_imports)]
-use super::model_settings::*;
-#[allow(unused_imports)]
 use super::validation::*;
 use super::*;
+use harness_model::{default_account_usage_registry, ProviderAccountUsageRegistry};
 
 #[derive(Clone)]
 pub(crate) struct ProviderConfigRevealTokenRecord {
@@ -97,6 +98,7 @@ impl DesktopRuntimeState {
                 workspace_root.clone(),
             )),
             official_quota_flights: new_official_quota_flights(),
+            account_usage_registry: Arc::new(default_account_usage_registry()),
             provider_capability_route_store: Arc::new(DesktopProviderCapabilityRouteStore::new(
                 workspace_root.clone(),
             )),
@@ -114,6 +116,15 @@ impl DesktopRuntimeState {
             stream_permission_runtime: None,
             workspace_root,
         })
+    }
+
+    pub fn with_workspace_and_account_usage_registry_for_test(
+        workspace_root: PathBuf,
+        account_usage_registry: Arc<ProviderAccountUsageRegistry>,
+    ) -> Result<Self, CommandErrorPayload> {
+        let mut state = Self::with_workspace_for_test(workspace_root)?;
+        state.account_usage_registry = account_usage_registry;
+        Ok(state)
     }
 
     pub fn with_harness_and_stream_permission_runtime(
@@ -224,6 +235,7 @@ impl DesktopRuntimeState {
                 workspace_root.clone(),
             )),
             official_quota_flights: new_official_quota_flights(),
+            account_usage_registry: Arc::new(default_account_usage_registry()),
             provider_capability_route_store: Arc::new(DesktopProviderCapabilityRouteStore::new(
                 workspace_root.clone(),
             )),

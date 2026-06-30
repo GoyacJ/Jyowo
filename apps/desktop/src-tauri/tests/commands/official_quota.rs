@@ -1,15 +1,79 @@
 use super::{openai_descriptor_record, unique_workspace};
+use async_trait::async_trait;
+use chrono::Utc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
-use harness_contracts::OfficialQuotaStatus;
+use harness_contracts::{OfficialQuotaScope, OfficialQuotaSnapshot, OfficialQuotaStatus};
+use harness_model::{
+    compute_expires_at, AccountUsageError, ProviderAccountUsageClient,
+    ProviderAccountUsageRegistry, ProviderAccountUsageRequest, DEFAULT_QUOTA_CACHE_TTL,
+};
 use jyowo_desktop_shell::commands::{
     list_official_quota_snapshots_with_runtime_state, refresh_official_quota_with_runtime_state,
     DesktopProviderQuotaCacheStore, DesktopProviderSettingsStore, DesktopRuntimeState,
     ProviderConfigRecord, ProviderQuotaCacheStore, ProviderSettingsRecord, ProviderSettingsStore,
 };
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+
+struct FakeAccountUsageClient {
+    call_count: Arc<AtomicUsize>,
+    delay: Duration,
+}
+
+#[async_trait]
+impl ProviderAccountUsageClient for FakeAccountUsageClient {
+    fn provider_id(&self) -> &str {
+        "openrouter"
+    }
+
+    fn source_url(&self) -> &'static str {
+        "https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key"
+    }
+
+    fn cache_ttl(&self) -> Duration {
+        DEFAULT_QUOTA_CACHE_TTL
+    }
+
+    async fn fetch_quota(
+        &self,
+        request: ProviderAccountUsageRequest,
+    ) -> Result<OfficialQuotaSnapshot, AccountUsageError> {
+        self.call_count.fetch_add(1, Ordering::SeqCst);
+        if !self.delay.is_zero() {
+            tokio::time::sleep(self.delay).await;
+        }
+        let fetched_at = Utc::now();
+        Ok(OfficialQuotaSnapshot {
+            config_id: request.config_id,
+            provider_id: request.provider_id,
+            model_id: request.model_id,
+            scope: OfficialQuotaScope::Account,
+            status: OfficialQuotaStatus::Supported,
+            period_start: None,
+            period_end: None,
+            quota_used: Some(2_000_000),
+            quota_total: Some(20_000_000),
+            quota_remaining: Some(18_000_000),
+            unit: Some("usd_micro".to_owned()),
+            billing_label: None,
+            source_url: self.source_url().to_owned(),
+            fetched_at,
+            expires_at: compute_expires_at(fetched_at, self.cache_ttl()),
+            is_stale: false,
+            safe_message: None,
+        })
+    }
+}
+
+fn fake_account_usage_registry(
+    call_count: Arc<AtomicUsize>,
+    delay: Duration,
+) -> Arc<ProviderAccountUsageRegistry> {
+    let mut registry = ProviderAccountUsageRegistry::new();
+    registry.register(Arc::new(FakeAccountUsageClient { call_count, delay }));
+    Arc::new(registry)
+}
 
 fn sample_openrouter_config(api_key: &str) -> ProviderConfigRecord {
     ProviderConfigRecord {
@@ -19,6 +83,7 @@ fn sample_openrouter_config(api_key: &str) -> ProviderConfigRecord {
         display_name: "OpenRouter Work".to_owned(),
         id: "openrouter-work".to_owned(),
         model_id: "openai/gpt-5.5".to_owned(),
+        official_quota_api_key: None,
         provider_id: "openrouter".to_owned(),
         model_descriptor: openai_descriptor_record("openai/gpt-5.5"),
     }
@@ -28,6 +93,24 @@ fn prepare_workspace(name: &str) -> std::path::PathBuf {
     let workspace = unique_workspace(name);
     std::fs::create_dir_all(&workspace).unwrap();
     workspace.canonicalize().unwrap()
+}
+
+#[test]
+fn official_quota_status_payload_serializes_camel_case_for_react() {
+    assert_eq!(
+        serde_json::to_value(
+            jyowo_desktop_shell::commands::OfficialQuotaStatusPayload::AuthRequired
+        )
+        .unwrap(),
+        serde_json::json!("authRequired")
+    );
+    assert_eq!(
+        serde_json::to_value(
+            jyowo_desktop_shell::commands::OfficialQuotaStatusPayload::NotConfigured
+        )
+        .unwrap(),
+        serde_json::json!("notConfigured")
+    );
 }
 
 #[tokio::test]
@@ -51,21 +134,22 @@ async fn official_quota_refresh_persists_unsupported_snapshot_for_catalog_provid
     let workspace = prepare_workspace("official-quota-unsupported");
     DesktopProviderSettingsStore::new(workspace.clone())
         .save_record(&ProviderSettingsRecord {
-            default_config_id: Some("anthropic-work".to_owned()),
+            default_config_id: Some("gemini-work".to_owned()),
             configs: vec![ProviderConfigRecord {
                 api_key: "provider-test-token".to_owned(),
                 protocol: harness_contracts::ModelProtocol::Messages,
                 base_url: None,
-                display_name: "Anthropic Work".to_owned(),
-                id: "anthropic-work".to_owned(),
-                model_id: "claude-sonnet-4.6".to_owned(),
-                provider_id: "anthropic".to_owned(),
-                model_descriptor: openai_descriptor_record("claude-sonnet-4.6"),
+                display_name: "Gemini Work".to_owned(),
+                id: "gemini-work".to_owned(),
+                model_id: "gemini-2.5-pro".to_owned(),
+                official_quota_api_key: None,
+                provider_id: "gemini".to_owned(),
+                model_descriptor: openai_descriptor_record("gemini-2.5-pro"),
             }],
         })
         .unwrap();
     let runtime = DesktopRuntimeState::with_workspace_for_test(workspace).unwrap();
-    let response = refresh_official_quota_with_runtime_state("anthropic-work", &runtime)
+    let response = refresh_official_quota_with_runtime_state("gemini-work", &runtime)
         .await
         .unwrap();
     assert_eq!(
@@ -78,29 +162,19 @@ async fn official_quota_refresh_persists_unsupported_snapshot_for_catalog_provid
 
 #[tokio::test]
 async fn official_quota_refresh_persists_supported_snapshot() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/key"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "data": {
-                "usage": 2.0,
-                "limit": 20.0,
-                "limit_remaining": 18.0
-            }
-        })))
-        .mount(&server)
-        .await;
-
     let workspace = prepare_workspace("official-quota-persist");
-    let mut config = sample_openrouter_config("provider-test-token");
-    config.base_url = Some(server.uri());
     DesktopProviderSettingsStore::new(workspace.clone())
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openrouter-work".to_owned()),
-            configs: vec![config],
+            configs: vec![sample_openrouter_config("provider-test-token")],
         })
         .unwrap();
-    let runtime = DesktopRuntimeState::with_workspace_for_test(workspace.clone()).unwrap();
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let runtime = DesktopRuntimeState::with_workspace_and_account_usage_registry_for_test(
+        workspace.clone(),
+        fake_account_usage_registry(Arc::clone(&call_count), Duration::ZERO),
+    )
+    .unwrap();
 
     let response = refresh_official_quota_with_runtime_state("openrouter-work", &runtime)
         .await
@@ -115,38 +189,26 @@ async fn official_quota_refresh_persists_supported_snapshot() {
     let listed = list_official_quota_snapshots_with_runtime_state(&runtime).unwrap();
     assert_eq!(listed.snapshots.len(), 1);
     assert_eq!(listed.snapshots[0].config_id, "openrouter-work");
+    assert_eq!(call_count.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
 async fn official_quota_refresh_is_single_flight_per_config() {
-    let server = MockServer::start().await;
     let call_count = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&call_count);
-    Mock::given(method("GET"))
-        .and(path("/v1/key"))
-        .respond_with(move |_: &wiremock::Request| {
-            counter.fetch_add(1, Ordering::SeqCst);
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {
-                    "usage": 1.0,
-                    "limit": 10.0,
-                    "limit_remaining": 9.0
-                }
-            }))
-        })
-        .mount(&server)
-        .await;
-
     let workspace = prepare_workspace("official-quota-single-flight");
-    let mut config = sample_openrouter_config("provider-test-token");
-    config.base_url = Some(server.uri());
     DesktopProviderSettingsStore::new(workspace.clone())
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openrouter-work".to_owned()),
-            configs: vec![config],
+            configs: vec![sample_openrouter_config("provider-test-token")],
         })
         .unwrap();
-    let runtime = Arc::new(DesktopRuntimeState::with_workspace_for_test(workspace).unwrap());
+    let runtime = Arc::new(
+        DesktopRuntimeState::with_workspace_and_account_usage_registry_for_test(
+            workspace,
+            fake_account_usage_registry(Arc::clone(&call_count), Duration::from_millis(50)),
+        )
+        .unwrap(),
+    );
 
     let first = Arc::clone(&runtime);
     let second = Arc::clone(&runtime);
@@ -213,11 +275,7 @@ fn official_quota_cache_recovers_from_invalid_json() {
     let workspace = prepare_workspace("official-quota-invalid-json");
     let runtime_dir = workspace.join(".jyowo").join("runtime");
     std::fs::create_dir_all(&runtime_dir).unwrap();
-    std::fs::write(
-        runtime_dir.join("provider-quota-cache.json"),
-        b"{not-json",
-    )
-    .unwrap();
+    std::fs::write(runtime_dir.join("provider-quota-cache.json"), b"{not-json").unwrap();
 
     let store = DesktopProviderQuotaCacheStore::new(workspace);
     let record = store.load_record().unwrap();

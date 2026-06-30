@@ -139,14 +139,14 @@ mod conversations;
 mod mcp;
 #[path = "commands/memory.rs"]
 mod memory;
-#[path = "commands/providers.rs"]
-mod providers;
 #[path = "commands/model_usage_summary.rs"]
 mod model_usage_summary;
 #[path = "commands/official_quota.rs"]
 mod official_quota;
 #[path = "commands/provider_probe.rs"]
 mod provider_probe;
+#[path = "commands/providers.rs"]
+mod providers;
 #[path = "commands/runs_permissions.rs"]
 mod runs_permissions;
 #[path = "commands/skills.rs"]
@@ -220,6 +220,7 @@ fn provider_settings_record_with_minimax_config(
             display_name: "MiniMax service".to_owned(),
             id: config_id.to_owned(),
             model_id: "minimax-text-01".to_owned(),
+            official_quota_api_key: None,
             provider_id: "minimax".to_owned(),
             model_descriptor: ProviderModelDescriptorRecord {
                 protocol: ModelProtocol::ChatCompletions,
@@ -323,6 +324,7 @@ fn provider_settings_with_openai_and_minimax(
                 display_name: "OpenAI main".to_owned(),
                 id: openai_config_id.to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             },
@@ -333,6 +335,7 @@ fn provider_settings_with_openai_and_minimax(
                 display_name: "MiniMax image".to_owned(),
                 id: minimax_config_id.to_owned(),
                 model_id: "minimax-text-01".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "minimax".to_owned(),
                 model_descriptor: ProviderModelDescriptorRecord {
                     protocol: ModelProtocol::ChatCompletions,

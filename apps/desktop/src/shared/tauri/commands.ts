@@ -1106,6 +1106,7 @@ const providerSettingsRequestSchema = z
     configId: z.string().trim().min(1).optional(),
     displayName: z.string().trim().min(1).optional(),
     modelId: z.string().trim().min(1),
+    officialQuotaApiKey: z.string().trim().min(1).optional(),
     providerId: providerIdSchema,
     setDefault: z.boolean().optional(),
   })
@@ -1164,6 +1165,7 @@ const providerConfigSchema = z
     baseUrl: z.string().min(1).optional(),
     displayName: z.string().min(1),
     hasApiKey: z.boolean(),
+    hasOfficialQuotaApiKey: z.boolean(),
     id: z.string().min(1),
     isDefault: z.boolean(),
     modelId: z.string().min(1),

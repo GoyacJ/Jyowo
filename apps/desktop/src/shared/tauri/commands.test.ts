@@ -2618,6 +2618,7 @@ describe('CommandClient', () => {
             baseUrl: 'https://gateway.example.com',
             displayName: 'OpenAI gateway',
             hasApiKey: true,
+            hasOfficialQuotaApiKey: false,
             id: 'openai',
             isDefault: true,
             modelId: 'gpt-5.4-mini',
@@ -2705,6 +2706,7 @@ describe('CommandClient', () => {
           protocol: 'responses',
           displayName: 'OpenAI',
           hasApiKey: true,
+          hasOfficialQuotaApiKey: false,
           id: 'openai',
           isDefault: true,
           modelId: 'gpt-5.4-mini',
@@ -2719,6 +2721,7 @@ describe('CommandClient', () => {
 
   it('validates and saves provider settings without returning raw keys', async () => {
     const providerToken = 'provider-test-token'
+    const officialQuotaToken = 'official-quota-token'
     const invoke = vi.fn(async (command: string) => {
       if (command === 'validate_provider_settings') {
         return {
@@ -2748,6 +2751,7 @@ describe('CommandClient', () => {
           baseUrl: 'https://gateway.example.com',
           displayName: 'OpenAI gateway',
           hasApiKey: true,
+          hasOfficialQuotaApiKey: true,
           id: 'openai',
           isDefault: true,
           modelDescriptor: openAiModelDescriptor,
@@ -2780,6 +2784,7 @@ describe('CommandClient', () => {
           configId: 'openai',
           displayName: 'OpenAI gateway',
           modelId: 'gpt-5.4-mini',
+          officialQuotaApiKey: officialQuotaToken,
           providerId: 'openai',
           setDefault: true,
         },
@@ -2791,6 +2796,7 @@ describe('CommandClient', () => {
         baseUrl: 'https://gateway.example.com',
         displayName: 'OpenAI gateway',
         hasApiKey: true,
+        hasOfficialQuotaApiKey: true,
         id: 'openai',
         isDefault: true,
         modelDescriptor: openAiModelDescriptor,
@@ -2812,6 +2818,7 @@ describe('CommandClient', () => {
     })
 
     expect(JSON.stringify(invoke.mock.results.slice(0, 2))).not.toContain(providerToken)
+    expect(JSON.stringify(invoke.mock.results.slice(0, 2))).not.toContain(officialQuotaToken)
     expect(invoke).toHaveBeenCalledWith('validate_provider_settings', {
       modelId: 'gpt-5.4-mini',
       providerId: 'openai',
@@ -2822,6 +2829,7 @@ describe('CommandClient', () => {
       configId: 'openai',
       displayName: 'OpenAI gateway',
       modelId: 'gpt-5.4-mini',
+      officialQuotaApiKey: officialQuotaToken,
       providerId: 'openai',
       setDefault: true,
     })
@@ -2883,6 +2891,16 @@ describe('CommandClient', () => {
           apiKey: '',
           modelId: '',
           providerId: 'unknown',
+        } as unknown as Parameters<typeof saveProviderSettings>[0],
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      saveProviderSettings(
+        {
+          modelId: 'gpt-5.4-mini',
+          official_quota_api_key: 'snake-case-token',
+          providerId: 'openai',
         } as unknown as Parameters<typeof saveProviderSettings>[0],
         client,
       ),
@@ -3130,7 +3148,7 @@ describe('CommandClient', () => {
       }),
     )
     await expect(
-      refreshOfficialQuota({ configId: 'anthropic-work' }, unsupportedClient),
+      refreshOfficialQuota({ configId: 'gemini-work' }, unsupportedClient),
     ).resolves.toMatchObject({
       snapshot: { status: 'unsupported', safeMessage: 'No official quota API.' },
     })

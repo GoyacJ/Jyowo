@@ -39,7 +39,11 @@ impl ModelProvider for ProbeTestProvider {
         }]
     }
 
-    async fn infer(&self, _req: ModelRequest, _ctx: InferContext) -> Result<ModelStream, ModelError> {
+    async fn infer(
+        &self,
+        _req: ModelRequest,
+        _ctx: InferContext,
+    ) -> Result<ModelStream, ModelError> {
         if self.hang_after_start {
             let events = self.events.clone();
             return Ok(Box::pin(event_stream! {
@@ -106,7 +110,10 @@ async fn provider_probe_runner_maps_auth_stream_error_without_provider_body() {
     )
     .await;
 
-    assert_eq!(outcome.snapshot.status, ProviderProbeStatus::Unauthenticated);
+    assert_eq!(
+        outcome.snapshot.status,
+        ProviderProbeStatus::Unauthenticated
+    );
     assert_eq!(
         outcome.snapshot.error_kind,
         Some(ProviderProbeErrorKind::Auth)

@@ -8,9 +8,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use harness_contracts::{
-    OfficialQuotaScope, OfficialQuotaSnapshot, OfficialQuotaStatus,
-};
+use harness_contracts::{OfficialQuotaScope, OfficialQuotaSnapshot, OfficialQuotaStatus};
 use serde::Deserialize;
 
 /// Default cache TTL when a provider response does not include expiry metadata.
@@ -20,6 +18,9 @@ const OPENROUTER_KEY_SOURCE: &str =
     "https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key";
 const DEEPSEEK_BALANCE_SOURCE: &str = "https://api-docs.deepseek.com/api/get-user-balance";
 const OPENAI_USAGE_SOURCE: &str = "https://platform.openai.com/docs/api-reference/usage";
+const ANTHROPIC_USAGE_SOURCE: &str =
+    "https://platform.claude.com/docs/en/api/admin/analytics/usage/list";
+const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderAccountUsageRequest {
@@ -27,6 +28,7 @@ pub struct ProviderAccountUsageRequest {
     pub provider_id: String,
     pub model_id: Option<String>,
     pub api_key: String,
+    pub official_quota_api_key: Option<String>,
     pub base_url: Option<String>,
 }
 
@@ -67,8 +69,7 @@ impl ProviderAccountUsageRegistry {
     }
 
     pub fn register(&mut self, client: Arc<dyn ProviderAccountUsageClient>) {
-        self.clients
-            .insert(client.provider_id().to_owned(), client);
+        self.clients.insert(client.provider_id().to_owned(), client);
     }
 
     pub fn get(&self, provider_id: &str) -> Option<Arc<dyn ProviderAccountUsageClient>> {
@@ -89,8 +90,9 @@ pub fn default_account_usage_registry() -> ProviderAccountUsageRegistry {
     registry.register(Arc::new(OpenRouterAccountUsageClient));
     #[cfg(feature = "deepseek")]
     registry.register(Arc::new(DeepSeekAccountUsageClient));
-    registry.register(Arc::new(OpenAiAdminRequiredClient));
-    registry.register(Arc::new(CodexAdminRequiredClient));
+    registry.register(Arc::new(OpenAiAccountUsageClient));
+    registry.register(Arc::new(CodexAccountUsageClient));
+    registry.register(Arc::new(AnthropicAccountUsageClient));
     registry
 }
 
@@ -109,7 +111,10 @@ pub fn compute_expires_at(fetched_at: DateTime<Utc>, ttl: Duration) -> DateTime<
 }
 
 #[must_use]
-pub fn with_staleness(mut snapshot: OfficialQuotaSnapshot, now: DateTime<Utc>) -> OfficialQuotaSnapshot {
+pub fn with_staleness(
+    mut snapshot: OfficialQuotaSnapshot,
+    now: DateTime<Utc>,
+) -> OfficialQuotaSnapshot {
     snapshot.is_stale = compute_is_stale(snapshot.fetched_at, snapshot.expires_at, now);
     snapshot
 }
@@ -338,10 +343,10 @@ fn supported_snapshot(
     }
 }
 
-struct OpenAiAdminRequiredClient;
+struct OpenAiAccountUsageClient;
 
 #[async_trait]
-impl ProviderAccountUsageClient for OpenAiAdminRequiredClient {
+impl ProviderAccountUsageClient for OpenAiAccountUsageClient {
     fn provider_id(&self) -> &str {
         "openai"
     }
@@ -356,18 +361,16 @@ impl ProviderAccountUsageClient for OpenAiAdminRequiredClient {
 
     async fn fetch_quota(
         &self,
-        _request: ProviderAccountUsageRequest,
+        request: ProviderAccountUsageRequest,
     ) -> Result<OfficialQuotaSnapshot, AccountUsageError> {
-        Err(AccountUsageError::AuthRequired {
-            safe_message: "OpenAI organization usage requires an admin API key that is not configured in provider settings.".to_owned(),
-        })
+        fetch_openai_usage_quota(&request, self.source_url(), self.cache_ttl(), "OpenAI").await
     }
 }
 
-struct CodexAdminRequiredClient;
+struct CodexAccountUsageClient;
 
 #[async_trait]
-impl ProviderAccountUsageClient for CodexAdminRequiredClient {
+impl ProviderAccountUsageClient for CodexAccountUsageClient {
     fn provider_id(&self) -> &str {
         "codex"
     }
@@ -384,10 +387,322 @@ impl ProviderAccountUsageClient for CodexAdminRequiredClient {
         &self,
         request: ProviderAccountUsageRequest,
     ) -> Result<OfficialQuotaSnapshot, AccountUsageError> {
-        let _ = request;
-        Err(AccountUsageError::AuthRequired {
-            safe_message: "OpenAI organization usage requires an admin API key that is not configured in provider settings.".to_owned(),
+        fetch_openai_usage_quota(&request, self.source_url(), self.cache_ttl(), "Codex").await
+    }
+}
+
+async fn fetch_openai_usage_quota(
+    request: &ProviderAccountUsageRequest,
+    source_url: &'static str,
+    ttl: Duration,
+    label: &str,
+) -> Result<OfficialQuotaSnapshot, AccountUsageError> {
+    let Some(admin_key) = request
+        .official_quota_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Err(AccountUsageError::AuthRequired {
+            safe_message: format!(
+                "{label} organization usage requires a separate admin API key for official quota."
+            ),
+        });
+    };
+    let url = openai_official_usage_url(request.base_url.as_deref(), label, Utc::now())?;
+
+    let response = reqwest::Client::new()
+        .get(url)
+        .bearer_auth(admin_key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|_| AccountUsageError::Failed {
+            safe_message: format!("{label} quota request failed due to a network error."),
+        })?;
+
+    let status = response.status();
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return Err(AccountUsageError::AuthRequired {
+            safe_message: format!("{label} rejected the configured official quota admin key."),
+        });
+    }
+    if !status.is_success() {
+        return Err(AccountUsageError::Failed {
+            safe_message: format!(
+                "{label} quota request failed with status {}.",
+                status.as_u16()
+            ),
+        });
+    }
+
+    let body: OpenAiUsageResponse =
+        response
+            .json()
+            .await
+            .map_err(|_| AccountUsageError::Failed {
+                safe_message: format!("{label} quota response could not be parsed."),
+            })?;
+    let input_tokens = body
+        .data
+        .iter()
+        .map(|bucket| {
+            bucket
+                .results
+                .iter()
+                .map(|result| result.input_tokens)
+                .sum::<u64>()
         })
+        .sum::<u64>();
+    let output_tokens = body
+        .data
+        .iter()
+        .map(|bucket| {
+            bucket
+                .results
+                .iter()
+                .map(|result| result.output_tokens)
+                .sum::<u64>()
+        })
+        .sum::<u64>();
+    let total_tokens = input_tokens.saturating_add(output_tokens);
+
+    let billing_label = format!("{label} organization usage");
+    Ok(supported_snapshot(
+        request,
+        source_url,
+        ttl,
+        Some(total_tokens),
+        None,
+        None,
+        "tokens",
+        Some(&billing_label),
+    ))
+}
+
+fn openai_official_usage_url(
+    base_url: Option<&str>,
+    label: &str,
+    generated_at: DateTime<Utc>,
+) -> Result<String, AccountUsageError> {
+    let base_url = base_url
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("https://api.openai.com")
+        .trim_end_matches('/');
+    let parsed = reqwest::Url::parse(base_url).map_err(|_| AccountUsageError::Failed {
+        safe_message: format!("{label} official quota endpoint is not a valid URL."),
+    })?;
+    let is_official_origin = parsed.scheme() == "https"
+        && parsed.host_str() == Some("api.openai.com")
+        && matches!(parsed.port_or_known_default(), Some(443));
+    let path = parsed.path().trim_end_matches('/');
+    if !is_official_origin || !matches!(path, "" | "/" | "/v1") {
+        return Err(AccountUsageError::Failed {
+            safe_message: format!(
+                "{label} official quota requires the official OpenAI API endpoint."
+            ),
+        });
+    }
+    let end_time = generated_at.timestamp().max(0);
+    let start_time = (generated_at - chrono::TimeDelta::days(31))
+        .timestamp()
+        .max(0);
+    let mut usage_url = reqwest::Url::parse(
+        "https://api.openai.com/v1/organization/usage/completions",
+    )
+    .map_err(|_| AccountUsageError::Failed {
+        safe_message: format!("{label} official quota endpoint is not a valid URL."),
+    })?;
+    usage_url
+        .query_pairs_mut()
+        .append_pair("start_time", &start_time.to_string())
+        .append_pair("end_time", &end_time.to_string())
+        .append_pair("bucket_width", "1d");
+    Ok(usage_url.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiUsageResponse {
+    #[serde(default)]
+    data: Vec<OpenAiUsageBucket>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiUsageBucket {
+    #[serde(default)]
+    results: Vec<OpenAiUsageResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiUsageResult {
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
+}
+
+struct AnthropicAccountUsageClient;
+
+#[async_trait]
+impl ProviderAccountUsageClient for AnthropicAccountUsageClient {
+    fn provider_id(&self) -> &str {
+        "anthropic"
+    }
+
+    fn source_url(&self) -> &'static str {
+        ANTHROPIC_USAGE_SOURCE
+    }
+
+    fn cache_ttl(&self) -> Duration {
+        DEFAULT_QUOTA_CACHE_TTL
+    }
+
+    async fn fetch_quota(
+        &self,
+        request: ProviderAccountUsageRequest,
+    ) -> Result<OfficialQuotaSnapshot, AccountUsageError> {
+        let Some(admin_key) = request
+            .official_quota_api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Err(AccountUsageError::AuthRequired {
+                safe_message:
+                    "Anthropic usage analytics requires a separate admin API key for official quota."
+                        .to_owned(),
+            });
+        };
+        let url = anthropic_official_usage_url(request.base_url.as_deref())?;
+
+        let response = reqwest::Client::new()
+            .get(url)
+            .header("x-api-key", admin_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|_| AccountUsageError::Failed {
+                safe_message: "Anthropic quota request failed due to a network error.".to_owned(),
+            })?;
+
+        let status = response.status();
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(AccountUsageError::AuthRequired {
+                safe_message: "Anthropic rejected the configured official quota admin key."
+                    .to_owned(),
+            });
+        }
+        if !status.is_success() {
+            return Err(AccountUsageError::Failed {
+                safe_message: format!(
+                    "Anthropic quota request failed with status {}.",
+                    status.as_u16()
+                ),
+            });
+        }
+
+        let body: AnthropicUsageResponse =
+            response
+                .json()
+                .await
+                .map_err(|_| AccountUsageError::Failed {
+                    safe_message: "Anthropic quota response could not be parsed.".to_owned(),
+                })?;
+        let total_tokens = anthropic_usage_tokens(&body);
+
+        Ok(supported_snapshot(
+            &request,
+            self.source_url(),
+            self.cache_ttl(),
+            Some(total_tokens),
+            None,
+            None,
+            "tokens",
+            Some("Anthropic organization usage"),
+        ))
+    }
+}
+
+fn anthropic_official_usage_url(base_url: Option<&str>) -> Result<String, AccountUsageError> {
+    let base_url = base_url
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("https://api.anthropic.com")
+        .trim_end_matches('/');
+    let parsed = reqwest::Url::parse(base_url).map_err(|_| AccountUsageError::Failed {
+        safe_message: "Anthropic official quota endpoint is not a valid URL.".to_owned(),
+    })?;
+    let is_official_origin = parsed.scheme() == "https"
+        && parsed.host_str() == Some("api.anthropic.com")
+        && matches!(parsed.port_or_known_default(), Some(443));
+    let path = parsed.path().trim_end_matches('/');
+    if !is_official_origin || !matches!(path, "" | "/" | "/v1") {
+        return Err(AccountUsageError::Failed {
+            safe_message: "Anthropic official quota requires the official Anthropic API endpoint."
+                .to_owned(),
+        });
+    }
+
+    let mut url =
+        reqwest::Url::parse("https://api.anthropic.com/v1/organizations/usage_report/messages")
+            .map_err(|_| AccountUsageError::Failed {
+                safe_message: "Anthropic official quota endpoint is not a valid URL.".to_owned(),
+            })?;
+    let ending_at = Utc::now();
+    let starting_at = ending_at - chrono::Duration::days(7);
+    url.query_pairs_mut()
+        .append_pair("starting_at", &starting_at.to_rfc3339())
+        .append_pair("ending_at", &ending_at.to_rfc3339())
+        .append_pair("bucket_width", "1d");
+    Ok(url.into())
+}
+
+fn anthropic_usage_tokens(body: &AnthropicUsageResponse) -> u64 {
+    body.data
+        .iter()
+        .map(|bucket| {
+            bucket
+                .results
+                .iter()
+                .map(AnthropicUsageResult::total_tokens)
+                .sum::<u64>()
+        })
+        .sum()
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicUsageResponse {
+    #[serde(default)]
+    data: Vec<AnthropicUsageBucket>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicUsageBucket {
+    #[serde(default)]
+    results: Vec<AnthropicUsageResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicUsageResult {
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
+    #[serde(default)]
+    uncached_input_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: u64,
+    #[serde(default)]
+    cache_read_input_tokens: u64,
+}
+
+impl AnthropicUsageResult {
+    fn total_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.output_tokens)
+            .saturating_add(self.uncached_input_tokens)
+            .saturating_add(self.cache_creation_input_tokens)
+            .saturating_add(self.cache_read_input_tokens)
     }
 }
 
@@ -413,12 +728,7 @@ impl ProviderAccountUsageClient for OpenRouterAccountUsageClient {
         &self,
         request: ProviderAccountUsageRequest,
     ) -> Result<OfficialQuotaSnapshot, AccountUsageError> {
-        let base_url = request
-            .base_url
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("https://openrouter.ai/api");
-        let url = format!("{}/v1/key", base_url.trim_end_matches('/'));
+        let url = openrouter_official_key_url(request.base_url.as_deref())?;
 
         let response = reqwest::Client::new()
             .get(url)
@@ -445,9 +755,13 @@ impl ProviderAccountUsageClient for OpenRouterAccountUsageClient {
             });
         }
 
-        let body: OpenRouterKeyResponse = response.json().await.map_err(|_| AccountUsageError::Failed {
-            safe_message: "OpenRouter quota response could not be parsed.".to_owned(),
-        })?;
+        let body: OpenRouterKeyResponse =
+            response
+                .json()
+                .await
+                .map_err(|_| AccountUsageError::Failed {
+                    safe_message: "OpenRouter quota response could not be parsed.".to_owned(),
+                })?;
 
         let data = body.data;
         let quota_used = Some(decimal_to_micros(data.usage));
@@ -465,6 +779,29 @@ impl ProviderAccountUsageClient for OpenRouterAccountUsageClient {
             Some("OpenRouter credits"),
         ))
     }
+}
+
+#[cfg(feature = "openrouter")]
+fn openrouter_official_key_url(base_url: Option<&str>) -> Result<String, AccountUsageError> {
+    let base_url = base_url
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("https://openrouter.ai/api")
+        .trim_end_matches('/');
+    let parsed = reqwest::Url::parse(base_url).map_err(|_| AccountUsageError::Failed {
+        safe_message: "OpenRouter official quota endpoint is not a valid URL.".to_owned(),
+    })?;
+    let is_official_origin = parsed.scheme() == "https"
+        && parsed.host_str() == Some("openrouter.ai")
+        && matches!(parsed.port_or_known_default(), Some(443));
+    let path = parsed.path().trim_end_matches('/');
+    if !is_official_origin || !matches!(path, "" | "/" | "/api") {
+        return Err(AccountUsageError::Failed {
+            safe_message:
+                "OpenRouter official quota requires the official OpenRouter API endpoint."
+                    .to_owned(),
+        });
+    }
+    Ok("https://openrouter.ai/api/v1/key".to_owned())
 }
 
 #[cfg(feature = "openrouter")]
@@ -503,12 +840,7 @@ impl ProviderAccountUsageClient for DeepSeekAccountUsageClient {
         &self,
         request: ProviderAccountUsageRequest,
     ) -> Result<OfficialQuotaSnapshot, AccountUsageError> {
-        let base_url = request
-            .base_url
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("https://api.deepseek.com");
-        let url = format!("{}/user/balance", base_url.trim_end_matches('/'));
+        let url = deepseek_official_balance_url(request.base_url.as_deref())?;
 
         let response = reqwest::Client::new()
             .get(url)
@@ -535,11 +867,13 @@ impl ProviderAccountUsageClient for DeepSeekAccountUsageClient {
             });
         }
 
-        let body: DeepSeekBalanceResponse = response.json().await.map_err(|_| {
-            AccountUsageError::Failed {
-                safe_message: "DeepSeek quota response could not be parsed.".to_owned(),
-            }
-        })?;
+        let body: DeepSeekBalanceResponse =
+            response
+                .json()
+                .await
+                .map_err(|_| AccountUsageError::Failed {
+                    safe_message: "DeepSeek quota response could not be parsed.".to_owned(),
+                })?;
 
         let preferred = body
             .balance_infos
@@ -577,6 +911,28 @@ impl ProviderAccountUsageClient for DeepSeekAccountUsageClient {
 }
 
 #[cfg(feature = "deepseek")]
+fn deepseek_official_balance_url(base_url: Option<&str>) -> Result<String, AccountUsageError> {
+    let base_url = base_url
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("https://api.deepseek.com")
+        .trim_end_matches('/');
+    let parsed = reqwest::Url::parse(base_url).map_err(|_| AccountUsageError::Failed {
+        safe_message: "DeepSeek official quota endpoint is not a valid URL.".to_owned(),
+    })?;
+    let is_official_origin = parsed.scheme() == "https"
+        && parsed.host_str() == Some("api.deepseek.com")
+        && matches!(parsed.port_or_known_default(), Some(443));
+    let path = parsed.path().trim_end_matches('/');
+    if !is_official_origin || !matches!(path, "" | "/" | "/v1") {
+        return Err(AccountUsageError::Failed {
+            safe_message: "DeepSeek official quota requires the official DeepSeek API endpoint."
+                .to_owned(),
+        });
+    }
+    Ok("https://api.deepseek.com/user/balance".to_owned())
+}
+
+#[cfg(feature = "deepseek")]
 #[derive(Debug, Deserialize)]
 struct DeepSeekBalanceResponse {
     balance_infos: Vec<DeepSeekBalanceInfo>,
@@ -589,4 +945,113 @@ struct DeepSeekBalanceInfo {
     total_balance: String,
     granted_balance: String,
     topped_up_balance: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn openai_official_usage_url_accepts_only_official_origin() {
+        let generated_at = Utc.with_ymd_and_hms(2026, 6, 30, 0, 0, 0).unwrap();
+        let default_url = openai_official_usage_url(None, "OpenAI", generated_at).unwrap();
+        assert_eq!(
+            reqwest::Url::parse(&default_url).unwrap().path(),
+            "/v1/organization/usage/completions"
+        );
+
+        let v1_url =
+            openai_official_usage_url(Some("https://api.openai.com/v1"), "OpenAI", generated_at)
+                .unwrap();
+        assert_eq!(v1_url, default_url);
+
+        let custom =
+            openai_official_usage_url(Some("http://127.0.0.1:8080/v1"), "OpenAI", generated_at);
+        assert!(matches!(custom, Err(AccountUsageError::Failed { .. })));
+    }
+
+    #[test]
+    fn openai_official_usage_url_includes_required_usage_window() {
+        let url = openai_official_usage_url(
+            None,
+            "OpenAI",
+            Utc.with_ymd_and_hms(2026, 6, 30, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+        let parsed = reqwest::Url::parse(&url).unwrap();
+        let params = parsed
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(params.get("bucket_width"), Some(&"1d".to_owned()));
+        assert_eq!(params.get("start_time"), Some(&"1780099200".to_owned()));
+        assert_eq!(params.get("end_time"), Some(&"1782777600".to_owned()));
+    }
+
+    #[test]
+    #[cfg(feature = "openrouter")]
+    fn openrouter_official_key_url_accepts_only_official_origin() {
+        let default_url = openrouter_official_key_url(None).unwrap();
+        assert_eq!(default_url, "https://openrouter.ai/api/v1/key");
+
+        let configured_url =
+            openrouter_official_key_url(Some("https://openrouter.ai/api")).unwrap();
+        assert_eq!(configured_url, default_url);
+
+        let custom = openrouter_official_key_url(Some("https://gateway.example.com/api"));
+        assert!(matches!(custom, Err(AccountUsageError::Failed { .. })));
+    }
+
+    #[test]
+    #[cfg(feature = "deepseek")]
+    fn deepseek_official_balance_url_accepts_only_official_origin() {
+        let default_url = deepseek_official_balance_url(None).unwrap();
+        assert_eq!(default_url, "https://api.deepseek.com/user/balance");
+
+        let configured_url =
+            deepseek_official_balance_url(Some("https://api.deepseek.com/v1")).unwrap();
+        assert_eq!(configured_url, default_url);
+
+        let custom = deepseek_official_balance_url(Some("https://gateway.example.com/v1"));
+        assert!(matches!(custom, Err(AccountUsageError::Failed { .. })));
+    }
+
+    #[test]
+    fn anthropic_usage_response_maps_token_fields() {
+        let body: AnthropicUsageResponse = serde_json::from_value(serde_json::json!({
+            "data": [
+                {
+                    "results": [
+                        {
+                            "input_tokens": 1,
+                            "uncached_input_tokens": 2,
+                            "cache_creation_input_tokens": 3,
+                            "cache_read_input_tokens": 4,
+                            "output_tokens": 5
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(anthropic_usage_tokens(&body), 15);
+    }
+
+    #[test]
+    fn anthropic_official_usage_url_accepts_only_official_origin() {
+        let default_url = anthropic_official_usage_url(None).unwrap();
+        assert!(default_url
+            .starts_with("https://api.anthropic.com/v1/organizations/usage_report/messages?"));
+
+        let v1_url = anthropic_official_usage_url(Some("https://api.anthropic.com/v1")).unwrap();
+        assert!(
+            v1_url.starts_with("https://api.anthropic.com/v1/organizations/usage_report/messages?")
+        );
+
+        let custom = anthropic_official_usage_url(Some("http://127.0.0.1:8080/v1"));
+        assert!(matches!(custom, Err(AccountUsageError::Failed { .. })));
+    }
 }

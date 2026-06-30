@@ -10,6 +10,7 @@
 #[cfg(feature = "redactor")]
 pub mod contract;
 pub mod error;
+pub mod model_usage;
 pub mod observer;
 #[cfg(feature = "otel")]
 pub mod otel;
@@ -19,13 +20,13 @@ pub mod prometheus;
 pub mod redactor;
 #[cfg(feature = "replay")]
 pub mod replay;
-pub mod model_usage;
 pub mod tracer;
 pub mod usage;
 
 #[cfg(feature = "redactor")]
 pub use contract::*;
 pub use error::*;
+pub use model_usage::*;
 pub use observer::*;
 #[cfg(feature = "otel")]
 pub use otel::*;
@@ -35,6 +36,5 @@ pub use prometheus::*;
 pub use redactor::*;
 #[cfg(feature = "replay")]
 pub use replay::*;
-pub use model_usage::*;
 pub use tracer::*;
 pub use usage::*;

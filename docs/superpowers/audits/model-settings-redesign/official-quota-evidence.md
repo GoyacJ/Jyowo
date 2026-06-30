@@ -14,24 +14,24 @@ anthropic, codex, deepseek, doubao, gemini, km, local-llama, minimax, openai, op
 
 ```text
 provider id: anthropic
-official account usage/quota API: none documented for API-key account balance or quota retrieval
-official source URL: https://docs.anthropic.com/en/api/getting-started
+official account usage/quota API: GET /v1/organizations/usage_report/messages
+official source URL: https://platform.claude.com/docs/en/api/admin/analytics/usage/list
 accessed at: 2026-06-30
-required credential scope: n/a
-credential storage decision: existing
-supported in this task: no
-reason: Official Anthropic API docs describe inference endpoints and rate limits only; no account balance or quota query endpoint usable with the stored API key.
+required credential scope: Anthropic Admin API key (distinct from standard inference API key)
+credential storage decision: extend
+supported in this task: yes
+reason: Anthropic Admin Usage Analytics exposes token usage over time and requires an admin key. Provider settings now store a separate optional official quota admin key, expose only `hasOfficialQuotaApiKey`, and the adapter calls the official Anthropic endpoint only on `api.anthropic.com`. Missing admin credentials fail closed as `auth_required`.
 ```
 
 ```text
 provider id: codex
-official account usage/quota API: OpenAI Organization Usage API (admin key required)
+official account usage/quota API: GET /v1/organization/usage/completions with `start_time`, `end_time`, and `bucket_width`
 official source URL: https://platform.openai.com/docs/api-reference/usage
 accessed at: 2026-06-30
 required credential scope: organization admin API key (distinct from standard chat API key)
 credential storage decision: extend
-supported in this task: no
-reason: Usage endpoints require an organization admin key not stored in current provider settings; adapter returns auth_required until a safe admin credential field exists.
+supported in this task: yes
+reason: Usage endpoints require an organization admin key whose scope is broader than the inference credential. Provider settings now store a separate optional official quota admin key, expose only `hasOfficialQuotaApiKey`, and the adapter uses that credential for the official usage completions API with an explicit query window. Missing admin credentials fail closed as `auth_required`.
 ```
 
 ```text
@@ -102,13 +102,13 @@ reason: MiniMax account balance is managed in the web console; official API docs
 
 ```text
 provider id: openai
-official account usage/quota API: OpenAI Organization Usage API (admin key required)
+official account usage/quota API: GET /v1/organization/usage/completions with `start_time`, `end_time`, and `bucket_width`
 official source URL: https://platform.openai.com/docs/api-reference/usage
 accessed at: 2026-06-30
 required credential scope: organization admin API key (distinct from standard chat API key)
 credential storage decision: extend
-supported in this task: no
-reason: Usage endpoints require an organization admin key not stored in current provider settings; adapter returns auth_required until a safe admin credential field exists.
+supported in this task: yes
+reason: Usage endpoints require an organization admin key whose scope is broader than the inference credential. Provider settings now store a separate optional official quota admin key, expose only `hasOfficialQuotaApiKey`, and the adapter uses that credential for the official usage completions API with an explicit query window. Missing admin credentials fail closed as `auth_required`.
 ```
 
 ```text

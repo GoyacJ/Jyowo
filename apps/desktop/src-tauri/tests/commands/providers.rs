@@ -105,6 +105,7 @@ async fn save_provider_settings_payload_stores_viewable_api_key_but_omits_key_fr
             config_id: None,
             display_name: Some("OpenAI Mini".to_owned()),
             model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
             provider_id: "openai".to_owned(),
             set_default: true,
         },
@@ -135,6 +136,46 @@ async fn save_provider_settings_payload_stores_viewable_api_key_but_omits_key_fr
 }
 
 #[tokio::test]
+async fn save_provider_settings_payload_stores_official_quota_key_but_omits_raw_key_from_payload() {
+    let raw_key = "provider-test-token";
+    let official_quota_key = "official-quota-admin-token";
+    let store = RecordingProviderSettingsStore::default();
+
+    let payload = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some(raw_key.to_owned()),
+            base_url: None,
+            config_id: None,
+            display_name: Some("OpenAI Mini".to_owned()),
+            model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: Some(official_quota_key.to_owned()),
+            provider_id: "openai".to_owned(),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+
+    let serialized = serde_json::to_string(&payload).unwrap();
+    assert!(serialized.contains("\"hasOfficialQuotaApiKey\":true"));
+    assert!(!serialized.contains(raw_key));
+    assert!(!serialized.contains(official_quota_key));
+
+    let record = store.record.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        record.configs[0].official_quota_api_key.as_deref(),
+        Some(official_quota_key)
+    );
+
+    let listed = list_provider_settings_with_store(&store).await.unwrap();
+    let listed_serialized = serde_json::to_string(&listed).unwrap();
+    assert!(listed_serialized.contains("\"hasOfficialQuotaApiKey\":true"));
+    assert!(!listed_serialized.contains(raw_key));
+    assert!(!listed_serialized.contains(official_quota_key));
+}
+
+#[tokio::test]
 async fn get_provider_config_api_key_with_store_requires_runtime_reveal_token_store() {
     let raw_key = "provider-test-token";
     let store = RecordingProviderSettingsStore {
@@ -147,6 +188,7 @@ async fn get_provider_config_api_key_with_store_requires_runtime_reveal_token_st
                 display_name: "OpenAI".to_owned(),
                 id: "openai".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
@@ -185,6 +227,7 @@ async fn provider_config_api_key_reveal_token_is_single_use_and_scoped_to_config
                     display_name: "OpenAI Work".to_owned(),
                     id: "openai-work".to_owned(),
                     model_id: "gpt-5.4-mini".to_owned(),
+                    official_quota_api_key: None,
                     provider_id: "openai".to_owned(),
                     model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
                 },
@@ -195,6 +238,7 @@ async fn provider_config_api_key_reveal_token_is_single_use_and_scoped_to_config
                     display_name: "OpenAI Personal".to_owned(),
                     id: "openai-personal".to_owned(),
                     model_id: "gpt-5.4-mini".to_owned(),
+                    official_quota_api_key: None,
                     provider_id: "openai".to_owned(),
                     model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
                 },
@@ -273,6 +317,7 @@ async fn request_provider_config_api_key_reveal_with_store_requires_runtime_reve
                 display_name: "OpenAI".to_owned(),
                 id: "openai".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
@@ -307,6 +352,7 @@ async fn provider_config_api_key_reveal_token_expires() {
                 display_name: "OpenAI".to_owned(),
                 id: "openai".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
@@ -353,6 +399,7 @@ async fn provider_config_api_key_reveal_token_rejects_config_key_changed_after_i
                 display_name: "OpenAI".to_owned(),
                 id: "openai".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
@@ -378,6 +425,7 @@ async fn provider_config_api_key_reveal_token_rejects_config_key_changed_after_i
                 display_name: "OpenAI".to_owned(),
                 id: "openai".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
@@ -412,6 +460,7 @@ async fn save_provider_settings_with_runtime_state_invalidates_pending_reveal_to
                 display_name: "OpenAI".to_owned(),
                 id: "openai".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
@@ -434,6 +483,7 @@ async fn save_provider_settings_with_runtime_state_invalidates_pending_reveal_to
             config_id: Some("openai".to_owned()),
             display_name: Some("OpenAI".to_owned()),
             model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
             provider_id: "openai".to_owned(),
             set_default: true,
         },
@@ -465,6 +515,7 @@ async fn save_provider_settings_payload_allows_same_provider_model_multiple_keys
             config_id: Some("openai-work".to_owned()),
             display_name: Some("OpenAI Work".to_owned()),
             model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
             provider_id: "openai".to_owned(),
             set_default: true,
         },
@@ -479,6 +530,7 @@ async fn save_provider_settings_payload_allows_same_provider_model_multiple_keys
             config_id: Some("openai-personal".to_owned()),
             display_name: Some("OpenAI Personal".to_owned()),
             model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
             provider_id: "openai".to_owned(),
             set_default: false,
         },
@@ -508,6 +560,7 @@ async fn list_provider_settings_payload_returns_profiles_without_raw_keys() {
                 display_name: "OpenAI gateway".to_owned(),
                 id: "openai".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
@@ -536,6 +589,7 @@ async fn list_provider_settings_payload_returns_saved_openrouter_dynamic_descrip
                 display_name: "OpenRouter dynamic".to_owned(),
                 id: "openrouter".to_owned(),
                 model_id: "dynamic/provider-model".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openrouter".to_owned(),
                 model_descriptor: openrouter_descriptor_record(
                     "dynamic/provider-model",
@@ -573,6 +627,7 @@ async fn list_provider_settings_payload_rejects_openrouter_descriptor_with_unsup
                 display_name: "OpenRouter image".to_owned(),
                 id: "openrouter".to_owned(),
                 model_id: "dynamic/image-model".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openrouter".to_owned(),
                 model_descriptor: openrouter_descriptor_record(
                     "dynamic/image-model",
@@ -612,6 +667,7 @@ async fn list_provider_settings_payload_rejects_openrouter_descriptor_with_wrong
                 display_name: "OpenRouter wrong protocol".to_owned(),
                 id: "openrouter".to_owned(),
                 model_id: "dynamic/messages-model".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openrouter".to_owned(),
                 model_descriptor: descriptor,
             }],
@@ -818,6 +874,7 @@ async fn provider_capability_route_rejects_provider_mismatch() {
             display_name: "OpenAI".to_owned(),
             id: "openai-image".to_owned(),
             model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
             provider_id: "openai".to_owned(),
             model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
         }],
@@ -1948,6 +2005,7 @@ async fn save_provider_settings_payload_reuses_saved_openrouter_dynamic_descript
             display_name: "OpenRouter dynamic".to_owned(),
             id: "openrouter".to_owned(),
             model_id: "dynamic/provider-model".to_owned(),
+            official_quota_api_key: None,
             provider_id: "openrouter".to_owned(),
             model_descriptor: openrouter_descriptor_record(
                 "dynamic/provider-model",
@@ -1965,6 +2023,7 @@ async fn save_provider_settings_payload_reuses_saved_openrouter_dynamic_descript
             config_id: Some("openrouter".to_owned()),
             display_name: Some("OpenRouter dynamic".to_owned()),
             model_id: "dynamic/provider-model".to_owned(),
+            official_quota_api_key: None,
             provider_id: "openrouter".to_owned(),
             set_default: true,
         },
@@ -1993,6 +2052,7 @@ async fn save_provider_settings_payload_requires_api_key_when_base_url_changes()
             display_name: "OpenAI gateway".to_owned(),
             id: "openai-gateway".to_owned(),
             model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
             provider_id: "openai".to_owned(),
             model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
         }],
@@ -2005,6 +2065,7 @@ async fn save_provider_settings_payload_requires_api_key_when_base_url_changes()
             config_id: Some("openai-gateway".to_owned()),
             display_name: Some("OpenAI gateway".to_owned()),
             model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
             provider_id: "openai".to_owned(),
             set_default: true,
         },
@@ -2018,6 +2079,46 @@ async fn save_provider_settings_payload_requires_api_key_when_base_url_changes()
 }
 
 #[tokio::test]
+async fn save_provider_settings_payload_does_not_preserve_official_quota_key_when_base_url_changes()
+{
+    let store = RecordingProviderSettingsStore::default();
+    *store.record.lock().unwrap() = Some(ProviderSettingsRecord {
+        default_config_id: Some("openai-gateway".to_owned()),
+        configs: vec![ProviderConfigRecord {
+            api_key: "provider-test-token".to_owned(),
+            protocol: ModelProtocol::Responses,
+            base_url: Some("https://gateway.example.com".to_owned()),
+            display_name: "OpenAI gateway".to_owned(),
+            id: "openai-gateway".to_owned(),
+            model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: Some("old-official-admin-key".to_owned()),
+            provider_id: "openai".to_owned(),
+            model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+        }],
+    });
+
+    let payload = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("new-provider-test-token".to_owned()),
+            base_url: Some("https://new-gateway.example.com".to_owned()),
+            config_id: Some("openai-gateway".to_owned()),
+            display_name: Some("OpenAI gateway".to_owned()),
+            model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
+            provider_id: "openai".to_owned(),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+
+    assert!(!payload.config.has_official_quota_api_key);
+    let record = store.record.lock().unwrap().clone().unwrap();
+    assert_eq!(record.configs[0].official_quota_api_key, None);
+}
+
+#[tokio::test]
 async fn save_provider_settings_payload_rejects_http_base_url_with_loopback_prefix_domain() {
     let store = RecordingProviderSettingsStore::default();
     let error = save_provider_settings_with_store(
@@ -2027,6 +2128,7 @@ async fn save_provider_settings_payload_rejects_http_base_url_with_loopback_pref
             config_id: None,
             display_name: Some("OpenAI gateway".to_owned()),
             model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
             provider_id: "openai".to_owned(),
             set_default: true,
         },
@@ -2051,6 +2153,7 @@ async fn save_provider_settings_payload_accepts_http_loopback_base_url() {
             config_id: None,
             display_name: Some("OpenAI gateway".to_owned()),
             model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
             provider_id: "openai".to_owned(),
             set_default: true,
         },
@@ -2078,6 +2181,7 @@ async fn save_provider_settings_payload_does_not_save_record_when_record_write_f
             config_id: None,
             display_name: None,
             model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
             provider_id: "openai".to_owned(),
             set_default: true,
         },
@@ -2105,6 +2209,7 @@ async fn set_conversation_model_config_with_runtime_state_persists_selection() {
                 display_name: "OpenAI Work".to_owned(),
                 id: "openai-work".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
@@ -2159,6 +2264,7 @@ async fn set_conversation_model_config_with_runtime_state_rejects_unknown_conver
                 display_name: "OpenAI Work".to_owned(),
                 id: "openai-work".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
@@ -2196,6 +2302,7 @@ async fn provider_settings_payload_rejects_invalid_provider_model_and_key() {
             config_id: None,
             display_name: None,
             model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
             provider_id: "unknown".to_owned(),
             set_default: true,
         },
@@ -2222,6 +2329,7 @@ async fn provider_settings_payload_rejects_invalid_provider_model_and_key() {
             config_id: None,
             display_name: None,
             model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
             provider_id: "openai".to_owned(),
             set_default: true,
         },
@@ -2269,6 +2377,7 @@ fn desktop_provider_settings_store_rejects_config_without_api_key() {
                 display_name: "OpenAI Work".to_owned(),
                 id: "openai-work".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
@@ -2297,6 +2406,7 @@ fn desktop_provider_settings_store_writes_owner_only_file_permissions() {
                 display_name: "OpenAI Work".to_owned(),
                 id: "openai-work".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
@@ -2335,6 +2445,7 @@ async fn set_conversation_model_config_with_runtime_state_allows_cross_provider_
                 display_name: "OpenAI Work".to_owned(),
                 id: "openai-work".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
@@ -2380,6 +2491,7 @@ fn desktop_provider_settings_store_rejects_symlink_settings_file() {
                 display_name: "OpenAI".to_owned(),
                 id: "openai".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],

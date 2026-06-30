@@ -86,6 +86,7 @@ describe('ModelConfigDialog', () => {
       setDefault: true,
     })
     expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('apiKey')
+    expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('officialQuotaApiKey')
   })
 
   it('saves a new API key only from the password field and does not show raw keys by default', async () => {
@@ -116,6 +117,37 @@ describe('ModelConfigDialog', () => {
     })
   })
 
+  it('saves a new official quota admin key only when typed', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: {
+        ...existingProfile,
+        hasOfficialQuotaApiKey: true,
+      },
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    const officialQuotaApiKey = within(dialog).getByLabelText('Official quota admin key')
+    expect(officialQuotaApiKey).toHaveAttribute('type', 'password')
+    expect(officialQuotaApiKey).toHaveValue('')
+
+    fireEvent.change(officialQuotaApiKey, { target: { value: 'admin-usage-key' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-openai',
+      officialQuotaApiKey: 'admin-usage-key',
+    })
+    expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('apiKey')
+  })
+
   it('clears the typed API key when save fails', async () => {
     const saveProviderSettings = vi.fn().mockRejectedValue(new Error('safe save failure'))
     renderDialog({
@@ -127,12 +159,16 @@ describe('ModelConfigDialog', () => {
 
     const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
     const apiKey = within(dialog).getByLabelText('API key')
+    const officialQuotaApiKey = within(dialog).getByLabelText('Official quota admin key')
     fireEvent.change(apiKey, { target: { value: 'sk-failed-secret' } })
+    fireEvent.change(officialQuotaApiKey, { target: { value: 'admin-failed-secret' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
     expect(apiKey).toHaveValue('')
+    expect(officialQuotaApiKey).toHaveValue('')
     expect(dialog).not.toHaveTextContent('sk-failed-secret')
+    expect(dialog).not.toHaveTextContent('admin-failed-secret')
   })
 
   it('clears the typed API key when closing without saving', () => {
@@ -141,12 +177,16 @@ describe('ModelConfigDialog', () => {
 
     const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
     const apiKey = within(dialog).getByLabelText('API key')
+    const officialQuotaApiKey = within(dialog).getByLabelText('Official quota admin key')
     fireEvent.change(apiKey, { target: { value: 'sk-unsaved-secret' } })
+    fireEvent.change(officialQuotaApiKey, { target: { value: 'admin-unsaved-secret' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
 
     expect(onOpenChange).toHaveBeenCalledWith(false)
     expect(apiKey).toHaveValue('')
+    expect(officialQuotaApiKey).toHaveValue('')
     expect(dialog).not.toHaveTextContent('sk-unsaved-secret')
+    expect(dialog).not.toHaveTextContent('admin-unsaved-secret')
   })
 
   it('switches the model field to the selected provider catalog', () => {
@@ -272,6 +312,7 @@ const existingProfile: ProviderConfig = {
   displayName: 'Primary OpenAI',
   baseUrl: 'https://api.openai.com/v1',
   hasApiKey: true,
+  hasOfficialQuotaApiKey: false,
   isDefault: true,
   protocol: 'responses',
   modelDescriptor: gpt41,

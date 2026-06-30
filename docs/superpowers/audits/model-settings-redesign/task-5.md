@@ -1,9 +1,9 @@
 # Model Settings Redesign Task 5 Audit
 
 ## Current Audit Status
-Code Review: PASS (manual; subagent unavailable)
-Security Review: PASS (manual; subagent unavailable)
-Last Updated: 2026-06-30T20:05:00Z
+Code Review: PASS
+Security Review: PASS
+Last Updated: 2026-06-30T20:00:13Z
 
 ## Task Analysis
 Task 5 analysis:
@@ -32,12 +32,12 @@ Task 5 exit analysis:
 - Remaining unsupported cases: UI matrix page (Task 6); type re-exports for UI consumption deferred to Task 6 to satisfy knip.
 
 ## Code Review Subagent
-Result: PASS (manual)
-Findings: Scope limited to view-model and queries; no fake metrics; default model from `isDefault`; capability route rows read-only with backend unavailable reasons; empty usage preserves three windows with zero totals.
+Result: PASS
+Findings: Retrospective fresh code-review subagent returned PASS for Task 5. View-model and query layers only combine backend state, probe/quota pending state is keyed by `configId`, duplicate mutations are blocked, and Capability Routes remains the route editing entry point.
 
 ## Security Review Subagent
-Result: PASS (manual)
-Findings: No credential storage in React state; mutations block duplicate per-`configId` dispatches; error messages from `getCommandErrorMessage`; no provider-native payload fields in view model types.
+Result: PASS
+Findings: Retrospective fresh security-review subagent returned PASS for Task 5. No credential storage in React state or provider-native payload fields were found; errors use safe command messages and duplicate per-config mutations are blocked.
 
 ## Gates
 - `pnpm -C apps/desktop test -- model-settings-view-model.test.ts`: exit 0

@@ -1,7 +1,7 @@
 use chrono::{TimeZone, Utc};
 use harness_contracts::{
-    export_all_schemas, CapabilityRouteHealth, CapabilityRouteKind, ModelUsageBucket, ModelUsagePeriod,
-    ModelUsageSummary, ModelUsageWindow, OfficialQuotaSnapshot,
+    export_all_schemas, CapabilityRouteHealth, CapabilityRouteKind, ModelUsageBucket,
+    ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow, OfficialQuotaSnapshot,
     OfficialQuotaStatus, ProviderProbeErrorKind, ProviderProbeSnapshot, ProviderProbeStatus,
     UsageSnapshot,
 };
@@ -293,6 +293,9 @@ fn model_settings_schema_exports_are_registered() {
         "official_quota_snapshot",
         "capability_route_health",
     ] {
-        assert!(schemas.contains_key(key), "missing model settings schema: {key}");
+        assert!(
+            schemas.contains_key(key),
+            "missing model settings schema: {key}"
+        );
     }
 }

@@ -18,6 +18,7 @@ use super::evals::*;
 use super::mcp::*;
 #[allow(unused_imports)]
 use super::memory::*;
+use super::model_settings::{OfficialQuotaFlights, ProviderProbeFlights};
 #[allow(unused_imports)]
 use super::plugins::*;
 #[allow(unused_imports)]
@@ -28,8 +29,8 @@ use super::runtime::*;
 use super::skills::*;
 #[allow(unused_imports)]
 use super::validation::*;
-use super::model_settings::{OfficialQuotaFlights, ProviderProbeFlights};
 use super::*;
+use harness_model::ProviderAccountUsageRegistry;
 
 mod automation;
 mod mcp;
@@ -979,10 +980,7 @@ impl ProviderDiagnosticsStore for DesktopProviderDiagnosticsStore {
         }
     }
 
-    fn upsert_snapshot(
-        &self,
-        snapshot: &ProviderProbeSnapshot,
-    ) -> Result<(), CommandErrorPayload> {
+    fn upsert_snapshot(&self, snapshot: &ProviderProbeSnapshot) -> Result<(), CommandErrorPayload> {
         let diagnostics_path = self.diagnostics_path();
         let mut record = self.load_record()?;
         if let Some(existing) = record
@@ -1005,7 +1003,9 @@ impl ProviderDiagnosticsStore for DesktopProviderDiagnosticsStore {
         })?;
         ensure_no_symlink_components(parent, "provider diagnostics directory")?;
         let bytes = serde_json::to_vec_pretty(&record).map_err(|error| {
-            runtime_operation_failed(format!("provider diagnostics serialization failed: {error}"))
+            runtime_operation_failed(format!(
+                "provider diagnostics serialization failed: {error}"
+            ))
         })?;
         write_atomic_runtime_file(
             &diagnostics_path,
@@ -1085,7 +1085,9 @@ impl super::ProviderQuotaCacheStore for DesktopProviderQuotaCacheStore {
         })?;
         ensure_no_symlink_components(parent, "provider quota cache directory")?;
         let bytes = serde_json::to_vec_pretty(&record).map_err(|error| {
-            runtime_operation_failed(format!("provider quota cache serialization failed: {error}"))
+            runtime_operation_failed(format!(
+                "provider quota cache serialization failed: {error}"
+            ))
         })?;
         write_atomic_runtime_file(
             &quota_cache_path,
@@ -1148,6 +1150,7 @@ pub struct DesktopRuntimeState {
     pub(crate) provider_probe_flights: ProviderProbeFlights,
     pub(crate) provider_quota_cache_store: Arc<dyn ProviderQuotaCacheStore>,
     pub(crate) official_quota_flights: OfficialQuotaFlights,
+    pub(crate) account_usage_registry: Arc<ProviderAccountUsageRegistry>,
     pub(crate) provider_capability_route_store: Arc<DesktopProviderCapabilityRouteStore>,
     pub(crate) provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
     pub(crate) execution_settings_lock: Arc<tokio::sync::Mutex<()>>,

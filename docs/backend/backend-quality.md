@@ -100,6 +100,8 @@ Allowed upstream-held transitive dependencies:
 | `toml` | `0.8.2` | `0.8.23` | `system-deps 6.2.2` | Linux GTK/Tauri build dependency chain |
 | `toml_datetime` | `0.6.3` | `0.6.11` | `proc-macro-crate 2.0.2` | exact dependency required by GTK proc-macro chain |
 | `toml_edit` | `0.20.2` | `0.20.7` | `proc-macro-crate 2.0.2` | exact dependency required by GTK proc-macro chain |
+| `time` | `0.3.51` | `0.3.52` | `tauri 2.11.4` | latest compatible Tauri runtime resolver keeps the time crate on 0.3.51 |
+| `time-macros` | `0.2.30` | `0.2.31` | `time 0.3.51` | proc-macro companion selected by the Tauri-held time 0.3.51 dependency |
 
 These entries are not direct project dependencies. Do not add `[patch.crates-io]`
 or force a transitive version to hide the audit output. Remove an entry when its

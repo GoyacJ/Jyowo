@@ -217,6 +217,7 @@ describe('ConversationWorkspace', () => {
               protocol: 'responses',
               displayName: 'OpenAI Work',
               hasApiKey: true,
+              hasOfficialQuotaApiKey: false,
               id: 'openai-work',
               isDefault: false,
               modelDescriptor: openAiModelDescriptor,

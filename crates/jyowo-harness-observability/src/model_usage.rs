@@ -90,10 +90,7 @@ impl WorkspaceTimezoneResolver for LocalTimezoneResolver {
     }
 
     fn offset_minutes_at(&self, utc: DateTime<Utc>) -> i32 {
-        utc.with_timezone(&chrono::Local)
-            .offset()
-            .local_minus_utc()
-            / 60
+        utc.with_timezone(&chrono::Local).offset().local_minus_utc() / 60
     }
 
     fn local_day_start_utc(&self, now_utc: DateTime<Utc>) -> DateTime<Utc> {
@@ -112,7 +109,8 @@ impl WorkspaceTimezoneResolver for LocalTimezoneResolver {
         let local = self.local_datetime(now_utc);
         let month_start = NaiveDate::from_ymd_opt(local.year(), local.month(), 1)
             .expect("month start should be valid");
-        let local_midnight = month_start.and_time(NaiveTime::from_hms_opt(0, 0, 0).expect("midnight"));
+        let local_midnight =
+            month_start.and_time(NaiveTime::from_hms_opt(0, 0, 0).expect("midnight"));
         chrono::Local
             .from_local_datetime(&local_midnight)
             .single()
@@ -139,7 +137,8 @@ where
     let month_start = timezone.local_month_start_utc(now_utc);
     let period_end = now_utc;
 
-    let mut today = WindowAccumulator::new(ModelUsagePeriod::Today, Some(today_start), Some(period_end));
+    let mut today =
+        WindowAccumulator::new(ModelUsagePeriod::Today, Some(today_start), Some(period_end));
     let mut month_to_date = WindowAccumulator::new(
         ModelUsagePeriod::MonthToDate,
         Some(month_start),
@@ -249,12 +248,15 @@ impl WindowAccumulator {
         };
 
         let key = model_usage_key(model_ref);
-        let bucket = self.by_model.entry(key.clone()).or_insert_with(|| ModelBucketState {
-            provider_id: model_ref.provider_id.clone(),
-            model_id: model_ref.model_id.clone(),
-            usage: UsageSnapshot::default(),
-            last_used_at: None,
-        });
+        let bucket = self
+            .by_model
+            .entry(key.clone())
+            .or_insert_with(|| ModelBucketState {
+                provider_id: model_ref.provider_id.clone(),
+                model_id: model_ref.model_id.clone(),
+                usage: UsageSnapshot::default(),
+                last_used_at: None,
+            });
         merge_usage(&mut bucket.usage, &event.delta);
         bucket.last_used_at = Some(match bucket.last_used_at {
             Some(current) => current.max(event.at),

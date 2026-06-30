@@ -31,7 +31,6 @@ type ModelDetailsDrawerProps = {
 }
 
 type RevealedApiKeyState = {
-  apiKey: string
   configId: string
   generation: number
 }
@@ -90,10 +89,10 @@ export function ModelDetailsDrawer({
       const payload = await getProviderConfigApiKey(configId, reveal.revealToken, commandClient)
       if (
         activeConfigIdRef.current === configId &&
+        payload.configId === configId &&
         revealGenerationRef.current === revealGeneration
       ) {
         setRevealedApiKey({
-          apiKey: payload.apiKey,
           configId,
           generation: revealGeneration,
         })
@@ -116,12 +115,10 @@ export function ModelDetailsDrawer({
     }
   }
 
-  const visibleApiKey =
+  const apiKeyRevealVerified =
     revealedApiKey &&
     revealedApiKey.configId === currentConfigId &&
     revealedApiKey.generation === revealGenerationRef.current
-      ? revealedApiKey.apiKey
-      : null
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open && row !== null}>
@@ -230,10 +227,10 @@ export function ModelDetailsDrawer({
                   >
                     {isRevealing ? t('provider.revealingApiKey') : t('provider.revealApiKey')}
                   </Button>
-                  {visibleApiKey ? (
-                    <code className="block rounded-sm border border-border bg-muted px-2 py-1 text-sm">
-                      {visibleApiKey}
-                    </code>
+                  {apiKeyRevealVerified ? (
+                    <p className="rounded-sm border border-border bg-muted px-2 py-1 text-muted-foreground text-sm">
+                      {t('provider.apiKeyRevealVerified')}
+                    </p>
                   ) : null}
                   {revealError ? (
                     <p className="text-destructive text-sm" role="alert">

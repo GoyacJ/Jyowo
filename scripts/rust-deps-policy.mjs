@@ -34,4 +34,18 @@ export const upstreamHeldRustDependencies = [
     owner: 'proc-macro-crate 2.0.2',
     constraint: 'exact dependency required by GTK proc-macro chain',
   },
+  {
+    name: 'time',
+    current: '0.3.51',
+    available: '0.3.52',
+    owner: 'tauri 2.11.4',
+    constraint: 'latest compatible Tauri runtime resolver keeps the time crate on 0.3.51',
+  },
+  {
+    name: 'time-macros',
+    current: '0.2.30',
+    available: '0.2.31',
+    owner: 'time 0.3.51',
+    constraint: 'proc-macro companion selected by the Tauri-held time 0.3.51 dependency',
+  },
 ]

@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod account_usage;
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
 pub mod aux;
@@ -18,10 +19,9 @@ pub mod cassette;
 pub mod codex;
 pub mod credential;
 pub mod credential_pool;
-pub mod diagnostics;
-pub mod account_usage;
 #[cfg(feature = "deepseek")]
 pub mod deepseek;
+pub mod diagnostics;
 #[cfg(feature = "doubao")]
 pub mod doubao;
 #[cfg(feature = "gemini")]
@@ -54,6 +54,7 @@ pub mod token_counter;
 #[cfg(feature = "zhipu")]
 pub mod zhipu;
 
+pub use account_usage::*;
 #[cfg(feature = "anthropic")]
 pub use anthropic::*;
 pub use aux::*;
@@ -65,10 +66,9 @@ pub use cassette::*;
 pub use codex::*;
 pub use credential::*;
 pub use credential_pool::*;
-pub use diagnostics::*;
-pub use account_usage::*;
 #[cfg(feature = "deepseek")]
 pub use deepseek::*;
+pub use diagnostics::*;
 #[cfg(feature = "doubao")]
 pub use doubao::*;
 #[cfg(feature = "gemini")]
