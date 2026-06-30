@@ -30,6 +30,7 @@ jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
 jyowo-harness-journal = { path = "../jyowo-harness-journal" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+chrono-tz = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
@@ -45,5 +46,6 @@ tracing-opentelemetry = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 
 [dev-dependencies]
+chrono-tz = { workspace = true }
 futures = { workspace = true }
 jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["jsonl", "sqlite", "in-memory"] }

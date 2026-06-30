@@ -30,7 +30,8 @@ use super::stores::*;
 use super::validation::*;
 use super::*;
 use harness_contracts::{
-    ProviderProbeErrorKind, ProviderProbeSnapshot, ProviderProbeStatus, UsageSnapshot,
+    ModelUsageBucket, ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow, ProviderProbeErrorKind,
+    ProviderProbeSnapshot, ProviderProbeStatus, UsageSnapshot,
 };
 
 pub type ConversationEventBatchEmitter =
@@ -1933,6 +1934,97 @@ pub struct ListProviderProbeSnapshotsResponse {
     pub snapshots: Vec<ProviderProbeSnapshotPayload>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelUsagePeriodPayload {
+    Today,
+    MonthToDate,
+    AllTime,
+}
+
+impl From<ModelUsagePeriod> for ModelUsagePeriodPayload {
+    fn from(value: ModelUsagePeriod) -> Self {
+        match value {
+            ModelUsagePeriod::Today => Self::Today,
+            ModelUsagePeriod::MonthToDate => Self::MonthToDate,
+            ModelUsagePeriod::AllTime => Self::AllTime,
+            _ => Self::AllTime,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsageBucketPayload {
+    pub key: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub usage: UsageSnapshotPayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<String>,
+}
+
+impl From<ModelUsageBucket> for ModelUsageBucketPayload {
+    fn from(value: ModelUsageBucket) -> Self {
+        Self {
+            key: value.key,
+            provider_id: value.provider_id,
+            model_id: value.model_id,
+            usage: value.usage.into(),
+            last_used_at: value.last_used_at.map(|at| at.to_rfc3339()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsageWindowPayload {
+    pub period: ModelUsagePeriodPayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period_start: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period_end: Option<String>,
+    pub total: UsageSnapshotPayload,
+    pub by_model: Vec<ModelUsageBucketPayload>,
+}
+
+impl From<ModelUsageWindow> for ModelUsageWindowPayload {
+    fn from(value: ModelUsageWindow) -> Self {
+        Self {
+            period: value.period.into(),
+            period_start: value.period_start.map(|at| at.to_rfc3339()),
+            period_end: value.period_end.map(|at| at.to_rfc3339()),
+            total: value.total.into(),
+            by_model: value.by_model.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetModelUsageSummaryResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone_id: Option<String>,
+    pub timezone_offset_minutes: i32,
+    pub today: ModelUsageWindowPayload,
+    pub month_to_date: ModelUsageWindowPayload,
+    pub all_time: ModelUsageWindowPayload,
+    pub generated_at: String,
+}
+
+impl From<ModelUsageSummary> for GetModelUsageSummaryResponse {
+    fn from(value: ModelUsageSummary) -> Self {
+        Self {
+            timezone_id: value.timezone_id,
+            timezone_offset_minutes: value.timezone_offset_minutes,
+            today: value.today.into(),
+            month_to_date: value.month_to_date.into(),
+            all_time: value.all_time.into(),
+            generated_at: value.generated_at.to_rfc3339(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderDiagnosticsRecord {
     pub snapshots: Vec<ProviderProbeSnapshot>,
@@ -1943,5 +2035,135 @@ pub trait ProviderDiagnosticsStore: Send + Sync {
     fn upsert_snapshot(
         &self,
         snapshot: &ProviderProbeSnapshot,
+    ) -> Result<(), CommandErrorPayload>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OfficialQuotaScopePayload {
+    Account,
+    Project,
+    Provider,
+    Model,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OfficialQuotaStatusPayload {
+    Supported,
+    Unsupported,
+    NotConfigured,
+    AuthRequired,
+    Failed,
+}
+
+impl From<harness_contracts::OfficialQuotaScope> for OfficialQuotaScopePayload {
+    fn from(value: harness_contracts::OfficialQuotaScope) -> Self {
+        match value {
+            harness_contracts::OfficialQuotaScope::Account => Self::Account,
+            harness_contracts::OfficialQuotaScope::Project => Self::Project,
+            harness_contracts::OfficialQuotaScope::Provider => Self::Provider,
+            harness_contracts::OfficialQuotaScope::Model => Self::Model,
+            _ => Self::Account,
+        }
+    }
+}
+
+impl From<harness_contracts::OfficialQuotaStatus> for OfficialQuotaStatusPayload {
+    fn from(value: harness_contracts::OfficialQuotaStatus) -> Self {
+        match value {
+            harness_contracts::OfficialQuotaStatus::Supported => Self::Supported,
+            harness_contracts::OfficialQuotaStatus::Unsupported => Self::Unsupported,
+            harness_contracts::OfficialQuotaStatus::NotConfigured => Self::NotConfigured,
+            harness_contracts::OfficialQuotaStatus::AuthRequired => Self::AuthRequired,
+            harness_contracts::OfficialQuotaStatus::Failed => Self::Failed,
+            _ => Self::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialQuotaSnapshotPayload {
+    pub config_id: String,
+    pub provider_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    pub scope: OfficialQuotaScopePayload,
+    pub status: OfficialQuotaStatusPayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period_start: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period_end: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_used: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_remaining: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub billing_label: Option<String>,
+    pub source_url: String,
+    pub fetched_at: String,
+    pub expires_at: String,
+    pub is_stale: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safe_message: Option<String>,
+}
+
+impl From<harness_contracts::OfficialQuotaSnapshot> for OfficialQuotaSnapshotPayload {
+    fn from(value: harness_contracts::OfficialQuotaSnapshot) -> Self {
+        Self {
+            config_id: value.config_id,
+            provider_id: value.provider_id,
+            model_id: value.model_id,
+            scope: value.scope.into(),
+            status: value.status.into(),
+            period_start: value.period_start.map(|at| at.to_rfc3339()),
+            period_end: value.period_end.map(|at| at.to_rfc3339()),
+            quota_used: value.quota_used,
+            quota_total: value.quota_total,
+            quota_remaining: value.quota_remaining,
+            unit: value.unit,
+            billing_label: value.billing_label,
+            source_url: value.source_url,
+            fetched_at: value.fetched_at.to_rfc3339(),
+            expires_at: value.expires_at.to_rfc3339(),
+            is_stale: value.is_stale,
+            safe_message: value.safe_message,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RefreshOfficialQuotaRequest {
+    pub config_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshOfficialQuotaResponse {
+    pub snapshot: OfficialQuotaSnapshotPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListOfficialQuotaSnapshotsResponse {
+    pub snapshots: Vec<OfficialQuotaSnapshotPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderQuotaCacheRecord {
+    pub snapshots: Vec<harness_contracts::OfficialQuotaSnapshot>,
+}
+
+pub trait ProviderQuotaCacheStore: Send + Sync {
+    fn load_record(&self) -> Result<ProviderQuotaCacheRecord, CommandErrorPayload>;
+    fn upsert_snapshot(
+        &self,
+        snapshot: &harness_contracts::OfficialQuotaSnapshot,
     ) -> Result<(), CommandErrorPayload>;
 }

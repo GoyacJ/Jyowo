@@ -141,6 +141,7 @@ import {
   getHarnessHealthcheck,
   getMcpServerConfig,
   getMemoryItem,
+  getModelUsageSummary,
   getPluginDetail,
   getProviderConfigApiKey,
   getReplayTimeline,
@@ -164,6 +165,7 @@ import {
   listMcpServers,
   listMemoryItems,
   listModelProviderCatalog,
+  listOfficialQuotaSnapshots,
   listPlugins,
   listProviderCapabilityRouteOptions,
   listProviderCapabilityRoutes,
@@ -177,6 +179,7 @@ import {
   type PageConversationWorktreeResponse,
   pageConversationWorktree,
   probeProviderConfig,
+  refreshOfficialQuota,
   reloadPlugin,
   requestProviderConfigApiKeyReveal,
   resolvePermission,
@@ -3008,6 +3011,166 @@ describe('CommandClient', () => {
       TauriCommandPayloadError,
     )
     expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('parses model usage summary responses with timezone identity fields', async () => {
+    const usageWindow = {
+      period: 'today' as const,
+      periodStart: '2026-06-30T00:00:00Z',
+      periodEnd: '2026-06-30T15:00:00Z',
+      total: {
+        cacheReadTokens: 1,
+        cacheWriteTokens: 2,
+        costMicros: 100,
+        inputTokens: 10,
+        outputTokens: 5,
+        toolCalls: 3,
+      },
+      byModel: [
+        {
+          key: 'openai/gpt-4.1',
+          providerId: 'openai',
+          modelId: 'gpt-4.1',
+          usage: {
+            cacheReadTokens: 1,
+            cacheWriteTokens: 2,
+            costMicros: 100,
+            inputTokens: 10,
+            outputTokens: 5,
+            toolCalls: 3,
+          },
+          lastUsedAt: '2026-06-30T10:00:00Z',
+        },
+      ],
+    }
+    const invoke = vi.fn().mockResolvedValue({
+      timezoneId: 'America/New_York',
+      timezoneOffsetMinutes: -240,
+      today: usageWindow,
+      monthToDate: { ...usageWindow, period: 'month_to_date' },
+      allTime: {
+        ...usageWindow,
+        period: 'all_time',
+        periodStart: undefined,
+        periodEnd: undefined,
+      },
+      generatedAt: '2026-06-30T15:00:00Z',
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(getModelUsageSummary(client)).resolves.toEqual({
+      timezoneId: 'America/New_York',
+      timezoneOffsetMinutes: -240,
+      today: usageWindow,
+      monthToDate: { ...usageWindow, period: 'month_to_date' },
+      allTime: {
+        ...usageWindow,
+        period: 'all_time',
+        periodStart: undefined,
+        periodEnd: undefined,
+      },
+      generatedAt: '2026-06-30T15:00:00Z',
+    })
+    expect(invoke).toHaveBeenCalledWith('get_model_usage_summary')
+
+    const allTimeOnlyClient = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        total: usageWindow.total,
+        byModel: usageWindow.byModel,
+      }),
+    )
+    await expect(getModelUsageSummary(allTimeOnlyClient)).rejects.toThrow(TauriCommandPayloadError)
+
+    const missingTimezoneClient = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        timezoneId: 'America/New_York',
+        today: usageWindow,
+        monthToDate: { ...usageWindow, period: 'month_to_date' },
+        allTime: { ...usageWindow, period: 'all_time' },
+        generatedAt: '2026-06-30T15:00:00Z',
+      }),
+    )
+    await expect(getModelUsageSummary(missingTimezoneClient)).rejects.toThrow(
+      TauriCommandPayloadError,
+    )
+  })
+
+  it('validates official quota snapshots and rejects snake_case backend fields', async () => {
+    const snapshot = {
+      configId: 'openrouter-work',
+      expiresAt: '2026-06-30T12:15:00Z',
+      fetchedAt: '2026-06-30T12:00:00Z',
+      isStale: false,
+      providerId: 'openrouter',
+      scope: 'account',
+      sourceUrl: 'https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key',
+      status: 'supported',
+    }
+    const invoke = vi.fn().mockResolvedValue({ snapshot })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(refreshOfficialQuota({ configId: 'openrouter-work' }, client)).resolves.toEqual({
+      snapshot,
+    })
+    expect(invoke).toHaveBeenCalledWith('refresh_official_quota', { configId: 'openrouter-work' })
+
+    await expect(
+      listOfficialQuotaSnapshots(
+        createInvokeCommandClient(vi.fn().mockResolvedValue({ snapshots: [snapshot] })),
+      ),
+    ).resolves.toEqual({ snapshots: [snapshot] })
+
+    const unsupportedClient = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        snapshot: {
+          ...snapshot,
+          status: 'unsupported',
+          safeMessage: 'No official quota API.',
+        },
+      }),
+    )
+    await expect(
+      refreshOfficialQuota({ configId: 'anthropic-work' }, unsupportedClient),
+    ).resolves.toMatchObject({
+      snapshot: { status: 'unsupported', safeMessage: 'No official quota API.' },
+    })
+
+    const missingFreshnessClient = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        snapshot: {
+          configId: 'openrouter-work',
+          providerId: 'openrouter',
+          scope: 'account',
+          sourceUrl: 'https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key',
+          status: 'supported',
+        },
+      }),
+    )
+    await expect(
+      refreshOfficialQuota({ configId: 'openrouter-work' }, missingFreshnessClient),
+    ).rejects.toThrow(TauriCommandPayloadError)
+
+    const snakeCaseClient = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        snapshot: {
+          config_id: 'openrouter-work',
+          fetched_at: '2026-06-30T12:00:00Z',
+          expires_at: '2026-06-30T12:15:00Z',
+          is_stale: false,
+          provider_id: 'openrouter',
+          scope: 'account',
+          source_url: 'https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key',
+          status: 'supported',
+        },
+      }),
+    )
+    await expect(
+      refreshOfficialQuota({ configId: 'openrouter-work' }, snakeCaseClient),
+    ).rejects.toThrow(TauriCommandPayloadError)
+
+    await expect(refreshOfficialQuota({ configId: '   ' }, client)).rejects.toThrow(
+      TauriCommandPayloadError,
+    )
   })
 
   it('parses provider capability route list responses', async () => {

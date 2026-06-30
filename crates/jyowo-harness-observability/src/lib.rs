@@ -19,6 +19,7 @@ pub mod prometheus;
 pub mod redactor;
 #[cfg(feature = "replay")]
 pub mod replay;
+pub mod model_usage;
 pub mod tracer;
 pub mod usage;
 
@@ -34,5 +35,6 @@ pub use prometheus::*;
 pub use redactor::*;
 #[cfg(feature = "replay")]
 pub use replay::*;
+pub use model_usage::*;
 pub use tracer::*;
 pub use usage::*;

@@ -820,7 +820,7 @@ git commit -m "feat: add real provider connectivity probes"
 - Modify: `apps/desktop/src/shared/tauri/commands.ts`
 - Modify: `apps/desktop/src/shared/tauri/commands.test.ts`
 
-- [ ] **Step 1: Write failing usage aggregation tests**
+- [x] **Step 1: Write failing usage aggregation tests**
 
 Use real `UsageAccumulatedEvent` values. Tests must prove:
 
@@ -837,7 +837,7 @@ Use real `UsageAccumulatedEvent` values. Tests must prove:
 
 Expected: tests fail because `model_usage` does not exist.
 
-- [ ] **Step 2: Add observability aggregation**
+- [x] **Step 2: Add observability aggregation**
 
 Implement a pure accumulator that accepts an iterator of `EventEnvelope` or `Event`, a fixed `now_utc`, and a backend-owned workspace timezone resolver, then returns `ModelUsageSummary`.
 
@@ -852,7 +852,7 @@ Rules:
 - The timezone resolver must use an IANA timezone id when available. If the platform cannot provide an IANA id, it must use backend local-time conversion for each event and boundary; it must not reuse the current offset for all historical timestamps.
 - If duplicate provider configs share a `providerId/modelId`, aggregation remains model-level and does not estimate per-config usage.
 
-- [ ] **Step 3: Add desktop command**
+- [x] **Step 3: Add desktop command**
 
 Add:
 
@@ -871,11 +871,11 @@ Rules:
 - Add `get_model_usage_summary` to `commands/mod.rs` and the `tauri::generate_handler!` list in `apps/desktop/src-tauri/src/lib.rs`.
 - The command response struct lives in `commands/contracts.rs`, uses camelCase IPC serde, and converts from the shared snake_case contract type.
 
-- [ ] **Step 4: Add frontend schema**
+- [x] **Step 4: Add frontend schema**
 
 Add `getModelUsageSummary()` to `CommandClient`. Zod schema must validate `today`, `monthToDate`, `allTime`, `timezoneId`, `timezoneOffsetMinutes`, `generatedAt`, and nested `total` / `byModel` values. Tests must reject the old all-time-only shape and summaries without timezone identity fields.
 
-- [ ] **Step 5: Run tests and gates**
+- [x] **Step 5: Run tests and gates**
 
 Run:
 
@@ -890,7 +890,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 6: Audit and commit**
+- [x] **Step 6: Audit and commit**
 
 Code-review and security-review subagents are required.
 
@@ -926,7 +926,7 @@ git commit -m "feat: add model usage summary"
 - Modify: `apps/desktop/src/shared/tauri/commands.test.ts`
 - Create: `docs/superpowers/audits/model-settings-redesign/official-quota-evidence.md`
 
-- [ ] **Step 1: Verify official provider APIs before coding**
+- [x] **Step 1: Verify official provider APIs before coding**
 
 Enumerate the current provider catalog from repository code before reading official provider documentation. Record the exact source used to enumerate provider ids.
 
@@ -961,7 +961,7 @@ Rules:
 - The Task 4 audit must compare the evidence file provider id set with the current catalog provider id set and fail on any missing, extra, or duplicate provider row.
 - The Task 4 audit must fail if a provider was marked unsupported while its evidence row says `credential storage decision: extend`.
 
-- [ ] **Step 2: Write failing quota framework tests**
+- [x] **Step 2: Write failing quota framework tests**
 
 Tests must prove:
 
@@ -982,7 +982,7 @@ Tests must prove:
 
 Expected: tests fail because account usage framework does not exist.
 
-- [ ] **Step 3: Add account usage trait and adapter registry**
+- [x] **Step 3: Add account usage trait and adapter registry**
 
 Add:
 
@@ -1008,7 +1008,7 @@ Rules:
 - No placeholder adapter is allowed. An adapter is either real and documented, or absent and mapped to explicit unsupported/auth-required state.
 - At least one real adapter is required when the official API verification proves a current catalog provider supports account usage/quota with available credentials.
 
-- [ ] **Step 4: Add desktop commands**
+- [x] **Step 4: Add desktop commands**
 
 Add:
 
@@ -1029,11 +1029,11 @@ Rules:
 - Add `refresh_official_quota` and `list_official_quota_snapshots` to `commands/mod.rs` and the `tauri::generate_handler!` list in `apps/desktop/src-tauri/src/lib.rs`.
 - The command response structs live in `commands/contracts.rs`, use camelCase IPC serde, and convert from the shared snake_case contract types.
 
-- [ ] **Step 5: Add frontend schema**
+- [x] **Step 5: Add frontend schema**
 
 Add `refreshOfficialQuota` and `listOfficialQuotaSnapshots` to `CommandClient`. Zod must validate `scope`, non-empty `sourceUrl` for every status except `notConfigured`, `fetchedAt`, `expiresAt`, `isStale`, distinguish `unsupported` from `failed`, and reject missing source/freshness fields and snake_case backend-only field names.
 
-- [ ] **Step 6: Run tests and gates**
+- [x] **Step 6: Run tests and gates**
 
 Run:
 
@@ -1048,7 +1048,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 7: Audit and commit**
+- [x] **Step 7: Audit and commit**
 
 Code-review and security-review subagents are required.
 

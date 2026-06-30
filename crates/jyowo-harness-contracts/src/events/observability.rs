@@ -12,6 +12,9 @@ pub struct UsageAccumulatedEvent {
     pub model_ref: Option<ModelRef>,
     pub pricing_snapshot_id: Option<PricingSnapshotId>,
     pub at: DateTime<Utc>,
+    /// Diagnostic probe usage must not be merged into product usage totals.
+    #[serde(default)]
+    pub diagnostic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

@@ -22,6 +22,7 @@ import type {
   GetExecutionSettingsResponse,
   GetMcpServerConfigResponse,
   GetMemoryItemResponse,
+  GetModelUsageSummaryResponse,
   GetPluginDetailResponse,
   GetProviderConfigApiKeyResponse,
   GetSkillCatalogEntryResponse,
@@ -41,6 +42,7 @@ import type {
   ListMcpDiagnosticsResponse,
   ListMcpServersResponse,
   ListMemoryItemsResponse,
+  ListOfficialQuotaSnapshotsResponse,
   ListPluginsResponse,
   ListProjectsResponse,
   ListProviderCapabilityRouteOptionsResponse,
@@ -58,6 +60,7 @@ import type {
   PluginInstallReport,
   PluginOperationResult,
   ProbeProviderConfigResponse,
+  RefreshOfficialQuotaResponse,
   ReplayTimelineResponse,
   RequestProviderConfigApiKeyRevealResponse,
   ResolvePermissionResponse,
@@ -313,6 +316,45 @@ const fixtureValidateProviderSettings: ValidateProviderSettingsResponse = {
 
 const fixtureListProviderProbeSnapshots: ListProviderProbeSnapshotsResponse = {
   snapshots: [],
+}
+
+const emptyUsageWindow = {
+  period: 'today' as const,
+  total: {
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    costMicros: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    toolCalls: 0,
+  },
+  byModel: [],
+}
+
+const fixtureGetModelUsageSummary: GetModelUsageSummaryResponse = {
+  timezoneId: 'UTC',
+  timezoneOffsetMinutes: 0,
+  today: emptyUsageWindow,
+  monthToDate: { ...emptyUsageWindow, period: 'month_to_date' },
+  allTime: { ...emptyUsageWindow, period: 'all_time' },
+  generatedAt: '2026-06-30T12:00:00+00:00',
+}
+
+const fixtureListOfficialQuotaSnapshots: ListOfficialQuotaSnapshotsResponse = {
+  snapshots: [],
+}
+
+const fixtureRefreshOfficialQuota: RefreshOfficialQuotaResponse = {
+  snapshot: {
+    configId: 'openrouter-work',
+    expiresAt: '2026-06-30T12:15:00+00:00',
+    fetchedAt: '2026-06-30T12:00:00+00:00',
+    isStale: false,
+    providerId: 'openrouter',
+    scope: 'account',
+    sourceUrl: 'https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key',
+    status: 'supported',
+  },
 }
 
 const fixtureProbeProviderConfig: ProbeProviderConfigResponse = {
@@ -1169,6 +1211,9 @@ export interface TestCommandClientOptions {
   providerCapabilityRoutes?: ListProviderCapabilityRoutesResponse
   providerCapabilityRouteOptions?: ListProviderCapabilityRouteOptionsResponse
   providerProbeSnapshots?: ListProviderProbeSnapshotsResponse
+  modelUsageSummary?: GetModelUsageSummaryResponse
+  officialQuotaSnapshots?: ListOfficialQuotaSnapshotsResponse
+  officialQuotaRefresh?: RefreshOfficialQuotaResponse
   providerProbe?: ProbeProviderConfigResponse
   projects?: ListProjectsResponse
   providerSettings?: SaveProviderSettingsResponse
@@ -1428,6 +1473,10 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
       await wait(options.delayMs)
       return options.healthcheck ?? fixtureHarnessHealthcheck
     },
+    async getModelUsageSummary() {
+      await wait(options.delayMs)
+      return cloneResponse(options.modelUsageSummary ?? fixtureGetModelUsageSummary)
+    },
     async getMemoryItem() {
       await wait(options.delayMs)
       return options.memoryItem ?? fixtureMemoryItem
@@ -1512,6 +1561,10 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
     async probeProviderConfig() {
       await wait(options.delayMs)
       return cloneResponse(options.providerProbe ?? fixtureProbeProviderConfig)
+    },
+    async refreshOfficialQuota() {
+      await wait(options.delayMs)
+      return cloneResponse(options.officialQuotaRefresh ?? fixtureRefreshOfficialQuota)
     },
     async getSkillDetail(id) {
       await wait(options.delayMs)
@@ -1658,6 +1711,10 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
     async listProviderCapabilityRouteOptions() {
       await wait(options.delayMs)
       return cloneResponse(providerCapabilityRouteOptions)
+    },
+    async listOfficialQuotaSnapshots() {
+      await wait(options.delayMs)
+      return cloneResponse(options.officialQuotaSnapshots ?? fixtureListOfficialQuotaSnapshots)
     },
     async listProviderProbeSnapshots() {
       await wait(options.delayMs)
@@ -2359,6 +2416,8 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     getAttachmentMediaPreview: () => Promise.reject(error),
     getAppInfo: () => Promise.reject(error),
     getHarnessHealthcheck: () => Promise.reject(error),
+    getModelUsageSummary: () => Promise.reject(error),
+    listOfficialQuotaSnapshots: () => Promise.reject(error),
     getMemoryItem: () => Promise.reject(error),
     getMcpServerConfig: () => Promise.reject(error),
     getPluginDetail: () => Promise.reject(error),
@@ -2369,6 +2428,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     pageConversationTimeline: () => Promise.reject(error),
     pageConversationWorktree: () => Promise.reject(error),
     probeProviderConfig: () => Promise.reject(error),
+    refreshOfficialQuota: () => Promise.reject(error),
     getSkillDetail: () => Promise.reject(error),
     getSkillFile: () => Promise.reject(error),
     importSkill: () => Promise.reject(error),

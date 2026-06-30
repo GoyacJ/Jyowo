@@ -28,7 +28,7 @@ use super::runtime::*;
 use super::skills::*;
 #[allow(unused_imports)]
 use super::validation::*;
-use super::model_settings::ProviderProbeFlights;
+use super::model_settings::{OfficialQuotaFlights, ProviderProbeFlights};
 use super::*;
 
 mod automation;
@@ -1016,6 +1016,98 @@ impl ProviderDiagnosticsStore for DesktopProviderDiagnosticsStore {
     }
 }
 
+#[derive(Clone)]
+pub struct DesktopProviderQuotaCacheStore {
+    workspace_root: PathBuf,
+}
+
+impl DesktopProviderQuotaCacheStore {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root }
+    }
+
+    fn quota_cache_path(&self) -> PathBuf {
+        self.workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("provider-quota-cache.json")
+    }
+}
+
+impl super::ProviderQuotaCacheStore for DesktopProviderQuotaCacheStore {
+    fn load_record(&self) -> Result<ProviderQuotaCacheRecord, CommandErrorPayload> {
+        let quota_cache_path = self.quota_cache_path();
+        ensure_no_symlink_components(&quota_cache_path, "provider quota cache file")?;
+        match std::fs::read(&quota_cache_path) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(record) => Ok(record),
+                Err(_) => {
+                    remove_invalid_provider_quota_cache_file(&quota_cache_path)?;
+                    Ok(ProviderQuotaCacheRecord {
+                        snapshots: Vec::new(),
+                    })
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(ProviderQuotaCacheRecord {
+                    snapshots: Vec::new(),
+                })
+            }
+            Err(error) => Err(runtime_operation_failed(format!(
+                "provider quota cache read failed: {error}"
+            ))),
+        }
+    }
+
+    fn upsert_snapshot(
+        &self,
+        snapshot: &harness_contracts::OfficialQuotaSnapshot,
+    ) -> Result<(), CommandErrorPayload> {
+        let quota_cache_path = self.quota_cache_path();
+        let mut record = self.load_record()?;
+        if let Some(existing) = record
+            .snapshots
+            .iter_mut()
+            .find(|entry| entry.config_id == snapshot.config_id)
+        {
+            *existing = snapshot.clone();
+        } else {
+            record.snapshots.push(snapshot.clone());
+        }
+        let parent = quota_cache_path.parent().ok_or_else(|| {
+            runtime_operation_failed("provider quota cache path has no parent".to_owned())
+        })?;
+        ensure_no_symlink_components(parent, "provider quota cache directory")?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            runtime_operation_failed(format!(
+                "provider quota cache directory unavailable: {error}"
+            ))
+        })?;
+        ensure_no_symlink_components(parent, "provider quota cache directory")?;
+        let bytes = serde_json::to_vec_pretty(&record).map_err(|error| {
+            runtime_operation_failed(format!("provider quota cache serialization failed: {error}"))
+        })?;
+        write_atomic_runtime_file(
+            &quota_cache_path,
+            "provider-quota-cache.json",
+            "provider quota cache",
+            &bytes,
+        )
+    }
+}
+
+pub(crate) fn remove_invalid_provider_quota_cache_file(
+    quota_cache_path: &Path,
+) -> Result<(), CommandErrorPayload> {
+    match std::fs::remove_file(quota_cache_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(runtime_operation_failed(format!(
+            "provider quota cache cleanup failed: {error}"
+        ))),
+    }
+}
+
 pub(crate) fn remove_invalid_provider_diagnostics_file(
     diagnostics_path: &Path,
 ) -> Result<(), CommandErrorPayload> {
@@ -1054,6 +1146,8 @@ pub struct DesktopRuntimeState {
     pub(crate) provider_settings_store: Arc<dyn ProviderSettingsStore>,
     pub(crate) provider_diagnostics_store: Arc<dyn ProviderDiagnosticsStore>,
     pub(crate) provider_probe_flights: ProviderProbeFlights,
+    pub(crate) provider_quota_cache_store: Arc<dyn ProviderQuotaCacheStore>,
+    pub(crate) official_quota_flights: OfficialQuotaFlights,
     pub(crate) provider_capability_route_store: Arc<DesktopProviderCapabilityRouteStore>,
     pub(crate) provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
     pub(crate) execution_settings_lock: Arc<tokio::sync::Mutex<()>>,

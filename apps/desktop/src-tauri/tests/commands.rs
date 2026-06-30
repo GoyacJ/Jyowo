@@ -141,6 +141,10 @@ mod mcp;
 mod memory;
 #[path = "commands/providers.rs"]
 mod providers;
+#[path = "commands/model_usage_summary.rs"]
+mod model_usage_summary;
+#[path = "commands/official_quota.rs"]
+mod official_quota;
 #[path = "commands/provider_probe.rs"]
 mod provider_probe;
 #[path = "commands/runs_permissions.rs"]

@@ -3076,6 +3076,7 @@ async fn append_usage_accumulated(
             model_ref: Some(model_ref),
             pricing_snapshot_id,
             at: harness_contracts::now(),
+            diagnostic: false,
         })],
     )
     .await

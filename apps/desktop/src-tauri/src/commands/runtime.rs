@@ -93,6 +93,10 @@ impl DesktopRuntimeState {
                 workspace_root.clone(),
             )),
             provider_probe_flights: new_provider_probe_flights(),
+            provider_quota_cache_store: Arc::new(DesktopProviderQuotaCacheStore::new(
+                workspace_root.clone(),
+            )),
+            official_quota_flights: new_official_quota_flights(),
             provider_capability_route_store: Arc::new(DesktopProviderCapabilityRouteStore::new(
                 workspace_root.clone(),
             )),
@@ -216,6 +220,10 @@ impl DesktopRuntimeState {
                 workspace_root.clone(),
             )),
             provider_probe_flights: new_provider_probe_flights(),
+            provider_quota_cache_store: Arc::new(DesktopProviderQuotaCacheStore::new(
+                workspace_root.clone(),
+            )),
+            official_quota_flights: new_official_quota_flights(),
             provider_capability_route_store: Arc::new(DesktopProviderCapabilityRouteStore::new(
                 workspace_root.clone(),
             )),

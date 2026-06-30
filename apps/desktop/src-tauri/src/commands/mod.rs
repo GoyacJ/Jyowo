@@ -147,6 +147,7 @@ pub use contracts::{
     GetContextSnapshotResponse, GetConversationRequest, GetConversationResponse,
     GetExecutionSettingsRequest, GetExecutionSettingsResponse, GetMcpServerConfigRequest,
     GetMcpServerConfigResponse, GetMemoryItemRequest, GetMemoryItemResponse,
+    GetModelUsageSummaryResponse,
     GetPluginDetailRequest, GetPluginDetailResponse, GetProviderConfigApiKeyRequest,
     GetProviderConfigApiKeyResponse, GetSkillDetailRequest, GetSkillDetailResponse,
     GetSkillFileRequest, GetSkillFileResponse, HarnessHealthcheckPayload, HarnessInfoPayload,
@@ -157,6 +158,7 @@ pub use contracts::{
     ListConversationsResponse, ListEvalCasesResponse, ListMcpDiagnosticsRequest,
     ListMcpDiagnosticsResponse, ListMcpServersResponse, ListMemoryItemsResponse,
     ListPluginsResponse, ListProviderCapabilityRoutesResponse, ListProviderProbeSnapshotsResponse,
+    ListOfficialQuotaSnapshotsResponse,
     ListProviderSettingsResponse,
     ListReferenceCandidatesRequest, ListReferenceCandidatesResponse,
     ListSkillCatalogInstallTasksResponse, ListSkillsResponse, McpDiagnosticBatchEmitter,
@@ -169,12 +171,14 @@ pub use contracts::{
     PageConversationWorktreeRequest, PermissionDecision, PermissionRequestedRunEventPayload,
     PermissionResolver, PluginSettingsRecord, PluginStore, PluginStoreRecord,
     ProbeProviderConfigRequest, ProbeProviderConfigResponse, ProviderBaseUrlRegionPayload,
-    ProviderCapabilityRouteStore, ProviderCapabilityRouteValidationToken, ProviderConfigPayload, ProviderConfigRecord,
+    OfficialQuotaSnapshotPayload, OfficialQuotaScopePayload, OfficialQuotaStatusPayload,
+    ProviderCapabilityRouteStore,     ProviderCapabilityRouteValidationToken, ProviderConfigPayload, ProviderConfigRecord,
     ProviderModelDescriptorRecord, ProviderModelLifecycleRecord, ProviderModelModalityRecord,
     ProviderProbeSnapshotPayload, ProviderProbeErrorKindPayload, ProviderProbeStatusPayload,
     ProviderRuntimeCapabilityPayload, ProviderServiceCapabilityPayload, ProviderSettingsRecord,
     ProviderSettingsRequest, ProviderSettingsStore, ReferenceCandidatePayload, ReloadPluginRequest,
-    ProviderDiagnosticsStore,
+    ProviderDiagnosticsStore, ProviderQuotaCacheRecord, ProviderQuotaCacheStore, RefreshOfficialQuotaRequest,
+    RefreshOfficialQuotaResponse,
     ReplayTimelineRequest, ReplayTimelineResponse, RequestProviderConfigApiKeyRevealRequest,
     RequestProviderConfigApiKeyRevealResponse, ResolvePermissionRequest, ResolvePermissionResponse,
     RestartMcpServerRequest, RestartMcpServerResponse, RunAutomationNowRequest,
@@ -261,9 +265,11 @@ pub use providers::{
     AgentCapabilitiesPayload, DesktopConversationModelConfigStore, DesktopExecutionSettingsStore,
     DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore, ExecutionSettingsRecord,
 };
-pub use model_settings::probe_provider_config_with_provider;
 pub use model_settings::{
-    list_provider_probe_snapshots_with_runtime_state, probe_provider_config_with_runtime_state,
+    collect_persisted_usage_events, get_model_usage_summary_with_runtime_state,
+    list_official_quota_snapshots_with_runtime_state,
+    list_provider_probe_snapshots_with_runtime_state, probe_provider_config_with_provider,
+    probe_provider_config_with_runtime_state, refresh_official_quota_with_runtime_state,
 };
 pub use runtime::{
     managed_runtime_state, runtime_state, runtime_state_async, runtime_state_for_workspace,
@@ -281,7 +287,8 @@ pub use skills::{
     set_skill_enabled_with_runtime_state, start_skill_catalog_install_task_with_runtime_state,
 };
 pub use stores::{
-    DesktopAutomationStore, DesktopMcpDiagnosticStore, DesktopPluginStore, DesktopProviderDiagnosticsStore, DesktopRuntimeState,
+    DesktopAutomationStore, DesktopMcpDiagnosticStore, DesktopPluginStore,
+    DesktopProviderDiagnosticsStore, DesktopProviderQuotaCacheStore, DesktopRuntimeState,
     DesktopSkillStore,
 };
 
@@ -591,6 +598,31 @@ pub async fn list_provider_probe_snapshots(
 ) -> Result<ListProviderProbeSnapshotsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     model_settings::list_provider_probe_snapshots_with_runtime_state(&*runtime_state)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_model_usage_summary(
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetModelUsageSummaryResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    model_settings::get_model_usage_summary_with_runtime_state(&*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn refresh_official_quota(
+    config_id: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<RefreshOfficialQuotaResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    model_settings::refresh_official_quota_with_runtime_state(&config_id, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_official_quota_snapshots(
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListOfficialQuotaSnapshotsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    Ok(model_settings::list_official_quota_snapshots_with_runtime_state(&*runtime_state)?)
 }
 
 #[tauri::command(rename_all = "camelCase")]

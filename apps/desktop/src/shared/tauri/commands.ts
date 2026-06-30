@@ -1309,6 +1309,110 @@ const listProviderProbeSnapshotsResponseSchema = z
   })
   .strict()
 
+const modelUsagePeriodSchema = z.enum(['today', 'month_to_date', 'all_time'])
+
+const modelUsageBucketSchema = z
+  .object({
+    key: z.string().min(1),
+    providerId: providerIdSchema,
+    modelId: z.string().min(1),
+    usage: usageSnapshotSchema,
+    lastUsedAt: isoDateTimeSchema.optional(),
+  })
+  .strict()
+
+const modelUsageWindowSchema = z
+  .object({
+    period: modelUsagePeriodSchema,
+    periodStart: isoDateTimeSchema.optional(),
+    periodEnd: isoDateTimeSchema.optional(),
+    total: usageSnapshotSchema,
+    byModel: z.array(modelUsageBucketSchema),
+  })
+  .strict()
+
+const getModelUsageSummaryResponseSchema = z
+  .object({
+    timezoneId: z.string().min(1).optional(),
+    timezoneOffsetMinutes: z.number().int(),
+    today: modelUsageWindowSchema,
+    monthToDate: modelUsageWindowSchema,
+    allTime: modelUsageWindowSchema,
+    generatedAt: isoDateTimeSchema,
+  })
+  .strict()
+
+const officialQuotaScopeSchema = z.enum(['account', 'project', 'provider', 'model'])
+
+const officialQuotaStatusSchema = z.enum([
+  'supported',
+  'unsupported',
+  'notConfigured',
+  'authRequired',
+  'failed',
+])
+
+const officialQuotaSnapshotSchema = z
+  .object({
+    billingLabel: z.string().min(1).optional(),
+    configId: z.string().min(1),
+    expiresAt: isoDateTimeSchema,
+    fetchedAt: isoDateTimeSchema,
+    isStale: z.boolean(),
+    modelId: z.string().min(1).optional(),
+    periodEnd: isoDateTimeSchema.optional(),
+    periodStart: isoDateTimeSchema.optional(),
+    providerId: providerIdSchema,
+    quotaRemaining: z.number().int().nonnegative().optional(),
+    quotaTotal: z.number().int().nonnegative().optional(),
+    quotaUsed: z.number().int().nonnegative().optional(),
+    safeMessage: z.string().min(1).optional(),
+    scope: officialQuotaScopeSchema,
+    sourceUrl: z.string(),
+    status: officialQuotaStatusSchema,
+    unit: z.string().min(1).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.status !== 'notConfigured' && value.sourceUrl.trim().length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'sourceUrl is required unless status is notConfigured',
+        path: ['sourceUrl'],
+      })
+    }
+    if (
+      (value.status === 'unsupported' ||
+        value.status === 'authRequired' ||
+        value.status === 'failed') &&
+      !value.safeMessage
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'safeMessage is required for unsupported, authRequired, and failed statuses',
+        path: ['safeMessage'],
+      })
+    }
+  })
+
+const refreshOfficialQuotaRequestSchema = z
+  .object({
+    configId: z.string().trim().min(1),
+  })
+  .strict()
+
+const refreshOfficialQuotaResponseSchema = z
+  .object({
+    snapshot: officialQuotaSnapshotSchema,
+  })
+  .strict()
+
+const listOfficialQuotaSnapshotsResponseSchema = z
+  .object({
+    snapshots: z.array(officialQuotaSnapshotSchema),
+  })
+  .strict()
+
 const automationIdSchema = z
   .string()
   .trim()
@@ -2679,6 +2783,12 @@ export type ProbeProviderConfigResponse = z.infer<typeof probeProviderConfigResp
 export type ListProviderProbeSnapshotsResponse = z.infer<
   typeof listProviderProbeSnapshotsResponseSchema
 >
+export type GetModelUsageSummaryResponse = z.infer<typeof getModelUsageSummaryResponseSchema>
+export type RefreshOfficialQuotaRequest = z.infer<typeof refreshOfficialQuotaRequestSchema>
+export type RefreshOfficialQuotaResponse = z.infer<typeof refreshOfficialQuotaResponseSchema>
+export type ListOfficialQuotaSnapshotsResponse = z.infer<
+  typeof listOfficialQuotaSnapshotsResponseSchema
+>
 export type ModelProviderCatalogResponse = z.infer<typeof modelProviderCatalogResponseSchema>
 export type ProviderConfig = z.infer<typeof providerConfigSchema>
 export type ListProviderSettingsResponse = z.infer<typeof listProviderSettingsResponseSchema>
@@ -2808,6 +2918,8 @@ export interface CommandClient {
   getConversation: (conversationId: string) => Promise<GetConversationResponse>
   getAppInfo: () => Promise<AppInfo>
   getHarnessHealthcheck: () => Promise<HarnessHealthcheck>
+  getModelUsageSummary: () => Promise<GetModelUsageSummaryResponse>
+  listOfficialQuotaSnapshots: () => Promise<ListOfficialQuotaSnapshotsResponse>
   getMemoryItem: (id: string) => Promise<GetMemoryItemResponse>
   getMcpServerConfig: (id: string) => Promise<GetMcpServerConfigResponse>
   getPluginDetail: (pluginId: string) => Promise<GetPluginDetailResponse>
@@ -2869,6 +2981,9 @@ export interface CommandClient {
     request: PageConversationWorktreeRequest,
   ) => Promise<PageConversationWorktreeResponse>
   probeProviderConfig: (request: ProbeProviderConfigRequest) => Promise<ProbeProviderConfigResponse>
+  refreshOfficialQuota: (
+    request: RefreshOfficialQuotaRequest,
+  ) => Promise<RefreshOfficialQuotaResponse>
   listReferenceCandidates: (
     request: ListReferenceCandidatesRequest,
   ) => Promise<ListReferenceCandidatesResponse>
@@ -3048,6 +3163,14 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'harness_healthcheck'
       return parsePayload(command, harnessHealthcheckSchema, await invoke(command))
     },
+    async getModelUsageSummary() {
+      const command = 'get_model_usage_summary'
+      return parsePayload(command, getModelUsageSummaryResponseSchema, await invoke(command))
+    },
+    async listOfficialQuotaSnapshots() {
+      const command = 'list_official_quota_snapshots'
+      return parsePayload(command, listOfficialQuotaSnapshotsResponseSchema, await invoke(command))
+    },
     async getMemoryItem(id) {
       const command = 'get_memory_item'
       const args = parseArgs(command, getMemoryItemRequestSchema, { id })
@@ -3102,6 +3225,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'probe_provider_config'
       const args = parseArgs(command, probeProviderConfigRequestSchema, request)
       return parsePayload(command, probeProviderConfigResponseSchema, await invoke(command, args))
+    },
+    async refreshOfficialQuota(request) {
+      const command = 'refresh_official_quota'
+      const args = parseArgs(command, refreshOfficialQuotaRequestSchema, request)
+      return parsePayload(command, refreshOfficialQuotaResponseSchema, await invoke(command, args))
     },
     async getSkillDetail(id) {
       const command = 'get_skill_detail'
@@ -4002,6 +4130,25 @@ export function listProviderCapabilityRouteOptions(
   client: CommandClient = tauriCommandClient,
 ): Promise<ListProviderCapabilityRouteOptionsResponse> {
   return client.listProviderCapabilityRouteOptions()
+}
+
+export function getModelUsageSummary(
+  client: CommandClient = tauriCommandClient,
+): Promise<GetModelUsageSummaryResponse> {
+  return client.getModelUsageSummary()
+}
+
+export function listOfficialQuotaSnapshots(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListOfficialQuotaSnapshotsResponse> {
+  return client.listOfficialQuotaSnapshots()
+}
+
+export function refreshOfficialQuota(
+  request: RefreshOfficialQuotaRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<RefreshOfficialQuotaResponse> {
+  return client.refreshOfficialQuota(request)
 }
 
 export function listProviderProbeSnapshots(

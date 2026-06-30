@@ -215,6 +215,7 @@ get_app_info
 get_conversation
 get_execution_settings
 get_memory_item
+get_model_usage_summary
 get_mcp_server_config
 get_plugin_detail
 get_provider_config_api_key
@@ -242,12 +243,14 @@ list_plugins
 list_provider_capability_route_options
 list_provider_capability_routes
 list_provider_probe_snapshots
+list_official_quota_snapshots
 list_provider_settings
 list_projects
 list_skills
 page_conversation_timeline
 page_conversation_worktree
 probe_provider_config
+refresh_official_quota
 resolve_permission
 request_provider_config_api_key_reveal
 restart_mcp_server
@@ -329,6 +332,7 @@ get_app_info() -> AppInfoPayload
 get_conversation(conversation_id: String) -> Result<GetConversationResponse, CommandErrorPayload>
 get_execution_settings(workspace_path?: string) -> Result<GetExecutionSettingsResponse, CommandErrorPayload>
 get_memory_item(id: String) -> Result<GetMemoryItemResponse, CommandErrorPayload>
+get_model_usage_summary() -> Result<GetModelUsageSummaryResponse, CommandErrorPayload>
 get_mcp_server_config(id: String) -> Result<GetMcpServerConfigResponse, CommandErrorPayload>
 get_plugin_detail(plugin_id: PluginId) -> Result<GetPluginDetailResponse, CommandErrorPayload>
 get_provider_config_api_key(
@@ -391,6 +395,7 @@ list_plugins() -> Result<ListPluginsResponse, CommandErrorPayload>
 list_provider_capability_route_options() -> Result<ListProviderCapabilityRouteOptionsResponse, CommandErrorPayload>
 list_provider_capability_routes() -> Result<ListProviderCapabilityRoutesResponse, CommandErrorPayload>
 list_provider_probe_snapshots() -> Result<ListProviderProbeSnapshotsResponse, CommandErrorPayload>
+list_official_quota_snapshots() -> Result<ListOfficialQuotaSnapshotsResponse, CommandErrorPayload>
 list_provider_settings() -> Result<ListProviderSettingsResponse, CommandErrorPayload>
 list_projects() -> ListProjectsResponse
 list_skills() -> Result<ListSkillsResponse, CommandErrorPayload>
@@ -409,6 +414,9 @@ probe_provider_config(
   config_id: String,
   timeout_ms: Option<u64>
 ) -> Result<ProbeProviderConfigResponse, CommandErrorPayload>
+refresh_official_quota(
+  config_id: String
+) -> Result<RefreshOfficialQuotaResponse, CommandErrorPayload>
 resolve_permission(
   decision: PermissionDecision,
   request_id: String
@@ -535,6 +543,23 @@ config. It persists the last safe snapshot in
 deduplication, and must not merge diagnostic probe usage into normal usage
 totals. `list_provider_probe_snapshots` returns persisted snapshots only; a
 never-checked config is represented by the absence of a snapshot row.
+
+`get_model_usage_summary` aggregates persisted `UsageAccumulated` journal events
+for `TenantId::SINGLE` into `today`, `month_to_date`, and `all_time` windows.
+Period boundaries use backend workspace-local time converted to UTC instants.
+The response includes `timezoneId` when the platform resolves an IANA id and
+`timezoneOffsetMinutes` at `generatedAt` for display only. Diagnostic probe
+usage events are excluded. The command fails closed when the harness runtime is
+unavailable or event reading fails.
+
+`refresh_official_quota` calls the provider account usage adapter for a saved
+provider config, persists the normalized snapshot in
+`.jyowo/runtime/provider-quota-cache.json`, and uses per-`configId` single-flight
+deduplication. Unsupported, auth-required, failed, and supported states are all
+persisted with safe messages and official source URLs. Cache entries must not
+contain API keys, account ids, provider-native payloads, headers, or request
+bodies. `list_official_quota_snapshots` returns cached snapshots and recomputes
+`isStale` from command time and cached freshness fields.
 
 `save_provider_settings` stores provider credentials in the workspace provider
 settings record. `api_key` is required for new provider configs and optional
