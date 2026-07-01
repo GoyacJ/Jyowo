@@ -689,15 +689,6 @@ request_provider_config_api_key_reveal(request: {
   status: 'ready'
 }
 
-set_conversation_model_config(request: {
-  conversationId: string
-  modelConfigId: string
-}): {
-  conversationId: string
-  modelConfigId: string
-  status: 'saved'
-}
-
 type ProviderConfig = {
   baseUrl?: string
   displayName: string
@@ -949,6 +940,12 @@ type ConversationWorktreePage = {
   gap: boolean
 }
 ```
+
+Composer model selection is a per-run control. The frontend keeps the selected
+`modelConfigId` in local composer state and includes it in `startRun`. Changing
+the selector must not persist a conversation setting or call a separate model
+config command. Rust persists the selected model as the conversation default
+only after `start_run` succeeds.
 
 `page_conversation_worktree` is the `ConversationCanvas` data source.
 `page_conversation_timeline` remains for Activity, Replay, and details views.

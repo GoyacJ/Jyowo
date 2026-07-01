@@ -105,8 +105,7 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
   const configuredModelProfiles =
     providerSettingsQuery.data?.configs.filter((profile) => profile.hasApiKey) ?? []
   const currentModelProfile =
-    configuredModelProfiles.find((profile) => profile.id === selectedModelConfigId) ??
-    null
+    configuredModelProfiles.find((profile) => profile.id === selectedModelConfigId) ?? null
   const modelConfigs = configuredModelProfiles.map((profile) => ({
     id: profile.id,
     label: `${profile.displayName} / ${profile.modelId}${

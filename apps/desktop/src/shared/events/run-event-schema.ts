@@ -152,20 +152,6 @@ const modelProtocolSchema = z.enum([
   'messages',
   'generate_content',
 ])
-const modelModalitySchema = z.enum(['text', 'image', 'audio', 'video', 'file', 'embedding'])
-const conversationModelCapabilitySchema = z
-  .object({
-    inputModalities: z.array(modelModalitySchema),
-    outputModalities: z.array(modelModalitySchema),
-    contextWindow: z.number().int().nonnegative(),
-    maxOutputTokens: z.number().int().nonnegative(),
-    streaming: z.boolean(),
-    toolCalling: z.boolean(),
-    reasoning: z.boolean(),
-    promptCache: z.boolean(),
-    structuredOutput: z.boolean(),
-  })
-  .strict()
 const runModelSnapshotSchema = z
   .object({
     modelConfigId: z.string().min(1).nullable().optional(),

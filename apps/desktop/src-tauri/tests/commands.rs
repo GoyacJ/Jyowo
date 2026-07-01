@@ -345,7 +345,15 @@ fn write_test_provider_settings(workspace: &Path) {
     let workspace = workspace
         .canonicalize()
         .expect("test workspace should canonicalize");
-    DesktopProviderSettingsStore::new(workspace)
+    let store = DesktopProviderSettingsStore::new(workspace);
+    if store
+        .load_record()
+        .expect("test provider settings should load")
+        .is_some()
+    {
+        return;
+    }
+    store
         .save_record(&test_provider_settings_record())
         .expect("test provider settings should save");
 }
@@ -464,6 +472,20 @@ fn provider_settings_with_openai_and_minimax(
             },
         ],
     }
+}
+
+fn provider_settings_with_test_and_minimax(
+    minimax_config_id: &str,
+    minimax_api_key: &str,
+) -> ProviderSettingsRecord {
+    let mut settings = test_provider_settings_record();
+    let mut minimax_settings = provider_settings_with_openai_and_minimax(
+        TEST_MODEL_CONFIG_ID,
+        minimax_config_id,
+        minimax_api_key,
+    );
+    settings.configs.push(minimax_settings.configs.remove(1));
+    settings
 }
 
 fn minimax_video_route(config_id: &str, enabled: bool) -> ProviderCapabilityRoute {

@@ -61,7 +61,18 @@ Ownership rules:
 - `MCP` tools enter the system through backend-owned registration and permission checks.
 - `Memory` recall and writes run through backend-owned tenant and visibility rules.
 - `Model` providers are backend capabilities and must not expose raw provider credentials to React.
-- The main conversation model and provider capability routes are separate runtime policies. The conversation model controls chat input modalities and tool-calling eligibility. Capability routes control which provider service tools are exposed and which provider profile credentials they use.
+- Conversation identity and run execution config are separate runtime policies.
+  Conversation identity covers workspace, tenant, user/team, and session scope.
+  Model choice, protocol, permission mode, tool profile/search, context
+  compression, agent options, and prompt addenda belong to the run effective
+  config.
+- The run model and provider capability routes are separate runtime policies.
+  The run model controls chat input modalities and tool-calling eligibility.
+  Capability routes control which provider service tools are exposed and which
+  provider profile credentials they use.
+- Draft conversations are desktop metadata records. Creating an empty
+  conversation must not write `SessionCreated` or any runtime journal event.
+  The runtime journal starts when `start_run` succeeds.
 - `Journal` stores structured `Event` values after redaction.
 - Conversation worktree projection belongs to Rust. It converts redacted journal
   events into `ConversationTurn` trees for the UI.
@@ -269,10 +280,10 @@ Persistence:
 .jyowo/runtime/provider-capability-routes.json
 ```
 
-The main conversation model binding remains in:
+Conversation metadata and provider settings live in:
 
 ```text
-.jyowo/runtime/conversation-model-settings.json
+.jyowo/runtime/conversation-metadata.json
 .jyowo/runtime/provider-settings.json
 ```
 
@@ -280,12 +291,13 @@ Runtime flow:
 
 ```text
 user message
-  -> main conversation model
+  -> start_run request.model_config_id
+  -> run model snapshot
   -> optional tool call
   -> ToolPool exposes only route-enabled service tools
   -> tool carries ToolServiceBinding metadata
   -> route resolver selects configured provider profile
-  -> credential resolver returns operation-scoped credential
+  -> credential resolver returns run-scoped or operation-scoped credential
   -> provider service adapter executes operation
   -> BlobStore stores media output
   -> engine creates ArtifactCreated / ArtifactUpdated from typed tool output
@@ -294,12 +306,12 @@ user message
 
 Ownership rules:
 
-- Main conversation model selection stays separate from service route selection.
-- User attachments are validated only against the main model input modalities.
+- Run model selection stays separate from service route selection.
+- User attachments are validated only against the run model input modalities.
 - Media generation is a routed provider service, not `ConversationModelCapability.output_modalities`.
-- A provider profile may be both the main model and a service route only through explicit route config.
-- Unconfigured service tools must not be exposed to the main model.
-- Main models without tool calling must not receive autonomous service tools.
+- A provider profile may be both the run model and a service route only through explicit route config.
+- Unconfigured service tools must not be exposed to the run model.
+- Run models without tool calling must not receive autonomous service tools.
 - Backend validates every route. React never decides security or runtime eligibility.
 - Provider credential resolution must include operation or route context. Route must not be inferred from tool name.
 - Engine must not know provider-specific service names. Artifact creation must use typed `ToolResultPart::Artifact`, not tool-name heuristics.
@@ -325,8 +337,12 @@ if operation_id and route_kind are present:
   find provider config by route.config_id
   validate provider id and API key
   return route credential
+else if model_config_id is present:
+  find provider config by model_config_id
+  validate provider id and API key
+  return run model credential
 else:
-  preserve existing provider-only behavior for non-service tools
+  fail closed
 ```
 
 Routed service operations fail closed when the route is missing, disabled, mismatched, or lacks an API key. Routed service operations must not fall back to the default provider profile.

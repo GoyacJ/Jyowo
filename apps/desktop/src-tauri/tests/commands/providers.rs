@@ -1465,11 +1465,7 @@ mod capability_route_conversation {
                 routes: vec![minimax_image_route("minimax-image", true)],
             },
             Arc::clone(&provider),
-            provider_settings_with_openai_and_minimax(
-                "openai-main",
-                "minimax-image",
-                "route-token",
-            ),
+            provider_settings_with_test_and_minimax("minimax-image", "route-token"),
         )
         .await;
         let session_id = SessionId::new();
@@ -1509,11 +1505,7 @@ mod capability_route_conversation {
                 routes: Vec::new(),
             },
             Arc::clone(&provider),
-            provider_settings_with_openai_and_minimax(
-                "openai-main",
-                "minimax-image",
-                "route-token",
-            ),
+            provider_settings_with_test_and_minimax("minimax-image", "route-token"),
         )
         .await;
         let session_id = SessionId::new();
@@ -1558,8 +1550,7 @@ mod capability_route_conversation {
             Arc::clone(&routes),
         );
         DesktopProviderSettingsStore::new(workspace.clone())
-            .save_record(&provider_settings_with_openai_and_minimax(
-                "openai-main",
+            .save_record(&provider_settings_with_test_and_minimax(
                 "minimax-image",
                 "route-token",
             ))
@@ -1648,11 +1639,7 @@ mod capability_route_conversation {
                 routes: vec![minimax_video_route("minimax-image", true)],
             },
             Arc::clone(&provider),
-            provider_settings_with_openai_and_minimax(
-                "openai-main",
-                "minimax-image",
-                "route-token",
-            ),
+            provider_settings_with_test_and_minimax("minimax-image", "route-token"),
         )
         .await;
         let session_id = SessionId::new();
@@ -1693,11 +1680,7 @@ mod capability_route_conversation {
                 routes: vec![minimax_tts_route("minimax-image", true)],
             },
             Arc::clone(&provider),
-            provider_settings_with_openai_and_minimax(
-                "openai-main",
-                "minimax-image",
-                "route-token",
-            ),
+            provider_settings_with_test_and_minimax("minimax-image", "route-token"),
         )
         .await;
         let session_id = SessionId::new();

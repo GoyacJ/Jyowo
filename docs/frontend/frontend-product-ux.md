@@ -488,10 +488,20 @@ only full editor for provider capability routes. `ModelDetailsDrawer` may show
 read-only route bindings and shortcuts, but it must not contain the full route
 table or editor.
 
+Composer model selection rules:
+
+- The composer model selector is per-run state.
+- Changing the selector must update only the local composer state before send.
+- Send and review-continue actions must include the current `modelConfigId`.
+- A successful send persists that `modelConfigId` as the conversation default
+  through backend metadata; failed sends must not change the default.
+- Empty draft conversations use metadata only and should render with empty
+  messages until the first run starts.
+
 Capability routing UX rules:
 
-- The main conversation model and capability routes are separate settings.
-- Image input describes the main model accepting image attachments.
+- The run model and capability routes are separate settings.
+- Image input describes the run model accepting image attachments.
 - Image generation describes a routed provider service for creating images.
 - Video input and video generation follow the same distinction.
 - Route rows are grouped by `CapabilityRouteKind` returned from
