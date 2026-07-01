@@ -2032,6 +2032,12 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
         page.events[0].payload["permissionMode"],
         "bypass_permissions"
     );
+    assert_eq!(page.events[0].payload["model"]["providerId"], "test");
+    assert_eq!(page.events[0].payload["model"]["modelId"], "test-model");
+    assert_eq!(page.events[0].payload["model"]["displayName"], "Test Model");
+    assert_eq!(page.events[0].payload["model"]["protocol"], "messages");
+    assert!(page.events[0].payload["model"].get("apiKey").is_none());
+    assert!(page.events[0].payload["model"].get("baseUrl").is_none());
     assert_eq!(
         page.events[1].payload["argumentsSummary"],
         "Input withheld from conversation timeline."

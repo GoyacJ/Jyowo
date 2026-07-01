@@ -48,6 +48,40 @@ fn user_event(
     event
 }
 
+fn run_model_snapshot(
+    model_config_id: &str,
+    provider_id: &str,
+    model_id: &str,
+) -> serde_json::Value {
+    json!({
+        "modelConfigId": model_config_id,
+        "providerId": provider_id,
+        "modelId": model_id,
+        "displayName": model_id,
+        "protocol": "chat_completions",
+    })
+}
+
+fn run_started(
+    sequence: u64,
+    id: &str,
+    run_id: &str,
+    model_config_id: &str,
+    provider_id: &str,
+    model_id: &str,
+) -> ConversationTimelineEvent {
+    event(
+        sequence,
+        id,
+        run_id,
+        "run.started",
+        json!({
+            "sessionId": "conversation-1",
+            "model": run_model_snapshot(model_config_id, provider_id, model_id),
+        }),
+    )
+}
+
 fn user_event_with_attachment(
     sequence: u64,
     id: &str,
@@ -82,6 +116,33 @@ fn user_event_with_attachment(
     );
     event.source = "user".to_owned();
     event
+}
+
+#[test]
+fn run_started_model_projects_to_assistant_work() {
+    let events = vec![
+        run_started(
+            1,
+            "event-run-started",
+            "run-1",
+            "minimax-config",
+            "minimax",
+            "MiniMax-M3",
+        ),
+        user_event(2, "event-user", "run-1", "user-1", "Use MiniMax"),
+        assistant_completed(3, "event-assistant", "run-1", "assistant-1", "Done"),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection.turns[0]
+        .assistant
+        .as_ref()
+        .expect("assistant work exists");
+    let model = assistant.model.as_ref().expect("assistant model exists");
+
+    assert_eq!(model.model_config_id.as_deref(), Some("minimax-config"));
+    assert_eq!(model.provider_id, "minimax");
+    assert_eq!(model.model_id, "MiniMax-M3");
 }
 
 #[test]

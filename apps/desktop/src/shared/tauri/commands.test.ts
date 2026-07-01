@@ -272,9 +272,6 @@ const openAiRunModelSnapshot = {
   modelId: openAiModelDescriptor.modelId,
   displayName: openAiModelDescriptor.displayName,
   protocol: openAiModelDescriptor.protocol,
-  contextWindow: openAiModelDescriptor.contextWindow,
-  maxOutputTokens: openAiModelDescriptor.maxOutputTokens,
-  conversationCapability: openAiModelDescriptor.conversationCapability,
 } as const
 
 describe('CommandClient', () => {

@@ -6,8 +6,8 @@ use harness_contracts::{
     AgentActivityKind, AgentActivityPermissionState, AgentActivitySegment, AgentActivityStatus,
     AgentTeamActivityDetails, AgentTeamMemberActivity, AgentTeamTaskActivity, ArtifactMediaKind,
     ArtifactMediaPreview, ArtifactSegment, ArtifactSource, ArtifactStatus, AssistantNoticeCode,
-    AssistantSegment, AssistantWork, AssistantWorkStatus, BlobId, BlobRef,
-    ClarificationRequestSegment, ConversationAttachmentReference, ConversationCursor,
+    AssistantSegment, AssistantWork, AssistantWorkModelSnapshot, AssistantWorkStatus, BlobId,
+    BlobRef, ClarificationRequestSegment, ConversationAttachmentReference, ConversationCursor,
     ConversationEventRef, ConversationTimelineEvent, ConversationTurn, ConversationTurnUserMessage,
     ConversationWorktreePage, ErrorSegment, NoticeSegment, ProcessDiffFile, ProcessSegment,
     ProcessSegmentStatus, ProcessStep, ProcessStepDetail, ProcessStepKind, ProcessStepStatus,
@@ -39,6 +39,7 @@ pub fn project_conversation_worktree_snapshot(
         turns: Vec::new(),
         run_turns: HashMap::new(),
         request_tools: HashMap::new(),
+        run_models: HashMap::new(),
         subagent_requests: HashMap::new(),
         agent_tool_tasks: HashMap::new(),
         seen_event_ids: HashSet::new(),
@@ -54,6 +55,7 @@ pub fn project_conversation_worktree_snapshot(
         let event_ref = event_ref(&event);
         state.event_refs.push(event_ref.clone());
         match event.event_type.as_str() {
+            "run.started" => state.project_run_started(&event, event_ref),
             "user.message.appended" => state.project_user_message(&event, event_ref),
             "assistant.completed" => state.project_assistant_completed(&event, event_ref),
             "assistant.delta" => state.project_assistant_delta(&event, event_ref),
@@ -156,6 +158,7 @@ struct ProjectionState<'a> {
     turns: Vec<ConversationTurn>,
     run_turns: HashMap<String, usize>,
     request_tools: HashMap<String, String>,
+    run_models: HashMap<String, AssistantWorkModelSnapshot>,
     subagent_requests: HashMap<String, String>,
     agent_tool_tasks: HashMap<String, (String, String)>,
     seen_event_ids: HashSet<String>,
@@ -164,6 +167,21 @@ struct ProjectionState<'a> {
 }
 
 impl ProjectionState<'_> {
+    fn project_run_started(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Ok(model) =
+            serde_json::from_value::<AssistantWorkModelSnapshot>(event.payload["model"].clone())
+        else {
+            return;
+        };
+        self.run_models.insert(event.run_id.clone(), model.clone());
+        let assistant = self.assistant_work(event, event_ref);
+        assistant.model = Some(model);
+    }
+
     fn project_user_message(
         &mut self,
         event: &ConversationTimelineEvent,
@@ -1827,6 +1845,7 @@ impl ProjectionState<'_> {
             .get_or_insert_with(|| AssistantWork {
                 id: format!("assistant:{}", event.run_id),
                 run_id: event.run_id.clone(),
+                model: self.run_models.get(&event.run_id).cloned(),
                 status: AssistantWorkStatus::Running,
                 segments: Vec::new(),
                 event_refs: Vec::new(),

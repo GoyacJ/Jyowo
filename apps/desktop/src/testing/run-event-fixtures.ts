@@ -6,19 +6,6 @@ const runModelSnapshot = {
   modelId: 'gpt-4.1',
   displayName: 'GPT-4.1',
   protocol: 'responses',
-  contextWindow: 128000,
-  maxOutputTokens: 16384,
-  conversationCapability: {
-    inputModalities: ['text', 'image'],
-    outputModalities: ['text'],
-    contextWindow: 128000,
-    maxOutputTokens: 16384,
-    streaming: true,
-    toolCalling: true,
-    reasoning: false,
-    promptCache: true,
-    structuredOutput: true,
-  },
 }
 
 export const runEventFixtures: Array<Record<string, unknown>> = [

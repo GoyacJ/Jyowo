@@ -32,10 +32,21 @@ export function AssistantWorkView({
 }) {
   const { t } = useTranslation('conversation')
   const processImageArtifactIds = getProcessImageArtifactIds(assistant)
+  const modelLabel = assistant.model?.displayName
 
   return (
     <section className="max-w-[86%]">
-      <div className="mb-2 text-muted-foreground text-xs">{t('timeline.assistantAuthor')}</div>
+      <div className="mb-2 flex items-center gap-2 text-muted-foreground text-xs">
+        <span>{t('timeline.assistantAuthor')}</span>
+        {modelLabel ? (
+          <span
+            className="max-w-48 truncate rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground/80"
+            title={modelLabel}
+          >
+            {modelLabel}
+          </span>
+        ) : null}
+      </div>
       {assistant.status === 'running' || assistant.status === 'failed' ? (
         <div className="mb-3 border-border border-b pb-2 text-muted-foreground text-xs">
           {assistant.status === 'running'

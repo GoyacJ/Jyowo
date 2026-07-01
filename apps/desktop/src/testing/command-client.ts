@@ -118,19 +118,6 @@ const fixtureRunModelSnapshot = {
   modelId: 'gpt-4.1',
   displayName: 'GPT-4.1',
   protocol: 'responses' as const,
-  contextWindow: 128000,
-  maxOutputTokens: 16384,
-  conversationCapability: {
-    inputModalities: ['text', 'image'] as Array<'text' | 'image'>,
-    outputModalities: ['text'] as Array<'text'>,
-    contextWindow: 128000,
-    maxOutputTokens: 16384,
-    streaming: true,
-    toolCalling: true,
-    reasoning: false,
-    promptCache: true,
-    structuredOutput: true,
-  },
 }
 
 const fixtureListConversations: ListConversationsResponse = {
@@ -1001,6 +988,7 @@ const fixtureConversationWorktreePage: PageConversationWorktreeResponse = {
       assistant: {
         id: 'assistant:run-001',
         runId: 'run-001',
+        model: fixtureRunModelSnapshot,
         status: 'running',
         segments: [
           {
@@ -1090,6 +1078,7 @@ const fixtureConversationWorktreePage: PageConversationWorktreeResponse = {
       assistant: {
         id: 'assistant:run-002',
         runId: 'run-002',
+        model: fixtureRunModelSnapshot,
         status: 'complete',
         segments: [
           {
@@ -1146,6 +1135,7 @@ export const agentOrchestrationProjectedWorktreePage: PageConversationWorktreeRe
       assistant: {
         id: 'assistant:run-agent-orchestration',
         runId: 'run-agent-orchestration',
+        model: fixtureRunModelSnapshot,
         status: 'running',
         segments: [
           {
@@ -1246,6 +1236,7 @@ function worktreePageForFixtureRun(
     assistant: {
       id: 'assistant:run-001',
       runId: 'run-001',
+      model: fixtureRunModelSnapshot,
       status,
       segments: [
         {

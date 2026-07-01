@@ -762,6 +762,39 @@ const agentActivityPermissionStateSchema = z
   })
   .strict()
 
+const modelProtocolSchema = z.enum([
+  'chat_completions',
+  'responses',
+  'messages',
+  'generate_content',
+])
+
+const modelModalitySchema = z.enum(['text', 'image', 'audio', 'video', 'file', 'embedding'])
+
+const conversationModelCapabilitySchema = z
+  .object({
+    inputModalities: z.array(modelModalitySchema),
+    outputModalities: z.array(modelModalitySchema),
+    contextWindow: z.number().int().nonnegative(),
+    maxOutputTokens: z.number().int().nonnegative(),
+    streaming: z.boolean(),
+    toolCalling: z.boolean(),
+    reasoning: z.boolean(),
+    promptCache: z.boolean(),
+    structuredOutput: z.boolean(),
+  })
+  .strict()
+
+const runModelSnapshotSchema = z
+  .object({
+    modelConfigId: z.string().min(1).nullable().optional(),
+    providerId: z.string().min(1),
+    modelId: z.string().min(1),
+    displayName: z.string().min(1),
+    protocol: modelProtocolSchema,
+  })
+  .strict()
+
 const agentTeamMemberActivitySchema = z
   .object({
     agentId: z.string().min(1),
@@ -824,6 +857,7 @@ const assistantWorkSchema = z
   .object({
     id: z.string().min(1),
     runId: z.string().min(1),
+    model: runModelSnapshotSchema.optional(),
     status: z.enum(['running', 'complete', 'failed', 'cancelled']),
     segments: z.array(assistantSegmentSchema),
     eventRefs: z.array(conversationEventRefSchema).optional(),
@@ -1081,13 +1115,6 @@ const getContextSnapshotResponseSchema = z
 
 const providerIdSchema = z.string().trim().min(1)
 
-const modelProtocolSchema = z.enum([
-  'chat_completions',
-  'responses',
-  'messages',
-  'generate_content',
-])
-
 const modelLifecycleSchema = z
   .object({
     kind: z.enum(['stable', 'preview', 'deprecated']),
@@ -1095,26 +1122,10 @@ const modelLifecycleSchema = z
   })
   .strict()
 
-const modelModalitySchema = z.enum(['text', 'image', 'audio', 'video', 'file', 'embedding'])
-
 const modelRuntimeStatusSchema = z
   .object({
     kind: z.enum(['runnable', 'unsupported']),
     reason: z.string().min(1).optional(),
-  })
-  .strict()
-
-const conversationModelCapabilitySchema = z
-  .object({
-    inputModalities: z.array(modelModalitySchema),
-    outputModalities: z.array(modelModalitySchema),
-    contextWindow: z.number().int().nonnegative(),
-    maxOutputTokens: z.number().int().nonnegative(),
-    streaming: z.boolean(),
-    toolCalling: z.boolean(),
-    reasoning: z.boolean(),
-    promptCache: z.boolean(),
-    structuredOutput: z.boolean(),
   })
   .strict()
 
@@ -2965,6 +2976,7 @@ export type AttachmentInputModality = Extract<
   'image' | 'video' | 'file'
 >
 export type ConversationModelCapability = z.infer<typeof conversationModelCapabilitySchema>
+export type RunModelSnapshot = z.infer<typeof runModelSnapshotSchema>
 export type StartRunRequest = z.infer<typeof startRunRequestSchema>
 export type StartRunResponse = z.infer<typeof startRunResponseSchema>
 export type BackgroundAgentRecord = z.infer<typeof backgroundAgentRecordSchema>

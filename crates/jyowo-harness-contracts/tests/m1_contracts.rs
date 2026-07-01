@@ -456,6 +456,7 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
             assistant: Some(AssistantWork {
                 id: "assistant:run-1".to_owned(),
                 run_id: "run-1".to_owned(),
+                model: Some(AssistantWorkModelSnapshot::from(&test_run_model_snapshot())),
                 status: AssistantWorkStatus::Running,
                 segments: vec![
                     AssistantSegment::Process(ProcessSegment {
@@ -849,6 +850,7 @@ fn conversation_worktree_schema_is_exported() {
         "conversation_turn",
         "conversation_turn_user_message",
         "assistant_work",
+        "assistant_work_model_snapshot",
         "assistant_segment",
         "agent_activity_segment",
         "agent_activity_kind",

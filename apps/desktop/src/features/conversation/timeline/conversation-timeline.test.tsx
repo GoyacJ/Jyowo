@@ -6,7 +6,7 @@ import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { appI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
-import type { CommandClient, ConversationTurn } from '@/shared/tauri/commands'
+import type { CommandClient, ConversationTurn, RunModelSnapshot } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
 import { createTestCommandClient } from '@/testing/command-client'
 import {
@@ -18,6 +18,21 @@ import { ConversationTimeline } from './conversation-timeline'
 import { parseDiffEvidenceLines } from './diff-evidence-block'
 
 const timestamp = '2026-06-17T00:00:00.000Z'
+const openAiRunModelSnapshot: RunModelSnapshot = {
+  modelConfigId: 'provider-config-001',
+  providerId: 'openai',
+  modelId: 'gpt-4.1',
+  displayName: 'GPT-4.1',
+  protocol: 'responses',
+}
+const minimaxRunModelSnapshot: RunModelSnapshot = {
+  ...openAiRunModelSnapshot,
+  modelConfigId: 'minimax-config',
+  providerId: 'minimax',
+  modelId: 'MiniMax-M3',
+  displayName: 'MiniMax M3',
+  protocol: 'chat_completions',
+}
 
 describe('ConversationTimeline', () => {
   afterEach(() => {
@@ -62,6 +77,7 @@ describe('ConversationTimeline', () => {
 
     expect(screen.getByText('Prompt')).toBeInTheDocument()
     expect(screen.getAllByText('Jyowo')).toHaveLength(1)
+    expect(screen.getByText('GPT-4.1')).toBeInTheDocument()
     expect(screen.queryByText('Jyowo Complete')).not.toBeInTheDocument()
     expect(screen.getByText('Tools')).toBeInTheDocument()
     expect(screen.getByText('Execution: failed')).toBeInTheDocument()
@@ -152,6 +168,7 @@ describe('ConversationTimeline', () => {
     render(<ConversationTimeline title="MiniMax flow" turns={[minimaxTurn()]} />)
 
     expect(screen.getByText('帮我生成一张海报图')).toBeInTheDocument()
+    expect(screen.getByText('MiniMax M3')).toBeInTheDocument()
     expect(screen.getByText('正在检查可用的图像工具')).toBeInTheDocument()
     expect(screen.getByText('MiniMaxTextToImage')).toBeInTheDocument()
     expect(screen.getByText('Execution: failed')).toBeInTheDocument()
@@ -763,6 +780,7 @@ function turn(
     assistant: {
       id: `assistant:run-${suffix}`,
       runId: `run-${suffix}`,
+      model: openAiRunModelSnapshot,
       status: 'running',
       segments: [
         {
@@ -879,6 +897,7 @@ function minimaxTurn(): ConversationTurn {
     assistant: {
       id: 'assistant:run-minimax',
       runId: 'run-minimax',
+      model: minimaxRunModelSnapshot,
       status: 'complete',
       segments: [
         {

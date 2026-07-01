@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    ArtifactSource, ArtifactStatus, ConversationAttachmentReference, EventId, RedactRules, Redactor,
+    ArtifactSource, ArtifactStatus, ConversationAttachmentReference, EventId, RedactRules,
+    Redactor, RunModelSnapshot,
 };
 
 const REDACTED: &str = "[REDACTED]";
@@ -183,10 +184,35 @@ pub struct ConversationTurnUserMessage {
 pub struct AssistantWork {
     pub id: String,
     pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<AssistantWorkModelSnapshot>,
     pub status: AssistantWorkStatus,
     pub segments: Vec<AssistantSegment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AssistantWorkModelSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_config_id: Option<String>,
+    pub provider_id: String,
+    pub model_id: String,
+    pub display_name: String,
+    pub protocol: crate::ModelProtocol,
+}
+
+impl From<&RunModelSnapshot> for AssistantWorkModelSnapshot {
+    fn from(value: &RunModelSnapshot) -> Self {
+        Self {
+            model_config_id: value.model_config_id.clone(),
+            provider_id: value.provider_id.clone(),
+            model_id: value.model_id.clone(),
+            display_name: value.display_name.clone(),
+            protocol: value.protocol,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

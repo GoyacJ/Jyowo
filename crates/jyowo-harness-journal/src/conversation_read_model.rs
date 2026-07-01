@@ -9,9 +9,9 @@ use harness_contracts::{
     ConversationSummary, ConversationTimelineEvent, ConversationTimelinePage,
     ConversationTurnCursor, ConversationWorktreePage, Decision, DecisionScope, DeltaChunk, Event,
     EventId, JournalError, MemberLeaveReason, MessageContent, MessagePart, PermissionActorSource,
-    PermissionSubject, RequestId, RoutingPolicyKind, RunId, SessionId, Severity, SubagentStatus,
-    SubagentTerminationReason, TeamTerminationReason, TenantId, ToolResult, ToolResultPart,
-    ToolUseId, TopologyKind, UiSafeText,
+    PermissionSubject, RequestId, RoutingPolicyKind, RunId, RunModelSnapshot, SessionId, Severity,
+    SubagentStatus, SubagentTerminationReason, TeamTerminationReason, TenantId, ToolResult,
+    ToolResultPart, ToolUseId, TopologyKind, UiSafeText,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
@@ -24,7 +24,7 @@ use crate::{
 
 const CONVERSATION_READ_MODEL_PROJECTION_VERSION_KEY: &str =
     "conversation_read_model_projection_version";
-const CONVERSATION_READ_MODEL_PROJECTION_VERSION: &str = "8";
+const CONVERSATION_READ_MODEL_PROJECTION_VERSION: &str = "9";
 const CONVERSATION_READ_MODEL_CACHE_TABLES: [&str; 7] = [
     "conversation_projection_background_context",
     "conversation_projection_permission_context",
@@ -643,6 +643,7 @@ fn project_envelope(
             "public",
             json!({
                 "sessionId": event.session_id.to_string(),
+                "model": run_model_payload(&event.model),
                 "permissionMode": event.permission_mode,
             }),
             None,
@@ -1458,6 +1459,16 @@ fn message_content_display(content: &MessageContent) -> UiSafeText {
             .join("\n"),
     };
     safe_text(value)
+}
+
+fn run_model_payload(model: &RunModelSnapshot) -> Value {
+    json!({
+        "modelConfigId": model.model_config_id.as_deref(),
+        "providerId": model.provider_id.as_str(),
+        "modelId": model.model_id.as_str(),
+        "displayName": model.display_name.as_str(),
+        "protocol": model.protocol,
+    })
 }
 
 fn attachment_references_payload(attachments: &[ConversationAttachmentReference]) -> Vec<Value> {

@@ -172,6 +172,11 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         ConversationTurnUserMessage
     );
     insert_schema!(schemas, "assistant_work", AssistantWork);
+    insert_schema!(
+        schemas,
+        "assistant_work_model_snapshot",
+        AssistantWorkModelSnapshot
+    );
     insert_schema!(schemas, "assistant_work_status", AssistantWorkStatus);
     insert_schema!(schemas, "assistant_segment", AssistantSegment);
     insert_schema!(schemas, "agent_activity_segment", AgentActivitySegment);

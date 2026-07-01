@@ -117,6 +117,62 @@ describe('RunEvent schema', () => {
     })
   })
 
+  it('accepts timeline-safe run started model snapshots', () => {
+    const event = runEventSchema.parse({
+      ...runEventFixtures[0],
+      payload: {
+        sessionId: 'conversation-001',
+        model: {
+          modelConfigId: 'provider-config-001',
+          providerId: 'minimax',
+          modelId: 'MiniMax-M3',
+          displayName: 'MiniMax M3',
+          protocol: 'chat_completions',
+        },
+      },
+    })
+
+    expect(event.payload).toMatchObject({
+      sessionId: 'conversation-001',
+      model: {
+        modelConfigId: 'provider-config-001',
+        providerId: 'minimax',
+        modelId: 'MiniMax-M3',
+        displayName: 'MiniMax M3',
+        protocol: 'chat_completions',
+      },
+    })
+  })
+
+  it('rejects secret-bearing run started model payload fields', () => {
+    const runStartedPayload = runEventFixtures[0].payload as Record<string, unknown>
+
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[0],
+        payload: {
+          ...runStartedPayload,
+          model: {
+            ...(runStartedPayload.model as Record<string, unknown>),
+            apiKey: 'sk-secret-token',
+          },
+        },
+      }),
+    ).toThrow()
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[0],
+        payload: {
+          ...runStartedPayload,
+          model: {
+            ...(runStartedPayload.model as Record<string, unknown>),
+            baseUrl: 'https://api.example.test',
+          },
+        },
+      }),
+    ).toThrow()
+  })
+
   it('accepts team member actor sources for permission requests', () => {
     const permissionPayload = runEventFixtures[9].payload as Record<string, unknown>
     const event = runEventSchema.parse({

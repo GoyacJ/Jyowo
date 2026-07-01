@@ -173,9 +173,6 @@ const runModelSnapshotSchema = z
     modelId: z.string().min(1),
     displayName: z.string().min(1),
     protocol: modelProtocolSchema,
-    contextWindow: z.number().int().nonnegative(),
-    maxOutputTokens: z.number().int().nonnegative(),
-    conversationCapability: conversationModelCapabilitySchema,
   })
   .strict()
 const mimeTypeMetadataSchema = z
