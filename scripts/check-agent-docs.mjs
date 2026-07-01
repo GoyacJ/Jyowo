@@ -6,6 +6,7 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const agentsPath = join(repoRoot, 'AGENTS.md')
 
 const requiredReferences = [
+  'docs/testing/testing-strategy.md',
   'docs/frontend/agent-harness-frontend-development-guidelines.md',
   'docs/frontend/frontend-product-ux.md',
   'docs/frontend/frontend-engineering.md',
@@ -22,8 +23,16 @@ const requiredCommands = [
   'pnpm check:agent-docs',
   'pnpm check:frontend-docs',
   'pnpm check:backend-docs',
+  'pnpm check:testing-docs',
+  'pnpm check:test-architecture',
+  'pnpm check:agent-orchestration-no-fakes',
+  'pnpm check:agent-supervisor-sidecar',
   'pnpm check:desktop',
   'pnpm check:rust',
+  'pnpm audit:tests',
+  'pnpm check:quick',
+  'pnpm check:frontend:fast',
+  'pnpm check:rust:fast',
   'cargo fmt --all --check',
   'cargo check --workspace',
   'cargo test --workspace',

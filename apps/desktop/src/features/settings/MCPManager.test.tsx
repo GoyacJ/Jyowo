@@ -218,7 +218,9 @@ describe('MCPManager', () => {
 
     renderMCPManager(client)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Disable Playwright Browser preset' }))
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Disable Playwright Browser preset' }),
+    )
 
     await waitFor(() =>
       expect(saveBrowserMcpPreset).toHaveBeenCalledWith({

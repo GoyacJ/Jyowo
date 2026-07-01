@@ -46,6 +46,20 @@ export const Empty: Story = {
   },
 }
 
+export const Loading: Story = {
+  args: {
+    context: null,
+    loading: true,
+  },
+}
+
+export const ErrorState: Story = {
+  args: {
+    context: null,
+    errorMessage: 'Workspace context is unavailable.',
+  },
+}
+
 export const MissingFile: Story = {
   args: {
     context: {
@@ -81,6 +95,17 @@ export const LongFileList: Story = {
         { label: 'crates/jyowo-harness-contracts/src/events/mod.rs' },
         { label: 'docs/frontend/frontend-product-ux.md' },
       ],
+    },
+  },
+}
+
+export const NoDecisions: Story = {
+  args: {
+    context: {
+      ...readyContext,
+      activeArtifact: undefined,
+      decisions: [],
+      nextActions: [],
     },
   },
 }

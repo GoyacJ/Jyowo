@@ -7,6 +7,11 @@ import test from 'node:test'
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const workflow = readFileSync(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8')
+const ciWorkflow = readFileSync(join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8')
+
+function ciJob(jobName) {
+  return ciWorkflow.match(new RegExp(`\\n  ${jobName}:[\\s\\S]*?(?=\\n  [a-zA-Z0-9_-]+:\\n|\\n*$)`))?.[0] ?? ''
+}
 
 test('release workflow is triggered only by semantic version tags', () => {
   assert.match(workflow, /push:\s*\n\s*tags:\s*\n\s*-\s*['"]v\*\.\*\.\*['"]/)
@@ -33,4 +38,65 @@ test('release workflow uploads Tauri artifacts with updater signing secrets', ()
   assert.match(workflow, /includeUpdaterJson:\s*true/)
   assert.doesNotMatch(workflow, /uploadUpdaterJson:/)
   assert.match(workflow, /releaseDraft:\s*false/)
+})
+
+test('ci workflow runs fast gates on pull requests', () => {
+  assert.match(ciWorkflow, /workflow_dispatch:/)
+  assert.match(ciWorkflow, /pull_request:/)
+  assert.match(ciJob('policy-fast'), /if:\s*github\.event_name == 'pull_request'/)
+  assert.match(
+    ciJob('policy-fast'),
+    /pnpm check:release-version && pnpm check:release-workflow && pnpm check:tauri-updater && pnpm check:agent-orchestration-no-fakes && pnpm check:agent-supervisor-sidecar/,
+  )
+  assert.match(ciJob('docs'), /if:\s*github\.event_name == 'pull_request'[\s\S]*pnpm check:docs/)
+  assert.match(ciJob('test-architecture'), /if:\s*github\.event_name == 'pull_request'[\s\S]*pnpm check:test-architecture/)
+  assert.match(ciJob('frontend-fast'), /if:\s*github\.event_name == 'pull_request'[\s\S]*pnpm check:frontend:fast/)
+  assert.match(ciJob('rust-fast'), /if:\s*github\.event_name == 'pull_request'[\s\S]*pnpm check:rust:fast/)
+})
+
+test('ci workflow runs full gates only on main pushes and manual dispatch', () => {
+  const fullGateCondition =
+    "if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
+
+  for (const [jobName, command] of [
+    ['frontend', 'pnpm check:desktop'],
+    ['rust', 'pnpm check:rust'],
+    ['desktop-build', 'pnpm check:desktop:full'],
+  ]) {
+    const job = ciJob(jobName)
+    assert.ok(job.includes(fullGateCondition))
+    assert.ok(job.includes(command))
+  }
+})
+
+test('ci pnpm jobs install Node, pnpm, and dependencies', () => {
+  const pnpmJobNames = [
+    'policy-fast',
+    'docs',
+    'test-architecture',
+    'frontend-fast',
+    'rust-fast',
+    'frontend',
+    'rust',
+    'desktop-build',
+  ]
+
+  for (const jobName of pnpmJobNames) {
+    const job = ciJob(jobName)
+    assert.match(job, /pnpm\/action-setup@v4/)
+    assert.match(job, /version:\s*11\.7\.0/)
+    assert.match(job, /actions\/setup-node@v4/)
+    assert.match(job, /node-version:\s*24/)
+    assert.match(job, /cache:\s*pnpm/)
+    assert.match(job, /cache-dependency-path:\s*pnpm-lock\.yaml/)
+    assert.match(job, /pnpm install --frozen-lockfile/)
+  }
+})
+
+test('ci rust jobs install Rust and use cache', () => {
+  for (const jobName of ['rust-fast', 'rust', 'desktop-build']) {
+    const job = ciJob(jobName)
+    assert.match(job, /dtolnay\/rust-toolchain@stable/)
+    assert.match(job, /swatinem\/rust-cache@v2/)
+  }
 })

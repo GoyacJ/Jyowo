@@ -4,6 +4,8 @@ This document defines tests, gates, CI, docs policy, review checklist, and refer
 
 ## Testing
 
+Frontend tests follow the project-wide strategy defined in [../testing/testing-strategy.md](../testing/testing-strategy.md). This section covers frontend-specific requirements.
+
 Test layers:
 
 | Layer | Tool | Scope |
@@ -110,6 +112,8 @@ pnpm check:docs
 pnpm check:release-version
 pnpm check:release-workflow
 pnpm check:tauri-updater
+pnpm check:agent-orchestration-no-fakes
+pnpm check:agent-supervisor-sidecar
 pnpm check:desktop
 pnpm check:desktop:full
 pnpm check:rust
@@ -138,6 +142,8 @@ pnpm -C apps/desktop check:full
 release version consistency
 release workflow policy
 Tauri updater policy
+agent orchestration no-fake policy
+agent supervisor sidecar policy
 frontend docs structure and required concepts
 desktop typecheck
 desktop lint

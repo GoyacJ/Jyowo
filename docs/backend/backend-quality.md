@@ -2,6 +2,8 @@
 
 This document defines backend tests, gates, CI, docs policy, and review checklist.
 
+Backend tests follow the project-wide strategy defined in [../testing/testing-strategy.md](../testing/testing-strategy.md). This section covers backend-specific requirements.
+
 ## Required Gates
 
 Root commands:
@@ -10,6 +12,8 @@ Root commands:
 pnpm check:rust-deps
 pnpm check:backend-docs
 pnpm check:docs
+pnpm check:agent-orchestration-no-fakes
+pnpm check:agent-supervisor-sidecar
 pnpm check:rust
 pnpm check
 ```
@@ -33,6 +37,8 @@ cargo test --workspace
 ```
 
 `pnpm check` MUST run docs, desktop, and Rust gates.
+It also MUST run the agent orchestration no-fake and supervisor sidecar policy
+gates before desktop and Rust verification.
 
 ## Test Coverage
 
@@ -69,14 +75,21 @@ Critical backend tests:
 ```text
 apps/desktop/src-tauri/tests/commands.rs
 crates/jyowo-harness-budget/tests/budget_contract.rs
-crates/jyowo-harness-contracts/tests/m1_contracts.rs
+crates/jyowo-harness-contracts/tests/core_contracts.rs
+crates/jyowo-harness-contracts/tests/tool_contracts.rs
 crates/jyowo-harness-contracts/tests/provider_capability_routes.rs
 crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs
 crates/jyowo-harness-journal/tests/conversation_read_model.rs
 crates/jyowo-harness-journal/tests/version.rs
 crates/jyowo-harness-sdk/tests/conversation_read_model.rs
 crates/jyowo-harness-observability/tests/journal_redactor_pipeline.rs
-crates/jyowo-harness-sdk/tests/runtime_assembly.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_agents.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_capability_routes.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_context.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_memory.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_observability.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_tools.rs
 crates/jyowo-harness-tool/tests/builtin_exec.rs
 crates/jyowo-harness-tool/tests/builtin_io.rs
 crates/jyowo-harness-tool/tests/orchestrator.rs
