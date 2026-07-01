@@ -8,6 +8,26 @@
 
 **Tech Stack:** Rust 1.96, Tauri 2, React 19, TypeScript 6, Zod, Tokio process execution, macOS Seatbelt, Linux bubblewrap, Windows process isolation only when enforceable, Docker, SSH, `cargo test`, `pnpm check:rust`, `pnpm check:desktop`, `pnpm check:docs`, `pnpm check`.
 
+## 2026-07-01 Revalidation Baseline
+
+This plan was rechecked after `goya/agent-orchestration` was merged into `main`.
+
+Current implementation facts:
+
+- `crates/jyowo-harness-agent-runtime` exists and owns agent profile storage, runtime policy merge, workspace isolation leases, team state, and background agent state.
+- `apps/desktop/src-tauri/src/commands/agents.rs` and `background_agents.rs` exist and are registered command domains.
+- `apps/desktop/src-tauri/src/commands/conversations.rs` now merges `AgentRunOptions`, starts foreground/background agent runs, and projects subagent, team, and background events.
+- `apps/desktop/src-tauri/src/commands/providers.rs` exposes agent capability availability through `AgentCapabilityResolver`.
+- `crates/jyowo-harness-sdk/src/harness/session_runtime.rs` installs run-scoped subagent capability wiring and always passes the configured sandbox into the engine builder.
+- `crates/jyowo-harness-engine` already contains subagent sandbox inheritance behavior and tests. Task 10 must consolidate this behavior into the shared sandbox policy merge design rather than adding a parallel inheritance model.
+
+Implementation rules from this revalidation:
+
+- Create the sandbox hardening worktree from the current `main` after agent orchestration, not from `origin/main` or a pre-orchestration branch.
+- Do not remove or bypass existing agent profile, subagent, team, background-agent, and run-scoped model-selection contracts while hardening sandbox behavior.
+- Treat agent orchestration paths as production sandbox call sites. Every task that changes `ExecSpec`, `SandboxPolicy`, `PermissionBroker`, or `ProcessNetworkAccess` must re-check `jyowo-harness-agent-runtime`, `session_runtime.rs`, `commands/conversations.rs`, `commands/providers.rs`, `commands/runtime.rs`, and `commands/background_agents.rs`.
+- Task 10 is now a refactor-and-unification task. It must replace or wrap existing ad hoc child sandbox checks with the shared L1 merge helper and preserve existing public behavior except where the plan explicitly requires fail-closed tightening.
+
 ---
 
 ## Authority References
@@ -35,6 +55,7 @@ cd ../Jyowo-sandbox-hardening
 Rules:
 
 - If `git worktree add` fails because the branch already exists, use `git worktree list` and switch to the existing `../Jyowo-sandbox-hardening` worktree.
+- The worktree base must include `crates/jyowo-harness-agent-runtime` and `apps/desktop/src-tauri/src/commands/background_agents.rs`. If either path is missing, the base branch is stale and implementation must stop.
 - Do not run `git reset --hard`, `git checkout --`, or equivalent destructive commands against user changes.
 - Every task must commit independently after passing its gates and subagent audits.
 
@@ -1961,17 +1982,35 @@ git commit -m "feat(sandbox): expose safe policy diagnostics"
 
 **Purpose:** Ensure all execution paths use the same sandbox policy model and do not bypass hard denies.
 
+**2026-07-01 baseline adjustment:** Agent orchestration is already implemented. This task must include the existing agent runtime and desktop run paths, not just the older engine/plugin/session paths. The target is one shared child-policy merge rule used by existing subagent, team, background-agent, plugin sidecar, and session-turn execution.
+
 **Files:**
 
 - Create: `crates/jyowo-harness-sandbox/src/policy_merge.rs`
 - Test: `crates/jyowo-harness-sandbox/tests/policy_merge.rs`
+- Modify: `crates/jyowo-harness-agent-runtime/src/policy.rs`
+- Modify: `crates/jyowo-harness-agent-runtime/src/subagents.rs`
+- Modify: `crates/jyowo-harness-agent-runtime/src/teams.rs`
+- Modify: `crates/jyowo-harness-agent-runtime/src/background.rs`
+- Modify: `crates/jyowo-harness-agent-runtime/tests/agent_orchestration_policy.rs`
+- Modify: `crates/jyowo-harness-agent-runtime/tests/subagents.rs`
+- Modify: `crates/jyowo-harness-agent-runtime/tests/agents_team.rs`
+- Modify: `crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs`
 - Modify: `crates/jyowo-harness-engine/src/engine.rs`
+- Modify: `crates/jyowo-harness-engine/src/turn.rs`
 - Modify: `crates/jyowo-harness-subagent/src/lib.rs`
 - Modify: `crates/jyowo-harness-subagent/tests/contract.rs`
 - Modify: `crates/jyowo-harness-plugin/src/cargo_extension.rs`
 - Modify: `crates/jyowo-harness-plugin/tests/sources.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/session_runtime.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/tool_pool.rs`
+- Modify: `crates/jyowo-harness-sdk/tests/runtime_assembly.rs`
 - Modify: `crates/jyowo-harness-session/src/turn.rs`
 - Modify: `crates/jyowo-harness-session/tests/run_turn.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/conversations.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/background_agents.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/background_agents.rs`
 
 - [ ] **Step 1: Task intent check**
 
@@ -1983,8 +2022,10 @@ Add tests proving:
 
 - `merge_sandbox_policy_for_child` lives in `jyowo-harness-sandbox` and is used by child execution paths rather than reimplemented in engine, session, plugin, or subagent crates.
 - `policy_merge.rs` does not import `harness_subagent`, `harness_engine`, `harness_plugin`, or `harness_session`.
+- agent runtime policy merge cannot produce write-capable subagent, team, or background execution without the hardened child sandbox policy.
 - subagent `Require` fails closed if parent sandbox lacks network-none or filesystem enforcement.
 - subagent `Override` cannot remove protected filesystem denies.
+- team member and background-agent runs inherit the parent run sandbox through the same merge helper.
 - plugin sidecar uses the same protected default policy.
 - session turn execution passes the configured sandbox into tool context.
 - no path calls `without_sandbox` except tests that intentionally assert missing sandbox rejection.
@@ -1993,9 +2034,11 @@ Run:
 
 ```bash
 cargo test -p jyowo-harness-sandbox policy_merge -- --nocapture
+cargo test -p jyowo-harness-agent-runtime sandbox -- --nocapture
 cargo test -p jyowo-harness-subagent sandbox -- --nocapture
 cargo test -p jyowo-harness-plugin sandbox -- --nocapture
 cargo test -p jyowo-harness-session sandbox -- --nocapture
+cargo test -p jyowo-harness-sdk runtime_assembly -- --nocapture
 ```
 
 Expected before implementation: FAIL.
@@ -2008,7 +2051,7 @@ Layering rule:
 
 - `policy_merge.rs` is an L1 helper and may depend only on L0 contracts and L1-local sandbox types.
 - It must not import or pattern-match on `SandboxInheritance`, `RequiredSandboxCapabilities`, subagent lifecycle types, plugin types, session turn types, or engine builder types.
-- Mapping `SandboxInheritance::{Inherit, Empty, Require, Override}` to parent/child `SandboxPolicy` values belongs in engine/subagent/session/plugin call sites.
+- Mapping `SandboxInheritance::{Inherit, Empty, Require, Override}` and agent profile `AgentProfileSandboxInheritance` to parent/child `SandboxPolicy` values belongs in engine/subagent/session/plugin/agent-runtime call sites.
 - Higher layers may call `merge_sandbox_policy_for_child(parent, child)`, but the sandbox crate must remain unaware of which higher-level domain requested the merge.
 
 Implement:
@@ -2031,16 +2074,18 @@ Rules:
 
 - [ ] **Step 4: Update inheritance call sites**
 
-Replace ad hoc sandbox capability checks in engine and subagent paths with the shared capability and policy merge helpers.
+Replace ad hoc sandbox capability checks in engine, subagent, team, background-agent, plugin, and session paths with the shared capability and policy merge helpers.
 
 - [ ] **Step 5: Run gates**
 
 ```bash
 cargo fmt --all --check
 cargo test -p jyowo-harness-sandbox policy_merge -- --nocapture
+cargo test -p jyowo-harness-agent-runtime sandbox -- --nocapture
 cargo test -p jyowo-harness-subagent sandbox -- --nocapture
 cargo test -p jyowo-harness-plugin sandbox -- --nocapture
 cargo test -p jyowo-harness-session sandbox -- --nocapture
+cargo test -p jyowo-harness-sdk runtime_assembly -- --nocapture
 if rg -n "harness_(subagent|engine|plugin|session)|SandboxInheritance|RequiredSandboxCapabilities" crates/jyowo-harness-sandbox/src/policy_merge.rs; then
   echo "L1 sandbox policy merge production code must not depend on higher-layer inheritance types."
   exit 1
