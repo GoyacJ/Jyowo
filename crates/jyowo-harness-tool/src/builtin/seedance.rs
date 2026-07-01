@@ -572,6 +572,7 @@ async fn seedance_credential(
             session_id: ctx.session_id,
             run_id: ctx.run_id,
             provider_id: SEEDANCE_PROVIDER_ID.to_owned(),
+            model_config_id: None,
             operation_id: operation_id.clone(),
             route_kind,
         })

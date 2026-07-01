@@ -13,12 +13,13 @@ use futures::StreamExt;
 use harness_contracts::{
     AssistantMessageCompletedEvent, BlobStore, BudgetKind, CapabilityRegistry, ConfigHash,
     Decision, DeferPolicy, EndReason, Event, McpOrigin, McpServerId, McpServerSource, Message,
-    MessageContent, MessageId, MessagePart, MessageRole, ModelError, NetworkAccess, NoopRedactor,
-    PermissionError, PermissionMode, ProviderRestriction, ResourceLimits, ResultBudget, RunId,
-    RunStartedEvent, SandboxMode, SandboxPolicy, SandboxScope, SessionId, SnapshotId, StopReason,
-    SubagentTerminationReason, TenantId, ToolCapability, ToolDescriptor, ToolError, ToolGroup,
-    ToolOrigin, ToolProperties, ToolResult, ToolUseCompletedEvent, ToolUseId, TrustLevel,
-    TurnInput, UsageSnapshot, UserMessageAppendedEvent,
+    MessageContent, MessageId, MessagePart, MessageRole, ModelError, ModelProtocol, NetworkAccess,
+    NoopRedactor, PermissionError, PermissionMode, ProviderRestriction, ResourceLimits,
+    ResultBudget, RunId, RunModelSnapshot, RunStartedEvent, SandboxMode, SandboxPolicy,
+    SandboxScope, SessionId, SnapshotId, StopReason, SubagentTerminationReason, TenantId,
+    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
+    ToolUseCompletedEvent, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
+    UserMessageAppendedEvent,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_journal::{EventStore, ReplayCursor};
@@ -2235,6 +2236,7 @@ fn parent_transcript_events(
             session_id: SessionId::new(),
             tenant_id: TenantId::SINGLE,
             parent_run_id: None,
+            model: test_run_model_snapshot(),
             input: turn_input(first_user),
             snapshot_id: SnapshotId::from_u128(0),
             effective_config_hash: ConfigHash([0; 32]),
@@ -2274,6 +2276,19 @@ fn parent_transcript_events(
             ended_at: harness_contracts::now(),
         }),
     ]
+}
+
+fn test_run_model_snapshot() -> RunModelSnapshot {
+    RunModelSnapshot {
+        model_config_id: None,
+        provider_id: "test".to_owned(),
+        model_id: "test-model".to_owned(),
+        display_name: "Test Model".to_owned(),
+        protocol: ModelProtocol::Messages,
+        context_window: 128_000,
+        max_output_tokens: 8_192,
+        conversation_capability: ConversationModelCapability::default(),
+    }
 }
 
 fn message_texts(messages: &[Message]) -> Vec<&str> {

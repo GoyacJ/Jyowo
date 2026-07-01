@@ -5,6 +5,26 @@ import type { ConversationTimelineAction } from './conversation-timeline-actions
 import { createConversationTimelineSource } from './conversation-timeline-source'
 
 const timestamp = '2026-06-17T00:00:00.000Z'
+const runModelSnapshot = {
+  modelConfigId: 'provider-config-001',
+  providerId: 'openai',
+  modelId: 'gpt-4.1',
+  displayName: 'GPT-4.1',
+  protocol: 'responses',
+  contextWindow: 128000,
+  maxOutputTokens: 16384,
+  conversationCapability: {
+    inputModalities: ['text', 'image'],
+    outputModalities: ['text'],
+    contextWindow: 128000,
+    maxOutputTokens: 16384,
+    streaming: true,
+    toolCalling: true,
+    reasoning: false,
+    promptCache: true,
+    structuredOutput: true,
+  },
+}
 
 function cursor(conversationSequence = 1) {
   return { eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV', conversationSequence }
@@ -13,7 +33,7 @@ function cursor(conversationSequence = 1) {
 const replayEvent: ConversationEventBatchPayload['events'][number] = {
   id: 'evt-replay',
   conversationSequence: 1,
-  payload: { sessionId: 'conversation-001' },
+  payload: { sessionId: 'conversation-001', model: runModelSnapshot },
   runId: 'run-001',
   sequence: 1,
   source: 'engine',

@@ -12,9 +12,9 @@ use harness_contracts::{
     DeltaChunk, DenyReason, EndReason, Event, EventId, FallbackPolicy, InteractivityLevel, Message,
     MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, PermissionActorSource,
     PermissionMode, PermissionRequestedEvent, PermissionResolvedEvent, RedactRules, Redactor,
-    RunEndedEvent, RunId, RunStartedEvent, SessionError, SessionId, StopReason, TeamId, TenantId,
-    ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseApprovedEvent,
-    ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
+    RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionError, SessionId, StopReason,
+    TeamId, TenantId, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult,
+    ToolUseApprovedEvent, ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
     ToolUseRequestedEvent, ToolUseSummary, TrustLevel, TurnInput, UsageSnapshot,
 };
 use harness_hook::{
@@ -70,6 +70,7 @@ pub(crate) async fn run_turn(
     let run_id = RunId::new();
     let projection = session.projection().await;
     let prompt = text_from_parts(&parts);
+    let model = run_model_snapshot(&runtime)?;
     let turn_input = TurnInput {
         message: Message {
             id: MessageId::new(),
@@ -88,6 +89,7 @@ pub(crate) async fn run_turn(
         session_id: session.session_id(),
         tenant_id: session.tenant_id(),
         parent_run_id: None,
+        model,
         input: turn_input.clone(),
         snapshot_id: session.config_snapshot_id(),
         effective_config_hash: session.effective_config_hash(),
@@ -413,6 +415,33 @@ pub(crate) async fn run_turn(
     projection_events.extend(final_events);
     session.apply_projection_events(&projection_events).await;
     Ok(())
+}
+
+fn run_model_snapshot(runtime: &SessionTurnRuntime) -> Result<RunModelSnapshot, SessionError> {
+    let provider_id = runtime.model.provider_id().to_owned();
+    let descriptor = runtime
+        .model
+        .supported_models()
+        .into_iter()
+        .find(|descriptor| {
+            descriptor.provider_id == provider_id && descriptor.model_id == runtime.model_id
+        })
+        .ok_or_else(|| {
+            SessionError::Message(format!(
+                "unsupported model id for provider {provider_id}: {}",
+                runtime.model_id
+            ))
+        })?;
+    Ok(RunModelSnapshot {
+        model_config_id: None,
+        provider_id: descriptor.provider_id,
+        model_id: descriptor.model_id,
+        display_name: descriptor.display_name,
+        protocol: runtime.protocol,
+        context_window: descriptor.context_window,
+        max_output_tokens: descriptor.max_output_tokens,
+        conversation_capability: descriptor.conversation_capability,
+    })
 }
 
 fn text_from_parts(parts: &[MessagePart]) -> String {

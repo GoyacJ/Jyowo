@@ -10,6 +10,7 @@ pub struct RunStartedEvent {
     pub session_id: SessionId,
     pub tenant_id: TenantId,
     pub parent_run_id: Option<RunId>,
+    pub model: RunModelSnapshot,
     pub input: TurnInput,
     pub snapshot_id: SnapshotId,
     pub effective_config_hash: ConfigHash,

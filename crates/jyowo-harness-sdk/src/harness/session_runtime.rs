@@ -219,7 +219,7 @@ impl Harness {
                 "workspace_root invalid: {error}"
             )))
         })?;
-        if !self.conversation_session_options_hash_matches(&canonical, created.options_hash) {
+        if !self.session_options_hash_matches(&canonical, created.options_hash) {
             return Err(HarnessError::PermissionDenied(
                 "conversation session options do not match the existing session".to_owned(),
             ));
@@ -242,73 +242,12 @@ impl Harness {
         Ok(())
     }
 
-    pub(super) fn matching_session_options_hash_variant(
-        &self,
-        options: &SessionOptions,
-        actual: [u8; 32],
-    ) -> Option<SessionOptions> {
-        if session_options_hash(options) == actual
-            || legacy_session_options_hash_with_permission_mode(options) == actual
-        {
-            return Some(options.clone());
-        }
-
-        if legacy_session_options_hash_without_runtime_context(options) == actual {
-            return Some(options.clone());
-        }
-
-        None
-    }
-
-    fn conversation_session_options_hash_matches(
+    pub(super) fn session_options_hash_matches(
         &self,
         options: &SessionOptions,
         actual: [u8; 32],
     ) -> bool {
-        if self
-            .matching_session_options_hash_variant(options, actual)
-            .is_some()
-        {
-            return true;
-        }
-
-        let mut model_ids = vec![None, options.model_id.clone()];
-        let mut protocols = vec![
-            None,
-            options.protocol,
-            Some(ModelProtocol::ChatCompletions),
-            Some(ModelProtocol::Responses),
-            Some(ModelProtocol::Messages),
-            Some(ModelProtocol::GenerateContent),
-        ];
-        for descriptor in self.inner.model.supported_models() {
-            model_ids.push(Some(descriptor.model_id));
-            protocols.push(Some(descriptor.protocol));
-        }
-        model_ids.sort();
-        model_ids.dedup();
-        let mut deduped_protocols = Vec::new();
-        for protocol in protocols {
-            if !deduped_protocols.contains(&protocol) {
-                deduped_protocols.push(protocol);
-            }
-        }
-
-        for model_id in model_ids {
-            for protocol in &deduped_protocols {
-                let mut variant = options.clone();
-                variant.model_id = model_id.clone();
-                variant.protocol = *protocol;
-                if session_options_hash(&variant) == actual
-                    || legacy_session_options_hash_with_permission_mode(&variant) == actual
-                    || legacy_session_options_hash_without_runtime_context(&variant) == actual
-                {
-                    return true;
-                }
-            }
-        }
-
-        false
+        session_options_hash(options) == actual
     }
 
     pub(super) async fn resume_sdk_session_from_projection(
@@ -783,15 +722,7 @@ pub(super) fn snapshot_for_supported_model(
                 "unsupported model id for provider {provider_id}: {model_id}"
             )))
         })?;
-    Ok(ModelRuntimeSnapshot {
-        provider_id: descriptor.provider_id,
-        model_id: descriptor.model_id,
-        protocol: descriptor.protocol,
-        context_window: descriptor.context_window,
-        conversation_capability: descriptor.conversation_capability,
-        lifecycle: descriptor.lifecycle,
-        pricing: descriptor.pricing,
-    })
+    Ok(ModelRuntimeSnapshot::from_descriptor(descriptor))
 }
 
 fn context_budget_for_model(

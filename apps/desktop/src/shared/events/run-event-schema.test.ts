@@ -100,17 +100,20 @@ describe('RunEvent schema', () => {
   })
 
   it('accepts run started permission mode payloads', () => {
+    const runStartedPayload = runEventFixtures[0].payload as Record<string, unknown>
     const event = runEventSchema.parse({
       ...runEventFixtures[0],
       payload: {
+        ...runStartedPayload,
         sessionId: 'conversation-001',
         permissionMode: 'bypass_permissions',
       },
     })
 
-    expect(event.payload).toEqual({
+    expect(event.payload).toMatchObject({
       sessionId: 'conversation-001',
       permissionMode: 'bypass_permissions',
+      model: runStartedPayload.model,
     })
   })
 
@@ -231,10 +234,12 @@ describe('RunEvent schema', () => {
     'dont_ask',
     'auto',
   ])('accepts contract permission mode %s in run started events', (permissionMode) => {
+    const runStartedPayload = runEventFixtures[0].payload as Record<string, unknown>
     expect(() =>
       runEventSchema.parse({
         ...runEventFixtures[0],
         payload: {
+          ...runStartedPayload,
           sessionId: 'conversation-001',
           permissionMode,
         },

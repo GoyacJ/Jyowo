@@ -146,6 +146,38 @@ const permissionModeSchema = z.enum([
   'dont_ask',
   'auto',
 ])
+const modelProtocolSchema = z.enum([
+  'chat_completions',
+  'responses',
+  'messages',
+  'generate_content',
+])
+const modelModalitySchema = z.enum(['text', 'image', 'audio', 'video', 'file', 'embedding'])
+const conversationModelCapabilitySchema = z
+  .object({
+    inputModalities: z.array(modelModalitySchema),
+    outputModalities: z.array(modelModalitySchema),
+    contextWindow: z.number().int().nonnegative(),
+    maxOutputTokens: z.number().int().nonnegative(),
+    streaming: z.boolean(),
+    toolCalling: z.boolean(),
+    reasoning: z.boolean(),
+    promptCache: z.boolean(),
+    structuredOutput: z.boolean(),
+  })
+  .strict()
+const runModelSnapshotSchema = z
+  .object({
+    modelConfigId: z.string().min(1).nullable().optional(),
+    providerId: z.string().min(1),
+    modelId: z.string().min(1),
+    displayName: z.string().min(1),
+    protocol: modelProtocolSchema,
+    contextWindow: z.number().int().nonnegative(),
+    maxOutputTokens: z.number().int().nonnegative(),
+    conversationCapability: conversationModelCapabilitySchema,
+  })
+  .strict()
 const mimeTypeMetadataSchema = z
   .string()
   .trim()
@@ -174,6 +206,7 @@ const toolDiffSchema = z
   .strict()
 const runStartedPayloadSchema = z
   .object({
+    model: runModelSnapshotSchema,
     permissionMode: permissionModeSchema.optional(),
     sessionId: z.string().min(1),
   })

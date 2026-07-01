@@ -10,13 +10,14 @@ use harness_contracts::{
     AssistantMessageCompletedEvent, AssistantNoticeEvent, AssistantReviewRequestedEvent,
     AutomationRunStatus, AutomationSchedule, AutomationSpec, AutomationWorkspaceScope,
     BackgroundRunPolicy, CapabilityRouteKind, ConfigHash, ConversationAttachmentReference,
-    CorrelationId, DecidedBy, EngineError, EngineFailedEvent, EventId, McpConnectionLostEvent,
-    McpConnectionLostReason, MessageContent, MessageId, MessageMetadata, MissedRunPolicy,
-    ModelModality, PermissionActorSource, PermissionRequestedEvent, PermissionResolvedEvent,
-    ProviderCapabilityRoute, ProviderCapabilityRouteSettings, ProviderServiceAdapterAvailability,
-    ReasoningSummaryChunk, RunStartedEvent, SandboxMode, SnapshotId, StopReason, ToolErrorPayload,
-    ToolServiceBinding, ToolUseFailedEvent, ToolUseRequestedEvent, ToolUseSummary, TurnInput,
-    UiSafeText, UserMessageAppendedEvent, WorkspaceAccess,
+    ConversationModelCapability, CorrelationId, DecidedBy, EngineError, EngineFailedEvent, EventId,
+    McpConnectionLostEvent, McpConnectionLostReason, MessageContent, MessageId, MessageMetadata,
+    MissedRunPolicy, ModelModality, ModelProtocol, PermissionActorSource, PermissionRequestedEvent,
+    PermissionResolvedEvent, ProviderCapabilityRoute, ProviderCapabilityRouteSettings,
+    ProviderServiceAdapterAvailability, ReasoningSummaryChunk, RunModelSnapshot, RunStartedEvent,
+    SandboxMode, SnapshotId, StopReason, ToolErrorPayload, ToolServiceBinding, ToolUseFailedEvent,
+    ToolUseRequestedEvent, ToolUseSummary, TurnInput, UiSafeText, UserMessageAppendedEvent,
+    WorkspaceAccess,
 };
 use harness_journal::ReplayCursor;
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
@@ -1049,11 +1050,25 @@ fn test_run_started_event(session_id: SessionId, run_id: RunId) -> RunStartedEve
         },
         parent_run_id: None,
         permission_mode: PermissionMode::Default,
+        model: test_run_model_snapshot(),
         run_id,
         session_id,
         snapshot_id: SnapshotId::new(),
         started_at: now(),
         tenant_id: TenantId::SINGLE,
+    }
+}
+
+fn test_run_model_snapshot() -> RunModelSnapshot {
+    RunModelSnapshot {
+        model_config_id: None,
+        provider_id: "test".to_owned(),
+        model_id: "test-model".to_owned(),
+        display_name: "Test Model".to_owned(),
+        protocol: ModelProtocol::Messages,
+        context_window: 128_000,
+        max_output_tokens: 8_192,
+        conversation_capability: ConversationModelCapability::default(),
     }
 }
 

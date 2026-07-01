@@ -490,10 +490,8 @@ impl Harness {
                 candidate.workspace_root.canonicalize().map_err(|error| {
                     McpServerError::Internal(format!("workspace_root invalid: {error}"))
                 })?;
-            if let Some(options) =
-                self.matching_session_options_hash_variant(&candidate, created_options_hash)
-            {
-                return Ok(options);
+            if self.session_options_hash_matches(&candidate, created_options_hash) {
+                return Ok(candidate);
             }
         }
 

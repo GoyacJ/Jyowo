@@ -84,8 +84,8 @@ use harness_memory::ConsolidationHook;
 use harness_memory::MemoryProvider;
 use harness_model::ModelRuntimeSnapshot;
 use harness_model::{
-    AuxModelProvider, ContentDelta, InferContext, InferMiddleware, ModelMetricsSink, ModelProtocol,
-    ModelProvider, ModelRequest, ModelStreamEvent,
+    AuxModelProvider, ContentDelta, InferContext, InferMiddleware, ModelMetricsSink, ModelProvider,
+    ModelRequest, ModelStreamEvent,
 };
 #[cfg(feature = "observability-redactor")]
 use harness_observability::DefaultRedactor;
@@ -106,10 +106,8 @@ use harness_session::session_effective_config_hash;
 #[cfg(feature = "agents-team")]
 use harness_session::WorkspaceBootstrap;
 use harness_session::{
-    legacy_session_options_hash_with_permission_mode,
-    legacy_session_options_hash_without_runtime_context, session_options_hash, Session,
-    SessionOptions, SessionProjection, SessionTurnContext, SessionTurnRunner, SkillReloadCap,
-    Workspace, WorkspaceRegistry, WorkspaceSpec,
+    session_options_hash, Session, SessionOptions, SessionProjection, SessionTurnContext,
+    SessionTurnRunner, SkillReloadCap, Workspace, WorkspaceRegistry, WorkspaceSpec,
 };
 use harness_skill::{
     parse_skill_markdown, BuiltinHookKind, DirectorySourceKind, Skill, SkillHookBinding,

@@ -751,8 +751,10 @@ mod tests {
         let snapshot = ModelRuntimeSnapshot {
             provider_id: "anthropic".to_owned(),
             model_id: "claude-sonnet".to_owned(),
+            display_name: "Claude Sonnet".to_owned(),
             protocol: ModelProtocol::Messages,
             context_window: 200_000,
+            max_output_tokens: 8_192,
             conversation_capability: ConversationModelCapability {
                 tool_calling: true,
                 ..ConversationModelCapability::default()

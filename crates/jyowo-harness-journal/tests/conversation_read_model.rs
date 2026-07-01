@@ -15,6 +15,19 @@ fn temp_root(name: &str) -> PathBuf {
     root
 }
 
+fn test_run_model_snapshot() -> RunModelSnapshot {
+    RunModelSnapshot {
+        model_config_id: None,
+        provider_id: "test".to_owned(),
+        model_id: "test-model".to_owned(),
+        display_name: "Test Model".to_owned(),
+        protocol: ModelProtocol::Messages,
+        context_window: 128_000,
+        max_output_tokens: 8_192,
+        conversation_capability: ConversationModelCapability::default(),
+    }
+}
+
 fn envelope(
     tenant_id: TenantId,
     session_id: SessionId,
@@ -1831,6 +1844,7 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
                 session_id,
                 tenant_id,
                 parent_run_id: None,
+                model: test_run_model_snapshot(),
                 input: TurnInput {
                     message: Message {
                         id: MessageId::new(),
@@ -2144,6 +2158,7 @@ async fn sqlite_conversation_read_model_omits_empty_assistant_review_body() {
                 session_id,
                 tenant_id,
                 parent_run_id: None,
+                model: test_run_model_snapshot(),
                 input: TurnInput {
                     message: Message {
                         id: MessageId::new(),

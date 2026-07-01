@@ -266,6 +266,16 @@ const openAiModelDescriptor = {
   modelId: 'gpt-5.4-mini',
   runtimeStatus: { kind: 'runnable' },
 } as const
+const openAiRunModelSnapshot = {
+  modelConfigId: 'provider-config-001',
+  providerId: 'openai',
+  modelId: openAiModelDescriptor.modelId,
+  displayName: openAiModelDescriptor.displayName,
+  protocol: openAiModelDescriptor.protocol,
+  contextWindow: openAiModelDescriptor.contextWindow,
+  maxOutputTokens: openAiModelDescriptor.maxOutputTokens,
+  conversationCapability: openAiModelDescriptor.conversationCapability,
+} as const
 
 describe('CommandClient', () => {
   const attachmentPreviewId =
@@ -2053,7 +2063,7 @@ describe('CommandClient', () => {
             {
               id: 'evt-001',
               conversationSequence: 1,
-              payload: { sessionId: 'session-001' },
+              payload: { sessionId: 'session-001', model: openAiRunModelSnapshot },
               runId: 'run-001',
               sequence: 1,
               source: 'engine',

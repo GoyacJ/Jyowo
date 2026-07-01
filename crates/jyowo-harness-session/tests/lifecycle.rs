@@ -142,13 +142,13 @@ async fn session_options_exposes_creation_time_tool_search_mode() {
 }
 
 #[tokio::test]
-async fn session_options_hash_changes_when_tool_profile_changes() {
+async fn session_options_hash_ignores_tool_profile() {
     let root = tempfile::tempdir().unwrap();
     let base = SessionOptions::new(root.path()).with_session_id(SessionId::new());
     let minimal = base.clone().with_tool_profile(ToolProfile::Minimal);
     let coding = base.with_tool_profile(ToolProfile::Coding);
 
-    assert_ne!(
+    assert_eq!(
         harness_session::session_options_hash(&minimal),
         harness_session::session_options_hash(&coding)
     );

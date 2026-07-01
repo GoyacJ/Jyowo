@@ -95,13 +95,27 @@ fn key_events_serialize_with_type_tag() {
     assert_eq!(grace.current_iteration, 4);
 }
 
+fn test_run_model_snapshot() -> RunModelSnapshot {
+    RunModelSnapshot {
+        model_config_id: Some("model-config-001".to_owned()),
+        provider_id: "test-provider".to_owned(),
+        model_id: "test-model".to_owned(),
+        display_name: "Test Model".to_owned(),
+        protocol: ModelProtocol::Messages,
+        context_window: 128_000,
+        max_output_tokens: 8_192,
+        conversation_capability: ConversationModelCapability::default(),
+    }
+}
+
 #[test]
-fn run_started_serializes_permission_mode_and_defaults_legacy_events() {
+fn run_started_serializes_permission_mode_and_requires_model_snapshot() {
     let event = RunStartedEvent {
         run_id: RunId::new(),
         session_id: SessionId::new(),
         tenant_id: TenantId::SINGLE,
         parent_run_id: None,
+        model: test_run_model_snapshot(),
         input: TurnInput {
             message: Message {
                 id: MessageId::new(),
@@ -120,15 +134,16 @@ fn run_started_serializes_permission_mode_and_defaults_legacy_events() {
 
     let mut value = serde_json::to_value(&event).expect("run.started serializes");
     assert_eq!(value["permission_mode"], "bypass_permissions");
+    assert_eq!(value["model"]["model_id"], "test-model");
 
     value
         .as_object_mut()
         .expect("run.started serializes as object")
-        .remove("permission_mode");
-    let legacy =
-        serde_json::from_value::<RunStartedEvent>(value).expect("legacy run.started loads");
+        .remove("model");
+    let error = serde_json::from_value::<RunStartedEvent>(value)
+        .expect_err("run.started without model must be rejected");
 
-    assert_eq!(legacy.permission_mode, PermissionMode::Default);
+    assert!(error.to_string().contains("missing field `model`"));
 }
 
 #[test]
@@ -285,6 +300,7 @@ fn schema_export_contains_required_surface() {
     assert!(schemas.contains_key("model_protocol"));
     assert!(schemas.contains_key("model_modality"));
     assert!(schemas.contains_key("conversation_model_capability"));
+    assert!(schemas.contains_key("run_model_snapshot"));
     assert!(schemas.contains_key("agent_capability_kind"));
     assert!(schemas.contains_key("agent_capability_unavailable_reason"));
     assert!(schemas.contains_key("provider_service_capability"));

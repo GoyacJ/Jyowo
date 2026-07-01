@@ -9,17 +9,29 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use harness_contracts::{OfficialQuotaScope, OfficialQuotaSnapshot, OfficialQuotaStatus};
+#[cfg(any(
+    feature = "anthropic",
+    feature = "codex",
+    feature = "deepseek",
+    feature = "openai",
+    feature = "openrouter"
+))]
 use serde::Deserialize;
 
 /// Default cache TTL when a provider response does not include expiry metadata.
 pub const DEFAULT_QUOTA_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 
+#[cfg(feature = "openrouter")]
 const OPENROUTER_KEY_SOURCE: &str =
     "https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key";
+#[cfg(feature = "deepseek")]
 const DEEPSEEK_BALANCE_SOURCE: &str = "https://api-docs.deepseek.com/api/get-user-balance";
+#[cfg(any(feature = "openai", feature = "codex"))]
 const OPENAI_USAGE_SOURCE: &str = "https://platform.openai.com/docs/api-reference/usage";
+#[cfg(feature = "anthropic")]
 const ANTHROPIC_USAGE_SOURCE: &str =
     "https://platform.claude.com/docs/en/api/admin/analytics/usage/list";
+#[cfg(feature = "anthropic")]
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,14 +98,21 @@ impl Default for ProviderAccountUsageRegistry {
 #[must_use]
 pub fn default_account_usage_registry() -> ProviderAccountUsageRegistry {
     let mut registry = ProviderAccountUsageRegistry::new();
-    #[cfg(feature = "openrouter")]
-    registry.register(Arc::new(OpenRouterAccountUsageClient));
-    #[cfg(feature = "deepseek")]
-    registry.register(Arc::new(DeepSeekAccountUsageClient));
-    registry.register(Arc::new(OpenAiAccountUsageClient));
-    registry.register(Arc::new(CodexAccountUsageClient));
-    registry.register(Arc::new(AnthropicAccountUsageClient));
+    register_default_account_usage_clients(&mut registry);
     registry
+}
+
+fn register_default_account_usage_clients(_registry: &mut ProviderAccountUsageRegistry) {
+    #[cfg(feature = "openrouter")]
+    _registry.register(Arc::new(OpenRouterAccountUsageClient));
+    #[cfg(feature = "deepseek")]
+    _registry.register(Arc::new(DeepSeekAccountUsageClient));
+    #[cfg(feature = "openai")]
+    _registry.register(Arc::new(OpenAiAccountUsageClient));
+    #[cfg(feature = "codex")]
+    _registry.register(Arc::new(CodexAccountUsageClient));
+    #[cfg(feature = "anthropic")]
+    _registry.register(Arc::new(AnthropicAccountUsageClient));
 }
 
 #[must_use]
@@ -294,6 +313,7 @@ pub async fn fetch_official_quota(
     }
 }
 
+#[cfg(any(feature = "deepseek", feature = "openrouter"))]
 #[must_use]
 fn decimal_to_micros(value: f64) -> u64 {
     if !value.is_finite() || value <= 0.0 {
@@ -302,6 +322,7 @@ fn decimal_to_micros(value: f64) -> u64 {
     (value * 1_000_000.0).round() as u64
 }
 
+#[cfg(any(feature = "deepseek", feature = "openrouter"))]
 #[must_use]
 fn decimal_string_to_micros(value: &str) -> Option<u64> {
     let trimmed = value.trim();
@@ -311,6 +332,13 @@ fn decimal_string_to_micros(value: &str) -> Option<u64> {
     trimmed.parse::<f64>().ok().map(decimal_to_micros)
 }
 
+#[cfg(any(
+    feature = "anthropic",
+    feature = "codex",
+    feature = "deepseek",
+    feature = "openai",
+    feature = "openrouter"
+))]
 fn supported_snapshot(
     request: &ProviderAccountUsageRequest,
     source_url: &'static str,
@@ -343,8 +371,10 @@ fn supported_snapshot(
     }
 }
 
+#[cfg(feature = "openai")]
 struct OpenAiAccountUsageClient;
 
+#[cfg(feature = "openai")]
 #[async_trait]
 impl ProviderAccountUsageClient for OpenAiAccountUsageClient {
     fn provider_id(&self) -> &str {
@@ -367,8 +397,10 @@ impl ProviderAccountUsageClient for OpenAiAccountUsageClient {
     }
 }
 
+#[cfg(feature = "codex")]
 struct CodexAccountUsageClient;
 
+#[cfg(feature = "codex")]
 #[async_trait]
 impl ProviderAccountUsageClient for CodexAccountUsageClient {
     fn provider_id(&self) -> &str {
@@ -391,6 +423,7 @@ impl ProviderAccountUsageClient for CodexAccountUsageClient {
     }
 }
 
+#[cfg(any(feature = "openai", feature = "codex"))]
 async fn fetch_openai_usage_quota(
     request: &ProviderAccountUsageRequest,
     source_url: &'static str,
@@ -480,6 +513,7 @@ async fn fetch_openai_usage_quota(
     ))
 }
 
+#[cfg(any(feature = "openai", feature = "codex"))]
 fn openai_official_usage_url(
     base_url: Option<&str>,
     label: &str,
@@ -521,18 +555,21 @@ fn openai_official_usage_url(
     Ok(usage_url.to_string())
 }
 
+#[cfg(any(feature = "openai", feature = "codex"))]
 #[derive(Debug, Deserialize)]
 struct OpenAiUsageResponse {
     #[serde(default)]
     data: Vec<OpenAiUsageBucket>,
 }
 
+#[cfg(any(feature = "openai", feature = "codex"))]
 #[derive(Debug, Deserialize)]
 struct OpenAiUsageBucket {
     #[serde(default)]
     results: Vec<OpenAiUsageResult>,
 }
 
+#[cfg(any(feature = "openai", feature = "codex"))]
 #[derive(Debug, Deserialize)]
 struct OpenAiUsageResult {
     #[serde(default)]
@@ -541,8 +578,10 @@ struct OpenAiUsageResult {
     output_tokens: u64,
 }
 
+#[cfg(feature = "anthropic")]
 struct AnthropicAccountUsageClient;
 
+#[cfg(feature = "anthropic")]
 #[async_trait]
 impl ProviderAccountUsageClient for AnthropicAccountUsageClient {
     fn provider_id(&self) -> &str {
@@ -624,6 +663,7 @@ impl ProviderAccountUsageClient for AnthropicAccountUsageClient {
     }
 }
 
+#[cfg(feature = "anthropic")]
 fn anthropic_official_usage_url(base_url: Option<&str>) -> Result<String, AccountUsageError> {
     let base_url = base_url
         .filter(|value| !value.trim().is_empty())
@@ -657,6 +697,7 @@ fn anthropic_official_usage_url(base_url: Option<&str>) -> Result<String, Accoun
     Ok(url.into())
 }
 
+#[cfg(feature = "anthropic")]
 fn anthropic_usage_tokens(body: &AnthropicUsageResponse) -> u64 {
     body.data
         .iter()
@@ -670,18 +711,21 @@ fn anthropic_usage_tokens(body: &AnthropicUsageResponse) -> u64 {
         .sum()
 }
 
+#[cfg(feature = "anthropic")]
 #[derive(Debug, Deserialize)]
 struct AnthropicUsageResponse {
     #[serde(default)]
     data: Vec<AnthropicUsageBucket>,
 }
 
+#[cfg(feature = "anthropic")]
 #[derive(Debug, Deserialize)]
 struct AnthropicUsageBucket {
     #[serde(default)]
     results: Vec<AnthropicUsageResult>,
 }
 
+#[cfg(feature = "anthropic")]
 #[derive(Debug, Deserialize)]
 struct AnthropicUsageResult {
     #[serde(default)]
@@ -696,6 +740,7 @@ struct AnthropicUsageResult {
     cache_read_input_tokens: u64,
 }
 
+#[cfg(feature = "anthropic")]
 impl AnthropicUsageResult {
     fn total_tokens(&self) -> u64 {
         self.input_tokens
@@ -953,6 +998,7 @@ mod tests {
     use chrono::TimeZone;
 
     #[test]
+    #[cfg(any(feature = "openai", feature = "codex"))]
     fn openai_official_usage_url_accepts_only_official_origin() {
         let generated_at = Utc.with_ymd_and_hms(2026, 6, 30, 0, 0, 0).unwrap();
         let default_url = openai_official_usage_url(None, "OpenAI", generated_at).unwrap();
@@ -972,6 +1018,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(feature = "openai", feature = "codex"))]
     fn openai_official_usage_url_includes_required_usage_window() {
         let url = openai_official_usage_url(
             None,
@@ -1019,6 +1066,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "anthropic")]
     fn anthropic_usage_response_maps_token_fields() {
         let body: AnthropicUsageResponse = serde_json::from_value(serde_json::json!({
             "data": [
@@ -1041,6 +1089,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "anthropic")]
     fn anthropic_official_usage_url_accepts_only_official_origin() {
         let default_url = anthropic_official_usage_url(None).unwrap();
         assert!(default_url

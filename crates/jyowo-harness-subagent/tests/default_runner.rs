@@ -6,9 +6,10 @@ use futures::{stream, StreamExt};
 use harness_contracts::{
     AssistantMessageCompletedEvent, BlobId, BlobRef, ConfigHash, ContentHash, EndReason, Event,
     JournalOffset, Message, MessageContent, MessageId, MessagePart, MessageRole, ModelError,
-    NoopRedactor, PermissionMode, RunId, RunStartedEvent, SnapshotId, StopReason,
-    SubagentContextReport, SubagentStatus, SubagentTerminationReason, ToolResult,
-    ToolUseCompletedEvent, ToolUseId, TranscriptRef, UsageSnapshot, UserMessageAppendedEvent,
+    ModelProtocol, NoopRedactor, PermissionMode, RunId, RunModelSnapshot, RunStartedEvent,
+    SnapshotId, StopReason, SubagentContextReport, SubagentStatus, SubagentTerminationReason,
+    ToolResult, ToolUseCompletedEvent, ToolUseId, TranscriptRef, UsageSnapshot,
+    UserMessageAppendedEvent,
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
@@ -1072,6 +1073,7 @@ fn parent_transcript_events(
             session_id: harness_contracts::SessionId::new(),
             tenant_id: harness_contracts::TenantId::SINGLE,
             parent_run_id: None,
+            model: test_run_model_snapshot(),
             input: test_input(first_user),
             snapshot_id: SnapshotId::from_u128(0),
             effective_config_hash: ConfigHash([0; 32]),
@@ -1111,6 +1113,19 @@ fn parent_transcript_events(
             ended_at: harness_contracts::now(),
         }),
     ]
+}
+
+fn test_run_model_snapshot() -> RunModelSnapshot {
+    RunModelSnapshot {
+        model_config_id: None,
+        provider_id: "test".to_owned(),
+        model_id: "test-model".to_owned(),
+        display_name: "Test Model".to_owned(),
+        protocol: ModelProtocol::Messages,
+        context_window: 128_000,
+        max_output_tokens: 8_192,
+        conversation_capability: ConversationModelCapability::default(),
+    }
 }
 
 fn message_roles(messages: &[Message]) -> Vec<MessageRole> {

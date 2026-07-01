@@ -181,11 +181,13 @@ fn provider_credential_resolve_context_round_trips_with_operation_scope() {
         session_id: SessionId::new(),
         run_id: RunId::new(),
         provider_id: "minimax".to_owned(),
+        model_config_id: Some("minimax-main".to_owned()),
         operation_id: Some("minimax.image_generation".to_owned()),
         route_kind: Some(CapabilityRouteKind::ImageGeneration),
     };
 
     let value = serde_json::to_value(&context).unwrap();
+    assert_eq!(value["modelConfigId"], "minimax-main");
     assert_eq!(value["operationId"], "minimax.image_generation");
     assert_eq!(value["routeKind"], "image_generation");
 
@@ -206,4 +208,5 @@ fn provider_credential_resolve_context_keeps_operation_scope_optional() {
 
     assert_eq!(context.operation_id, None);
     assert_eq!(context.route_kind, None);
+    assert_eq!(context.model_config_id, None);
 }

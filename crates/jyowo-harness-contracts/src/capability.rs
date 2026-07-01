@@ -376,6 +376,12 @@ pub struct ProviderCredentialResolveContext {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
+        rename = "modelConfigId"
+    )]
+    pub model_config_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
         rename = "operationId"
     )]
     pub operation_id: Option<String>,

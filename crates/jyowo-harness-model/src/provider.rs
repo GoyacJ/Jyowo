@@ -161,8 +161,10 @@ pub struct ModelDescriptor {
 pub struct ModelRuntimeSnapshot {
     pub provider_id: String,
     pub model_id: String,
+    pub display_name: String,
     pub protocol: ModelProtocol,
     pub context_window: u32,
+    pub max_output_tokens: u32,
     pub conversation_capability: ConversationModelCapability,
     pub lifecycle: ModelLifecycle,
     pub pricing: Option<ModelPricing>,
@@ -174,8 +176,10 @@ impl ModelRuntimeSnapshot {
         Self {
             provider_id: descriptor.provider_id,
             model_id: descriptor.model_id,
+            display_name: descriptor.display_name,
             protocol: descriptor.protocol,
             context_window: descriptor.context_window,
+            max_output_tokens: descriptor.max_output_tokens,
             conversation_capability: descriptor.conversation_capability,
             lifecycle: descriptor.lifecycle,
             pricing: descriptor.pricing,

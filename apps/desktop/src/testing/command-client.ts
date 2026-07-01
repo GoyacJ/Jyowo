@@ -113,6 +113,26 @@ const fixtureHarnessHealthcheck: HarnessHealthcheck = {
 }
 
 const timestamp = '2026-06-17T02:22:00.000Z'
+const fixtureRunModelSnapshot = {
+  modelConfigId: 'provider-config-001',
+  providerId: 'openai',
+  modelId: 'gpt-4.1',
+  displayName: 'GPT-4.1',
+  protocol: 'responses',
+  contextWindow: 128000,
+  maxOutputTokens: 16384,
+  conversationCapability: {
+    inputModalities: ['text', 'image'],
+    outputModalities: ['text'],
+    contextWindow: 128000,
+    maxOutputTokens: 16384,
+    streaming: true,
+    toolCalling: true,
+    reasoning: false,
+    promptCache: true,
+    structuredOutput: true,
+  },
+}
 
 const fixtureListConversations: ListConversationsResponse = {
   conversations: [
@@ -231,7 +251,11 @@ const fixtureListActivity: ListActivityResponse = {
     {
       id: 'evt-001',
       conversationSequence: 1,
-      payload: { permissionMode: 'default', sessionId: 'conversation-001' },
+      payload: {
+        model: fixtureRunModelSnapshot,
+        permissionMode: 'default',
+        sessionId: 'conversation-001',
+      },
       runId: 'run-001',
       sequence: 1,
       source: 'engine',
@@ -2383,6 +2407,7 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
         fixtureTimelineEvent(
           'run.started',
           {
+            model: fixtureRunModelSnapshot,
             permissionMode: request.permissionMode ?? 'default',
             sessionId: request.conversationId,
           },

@@ -1173,78 +1173,22 @@ fn conversation_turn_permission_override_is_run_scoped() {
 }
 
 #[test]
-fn legacy_conversation_session_hash_accepts_permission_mode_variant() {
+fn conversation_session_hash_allows_permission_mode_variant() {
     block_on(async {
-        let workspace = unique_workspace("sdk-legacy-session-permission-hash");
+        let workspace = unique_workspace("sdk-current-session-permission-hash");
         std::fs::create_dir_all(&workspace).unwrap();
         let session_id = SessionId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let model = Arc::new(CapabilityScriptedProvider::new(
             ConversationModelCapability::default(),
-            vec![vec![ModelStreamEvent::MessageStop]],
+            vec![
+                vec![ModelStreamEvent::MessageStop],
+                vec![ModelStreamEvent::MessageStop],
+            ],
         ));
         let harness = Harness::builder()
             .with_model_arc(model)
             .with_store_arc(store.clone())
-            .with_sandbox(NoopSandbox::new())
-            .build()
-            .await
-            .expect("harness should build");
-        let mut legacy_options = SessionOptions::new(&workspace)
-            .with_session_id(session_id)
-            .with_permission_mode(PermissionMode::BypassPermissions);
-        legacy_options.workspace_root = legacy_options
-            .workspace_root
-            .canonicalize()
-            .expect("workspace root should canonicalize");
-        let current_options = SessionOptions::new(&workspace).with_session_id(session_id);
-
-        store
-            .append(
-                TenantId::SINGLE,
-                session_id,
-                &[Event::SessionCreated(SessionCreatedEvent {
-                    session_id,
-                    tenant_id: TenantId::SINGLE,
-                    options_hash:
-                        harness_session::legacy_session_options_hash_without_runtime_context(
-                            &legacy_options,
-                        ),
-                    snapshot_id: SnapshotId::from_u128(1),
-                    effective_config_hash: ConfigHash([1; 32]),
-                    created_at: harness_contracts::now(),
-                })],
-            )
-            .await
-            .expect("legacy session should be written");
-        let receipt = harness
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: current_options,
-                input: ConversationTurnInput::ask("continue old conversation"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
-            .await
-            .expect("old session should continue under current default identity");
-
-        assert_eq!(receipt.session_id, session_id);
-    });
-}
-
-#[test]
-fn current_conversation_session_hash_rejects_permission_mode_variant() {
-    block_on(async {
-        let workspace = unique_workspace("sdk-current-session-permission-hash");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let session_id = SessionId::new();
-        let model = Arc::new(CapabilityScriptedProvider::new(
-            ConversationModelCapability::default(),
-            vec![vec![ModelStreamEvent::MessageStop]],
-        ));
-        let harness = Harness::builder()
-            .with_model_arc(model)
-            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
             .build()
             .await
@@ -1258,7 +1202,7 @@ fn current_conversation_session_hash_rejects_permission_mode_variant() {
             .await
             .expect("session should be created");
 
-        let error = harness
+        let receipt = harness
             .submit_conversation_turn(ConversationTurnRequest {
                 options: SessionOptions::new(&workspace).with_session_id(session_id),
                 input: ConversationTurnInput::ask("continue current conversation"),
@@ -1267,16 +1211,14 @@ fn current_conversation_session_hash_rejects_permission_mode_variant() {
                 agent_run_options: None,
             })
             .await
-            .expect_err("current hash should reject permission mode mismatch");
+            .expect("permission mode changes are run-level and must not reject the session");
 
-        assert!(error
-            .to_string()
-            .contains("conversation session options do not match"));
+        assert_eq!(receipt.session_id, session_id);
     });
 }
 
 #[test]
-fn session_options_hash_tracks_runtime_prompt_inputs() {
+fn session_options_hash_ignores_run_level_options() {
     let workspace = unique_workspace("sdk-session-options-runtime-hash");
     std::fs::create_dir_all(&workspace).unwrap();
     let session_id = SessionId::new();
@@ -1294,8 +1236,8 @@ fn session_options_hash_tracks_runtime_prompt_inputs() {
             .with_context_compression_trigger_ratio(0.5),
     );
 
-    assert_ne!(default_hash, permission_hash);
-    assert_ne!(default_hash, compression_hash);
+    assert_eq!(default_hash, permission_hash);
+    assert_eq!(default_hash, compression_hash);
 }
 
 #[test]

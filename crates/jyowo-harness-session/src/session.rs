@@ -6,12 +6,11 @@ use async_trait::async_trait;
 use harness_contracts::{
     ConfigHash, ContextPatchRequest, ContextPatchSinkCap, ConversationAttachmentReference,
     DeferredToolsDeltaAttachment, EndReason, Event, InteractivityLevel, Message, MessageId,
-    MessagePart, PermissionActorSource, PermissionMode, RunId, SessionCreatedEvent,
+    MessagePart, ModelProtocol, PermissionActorSource, PermissionMode, RunId, SessionCreatedEvent,
     SessionEndedEvent, SessionError, SessionId, SnapshotId, TeamId, TenantId, ToolProfile,
     ToolSearchMode, UsageSnapshot, WorkspaceId,
 };
 use harness_journal::EventStore;
-use harness_model::ModelProtocol;
 use harness_skill::SkillRegistration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -712,58 +711,8 @@ pub fn session_options_hash(options: &SessionOptions) -> [u8; 32] {
         "workspace_bootstrap": options.workspace_bootstrap,
         "tenant_id": options.tenant_id,
         "session_id": options.session_id,
-        "tool_search": options.tool_search,
-        "tool_profile": options.tool_profile,
-        "model_id": options.model_id,
-        "protocol": options.protocol.map(protocol_name),
-        "model_extra": options.model_extra,
-        "interactivity": options.interactivity,
         "user_id": options.user_id,
         "team_id": options.team_id,
-        "system_prompt_addendum": options.system_prompt_addendum,
-        "max_iterations": options.max_iterations,
-        "permission_mode": options.permission_mode,
-        "context_compression_trigger_ratio": options.context_compression_trigger_ratio,
-    }))
-}
-
-pub fn legacy_session_options_hash_with_permission_mode(options: &SessionOptions) -> [u8; 32] {
-    hash_json(&json!({
-        "workspace_ref": options.workspace_ref,
-        "workspace_root": options.workspace_root,
-        "workspace_bootstrap": options.workspace_bootstrap,
-        "tenant_id": options.tenant_id,
-        "session_id": options.session_id,
-        "tool_search": options.tool_search,
-        "model_id": options.model_id,
-        "protocol": options.protocol.map(protocol_name),
-        "model_extra": options.model_extra,
-        "permission_mode": options.permission_mode,
-        "interactivity": options.interactivity,
-        "user_id": options.user_id,
-        "team_id": options.team_id,
-        "system_prompt_addendum": options.system_prompt_addendum,
-        "max_iterations": options.max_iterations,
-        "context_compression_trigger_ratio": options.context_compression_trigger_ratio,
-    }))
-}
-
-pub fn legacy_session_options_hash_without_runtime_context(options: &SessionOptions) -> [u8; 32] {
-    hash_json(&json!({
-        "workspace_ref": options.workspace_ref,
-        "workspace_root": options.workspace_root,
-        "workspace_bootstrap": options.workspace_bootstrap,
-        "tenant_id": options.tenant_id,
-        "session_id": options.session_id,
-        "tool_search": options.tool_search,
-        "model_id": options.model_id,
-        "protocol": options.protocol.map(protocol_name),
-        "model_extra": options.model_extra,
-        "interactivity": options.interactivity,
-        "user_id": options.user_id,
-        "team_id": options.team_id,
-        "system_prompt_addendum": options.system_prompt_addendum,
-        "max_iterations": options.max_iterations,
     }))
 }
 
@@ -791,15 +740,6 @@ fn config_snapshot_id(hash: ConfigHash) -> SnapshotId {
 fn hash_json(value: &Value) -> [u8; 32] {
     let bytes = serde_json::to_vec(value).unwrap_or_default();
     blake3::hash(&bytes).into()
-}
-
-fn protocol_name(mode: ModelProtocol) -> &'static str {
-    match mode {
-        ModelProtocol::ChatCompletions => "chat_completions",
-        ModelProtocol::Responses => "responses",
-        ModelProtocol::Messages => "messages",
-        ModelProtocol::GenerateContent => "generate_content",
-    }
 }
 
 fn text_only_parts(parts: &[MessagePart]) -> Option<String> {

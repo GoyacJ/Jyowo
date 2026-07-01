@@ -6,9 +6,9 @@ use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::BlobStore;
 use harness_contracts::{
-    AgentId, CorrelationId, EndReason, Event, MemberLeaveReason, NoopRedactor, Recipient,
-    RunEndedEvent, RunStartedEvent, SessionId, StalledAction, TeamTerminationReason, TenantId,
-    UsageSnapshot,
+    AgentId, ConversationModelCapability, CorrelationId, EndReason, Event, MemberLeaveReason,
+    ModelProtocol, NoopRedactor, Recipient, RunEndedEvent, RunModelSnapshot, RunStartedEvent,
+    SessionId, StalledAction, TeamTerminationReason, TenantId, UsageSnapshot,
 };
 use harness_journal::{EventStore, InMemoryBlobStore, InMemoryEventStore, ReplayCursor};
 use harness_team::{
@@ -1348,6 +1348,7 @@ impl TeamMemberRunner for RecordingMemberRunner {
                         session_id: request.session_id,
                         tenant_id: request.tenant_id,
                         parent_run_id: request.parent_run_id,
+                        model: test_run_model_snapshot(),
                         input: request.input.clone(),
                         snapshot_id: harness_contracts::SnapshotId::from_u128(1),
                         effective_config_hash: harness_contracts::ConfigHash([0; 32]),
@@ -1369,5 +1370,18 @@ impl TeamMemberRunner for RecordingMemberRunner {
             body: format!("{}: {}", request.goal, self.response),
             usage,
         })
+    }
+}
+
+fn test_run_model_snapshot() -> RunModelSnapshot {
+    RunModelSnapshot {
+        model_config_id: None,
+        provider_id: "test".to_owned(),
+        model_id: "test-model".to_owned(),
+        display_name: "Test Model".to_owned(),
+        protocol: ModelProtocol::Messages,
+        context_window: 128_000,
+        max_output_tokens: 8_192,
+        conversation_capability: ConversationModelCapability::default(),
     }
 }

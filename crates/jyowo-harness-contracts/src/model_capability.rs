@@ -58,6 +58,20 @@ impl Default for ConversationModelCapability {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct RunModelSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_config_id: Option<String>,
+    pub provider_id: String,
+    pub model_id: String,
+    pub display_name: String,
+    pub protocol: ModelProtocol,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+    pub conversation_capability: ConversationModelCapability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderServiceCapability {
     pub operation_id: String,
     pub category: ProviderServiceCategory,
