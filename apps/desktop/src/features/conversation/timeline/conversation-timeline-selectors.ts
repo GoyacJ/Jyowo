@@ -59,6 +59,34 @@ export function selectPendingPermissions(
         turnId: turn.id,
       })
     }
+
+    for (const segment of turn.assistant?.segments ?? []) {
+      if (segment.kind !== 'agentActivity') {
+        continue
+      }
+      const permission = segment.permission
+      if (!permission || (permission.status !== 'pending' && permission.status !== 'submitting')) {
+        continue
+      }
+      const toolUseId = segment.agentId
+      const permissionWithToolUseId = {
+        ...permission,
+        toolUseId,
+      }
+      pending.push({
+        ...permissionWithToolUseId,
+        conversationId: turn.conversationId,
+        turnId: turn.id,
+        toolAttempt: {
+          id: segment.id,
+          order: segment.order,
+          toolUseId,
+          toolName: segment.role,
+          status: 'waitingPermission',
+          permission: permissionWithToolUseId,
+        },
+      })
+    }
   }
 
   return pending

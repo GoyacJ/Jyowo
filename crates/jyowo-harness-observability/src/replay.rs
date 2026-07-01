@@ -4,7 +4,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use harness_contracts::{
     AgentId, ContextVisibility, Event, Message, ModelRef, SessionId, SubagentId, SubagentStatus,
-    TeamId, TeamTerminationReason, TenantId, ToolUseId, UsageSnapshot,
+    TeamId, TeamTerminationReason, TenantId, ToolUseId, UiSafeText, UsageSnapshot,
 };
 use harness_journal::{
     EventStore, EventStream, Projection, ReplayCursor,
@@ -185,7 +185,7 @@ impl ReplayEngine {
                     .read(tenant, session_id, ReplayCursor::FromStart)
                     .await?;
                 while let Some(event) = events.next().await {
-                    write_json_line(&mut out, &event).await?;
+                    write_json_line(&mut out, &safe_replay_export_value(event)).await?;
                 }
             }
             ExportFormat::Markdown => {
@@ -457,7 +457,9 @@ impl HarExport {
         let entries = envelopes
             .iter()
             .map(|envelope| {
-                let text = serde_json::to_string(&envelope.payload).unwrap_or_default();
+                let text =
+                    serde_json::to_string(&safe_replay_export_value(envelope.payload.clone()))
+                        .unwrap_or_default();
                 HarEntry {
                     started_date_time: envelope.recorded_at.to_rfc3339(),
                     time: 0,
@@ -509,6 +511,51 @@ impl HarExport {
             },
         }
     }
+}
+
+fn safe_replay_export_event(event: Event) -> Event {
+    match event {
+        Event::SubagentAnnounced(mut event) => {
+            event.result = None;
+            event.transcript_ref = None;
+            event.context_report = None;
+            Event::SubagentAnnounced(event)
+        }
+        Event::AgentMessageSent(mut event) => {
+            event.payload = harness_contracts::MessagePayload::Text(
+                "Agent team message payload withheld from replay export.".to_owned(),
+            );
+            Event::AgentMessageSent(event)
+        }
+        Event::BackgroundAgentInputSubmitted(mut event) => {
+            event.input = UiSafeText::from_trusted_redacted(
+                "Background agent input withheld from replay export.",
+            );
+            Event::BackgroundAgentInputSubmitted(event)
+        }
+        Event::TeamTurnCompleted(mut event) => {
+            event.transcript_ref = None;
+            Event::TeamTurnCompleted(event)
+        }
+        _ => event,
+    }
+}
+
+fn safe_replay_export_value(event: Event) -> serde_json::Value {
+    let is_subagent_announced = matches!(event, Event::SubagentAnnounced(_));
+    let is_team_turn_completed = matches!(event, Event::TeamTurnCompleted(_));
+    let mut value = serde_json::to_value(safe_replay_export_event(event))
+        .unwrap_or_else(|_| serde_json::json!({}));
+    if is_subagent_announced || is_team_turn_completed {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("transcript_ref");
+            if is_subagent_announced {
+                object.remove("result");
+                object.remove("context_report");
+            }
+        }
+    }
+    value
 }
 
 #[derive(Serialize)]

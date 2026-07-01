@@ -311,24 +311,6 @@ const attachmentReferenceSchema = z.union([
   attachmentReferenceSnakeSchema,
 ])
 
-const startRunRequestSchema = z
-  .object({
-    attachments: z.array(attachmentReferenceSchema).optional(),
-    clientMessageId: z.uuid().regex(uuidV4Pattern).optional(),
-    conversationId: z.string().min(1),
-    contextReferences: z.array(contextReferenceSchema).optional(),
-    permissionMode: permissionModeSchema.optional(),
-    prompt: z.string().min(1),
-  })
-  .strict()
-
-const startRunResponseSchema = z
-  .object({
-    runId: z.string().min(1),
-    status: z.literal('started'),
-  })
-  .strict()
-
 const createAttachmentFromPathRequestSchema = z
   .object({
     path: z.string().trim().min(1),
@@ -758,6 +740,73 @@ const errorSegmentSchema = z
   })
   .strict()
 
+const agentActivityKindSchema = z.enum(['subagent', 'agentTeam', 'backgroundAgent'])
+const agentActivityStatusSchema = z.enum([
+  'loading',
+  'running',
+  'waitingPermission',
+  'waitingInput',
+  'completed',
+  'failed',
+  'cancelled',
+  'stalled',
+  'redacted',
+])
+const agentActivityPermissionStateSchema = z
+  .object({
+    id: z.string().min(1),
+    requestId: z.string().min(1),
+    status: z.enum(['pending', 'submitting', 'approved', 'denied', 'failed']),
+    summary: conversationDisplayTextSchema.optional(),
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
+const agentTeamMemberActivitySchema = z
+  .object({
+    agentId: z.string().min(1),
+    role: conversationDisplayTextSchema,
+    status: agentActivityStatusSchema,
+  })
+  .strict()
+
+const agentTeamTaskActivitySchema = z
+  .object({
+    id: z.string().min(1),
+    title: conversationDisplayTextSchema,
+    status: conversationDisplayTextSchema,
+    assigneeProfileId: z.string().min(1).optional(),
+  })
+  .strict()
+
+const agentTeamActivityDetailsSchema = z
+  .object({
+    topology: conversationDisplayTextSchema,
+    lead: agentTeamMemberActivitySchema.optional(),
+    members: z.array(agentTeamMemberActivitySchema).optional(),
+    currentTasks: z.array(agentTeamTaskActivitySchema).optional(),
+    mailboxCount: z.number().int().nonnegative(),
+    mailboxSummaries: z.array(conversationDisplayTextSchema).optional(),
+  })
+  .strict()
+
+const agentActivitySegmentSchema = z
+  .object({
+    kind: z.literal('agentActivity'),
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    activityKind: agentActivityKindSchema,
+    agentId: z.string().min(1),
+    role: conversationDisplayTextSchema,
+    taskSummary: conversationDisplayTextSchema,
+    status: agentActivityStatusSchema,
+    resultSummary: conversationDisplayTextSchema.optional(),
+    permission: agentActivityPermissionStateSchema.optional(),
+    team: agentTeamActivityDetailsSchema.optional(),
+    eventRefs: z.array(conversationEventRefSchema).optional(),
+  })
+  .strict()
+
 const assistantSegmentSchema = z.discriminatedUnion('kind', [
   processSegmentSchema,
   thinkingSegmentSchema,
@@ -768,6 +817,7 @@ const assistantSegmentSchema = z.discriminatedUnion('kind', [
   clarificationRequestSegmentSchema,
   noticeSegmentSchema,
   errorSegmentSchema,
+  agentActivitySegmentSchema,
 ])
 
 const assistantWorkSchema = z
@@ -1190,10 +1240,226 @@ const saveProviderSettingsResponseSchema = z
 
 const contextCompressionTriggerRatioSchema = z.number().min(0.5).max(0.95)
 const agentCapabilityKindSchema = z.enum(['subagents', 'agentTeams', 'backgroundAgents'])
-const agentCapabilityUnavailableReasonSchema = z
+const agentCapabilityUnavailableReasonSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      capability: agentCapabilityKindSchema,
+      type: z.literal('notCompiled'),
+    })
+    .strict(),
+  z
+    .object({
+      capability: agentCapabilityKindSchema,
+      message: z.string(),
+      type: z.literal('runtimeStoreUnavailable'),
+    })
+    .strict(),
+  z
+    .object({
+      capability: agentCapabilityKindSchema,
+      type: z.literal('permissionRuntimeUnavailable'),
+    })
+    .strict(),
+  z
+    .object({
+      capability: agentCapabilityKindSchema,
+      message: z.string(),
+      type: z.literal('invalidAgentProfiles'),
+    })
+    .strict(),
+  z
+    .object({
+      message: z.string(),
+      type: z.literal('backgroundSupervisorUnavailable'),
+    })
+    .strict(),
+  z
+    .object({
+      capability: agentCapabilityKindSchema,
+      message: z.string(),
+      type: z.literal('workspaceIsolationUnavailable'),
+    })
+    .strict(),
+])
+const agentProfileScopeSchema = z.enum(['builtin', 'user', 'project'])
+const agentProfileSandboxInheritanceSchema = z.enum(['inherit_parent', 'narrow_only'])
+const agentProfileMemoryScopeSchema = z.enum(['none', 'read_only', 'read_write'])
+const agentProfileContextModeSchema = z.enum(['minimal', 'focused', 'full_workspace'])
+const agentWorkspaceIsolationModeSchema = z.enum(['read_only', 'patch_only', 'git_worktree'])
+const agentUsePolicySchema = z.enum(['off', 'allowed'])
+const backgroundRunPolicySchema = z.enum(['foreground', 'background'])
+const agentTeamTopologySchema = z.enum(['coordinator_worker', 'peer_to_peer', 'role_routed'])
+const agentTeamSharedMemoryPolicySchema = z.enum(['none', 'summaries_only', 'redacted_mailbox'])
+const agentProfileIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .regex(/^[a-z0-9_-]+$/)
+const agentProfileModelOverrideSchema = z
   .object({
-    capability: agentCapabilityKindSchema,
-    type: z.literal('notCompiled'),
+    modelId: z.string().nullable().optional(),
+    providerConfigId: z.string().nullable().optional(),
+  })
+  .strict()
+const agentProfileSchema = z
+  .object({
+    contextMode: agentProfileContextModeSchema,
+    defaultWorkspaceIsolation: agentWorkspaceIsolationModeSchema,
+    description: z.string(),
+    id: agentProfileIdSchema,
+    maxDepth: z.number().int().min(0).max(8),
+    maxTurns: z.number().int().min(1),
+    memoryScope: agentProfileMemoryScopeSchema,
+    modelConfigOverride: agentProfileModelOverrideSchema.nullable().optional(),
+    role: z.string().trim().min(1),
+    sandboxInheritance: agentProfileSandboxInheritanceSchema,
+    scope: agentProfileScopeSchema,
+    toolAllowlist: z.array(z.string()).nullable().optional(),
+    toolBlocklist: z.array(z.string()),
+  })
+  .strict()
+const agentTeamRunConfigSchema = z
+  .object({
+    leadProfileId: agentProfileIdSchema,
+    maxTurnsPerGoal: z.number().int().min(1),
+    memberProfileIds: z.array(agentProfileIdSchema).min(1),
+    sharedMemoryPolicy: agentTeamSharedMemoryPolicySchema,
+    topology: agentTeamTopologySchema,
+  })
+  .strict()
+const agentRunOptionsSchema = z
+  .object({
+    agentTeam: agentUsePolicySchema,
+    background: backgroundRunPolicySchema,
+    maxConcurrentSubagents: z.number().int().min(1),
+    maxDepth: z.number().int().min(0).max(8),
+    maxTeamMembers: z.number().int().min(1),
+    subagents: agentUsePolicySchema,
+    teamConfig: agentTeamRunConfigSchema.nullable().optional(),
+    workspaceIsolation: agentWorkspaceIsolationModeSchema,
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.agentTeam === 'allowed' && !value.teamConfig) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'teamConfig is required when agentTeam is allowed',
+        path: ['teamConfig'],
+      })
+    }
+    if (value.agentTeam === 'off' && value.teamConfig) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'teamConfig must be null when agentTeam is off',
+        path: ['teamConfig'],
+      })
+    }
+  })
+
+const startRunRequestSchema = z
+  .object({
+    agentOptions: agentRunOptionsSchema.optional(),
+    attachments: z.array(attachmentReferenceSchema).optional(),
+    clientMessageId: z.uuid().regex(uuidV4Pattern).optional(),
+    conversationId: z.string().min(1),
+    contextReferences: z.array(contextReferenceSchema).optional(),
+    permissionMode: permissionModeSchema.optional(),
+    prompt: z.string().min(1),
+  })
+  .strict()
+
+const startRunResponseSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1).optional(),
+    runId: z.string().min(1),
+    status: z.literal('started'),
+  })
+  .strict()
+
+const isoDateTimeSchema = z.string().datetime({ offset: true })
+const backgroundAgentStateSchema = z.enum([
+  'queued',
+  'running',
+  'waiting_for_permission',
+  'waiting_for_input',
+  'paused',
+  'cancelling',
+  'cancelled',
+  'succeeded',
+  'failed',
+  'interrupted',
+  'recoverable',
+  'archived',
+])
+const backgroundAgentRecordSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
+    conversationId: z.string().min(1),
+    createdAt: isoDateTimeSchema,
+    parentRunId: z.string().min(1).nullable().optional(),
+    pendingInputRequestId: z.string().min(1).optional(),
+    pendingPermissionRequestId: z.string().min(1).optional(),
+    state: backgroundAgentStateSchema,
+    title: z.string().trim().min(1),
+    updatedAt: isoDateTimeSchema,
+  })
+  .strict()
+const listBackgroundAgentsRequestSchema = z
+  .object({
+    conversationId: z.string().min(1).optional(),
+    includeArchived: z.boolean().optional(),
+  })
+  .strict()
+const listBackgroundAgentsResponseSchema = z
+  .object({
+    agents: z.array(backgroundAgentRecordSchema),
+  })
+  .strict()
+const backgroundAgentIdRequestSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
+    conversationId: z.string().min(1).optional(),
+  })
+  .strict()
+const getBackgroundAgentResponseSchema = z
+  .object({
+    agent: backgroundAgentRecordSchema,
+  })
+  .strict()
+const backgroundAgentActionResponseSchema = getBackgroundAgentResponseSchema
+const sendBackgroundAgentInputRequestSchema = backgroundAgentIdRequestSchema
+  .extend({
+    input: z.string().min(1),
+    requestId: z.string().min(1),
+  })
+  .strict()
+const deleteBackgroundAgentResponseSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
+    status: z.literal('deleted'),
+  })
+  .strict()
+
+const listAgentProfilesResponseSchema = z
+  .object({
+    profiles: z.array(agentProfileSchema),
+  })
+  .strict()
+const saveAgentProfileResponseSchema = z
+  .object({
+    profile: agentProfileSchema,
+    status: z.literal('saved'),
+  })
+  .strict()
+const deleteAgentProfileRequestSchema = z
+  .object({
+    id: agentProfileIdSchema,
+  })
+  .strict()
+const deleteAgentProfileResponseSchema = z
+  .object({
+    id: agentProfileIdSchema,
+    status: z.literal('deleted'),
   })
   .strict()
 const agentCapabilitiesSchema = z
@@ -1243,8 +1509,6 @@ const setExecutionSettingsResponseSchema = z
     toolProfile: toolProfileSchema,
   })
   .strict()
-
-const isoDateTimeSchema = z.string().datetime({ offset: true })
 
 const providerProbeStatusSchema = z.enum([
   'online',
@@ -2717,6 +2981,14 @@ export type AttachmentInputModality = Extract<
 export type ConversationModelCapability = z.infer<typeof conversationModelCapabilitySchema>
 export type StartRunRequest = z.infer<typeof startRunRequestSchema>
 export type StartRunResponse = z.infer<typeof startRunResponseSchema>
+export type BackgroundAgentRecord = z.infer<typeof backgroundAgentRecordSchema>
+export type ListBackgroundAgentsRequest = z.infer<typeof listBackgroundAgentsRequestSchema>
+export type ListBackgroundAgentsResponse = z.infer<typeof listBackgroundAgentsResponseSchema>
+export type BackgroundAgentIdRequest = z.infer<typeof backgroundAgentIdRequestSchema>
+export type GetBackgroundAgentResponse = z.infer<typeof getBackgroundAgentResponseSchema>
+export type BackgroundAgentActionResponse = z.infer<typeof backgroundAgentActionResponseSchema>
+export type SendBackgroundAgentInputRequest = z.infer<typeof sendBackgroundAgentInputRequestSchema>
+export type DeleteBackgroundAgentResponse = z.infer<typeof deleteBackgroundAgentResponseSchema>
 export type CreateAttachmentFromPathResponse = z.infer<
   typeof createAttachmentFromPathResponseSchema
 >
@@ -2740,6 +3012,7 @@ export type TextSegment = z.infer<typeof textSegmentSchema>
 export type ToolPermissionState = z.infer<typeof toolPermissionStateSchema>
 export type ToolAttempt = z.infer<typeof toolAttemptSchema>
 export type ToolGroupSegment = z.infer<typeof toolGroupSegmentSchema>
+export type AgentActivitySegment = z.infer<typeof agentActivitySegmentSchema>
 export type ProcessSegment = z.infer<typeof processSegmentSchema>
 export type ProcessStep = z.infer<typeof processStepSchema>
 export type ArtifactSegment = z.infer<typeof artifactSegmentSchema>
@@ -2819,6 +3092,29 @@ export type GetExecutionSettingsResponse = z.infer<typeof getExecutionSettingsRe
 export type GetExecutionSettingsRequest = z.infer<typeof getExecutionSettingsRequestSchema>
 export type SetExecutionSettingsRequest = z.infer<typeof setExecutionSettingsRequestSchema>
 export type SetExecutionSettingsResponse = z.infer<typeof setExecutionSettingsResponseSchema>
+export type AgentCapabilities = z.infer<typeof agentCapabilitiesSchema>
+export type AgentCapabilityUnavailableReason = z.infer<
+  typeof agentCapabilityUnavailableReasonSchema
+>
+export type AgentProfile = z.infer<typeof agentProfileSchema>
+export type AgentRunOptions = z.infer<typeof agentRunOptionsSchema>
+export type AgentWorkspaceIsolationMode = z.infer<typeof agentWorkspaceIsolationModeSchema>
+export type ListAgentProfilesResponse = z.infer<typeof listAgentProfilesResponseSchema>
+export type SaveAgentProfileResponse = z.infer<typeof saveAgentProfileResponseSchema>
+export type DeleteAgentProfileRequest = z.infer<typeof deleteAgentProfileRequestSchema>
+export type DeleteAgentProfileResponse = z.infer<typeof deleteAgentProfileResponseSchema>
+
+export function parseAgentCapabilities(value: unknown): AgentCapabilities {
+  return agentCapabilitiesSchema.parse(value)
+}
+
+export function parseAgentRunOptions(value: unknown): AgentRunOptions {
+  return agentRunOptionsSchema.parse(value)
+}
+
+export function parseAgentProfile(value: unknown): AgentProfile {
+  return agentProfileSchema.parse(value)
+}
 export type AutomationSpec = z.infer<typeof automationSpecSchema>
 export type AutomationRunRecord = z.infer<typeof automationRunRecordSchema>
 export type ListAutomationsResponse = z.infer<typeof listAutomationsResponseSchema>
@@ -2911,12 +3207,17 @@ export interface CommandClient {
   createAttachmentFromPath: (path: string) => Promise<CreateAttachmentFromPathResponse>
   createConversation: () => Promise<CreateConversationResponse>
   deleteAutomation: (id: string) => Promise<DeleteAutomationResponse>
+  deleteAgentProfile: (id: string) => Promise<DeleteAgentProfileResponse>
+  deleteBackgroundAgent: (
+    request: BackgroundAgentIdRequest,
+  ) => Promise<DeleteBackgroundAgentResponse>
   deleteConversation: (conversationId: string) => Promise<DeleteConversationResponse>
   deleteMcpServer: (id: string) => Promise<DeleteMcpServerResponse>
   deleteMemoryItem: (id: string) => Promise<DeleteMemoryItemResponse>
   uninstallPlugin: (pluginId: string) => Promise<PluginOperationResult>
   deleteSkill: (id: string) => Promise<DeleteSkillResponse>
   getContextSnapshot: (request: GetContextSnapshotRequest) => Promise<GetContextSnapshotResponse>
+  getBackgroundAgent: (request: BackgroundAgentIdRequest) => Promise<GetBackgroundAgentResponse>
   getConversation: (conversationId: string) => Promise<GetConversationResponse>
   getAppInfo: () => Promise<AppInfo>
   getHarnessHealthcheck: () => Promise<HarnessHealthcheck>
@@ -2951,6 +3252,7 @@ export interface CommandClient {
     request?: GetExecutionSettingsRequest,
   ) => Promise<GetExecutionSettingsResponse>
   listActivity: (request: ListActivityRequest) => Promise<ListActivityResponse>
+  listAgentProfiles: () => Promise<ListAgentProfilesResponse>
   listArtifacts: (request: ListArtifactsRequest) => Promise<ListArtifactsResponse>
   getArtifactMediaPreview: (
     request: GetArtifactMediaPreviewRequest,
@@ -2960,6 +3262,9 @@ export interface CommandClient {
   ) => Promise<GetAttachmentMediaPreviewResponse>
   listAutomationRuns: (automationId?: string) => Promise<ListAutomationRunsResponse>
   listAutomations: () => Promise<ListAutomationsResponse>
+  listBackgroundAgents: (
+    request: ListBackgroundAgentsRequest,
+  ) => Promise<ListBackgroundAgentsResponse>
   listConversations: () => Promise<ListConversationsResponse>
   listEvalCases: () => Promise<ListEvalCasesResponse>
   listBrowserMcpPresets: () => Promise<ListBrowserMcpPresetsResponse>
@@ -2986,6 +3291,9 @@ export interface CommandClient {
   refreshOfficialQuota: (
     request: RefreshOfficialQuotaRequest,
   ) => Promise<RefreshOfficialQuotaResponse>
+  pauseBackgroundAgent: (
+    request: BackgroundAgentIdRequest,
+  ) => Promise<BackgroundAgentActionResponse>
   listReferenceCandidates: (
     request: ListReferenceCandidatesRequest,
   ) => Promise<ListReferenceCandidatesResponse>
@@ -2999,9 +3307,13 @@ export interface CommandClient {
   requestProviderConfigApiKeyReveal: (
     configId: string,
   ) => Promise<RequestProviderConfigApiKeyRevealResponse>
+  resumeBackgroundAgent: (
+    request: BackgroundAgentIdRequest,
+  ) => Promise<BackgroundAgentActionResponse>
   runAutomationNow: (id: string) => Promise<RunAutomationNowResponse>
   runEvalCase: (caseId: string) => Promise<RunEvalCaseResponse>
   saveAutomation: (request: SaveAutomationRequest) => Promise<SaveAutomationResponse>
+  saveAgentProfile: (profile: AgentProfile) => Promise<SaveAgentProfileResponse>
   saveBrowserMcpPreset: (
     request: SaveBrowserMcpPresetRequest,
   ) => Promise<SaveBrowserMcpPresetResponse>
@@ -3027,6 +3339,15 @@ export interface CommandClient {
     modelConfigId: string,
   ) => Promise<SetConversationModelConfigResponse>
   setSkillEnabled: (id: string, enabled: boolean) => Promise<SetSkillEnabledResponse>
+  archiveBackgroundAgent: (
+    request: BackgroundAgentIdRequest,
+  ) => Promise<BackgroundAgentActionResponse>
+  cancelBackgroundAgent: (
+    request: BackgroundAgentIdRequest,
+  ) => Promise<BackgroundAgentActionResponse>
+  sendBackgroundAgentInput: (
+    request: SendBackgroundAgentInputRequest,
+  ) => Promise<BackgroundAgentActionResponse>
   startRun: (request: StartRunRequest) => Promise<StartRunResponse>
   subscribeConversationEvents: (
     request: SubscribeConversationEventsRequest,
@@ -3104,6 +3425,16 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, deleteAutomationRequestSchema, { id })
       return parsePayload(command, deleteAutomationResponseSchema, await invoke(command, args))
     },
+    async deleteAgentProfile(id) {
+      const command = 'delete_agent_profile'
+      const args = parseArgs(command, deleteAgentProfileRequestSchema, { id })
+      return parsePayload(command, deleteAgentProfileResponseSchema, await invoke(command, args))
+    },
+    async deleteBackgroundAgent(request) {
+      const command = 'delete_background_agent'
+      const args = parseArgs(command, backgroundAgentIdRequestSchema, request)
+      return parsePayload(command, deleteBackgroundAgentResponseSchema, await invoke(command, args))
+    },
     async deleteMcpServer(id) {
       const command = 'delete_mcp_server'
       const args = parseArgs(command, deleteMcpServerRequestSchema, { id })
@@ -3137,6 +3468,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'get_context_snapshot'
       const args = parseArgs(command, getContextSnapshotRequestSchema, request)
       return parsePayload(command, getContextSnapshotResponseSchema, await invoke(command, args))
+    },
+    async getBackgroundAgent(request) {
+      const command = 'get_background_agent'
+      const args = parseArgs(command, backgroundAgentIdRequestSchema, request)
+      return parsePayload(command, getBackgroundAgentResponseSchema, await invoke(command, args))
     },
     async getExecutionSettings(request) {
       const command = 'get_execution_settings'
@@ -3233,6 +3569,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, refreshOfficialQuotaRequestSchema, request)
       return parsePayload(command, refreshOfficialQuotaResponseSchema, await invoke(command, args))
     },
+    async pauseBackgroundAgent(request) {
+      const command = 'pause_background_agent'
+      const args = parseArgs(command, backgroundAgentIdRequestSchema, request)
+      return parsePayload(command, backgroundAgentActionResponseSchema, await invoke(command, args))
+    },
     async getSkillDetail(id) {
       const command = 'get_skill_detail'
       const args = parseArgs(command, getSkillDetailRequestSchema, {
@@ -3318,6 +3659,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     async listAutomations() {
       const command = 'list_automations'
       return parsePayload(command, listAutomationsResponseSchema, await invoke(command))
+    },
+    async listBackgroundAgents(request) {
+      const command = 'list_background_agents'
+      const args = parseArgs(command, listBackgroundAgentsRequestSchema, request)
+      return parsePayload(command, listBackgroundAgentsResponseSchema, await invoke(command, args))
     },
     async listAutomationRuns(automationId) {
       const command = 'list_automation_runs'
@@ -3443,6 +3789,10 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'list_skills'
       return parsePayload(command, listSkillsResponseSchema, await invoke(command))
     },
+    async listAgentProfiles() {
+      const command = 'list_agent_profiles'
+      return parsePayload(command, listAgentProfilesResponseSchema, await invoke(command))
+    },
     async resolvePermission(request) {
       const command = 'resolve_permission'
       const args = parseArgs(command, resolvePermissionRequestSchema, request)
@@ -3464,6 +3814,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         await invoke(command, args),
       )
     },
+    async resumeBackgroundAgent(request) {
+      const command = 'resume_background_agent'
+      const args = parseArgs(command, backgroundAgentIdRequestSchema, request)
+      return parsePayload(command, backgroundAgentActionResponseSchema, await invoke(command, args))
+    },
     async runEvalCase(caseId) {
       const command = 'run_eval_case'
       const args = parseArgs(command, runEvalCaseRequestSchema, { caseId })
@@ -3478,6 +3833,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'save_automation'
       const args = parseArgs(command, saveAutomationRequestSchema, request)
       return parsePayload(command, saveAutomationResponseSchema, await invoke(command, args))
+    },
+    async saveAgentProfile(profile) {
+      const command = 'save_agent_profile'
+      const args = parseArgs(command, agentProfileSchema, profile)
+      return parsePayload(command, saveAgentProfileResponseSchema, await invoke(command, args))
     },
     async saveProviderSettings(request) {
       const command = 'save_provider_settings'
@@ -3570,6 +3930,21 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         id,
       })
       return parsePayload(command, setSkillEnabledResponseSchema, await invoke(command, args))
+    },
+    async archiveBackgroundAgent(request) {
+      const command = 'archive_background_agent'
+      const args = parseArgs(command, backgroundAgentIdRequestSchema, request)
+      return parsePayload(command, backgroundAgentActionResponseSchema, await invoke(command, args))
+    },
+    async cancelBackgroundAgent(request) {
+      const command = 'cancel_background_agent'
+      const args = parseArgs(command, backgroundAgentIdRequestSchema, request)
+      return parsePayload(command, backgroundAgentActionResponseSchema, await invoke(command, args))
+    },
+    async sendBackgroundAgentInput(request) {
+      const command = 'send_background_agent_input'
+      const args = parseArgs(command, sendBackgroundAgentInputRequestSchema, request)
+      return parsePayload(command, backgroundAgentActionResponseSchema, await invoke(command, args))
     },
     async installPluginFromPath(sourcePath) {
       const command = 'install_plugin_from_path'
@@ -3789,6 +4164,62 @@ export function listAutomations(
   return client.listAutomations()
 }
 
+export function listBackgroundAgents(
+  request: ListBackgroundAgentsRequest = {},
+  client: CommandClient = tauriCommandClient,
+): Promise<ListBackgroundAgentsResponse> {
+  return client.listBackgroundAgents(request)
+}
+
+export function getBackgroundAgent(
+  request: BackgroundAgentIdRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<GetBackgroundAgentResponse> {
+  return client.getBackgroundAgent(request)
+}
+
+export function pauseBackgroundAgent(
+  request: BackgroundAgentIdRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<BackgroundAgentActionResponse> {
+  return client.pauseBackgroundAgent(request)
+}
+
+export function resumeBackgroundAgent(
+  request: BackgroundAgentIdRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<BackgroundAgentActionResponse> {
+  return client.resumeBackgroundAgent(request)
+}
+
+export function cancelBackgroundAgent(
+  request: BackgroundAgentIdRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<BackgroundAgentActionResponse> {
+  return client.cancelBackgroundAgent(request)
+}
+
+export function sendBackgroundAgentInput(
+  request: SendBackgroundAgentInputRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<BackgroundAgentActionResponse> {
+  return client.sendBackgroundAgentInput(request)
+}
+
+export function archiveBackgroundAgent(
+  request: BackgroundAgentIdRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<BackgroundAgentActionResponse> {
+  return client.archiveBackgroundAgent(request)
+}
+
+export function deleteBackgroundAgent(
+  request: BackgroundAgentIdRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<DeleteBackgroundAgentResponse> {
+  return client.deleteBackgroundAgent(request)
+}
+
 export function saveAutomation(
   request: SaveAutomationRequest,
   client: CommandClient = tauriCommandClient,
@@ -3983,6 +4414,26 @@ export function listSkills(
   client: CommandClient = tauriCommandClient,
 ): Promise<ListSkillsResponse> {
   return client.listSkills()
+}
+
+export function listAgentProfiles(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListAgentProfilesResponse> {
+  return client.listAgentProfiles()
+}
+
+export function saveAgentProfile(
+  profile: AgentProfile,
+  client: CommandClient = tauriCommandClient,
+): Promise<SaveAgentProfileResponse> {
+  return client.saveAgentProfile(profile)
+}
+
+export function deleteAgentProfile(
+  id: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<DeleteAgentProfileResponse> {
+  return client.deleteAgentProfile(id)
 }
 
 export function getSkillDetail(

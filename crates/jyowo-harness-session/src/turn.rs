@@ -10,12 +10,12 @@ use harness_contracts::{
     AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobStore, CapabilityRegistry,
     CausationId, ConversationAttachmentReference, CorrelationId, DecidedBy, Decision, DecisionId,
     DeltaChunk, DenyReason, EndReason, Event, EventId, FallbackPolicy, InteractivityLevel, Message,
-    MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, PermissionMode,
-    PermissionRequestedEvent, PermissionResolvedEvent, RedactRules, Redactor, RunEndedEvent, RunId,
-    RunStartedEvent, SessionError, SessionId, StopReason, TeamId, TenantId, ToolDescriptor,
-    ToolError, ToolErrorPayload, ToolResult, ToolUseApprovedEvent, ToolUseCompletedEvent,
-    ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseSummary,
-    TrustLevel, TurnInput, UsageSnapshot,
+    MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, PermissionActorSource,
+    PermissionMode, PermissionRequestedEvent, PermissionResolvedEvent, RedactRules, Redactor,
+    RunEndedEvent, RunId, RunStartedEvent, SessionError, SessionId, StopReason, TeamId, TenantId,
+    ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseApprovedEvent,
+    ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
+    ToolUseRequestedEvent, ToolUseSummary, TrustLevel, TurnInput, UsageSnapshot,
 };
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookMessageView, HookOutcome, HookSessionView,
@@ -65,6 +65,7 @@ pub(crate) async fn run_turn(
     client_message_id: Option<String>,
     attachments: Vec<ConversationAttachmentReference>,
     permission_mode: PermissionMode,
+    permission_actor_source: PermissionActorSource,
 ) -> Result<(), SessionError> {
     let run_id = RunId::new();
     let projection = session.projection().await;
@@ -336,6 +337,7 @@ pub(crate) async fn run_turn(
                     run_id,
                     permission_recorder.as_ref(),
                     &mut flushed_permission_records,
+                    &permission_actor_source,
                 )
                 .await?;
                 session.append_events(std::slice::from_ref(&event)).await?;
@@ -350,6 +352,7 @@ pub(crate) async fn run_turn(
             run_id,
             permission_recorder.as_ref(),
             &mut flushed_permission_records,
+            &permission_actor_source,
         )
         .await?;
         session.append_events(std::slice::from_ref(&event)).await?;
@@ -361,6 +364,7 @@ pub(crate) async fn run_turn(
         run_id,
         permission_recorder.as_ref(),
         &mut flushed_permission_records,
+        &permission_actor_source,
     )
     .await?;
 
@@ -716,20 +720,29 @@ async fn flush_session_permission_events(
     run_id: RunId,
     permission_recorder: &RecordingPermissionBroker,
     flushed_permission_records: &mut usize,
+    actor_source: &PermissionActorSource,
 ) -> Result<(), SessionError> {
     let records = permission_recorder.records().await;
     if records.len() <= *flushed_permission_records {
         return Ok(());
     }
 
-    let events = permission_events(run_id, records[*flushed_permission_records..].to_vec());
+    let events = permission_events(
+        run_id,
+        records[*flushed_permission_records..].to_vec(),
+        actor_source.clone(),
+    );
     *flushed_permission_records = records.len();
     session.append_events(&events).await?;
     projection_events.extend(events);
     Ok(())
 }
 
-fn permission_events(run_id: RunId, records: Vec<PermissionDecisionRecord>) -> Vec<Event> {
+fn permission_events(
+    run_id: RunId,
+    records: Vec<PermissionDecisionRecord>,
+    actor_source: PermissionActorSource,
+) -> Vec<Event> {
     let mut events = Vec::with_capacity(records.len() * 3);
     for record in records {
         events.push(Event::PermissionRequested(PermissionRequestedEvent {
@@ -746,6 +759,7 @@ fn permission_events(run_id: RunId, records: Vec<PermissionDecisionRecord>) -> V
             presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
             interactivity: InteractivityLevel::NoInteractive,
             auto_resolved: record.auto_resolved,
+            actor_source: actor_source.clone(),
             causation_id: EventId::new(),
             at: harness_contracts::now(),
         }));

@@ -13,6 +13,7 @@ import { Route as SkillsRouteImport } from './routes/skills'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as MemoryRouteImport } from './routes/memory'
 import { Route as EvalsRouteImport } from './routes/evals'
+import { Route as BackgroundAgentsRouteImport } from './routes/background-agents'
 import { Route as IndexRouteImport } from './routes/index'
 
 const SkillsRoute = SkillsRouteImport.update({
@@ -35,6 +36,13 @@ const EvalsRoute = EvalsRouteImport.update({
   path: '/evals',
   getParentRoute: () => rootRouteImport,
 } as any).lazy(() => import('./routes/evals.lazy').then((d) => d.Route))
+const BackgroundAgentsRoute = BackgroundAgentsRouteImport.update({
+  id: '/background-agents',
+  path: '/background-agents',
+  getParentRoute: () => rootRouteImport,
+} as any).lazy(() =>
+  import('./routes/background-agents.lazy').then((d) => d.Route),
+)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -43,6 +51,7 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/background-agents': typeof BackgroundAgentsRoute
   '/evals': typeof EvalsRoute
   '/memory': typeof MemoryRoute
   '/settings': typeof SettingsRoute
@@ -50,6 +59,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/background-agents': typeof BackgroundAgentsRoute
   '/evals': typeof EvalsRoute
   '/memory': typeof MemoryRoute
   '/settings': typeof SettingsRoute
@@ -58,6 +68,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/background-agents': typeof BackgroundAgentsRoute
   '/evals': typeof EvalsRoute
   '/memory': typeof MemoryRoute
   '/settings': typeof SettingsRoute
@@ -65,14 +76,34 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/evals' | '/memory' | '/settings' | '/skills'
+  fullPaths:
+    | '/'
+    | '/background-agents'
+    | '/evals'
+    | '/memory'
+    | '/settings'
+    | '/skills'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/evals' | '/memory' | '/settings' | '/skills'
-  id: '__root__' | '/' | '/evals' | '/memory' | '/settings' | '/skills'
+  to:
+    | '/'
+    | '/background-agents'
+    | '/evals'
+    | '/memory'
+    | '/settings'
+    | '/skills'
+  id:
+    | '__root__'
+    | '/'
+    | '/background-agents'
+    | '/evals'
+    | '/memory'
+    | '/settings'
+    | '/skills'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  BackgroundAgentsRoute: typeof BackgroundAgentsRoute
   EvalsRoute: typeof EvalsRoute
   MemoryRoute: typeof MemoryRoute
   SettingsRoute: typeof SettingsRoute
@@ -109,6 +140,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EvalsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/background-agents': {
+      id: '/background-agents'
+      path: '/background-agents'
+      fullPath: '/background-agents'
+      preLoaderRoute: typeof BackgroundAgentsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -121,6 +159,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  BackgroundAgentsRoute: BackgroundAgentsRoute,
   EvalsRoute: EvalsRoute,
   MemoryRoute: MemoryRoute,
   SettingsRoute: SettingsRoute,

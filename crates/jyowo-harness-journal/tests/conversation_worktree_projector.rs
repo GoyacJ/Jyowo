@@ -2278,3 +2278,492 @@ fn run_end_marks_failed_or_cancelled_process_status() {
         assert_eq!(process.summary.as_str(), "正在处理请求");
     }
 }
+
+#[test]
+fn subagent_events_project_agent_activity_segment() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "Delegate review"),
+        event(
+            2,
+            "event-tool-requested",
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolName": "agent",
+                "toolUseId": "tool-use-1",
+                "role": "Reviewer",
+                "taskSummary": "Review recent changes",
+            }),
+        ),
+        event(
+            3,
+            "event-subagent-spawned",
+            "run-1",
+            "subagent.spawned",
+            json!({
+                "subagentId": "subagent-1",
+                "role": "Reviewer",
+                "taskSummary": "Review recent changes",
+                "triggerToolUseId": "tool-use-1",
+            }),
+        ),
+        event(
+            4,
+            "event-subagent-permission",
+            "run-1",
+            "subagent.permission.forwarded",
+            json!({
+                "subagentId": "subagent-1",
+                "requestId": "req-1",
+                "reason": "Needs approval to continue.",
+            }),
+        ),
+        event(
+            5,
+            "event-subagent-permission-resolved",
+            "run-1",
+            "subagent.permission.resolved",
+            json!({
+                "subagentId": "subagent-1",
+                "requestId": "req-1",
+                "decision": "approve",
+            }),
+        ),
+        event(
+            6,
+            "event-subagent-announced",
+            "run-1",
+            "subagent.announced",
+            json!({
+                "subagentId": "subagent-1",
+                "status": "completed",
+                "resultSummary": "No blocking issues found.",
+                "redacted": false,
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection
+        .turns
+        .last()
+        .and_then(|turn| turn.assistant.as_ref())
+        .expect("assistant work exists");
+    let segment = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::AgentActivity(activity) => Some(activity),
+            _ => None,
+        })
+        .expect("agent activity segment exists");
+
+    assert_eq!(segment.activity_kind, AgentActivityKind::Subagent);
+    assert_eq!(segment.agent_id, "subagent-1");
+    assert_eq!(segment.role.as_str(), "Reviewer");
+    assert_eq!(segment.task_summary.as_str(), "Review recent changes");
+    assert_eq!(segment.status, AgentActivityStatus::Completed);
+    assert_eq!(
+        segment.result_summary.as_ref().map(|value| value.as_str()),
+        Some("No blocking issues found.")
+    );
+    assert_eq!(segment.event_refs.len(), 4);
+}
+
+#[test]
+fn subagent_redacted_announced_projects_redacted_status() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "Delegate review"),
+        event(
+            2,
+            "event-subagent-spawned",
+            "run-1",
+            "subagent.spawned",
+            json!({
+                "subagentId": "subagent-1",
+                "role": "Reviewer",
+                "taskSummary": "Review recent changes",
+            }),
+        ),
+        event(
+            3,
+            "event-subagent-announced",
+            "run-1",
+            "subagent.announced",
+            json!({
+                "subagentId": "subagent-1",
+                "status": "completed",
+                "resultSummary": "Subagent result withheld from conversation timeline.",
+                "redacted": true,
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+    let segment = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::AgentActivity(activity) => Some(activity),
+            _ => None,
+        })
+        .expect("agent activity segment exists");
+
+    assert_eq!(segment.status, AgentActivityStatus::Redacted);
+}
+
+#[test]
+fn subagent_terminated_projects_terminal_status() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "Delegate review"),
+        event(
+            2,
+            "event-subagent-spawned",
+            "run-1",
+            "subagent.spawned",
+            json!({
+                "subagentId": "subagent-1",
+                "role": "Reviewer",
+                "taskSummary": "Review recent changes",
+            }),
+        ),
+        event(
+            3,
+            "event-subagent-terminated",
+            "run-1",
+            "subagent.terminated",
+            json!({
+                "subagentId": "subagent-1",
+                "reason": "parentCancelled",
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let segment = projection.turns[0]
+        .assistant
+        .as_ref()
+        .and_then(|assistant| {
+            assistant.segments.iter().find_map(|segment| match segment {
+                AssistantSegment::AgentActivity(activity) => Some(activity.status),
+                _ => None,
+            })
+        })
+        .expect("agent activity segment exists");
+
+    assert_eq!(segment, AgentActivityStatus::Cancelled);
+}
+
+#[test]
+fn subagent_stalled_projects_stalled_status() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "Delegate review"),
+        event(
+            2,
+            "event-subagent-spawned",
+            "run-1",
+            "subagent.spawned",
+            json!({
+                "subagentId": "subagent-1",
+                "role": "Reviewer",
+                "taskSummary": "Review recent changes",
+            }),
+        ),
+        event(
+            3,
+            "event-subagent-stalled",
+            "run-1",
+            "subagent.stalled",
+            json!({
+                "subagentId": "subagent-1",
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let segment = projection.turns[0]
+        .assistant
+        .as_ref()
+        .and_then(|assistant| {
+            assistant.segments.iter().find_map(|segment| match segment {
+                AssistantSegment::AgentActivity(activity) => Some(activity.status),
+                _ => None,
+            })
+        })
+        .expect("agent activity segment exists");
+
+    assert_eq!(segment, AgentActivityStatus::Stalled);
+}
+
+#[test]
+fn team_lifecycle_events_project_agent_team_activity_segment() {
+    let events = vec![
+        user_event(
+            1,
+            "event-user",
+            "run-1",
+            "user-1",
+            "Coordinate the migration",
+        ),
+        event(
+            2,
+            "event-team-created",
+            "run-1",
+            "team.created",
+            json!({
+                "teamId": "team-1",
+                "name": "Migration team",
+                "topologyKind": "coordinator_worker",
+            }),
+        ),
+        event(
+            3,
+            "event-team-lead-joined",
+            "run-1",
+            "team.member.joined",
+            json!({
+                "teamId": "team-1",
+                "agentId": "agent-lead",
+                "role": "Lead",
+            }),
+        ),
+        event(
+            4,
+            "event-team-member-joined",
+            "run-1",
+            "team.member.joined",
+            json!({
+                "teamId": "team-1",
+                "agentId": "agent-worker",
+                "role": "Worker",
+            }),
+        ),
+        event(
+            5,
+            "event-team-task-updated",
+            "run-1",
+            "team.task.updated",
+            json!({
+                "teamId": "team-1",
+                "taskId": "task-1",
+                "title": "Audit composer payload",
+                "status": "running",
+                "assigneeProfileId": "lead",
+            }),
+        ),
+        event(
+            6,
+            "event-agent-message-routed",
+            "run-1",
+            "agent.message.routed",
+            json!({
+                "teamId": "team-1",
+                "messageId": "message-1",
+                "resolvedRecipients": ["agent-worker"],
+                "routingPolicy": "coordinator",
+            }),
+        ),
+        event(
+            7,
+            "event-team-turn-completed",
+            "run-1",
+            "team.turn.completed",
+            json!({
+                "teamId": "team-1",
+                "turnId": "run-1",
+                "participatingAgents": ["agent-lead", "agent-worker"],
+            }),
+        ),
+        event(
+            8,
+            "event-team-terminated",
+            "run-1",
+            "team.terminated",
+            json!({
+                "teamId": "team-1",
+                "reason": "completed",
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+    let segment = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::AgentActivity(activity) => Some(activity),
+            _ => None,
+        })
+        .expect("team activity segment exists");
+    let team = segment.team.as_ref().expect("team projection exists");
+
+    assert_eq!(segment.activity_kind, AgentActivityKind::AgentTeam);
+    assert_eq!(segment.agent_id, "team-1");
+    assert_eq!(segment.role.as_str(), "Migration team");
+    assert_eq!(segment.status, AgentActivityStatus::Completed);
+    assert_eq!(team.topology.as_str(), "coordinator_worker");
+    assert_eq!(
+        team.lead.as_ref().map(|lead| lead.agent_id.as_str()),
+        Some("agent-lead")
+    );
+    assert_eq!(team.members.len(), 2);
+    assert_eq!(
+        team.current_tasks[0].title.as_str(),
+        "Audit composer payload"
+    );
+    assert_eq!(
+        team.current_tasks[0].assignee_profile_id.as_deref(),
+        Some("lead")
+    );
+    assert_eq!(team.mailbox_count, 1);
+    assert_eq!(
+        team.mailbox_summaries[0].as_str(),
+        "Routed message message-1 to 1 member."
+    );
+    assert_eq!(
+        segment.result_summary.as_ref().map(|value| value.as_str()),
+        Some("Team completed.")
+    );
+}
+
+#[test]
+fn background_started_projects_background_agent_activity_segment() {
+    let events = vec![
+        user_event(
+            1,
+            "event-user",
+            "run-background",
+            "user-background",
+            "Run in the background",
+        ),
+        event(
+            2,
+            "event-background-started",
+            "run-background",
+            "background.started",
+            json!({
+                "backgroundAgentId": "background-agent-1",
+                "title": "Run background checks",
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+    let segment = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::AgentActivity(activity) => Some(activity),
+            _ => None,
+        })
+        .expect("background activity segment exists");
+
+    assert_eq!(segment.activity_kind, AgentActivityKind::BackgroundAgent);
+    assert_eq!(segment.agent_id, "background-agent-1");
+    assert_eq!(segment.role.as_str(), "Background agent");
+    assert_eq!(segment.task_summary.as_str(), "Run background checks");
+    assert_eq!(segment.status, AgentActivityStatus::Running);
+    assert_eq!(segment.event_refs.len(), 1);
+}
+
+#[test]
+fn background_lifecycle_events_update_agent_activity_segment() {
+    let events = vec![
+        user_event(
+            1,
+            "event-user",
+            "run-background",
+            "user-background",
+            "Run in the background",
+        ),
+        event(
+            2,
+            "event-background-started",
+            "run-background",
+            "background.started",
+            json!({
+                "backgroundAgentId": "background-agent-1",
+                "title": "Run background checks",
+            }),
+        ),
+        event(
+            3,
+            "event-background-input-requested",
+            "run-background",
+            "background.input.requested",
+            json!({
+                "backgroundAgentId": "background-agent-1",
+                "requestId": "input-request-1",
+                "prompt": "Need branch name",
+            }),
+        ),
+        event(
+            4,
+            "event-background-input-submitted",
+            "run-background",
+            "background.input.submitted",
+            json!({
+                "backgroundAgentId": "background-agent-1",
+                "requestId": "input-request-1",
+            }),
+        ),
+        event(
+            5,
+            "event-background-permission-requested",
+            "run-background",
+            "background.permission.requested",
+            json!({
+                "backgroundAgentId": "background-agent-1",
+                "requestId": "permission-request-1",
+                "reason": "Needs file write approval",
+            }),
+        ),
+        event(
+            6,
+            "event-background-permission-resolved",
+            "run-background",
+            "background.permission.resolved",
+            json!({
+                "backgroundAgentId": "background-agent-1",
+                "requestId": "permission-request-1",
+                "decision": "approve",
+            }),
+        ),
+        event(
+            7,
+            "event-background-completed",
+            "run-background",
+            "background.completed",
+            json!({
+                "backgroundAgentId": "background-agent-1",
+                "summary": "Background checks completed",
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+    let segment = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::AgentActivity(activity) => Some(activity),
+            _ => None,
+        })
+        .expect("background activity segment exists");
+
+    assert_eq!(segment.activity_kind, AgentActivityKind::BackgroundAgent);
+    assert_eq!(segment.agent_id, "background-agent-1");
+    assert_eq!(segment.status, AgentActivityStatus::Completed);
+    assert_eq!(
+        segment.result_summary.as_ref().map(UiSafeText::as_str),
+        Some("Background checks completed")
+    );
+    assert_eq!(segment.event_refs.len(), 6);
+    let permission = segment.permission.as_ref().expect("permission tracked");
+    assert_eq!(permission.request_id, "permission-request-1");
+    assert_eq!(permission.status, ToolPermissionStatus::Approved);
+}

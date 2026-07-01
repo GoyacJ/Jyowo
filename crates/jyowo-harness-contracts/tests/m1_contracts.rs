@@ -150,12 +150,14 @@ fn permission_requested_serializes_auto_resolved_and_defaults_legacy_events() {
         presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
         interactivity: InteractivityLevel::FullyInteractive,
         auto_resolved: true,
+        actor_source: PermissionActorSource::ParentRun,
         causation_id: EventId::new(),
         at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
     };
 
     let mut value = serde_json::to_value(&event).expect("permission requested serializes");
     assert_eq!(value["auto_resolved"], true);
+    assert!(value.get("actor_source").is_none());
 
     value
         .as_object_mut()
@@ -165,6 +167,26 @@ fn permission_requested_serializes_auto_resolved_and_defaults_legacy_events() {
         .expect("legacy permission requested loads");
 
     assert!(!legacy.auto_resolved);
+    assert_eq!(legacy.actor_source, PermissionActorSource::ParentRun);
+}
+
+#[test]
+fn permission_actor_source_team_member_serializes_with_stable_tag() {
+    let source = PermissionActorSource::TeamMember {
+        team_id: TeamId::from_u128(1),
+        agent_id: AgentId::from_u128(2),
+        role: "researcher".to_owned(),
+        parent_run_id: Some(RunId::from_u128(3)),
+    };
+
+    let value = serde_json::to_value(&source).expect("actor source serializes");
+
+    assert_eq!(value["type"], "team_member");
+    assert_eq!(value["role"], "researcher");
+    assert_eq!(
+        serde_json::from_value::<PermissionActorSource>(value).expect("actor source deserializes"),
+        source
+    );
 }
 
 #[test]
@@ -546,6 +568,21 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                         body: UiSafeText::from_trusted_redacted("Tool execution failed."),
                         event_refs: vec![event_ref.clone()],
                     }),
+                    AssistantSegment::AgentActivity(AgentActivitySegment {
+                        id: "segment:agent:subagent-1".to_owned(),
+                        order: 9,
+                        activity_kind: AgentActivityKind::Subagent,
+                        agent_id: "subagent-1".to_owned(),
+                        role: UiSafeText::from_trusted_redacted("Reviewer"),
+                        task_summary: UiSafeText::from_trusted_redacted("Review recent changes"),
+                        status: AgentActivityStatus::Completed,
+                        result_summary: Some(UiSafeText::from_trusted_redacted(
+                            "No blocking issues found.",
+                        )),
+                        permission: None,
+                        team: None,
+                        event_refs: vec![event_ref.clone()],
+                    }),
                 ],
                 event_refs: vec![event_ref],
             }),
@@ -753,6 +790,40 @@ fn process_segment_contracts_use_stable_wire_shape() {
 }
 
 #[test]
+fn agent_activity_segment_roundtrips_with_camel_case_tags() {
+    let segment = AgentActivitySegment {
+        id: "segment:agent:subagent-1".to_owned(),
+        order: 0,
+        activity_kind: AgentActivityKind::Subagent,
+        agent_id: "subagent-1".to_owned(),
+        role: UiSafeText::from_trusted_redacted("Reviewer"),
+        task_summary: UiSafeText::from_trusted_redacted("Review recent changes"),
+        status: AgentActivityStatus::WaitingPermission,
+        result_summary: None,
+        permission: Some(AgentActivityPermissionState {
+            id: "permission:req-1".to_owned(),
+            request_id: "req-1".to_owned(),
+            status: ToolPermissionStatus::Pending,
+            summary: Some(UiSafeText::from_trusted_redacted(
+                "Needs approval to continue.",
+            )),
+            event_refs: Vec::new(),
+        }),
+        team: None,
+        event_refs: Vec::new(),
+    };
+
+    let value = serde_json::to_value(AssistantSegment::AgentActivity(segment.clone())).unwrap();
+    assert_eq!(value["kind"], "agentActivity");
+    assert_eq!(value["activityKind"], "subagent");
+    assert_eq!(value["status"], "waitingPermission");
+    assert_eq!(value["permission"]["status"], "pending");
+
+    let parsed: AssistantSegment = serde_json::from_value(value).unwrap();
+    assert_eq!(parsed, AssistantSegment::AgentActivity(segment));
+}
+
+#[test]
 fn conversation_worktree_schema_is_exported() {
     let schemas = export_all_schemas();
 
@@ -763,6 +834,10 @@ fn conversation_worktree_schema_is_exported() {
         "conversation_turn_user_message",
         "assistant_work",
         "assistant_segment",
+        "agent_activity_segment",
+        "agent_activity_kind",
+        "agent_activity_status",
+        "agent_activity_permission_state",
         "process_segment",
         "process_segment_status",
         "process_step",

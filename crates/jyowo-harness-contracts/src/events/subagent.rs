@@ -80,6 +80,10 @@ pub struct SubagentPermissionForwardedEvent {
     pub subject: PermissionSubject,
     pub presented_options: Vec<Decision>,
     pub timeout_policy: Option<TimeoutPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<TeamId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_member_profile_id: Option<String>,
     pub forwarded_at: DateTime<Utc>,
 }
 
@@ -90,5 +94,9 @@ pub struct SubagentPermissionResolvedEvent {
     pub original_request_id: PermissionRequestId,
     pub decision: Decision,
     pub decided_by: DecidedBy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<TeamId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_member_profile_id: Option<String>,
     pub at: DateTime<Utc>,
 }

@@ -1,6 +1,6 @@
 use harness_contracts::{
-    ConfigHash, CorrelationId, InteractivityLevel, Message, PermissionMode, RunId, SessionId,
-    SnapshotId, TeamId, TenantId, TurnInput,
+    ConfigHash, CorrelationId, InteractivityLevel, Message, PermissionActorSource, PermissionMode,
+    RunId, SessionId, SnapshotId, TeamId, TenantId, TurnInput,
 };
 use std::time::Duration;
 
@@ -47,6 +47,7 @@ pub struct RunContext {
     pub correlation_id: CorrelationId,
     pub subagent_depth: u8,
     pub permission_mode: PermissionMode,
+    pub permission_actor_source: PermissionActorSource,
     pub interactivity: InteractivityLevel,
     pub budget_limits: Option<RunBudgetLimits>,
     pub cancellation: CancellationToken,
@@ -77,6 +78,7 @@ impl RunContext {
             correlation_id: CorrelationId::new(),
             subagent_depth: 0,
             permission_mode: PermissionMode::Default,
+            permission_actor_source: PermissionActorSource::ParentRun,
             interactivity: InteractivityLevel::NoInteractive,
             budget_limits: None,
             cancellation: CancellationToken::new(),
@@ -138,6 +140,15 @@ impl RunContext {
     #[must_use]
     pub fn with_permission_mode(mut self, permission_mode: PermissionMode) -> Self {
         self.permission_mode = permission_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_permission_actor_source(
+        mut self,
+        permission_actor_source: PermissionActorSource,
+    ) -> Self {
+        self.permission_actor_source = permission_actor_source;
         self
     }
 

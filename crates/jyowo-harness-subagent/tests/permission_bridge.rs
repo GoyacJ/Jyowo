@@ -1,18 +1,32 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 use async_trait::async_trait;
-use futures::StreamExt;
+use futures::{
+    stream::{self, BoxStream},
+    StreamExt,
+};
 use harness_contracts::{
-    CorrelationId, DecidedBy, Decision, DecisionScope, Event, FallbackPolicy, InteractivityLevel,
-    NoopRedactor, PermissionMode, PermissionSubject, RequestId, RunId, SessionId, Severity,
-    SubagentId, SubagentStatus, SubagentTerminationReason, TenantId, TimeoutPolicy, ToolUseId,
+    CorrelationId, DecidedBy, Decision, DecisionScope, Event, FallbackPolicy, ForkReason,
+    InteractivityLevel, JournalError, JournalOffset, NoopRedactor, PermissionActorSource,
+    PermissionMode, PermissionSubject, RequestId, RunId, SessionId, Severity, SubagentId,
+    SubagentStatus, SubagentTerminationReason, TeamId, TenantId, TimeoutPolicy, ToolUseId,
     UsageSnapshot,
 };
-use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
+use harness_journal::{
+    AppendMetadata, EventEnvelope, EventEnvelopePage, EventStore, InMemoryEventStore, PrunePolicy,
+    PruneReport, ReplayCursor, SessionFilter, SessionSnapshot, SessionSummary,
+};
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest, RuleSnapshot};
 use harness_subagent::{
     ChildRunOutcome, ChildRunRequest, ChildSessionRunner, DefaultSubagentRunner, ParentContext,
-    SubagentAdmin, SubagentError, SubagentPermissionBridge, SubagentRunner, SubagentSpec,
+    SubagentAdmin, SubagentError, SubagentPermissionBridge, SubagentRunner,
+    SubagentRunnerCapAdapter, SubagentSpec,
 };
 use tokio::sync::Notify;
 
@@ -132,6 +146,13 @@ async fn bridge_forwards_and_resolves_child_permission_requests() {
                 if requested.request_id == request_id
                     && requested.session_id == child_session_id
                     && requested.run_id == child_run_id
+                    && requested.actor_source == PermissionActorSource::Subagent {
+                        subagent_id,
+                        parent_session_id,
+                        parent_run_id,
+                        team_id: None,
+                        team_member_profile_id: None
+                    }
         )
     }));
     assert!(child_events.iter().any(|event| {
@@ -146,6 +167,182 @@ async fn bridge_forwards_and_resolves_child_permission_requests() {
                     } if forwarded_parent == parent_session_id)
         )
     }));
+}
+
+#[tokio::test]
+async fn bridge_records_team_member_permission_attribution() {
+    let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let parent_session_id = SessionId::new();
+    let parent_run_id = RunId::new();
+    let child_session_id = SessionId::new();
+    let child_run_id = RunId::new();
+    let subagent_id = SubagentId::new();
+    let team_id = TeamId::new();
+    let request_id = RequestId::new();
+    let bridge = SubagentPermissionBridge::new(
+        Arc::new(AllowBroker),
+        store.clone(),
+        TenantId::SINGLE,
+        parent_session_id,
+        parent_run_id,
+        subagent_id,
+    )
+    .with_team_attribution(team_id, "reviewer")
+    .with_child_context(child_session_id, child_run_id, CorrelationId::new());
+
+    let decision = bridge
+        .decide(
+            PermissionRequest {
+                request_id,
+                tenant_id: TenantId::SINGLE,
+                session_id: child_session_id,
+                tool_use_id: ToolUseId::new(),
+                tool_name: "FileWrite".to_owned(),
+                subject: PermissionSubject::ToolInvocation {
+                    tool: "FileWrite".to_owned(),
+                    input: serde_json::json!({ "path": "README.md" }),
+                },
+                severity: Severity::High,
+                scope_hint: DecisionScope::Any,
+                created_at: harness_contracts::now(),
+            },
+            permission_context(child_session_id),
+        )
+        .await;
+
+    assert_eq!(decision, Decision::AllowOnce);
+    let parent_events: Vec<_> = store
+        .read(TenantId::SINGLE, parent_session_id, ReplayCursor::FromStart)
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    assert!(parent_events.iter().any(|event| {
+        matches!(
+            event,
+            Event::SubagentPermissionForwarded(forwarded)
+                if forwarded.subagent_id == subagent_id
+                    && forwarded.original_request_id == request_id
+                    && forwarded.team_id == Some(team_id)
+                    && forwarded.team_member_profile_id.as_deref() == Some("reviewer")
+        )
+    }));
+    assert!(parent_events.iter().any(|event| {
+        matches!(
+            event,
+            Event::SubagentPermissionResolved(resolved)
+                if resolved.subagent_id == subagent_id
+                    && resolved.original_request_id == request_id
+                    && resolved.team_id == Some(team_id)
+                    && resolved.team_member_profile_id.as_deref() == Some("reviewer")
+        )
+    }));
+}
+
+#[tokio::test]
+async fn bridge_denies_without_parent_broker_when_permission_audit_append_fails() {
+    let parent_session_id = SessionId::new();
+    let parent_run_id = RunId::new();
+    let child_session_id = SessionId::new();
+    let subagent_id = SubagentId::new();
+    let broker = Arc::new(CountingBroker::default());
+    let bridge = SubagentPermissionBridge::new(
+        broker.clone(),
+        Arc::new(FailingAppendStore),
+        TenantId::SINGLE,
+        parent_session_id,
+        parent_run_id,
+        subagent_id,
+    )
+    .with_child_context(child_session_id, RunId::new(), CorrelationId::new());
+
+    let decision = bridge
+        .decide(
+            PermissionRequest {
+                request_id: RequestId::new(),
+                tenant_id: TenantId::SINGLE,
+                session_id: child_session_id,
+                tool_use_id: ToolUseId::new(),
+                tool_name: "FileWrite".to_owned(),
+                subject: PermissionSubject::ToolInvocation {
+                    tool: "FileWrite".to_owned(),
+                    input: serde_json::json!({ "path": "README.md" }),
+                },
+                severity: Severity::High,
+                scope_hint: DecisionScope::Any,
+                created_at: harness_contracts::now(),
+            },
+            permission_context(child_session_id),
+        )
+        .await;
+
+    assert_eq!(decision, Decision::DenyOnce);
+    assert_eq!(broker.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn runner_cap_adapter_applies_team_member_parent_attribution() {
+    struct CapturingRunner {
+        parent: Arc<tokio::sync::Mutex<Option<ParentContext>>>,
+    }
+
+    #[async_trait]
+    impl SubagentRunner for CapturingRunner {
+        async fn spawn(
+            &self,
+            spec: SubagentSpec,
+            _input: harness_contracts::TurnInput,
+            parent_ctx: ParentContext,
+        ) -> Result<harness_subagent::SubagentHandle, SubagentError> {
+            *self.parent.lock().await = Some(parent_ctx.clone());
+            Ok(harness_subagent::SubagentHandle::ready(
+                harness_subagent::SubagentAnnouncement {
+                    subagent_id: SubagentId::new(),
+                    parent_session_id: parent_ctx.parent_session_id,
+                    status: SubagentStatus::Completed,
+                    summary: spec.task,
+                    result: None,
+                    usage: UsageSnapshot::default(),
+                    transcript_ref: None,
+                    context_report: None,
+                },
+            ))
+        }
+    }
+
+    let team_id = TeamId::new();
+    let parent = Arc::new(tokio::sync::Mutex::new(None));
+    let adapter = SubagentRunnerCapAdapter::from_runner_with_team_attribution(
+        Arc::new(CapturingRunner {
+            parent: Arc::clone(&parent),
+        }),
+        team_id,
+        "reviewer",
+    );
+    let parent_context = harness_contracts::SubagentParentContext {
+        tenant_id: TenantId::SINGLE,
+        parent_session_id: SessionId::new(),
+        parent_run_id: RunId::new(),
+        depth: 0,
+        sibling_count: 0,
+        trigger_tool_use_id: None,
+        correlation_id: CorrelationId::new(),
+    };
+
+    adapter
+        .spawn(
+            serde_json::to_value(SubagentSpec::minimal("worker", "inspect")).unwrap(),
+            parent_context,
+        )
+        .await
+        .expect("subagent spawns")
+        .wait()
+        .await
+        .expect("announcement");
+
+    let captured = parent.lock().await.clone().expect("parent captured");
+    assert_eq!(captured.team_id, Some(team_id));
+    assert_eq!(captured.team_member_profile_id.as_deref(), Some("reviewer"));
 }
 
 #[tokio::test]
@@ -613,6 +810,134 @@ impl PermissionBroker for FixedBroker {
         _decision: harness_permission::PersistedDecision,
     ) -> Result<(), harness_contracts::PermissionError> {
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct CountingBroker {
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl PermissionBroker for CountingBroker {
+    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Decision::AllowOnce
+    }
+
+    async fn persist(
+        &self,
+        _decision: harness_permission::PersistedDecision,
+    ) -> Result<(), harness_contracts::PermissionError> {
+        Ok(())
+    }
+}
+
+struct FailingAppendStore;
+
+#[async_trait]
+impl EventStore for FailingAppendStore {
+    async fn append(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+        _events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        Err(JournalError::Message("append failed".to_owned()))
+    }
+
+    async fn append_with_metadata(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+        _metadata: AppendMetadata,
+        _events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        Err(JournalError::Message("append failed".to_owned()))
+    }
+
+    async fn read_envelopes(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+        _cursor: ReplayCursor,
+    ) -> Result<BoxStream<'static, EventEnvelope>, JournalError> {
+        Ok(Box::pin(stream::empty()))
+    }
+
+    async fn page_session_envelopes(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+        _after_event_id: Option<harness_contracts::EventId>,
+        _limit: usize,
+    ) -> Result<EventEnvelopePage, JournalError> {
+        Ok(EventEnvelopePage {
+            envelopes: Vec::new(),
+            next_event_id: None,
+        })
+    }
+
+    async fn query_after(
+        &self,
+        _tenant: TenantId,
+        _after: Option<harness_contracts::EventId>,
+        _limit: usize,
+    ) -> Result<Vec<EventEnvelope>, JournalError> {
+        Ok(Vec::new())
+    }
+
+    async fn snapshot(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+    ) -> Result<Option<SessionSnapshot>, JournalError> {
+        Ok(None)
+    }
+
+    async fn save_snapshot(
+        &self,
+        _tenant: TenantId,
+        _snapshot: SessionSnapshot,
+    ) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    async fn compact_link(
+        &self,
+        _parent: SessionId,
+        _child: SessionId,
+        _reason: ForkReason,
+    ) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    async fn delete_session(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+    ) -> Result<bool, JournalError> {
+        Ok(false)
+    }
+
+    async fn list_sessions(
+        &self,
+        _tenant: TenantId,
+        _filter: SessionFilter,
+    ) -> Result<Vec<SessionSummary>, JournalError> {
+        Ok(Vec::new())
+    }
+
+    async fn prune(
+        &self,
+        _tenant: TenantId,
+        _policy: PrunePolicy,
+    ) -> Result<PruneReport, JournalError> {
+        Ok(PruneReport {
+            events_removed: 0,
+            snapshots_removed: 0,
+            bytes_freed: 0,
+        })
     }
 }
 

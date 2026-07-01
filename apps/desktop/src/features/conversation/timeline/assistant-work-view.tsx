@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import type { AssistantWork, ConversationEventRef } from '@/shared/tauri/commands'
+import { AgentActivitySegmentView } from '../AgentActivitySegment'
 import { ArtifactSegmentView } from './artifact-segment-view'
 import { AssistantTextSegmentView } from './assistant-text-segment-view'
 import { ClarificationRequestSegmentView } from './clarification-request-segment-view'
@@ -99,6 +100,17 @@ export function AssistantWorkView({
               return <NoticeSegmentView key={segment.id} segment={segment} />
             case 'error':
               return <ErrorSegmentView key={segment.id} segment={segment} />
+            case 'agentActivity':
+              return (
+                <AgentActivitySegmentView
+                  conversationId={conversationId}
+                  key={segment.id}
+                  onPermissionResolve={onPermissionResolve}
+                  parentRunId={assistant.runId}
+                  segment={segment}
+                  turnId={turnId}
+                />
+              )
           }
           return null
         })}

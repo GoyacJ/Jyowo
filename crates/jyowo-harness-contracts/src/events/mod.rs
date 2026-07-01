@@ -3,6 +3,7 @@
 //! SPEC: docs/architecture/harness/event-schema.md
 
 pub mod artifact;
+pub mod background_agent;
 pub mod context;
 pub mod error;
 pub mod execute_code;
@@ -29,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use crate::{ToolLoadingBackendName, ToolName};
 
 pub use artifact::*;
+pub use background_agent::*;
 pub use context::*;
 pub use error::*;
 pub use execute_code::*;
@@ -122,7 +124,20 @@ pub enum Event {
     AgentMessageSent(AgentMessageSentEvent),
     AgentMessageRouted(AgentMessageRoutedEvent),
     TeamTurnCompleted(TeamTurnCompletedEvent),
+    TeamTaskUpdated(TeamTaskUpdatedEvent),
     TeamTerminated(TeamTerminatedEvent),
+    BackgroundAgentStarted(BackgroundAgentStartedEvent),
+    BackgroundAgentStateChanged(BackgroundAgentStateChangedEvent),
+    BackgroundAgentInputRequested(BackgroundAgentInputRequestedEvent),
+    BackgroundAgentInputSubmitted(BackgroundAgentInputSubmittedEvent),
+    BackgroundAgentPermissionRequested(BackgroundAgentPermissionRequestedEvent),
+    BackgroundAgentPermissionResolved(BackgroundAgentPermissionResolvedEvent),
+    BackgroundAgentCancelled(BackgroundAgentCancelledEvent),
+    BackgroundAgentCompleted(BackgroundAgentCompletedEvent),
+    BackgroundAgentFailed(BackgroundAgentFailedEvent),
+    BackgroundAgentInterrupted(BackgroundAgentInterruptedEvent),
+    BackgroundAgentArchived(BackgroundAgentArchivedEvent),
+    BackgroundAgentDeleted(BackgroundAgentDeletedEvent),
     MemoryUpserted(MemoryUpsertedEvent),
     MemoryExported(MemoryExportedEvent),
     MemoryRecalled(MemoryRecalledEvent),

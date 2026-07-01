@@ -29,6 +29,12 @@ use super::stores::*;
 #[allow(unused_imports)]
 use super::validation::*;
 use super::*;
+use crate::agent_supervisor::BackgroundSupervisorSession;
+use harness_contracts::{
+    BackgroundAgentId, ConversationAttachmentReference, ConversationContextReference,
+    PermissionActorSource, SubagentId, SubagentStatus, SubagentTerminationReason, TeamId,
+    TeamTerminationReason, TopologyKind,
+};
 
 pub async fn list_conversations_with_runtime_state(
     state: &DesktopRuntimeState,
@@ -316,6 +322,7 @@ pub fn start_run_payload(
     }
     validate_context_reference_payloads(request.context_references.as_deref())?;
     validate_attachment_reference_payloads(request.attachments.as_deref())?;
+    validate_start_run_agent_options_shape(request.agent_options.as_ref())?;
 
     Err(runtime_unavailable(
         "Starting runs requires the runtime conversation facade.",
@@ -348,6 +355,7 @@ pub async fn start_run_with_runtime_state(
         request.permission_mode,
         &state.execution_settings_store,
     )?;
+    let agent_policy = resolve_start_run_agent_policy(&request, state)?;
     let input = build_conversation_turn_input(&request, state).await?;
     let _start_run_guard = state.start_run_lock.lock().await;
     let (harness, options) =
@@ -379,15 +387,38 @@ pub async fn start_run_with_runtime_state(
         .open_or_create_conversation_session(options.clone())
         .await
         .map_err(|error| runtime_operation_failed(format!("conversation open failed: {error}")))?;
+    if let Some(background_agent_id) = agent_policy.background_agent_id.clone() {
+        let record = start_background_agent_record_before_execution(
+            state,
+            &harness,
+            options.clone(),
+            session_id,
+            &background_agent_id,
+            &input,
+            permission_mode,
+            &agent_policy.options,
+            &request.prompt,
+        )
+        .await?;
+        let _ = crate::agent_supervisor::wake_agent_supervisor(state.workspace_root()).await;
+        return Ok(StartRunResponse {
+            background_agent_id: agent_policy.background_agent_id,
+            run_id: record.run_id.unwrap_or(background_agent_id),
+            status: "started",
+        });
+    }
     let after_event_id = conversation_tail_event_id(&harness, options.clone()).await?;
     let run_harness = Arc::clone(&harness);
     let run_options = options.clone();
+    let run_agent_options = agent_policy.options;
     let mut run_task = tokio::spawn(async move {
         run_harness
             .submit_conversation_turn(ConversationTurnRequest {
                 options: run_options,
                 input,
                 permission_mode_override: Some(permission_mode),
+                permission_actor_source: None,
+                agent_run_options: Some(run_agent_options),
             })
             .await
     });
@@ -404,9 +435,210 @@ pub async fn start_run_with_runtime_state(
     drop(run_task);
 
     Ok(StartRunResponse {
+        background_agent_id: agent_policy.background_agent_id,
         run_id: run_id.to_string(),
         status: "started",
     })
+}
+
+async fn start_background_agent_record_before_execution(
+    state: &DesktopRuntimeState,
+    harness: &Harness,
+    options: SessionOptions,
+    session_id: SessionId,
+    background_agent_id: &str,
+    input: &ConversationTurnInput,
+    permission_mode: PermissionMode,
+    agent_run_options: &AgentRunOptions,
+    prompt: &str,
+) -> Result<jyowo_harness_sdk::BackgroundAgentRecord, CommandErrorPayload> {
+    let store = Arc::new(
+        AgentRuntimeStore::open(state.workspace_root()).map_err(|error| {
+            runtime_operation_failed(format!("background store open failed: {error}"))
+        })?,
+    );
+    let manager = BackgroundAgentManager::new(
+        store,
+        harness.event_store(),
+        TenantId::SINGLE,
+        session_id,
+        Arc::new(DefaultRedactor::default()),
+    );
+    let safe_supervisor_input =
+        safe_background_supervisor_input(input, &DefaultRedactor::default());
+    let supervisor_session = BackgroundSupervisorSession::from_session_options(&options);
+    manager
+        .start(BackgroundAgentStartRequest {
+            background_agent_id: Some(background_agent_id.to_owned()),
+            conversation_id: session_id,
+            title: prompt
+                .lines()
+                .next()
+                .unwrap_or("Background agent")
+                .to_owned(),
+            payload_json: json!({
+                "conversationId": session_id.to_string(),
+                "source": "start_run",
+                "supervisorExecution": {
+                    "status": "queued",
+                    "session": supervisor_session,
+                    "input": safe_supervisor_input,
+                    "permissionMode": permission_mode,
+                    "agentRunOptions": agent_run_options,
+                },
+            })
+            .to_string(),
+        })
+        .await
+        .map_err(|error| {
+            runtime_operation_failed(format!("background agent start failed: {error}"))
+        })
+}
+
+fn safe_background_supervisor_input(
+    input: &ConversationTurnInput,
+    redactor: &dyn harness_contracts::Redactor,
+) -> ConversationTurnInput {
+    let mut safe = input.clone();
+    safe.prompt = safe_redacted_string(&input.prompt, redactor);
+    safe.client_message_id = input
+        .client_message_id
+        .as_deref()
+        .map(|value| safe_redacted_string(value, redactor));
+    safe.context_references = input
+        .context_references
+        .iter()
+        .map(|reference| safe_background_context_reference(reference, redactor))
+        .collect();
+    safe.attachments = input
+        .attachments
+        .iter()
+        .map(|attachment| safe_background_attachment_reference(attachment, redactor))
+        .collect();
+    safe
+}
+
+fn safe_background_context_reference(
+    reference: &ConversationContextReference,
+    redactor: &dyn harness_contracts::Redactor,
+) -> ConversationContextReference {
+    match reference {
+        ConversationContextReference::WorkspaceFile { path, label } => {
+            ConversationContextReference::WorkspaceFile {
+                path: safe_redacted_string(path, redactor),
+                label: safe_redacted_string(label, redactor),
+            }
+        }
+        ConversationContextReference::Artifact { id, label } => {
+            ConversationContextReference::Artifact {
+                id: safe_redacted_string(id, redactor),
+                label: safe_redacted_string(label, redactor),
+            }
+        }
+        ConversationContextReference::Conversation { id, label } => {
+            ConversationContextReference::Conversation {
+                id: safe_redacted_string(id, redactor),
+                label: safe_redacted_string(label, redactor),
+            }
+        }
+        ConversationContextReference::Memory { id, label } => {
+            ConversationContextReference::Memory {
+                id: safe_redacted_string(id, redactor),
+                label: safe_redacted_string(label, redactor),
+            }
+        }
+        ConversationContextReference::Skill { id, label } => ConversationContextReference::Skill {
+            id: safe_redacted_string(id, redactor),
+            label: safe_redacted_string(label, redactor),
+        },
+        ConversationContextReference::Tool { id, label } => ConversationContextReference::Tool {
+            id: safe_redacted_string(id, redactor),
+            label: safe_redacted_string(label, redactor),
+        },
+        ConversationContextReference::McpServer { id, label } => {
+            ConversationContextReference::McpServer {
+                id: safe_redacted_string(id, redactor),
+                label: safe_redacted_string(label, redactor),
+            }
+        }
+    }
+}
+
+fn safe_background_attachment_reference(
+    attachment: &ConversationAttachmentReference,
+    redactor: &dyn harness_contracts::Redactor,
+) -> ConversationAttachmentReference {
+    let mut safe = attachment.clone();
+    safe.id = safe_redacted_string(&attachment.id, redactor);
+    safe.name = safe_redacted_string(&attachment.name, redactor);
+    safe.mime_type = safe_redacted_string(&attachment.mime_type, redactor);
+    safe.blob_ref.content_type = attachment
+        .blob_ref
+        .content_type
+        .as_deref()
+        .map(|value| safe_redacted_string(value, redactor));
+    safe
+}
+
+fn safe_redacted_string(value: &str, redactor: &dyn harness_contracts::Redactor) -> String {
+    harness_contracts::UiSafeText::from_redacted_display(value, redactor).into_string()
+}
+
+pub(crate) fn validate_start_run_agent_options_shape(
+    agent_options: Option<&AgentRunOptions>,
+) -> Result<(), CommandErrorPayload> {
+    if let Some(options) = agent_options {
+        validate_agent_run_options(options).map_err(|error| invalid_payload(error.to_string()))?;
+    }
+    Ok(())
+}
+
+pub fn resolve_start_run_agent_policy(
+    request: &StartRunRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ResolvedAgentRuntimePolicy, CommandErrorPayload> {
+    let settings = state.execution_settings_store.load_record()?;
+    let capability_context = agent_capability_resolution_context_for_state(state);
+    let capabilities_payload = agent_capabilities_payload(
+        &settings,
+        state.workspace_root(),
+        capability_context.as_ref(),
+    );
+    let capabilities = AgentCapabilitiesInput {
+        subagents_available: capabilities_payload.subagents_available,
+        agent_teams_available: capabilities_payload.agent_teams_available,
+        background_agents_available: capabilities_payload.background_agents_available,
+    };
+    let settings_input = ExecutionSettingsAgentInput {
+        subagents_enabled: settings.subagents_enabled,
+        agent_teams_enabled: settings.agent_teams_enabled,
+        background_agents_enabled: settings.background_agents_enabled,
+    };
+    let profiles = jyowo_harness_sdk::list_agent_profiles(state.workspace_root())
+        .map_err(map_agent_runtime_error)?;
+    let profile_ids: Vec<String> = profiles.into_iter().map(|profile| profile.id).collect();
+
+    resolve_agent_runtime_policy(
+        state.workspace_root(),
+        &settings_input,
+        request.agent_options.as_ref(),
+        &capabilities,
+        &profile_ids,
+        &request.conversation_id,
+    )
+    .map_err(map_agent_runtime_policy_error)
+}
+
+fn agent_capability_resolution_context_for_state(
+    state: &DesktopRuntimeState,
+) -> Option<AgentCapabilityResolutionContext> {
+    Some(AgentCapabilityResolutionContext {
+        stream_permission_runtime_available: state.stream_permission_runtime.is_some(),
+    })
+}
+
+fn map_agent_runtime_policy_error(error: AgentRuntimePolicyError) -> CommandErrorPayload {
+    invalid_payload(error.to_string())
 }
 
 pub fn create_attachment_from_path_payload(
@@ -1157,7 +1389,11 @@ pub async fn export_support_bundle_with_runtime_state(
     let jsonl_path = export_dir.join(format!("events-{stamp}-{export_id}.jsonl"));
     let markdown_path = export_dir.join(format!("support-report-{stamp}-{export_id}.md"));
     let bundle_path = export_dir.join(format!("support-bundle-{stamp}-{export_id}.json"));
-    let jsonl = events
+    let safe_events = events
+        .iter()
+        .map(support_bundle_safe_event)
+        .collect::<Vec<_>>();
+    let jsonl = safe_events
         .iter()
         .map(serde_json::to_string)
         .collect::<Result<Vec<_>, _>>()
@@ -1170,7 +1406,7 @@ pub async fn export_support_bundle_with_runtime_state(
         "exportedAt": exported_at.to_rfc3339(),
         "eventCount": event_count,
         "redacted": true,
-        "events": events,
+        "events": safe_events,
     });
     let bundle = serde_json::to_string(&bundle).map_err(|_| support_bundle_operation_failed())?;
 
@@ -1186,6 +1422,180 @@ pub async fn export_support_bundle_with_runtime_state(
         markdown_path: markdown_path.to_string_lossy().into_owned(),
         redacted: true,
     })
+}
+
+fn support_bundle_safe_event(event: &RunEventPayload) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("id".to_owned(), json!(event.id));
+    object.insert("type".to_owned(), json!(event.event_type));
+    object.insert("runId".to_owned(), json!(event.run_id));
+    object.insert("source".to_owned(), json!(event.source));
+    object.insert("timestamp".to_owned(), json!(event.timestamp));
+    object.insert("visibility".to_owned(), json!(event.visibility));
+
+    let identifiers = support_bundle_identifiers(&event.payload);
+    if !identifiers.is_empty() {
+        object.insert("identifiers".to_owned(), Value::Object(identifiers));
+    }
+
+    let summary = support_bundle_summary(event);
+    if !summary.is_empty() {
+        object.insert("summary".to_owned(), Value::Object(summary));
+    }
+
+    Value::Object(object)
+}
+
+fn support_bundle_identifiers(payload: &Value) -> serde_json::Map<String, Value> {
+    let mut identifiers = serde_json::Map::new();
+    for key in [
+        "artifactId",
+        "backgroundAgentId",
+        "messageId",
+        "noticeId",
+        "requestId",
+        "sessionId",
+        "subagentId",
+        "teamId",
+        "toolUseId",
+        "triggerToolUseId",
+    ] {
+        support_bundle_copy_payload_key(payload, &mut identifiers, key);
+    }
+    identifiers
+}
+
+fn support_bundle_summary(event: &RunEventPayload) -> serde_json::Map<String, Value> {
+    let mut summary = serde_json::Map::new();
+    match event.event_type {
+        "run.started" => {
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "permissionMode");
+        }
+        "run.ended" => {
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "reason");
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "usage");
+        }
+        "permission.requested" => {
+            for key in [
+                "actorSource",
+                "autoResolved",
+                "exposure",
+                "operation",
+                "reason",
+                "severity",
+                "target",
+            ] {
+                support_bundle_copy_payload_key(&event.payload, &mut summary, key);
+            }
+        }
+        "permission.resolved"
+        | "background.permission.resolved"
+        | "subagent.permission.resolved" => {
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "decision");
+        }
+        "tool.requested" => {
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "toolName");
+            summary.insert(
+                "arguments".to_owned(),
+                json!("withheld from support bundle"),
+            );
+        }
+        "tool.completed" => {
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "durationMs");
+            summary.insert("output".to_owned(), json!("withheld from support bundle"));
+        }
+        "tool.failed" | "engine.failed" | "plugin.failed" => {
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "message");
+        }
+        "artifact.created" | "artifact.updated" => {
+            for key in ["kind", "source", "status"] {
+                support_bundle_copy_payload_key(&event.payload, &mut summary, key);
+            }
+        }
+        "subagent.spawned" => {
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "depth");
+            summary.insert(
+                "taskSummary".to_owned(),
+                json!("withheld from support bundle"),
+            );
+        }
+        "subagent.announced" => {
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "status");
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "redacted");
+            summary.insert(
+                "resultSummary".to_owned(),
+                json!("withheld from support bundle"),
+            );
+        }
+        "subagent.terminated" | "team.terminated" => {
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "reason");
+        }
+        "team.created" => {
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "topologyKind");
+        }
+        "team.task.updated" => {
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "status");
+        }
+        "background.permission.requested" => {
+            support_bundle_copy_payload_key(&event.payload, &mut summary, "reason");
+        }
+        _ => {}
+    }
+    summary
+}
+
+fn permission_actor_source_payload(
+    actor_source: &PermissionActorSource,
+    redactor: &dyn Redactor,
+) -> PermissionActorSourceRunEventPayload {
+    match actor_source {
+        PermissionActorSource::ParentRun => PermissionActorSourceRunEventPayload::ParentRun,
+        PermissionActorSource::Subagent {
+            subagent_id,
+            parent_session_id,
+            parent_run_id,
+            team_id,
+            team_member_profile_id,
+        } => PermissionActorSourceRunEventPayload::Subagent {
+            subagent_id: subagent_id.to_string(),
+            parent_session_id: parent_session_id.to_string(),
+            parent_run_id: parent_run_id.to_string(),
+            team_id: team_id.map(|id| id.to_string()),
+            team_member_profile_id: team_member_profile_id
+                .as_ref()
+                .map(|profile_id| public_text_display(profile_id.clone(), redactor)),
+        },
+        PermissionActorSource::TeamMember {
+            team_id,
+            agent_id,
+            role,
+            parent_run_id,
+        } => PermissionActorSourceRunEventPayload::TeamMember {
+            team_id: team_id.to_string(),
+            agent_id: agent_id.to_string(),
+            role: public_text_display(role.clone(), redactor),
+            parent_run_id: parent_run_id.map(|id| id.to_string()),
+        },
+        PermissionActorSource::BackgroundAgent {
+            background_agent_id,
+            conversation_id,
+            attempt_id,
+        } => PermissionActorSourceRunEventPayload::BackgroundAgent {
+            background_agent_id: background_agent_id.to_string(),
+            conversation_id: conversation_id.to_string(),
+            attempt_id: attempt_id.map(|id| id.to_string()),
+        },
+    }
+}
+
+fn support_bundle_copy_payload_key(
+    payload: &Value,
+    target: &mut serde_json::Map<String, Value>,
+    key: &str,
+) {
+    if let Some(value) = payload.get(key) {
+        target.insert(key.to_owned(), value.clone());
+    }
 }
 
 pub async fn get_context_snapshot_with_runtime_state(
@@ -1421,6 +1831,9 @@ pub(crate) fn run_event_source_label(value: &str) -> Result<&'static str, Comman
         "tool" => Ok("tool"),
         "engine" => Ok("engine"),
         "policy" => Ok("policy"),
+        "agent" => Ok("agent"),
+        "background" => Ok("background"),
+        "plugin" => Ok("plugin"),
         _ => Err(runtime_operation_failed(
             "conversation timeline source is invalid".to_owned(),
         )),
@@ -1456,6 +1869,25 @@ pub(crate) fn run_event_type_label(value: &str) -> Result<&'static str, CommandE
         "tool.failed" => Ok("tool.failed"),
         "permission.requested" => Ok("permission.requested"),
         "permission.resolved" => Ok("permission.resolved"),
+        "subagent.spawned" => Ok("subagent.spawned"),
+        "subagent.announced" => Ok("subagent.announced"),
+        "subagent.terminated" => Ok("subagent.terminated"),
+        "subagent.stalled" => Ok("subagent.stalled"),
+        "subagent.permission.forwarded" => Ok("subagent.permission.forwarded"),
+        "subagent.permission.resolved" => Ok("subagent.permission.resolved"),
+        "team.created" => Ok("team.created"),
+        "team.member.joined" => Ok("team.member.joined"),
+        "team.member.left" => Ok("team.member.left"),
+        "team.member.stalled" => Ok("team.member.stalled"),
+        "team.task.updated" => Ok("team.task.updated"),
+        "agent.message.sent" => Ok("agent.message.sent"),
+        "agent.message.routed" => Ok("agent.message.routed"),
+        "team.turn.completed" => Ok("team.turn.completed"),
+        "team.terminated" => Ok("team.terminated"),
+        "background.started" => Ok("background.started"),
+        "background.state.changed" => Ok("background.state.changed"),
+        "background.permission.requested" => Ok("background.permission.requested"),
+        "background.permission.resolved" => Ok("background.permission.resolved"),
         "artifact.created" => Ok("artifact.created"),
         "artifact.updated" => Ok("artifact.updated"),
         "engine.failed" => Ok("engine.failed"),
@@ -1485,6 +1917,7 @@ pub(crate) fn permission_requested_run_event(
         id: event_id,
         conversation_sequence: sequence,
         payload: serde_json::to_value(PermissionRequestedRunEventPayload {
+            actor_source: permission_actor_source_payload(&event.actor_source, redactor),
             auto_resolved: event.auto_resolved,
             decision_scope: decision_scope_display(&event.scope_hint, redactor),
             exposure: subject.exposure,
@@ -2175,7 +2608,11 @@ pub(crate) fn workspace_project_name(workspace_root: &Path) -> String {
 #[derive(Default)]
 pub(crate) struct RunEventMapper {
     allowed_run_ids: HashSet<RunId>,
+    current_run_id: Option<RunId>,
+    background_agent_run_ids: HashMap<BackgroundAgentId, RunId>,
     permission_run_ids: HashMap<RequestId, RunId>,
+    subagent_run_ids: HashMap<SubagentId, RunId>,
+    team_run_ids: HashMap<TeamId, RunId>,
     tool_run_ids: HashMap<ToolUseId, RunId>,
 }
 
@@ -2198,6 +2635,7 @@ impl RunEventMapper {
                 }
 
                 self.allowed_run_ids.insert(event.run_id);
+                self.current_run_id = Some(event.run_id);
                 Some(RunEventPayload {
                     id: event_id,
                     conversation_sequence: 0,
@@ -2612,6 +3050,266 @@ impl RunEventMapper {
                     event_type: "permission.resolved",
                     visibility: "public",
                 }),
+            Event::SubagentSpawned(event) => {
+                if event.parent_session_id != requested_session_id
+                    || !self.is_allowed_run(&event.parent_run_id)
+                {
+                    return None;
+                }
+                self.subagent_run_ids
+                    .insert(event.subagent_id, event.parent_run_id);
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "subagentId": event.subagent_id.to_string(),
+                        "role": public_text_display(event.agent_ref.name, redactor),
+                        "taskSummary": "Subagent task details withheld from conversation timeline.",
+                        "depth": event.depth,
+                        "triggerToolUseId": event.trigger_tool_use_id.map(|id| id.to_string()),
+                    }),
+                    run_id: event.parent_run_id.to_string(),
+                    sequence: 0,
+                    source: "agent",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "subagent.spawned",
+                    visibility: "public",
+                })
+            }
+            Event::SubagentAnnounced(event) => {
+                self.subagent_run_ids
+                    .get(&event.subagent_id)
+                    .map(|run_id| {
+                        let safe_summary = public_text_display(event.summary, redactor);
+                        let redacted = safe_summary.contains("[REDACTED]");
+                        RunEventPayload {
+                            id: event_id,
+                            conversation_sequence: 0,
+                            payload: json!({
+                                "subagentId": event.subagent_id.to_string(),
+                                "status": subagent_status_payload(&event.status),
+                                "resultSummary": if redacted {
+                                    "Subagent result withheld from conversation timeline.".to_owned()
+                                } else {
+                                    safe_summary
+                                },
+                                "redacted": redacted,
+                            }),
+                            run_id: run_id.to_string(),
+                            sequence: 0,
+                            source: "agent",
+                            timestamp: event.at.to_rfc3339(),
+                            event_type: "subagent.announced",
+                            visibility: if redacted { "redacted" } else { "public" },
+                        }
+                    })
+            }
+            Event::SubagentTerminated(event) => {
+                self.subagent_run_ids
+                    .get(&event.subagent_id)
+                    .map(|run_id| RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({
+                            "subagentId": event.subagent_id.to_string(),
+                            "reason": subagent_termination_reason_payload(&event.reason),
+                        }),
+                        run_id: run_id.to_string(),
+                        sequence: 0,
+                        source: "agent",
+                        timestamp: event.at.to_rfc3339(),
+                        event_type: "subagent.terminated",
+                        visibility: "public",
+                    })
+            }
+            Event::SubagentStalled(event) => {
+                if !self.is_allowed_run(&event.parent_run_id) {
+                    return None;
+                }
+                self.subagent_run_ids
+                    .insert(event.subagent_id, event.parent_run_id);
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({ "subagentId": event.subagent_id.to_string() }),
+                    run_id: event.parent_run_id.to_string(),
+                    sequence: 0,
+                    source: "agent",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "subagent.stalled",
+                    visibility: "public",
+                })
+            }
+            Event::SubagentPermissionForwarded(event) => {
+                self.subagent_run_ids
+                    .get(&event.subagent_id)
+                    .map(|run_id| RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({
+                            "subagentId": event.subagent_id.to_string(),
+                            "requestId": event.original_request_id.to_string(),
+                            "reason": "Subagent permission forwarded to parent.",
+                        }),
+                        run_id: run_id.to_string(),
+                        sequence: 0,
+                        source: "policy",
+                        timestamp: event.forwarded_at.to_rfc3339(),
+                        event_type: "subagent.permission.forwarded",
+                        visibility: "public",
+                    })
+            }
+            Event::SubagentPermissionResolved(event) => {
+                self.subagent_run_ids
+                    .get(&event.subagent_id)
+                    .map(|run_id| RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({
+                            "subagentId": event.subagent_id.to_string(),
+                            "requestId": event.original_request_id.to_string(),
+                            "decision": permission_decision_payload(event.decision),
+                        }),
+                        run_id: run_id.to_string(),
+                        sequence: 0,
+                        source: "policy",
+                        timestamp: event.at.to_rfc3339(),
+                        event_type: "subagent.permission.resolved",
+                        visibility: "public",
+                    })
+            }
+            Event::TeamCreated(event) => {
+                let run_id = self.current_run_id?;
+                if !self.is_allowed_run(&run_id) {
+                    return None;
+                }
+                self.team_run_ids.insert(event.team_id, run_id);
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "teamId": event.team_id.to_string(),
+                        "name": public_text_display(event.name, redactor),
+                        "topologyKind": topology_kind_payload(&event.topology_kind),
+                    }),
+                    run_id: run_id.to_string(),
+                    sequence: 0,
+                    source: "agent",
+                    timestamp: event.created_at.to_rfc3339(),
+                    event_type: "team.created",
+                    visibility: "public",
+                })
+            }
+            Event::TeamTaskUpdated(event) => {
+                self.team_run_ids.get(&event.team_id).map(|run_id| RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "teamId": event.team_id.to_string(),
+                        "taskId": public_text_display(event.task_id, redactor),
+                        "title": public_text_display(event.title, redactor),
+                        "status": public_text_display(event.status, redactor),
+                        "assigneeProfileId": event
+                            .assignee_profile_id
+                            .map(|value| public_text_display(value, redactor)),
+                    }),
+                    run_id: run_id.to_string(),
+                    sequence: 0,
+                    source: "agent",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "team.task.updated",
+                    visibility: "public",
+                })
+            }
+            Event::TeamTerminated(event) => {
+                self.team_run_ids.get(&event.team_id).map(|run_id| RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "teamId": event.team_id.to_string(),
+                        "reason": team_termination_reason_payload(&event.reason),
+                    }),
+                    run_id: run_id.to_string(),
+                    sequence: 0,
+                    source: "agent",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "team.terminated",
+                    visibility: "public",
+                })
+            }
+            Event::BackgroundAgentStarted(event) => {
+                if event.conversation_id != requested_session_id {
+                    return None;
+                }
+                self.background_agent_run_ids
+                    .insert(event.background_agent_id, event.attempt_id);
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "backgroundAgentId": event.background_agent_id.to_string(),
+                        "title": public_ui_safe_text_display(&event.title, redactor),
+                    }),
+                    run_id: event.attempt_id.to_string(),
+                    sequence: 0,
+                    source: "background",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "background.started",
+                    visibility: "public",
+                })
+            }
+            Event::BackgroundAgentPermissionRequested(event) => {
+                let run_id = event.attempt_id.or_else(|| {
+                    self.background_agent_run_ids
+                        .get(&event.background_agent_id)
+                        .copied()
+                })?;
+                if event.conversation_id != requested_session_id && !self.is_allowed_run(&run_id) {
+                    return None;
+                }
+                self.background_agent_run_ids
+                    .insert(event.background_agent_id, run_id);
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "backgroundAgentId": event.background_agent_id.to_string(),
+                        "requestId": event.request_id.to_string(),
+                        "reason": public_ui_safe_text_display(&event.reason, redactor),
+                    }),
+                    run_id: run_id.to_string(),
+                    sequence: 0,
+                    source: "policy",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "background.permission.requested",
+                    visibility: "public",
+                })
+            }
+            Event::BackgroundAgentPermissionResolved(event) => {
+                let run_id = event.attempt_id.or_else(|| {
+                    self.background_agent_run_ids
+                        .get(&event.background_agent_id)
+                        .copied()
+                })?;
+                if event.conversation_id != requested_session_id && !self.is_allowed_run(&run_id) {
+                    return None;
+                }
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "backgroundAgentId": event.background_agent_id.to_string(),
+                        "requestId": event.request_id.to_string(),
+                        "decision": permission_decision_payload(event.decision),
+                    }),
+                    run_id: run_id.to_string(),
+                    sequence: 0,
+                    source: "policy",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "background.permission.resolved",
+                    visibility: "public",
+                })
+            }
             Event::PluginLoaded(event) => Some(RunEventPayload {
                 id: event_id,
                 conversation_sequence: 0,
@@ -2680,6 +3378,54 @@ impl RunEventMapper {
 
 pub(crate) fn tool_result_summary(_result: impl Serialize) -> String {
     "Output withheld from conversation timeline.".to_owned()
+}
+
+pub(crate) fn subagent_status_payload(status: &SubagentStatus) -> &'static str {
+    match status {
+        SubagentStatus::Completed => "completed",
+        SubagentStatus::Cancelled => "cancelled",
+        SubagentStatus::Failed => "failed",
+        SubagentStatus::Stalled => "stalled",
+        SubagentStatus::MaxIterationsReached => "max_iterations_reached",
+        SubagentStatus::MaxBudget(_) => "max_budget",
+        _ => "failed",
+    }
+}
+
+pub(crate) fn subagent_termination_reason_payload(
+    reason: &SubagentTerminationReason,
+) -> &'static str {
+    match reason {
+        SubagentTerminationReason::NaturalCompletion => "natural_completion",
+        SubagentTerminationReason::ParentCancelled => "parent_cancelled",
+        SubagentTerminationReason::AdminInterrupted { .. } => "admin_interrupted",
+        SubagentTerminationReason::Stalled { .. } => "stalled",
+        SubagentTerminationReason::BridgeBroken => "bridge_broken",
+        SubagentTerminationReason::Failed { .. } => "failed",
+        _ => "failed",
+    }
+}
+
+pub(crate) fn topology_kind_payload(topology: &TopologyKind) -> String {
+    match topology {
+        TopologyKind::CoordinatorWorker => "coordinator_worker".to_owned(),
+        TopologyKind::PeerToPeer => "peer_to_peer".to_owned(),
+        TopologyKind::RoleRouted => "role_routed".to_owned(),
+        TopologyKind::Custom(_) => "custom".to_owned(),
+        _ => "custom".to_owned(),
+    }
+}
+
+pub(crate) fn team_termination_reason_payload(reason: &TeamTerminationReason) -> &'static str {
+    match reason {
+        TeamTerminationReason::Completed => "completed",
+        TeamTerminationReason::Cancelled => "cancelled",
+        TeamTerminationReason::Error(_) => "error",
+        TeamTerminationReason::MemberFailed => "member_failed",
+        TeamTerminationReason::IdleTimeout => "idle_timeout",
+        TeamTerminationReason::Timeout => "timeout",
+        _ => "error",
+    }
 }
 
 pub(crate) fn plugin_capability_count(capabilities: &PluginCapabilitiesSummary) -> u64 {

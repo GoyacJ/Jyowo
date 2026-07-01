@@ -14,6 +14,20 @@ export const upstreamHeldRustDependencies = [
     constraint: 'exact dependency selected by the latest stable Axum release',
   },
   {
+    name: 'time',
+    current: '0.3.51',
+    available: '0.3.53',
+    owner: 'cookie 0.18.1',
+    constraint: 'Tauri cookie dependency calls the time 0.3.51 parsing API; newer time versions change the method signature',
+  },
+  {
+    name: 'time-macros',
+    current: '0.2.30',
+    available: '0.2.31',
+    owner: 'time 0.3.51',
+    constraint: 'kept in lockstep with the Tauri-held time 0.3.51 dependency',
+  },
+  {
     name: 'toml',
     current: '0.8.2',
     available: '0.8.23',
@@ -33,19 +47,5 @@ export const upstreamHeldRustDependencies = [
     available: '0.20.7',
     owner: 'proc-macro-crate 2.0.2',
     constraint: 'exact dependency required by GTK proc-macro chain',
-  },
-  {
-    name: 'time',
-    current: '0.3.51',
-    available: '0.3.52',
-    owner: 'tauri 2.11.4',
-    constraint: 'latest compatible Tauri runtime resolver keeps the time crate on 0.3.51',
-  },
-  {
-    name: 'time-macros',
-    current: '0.2.30',
-    available: '0.2.31',
-    owner: 'time 0.3.51',
-    constraint: 'proc-macro companion selected by the Tauri-held time 0.3.51 dependency',
   },
 ]

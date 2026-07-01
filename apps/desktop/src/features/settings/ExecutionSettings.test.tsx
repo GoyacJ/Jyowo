@@ -5,21 +5,45 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AppI18nProvider } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
-import type { CommandClient } from '@/shared/tauri/commands'
+import type { AgentCapabilities, CommandClient } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
 import { createTestCommandClient } from '@/testing/command-client'
 
 import { ExecutionSettings } from './ExecutionSettings'
 
-const agentCapabilities = {
-  agentTeamsAvailable: false,
-  agentTeamsEnabled: false,
-  backgroundAgentsAvailable: false,
-  backgroundAgentsEnabled: false,
-  subagentsAvailable: false,
-  subagentsEnabled: false,
-  unavailableReasons: [],
+function createAgentCapabilities(overrides: Partial<AgentCapabilities> = {}): AgentCapabilities {
+  return {
+    agentTeamsAvailable: false,
+    agentTeamsEnabled: false,
+    backgroundAgentsAvailable: false,
+    backgroundAgentsEnabled: false,
+    subagentsAvailable: false,
+    subagentsEnabled: false,
+    unavailableReasons: [],
+    ...overrides,
+  }
 }
+
+const agentCapabilities = createAgentCapabilities()
+
+function createExecutionSettings(
+  agentCapabilityOverrides: Partial<ReturnType<typeof createAgentCapabilities>> = {},
+) {
+  return {
+    agentCapabilities: createAgentCapabilities(agentCapabilityOverrides),
+    autoModeAvailable: false,
+    contextCompressionTriggerRatio: 0.8,
+    permissionMode: 'default' as const,
+    toolProfile: 'full' as const,
+  }
+}
+
+const availableAgentCapabilities = createAgentCapabilities({
+  agentTeamsAvailable: true,
+  backgroundAgentsAvailable: true,
+  backgroundAgentsEnabled: false,
+  subagentsAvailable: true,
+})
 
 function renderExecutionSettings(commandClient: CommandClient = createTestCommandClient()) {
   return render(
@@ -172,6 +196,183 @@ describe('ExecutionSettings', () => {
 
     expect(await screen.findByText(/Auto approval is unavailable/i)).toBeInTheDocument()
     expect(screen.getByDisplayValue('auto')).toBeDisabled()
+  })
+
+  it('shows a loading state before execution settings arrive', () => {
+    uiStore.getState().setLocale('en-US')
+
+    renderExecutionSettings(
+      createTestCommandClient({
+        delayMs: 50,
+        executionSettings: createExecutionSettings(availableAgentCapabilities),
+      }),
+    )
+
+    expect(screen.getByText('Loading default permission mode...')).toBeInTheDocument()
+  })
+
+  it('renders available agent switches off', async () => {
+    uiStore.getState().setLocale('en-US')
+
+    renderExecutionSettings(
+      createTestCommandClient({
+        executionSettings: createExecutionSettings(availableAgentCapabilities),
+      }),
+    )
+
+    expect(await screen.findByRole('switch', { name: 'Subagents' })).toBeEnabled()
+    expect(screen.getByRole('switch', { name: 'Subagents' })).not.toBeChecked()
+    expect(screen.getByRole('switch', { name: 'Agent teams' })).toBeEnabled()
+    expect(screen.getByRole('switch', { name: 'Agent teams' })).not.toBeChecked()
+    expect(screen.getByRole('switch', { name: 'Background agents' })).toBeEnabled()
+    expect(screen.getByRole('switch', { name: 'Background agents' })).not.toBeChecked()
+  })
+
+  it('renders available agent switches on', async () => {
+    uiStore.getState().setLocale('en-US')
+
+    renderExecutionSettings(
+      createTestCommandClient({
+        executionSettings: createExecutionSettings({
+          ...availableAgentCapabilities,
+          agentTeamsEnabled: true,
+          backgroundAgentsEnabled: true,
+          subagentsEnabled: true,
+        }),
+      }),
+    )
+
+    expect(await screen.findByRole('switch', { name: 'Subagents' })).toBeChecked()
+    expect(screen.getByRole('switch', { name: 'Agent teams' })).toBeChecked()
+    expect(screen.getByRole('switch', { name: 'Background agents' })).toBeChecked()
+  })
+
+  it('disables unavailable agent switches and renders backend reasons', async () => {
+    uiStore.getState().setLocale('en-US')
+
+    renderExecutionSettings(
+      createTestCommandClient({
+        executionSettings: createExecutionSettings({
+          unavailableReasons: [
+            {
+              capability: 'subagents',
+              message: 'runtime store closed',
+              type: 'runtimeStoreUnavailable',
+            },
+          ],
+        }),
+      }),
+    )
+
+    expect(await screen.findByRole('switch', { name: 'Subagents' })).toBeDisabled()
+    expect(screen.getByText('Runtime store unavailable: runtime store closed')).toBeInTheDocument()
+  })
+
+  it('saves agent switch changes through setExecutionSettings', async () => {
+    uiStore.getState().setLocale('en-US')
+
+    const setExecutionSettings = vi.fn(async () =>
+      createExecutionSettings({
+        ...availableAgentCapabilities,
+        subagentsEnabled: true,
+      }),
+    )
+    const commandClient = {
+      ...createTestCommandClient(),
+      getExecutionSettings: async () => createExecutionSettings(availableAgentCapabilities),
+      setExecutionSettings,
+    } satisfies CommandClient
+
+    renderExecutionSettings(commandClient)
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Subagents' }))
+
+    await waitFor(() => {
+      expect(setExecutionSettings).toHaveBeenCalledWith({
+        agentTeamsEnabled: false,
+        backgroundAgentsEnabled: false,
+        contextCompressionTriggerRatio: 0.8,
+        permissionMode: 'default',
+        subagentsEnabled: true,
+        toolProfile: 'full',
+      })
+    })
+    expect(screen.getByRole('switch', { name: 'Subagents' })).toBeChecked()
+  })
+
+  it('refetches backend truth and shows a safe error when saving agent switches fails', async () => {
+    uiStore.getState().setLocale('en-US')
+
+    const getExecutionSettings = vi.fn(async () =>
+      createExecutionSettings(availableAgentCapabilities),
+    )
+    const commandClient = {
+      ...createTestCommandClient(),
+      getExecutionSettings,
+      setExecutionSettings: vi.fn(async () => {
+        throw new Error('write denied')
+      }),
+    } satisfies CommandClient
+
+    renderExecutionSettings(commandClient)
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Subagents' }))
+
+    await waitFor(() => {
+      expect(getExecutionSettings).toHaveBeenCalledTimes(2)
+    })
+    expect(screen.getByText('Execution settings could not be saved.')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('write denied')
+    expect(screen.getByRole('switch', { name: 'Subagents' })).not.toBeChecked()
+  })
+
+  it('restores the previous switch state when save and backend refetch both fail', async () => {
+    uiStore.getState().setLocale('en-US')
+
+    const getExecutionSettings = vi
+      .fn()
+      .mockResolvedValueOnce(createExecutionSettings(availableAgentCapabilities))
+      .mockRejectedValueOnce(new Error('/Users/goya/.ssh/id_ed25519 leaked path'))
+    const commandClient = {
+      ...createTestCommandClient(),
+      getExecutionSettings,
+      setExecutionSettings: vi.fn(async () => {
+        throw new Error('/Users/goya/.ssh/id_ed25519 leaked path')
+      }),
+    } satisfies CommandClient
+
+    renderExecutionSettings(commandClient)
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Subagents' }))
+
+    await waitFor(() => {
+      expect(getExecutionSettings).toHaveBeenCalledTimes(2)
+    })
+    expect(screen.getByText('Execution settings could not be saved.')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('/Users/goya/.ssh/id_ed25519')
+    expect(screen.getByRole('switch', { name: 'Subagents' })).not.toBeChecked()
+  })
+
+  it('uses backend enabled false after an attempted switch save', async () => {
+    uiStore.getState().setLocale('en-US')
+
+    const setExecutionSettings = vi.fn(async () =>
+      createExecutionSettings(availableAgentCapabilities),
+    )
+    const commandClient = {
+      ...createTestCommandClient(),
+      getExecutionSettings: async () => createExecutionSettings(availableAgentCapabilities),
+      setExecutionSettings,
+    } satisfies CommandClient
+
+    renderExecutionSettings(commandClient)
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Subagents' }))
+
+    await waitFor(() => {
+      expect(setExecutionSettings).toHaveBeenCalled()
+    })
+    expect(screen.getByRole('switch', { name: 'Subagents' })).not.toBeChecked()
   })
 
   it('labels settings as the default permission mode without leaking translation keys', async () => {

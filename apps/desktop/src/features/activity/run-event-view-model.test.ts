@@ -84,6 +84,7 @@ describe('run-event-view-model', () => {
     const event = runEventSchema.parse({
       ...runEventFixtures[9],
       payload: {
+        actorSource: { type: 'parentRun' },
         decisionScope: 'current run',
         exposure: 'Can modify package metadata and lockfile.',
         operation: 'Install dependencies',
@@ -117,6 +118,7 @@ describe('run-event-view-model', () => {
     const event = runEventSchema.parse({
       ...runEventFixtures[9],
       payload: {
+        actorSource: { type: 'parentRun' },
         autoResolved: true,
         decisionScope: 'current run',
         exposure: 'Can inspect workspace metadata.',
@@ -216,12 +218,75 @@ describe('run-event-view-model', () => {
     ])
   })
 
+  it('maps background lifecycle and permission events', () => {
+    const events = runEventsSchema.parse([
+      {
+        id: 'evt-background-started',
+        conversationSequence: 21,
+        runId: 'run-background',
+        sequence: 1,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'background.started',
+        source: 'background',
+        visibility: 'public',
+        payload: {
+          backgroundAgentId: 'bg-agent-001',
+          title: 'Background run',
+        },
+      },
+      {
+        id: 'evt-background-permission-requested',
+        conversationSequence: 22,
+        runId: 'run-background',
+        sequence: 2,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'background.permission.requested',
+        source: 'policy',
+        visibility: 'public',
+        payload: {
+          backgroundAgentId: 'bg-agent-001',
+          reason: 'Permission required',
+          requestId: '01HZ0000000000000000000003',
+        },
+      },
+      {
+        id: 'evt-background-permission-resolved',
+        conversationSequence: 23,
+        runId: 'run-background',
+        sequence: 3,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'background.permission.resolved',
+        source: 'policy',
+        visibility: 'public',
+        payload: {
+          backgroundAgentId: 'bg-agent-001',
+          decision: 'approve',
+          requestId: '01HZ0000000000000000000003',
+        },
+      },
+    ])
+    const viewModels = toRunEventViewModels(events)
+
+    expect(viewModels.map((viewModel) => viewModel.activityItem)).toMatchObject([
+      { label: 'Background run', status: 'running' },
+      { label: '01HZ0000000000000000000003', status: 'blocked' },
+      { label: '01HZ0000000000000000000003', status: 'success' },
+    ])
+    expect(viewModels[1]?.details?.permissions?.[0]).toMatchObject({
+      id: '01HZ0000000000000000000003',
+      label: 'background permission',
+      state: 'approved',
+    })
+    expect(viewModels[2]?.details).toBeUndefined()
+  })
+
   it('merges permission resolved events into the matching requested details', () => {
     const events = runEventsSchema.parse([
       {
         ...runEventFixtures[9],
         sequence: 1,
         payload: {
+          actorSource: { type: 'parentRun' },
           decisionScope: 'current run',
           exposure: 'Can modify package metadata and lockfile.',
           operation: 'Install dependencies',

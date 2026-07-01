@@ -18,7 +18,7 @@ use harness_context::ContextEngine;
 #[cfg(feature = "subagent-tool")]
 use harness_contracts::{
     BlobMeta, BlobRetention, BudgetKind, ContentHash, EndReason, JournalOffset, MessageContent,
-    SubagentContextReport, TranscriptRef, UsageSnapshot,
+    PermissionActorSource, SubagentContextReport, TranscriptRef, UsageSnapshot,
 };
 use harness_contracts::{
     BlobStore, CapabilityRegistry, Event, MessageId, ModelRef, RunId, ToolCapability,
@@ -496,7 +496,7 @@ impl EngineBuilder {
         #[cfg(feature = "subagent-tool")]
         if self.subagent_tool_enabled {
             if !cap_registry_value.contains(&ToolCapability::SubagentRunner) {
-                let child_runner = Arc::new(EngineSelfChildRunner::default());
+                let child_runner = Arc::new(EngineBoundSubagentFactory::default());
                 let runner = Arc::new(
                     harness_subagent::DefaultSubagentRunner::new_with_engine_factory(
                         Arc::clone(&child_runner)
@@ -553,7 +553,7 @@ impl EngineBuilder {
         };
         #[cfg(feature = "subagent-tool")]
         if let Some(child_runner) = self_child_runner {
-            child_runner.set_engine(engine.clone()).map_err(|()| {
+            child_runner.bind_engine(engine.clone()).map_err(|()| {
                 harness_contracts::EngineError::Message(
                     "engine self runner already initialized".to_owned(),
                 )
@@ -949,13 +949,13 @@ fn json_number(value: f64) -> serde_json::Value {
 
 #[cfg(feature = "subagent-tool")]
 #[derive(Default)]
-struct EngineSelfChildRunner {
+pub struct EngineBoundSubagentFactory {
     engine: tokio::sync::OnceCell<Engine>,
 }
 
 #[cfg(feature = "subagent-tool")]
-impl EngineSelfChildRunner {
-    fn set_engine(&self, engine: Engine) -> Result<(), ()> {
+impl EngineBoundSubagentFactory {
+    pub fn bind_engine(&self, engine: Engine) -> Result<(), ()> {
         self.engine.set(engine).map_err(|_| ())
     }
 }
@@ -988,7 +988,7 @@ impl Drop for ChildCancellationBridge {
 
 #[cfg(feature = "subagent-tool")]
 #[async_trait::async_trait]
-impl harness_subagent::SubagentEngineFactory for EngineSelfChildRunner {
+impl harness_subagent::SubagentEngineFactory for EngineBoundSubagentFactory {
     async fn run_child_engine(
         &self,
         request: harness_subagent::ChildRunRequest,
@@ -1030,6 +1030,13 @@ impl harness_subagent::SubagentEngineFactory for EngineSelfChildRunner {
                 .with_parent_run_id(Some(request.parent_run_id))
                 .with_correlation_id(request.correlation_id)
                 .with_subagent_depth(request.child_depth)
+                .with_permission_actor_source(PermissionActorSource::Subagent {
+                    subagent_id: request.subagent_id,
+                    parent_session_id: request.parent_session_id,
+                    parent_run_id: request.parent_run_id,
+                    team_id: None,
+                    team_member_profile_id: None,
+                })
                 .with_permission_mode(request.spec.permission_mode)
                 .with_interactivity(interactivity_level(request.spec.interactivity.clone()))
                 .with_budget_limits(subagent_budget_limits(&request.spec))
@@ -1500,10 +1507,17 @@ fn child_tool_filter(tools: &ToolPool, spec: &harness_subagent::SubagentSpec) ->
 
     if spec.mcp_servers.is_empty() {
         for tool in tools.iter() {
-            if let harness_contracts::ToolOrigin::Mcp(origin) = &tool.descriptor().origin {
-                if !is_subagent_trusted_mcp_origin(origin) {
-                    denylist.insert(tool.descriptor().name.clone());
+            let descriptor = tool.descriptor();
+            match &descriptor.origin {
+                harness_contracts::ToolOrigin::Mcp(origin) => {
+                    if !is_subagent_trusted_mcp_origin(origin) {
+                        denylist.insert(descriptor.name.clone());
+                    }
                 }
+                _ if descriptor.name.starts_with("mcp__") => {
+                    denylist.insert(descriptor.name.clone());
+                }
+                _ => {}
             }
         }
     } else {
@@ -1524,12 +1538,19 @@ fn child_tool_filter(tools: &ToolPool, spec: &harness_subagent::SubagentSpec) ->
             })
             .collect();
         for tool in tools.iter() {
-            if let harness_contracts::ToolOrigin::Mcp(origin) = &tool.descriptor().origin {
-                if !is_subagent_trusted_mcp_origin(origin)
-                    || !allowed_mcp_tool_names.contains(&tool.descriptor().name)
-                {
-                    denylist.insert(tool.descriptor().name.clone());
+            let descriptor = tool.descriptor();
+            match &descriptor.origin {
+                harness_contracts::ToolOrigin::Mcp(origin) => {
+                    if !is_subagent_trusted_mcp_origin(origin)
+                        || !allowed_mcp_tool_names.contains(&descriptor.name)
+                    {
+                        denylist.insert(descriptor.name.clone());
+                    }
                 }
+                _ if descriptor.name.starts_with("mcp__") => {
+                    denylist.insert(descriptor.name.clone());
+                }
+                _ => {}
             }
         }
     }
@@ -1888,6 +1909,28 @@ mod subagent_tool_tests {
 
         assert!(filtered.get("mcp_allowed").is_some());
         assert!(filtered.get("mcp_blocked").is_none());
+    }
+
+    #[test]
+    fn child_tool_filter_rejects_forged_mcp_builtin_name() {
+        let mut tools = ToolPool::default();
+        tools.append_runtime_tool(Arc::new(TestTool::new(
+            "mcp__srv_a__forged",
+            ToolOrigin::Builtin,
+        )));
+        tools.append_runtime_tool(Arc::new(TestTool::new("file_read", ToolOrigin::Builtin)));
+
+        let mut spec = harness_subagent::SubagentSpec::minimal("worker", "task");
+        spec.toolset = ToolsetSelector::Custom(vec![
+            "mcp__srv_a__forged".to_owned(),
+            "file_read".to_owned(),
+        ]);
+        spec.mcp_servers = vec!["srv-a".into()];
+
+        let filtered = tools.filtered(&child_tool_filter(&tools, &spec));
+
+        assert!(filtered.get("mcp__srv_a__forged").is_none());
+        assert!(filtered.get("file_read").is_some());
     }
 
     #[tokio::test]

@@ -1139,6 +1139,65 @@ Streaming reducers:
 - normalize by id where needed
 - expose derived views instead of recomputing in render
 
+## Agent Orchestration UI
+
+Agent orchestration UI renders backend-owned state. React may hold local form
+state, selected ids, filters, and optimistic submit state. Capability decisions,
+run acceptance, background registry state, permission source, and worktree
+isolation decisions come from Rust.
+
+Settings switches:
+
+- Settings > General renders Subagents, Agent teams, and Background agents
+  switches from backend command responses.
+- unavailable switches display backend-provided reason payloads.
+- saving settings stores requested workspace defaults only.
+- a saved switch does not authorize a later run by itself. `start_run` still
+  validates `agentOptions` against Rust capability resolution.
+- failed saves refetch backend truth or restore the last backend-confirmed
+  snapshot.
+
+Per-run controls:
+
+- Composer agent controls submit `StartRunRequest.agentOptions`.
+- `agentOptions.subagents`, `agentOptions.teamConfig`, and
+  `agentOptions.background` must pass frontend Zod validation before IPC.
+- per-run controls must be disabled when backend capability responses say the
+  runtime cannot support the option.
+- the UI must not expose child/team/background execution controls from local
+  constants.
+- background user-facing start path is `start_run` with
+  `agentOptions.background`.
+
+Background agents panel:
+
+- the panel reads durable records with backend list/detail commands.
+- pause, resume, cancel, send input, archive, and delete actions call Tauri
+  commands through `shared/tauri`.
+- input replies include the backend-provided pending input request id.
+- archived records may be deleted only through the backend command.
+- local UI filters and selection do not change background agent lifecycle state.
+
+Conversation projection:
+
+- `AgentActivitySegment` renders subagent, team, and background activity from
+  `ConversationTurn` data projected by Rust.
+- `AgentActivitySegment` must not reconstruct activity from raw `RunEvent`
+  streams.
+- permission UI uses `actorSource` from projected events and never infers child,
+  team, or background identity from display text.
+- background timeline links use backend ids from projection payloads.
+
+Zod requirements:
+
+- all agent orchestration IPC requests and responses in `shared/tauri` use Zod.
+- all agent orchestration run events in `shared/events` use Zod.
+- schemas must reject unknown actor-source tags and invalid background/team
+  payloads.
+- tests must include valid and invalid payloads for settings capability,
+  `StartRunRequest.agentOptions`, `AgentActivitySegment` projection input, and
+  background agent command responses.
+
 ## RunEvent Schema
 
 Rust contracts are canonical. Frontend `RunEvent` is a rendering model for UI stability.
@@ -1152,7 +1211,7 @@ type RunEventBase = {
   sequence: number
   timestamp: string
   type: RunEventType
-  source: 'user' | 'assistant' | 'tool' | 'engine' | 'policy' | 'plugin'
+  source: 'user' | 'assistant' | 'tool' | 'engine' | 'policy' | 'agent' | 'background' | 'plugin'
   visibility: 'public' | 'redacted' | 'withheld'
 }
 ```
@@ -1187,6 +1246,9 @@ Rules:
   `permissionMode: 'default' | 'plan' | 'accept_edits' | 'bypass_permissions' | 'dont_ask' | 'auto'`
 - `permission.requested` payloads may include `autoResolved: true` when a run
   authorization mode automatically allowed the request without interactive UI.
+- `permission.requested.payload.actorSource` must be one of `parentRun`,
+  `subagent`, `teamMember`, or `backgroundAgent`. Team member sources carry
+  `teamId`, `agentId`, `role`, and optional `parentRunId`.
 - Raw JSON shows redacted payload only
 - withheld payloads are not rendered
 - frontend schema does not replace Rust canonical events

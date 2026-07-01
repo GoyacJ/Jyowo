@@ -3,8 +3,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use harness_contracts::{
-    Decision, Event, McpServerId, PermissionMode, RequestId, RunId, SamplingBudgetDimension,
-    SamplingDenyReason, SamplingOutcome, SessionId, TrustLevel,
+    AgentId, Decision, Event, McpServerId, PermissionActorSource, PermissionMode,
+    PermissionSubject, RequestId, RunId, SamplingBudgetDimension, SamplingDenyReason,
+    SamplingOutcome, SessionId, TeamId, TrustLevel,
 };
 use harness_mcp::{
     AggregateBudget, JsonRpcRequest, McpEventSink, McpMetric, McpMetricOutcome, McpMetricsSink,
@@ -360,15 +361,67 @@ async fn jsonrpc_sampling_create_message_invokes_provider_and_records_token_metr
 }
 
 #[tokio::test]
+async fn jsonrpc_sampling_create_message_rejects_auto_allow_without_authoritative_run_id() {
+    let sink = Arc::new(CollectingSink::default());
+    let provider = Arc::new(RecordingSamplingProvider::default());
+    let broker = Arc::new(FixedPermissionBroker::new(Decision::AllowOnce));
+    let handler = SamplingJsonRpcHandler::new(SamplingPolicy::allow_auto(), sink.clone())
+        .with_session_id(SessionId::from_u128(1))
+        .with_server_id(McpServerId("github".to_owned()))
+        .with_server_trust(TrustLevel::AdminTrusted)
+        .with_permission_broker(broker.clone())
+        .with_provider(provider.clone());
+
+    let response = handler
+        .handle_request(JsonRpcRequest::new(
+            json!(7),
+            "sampling/createMessage",
+            Some(json!({
+                "request_id": RequestId::from_u128(7),
+                "run_id": RunId::from_u128(99).to_string(),
+                "model": "claude-3-5-sonnet",
+                "input_tokens": 2,
+                "max_tokens": 4,
+                "messages": []
+            })),
+        ))
+        .await;
+
+    assert!(matches!(
+        response.error,
+        Some(ref error) if error.code == MCP_SAMPLING_DENIED_CODE
+    ));
+    assert!(broker.requests().is_empty());
+    assert!(provider.last_request().is_none());
+    assert!(!sink
+        .events()
+        .iter()
+        .any(|event| matches!(event, Event::PermissionRequested(_))));
+}
+
+#[tokio::test]
 async fn jsonrpc_sampling_create_message_waits_for_approval_before_provider_call() {
     let sink = Arc::new(CollectingSink::default());
     let provider = Arc::new(RecordingSamplingProvider::default());
     let broker = Arc::new(FixedPermissionBroker::new(Decision::AllowOnce));
+    let actor_source = PermissionActorSource::TeamMember {
+        team_id: TeamId::from_u128(3),
+        agent_id: AgentId::from_u128(4),
+        role: "researcher sk-abcdefghijklmnopqrstuvwxyz".to_owned(),
+        parent_run_id: Some(RunId::from_u128(5)),
+    };
+    let expected_actor_source = PermissionActorSource::TeamMember {
+        team_id: TeamId::from_u128(3),
+        agent_id: AgentId::from_u128(4),
+        role: "[REDACTED]".to_owned(),
+        parent_run_id: Some(RunId::from_u128(5)),
+    };
     let handler = SamplingJsonRpcHandler::new(SamplingPolicy::allow_with_approval(), sink.clone())
         .with_session_id(SessionId::from_u128(1))
         .with_run_id(Some(RunId::from_u128(2)))
         .with_server_id(McpServerId("github".to_owned()))
         .with_server_trust(TrustLevel::AdminTrusted)
+        .with_permission_actor_source(actor_source.clone())
         .with_permission_broker(broker.clone())
         .with_provider(provider.clone());
 
@@ -378,6 +431,9 @@ async fn jsonrpc_sampling_create_message_waits_for_approval_before_provider_call
             "sampling/createMessage",
             Some(json!({
                 "request_id": RequestId::from_u128(4),
+                "session_id": SessionId::from_u128(99).to_string(),
+                "run_id": RunId::from_u128(98).to_string(),
+                "server_id": "spoofed",
                 "model": "claude-3-5-sonnet",
                 "input_tokens": 2,
                 "max_tokens": 4,
@@ -388,11 +444,73 @@ async fn jsonrpc_sampling_create_message_waits_for_approval_before_provider_call
 
     assert!(response.error.is_none());
     assert_eq!(broker.requests().len(), 1);
+    let broker_request = broker.requests().pop().expect("broker should see request");
+    assert_eq!(broker_request.session_id, SessionId::from_u128(1));
+    assert!(matches!(
+        broker_request.subject,
+        PermissionSubject::Custom { ref payload, .. }
+            if payload["server_id"] == "github"
+                && !payload.to_string().contains("spoofed")
+    ));
+    let broker_context = broker.contexts().pop().expect("broker should see context");
+    assert_eq!(broker_context.session_id, SessionId::from_u128(1));
+    assert_eq!(broker_context.run_id, Some(RunId::from_u128(2)));
     let request = provider.last_request().expect("provider was called");
+    assert_eq!(request.session_id, SessionId::from_u128(1));
+    assert_eq!(request.run_id, Some(RunId::from_u128(2)));
+    assert_eq!(request.server_id, McpServerId("github".to_owned()));
     assert_eq!(
         request.prompt_cache_namespace.as_deref(),
         Some("mcp::sampling::github::00000000000000000000000001")
     );
+    assert!(sink.events().iter().any(|event| {
+        matches!(
+            event,
+            Event::PermissionRequested(permission)
+                if permission.actor_source == expected_actor_source
+                    && permission.run_id == RunId::from_u128(2)
+                    && permission.session_id == SessionId::from_u128(1)
+        )
+    }));
+}
+
+#[tokio::test]
+async fn jsonrpc_sampling_create_message_rejects_approval_without_authoritative_run_id() {
+    let sink = Arc::new(CollectingSink::default());
+    let provider = Arc::new(RecordingSamplingProvider::default());
+    let broker = Arc::new(FixedPermissionBroker::new(Decision::AllowOnce));
+    let handler = SamplingJsonRpcHandler::new(SamplingPolicy::allow_with_approval(), sink.clone())
+        .with_session_id(SessionId::from_u128(1))
+        .with_server_id(McpServerId("github".to_owned()))
+        .with_server_trust(TrustLevel::AdminTrusted)
+        .with_permission_broker(broker.clone())
+        .with_provider(provider.clone());
+
+    let response = handler
+        .handle_request(JsonRpcRequest::new(
+            json!(6),
+            "sampling/createMessage",
+            Some(json!({
+                "request_id": RequestId::from_u128(6),
+                "run_id": RunId::from_u128(99).to_string(),
+                "model": "claude-3-5-sonnet",
+                "input_tokens": 2,
+                "max_tokens": 4,
+                "messages": []
+            })),
+        ))
+        .await;
+
+    assert!(matches!(
+        response.error,
+        Some(ref error) if error.code == MCP_SAMPLING_DENIED_CODE
+    ));
+    assert!(broker.requests().is_empty());
+    assert!(provider.last_request().is_none());
+    assert!(!sink
+        .events()
+        .iter()
+        .any(|event| matches!(event, Event::PermissionRequested(_))));
 }
 
 #[tokio::test]
@@ -553,6 +671,7 @@ impl SamplingProvider for RecordingSamplingProvider {
 struct FixedPermissionBroker {
     decision: Decision,
     requests: Mutex<Vec<PermissionRequest>>,
+    contexts: Mutex<Vec<PermissionContext>>,
 }
 
 impl FixedPermissionBroker {
@@ -560,18 +679,24 @@ impl FixedPermissionBroker {
         Self {
             decision,
             requests: Mutex::new(Vec::new()),
+            contexts: Mutex::new(Vec::new()),
         }
     }
 
     fn requests(&self) -> Vec<PermissionRequest> {
         self.requests.lock().clone()
     }
+
+    fn contexts(&self) -> Vec<PermissionContext> {
+        self.contexts.lock().clone()
+    }
 }
 
 #[async_trait]
 impl PermissionBroker for FixedPermissionBroker {
-    async fn decide(&self, request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+    async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
         self.requests.lock().push(request);
+        self.contexts.lock().push(ctx);
         self.decision.clone()
     }
 

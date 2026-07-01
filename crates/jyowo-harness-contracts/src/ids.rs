@@ -147,6 +147,7 @@ define_scopes! {
     MessageScope => MessageId,
     ToolUseScope => ToolUseId,
     SubagentScope => SubagentId,
+    BackgroundAgentScope => BackgroundAgentId,
     TeamScope => TeamId,
     AgentScope => AgentId,
     TenantScope => TenantId,

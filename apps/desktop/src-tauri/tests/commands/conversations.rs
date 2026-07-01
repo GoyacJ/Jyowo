@@ -14,6 +14,7 @@ async fn list_conversations_with_runtime_state_returns_startable_conversation_id
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id,
             permission_mode: None,
@@ -155,6 +156,7 @@ async fn delete_conversation_with_runtime_state_removes_session_from_runtime_lis
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: conversation_id.clone(),
             permission_mode: None,
@@ -197,6 +199,7 @@ async fn delete_conversation_with_runtime_state_removes_session_from_runtime_lis
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id,
             permission_mode: None,
@@ -225,6 +228,7 @@ async fn get_and_delete_conversation_with_runtime_state_survive_runtime_option_c
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: conversation_id.clone(),
             permission_mode: None,
@@ -318,6 +322,7 @@ async fn get_conversation_with_runtime_state_returns_runtime_messages() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -372,6 +377,7 @@ async fn list_conversations_with_runtime_state_projects_runtime_summary() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -428,6 +434,7 @@ async fn conversation_payloads_with_runtime_state_redact_private_paths() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -498,6 +505,7 @@ async fn get_conversation_with_runtime_state_includes_safe_client_message_id() {
         StartRunRequest {
             client_message_id: Some(client_message_id.clone()),
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,

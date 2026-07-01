@@ -64,7 +64,7 @@ fn subagent_tool_feature_appends_agent_tool_when_enabled() {
         .with_tools(ToolPool::default())
         .with_permission_broker(Arc::new(AllowBroker))
         .with_workspace_root(workspace.path())
-        .with_model_id("test-model")
+        .with_model_id("empty-model")
         .with_cap_registry(Arc::new(registry))
         .with_subagent_tool()
         .build()
@@ -92,7 +92,7 @@ fn subagent_tool_feature_installs_default_runner_when_cap_missing() {
         .with_tools(ToolPool::default())
         .with_permission_broker(Arc::new(AllowBroker))
         .with_workspace_root(workspace.path())
-        .with_model_id("test-model")
+        .with_model_id("empty-model")
         .with_subagent_tool()
         .build()
         .unwrap();

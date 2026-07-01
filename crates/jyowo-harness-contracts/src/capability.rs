@@ -31,7 +31,248 @@ pub enum AgentCapabilityKind {
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AgentCapabilityUnavailableReason {
-    NotCompiled { capability: AgentCapabilityKind },
+    NotCompiled {
+        capability: AgentCapabilityKind,
+    },
+    RuntimeStoreUnavailable {
+        capability: AgentCapabilityKind,
+        message: String,
+    },
+    PermissionRuntimeUnavailable {
+        capability: AgentCapabilityKind,
+    },
+    InvalidAgentProfiles {
+        capability: AgentCapabilityKind,
+        message: String,
+    },
+    BackgroundSupervisorUnavailable {
+        message: String,
+    },
+    WorkspaceIsolationUnavailable {
+        capability: AgentCapabilityKind,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCapabilitiesPayload {
+    pub subagents_enabled: bool,
+    pub agent_teams_enabled: bool,
+    pub background_agents_enabled: bool,
+    pub subagents_available: bool,
+    pub agent_teams_available: bool,
+    pub background_agents_available: bool,
+    pub unavailable_reasons: Vec<AgentCapabilityUnavailableReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProfile {
+    pub id: String,
+    pub scope: AgentProfileScope,
+    pub role: String,
+    pub description: String,
+    pub model_config_override: Option<AgentProfileModelOverride>,
+    pub tool_allowlist: Option<Vec<String>>,
+    pub tool_blocklist: Vec<String>,
+    pub sandbox_inheritance: AgentProfileSandboxInheritance,
+    pub memory_scope: AgentProfileMemoryScope,
+    pub context_mode: AgentProfileContextMode,
+    pub max_turns: u32,
+    pub max_depth: u8,
+    pub default_workspace_isolation: AgentWorkspaceIsolationMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProfileModelOverride {
+    pub provider_config_id: Option<String>,
+    pub model_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentProfileScope {
+    Builtin,
+    User,
+    Project,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentProfileSandboxInheritance {
+    InheritParent,
+    NarrowOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentProfileMemoryScope {
+    None,
+    ReadOnly,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentProfileContextMode {
+    Minimal,
+    Focused,
+    FullWorkspace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunOptions {
+    pub subagents: AgentUsePolicy,
+    pub agent_team: AgentUsePolicy,
+    pub team_config: Option<AgentTeamRunConfig>,
+    pub background: BackgroundRunPolicy,
+    pub workspace_isolation: AgentWorkspaceIsolationMode,
+    pub max_depth: u8,
+    pub max_concurrent_subagents: u32,
+    pub max_team_members: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTeamRunConfig {
+    pub topology: AgentTeamTopology,
+    pub lead_profile_id: String,
+    pub member_profile_ids: Vec<String>,
+    pub max_turns_per_goal: u32,
+    pub shared_memory_policy: AgentTeamSharedMemoryPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTeamTopology {
+    CoordinatorWorker,
+    PeerToPeer,
+    RoleRouted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTeamSharedMemoryPolicy {
+    None,
+    SummariesOnly,
+    RedactedMailbox,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentUsePolicy {
+    Off,
+    Allowed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundRunPolicy {
+    Foreground,
+    Background,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceIsolationMode {
+    ReadOnly,
+    PatchOnly,
+    GitWorktree,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentOrchestrationValidationError {
+    InvalidProfileId { id: String },
+    EmptyTeamMemberList,
+    MissingTeamConfig,
+    UnexpectedTeamConfig,
+    InvalidConcurrency { field: &'static str, value: u32 },
+}
+
+impl std::fmt::Display for AgentOrchestrationValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidProfileId { id } => write!(f, "invalid agent profile id: {id}"),
+            Self::EmptyTeamMemberList => write!(f, "agent team member list must not be empty"),
+            Self::MissingTeamConfig => {
+                write!(f, "agent team allowed but teamConfig is missing")
+            }
+            Self::UnexpectedTeamConfig => {
+                write!(f, "agent team off but teamConfig is present")
+            }
+            Self::InvalidConcurrency { field, value } => {
+                write!(f, "invalid {field}: {value}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AgentOrchestrationValidationError {}
+
+pub fn validate_agent_profile_id(id: &str) -> Result<(), AgentOrchestrationValidationError> {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-')
+    {
+        return Err(AgentOrchestrationValidationError::InvalidProfileId { id: id.to_owned() });
+    }
+    Ok(())
+}
+
+pub fn validate_agent_profile(
+    profile: &AgentProfile,
+) -> Result<(), AgentOrchestrationValidationError> {
+    validate_agent_profile_id(&profile.id)?;
+    if profile.role.trim().is_empty() {
+        return Err(AgentOrchestrationValidationError::InvalidProfileId {
+            id: profile.id.clone(),
+        });
+    }
+    Ok(())
+}
+
+pub fn validate_agent_run_options(
+    options: &AgentRunOptions,
+) -> Result<(), AgentOrchestrationValidationError> {
+    match (options.agent_team, options.team_config.as_ref()) {
+        (AgentUsePolicy::Allowed, None) => {
+            return Err(AgentOrchestrationValidationError::MissingTeamConfig);
+        }
+        (AgentUsePolicy::Off, Some(_)) => {
+            return Err(AgentOrchestrationValidationError::UnexpectedTeamConfig);
+        }
+        _ => {}
+    }
+
+    if let Some(team_config) = options.team_config.as_ref() {
+        validate_agent_profile_id(&team_config.lead_profile_id)?;
+        if team_config.member_profile_ids.is_empty() {
+            return Err(AgentOrchestrationValidationError::EmptyTeamMemberList);
+        }
+        for member_id in &team_config.member_profile_ids {
+            validate_agent_profile_id(member_id)?;
+        }
+    }
+
+    if options.max_concurrent_subagents == 0 {
+        return Err(AgentOrchestrationValidationError::InvalidConcurrency {
+            field: "maxConcurrentSubagents",
+            value: options.max_concurrent_subagents,
+        });
+    }
+
+    if options.max_team_members == 0 {
+        return Err(AgentOrchestrationValidationError::InvalidConcurrency {
+            field: "maxTeamMembers",
+            value: options.max_team_members,
+        });
+    }
+
+    Ok(())
 }
 
 pub trait SubagentRunnerCap: Send + Sync + 'static {

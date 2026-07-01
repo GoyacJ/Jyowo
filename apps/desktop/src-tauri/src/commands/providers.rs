@@ -29,6 +29,7 @@ use super::stores::*;
 #[allow(unused_imports)]
 use super::validation::*;
 use super::*;
+use jyowo_harness_sdk::AgentCapabilityResolutionContext;
 
 #[derive(Clone)]
 pub(crate) struct DesktopProviderCredentialResolver {
@@ -486,6 +487,11 @@ impl DesktopExecutionSettingsStore {
         Self { workspace_root }
     }
 
+    #[must_use]
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
     fn settings_path(&self) -> PathBuf {
         self.workspace_root
             .join(".jyowo")
@@ -499,7 +505,7 @@ impl DesktopExecutionSettingsStore {
         match std::fs::read(&settings_path) {
             Ok(bytes) => match serde_json::from_slice(&bytes) {
                 Ok(record) => {
-                    if ensure_execution_settings_record(&record).is_ok() {
+                    if ensure_execution_settings_structure(&record).is_ok() {
                         Ok(record)
                     } else {
                         remove_invalid_execution_settings_file(&settings_path)?;
@@ -520,8 +526,12 @@ impl DesktopExecutionSettingsStore {
         }
     }
 
-    pub fn save_record(&self, record: &ExecutionSettingsRecord) -> Result<(), CommandErrorPayload> {
-        ensure_execution_settings_record(record)?;
+    pub fn save_record(
+        &self,
+        record: &ExecutionSettingsRecord,
+        context: Option<&AgentCapabilityResolutionContext>,
+    ) -> Result<(), CommandErrorPayload> {
+        ensure_execution_settings_record(record, &self.workspace_root, context)?;
         let settings_path = self.settings_path();
         let parent = settings_path.parent().ok_or_else(|| {
             runtime_operation_failed("execution settings path has no parent".to_owned())
@@ -583,7 +593,7 @@ pub(crate) fn remove_invalid_execution_settings_file(
     }
 }
 
-pub(crate) fn ensure_execution_settings_record(
+pub(crate) fn ensure_execution_settings_structure(
     record: &ExecutionSettingsRecord,
 ) -> Result<(), CommandErrorPayload> {
     match record.permission_mode {
@@ -602,19 +612,30 @@ pub(crate) fn ensure_execution_settings_record(
         ));
     }
 
+    Ok(())
+}
+
+pub(crate) fn ensure_execution_settings_record(
+    record: &ExecutionSettingsRecord,
+    workspace_root: &Path,
+    context: Option<&AgentCapabilityResolutionContext>,
+) -> Result<(), CommandErrorPayload> {
+    ensure_execution_settings_structure(record)?;
+
+    let policy = resolve_agent_capability_policy(workspace_root, context);
     ensure_agent_capability_setting_available(
         record.subagents_enabled,
-        agent_capabilities_available().subagents_available,
+        policy.subagents_available,
         "subagents",
     )?;
     ensure_agent_capability_setting_available(
         record.agent_teams_enabled,
-        agent_capabilities_available().agent_teams_available,
+        policy.agent_teams_available,
         "agentTeams",
     )?;
     ensure_agent_capability_setting_available(
         record.background_agents_enabled,
-        agent_capabilities_available().background_agents_available,
+        policy.background_agents_available,
         "backgroundAgents",
     )
 }
@@ -634,8 +655,7 @@ pub(crate) fn ensure_agent_capability_setting_available(
 
 pub(crate) fn auto_mode_available() -> bool {
     // The desktop shell does not currently assemble an AuxLlmBroker-backed
-    // permission runtime. Keep Auto fail-closed even if the placeholder feature
-    // is enabled.
+    // permission runtime. Keep Auto fail-closed until that runtime is present.
     false
 }
 
@@ -651,50 +671,30 @@ pub struct AgentCapabilitiesPayload {
     pub unavailable_reasons: Vec<AgentCapabilityUnavailableReason>,
 }
 
+pub(crate) fn resolve_agent_capability_policy(
+    workspace_root: &Path,
+    context: Option<&AgentCapabilityResolutionContext>,
+) -> jyowo_harness_sdk::ResolvedAgentCapabilityPolicy {
+    jyowo_harness_sdk::resolve_agent_capabilities_with_context(
+        workspace_root,
+        context.copied().unwrap_or_default(),
+    )
+}
+
 pub(crate) fn agent_capabilities_payload(
     record: &ExecutionSettingsRecord,
+    workspace_root: &Path,
+    context: Option<&AgentCapabilityResolutionContext>,
 ) -> AgentCapabilitiesPayload {
-    let availability = agent_capabilities_available();
+    let policy = resolve_agent_capability_policy(workspace_root, context);
     AgentCapabilitiesPayload {
         subagents_enabled: record.subagents_enabled,
         agent_teams_enabled: record.agent_teams_enabled,
         background_agents_enabled: record.background_agents_enabled,
-        subagents_available: availability.subagents_available,
-        agent_teams_available: availability.agent_teams_available,
-        background_agents_available: availability.background_agents_available,
-        unavailable_reasons: availability.unavailable_reasons,
-    }
-}
-
-pub(crate) fn agent_capabilities_available() -> AgentCapabilitiesPayload {
-    let subagents_available = false;
-    let agent_teams_available = false;
-    let background_agents_available = false;
-    let mut unavailable_reasons = Vec::new();
-    if !subagents_available {
-        unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
-            capability: AgentCapabilityKind::Subagents,
-        });
-    }
-    if !agent_teams_available {
-        unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
-            capability: AgentCapabilityKind::AgentTeams,
-        });
-    }
-    if !background_agents_available {
-        unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
-            capability: AgentCapabilityKind::BackgroundAgents,
-        });
-    }
-
-    AgentCapabilitiesPayload {
-        subagents_enabled: false,
-        agent_teams_enabled: false,
-        background_agents_enabled: false,
-        subagents_available,
-        agent_teams_available,
-        background_agents_available,
-        unavailable_reasons,
+        subagents_available: policy.subagents_available,
+        agent_teams_available: policy.agent_teams_available,
+        background_agents_available: policy.background_agents_available,
+        unavailable_reasons: policy.unavailable_reasons,
     }
 }
 
@@ -1053,6 +1053,7 @@ pub async fn validate_provider_settings_payload(
 
 pub fn get_execution_settings_with_store(
     store: &DesktopExecutionSettingsStore,
+    context: Option<&AgentCapabilityResolutionContext>,
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
     let record = store.load_record()?;
     let permission_mode = effective_execution_settings_permission_mode(record.permission_mode);
@@ -1061,7 +1062,7 @@ pub fn get_execution_settings_with_store(
         tool_profile: record.tool_profile.clone(),
         context_compression_trigger_ratio: record.context_compression_trigger_ratio,
         auto_mode_available: auto_mode_available(),
-        agent_capabilities: agent_capabilities_payload(&record),
+        agent_capabilities: agent_capabilities_payload(&record, store.workspace_root(), context),
     })
 }
 
@@ -1069,9 +1070,10 @@ pub fn get_execution_settings_for_request(
     request: GetExecutionSettingsRequest,
     active_store: &DesktopExecutionSettingsStore,
     project_registry: &ProjectRegistry,
+    context: Option<&AgentCapabilityResolutionContext>,
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
     let Some(workspace_path) = request.workspace_path else {
-        return get_execution_settings_with_store(active_store);
+        return get_execution_settings_with_store(active_store, context);
     };
     let workspace_root =
         canonical_workspace_root(PathBuf::from(workspace_path), "workspace path".to_owned())?;
@@ -1084,21 +1086,26 @@ pub fn get_execution_settings_for_request(
         return Err(invalid_payload("project is not registered".to_owned()));
     }
     let store = DesktopExecutionSettingsStore::new(workspace_root);
-    get_execution_settings_with_store(&store)
+    get_execution_settings_with_store(&store, context)
 }
 
 pub fn set_execution_settings_with_store(
     request: SetExecutionSettingsRequest,
     store: &DesktopExecutionSettingsStore,
+    context: Option<&AgentCapabilityResolutionContext>,
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
-    ensure_execution_settings_record(&ExecutionSettingsRecord {
-        permission_mode: request.permission_mode,
-        tool_profile: request.tool_profile.clone(),
-        context_compression_trigger_ratio: request.context_compression_trigger_ratio,
-        subagents_enabled: request.subagents_enabled,
-        agent_teams_enabled: request.agent_teams_enabled,
-        background_agents_enabled: request.background_agents_enabled,
-    })?;
+    ensure_execution_settings_record(
+        &ExecutionSettingsRecord {
+            permission_mode: request.permission_mode,
+            tool_profile: request.tool_profile.clone(),
+            context_compression_trigger_ratio: request.context_compression_trigger_ratio,
+            subagents_enabled: request.subagents_enabled,
+            agent_teams_enabled: request.agent_teams_enabled,
+            background_agents_enabled: request.background_agents_enabled,
+        },
+        store.workspace_root(),
+        context,
+    )?;
     if request.permission_mode == PermissionMode::Auto && !auto_mode_available() {
         return Err(invalid_payload(
             "auto permission mode is unavailable in this desktop build".to_owned(),
@@ -1112,13 +1119,13 @@ pub fn set_execution_settings_with_store(
         agent_teams_enabled: request.agent_teams_enabled,
         background_agents_enabled: request.background_agents_enabled,
     };
-    store.save_record(&record)?;
+    store.save_record(&record, context)?;
     Ok(SetExecutionSettingsResponse {
         permission_mode: record.permission_mode,
         tool_profile: record.tool_profile.clone(),
         context_compression_trigger_ratio: record.context_compression_trigger_ratio,
         auto_mode_available: auto_mode_available(),
-        agent_capabilities: agent_capabilities_payload(&record),
+        agent_capabilities: agent_capabilities_payload(&record, store.workspace_root(), context),
     })
 }
 

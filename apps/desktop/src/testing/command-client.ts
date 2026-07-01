@@ -2,6 +2,8 @@ import type { RunEvent } from '@/shared/events/run-event-schema'
 import type {
   AppInfo,
   AutomationSpec,
+  BackgroundAgentActionResponse,
+  BackgroundAgentRecord,
   CancelRunResponse,
   ClearMcpDiagnosticsResponse,
   CommandClient,
@@ -9,7 +11,9 @@ import type {
   ConversationModelCapability,
   CreateAttachmentFromPathResponse,
   CreateConversationResponse,
+  DeleteAgentProfileResponse,
   DeleteAutomationResponse,
+  DeleteBackgroundAgentResponse,
   DeleteConversationResponse,
   DeleteProjectResponse,
   DeleteProviderCapabilityRouteResponse,
@@ -17,6 +21,7 @@ import type {
   ExportSupportBundleResponse,
   GetArtifactMediaPreviewResponse,
   GetAttachmentMediaPreviewResponse,
+  GetBackgroundAgentResponse,
   GetContextSnapshotResponse,
   GetConversationResponse,
   GetExecutionSettingsResponse,
@@ -33,9 +38,11 @@ import type {
   InstallSkillFromCatalogRequest,
   InstallSkillFromCatalogResponse,
   ListActivityResponse,
+  ListAgentProfilesResponse,
   ListArtifactsResponse,
   ListAutomationRunsResponse,
   ListAutomationsResponse,
+  ListBackgroundAgentsResponse,
   ListBrowserMcpPresetsResponse,
   ListConversationsResponse,
   ListEvalCasesResponse,
@@ -66,6 +73,7 @@ import type {
   ResolvePermissionResponse,
   RunAutomationNowResponse,
   RunEvalCaseResponse,
+  SaveAgentProfileResponse,
   SaveAutomationRequest,
   SaveAutomationResponse,
   SaveBrowserMcpPresetResponse,
@@ -148,6 +156,44 @@ const fixtureAutomationRun = {
 
 const fixtureAutomationRuns: ListAutomationRunsResponse = {
   runs: [fixtureAutomationRun],
+}
+
+const fixtureBackgroundAgent: BackgroundAgentRecord = {
+  backgroundAgentId: 'bg-agent-001',
+  conversationId: 'conversation-001',
+  createdAt: '2026-06-30T00:00:00.000Z',
+  parentRunId: 'run-001',
+  pendingInputRequestId: 'request-001',
+  state: 'running',
+  title: 'Run checks',
+  updatedAt: '2026-06-30T00:01:00.000Z',
+}
+
+const fixtureBackgroundAgents: ListBackgroundAgentsResponse = {
+  agents: [fixtureBackgroundAgent],
+}
+
+export const agentOrchestrationBackgroundAgentsResponse: ListBackgroundAgentsResponse = {
+  agents: [
+    {
+      backgroundAgentId: 'bg-agent-runtime-e2e',
+      conversationId: 'conversation-agent-orchestration',
+      createdAt: '2026-06-30T00:00:00.000Z',
+      parentRunId: 'run-agent-orchestration',
+      state: 'running',
+      title: 'Runtime orchestration background run',
+      updatedAt: '2026-06-30T00:01:00.000Z',
+    },
+    {
+      backgroundAgentId: 'bg-agent-runtime-recovery',
+      conversationId: 'conversation-agent-orchestration',
+      createdAt: '2026-06-30T00:02:00.000Z',
+      parentRunId: 'run-agent-recovery',
+      state: 'interrupted',
+      title: 'Recovered background run',
+      updatedAt: '2026-06-30T00:03:00.000Z',
+    },
+  ],
 }
 
 const fixtureConversation: GetConversationResponse = {
@@ -1035,6 +1081,86 @@ const fixtureConversationWorktreePage: PageConversationWorktreeResponse = {
   gap: false,
 }
 
+export const agentOrchestrationProjectedWorktreePage: PageConversationWorktreeResponse = {
+  turns: [
+    {
+      id: 'turn:agent-orchestration',
+      conversationId: 'conversation-agent-orchestration',
+      position: 0,
+      user: {
+        id: 'user:agent-orchestration',
+        messageId: 'message-agent-orchestration-user',
+        body: 'Delegate implementation',
+        timestamp,
+      },
+      assistant: {
+        id: 'assistant:run-agent-orchestration',
+        runId: 'run-agent-orchestration',
+        status: 'running',
+        segments: [
+          {
+            kind: 'agentActivity',
+            id: 'segment:agent:subagent-reviewer',
+            order: 0,
+            activityKind: 'subagent',
+            agentId: 'subagent-reviewer',
+            role: 'Reviewer',
+            taskSummary: 'Review the orchestration diff',
+            status: 'completed',
+            resultSummary: 'No blocking issue found.',
+          },
+          {
+            kind: 'agentActivity',
+            id: 'segment:agent-team:team-runtime',
+            order: 1,
+            activityKind: 'agentTeam',
+            agentId: 'team-runtime',
+            role: 'Runtime team',
+            taskSummary: 'Coordinate backend and UI verification',
+            status: 'running',
+            team: {
+              topology: 'coordinator_worker',
+              lead: {
+                agentId: 'team-lead',
+                role: 'Lead',
+                status: 'running',
+              },
+              members: [
+                {
+                  agentId: 'team-worker',
+                  role: 'Worker',
+                  status: 'running',
+                },
+              ],
+              currentTasks: [
+                {
+                  id: 'task-runtime-e2e',
+                  title: 'Run scoped orchestration E2E',
+                  status: 'active',
+                  assigneeProfileId: 'reviewer',
+                },
+              ],
+              mailboxCount: 1,
+              mailboxSummaries: ['Team run queued'],
+            },
+          },
+        ],
+      },
+    },
+  ],
+  pageCursor: {
+    turnId: 'turn:agent-orchestration',
+    position: 0,
+  },
+  eventCursor: {
+    eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAA',
+    conversationSequence: 12,
+  },
+  hasMoreBefore: false,
+  hasMoreAfter: false,
+  gap: false,
+}
+
 function cloneResponse<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
@@ -1188,6 +1314,7 @@ export interface TestCommandClientOptions {
   automationSave?: SaveAutomationResponse
   automationSetEnabled?: SetAutomationEnabledResponse
   automationDelete?: DeleteAutomationResponse
+  backgroundAgents?: ListBackgroundAgentsResponse
   artifactMediaPreview?: GetArtifactMediaPreviewResponse
   attachmentMediaPreview?: GetAttachmentMediaPreviewResponse
   listActivity?: ListActivityResponse
@@ -1250,6 +1377,28 @@ function wait(delayMs: number | undefined) {
   })
 }
 
+function backgroundAgentActionResponse(
+  agents: ListBackgroundAgentsResponse,
+  backgroundAgentId: string,
+  state: BackgroundAgentRecord['state'],
+): BackgroundAgentActionResponse {
+  const agent = agents.agents.find(
+    (currentAgent) => currentAgent.backgroundAgentId === backgroundAgentId,
+  )
+
+  if (!agent) {
+    throw new Error(`Background agent not found: ${backgroundAgentId}`)
+  }
+
+  return {
+    agent: {
+      ...agent,
+      state,
+      updatedAt: new Date().toISOString(),
+    },
+  }
+}
+
 function fixtureProviderApiKeyForConfig(configId: string) {
   return ['fixture', 'provider', 'revealed', configId].join(':')
 }
@@ -1284,6 +1433,7 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
   let providerRevealCounter = 0
   let completionBatchFlushed: Promise<void> = Promise.resolve()
   let projects = options.projects ?? testJyowoProject
+  let backgroundAgents = cloneResponse(options.backgroundAgents ?? fixtureBackgroundAgents)
   let providerSettings = cloneResponse(options.providerSettingsList ?? fixtureProviderSettingsList)
   let providerCapabilityRoutes = cloneResponse(
     options.providerCapabilityRoutes ?? {
@@ -1413,6 +1563,10 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
           status: 'deleted',
         }
       )
+    },
+    async deleteAgentProfile(id) {
+      await wait(options.delayMs)
+      return { id, status: 'deleted' } satisfies DeleteAgentProfileResponse
     },
     async deleteMcpServer(id) {
       await wait(options.delayMs)
@@ -1641,6 +1795,10 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
       await wait(options.delayMs)
       return options.listActivity ?? fixtureListActivity
     },
+    async listAgentProfiles() {
+      await wait(options.delayMs)
+      return { profiles: [] } satisfies ListAgentProfilesResponse
+    },
     async listArtifacts(_request) {
       await wait(options.delayMs)
       return options.artifacts ?? fixtureListArtifacts
@@ -1652,6 +1810,114 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
     async listAutomations() {
       await wait(options.delayMs)
       return cloneResponse(automations)
+    },
+    async listBackgroundAgents(request) {
+      await wait(options.delayMs)
+      const agents = request.includeArchived
+        ? backgroundAgents.agents
+        : backgroundAgents.agents.filter((agent) => agent.state !== 'archived')
+      return {
+        agents: cloneResponse(
+          request.conversationId === undefined
+            ? agents
+            : agents.filter((agent) => agent.conversationId === request.conversationId),
+        ),
+      }
+    },
+    async getBackgroundAgent(request) {
+      await wait(options.delayMs)
+      const agent = backgroundAgents.agents.find(
+        (currentAgent) =>
+          currentAgent.backgroundAgentId === request.backgroundAgentId &&
+          (request.conversationId === undefined ||
+            currentAgent.conversationId === request.conversationId),
+      )
+      if (!agent) {
+        throw new Error(`Background agent not found: ${request.backgroundAgentId}`)
+      }
+      return { agent: cloneResponse(agent) } satisfies GetBackgroundAgentResponse
+    },
+    async pauseBackgroundAgent(request) {
+      await wait(options.delayMs)
+      const response = backgroundAgentActionResponse(
+        backgroundAgents,
+        request.backgroundAgentId,
+        'paused',
+      )
+      backgroundAgents = {
+        agents: backgroundAgents.agents.map((agent) =>
+          agent.backgroundAgentId === response.agent.backgroundAgentId ? response.agent : agent,
+        ),
+      }
+      return response
+    },
+    async resumeBackgroundAgent(request) {
+      await wait(options.delayMs)
+      const response = backgroundAgentActionResponse(
+        backgroundAgents,
+        request.backgroundAgentId,
+        'running',
+      )
+      backgroundAgents = {
+        agents: backgroundAgents.agents.map((agent) =>
+          agent.backgroundAgentId === response.agent.backgroundAgentId ? response.agent : agent,
+        ),
+      }
+      return response
+    },
+    async cancelBackgroundAgent(request) {
+      await wait(options.delayMs)
+      const response = backgroundAgentActionResponse(
+        backgroundAgents,
+        request.backgroundAgentId,
+        'cancelled',
+      )
+      backgroundAgents = {
+        agents: backgroundAgents.agents.map((agent) =>
+          agent.backgroundAgentId === response.agent.backgroundAgentId ? response.agent : agent,
+        ),
+      }
+      return response
+    },
+    async sendBackgroundAgentInput(request) {
+      await wait(options.delayMs)
+      const response = backgroundAgentActionResponse(
+        backgroundAgents,
+        request.backgroundAgentId,
+        'running',
+      )
+      backgroundAgents = {
+        agents: backgroundAgents.agents.map((agent) =>
+          agent.backgroundAgentId === response.agent.backgroundAgentId ? response.agent : agent,
+        ),
+      }
+      return response
+    },
+    async archiveBackgroundAgent(request) {
+      await wait(options.delayMs)
+      const response = backgroundAgentActionResponse(
+        backgroundAgents,
+        request.backgroundAgentId,
+        'archived',
+      )
+      backgroundAgents = {
+        agents: backgroundAgents.agents.map((agent) =>
+          agent.backgroundAgentId === response.agent.backgroundAgentId ? response.agent : agent,
+        ),
+      }
+      return response
+    },
+    async deleteBackgroundAgent(request) {
+      await wait(options.delayMs)
+      backgroundAgents = {
+        agents: backgroundAgents.agents.filter(
+          (agent) => agent.backgroundAgentId !== request.backgroundAgentId,
+        ),
+      }
+      return {
+        backgroundAgentId: request.backgroundAgentId,
+        status: 'deleted',
+      } satisfies DeleteBackgroundAgentResponse
     },
     async listAutomationRuns(automationId) {
       await wait(options.delayMs)
@@ -1877,6 +2143,10 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
           record,
         }
       )
+    },
+    async saveAgentProfile(profile) {
+      await wait(options.delayMs)
+      return { profile, status: 'saved' } satisfies SaveAgentProfileResponse
     },
     async saveAutomation(request) {
       await wait(options.delayMs)
@@ -2176,6 +2446,7 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
         fixtureTimelineEvent(
           'permission.requested',
           {
+            actorSource: { type: 'parentRun' },
             autoResolved: false,
             decisionScope: 'this run',
             exposure: 'workspace',
@@ -2402,7 +2673,9 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     cancelRun: () => Promise.reject(error),
     createAttachmentFromPath: () => Promise.reject(error),
     createConversation: () => Promise.reject(error),
+    deleteAgentProfile: () => Promise.reject(error),
     deleteAutomation: () => Promise.reject(error),
+    deleteBackgroundAgent: () => Promise.reject(error),
     deleteConversation: () => Promise.reject(error),
     deleteMcpServer: () => Promise.reject(error),
     deleteMemoryItem: () => Promise.reject(error),
@@ -2411,6 +2684,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     exportMemoryItems: () => Promise.reject(error),
     exportSupportBundle: () => Promise.reject(error),
     getContextSnapshot: () => Promise.reject(error),
+    getBackgroundAgent: () => Promise.reject(error),
     getExecutionSettings: () => Promise.reject(error),
     getConversation: () => Promise.reject(error),
     getArtifactMediaPreview: () => Promise.reject(error),
@@ -2437,10 +2711,12 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     installSkillFromCatalog: () => Promise.reject(error),
     listSkillCatalogInstallTasks: () => Promise.reject(error),
     listenSkillCatalogInstallProgress: () => Promise.reject(error),
+    listAgentProfiles: () => Promise.reject(error),
     listActivity: () => Promise.reject(error),
     listArtifacts: () => Promise.reject(error),
     listAutomationRuns: () => Promise.reject(error),
     listAutomations: () => Promise.reject(error),
+    listBackgroundAgents: () => Promise.reject(error),
     listConversations: () => Promise.reject(error),
     listEvalCases: () => Promise.reject(error),
     listModelProviderCatalog: () => Promise.reject(error),
@@ -2461,11 +2737,14 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     listSkillCatalogEntries: () => Promise.reject(error),
     listSkillCatalogSources: () => Promise.reject(error),
     listSkills: () => Promise.reject(error),
+    pauseBackgroundAgent: () => Promise.reject(error),
     resolvePermission: () => Promise.reject(error),
     reloadPlugin: () => Promise.reject(error),
     requestProviderConfigApiKeyReveal: () => Promise.reject(error),
+    resumeBackgroundAgent: () => Promise.reject(error),
     runAutomationNow: () => Promise.reject(error),
     runEvalCase: () => Promise.reject(error),
+    saveAgentProfile: () => Promise.reject(error),
     saveAutomation: () => Promise.reject(error),
     saveBrowserMcpPreset: () => Promise.reject(error),
     saveMcpServer: () => Promise.reject(error),
@@ -2481,6 +2760,9 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     setAutomationEnabled: () => Promise.reject(error),
     setConversationModelConfig: () => Promise.reject(error),
     setSkillEnabled: () => Promise.reject(error),
+    archiveBackgroundAgent: () => Promise.reject(error),
+    cancelBackgroundAgent: () => Promise.reject(error),
+    sendBackgroundAgentInput: () => Promise.reject(error),
     startRun: () => Promise.reject(error),
     subscribeConversationEvents: () => Promise.reject(error),
     listenConversationEventBatches: () => Promise.reject(error),

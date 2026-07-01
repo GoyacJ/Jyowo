@@ -17,7 +17,11 @@ import type {
   StartRunResponse,
 } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
-import { createRejectedTestCommandClient, createTestCommandClient } from '@/testing/command-client'
+import {
+  agentOrchestrationProjectedWorktreePage,
+  createRejectedTestCommandClient,
+  createTestCommandClient,
+} from '@/testing/command-client'
 
 import { ConversationWorkspace } from './ConversationWorkspace'
 
@@ -155,6 +159,77 @@ describe('ConversationWorkspace', () => {
     ]) {
       expect(renderedText).not.toContain(hiddenText)
     }
+  })
+
+  it('renders backend-projected subagent activity segments', async () => {
+    renderConversationWorkspace(
+      createTestCommandClient({
+        conversationWorktreePage: {
+          turns: [
+            {
+              id: 'turn:user-agent-activity',
+              conversationId: 'conversation-agent-activity',
+              position: 0,
+              user: {
+                id: 'user:user-agent-activity',
+                messageId: 'user-agent-activity',
+                body: 'Delegate review',
+                timestamp,
+              },
+              assistant: {
+                id: 'assistant:run-agent-activity',
+                runId: 'run-agent-activity',
+                status: 'complete',
+                segments: [
+                  {
+                    kind: 'agentActivity',
+                    id: 'segment:agent:subagent-1',
+                    order: 0,
+                    activityKind: 'subagent',
+                    agentId: 'subagent-1',
+                    role: 'Reviewer',
+                    taskSummary: 'Review recent changes',
+                    status: 'completed',
+                    resultSummary: 'No blocking issues found.',
+                  },
+                ],
+              },
+            },
+          ],
+          pageCursor: { turnId: 'turn:user-agent-activity', position: 0 },
+          eventCursor: cursor(2),
+          hasMoreBefore: false,
+          hasMoreAfter: false,
+          gap: false,
+        },
+      }),
+      'conversation-agent-activity',
+    )
+
+    expect(await screen.findByText('Review recent changes')).toBeInTheDocument()
+    expect(screen.getByText('No blocking issues found.')).toBeInTheDocument()
+    expect(screen.getByText(/Reviewer/)).toBeInTheDocument()
+  })
+
+  it('renders backend-projected orchestration activity without local run synthesis', async () => {
+    const commandClient = createTestCommandClient({
+      conversationWorktreePage: agentOrchestrationProjectedWorktreePage,
+    })
+    const startRun = vi.fn(commandClient.startRun)
+
+    renderConversationWorkspace(
+      {
+        ...commandClient,
+        startRun,
+      },
+      'conversation-agent-orchestration',
+    )
+
+    expect(await screen.findByText('Review the orchestration diff')).toBeInTheDocument()
+    expect(screen.getByText('Coordinate backend and UI verification')).toBeInTheDocument()
+    expect(screen.getByText('Run scoped orchestration E2E')).toBeInTheDocument()
+    expect(screen.getByText('Team run queued')).toBeInTheDocument()
+    expect(startRun).not.toHaveBeenCalled()
   })
 
   it('loads reference candidates for the selected conversation', async () => {

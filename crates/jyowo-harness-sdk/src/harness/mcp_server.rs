@@ -530,12 +530,29 @@ impl Harness {
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         #[cfg(feature = "memory-external-slot")]
         let session_engine = self
-            .engine_for_session(&options, &prompt_inputs, memory_manager.clone(), None)
+            .engine_for_session(
+                &options,
+                &prompt_inputs,
+                memory_manager.clone(),
+                None,
+                #[cfg(feature = "agents-subagent")]
+                None,
+                #[cfg(feature = "agents-subagent")]
+                None,
+            )
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         #[cfg(not(feature = "memory-external-slot"))]
         let session_engine = self
-            .engine_for_session(&options, &prompt_inputs, None)
+            .engine_for_session(
+                &options,
+                &prompt_inputs,
+                None,
+                #[cfg(feature = "agents-subagent")]
+                None,
+                #[cfg(feature = "agents-subagent")]
+                None,
+            )
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         let effective_config_hash = session_effective_config_hash(

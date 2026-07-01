@@ -31,7 +31,8 @@ use harness_contracts::RedactPatternKind;
 use harness_contracts::RequestId;
 #[cfg(feature = "agents-team")]
 use harness_contracts::{
-    BlobMeta, BlobRetention, TeamCreatedEvent, TeamMemberJoinedEvent, TopologyKind,
+    AgentId, BlobMeta, BlobRetention, Recipient, TeamCreatedEvent, TeamMemberJoinedEvent,
+    TeamTaskUpdatedEvent, TeamTerminationReason, TopologyKind,
 };
 use harness_contracts::{
     BlobReaderCapAdapter, BlobStore, BlobWriterCapAdapter, CapabilityRegistry, ContextPatchRequest,
@@ -102,6 +103,8 @@ use harness_plugin::{
 use harness_sandbox::SandboxBackend;
 #[cfg(feature = "mcp-server-adapter")]
 use harness_session::session_effective_config_hash;
+#[cfg(feature = "agents-team")]
+use harness_session::WorkspaceBootstrap;
 use harness_session::{
     legacy_session_options_hash_with_permission_mode,
     legacy_session_options_hash_without_runtime_context, session_options_hash, Session,
@@ -172,6 +175,7 @@ pub use self::types::{
     McpConfig, RuntimeSkillParameter, RuntimeSkillSummary, RuntimeSkillView, TenantPolicy,
 };
 pub use self::workspace::WorkspaceCreateRequest;
+pub use crate::agent_runtime::AgentCapabilityResolutionContext;
 
 #[cfg(feature = "tool-search")]
 use self::events::sdk_hook_events;
@@ -230,6 +234,8 @@ struct HarnessInner {
     session_limits: Arc<SessionLimitState>,
     workspace_registry: Arc<WorkspaceRegistry>,
     active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, ActiveConversationRun>>>,
+    #[cfg(feature = "agents-team")]
+    active_run_teams: Arc<parking_lot::Mutex<HashMap<RunId, Arc<crate::team::Team>>>>,
     deleted_conversation_sessions: Arc<parking_lot::Mutex<HashSet<(TenantId, SessionId)>>>,
     provider_capability_routes: Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>>,
 }
@@ -399,6 +405,8 @@ impl Harness {
                 session_limits,
                 workspace_registry: Arc::new(WorkspaceRegistry::new()),
                 active_conversation_runs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+                #[cfg(feature = "agents-team")]
+                active_run_teams: Arc::new(parking_lot::Mutex::new(HashMap::new())),
                 deleted_conversation_sessions: Arc::new(parking_lot::Mutex::new(HashSet::new())),
                 provider_capability_routes: extras
                     .provider_capability_routes

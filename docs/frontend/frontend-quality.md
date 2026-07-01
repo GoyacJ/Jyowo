@@ -116,6 +116,7 @@ pnpm build
 pnpm lint
 pnpm format
 pnpm check:docs
+pnpm check:agent-orchestration-no-fakes
 pnpm check:release-version
 pnpm check:release-workflow
 pnpm check:tauri-updater
@@ -165,6 +166,51 @@ Rust workspace tests
 - the frontend docs directory contains only the approved active docs
 - active frontend docs do not contain old project names
 - required foundation concepts are present in active frontend docs
+
+Agent orchestration anti-fake gate:
+
+```text
+pnpm check:agent-orchestration-no-fakes
+```
+
+This gate fails agent-orchestration production UI and IPC surfaces that contain:
+
+- placeholder, fake, mock, noop, TODO, coming-soon, or experimental markers near
+  subagent, agent team, background agent, or agent runtime context
+- hardcoded agent capability availability false values
+- temporary scanner allowlists for hardcoded agent capability availability fields
+- noop agent commands that return fixed success without SDK/runtime delegation
+- frontend-only agent capability availability state not backed by command responses
+
+Test files and unrelated placeholder UI are excluded. Capability availability in
+React must come from `shared/tauri` command responses and Zod parsing, not local
+constants that grant agent capability.
+
+Agent orchestration test requirements:
+
+- Settings tests cover Subagents, Agent teams, and Background agents switches
+  using backend-backed availability and reason payloads.
+- Composer tests cover per-run `agentOptions`, including disabled capability
+  states and validated `teamConfig`.
+- Background panel tests cover list, inspect, pause, resume, cancel, send input,
+  archive, delete archived records, loading, empty, error, and ready states.
+- Conversation tests cover `AgentActivitySegment` for subagent, team, and
+  background activity projected by Rust.
+- Event schema tests cover valid and invalid `actorSource` values for
+  `parentRun`, `subagent`, `teamMember`, and `backgroundAgent`.
+- Frontend tests must not replace runtime-backed behavior with local capability
+  constants.
+
+Native E2E coverage for agent orchestration must stay in the desktop gate:
+
+- subagent permission request and denial flow
+- run-scoped team creation and persisted activity projection
+- background agent durable lifecycle and restart recovery
+- negative settings/runtime/isolation/permission paths
+
+Each agent orchestration implementation task requires a read-only subagent audit
+before its checklist is marked complete. The final release gate requires one
+read-only audit across the whole implementation plan.
 
 Naming gate:
 
@@ -270,6 +316,9 @@ PR checklist:
 [ ] Did RunEvent schema change?
 [ ] Was a Tauri command added?
 [ ] Was a permission type added?
+[ ] Did StartRunRequest.agentOptions change?
+[ ] Did agent orchestration capability or settings behavior change?
+[ ] Did background agent lifecycle behavior change?
 [ ] Was secret handling changed?
 [ ] Did a new UI primitive or component pattern appear?
 ```
@@ -334,6 +383,9 @@ Conversation and execution:
 ```text
 [ ] RunEvent schema changes are documented
 [ ] worktree contract and Zod schema changes are documented
+[ ] AgentActivitySegment renders only Rust-projected activity
+[ ] background agent panel state comes from command responses
+[ ] per-run agent controls submit validated agentOptions
 [ ] every event type has a renderer
 [ ] raw RunEvent data is not used as the conversation canvas product model
 [ ] get_conversation.messages does not drive ConversationCanvas

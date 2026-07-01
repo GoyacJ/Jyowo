@@ -1270,6 +1270,8 @@ pub struct StartRunRequest {
     #[serde(default)]
     pub attachments: Option<Vec<AttachmentReferencePayload>>,
     #[serde(default)]
+    pub agent_options: Option<AgentRunOptions>,
+    #[serde(default)]
     pub client_message_id: Option<String>,
     #[serde(default)]
     pub context_references: Option<Vec<ContextReferencePayload>>,
@@ -1313,7 +1315,86 @@ pub struct AttachmentBlobRefPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartRunResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_agent_id: Option<String>,
     pub run_id: String,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundAgentPayload {
+    pub background_agent_id: String,
+    pub conversation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_input_request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_permission_request_id: Option<String>,
+    pub state: BackgroundAgentState,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListBackgroundAgentsRequest {
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub include_archived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListBackgroundAgentsResponse {
+    pub agents: Vec<BackgroundAgentPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetBackgroundAgentRequest {
+    pub background_agent_id: String,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundAgentIdRequest {
+    pub background_agent_id: String,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendBackgroundAgentInputRequest {
+    pub background_agent_id: String,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    pub request_id: String,
+    pub input: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetBackgroundAgentResponse {
+    pub agent: BackgroundAgentPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundAgentActionResponse {
+    pub agent: BackgroundAgentPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundAgentDeleteResponse {
+    pub background_agent_id: String,
     pub status: &'static str,
 }
 
@@ -1467,6 +1548,7 @@ pub enum RunEventBodyPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionRequestedRunEventPayload {
+    pub actor_source: PermissionActorSourceRunEventPayload,
     pub auto_resolved: bool,
     pub decision_scope: String,
     pub exposure: String,
@@ -1477,6 +1559,34 @@ pub struct PermissionRequestedRunEventPayload {
     pub target: String,
     pub tool_use_id: String,
     pub workspace_boundary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum PermissionActorSourceRunEventPayload {
+    ParentRun,
+    Subagent {
+        subagent_id: String,
+        parent_session_id: String,
+        parent_run_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        team_member_profile_id: Option<String>,
+    },
+    TeamMember {
+        team_id: String,
+        agent_id: String,
+        role: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_run_id: Option<String>,
+    },
+    BackgroundAgent {
+        background_agent_id: String,
+        conversation_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        attempt_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1816,6 +1926,12 @@ pub struct ProbeProviderConfigRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ListAgentProfilesResponse {
+    pub profiles: Vec<AgentProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UsageSnapshotPayload {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -2139,10 +2255,23 @@ impl From<harness_contracts::OfficialQuotaSnapshot> for OfficialQuotaSnapshotPay
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveAgentProfileResponse {
+    pub profile: AgentProfile,
+    pub status: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RefreshOfficialQuotaRequest {
     pub config_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DeleteAgentProfileRequest {
+    pub id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2168,4 +2297,11 @@ pub trait ProviderQuotaCacheStore: Send + Sync {
         &self,
         snapshot: &harness_contracts::OfficialQuotaSnapshot,
     ) -> Result<(), CommandErrorPayload>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAgentProfileResponse {
+    pub id: String,
+    pub status: &'static str,
 }

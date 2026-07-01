@@ -1,5 +1,12 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
+use async_trait::async_trait;
 use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
@@ -7,10 +14,13 @@ use harness_contracts::{
     TeamId, TeamTerminationReason, TenantId,
 };
 use harness_journal::{EventStore, InMemoryBlobStore, InMemoryEventStore, ReplayCursor};
+use harness_session::{session_options_hash, SessionOptions};
 use harness_team::{
     CoordinatorWorkerRuntime, MessageBus, Team, TeamBuilder, TeamError, TeamJournalContext,
-    TeamLifecycle, TeamMember, TeamMemberEngineConfig, TeamProjection, TeamQuotaKind, Topology,
+    TeamLifecycle, TeamMember, TeamMemberEngineConfig, TeamMemberRunOutcome, TeamMemberRunRequest,
+    TeamMemberRunner, TeamProjection, TeamQuotaKind, Topology,
 };
+use tokio::sync::Notify;
 
 #[tokio::test]
 async fn terminate_emits_member_left_and_team_terminated() {
@@ -68,6 +78,80 @@ async fn terminate_emits_member_left_and_team_terminated() {
                     && terminated.reason == TeamTerminationReason::Cancelled
         )
     }));
+}
+
+#[tokio::test]
+async fn cancelling_runtime_terminates_active_member_runner() {
+    let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let session_id = SessionId::new();
+    let journal = TeamJournalContext {
+        tenant_id: TenantId::SINGLE,
+        session_id,
+    };
+    let coordinator = AgentId::new();
+    let team = TeamBuilder::new("cancellable", Topology::CoordinatorWorker)
+        .member(coordinator, "lead", ContextVisibility::All)
+        .coordinator_worker(coordinator, Vec::new())
+        .build();
+    let team_id = team.team_id;
+    let bus = MessageBus::journaled(team_id, 16, journal, store.clone());
+    let runner = Arc::new(CancellableRunner::default());
+    let runtime = Arc::new(
+        CoordinatorWorkerRuntime::new(
+            team,
+            bus,
+            journal,
+            store.clone(),
+            Arc::new(InMemoryBlobStore::default()),
+        )
+        .with_member_runner(coordinator, runner.clone()),
+    );
+    let dispatch_runtime = Arc::clone(&runtime);
+    let dispatch = tokio::spawn(async move { dispatch_runtime.dispatch_goal("inspect").await });
+
+    runner.started.notified().await;
+    runtime
+        .terminate(TeamTerminationReason::Cancelled)
+        .await
+        .expect("runtime cancellation should terminate team");
+
+    let dispatch_result = dispatch.await.expect("dispatch task should join");
+    assert!(matches!(dispatch_result, Err(TeamError::TeamTerminated)));
+    assert!(runner.cancelled.load(Ordering::SeqCst));
+
+    let events: Vec<_> = store
+        .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            Event::TeamTerminated(terminated)
+                if terminated.team_id == team_id
+                    && terminated.reason == TeamTerminationReason::Cancelled
+        )
+    }));
+}
+
+#[derive(Default)]
+struct CancellableRunner {
+    started: Notify,
+    cancelled: AtomicBool,
+}
+
+#[async_trait]
+impl TeamMemberRunner for CancellableRunner {
+    async fn run_member(
+        &self,
+        request: TeamMemberRunRequest,
+    ) -> Result<TeamMemberRunOutcome, TeamError> {
+        self.started.notify_waiters();
+        request.cancellation.cancelled().await;
+        self.cancelled.store(true, Ordering::SeqCst);
+        Err(TeamError::TeamTerminated)
+    }
 }
 
 #[tokio::test]
@@ -143,6 +227,81 @@ async fn public_team_adds_and_removes_members_with_lifecycle_events() {
     let observations = team.observation_snapshot().await;
     assert_eq!(observations.dynamic_member_adds, 1);
     assert_eq!(observations.dynamic_member_removes, 1);
+}
+
+#[tokio::test]
+async fn public_team_add_member_uses_team_workspace_root_for_member_session() {
+    let workspace = std::env::temp_dir().join(format!(
+        "jyowo-team-add-member-workspace-{}-{}",
+        std::process::id(),
+        SessionId::new()
+    ));
+    std::fs::create_dir_all(&workspace).unwrap();
+    let canonical_workspace = workspace.canonicalize().unwrap();
+    let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let session_id = SessionId::new();
+    let journal = TeamJournalContext {
+        tenant_id: TenantId::SINGLE,
+        session_id,
+    };
+    let owner = AgentId::new();
+    let team_spec = TeamBuilder::new("dynamic-workspace", Topology::PeerToPeer)
+        .member(owner, "owner", ContextVisibility::All)
+        .build();
+    let bus = MessageBus::journaled(team_spec.team_id, 16, journal, store.clone());
+    let blob_store = Arc::new(InMemoryBlobStore::default());
+    let team = Team::new_with_workspace_root(
+        team_spec,
+        bus,
+        journal,
+        store.clone(),
+        blob_store,
+        workspace,
+    );
+    let worker = AgentId::new();
+
+    team.add_member(TeamMember {
+        agent_id: worker,
+        role: "worker".to_owned(),
+        visibility: ContextVisibility::All,
+        engine_config: TeamMemberEngineConfig::default(),
+    })
+    .await
+    .expect("add member should emit joined event");
+
+    let events: Vec<_> = store
+        .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    let member_session_id = events
+        .iter()
+        .find_map(|event| match event {
+            Event::TeamMemberJoined(joined) if joined.agent_id == worker => Some(joined.session_id),
+            _ => None,
+        })
+        .expect("member joined event should include a session id");
+    let member_events: Vec<_> = store
+        .read(TenantId::SINGLE, member_session_id, ReplayCursor::FromStart)
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    let created = member_events
+        .iter()
+        .find_map(|event| match event {
+            Event::SessionCreated(created) => Some(created),
+            _ => None,
+        })
+        .expect("member session should be created");
+    let expected_hash = session_options_hash(
+        &SessionOptions::new(canonical_workspace)
+            .with_tenant_id(TenantId::SINGLE)
+            .with_session_id(member_session_id),
+    );
+
+    assert_eq!(created.options_hash, expected_hash);
 }
 
 #[tokio::test]

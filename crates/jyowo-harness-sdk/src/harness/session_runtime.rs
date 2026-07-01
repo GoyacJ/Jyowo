@@ -31,6 +31,10 @@ impl Harness {
                 &prompt_inputs,
                 memory_manager.clone(),
                 Some(Arc::clone(&pending_session_events)),
+                #[cfg(feature = "agents-subagent")]
+                None,
+                #[cfg(feature = "agents-subagent")]
+                None,
             )
             .await?;
         #[cfg(not(feature = "memory-external-slot"))]
@@ -39,6 +43,10 @@ impl Harness {
                 &options,
                 &prompt_inputs,
                 Some(Arc::clone(&pending_session_events)),
+                #[cfg(feature = "agents-subagent")]
+                None,
+                #[cfg(feature = "agents-subagent")]
+                None,
             )
             .await?;
         let tenant_id = options.tenant_id;
@@ -307,6 +315,9 @@ impl Harness {
         &self,
         options: SessionOptions,
         projection: SessionProjection,
+        #[cfg(feature = "agents-subagent")] agent_run_options: Option<
+            &harness_contracts::AgentRunOptions,
+        >,
     ) -> Result<Session, HarnessError> {
         let limit_permit = self.inner.session_limits.try_acquire()?;
         let prompt_inputs = self.load_effective_prompt_inputs(&options)?;
@@ -315,11 +326,28 @@ impl Harness {
         let memory_manager = self.memory_manager_for_session(&options).await?;
         #[cfg(feature = "memory-external-slot")]
         let session_engine = self
-            .engine_for_session(&options, &prompt_inputs, memory_manager.clone(), None)
+            .engine_for_session(
+                &options,
+                &prompt_inputs,
+                memory_manager.clone(),
+                None,
+                #[cfg(feature = "agents-subagent")]
+                agent_run_options,
+                #[cfg(feature = "agents-subagent")]
+                None,
+            )
             .await?;
         #[cfg(not(feature = "memory-external-slot"))]
         let session_engine = self
-            .engine_for_session(&options, &prompt_inputs, None)
+            .engine_for_session(
+                &options,
+                &prompt_inputs,
+                None,
+                #[cfg(feature = "agents-subagent")]
+                agent_run_options,
+                #[cfg(feature = "agents-subagent")]
+                None,
+            )
             .await?;
         let event_store: Arc<dyn EventStore> = Arc::new(LifecycleHookEventStore {
             inner: Arc::clone(&self.inner.event_store),
@@ -439,6 +467,12 @@ impl Harness {
         prompt_inputs: &EffectiveSystemPromptInputs,
         memory_manager: Option<Arc<harness_memory::MemoryManager>>,
         pending_session_events: Option<Arc<PendingSessionEvents>>,
+        #[cfg(feature = "agents-subagent")] agent_run_options: Option<
+            &harness_contracts::AgentRunOptions,
+        >,
+        #[cfg(feature = "agents-subagent")] subagent_team_attribution: Option<
+            harness_agent_runtime::SubagentTeamAttribution,
+        >,
     ) -> Result<SessionEngine, HarnessError> {
         self.activate_plugins(options).await?;
         let context = self.context_engine(options, memory_manager).await?;
@@ -447,6 +481,10 @@ impl Harness {
             prompt_inputs,
             context,
             pending_session_events,
+            #[cfg(feature = "agents-subagent")]
+            agent_run_options,
+            #[cfg(feature = "agents-subagent")]
+            subagent_team_attribution,
         )
         .await
     }
@@ -457,6 +495,12 @@ impl Harness {
         options: &SessionOptions,
         prompt_inputs: &EffectiveSystemPromptInputs,
         pending_session_events: Option<Arc<PendingSessionEvents>>,
+        #[cfg(feature = "agents-subagent")] agent_run_options: Option<
+            &harness_contracts::AgentRunOptions,
+        >,
+        #[cfg(feature = "agents-subagent")] subagent_team_attribution: Option<
+            harness_agent_runtime::SubagentTeamAttribution,
+        >,
     ) -> Result<SessionEngine, HarnessError> {
         self.activate_plugins(options).await?;
         let context = self.context_engine(options).await?;
@@ -465,6 +509,10 @@ impl Harness {
             prompt_inputs,
             context,
             pending_session_events,
+            #[cfg(feature = "agents-subagent")]
+            agent_run_options,
+            #[cfg(feature = "agents-subagent")]
+            subagent_team_attribution,
         )
         .await
     }
@@ -475,7 +523,24 @@ impl Harness {
         prompt_inputs: &EffectiveSystemPromptInputs,
         context: ContextEngine,
         pending_session_events: Option<Arc<PendingSessionEvents>>,
+        #[cfg(feature = "agents-subagent")] agent_run_options: Option<
+            &harness_contracts::AgentRunOptions,
+        >,
+        #[cfg(feature = "agents-subagent")] subagent_team_attribution: Option<
+            harness_agent_runtime::SubagentTeamAttribution,
+        >,
     ) -> Result<SessionEngine, HarnessError> {
+        #[cfg(feature = "agents-subagent")]
+        {
+            let worktrees_dir = harness_agent_runtime::WorkspaceIsolationManager::worktrees_dir(
+                &options.workspace_root,
+            );
+            std::fs::create_dir_all(worktrees_dir).map_err(|error| {
+                HarnessError::Other(format!(
+                    "failed to prepare agent worktrees directory: {error}"
+                ))
+            })?;
+        }
         let mut cap_registry = (*self.inner.cap_registry).clone();
         if let Some(blob_store) = &self.inner.blob_store {
             cap_registry.install::<dyn harness_contracts::BlobReaderCap>(
@@ -554,10 +619,29 @@ impl Harness {
         self.install_tool_search_runtime(options, &mut tools, &mut cap_registry, &model_snapshot);
 
         #[cfg(feature = "agents-subagent")]
-        let subagent_tool_enabled = self
+        let harness_has_subagent_runner = self
             .inner
             .cap_registry
             .contains(&ToolCapability::SubagentRunner);
+        #[cfg(feature = "agents-subagent")]
+        let mut subagent_assembly = None;
+        #[cfg(feature = "agents-subagent")]
+        if let Some(run_options) = agent_run_options {
+            if harness_agent_runtime::should_install_subagent_runner(run_options) {
+                subagent_assembly = Some(super::tool_pool::install_subagent_runner_for_run(
+                    &mut cap_registry,
+                    run_options,
+                    self.conversation_deletion_guarded_event_store(),
+                    &options.workspace_root,
+                    subagent_team_attribution.clone(),
+                ));
+            }
+        }
+        #[cfg(feature = "agents-subagent")]
+        let subagent_tool_enabled = super::tool_pool::subagent_tool_should_be_enabled(
+            harness_has_subagent_runner,
+            agent_run_options,
+        );
         #[cfg(not(feature = "agents-subagent"))]
         let subagent_tool_enabled = false;
 
@@ -574,6 +658,10 @@ impl Harness {
             true,
         );
         let runtime_prompt_context_hash = runtime_prompt_context_hash(&runtime_context);
+
+        #[cfg(feature = "agents-subagent")]
+        let enable_subagent_tool =
+            subagent_tool_enabled && cap_registry.contains(&ToolCapability::SubagentRunner);
 
         let mut builder = Engine::builder()
             .with_event_store(self.conversation_deletion_guarded_event_store())
@@ -597,11 +685,7 @@ impl Harness {
             builder = builder.with_max_iterations(options.max_iterations);
         }
         #[cfg(feature = "agents-subagent")]
-        if self
-            .inner
-            .cap_registry
-            .contains(&ToolCapability::SubagentRunner)
-        {
+        if enable_subagent_tool {
             builder = builder.with_subagent_tool();
         }
         if let Some(blob_store) = &self.inner.blob_store {
@@ -614,8 +698,20 @@ impl Harness {
             builder = builder.with_observer(Arc::clone(observer));
         }
         builder = builder.with_model_middlewares(self.inner.model_middlewares.clone());
+        let engine = builder.build().map_err(HarnessError::from)?;
+        #[cfg(feature = "agents-subagent")]
+        if let Some(assembly) = &subagent_assembly {
+            assembly
+                .engine_factory
+                .bind_engine(engine.clone())
+                .map_err(|()| {
+                    HarnessError::Other(
+                        "subagent engine factory already bound to parent engine".to_owned(),
+                    )
+                })?;
+        }
         Ok(SessionEngine {
-            engine: builder.build().map_err(HarnessError::from)?,
+            engine,
             runtime_prompt_context_hash,
         })
     }
@@ -868,6 +964,7 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
             .with_optional_user_id(ctx.user_id.clone())
             .with_optional_team_id(ctx.team_id)
             .with_permission_mode(ctx.permission_mode)
+            .with_permission_actor_source(ctx.permission_actor_source.clone())
             .with_interactivity(ctx.interactivity)
             .with_config_snapshot(
                 ctx.config_snapshot_id,

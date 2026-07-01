@@ -140,6 +140,7 @@ Lower layers MUST NOT depend on higher layers.
 | `jyowo-harness-observability` | `crates/jyowo-harness-observability` | L3 | Owns tracing, usage accounting, Replay helpers, and Redactor implementations. |
 | `jyowo-harness-plugin` | `crates/jyowo-harness-plugin` | L3 | Owns plugin loading, manifest validation, and plugin rejection. |
 | `jyowo-harness-subagent` | `crates/jyowo-harness-subagent` | L3 | Owns subagent lifecycle, permission forwarding, and stalled-worker behavior. |
+| `jyowo-harness-agent-runtime` | `crates/jyowo-harness-agent-runtime` | L3 | Owns cross-domain agent orchestration storage, profile registry, capability policy inputs, background registry, team persistence, and workspace isolation leases. |
 | `jyowo-harness-team` | `crates/jyowo-harness-team` | L3 | Owns multi-agent teams, member routing, topology, quotas, and team termination. |
 | `jyowo-harness-sdk` | `crates/jyowo-harness-sdk` | L4 | Owns the business-facing facade, builder, prelude, builtins, and testing adapters. |
 
@@ -151,6 +152,65 @@ Rules:
 - New orchestration across domains belongs in L3.
 - Application-facing assembly belongs in `jyowo-harness-sdk`.
 - Tauri command code must not reach around the SDK into lower layers unless the command is only exposing shell metadata.
+
+## Agent Orchestration Engineering
+
+Agent orchestration spans subagents, run-scoped teams, and durable background
+agents. Ownership stays in Rust.
+
+Layer placement:
+
+- public agent option, capability, permission, team, and background event shapes
+  belong in `jyowo-harness-contracts`.
+- agent profile storage, capability policy inputs, durable background registry,
+  task/mailbox tables, and workspace isolation leases belong in
+  `jyowo-harness-agent-runtime`.
+- child agent delegation and child permission forwarding belong in
+  `jyowo-harness-subagent`.
+- run-scoped team routing, member sessions, cancellation, and quotas belong in
+  `jyowo-harness-team`.
+- application composition and Tauri-facing facades belong in
+  `jyowo-harness-sdk`.
+- desktop command handlers in `jyowo-desktop-shell` stay thin and call the SDK.
+
+Capability resolver rules:
+
+- `resolve_agent_capabilities` is the source for `subagents`, `agentTeams`, and
+  `backgroundAgents` availability.
+- the resolver must include feature flags, runtime support, profile/model
+  support, workspace state, and write-isolation requirements in its decision.
+- disabled or unavailable capabilities must return backend-authored reason
+  payloads.
+- frontend settings may store requested defaults, but final availability is
+  recomputed by Rust.
+
+Worktree isolation rules:
+
+- write-capable child, team, or background work must acquire a backend write
+  lease before it runs.
+- duplicate write leases for the same checkout fail closed.
+- no Tauri command may mark a run as isolated unless the runtime acquired the
+  lease.
+
+Durable background agent rules:
+
+- public background start uses `start_run` with `agentOptions.background`.
+- separate background commands may list, read, pause, resume, cancel, send input,
+  archive, and delete durable records.
+- registry mutation must happen through `jyowo-harness-agent-runtime` and SDK
+  facades.
+- supervisor sidecar wakeups must revalidate queued payloads before execution.
+- restart recovery must use durable registry and journal state, not live task
+  handles.
+
+Permission source attribution rules:
+
+- foreground permissions use `parentRun`.
+- child agent permissions use `subagent`.
+- run-scoped team member permissions use `teamMember`.
+- durable background agent permissions use `backgroundAgent`.
+- command handlers and event projection must preserve actor source tags through
+  the Rust contract and frontend Zod schema.
 
 ## Contracts
 
@@ -193,11 +253,15 @@ Current Tauri commands:
 
 ```text
 add_project
+archive_background_agent
+cancel_background_agent
 cancel_run
 clear_mcp_diagnostics
 create_attachment_from_path
 create_conversation
 delete_automation
+delete_agent_profile
+delete_background_agent
 delete_conversation
 delete_mcp_server
 delete_memory_item
@@ -212,6 +276,7 @@ get_context_snapshot
 get_artifact_media_preview
 get_attachment_media_preview
 get_app_info
+get_background_agent
 get_conversation
 get_execution_settings
 get_memory_item
@@ -227,6 +292,8 @@ get_skill_file
 harness_healthcheck
 install_plugin_from_path
 list_activity
+list_agent_profiles
+list_background_agents
 list_automation_runs
 list_automations
 list_conversations
@@ -251,16 +318,20 @@ page_conversation_timeline
 page_conversation_worktree
 probe_provider_config
 refresh_official_quota
+pause_background_agent
 resolve_permission
 request_provider_config_api_key_reveal
+resume_background_agent
 restart_mcp_server
 run_automation_now
 run_eval_case
 save_automation
+save_agent_profile
 save_browser_mcp_preset
 save_mcp_server
 save_provider_capability_route
 save_provider_settings
+send_background_agent_input
 import_skill
 install_skill_from_catalog
 set_execution_settings
@@ -288,6 +359,14 @@ Command payloads:
 
 ```rust
 add_project(path: String) -> Result<SwitchProjectResponse, CommandErrorPayload>
+archive_background_agent(
+  background_agent_id: String,
+  conversation_id: Option<String>
+) -> Result<BackgroundAgentActionResponse, CommandErrorPayload>
+cancel_background_agent(
+  background_agent_id: String,
+  conversation_id: Option<String>
+) -> Result<BackgroundAgentActionResponse, CommandErrorPayload>
 cancel_run(run_id: String) -> Result<CancelRunResponse, CommandErrorPayload>
 clear_mcp_diagnostics(
   server_id: Option<String>
@@ -297,6 +376,11 @@ create_attachment_from_path(
 ) -> Result<CreateAttachmentFromPathResponse, CommandErrorPayload>
 create_conversation() -> Result<CreateConversationResponse, CommandErrorPayload>
 delete_automation(id: String) -> Result<DeleteAutomationResponse, CommandErrorPayload>
+delete_agent_profile(id: String) -> Result<DeleteAgentProfileResponse, CommandErrorPayload>
+delete_background_agent(
+  background_agent_id: String,
+  conversation_id: Option<String>
+) -> Result<BackgroundAgentDeleteResponse, CommandErrorPayload>
 delete_conversation(conversation_id: String) -> Result<DeleteConversationResponse, CommandErrorPayload>
 delete_mcp_server(id: String) -> Result<DeleteMcpServerResponse, CommandErrorPayload>
 delete_memory_item(id: String) -> Result<DeleteMemoryItemResponse, CommandErrorPayload>
@@ -329,6 +413,10 @@ get_context_snapshot(
   run_id: Option<String>
 ) -> Result<GetContextSnapshotResponse, CommandErrorPayload>
 get_app_info() -> AppInfoPayload
+get_background_agent(
+  background_agent_id: String,
+  conversation_id: Option<String>
+) -> Result<GetBackgroundAgentResponse, CommandErrorPayload>
 get_conversation(conversation_id: String) -> Result<GetConversationResponse, CommandErrorPayload>
 get_execution_settings(workspace_path?: string) -> Result<GetExecutionSettingsResponse, CommandErrorPayload>
 get_memory_item(id: String) -> Result<GetMemoryItemResponse, CommandErrorPayload>
@@ -367,6 +455,11 @@ list_activity(
   conversation_id: Option<String>,
   run_id: Option<String>
 ) -> Result<ListActivityResponse, CommandErrorPayload>
+list_agent_profiles() -> Result<ListAgentProfilesResponse, CommandErrorPayload>
+list_background_agents(
+  conversation_id: Option<String>,
+  include_archived: bool
+) -> Result<ListBackgroundAgentsResponse, CommandErrorPayload>
 list_automation_runs(
   automation_id: Option<String>
 ) -> Result<ListAutomationRunsResponse, CommandErrorPayload>
@@ -417,6 +510,10 @@ probe_provider_config(
 refresh_official_quota(
   config_id: String
 ) -> Result<RefreshOfficialQuotaResponse, CommandErrorPayload>
+pause_background_agent(
+  background_agent_id: String,
+  conversation_id: Option<String>
+) -> Result<BackgroundAgentActionResponse, CommandErrorPayload>
 resolve_permission(
   decision: PermissionDecision,
   request_id: String
@@ -424,12 +521,19 @@ resolve_permission(
 request_provider_config_api_key_reveal(
   config_id: String
 ) -> Result<RequestProviderConfigApiKeyRevealResponse, CommandErrorPayload>
+resume_background_agent(
+  background_agent_id: String,
+  conversation_id: Option<String>
+) -> Result<BackgroundAgentActionResponse, CommandErrorPayload>
 restart_mcp_server(id: String) -> Result<RestartMcpServerResponse, CommandErrorPayload>
 run_automation_now(id: String) -> Result<RunAutomationNowResponse, CommandErrorPayload>
 run_eval_case(case_id: String) -> Result<RunEvalCaseResponse, CommandErrorPayload>
 save_automation(
   automation: AutomationSpec
 ) -> Result<SaveAutomationResponse, CommandErrorPayload>
+save_agent_profile(
+  profile: AgentProfile
+) -> Result<SaveAgentProfileResponse, CommandErrorPayload>
 save_browser_mcp_preset(
   preset_id: BrowserMcpPresetId,
   enabled: Option<bool>
@@ -453,6 +557,12 @@ save_provider_settings(
   provider_id: String,
   set_default: Option<bool>
 ) -> Result<SaveProviderSettingsResponse, CommandErrorPayload>
+send_background_agent_input(
+  background_agent_id: String,
+  conversation_id: Option<String>,
+  input: String,
+  request_id: String
+) -> Result<BackgroundAgentActionResponse, CommandErrorPayload>
 import_skill(source_path: String) -> Result<ImportSkillResponse, CommandErrorPayload>
 install_skill_from_catalog(
   source_id: String,
@@ -487,6 +597,7 @@ set_skill_enabled(
 ) -> Result<SetSkillEnabledResponse, CommandErrorPayload>
 switch_project(path: String) -> Result<SwitchProjectResponse, CommandErrorPayload>
 start_run(
+  agent_options: Option<AgentRunOptions>,
   client_message_id: Option<String>,
   attachments: Option<Vec<AttachmentReferencePayload>>,
   context_references: Option<Vec<ContextReferencePayload>>,
@@ -623,6 +734,13 @@ audit events that contain hashes and counts, not raw memory content.
 `export_memory_items` writes the JSON export under `.jyowo/runtime/exports` and
 returns only the relative path, item count, format, and timestamp over IPC; raw
 export content must not cross into frontend state.
+
+`list_agent_profiles`, `save_agent_profile`, and `delete_agent_profile` must go
+through the SDK agent-runtime facade and `jyowo-harness-agent-runtime` profile
+registry. User and project profiles persist in
+`.jyowo/runtime/agent-profiles.json`; profile metadata cache and validation state
+persist in `.jyowo/runtime/agent-runtime.sqlite`. Builtin profiles are read-only.
+Invalid profile files are quarantined before any list or save succeeds.
 
 `list_skills`, `get_skill_detail`, `get_skill_file`, `import_skill`,
 `set_skill_enabled`, and `delete_skill` must go through the SDK skill facade.

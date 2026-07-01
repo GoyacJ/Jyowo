@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "pnpm -C apps/desktop tauri dev",
-    "build": "pnpm -C apps/desktop build && pnpm -C apps/desktop tauri build",
+    "build": "pnpm build:agent-supervisor-sidecar && pnpm -C apps/desktop build && pnpm -C apps/desktop tauri build",
     "lint": "pnpm -C apps/desktop lint",
     "format": "pnpm -C apps/desktop format",
     "check:agent-docs": "node scripts/check-agent-docs.mjs",
@@ -18,13 +18,16 @@
     "check:tauri-updater": "node --test scripts/tauri-updater-policy.test.mjs",
     "check:frontend-docs": "node scripts/check-frontend-docs.mjs",
     "check:backend-docs": "node --test scripts/backend-docs-policy.test.mjs && node scripts/check-backend-docs.mjs",
+    "check:agent-orchestration-no-fakes": "node --test scripts/check-agent-orchestration-no-fakes.test.mjs && node scripts/check-agent-orchestration-no-fakes.mjs",
+    "check:agent-supervisor-sidecar": "node --test scripts/build-agent-supervisor-sidecar.test.mjs",
+    "build:agent-supervisor-sidecar": "pnpm check:agent-supervisor-sidecar && node scripts/build-agent-supervisor-sidecar.mjs",
     "check:docs": "pnpm check:agent-docs && pnpm check:frontend-docs && pnpm check:backend-docs",
     "check:rust-deps": "node scripts/check-rust-deps.mjs",
-    "check:rust": "pnpm check:rust-deps && cargo fmt --all --check && cargo check --workspace && cargo test --workspace",
+    "check:rust": "pnpm check:rust-deps && pnpm build:agent-supervisor-sidecar && cargo fmt --all --check && cargo check --workspace && cargo test --workspace",
     "check:desktop": "pnpm -C apps/desktop check",
-    "check:desktop:full": "pnpm -C apps/desktop check:full",
-    "check": "pnpm check:release-version && pnpm check:release-workflow && pnpm check:tauri-updater && pnpm check:docs && pnpm check:desktop && pnpm check:rust",
-    "tauri": "tauri"
+    "check:desktop:full": "pnpm build:agent-supervisor-sidecar && pnpm -C apps/desktop check:full",
+    "check": "pnpm check:release-version && pnpm check:release-workflow && pnpm check:tauri-updater && pnpm check:docs && pnpm check:agent-orchestration-no-fakes && pnpm check:agent-supervisor-sidecar && pnpm check:desktop && pnpm check:rust",
+    "tauri": "pnpm build:agent-supervisor-sidecar && tauri"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2"

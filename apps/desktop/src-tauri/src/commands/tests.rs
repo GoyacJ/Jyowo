@@ -4,7 +4,8 @@ use super::*;
 mod tests {
     use super::*;
     use crate::commands::conversations::{
-        message_content_display, run_end_reason_display, RunEventMapper,
+        message_content_display, permission_requested_run_event, run_end_reason_display,
+        RunEventMapper,
     };
     use crate::commands::error::runtime_operation_failed;
     use crate::commands::mcp::mcp_stdio_env;
@@ -17,9 +18,10 @@ mod tests {
     use crate::commands::stores::ensure_plugin_package_dir_name;
     use crate::commands::validation::ensure_mcp_server_transport;
     use harness_contracts::{
-        ManifestOriginRef, PluginCapabilitiesSummary, PluginFailedEvent,
-        PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginProductState,
-        PluginRejectedEvent, PluginSourceKind, RejectionReason, TrustLevel,
+        ManifestOriginRef, PermissionActorSource, PermissionRequestedEvent,
+        PluginCapabilitiesSummary, PluginFailedEvent, PluginLifecycleStateDiscriminant,
+        PluginLoadedEvent, PluginProductState, PluginRejectedEvent, PluginSourceKind,
+        RejectionReason, TeamId, TrustLevel,
     };
 
     struct EmptyRedactor;
@@ -46,6 +48,52 @@ mod tests {
             ),
             "Run error withheld from conversation timeline."
         );
+    }
+
+    #[test]
+    fn permission_requested_run_event_redacts_team_member_actor_role() {
+        let session_id = SessionId::new();
+        let run_id = RunId::new();
+        let secret = "sk-abcdefghijklmnopqrstuvwxyz";
+        let event = Event::PermissionRequested(PermissionRequestedEvent {
+            request_id: RequestId::new(),
+            run_id,
+            session_id,
+            tenant_id: TenantId::SINGLE,
+            tool_use_id: ToolUseId::new(),
+            tool_name: "NeedsPermission".to_owned(),
+            subject: PermissionSubject::ToolInvocation {
+                tool: "NeedsPermission".to_owned(),
+                input: serde_json::json!({}),
+            },
+            severity: Severity::Medium,
+            scope_hint: DecisionScope::ToolName("NeedsPermission".to_owned()),
+            fingerprint: None,
+            presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+            interactivity: InteractivityLevel::FullyInteractive,
+            auto_resolved: false,
+            actor_source: PermissionActorSource::TeamMember {
+                team_id: TeamId::new(),
+                agent_id: AgentId::new(),
+                role: format!("reviewer {secret}"),
+                parent_run_id: Some(run_id),
+            },
+            causation_id: EventId::new(),
+            at: now(),
+        });
+
+        let payload = permission_requested_run_event(
+            "evt-permission".to_owned(),
+            &event,
+            1,
+            &DefaultRedactor::default(),
+        );
+
+        assert_eq!(
+            payload.payload["actorSource"]["role"],
+            "reviewer [REDACTED]"
+        );
+        assert!(!payload.payload.to_string().contains(secret));
     }
 
     #[test]

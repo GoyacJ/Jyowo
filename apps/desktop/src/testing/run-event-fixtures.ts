@@ -105,6 +105,7 @@ export const runEventFixtures: Array<Record<string, unknown>> = [
     source: 'policy',
     visibility: 'public',
     payload: {
+      actorSource: { type: 'parentRun' },
       decisionScope: 'current run',
       exposure: 'Can run inside the local workspace boundary.',
       operation: 'Review permission',

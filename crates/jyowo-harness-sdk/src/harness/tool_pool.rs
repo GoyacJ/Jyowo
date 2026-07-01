@@ -116,6 +116,49 @@ pub(super) fn apply_tenant_tool_filter(filter: &mut ToolPoolFilter, policy: &Ten
     }
 }
 
+#[cfg(feature = "agents-subagent")]
+pub(super) struct SubagentSessionAssembly {
+    pub(super) engine_factory: Arc<harness_engine::EngineBoundSubagentFactory>,
+}
+
+#[cfg(feature = "agents-subagent")]
+pub(super) fn install_subagent_runner_for_run(
+    cap_registry: &mut CapabilityRegistry,
+    agent_run_options: &harness_contracts::AgentRunOptions,
+    event_store: Arc<dyn EventStore>,
+    workspace_root: &Path,
+    team_attribution: Option<harness_agent_runtime::SubagentTeamAttribution>,
+) -> SubagentSessionAssembly {
+    let engine_factory = Arc::new(harness_engine::EngineBoundSubagentFactory::default());
+    let runner = harness_agent_runtime::assemble_subagent_runner(
+        harness_agent_runtime::SubagentRunnerAssemblyInput {
+            agent_run_options: agent_run_options.clone(),
+            engine_factory: Arc::clone(&engine_factory)
+                as Arc<dyn harness_subagent::SubagentEngineFactory>,
+            event_store,
+            workspace_root: workspace_root.to_path_buf(),
+            team_attribution: team_attribution.clone(),
+        },
+    );
+    harness_agent_runtime::install_subagent_runner_capability(
+        cap_registry,
+        runner,
+        team_attribution,
+    );
+    SubagentSessionAssembly { engine_factory }
+}
+
+#[cfg(feature = "agents-subagent")]
+pub(super) fn subagent_tool_should_be_enabled(
+    harness_has_runner: bool,
+    agent_run_options: Option<&harness_contracts::AgentRunOptions>,
+) -> bool {
+    match agent_run_options {
+        Some(options) => harness_agent_runtime::should_install_subagent_runner(options),
+        None => harness_has_runner,
+    }
+}
+
 #[cfg(feature = "tool-search")]
 #[derive(Clone)]
 struct SdkToolSearchRuntime {

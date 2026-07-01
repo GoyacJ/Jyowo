@@ -148,6 +148,7 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
       />
       <div className="pt-4">
         <Composer
+          agentCapabilities={executionSettings?.agentCapabilities ?? null}
           disabled={composerDisabled}
           errorMessage={
             timeline.cancelError
