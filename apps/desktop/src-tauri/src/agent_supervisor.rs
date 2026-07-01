@@ -109,6 +109,7 @@ struct BackgroundSupervisorExecution {
     #[serde(default)]
     session_options: Option<SessionOptions>,
     input: ConversationTurnInput,
+    model_config_id: String,
     permission_mode: PermissionMode,
     agent_run_options: AgentRunOptions,
 }
@@ -753,22 +754,44 @@ async fn run_claimed_background_record(
     session_options: SessionOptions,
     running_payload: &str,
 ) -> Result<(), AgentSupervisorError> {
-    backend
-        .harness
+    let stream_permission_runtime = backend
+        ._runtime_state
+        .stream_permission_runtime
+        .as_ref()
+        .ok_or_else(|| {
+            AgentSupervisorError::Runtime("agent supervisor runtime is unavailable".to_owned())
+        })?;
+    let (harness, model_id, protocol) = crate::commands::build_desktop_harness(
+        backend._runtime_state.workspace_root(),
+        Arc::clone(stream_permission_runtime),
+        Some(&execution.model_config_id),
+        Arc::clone(&backend._runtime_state.provider_capability_routes),
+    )
+    .await
+    .map_err(|error| AgentSupervisorError::Runtime(error.message))?;
+    let harness = Arc::new(harness);
+    let mut session_options = session_options;
+    session_options.model_id = Some(model_id.clone());
+    session_options.protocol = Some(protocol);
+    harness
         .open_or_create_conversation_session(session_options.clone())
         .await
         .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?;
-    let manager = background_manager_for_record(backend, record, Some(session_options.session_id));
+    let session_id = session_options.session_id;
+    let manager = background_manager_for_record(backend, record, Some(session_id));
     let permission_actor_source = PermissionActorSource::BackgroundAgent {
         background_agent_id: parse_background_agent_id(&record.background_agent_id)?,
-        conversation_id: session_options.session_id,
+        conversation_id: session_id,
         attempt_id: parse_background_agent_attempt_id(record),
     };
+    let model_config_id = execution.model_config_id.clone();
     let mut run_options = ConversationRunOptions::from_session_options(&session_options)
+        .with_model_config_id(model_config_id.clone())
+        .with_model_id(model_id)
+        .with_protocol(protocol)
         .with_permission_mode(execution.permission_mode);
     run_options.agent_run_options = Some(execution.agent_run_options);
-    let receipt = backend
-        .harness
+    let receipt = harness
         .submit_conversation_turn(ConversationTurnRequest {
             options: session_options,
             run_options,
@@ -777,6 +800,13 @@ async fn run_claimed_background_record(
         })
         .await
         .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?;
+    crate::commands::mark_conversation_metadata_active(
+        session_id,
+        Some(model_config_id),
+        &backend._runtime_state,
+    )
+    .await
+    .map_err(|error| AgentSupervisorError::Runtime(error.message))?;
     backend
         .store
         .update_background_agent_run_id(

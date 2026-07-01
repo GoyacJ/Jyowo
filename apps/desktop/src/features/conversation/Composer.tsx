@@ -140,10 +140,11 @@ export function Composer({
   const [composerError, setComposerError] = useState<string | null>(null)
   const [localPermissionMode, setLocalPermissionMode] = useState<PermissionMode>('default')
   const selectedPermissionMode = permissionMode ?? localPermissionMode
+  const selectedModelConfigId = modelConfigId ?? ''
   const effectiveMode = mode ?? legacyComposerMode(pending, disabled)
   const isDisabled =
     disabled || effectiveMode.kind === 'submitting' || effectiveMode.kind === 'running-disabled'
-  const canSubmit = draft.text.trim().length > 0 && !isDisabled
+  const canSubmit = draft.text.trim().length > 0 && selectedModelConfigId.length > 0 && !isDisabled
   const visibleError = composerError ?? errorMessage
   const canCancelRun =
     effectiveMode.kind === 'running-disabled' &&
@@ -172,6 +173,7 @@ export function Composer({
       agentOptions: agentOptions.options,
       attachments: draft.attachments,
       contextReferences: draft.contextReferences,
+      modelConfigId: selectedModelConfigId,
       permissionMode: selectedPermissionMode,
       prompt: submittedText,
     }

@@ -1713,6 +1713,7 @@ describe('CommandClient', () => {
               label: 'Filesystem MCP',
             },
           ],
+          modelConfigId: 'provider-config-001',
           permissionMode: 'bypass_permissions',
           prompt: 'Continue implementation',
         },
@@ -1772,6 +1773,7 @@ describe('CommandClient', () => {
           label: 'Filesystem MCP',
         },
       ],
+      modelConfigId: 'provider-config-001',
       permissionMode: 'bypass_permissions',
       prompt: 'Continue implementation',
     })
@@ -1898,6 +1900,7 @@ describe('CommandClient', () => {
       clientMessageId: '00000000-0000-4000-8000-000000000001',
       contextReferences: [],
       conversationId: 'conversation-001',
+      modelConfigId: 'provider-config-001',
       prompt: 'Run local verification',
     })
 
@@ -1913,6 +1916,7 @@ describe('CommandClient', () => {
         {
           conversationId: 'conversation-001',
           contextReferences: [{ kind: 'workspace_file', label: '', path: 'Cargo.toml' }],
+          modelConfigId: 'provider-config-001',
           prompt: 'Continue',
         },
         client,
@@ -1923,6 +1927,7 @@ describe('CommandClient', () => {
         {
           conversationId: 'conversation-001',
           intentMode: 'execute',
+          modelConfigId: 'provider-config-001',
           prompt: 'Continue',
         } as unknown as Parameters<typeof startRun>[0],
         client,
@@ -1933,6 +1938,7 @@ describe('CommandClient', () => {
         {
           clientMessageId: '00000000-0000-1000-8000-000000000001',
           conversationId: 'conversation-001',
+          modelConfigId: 'provider-config-001',
           prompt: 'Continue',
         },
         client,
@@ -1942,6 +1948,7 @@ describe('CommandClient', () => {
       startRun(
         {
           conversationId: 'conversation-001',
+          modelConfigId: 'provider-config-001',
           permissionMode: 'ask' as never,
           prompt: 'Continue',
         },
@@ -1965,6 +1972,7 @@ describe('CommandClient', () => {
             },
           ],
           conversationId: 'conversation-001',
+          modelConfigId: 'provider-config-001',
           prompt: 'Continue',
         },
         client,
@@ -2608,9 +2616,9 @@ describe('CommandClient', () => {
     const invoke = vi.fn()
     const client = createInvokeCommandClient(invoke)
 
-    await expect(startRun({ conversationId: '', prompt: '' }, client)).rejects.toThrow(
-      TauriCommandPayloadError,
-    )
+    await expect(
+      startRun({ conversationId: '', modelConfigId: '', prompt: '' }, client),
+    ).rejects.toThrow(TauriCommandPayloadError)
     await expect(deleteConversation('', client)).rejects.toThrow(TauriCommandPayloadError)
     await expect(deleteProject('', client)).rejects.toThrow(TauriCommandPayloadError)
     expect(invoke).not.toHaveBeenCalled()
@@ -2626,7 +2634,14 @@ describe('CommandClient', () => {
       'conversation-001',
     )
     await expect(
-      startRun({ conversationId: 'conversation-001', prompt: 'Run' }, client),
+      startRun(
+        {
+          conversationId: 'conversation-001',
+          modelConfigId: 'provider-config-001',
+          prompt: 'Run',
+        },
+        client,
+      ),
     ).resolves.toHaveProperty('status', 'started')
     await expect(deleteConversation('conversation-001', client)).resolves.toHaveProperty(
       'status',
@@ -5075,6 +5090,7 @@ describe('agent orchestration contracts', () => {
             workspaceIsolation: 'read_only',
           },
           conversationId: 'conversation-001',
+          modelConfigId: 'provider-config-001',
           prompt: 'Run',
         },
         client,
@@ -5197,6 +5213,7 @@ describe('agent orchestration contracts', () => {
             workspaceIsolation: 'read_only',
           },
           conversationId: 'conversation-001',
+          modelConfigId: 'provider-config-001',
           prompt: 'Run',
         },
         client,

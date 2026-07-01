@@ -1482,6 +1482,7 @@ mod capability_route_conversation {
                 agent_options: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
+                model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
                 permission_mode: None,
                 prompt: "draw a poster".to_owned(),
             },
@@ -1525,6 +1526,7 @@ mod capability_route_conversation {
                 agent_options: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
+                model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
                 permission_mode: None,
                 prompt: "draw a poster".to_owned(),
             },
@@ -1610,6 +1612,7 @@ mod capability_route_conversation {
                 agent_options: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
+                model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
                 permission_mode: None,
                 prompt: "draw a poster".to_owned(),
             },
@@ -1662,6 +1665,7 @@ mod capability_route_conversation {
                 agent_options: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
+                model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
                 permission_mode: None,
                 prompt: "make a clip".to_owned(),
             },
@@ -1706,6 +1710,7 @@ mod capability_route_conversation {
                 agent_options: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
+                model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
                 permission_mode: None,
                 prompt: "read this aloud".to_owned(),
             },
@@ -1724,7 +1729,7 @@ mod provider_credential_route {
     use super::*;
 
     #[tokio::test]
-    async fn provider_credential_route_provider_only_resolution_still_works() {
+    async fn provider_credential_route_provider_only_resolution_requires_run_model_config() {
         let workspace = canonical_unique_workspace("provider-credential-route-provider-only");
         let provider_settings = provider_settings_record_with_minimax_config("minimax-main", true);
         let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
@@ -1739,7 +1744,7 @@ mod provider_credential_route {
         );
         let session_id = SessionId::new();
 
-        let credential = resolver
+        let error = resolver
             .resolve_provider_credential(ProviderCredentialResolveContext {
                 tenant_id: TenantId::SINGLE,
                 session_id,
@@ -1750,7 +1755,37 @@ mod provider_credential_route {
                 route_kind: None,
             })
             .await
-            .expect("provider-only credential resolution should succeed");
+            .expect_err("provider-only credential resolution without model config should fail");
+
+        assert!(matches!(error, ToolError::PermissionDenied(_)));
+    }
+
+    #[tokio::test]
+    async fn provider_credential_route_provider_only_resolution_uses_run_model_config() {
+        let workspace = canonical_unique_workspace("provider-credential-route-provider-only-run");
+        let provider_settings = provider_settings_record_with_minimax_config("minimax-main", true);
+        let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
+        provider_store
+            .save_record(&provider_settings)
+            .expect("provider settings should save");
+        let resolver = desktop_provider_credential_resolver_with_stores(
+            Arc::new(DesktopConversationMetadataStore::new(workspace)),
+            Arc::new(provider_store),
+            empty_provider_capability_routes(),
+        );
+
+        let credential = resolver
+            .resolve_provider_credential(ProviderCredentialResolveContext {
+                tenant_id: TenantId::SINGLE,
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
+                provider_id: "minimax".to_owned(),
+                model_config_id: Some("minimax-main".to_owned()),
+                operation_id: None,
+                route_kind: None,
+            })
+            .await
+            .expect("provider-only credential resolution should use run model config");
 
         assert_eq!(credential.provider_id, "minimax");
         assert_eq!(credential.config_id, "minimax-main");
@@ -2205,108 +2240,6 @@ async fn save_provider_settings_payload_does_not_save_record_when_record_write_f
 }
 
 #[tokio::test]
-async fn set_conversation_model_config_with_runtime_state_persists_selection() {
-    let workspace = unique_workspace("conversation-model-config");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let workspace = workspace.canonicalize().unwrap();
-    let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
-    provider_store
-        .save_record(&ProviderSettingsRecord {
-            default_config_id: Some("openai-work".to_owned()),
-            configs: vec![ProviderConfigRecord {
-                api_key: "provider-test-token".to_owned(),
-                protocol: ModelProtocol::Responses,
-                base_url: None,
-                display_name: "OpenAI Work".to_owned(),
-                id: "openai-work".to_owned(),
-                model_id: "gpt-5.4-mini".to_owned(),
-                official_quota_api_key: None,
-                provider_id: "openai".to_owned(),
-                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
-            }],
-        })
-        .unwrap();
-    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
-    let session_id = SessionId::new();
-    open_conversation_session(&state, session_id).await;
-    let conversation_id = session_id.to_string();
-
-    let payload = set_conversation_model_config_with_runtime_state(
-        SetConversationModelConfigRequest {
-            conversation_id: conversation_id.clone(),
-            model_config_id: "openai-work".to_owned(),
-        },
-        &state,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(payload.conversation_id, conversation_id);
-    assert_eq!(payload.model_config_id, "openai-work");
-    assert_eq!(payload.status, "saved");
-    let saved: ConversationMetadataFile = serde_json::from_slice(
-        &std::fs::read(
-            workspace
-                .join(".jyowo")
-                .join("runtime")
-                .join("conversation-metadata.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        saved
-            .conversations
-            .get(&payload.conversation_id)
-            .and_then(|record| record.default_model_config_id.as_deref()),
-        Some("openai-work")
-    );
-}
-
-#[tokio::test]
-async fn set_conversation_model_config_with_runtime_state_rejects_unknown_conversation_id() {
-    let workspace = unique_workspace("conversation-model-config-unknown");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let workspace = workspace.canonicalize().unwrap();
-    DesktopProviderSettingsStore::new(workspace.clone())
-        .save_record(&ProviderSettingsRecord {
-            default_config_id: Some("openai-work".to_owned()),
-            configs: vec![ProviderConfigRecord {
-                api_key: "provider-test-token".to_owned(),
-                protocol: ModelProtocol::Responses,
-                base_url: None,
-                display_name: "OpenAI Work".to_owned(),
-                id: "openai-work".to_owned(),
-                model_id: "gpt-5.4-mini".to_owned(),
-                official_quota_api_key: None,
-                provider_id: "openai".to_owned(),
-                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
-            }],
-        })
-        .unwrap();
-    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
-    let unknown_conversation_id = SessionId::new().to_string();
-
-    let error = set_conversation_model_config_with_runtime_state(
-        SetConversationModelConfigRequest {
-            conversation_id: unknown_conversation_id.clone(),
-            model_config_id: "openai-work".to_owned(),
-        },
-        &state,
-    )
-    .await
-    .unwrap_err();
-
-    assert_eq!(error.code, "NOT_FOUND");
-    assert!(error.message.contains(&unknown_conversation_id));
-    assert!(!workspace
-        .join(".jyowo")
-        .join("runtime")
-        .join("conversation-metadata.json")
-        .exists());
-}
-
-#[tokio::test]
 async fn provider_settings_payload_rejects_invalid_provider_model_and_key() {
     let store = RecordingProviderSettingsStore::default();
     let invalid_provider = save_provider_settings_with_store(
@@ -2436,48 +2369,6 @@ fn desktop_provider_settings_store_writes_owner_only_file_permissions() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600);
-}
-
-#[tokio::test]
-async fn set_conversation_model_config_with_runtime_state_allows_cross_provider_known_models() {
-    let workspace = unique_workspace("conversation-cross-provider-model");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let workspace = workspace.canonicalize().unwrap();
-    let state = runtime_state_for_workspace(workspace.clone())
-        .await
-        .expect("runtime should start with local llama fallback");
-    let created = create_conversation_with_runtime_state(&state)
-        .await
-        .expect("conversation should be created with fallback runtime");
-    DesktopProviderSettingsStore::new(workspace)
-        .save_record(&ProviderSettingsRecord {
-            default_config_id: Some("openai-work".to_owned()),
-            configs: vec![ProviderConfigRecord {
-                api_key: "provider-test-token".to_owned(),
-                protocol: ModelProtocol::Responses,
-                base_url: None,
-                display_name: "OpenAI Work".to_owned(),
-                id: "openai-work".to_owned(),
-                model_id: "gpt-5.4-mini".to_owned(),
-                official_quota_api_key: None,
-                provider_id: "openai".to_owned(),
-                model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
-            }],
-        })
-        .unwrap();
-
-    let saved = set_conversation_model_config_with_runtime_state(
-        SetConversationModelConfigRequest {
-            conversation_id: created.conversation.id.clone(),
-            model_config_id: "openai-work".to_owned(),
-        },
-        &state,
-    )
-    .await
-    .expect("known provider model switch should open the existing session");
-
-    assert_eq!(saved.conversation_id, created.conversation.id);
-    assert_eq!(saved.model_config_id, "openai-work");
 }
 
 #[cfg(unix)]

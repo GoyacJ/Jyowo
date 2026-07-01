@@ -225,6 +225,71 @@ pub(crate) fn conversation_model_config_id(
         .and_then(|record| record.default_model_config_id))
 }
 
+pub(crate) fn default_model_config_id_for_conversation_or_provider(
+    session_id: &SessionId,
+    state: &DesktopRuntimeState,
+) -> Result<String, CommandErrorPayload> {
+    if let Some(model_config_id) = conversation_model_config_id(session_id, state)? {
+        return Ok(model_config_id);
+    }
+    let record = state
+        .provider_settings_store
+        .load_record()?
+        .ok_or_else(|| invalid_payload("provider config is required".to_owned()))?;
+    let config_id = record
+        .default_config_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| invalid_payload("provider config is required".to_owned()))?;
+    let config = provider_config_by_id(&record, config_id)?;
+    ensure_provider_config_has_api_key(config)?;
+    Ok(config.id.clone())
+}
+
+fn provider_config_for_run(
+    model_config_id: &str,
+    state: &DesktopRuntimeState,
+) -> Result<ProviderConfigRecord, CommandErrorPayload> {
+    let record = state
+        .provider_settings_store
+        .load_record()?
+        .ok_or_else(|| invalid_payload("provider config was not found".to_owned()))?;
+    let config = provider_config_by_id(&record, model_config_id)?;
+    ensure_provider_config_has_api_key(config)?;
+    Ok(config.clone())
+}
+
+pub(crate) async fn runtime_for_model_config(
+    session_id: SessionId,
+    model_config_id: &str,
+    state: &DesktopRuntimeState,
+) -> Result<(Arc<Harness>, SessionOptions, String, ModelProtocol), CommandErrorPayload> {
+    let config = provider_config_for_run(model_config_id, state)?;
+    let provider_config_fingerprint = provider_config_runtime_fingerprint(&config)?;
+    if let Some((harness, options)) = state.active_conversation_runtime_for_model_config(
+        session_id,
+        model_config_id,
+        provider_config_fingerprint,
+    ) {
+        return Ok((harness, options, config.model_id.clone(), config.protocol));
+    }
+    let stream_permission_runtime = state
+        .stream_permission_runtime
+        .as_ref()
+        .ok_or_else(|| runtime_unavailable("Starting runs requires the desktop runtime."))?;
+    let (harness, model_id, protocol) = build_desktop_harness(
+        &state.workspace_root,
+        Arc::clone(stream_permission_runtime),
+        Some(model_config_id),
+        Arc::clone(&state.provider_capability_routes),
+    )
+    .await?;
+    let options =
+        state.conversation_session_options_for_model(session_id, model_id.clone(), protocol);
+    Ok((Arc::new(harness), options, model_id, protocol))
+}
+
 pub(crate) fn conversation_metadata_record(
     session_id: &SessionId,
     state: &DesktopRuntimeState,
@@ -235,30 +300,6 @@ pub(crate) fn conversation_metadata_record(
         .conversations
         .get(&session_id.to_string())
         .cloned())
-}
-
-pub(crate) async fn persist_conversation_model_config_id(
-    session_id: SessionId,
-    model_config_id: &str,
-    state: &DesktopRuntimeState,
-) -> Result<(), CommandErrorPayload> {
-    let _guard = state.conversation_metadata_lock.lock().await;
-    let mut metadata = state.conversation_metadata_store.load_record()?;
-    let now = chrono::Utc::now().to_rfc3339();
-    let record = metadata
-        .conversations
-        .entry(session_id.to_string())
-        .or_insert_with(|| ConversationMetadataRecord {
-            id: session_id.to_string(),
-            title: "New conversation".to_owned(),
-            created_at: now.clone(),
-            updated_at: now.clone(),
-            default_model_config_id: None,
-            state: ConversationMetadataState::Active,
-        });
-    record.default_model_config_id = Some(model_config_id.to_owned());
-    record.updated_at = now;
-    state.conversation_metadata_store.save_record(&metadata)
 }
 
 pub(crate) async fn mark_conversation_metadata_active(
@@ -286,42 +327,6 @@ pub(crate) async fn mark_conversation_metadata_active(
         record.default_model_config_id = Some(model_config_id);
     }
     state.conversation_metadata_store.save_record(&metadata)
-}
-
-pub async fn set_conversation_model_config_with_runtime_state(
-    request: SetConversationModelConfigRequest,
-    state: &DesktopRuntimeState,
-) -> Result<SetConversationModelConfigResponse, CommandErrorPayload> {
-    ensure_non_empty("conversationId", &request.conversation_id)?;
-    ensure_non_empty("modelConfigId", &request.model_config_id)?;
-    let session_id = parse_session_id(&request.conversation_id)?;
-    ensure_existing_conversation_session(session_id, state).await?;
-    let provider_record = state
-        .provider_settings_store
-        .load_record()?
-        .unwrap_or_default();
-    let Some(config) = provider_record
-        .configs
-        .iter()
-        .find(|config| config.id == request.model_config_id)
-    else {
-        return Err(not_found(format!(
-            "provider config not found: {}",
-            request.model_config_id
-        )));
-    };
-    if ensure_provider_config_has_api_key(config).is_err() {
-        return Err(invalid_payload(
-            "apiKey is required before selecting a provider config".to_owned(),
-        ));
-    }
-    persist_conversation_model_config_id(session_id, &request.model_config_id, state).await?;
-
-    Ok(SetConversationModelConfigResponse {
-        conversation_id: request.conversation_id,
-        model_config_id: request.model_config_id,
-        status: "saved",
-    })
 }
 
 pub fn delete_conversation_payload(
@@ -399,6 +404,7 @@ pub fn start_run_payload(
 ) -> Result<StartRunResponse, CommandErrorPayload> {
     ensure_non_empty("conversationId", &request.conversation_id)?;
     let _session_id = parse_session_id(&request.conversation_id)?;
+    ensure_non_empty("modelConfigId", &request.model_config_id)?;
     ensure_non_empty("prompt", &request.prompt)?;
     if let Some(client_message_id) = request.client_message_id.as_deref() {
         validate_client_message_id(client_message_id)?;
@@ -421,6 +427,7 @@ pub async fn start_run_with_runtime_state(
 ) -> Result<StartRunResponse, CommandErrorPayload> {
     ensure_non_empty("conversationId", &request.conversation_id)?;
     let session_id = parse_session_id(&request.conversation_id)?;
+    ensure_non_empty("modelConfigId", &request.model_config_id)?;
     ensure_non_empty("prompt", &request.prompt)?;
     if let Some(client_message_id) = request.client_message_id.as_deref() {
         validate_client_message_id(client_message_id)?;
@@ -444,31 +451,8 @@ pub async fn start_run_with_runtime_state(
     let agent_policy = resolve_start_run_agent_policy(&request, state)?;
     let input = build_conversation_turn_input(&request, state).await?;
     let _start_run_guard = state.start_run_lock.lock().await;
-    let (harness, options) =
-        if let Some(model_config_id) = conversation_model_config_id(&session_id, state)? {
-            let stream_permission_runtime =
-                state.stream_permission_runtime.as_ref().ok_or_else(|| {
-                    runtime_unavailable("Starting runs requires the desktop runtime.")
-                })?;
-            let (harness, model_id, protocol) = build_desktop_harness(
-                &state.workspace_root,
-                Arc::clone(stream_permission_runtime),
-                Some(&model_config_id),
-                Arc::clone(&state.provider_capability_routes),
-            )
-            .await?;
-            (
-                Arc::new(harness),
-                state.conversation_session_options_for_model(session_id, model_id, protocol),
-            )
-        } else {
-            let Some(runtime) = state.active_conversation_runtime(session_id) else {
-                return Err(runtime_unavailable(
-                    "Starting runs requires the runtime conversation facade.",
-                ));
-            };
-            runtime
-        };
+    let (harness, options, model_id, protocol) =
+        runtime_for_model_config(session_id, &request.model_config_id, state).await?;
     harness
         .open_or_create_conversation_session(options.clone())
         .await
@@ -483,10 +467,10 @@ pub async fn start_run_with_runtime_state(
             &input,
             permission_mode,
             &agent_policy.options,
+            &request.model_config_id,
             &request.prompt,
         )
         .await?;
-        mark_conversation_metadata_active(session_id, None, state).await?;
         let _ = crate::agent_supervisor::wake_agent_supervisor(state.workspace_root()).await;
         return Ok(StartRunResponse {
             background_agent_id: agent_policy.background_agent_id,
@@ -499,6 +483,9 @@ pub async fn start_run_with_runtime_state(
     let run_session_options = options.clone();
     let run_agent_options = agent_policy.options;
     let mut run_options = ConversationRunOptions::from_session_options(&run_session_options)
+        .with_model_config_id(request.model_config_id.clone())
+        .with_model_id(model_id)
+        .with_protocol(protocol)
         .with_permission_mode(permission_mode);
     run_options.agent_run_options = Some(run_agent_options);
     let mut run_task = tokio::spawn(async move {
@@ -522,7 +509,7 @@ pub async fn start_run_with_runtime_state(
             }
         };
     drop(run_task);
-    mark_conversation_metadata_active(session_id, None, state).await?;
+    mark_conversation_metadata_active(session_id, Some(request.model_config_id), state).await?;
 
     Ok(StartRunResponse {
         background_agent_id: agent_policy.background_agent_id,
@@ -540,6 +527,7 @@ async fn start_background_agent_record_before_execution(
     input: &ConversationTurnInput,
     permission_mode: PermissionMode,
     agent_run_options: &AgentRunOptions,
+    model_config_id: &str,
     prompt: &str,
 ) -> Result<jyowo_harness_sdk::BackgroundAgentRecord, CommandErrorPayload> {
     let store = Arc::new(
@@ -573,6 +561,7 @@ async fn start_background_agent_record_before_execution(
                     "status": "queued",
                     "session": supervisor_session,
                     "input": safe_supervisor_input,
+                    "modelConfigId": model_config_id,
                     "permissionMode": permission_mode,
                     "agentRunOptions": agent_run_options,
                 },
@@ -964,22 +953,6 @@ pub(crate) async fn ensure_reference_conversation_exists(
     let Some(harness) = state.harness() else {
         return Err(runtime_unavailable(
             "Listing reference candidates requires the runtime conversation facade.",
-        ));
-    };
-
-    ensure_existing_conversation_session_with_harness(session_id, state, &harness).await
-}
-
-pub(crate) async fn ensure_existing_conversation_session(
-    session_id: SessionId,
-    state: &DesktopRuntimeState,
-) -> Result<(), CommandErrorPayload> {
-    if conversation_metadata_record(&session_id, state)?.is_some() {
-        return Ok(());
-    }
-    let Some(harness) = state.harness() else {
-        return Err(runtime_unavailable(
-            "Reading conversations requires the runtime conversation facade.",
         ));
     };
 

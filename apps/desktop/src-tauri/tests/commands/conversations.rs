@@ -1,4 +1,13 @@
 use super::*;
+use wiremock::{
+    matchers::{method, path},
+    Mock, MockServer, ResponseTemplate,
+};
+
+const DEEPSEEK_CONFIG_ID: &str = "deepseek-run-config";
+const MINIMAX_CONFIG_ID: &str = "minimax-run-config";
+const MINIMAX_PRIMARY_CONFIG_ID: &str = "minimax-primary-run-config";
+const MINIMAX_SECONDARY_CONFIG_ID: &str = "minimax-secondary-run-config";
 
 #[tokio::test]
 async fn list_conversations_with_runtime_state_returns_startable_conversation_id() {
@@ -24,6 +33,7 @@ async fn list_conversations_with_runtime_state_returns_startable_conversation_id
             agent_options: None,
             context_references: None,
             conversation_id,
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
             prompt: "Continue implementation".to_owned(),
         },
@@ -94,6 +104,403 @@ async fn create_conversation_with_runtime_state_persists_draft_metadata_only() {
 
     assert_eq!(detail.conversation.id, conversation_id);
     assert!(detail.conversation.messages.is_empty());
+}
+
+async fn mounted_chat_completion_server() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    concat!(
+                        "data: {\"id\":\"chat_1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\n",
+                        "data: [DONE]\n\n",
+                    ),
+                    "text/event-stream",
+                ),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn runtime_state_with_provider_configs(base_url: &str) -> DesktopRuntimeState {
+    let workspace = unique_workspace("run-model-config");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    DesktopProviderSettingsStore::new(workspace.clone())
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some(DEEPSEEK_CONFIG_ID.to_owned()),
+            configs: vec![deepseek_config(base_url), minimax_config(base_url)],
+        })
+        .expect("provider settings should save");
+    runtime_state_for_workspace(workspace)
+        .await
+        .expect("runtime should start from provider settings")
+}
+
+async fn runtime_state_with_duplicate_minimax_configs(
+    primary_base_url: &str,
+    secondary_base_url: &str,
+) -> DesktopRuntimeState {
+    let workspace = unique_workspace("run-model-config-duplicate-provider");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    DesktopProviderSettingsStore::new(workspace.clone())
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some(MINIMAX_PRIMARY_CONFIG_ID.to_owned()),
+            configs: vec![
+                minimax_config_with_id(MINIMAX_PRIMARY_CONFIG_ID, primary_base_url),
+                minimax_config_with_id(MINIMAX_SECONDARY_CONFIG_ID, secondary_base_url),
+            ],
+        })
+        .expect("provider settings should save");
+    runtime_state_for_workspace(workspace)
+        .await
+        .expect("runtime should start from provider settings")
+}
+
+fn deepseek_config(base_url: &str) -> ProviderConfigRecord {
+    chat_provider_config_record(
+        DEEPSEEK_CONFIG_ID,
+        "deepseek",
+        "deepseek-v4-flash",
+        "DeepSeek V4 Flash",
+        Some(base_url.to_owned()),
+        "provider-key",
+    )
+}
+
+fn minimax_config(base_url: &str) -> ProviderConfigRecord {
+    minimax_config_with_id(MINIMAX_CONFIG_ID, base_url)
+}
+
+fn minimax_config_with_id(config_id: &str, base_url: &str) -> ProviderConfigRecord {
+    chat_provider_config_record(
+        config_id,
+        "minimax",
+        "MiniMax-M2.7",
+        "MiniMax M2.7",
+        Some(base_url.to_owned()),
+        "provider-key",
+    )
+}
+
+async fn wait_for_received_request_count(server: &MockServer, expected: usize) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let requests = server
+            .received_requests()
+            .await
+            .expect("wiremock requests should be readable");
+        if requests.len() == expected {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "expected {expected} received requests, got {}",
+                requests.len()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+async fn run_started_models(
+    state: &DesktopRuntimeState,
+    session_id: SessionId,
+) -> Vec<RunModelSnapshot> {
+    state
+        .harness()
+        .expect("runtime harness should be available")
+        .event_store()
+        .read_envelopes(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .expect("events should be readable")
+        .filter_map(|envelope| async move {
+            match envelope.payload {
+                Event::RunStarted(started) => Some(started.model),
+                _ => None,
+            }
+        })
+        .collect()
+        .await
+}
+
+fn provider_config_json(config: &ProviderConfigRecord) -> Value {
+    serde_json::to_value(config).expect("provider config should serialize")
+}
+
+fn write_provider_settings_json(workspace: &Path, value: Value) {
+    let runtime_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+    std::fs::write(
+        runtime_dir.join("provider-settings.json"),
+        serde_json::to_vec_pretty(&value).unwrap(),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn start_run_uses_request_model_config_for_first_draft_run() {
+    let server = mounted_chat_completion_server().await;
+    let state = runtime_state_with_provider_configs(&server.uri()).await;
+    let created = create_conversation_with_runtime_state(&state)
+        .await
+        .expect("draft conversation should be created");
+    let session_id = SessionId::parse(&created.conversation.id).unwrap();
+
+    start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            agent_options: None,
+            context_references: None,
+            conversation_id: created.conversation.id.clone(),
+            model_config_id: MINIMAX_CONFIG_ID.to_owned(),
+            permission_mode: None,
+            prompt: "Use MiniMax for this run".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("MiniMax run should start from a DeepSeek-default draft");
+
+    let started = run_started_models(&state, session_id).await;
+    let model = started.last().expect("RunStarted should be recorded");
+    assert_eq!(model.model_config_id.as_deref(), Some(MINIMAX_CONFIG_ID));
+    assert_eq!(model.provider_id, "minimax");
+    assert_eq!(model.model_id, "MiniMax-M2.7");
+    let detail = get_conversation_with_runtime_state(
+        GetConversationRequest {
+            conversation_id: created.conversation.id,
+        },
+        &state,
+    )
+    .await
+    .expect("conversation should be readable");
+    assert_eq!(
+        detail.conversation.model_config_id.as_deref(),
+        Some(MINIMAX_CONFIG_ID)
+    );
+}
+
+#[tokio::test]
+async fn start_run_allows_active_conversation_to_switch_models_per_run() {
+    let server = mounted_chat_completion_server().await;
+    let state = runtime_state_with_provider_configs(&server.uri()).await;
+    let created = create_conversation_with_runtime_state(&state)
+        .await
+        .expect("draft conversation should be created");
+    let session_id = SessionId::parse(&created.conversation.id).unwrap();
+
+    start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            agent_options: None,
+            context_references: None,
+            conversation_id: created.conversation.id.clone(),
+            model_config_id: MINIMAX_CONFIG_ID.to_owned(),
+            permission_mode: None,
+            prompt: "First MiniMax run".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("first run should start");
+    start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            agent_options: None,
+            context_references: None,
+            conversation_id: created.conversation.id.clone(),
+            model_config_id: DEEPSEEK_CONFIG_ID.to_owned(),
+            permission_mode: None,
+            prompt: "Second DeepSeek run".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("second run should start with a different model config");
+
+    let started = run_started_models(&state, session_id).await;
+    assert!(started.len() >= 2, "expected two RunStarted events");
+    assert_eq!(
+        started[started.len() - 2].model_config_id.as_deref(),
+        Some(MINIMAX_CONFIG_ID)
+    );
+    assert_eq!(started[started.len() - 2].provider_id, "minimax");
+    assert_eq!(
+        started[started.len() - 1].model_config_id.as_deref(),
+        Some(DEEPSEEK_CONFIG_ID)
+    );
+    assert_eq!(started[started.len() - 1].provider_id, "deepseek");
+}
+
+#[tokio::test]
+async fn start_run_rebuilds_harness_for_same_provider_model_with_different_config() {
+    let primary_server = mounted_chat_completion_server().await;
+    let secondary_server = mounted_chat_completion_server().await;
+    let state = runtime_state_with_duplicate_minimax_configs(
+        &primary_server.uri(),
+        &secondary_server.uri(),
+    )
+    .await;
+    let created = create_conversation_with_runtime_state(&state)
+        .await
+        .expect("draft conversation should be created");
+
+    start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            agent_options: None,
+            context_references: None,
+            conversation_id: created.conversation.id.clone(),
+            model_config_id: MINIMAX_PRIMARY_CONFIG_ID.to_owned(),
+            permission_mode: None,
+            prompt: "Use primary MiniMax config".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("primary MiniMax run should start");
+    wait_for_received_request_count(&primary_server, 1).await;
+
+    start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            agent_options: None,
+            context_references: None,
+            conversation_id: created.conversation.id.clone(),
+            model_config_id: MINIMAX_SECONDARY_CONFIG_ID.to_owned(),
+            permission_mode: None,
+            prompt: "Use secondary MiniMax config".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("secondary MiniMax run should start");
+    wait_for_received_request_count(&secondary_server, 1).await;
+
+    let primary_requests = primary_server
+        .received_requests()
+        .await
+        .expect("primary requests should be readable");
+    assert_eq!(
+        primary_requests.len(),
+        1,
+        "second run must not reuse the first config harness",
+    );
+}
+
+#[tokio::test]
+async fn start_run_rejects_invalid_model_config_without_activating_draft() {
+    let server = mounted_chat_completion_server().await;
+    let state = runtime_state_with_provider_configs(&server.uri()).await;
+    let created = create_conversation_with_runtime_state(&state)
+        .await
+        .expect("draft conversation should be created");
+
+    let missing = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            agent_options: None,
+            context_references: None,
+            conversation_id: created.conversation.id.clone(),
+            model_config_id: "missing-config".to_owned(),
+            permission_mode: None,
+            prompt: "Should fail".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("unknown model config should fail closed");
+    assert_eq!(missing.code, "INVALID_PAYLOAD");
+
+    let detail = get_conversation_with_runtime_state(
+        GetConversationRequest {
+            conversation_id: created.conversation.id.clone(),
+        },
+        &state,
+    )
+    .await
+    .expect("draft should remain readable");
+    assert!(detail.conversation.messages.is_empty());
+    assert!(detail.conversation.model_config_id.is_none());
+
+    let no_key_config_id = "minimax-no-key";
+    write_provider_settings_json(
+        state.workspace_root(),
+        json!({
+            "defaultConfigId": DEEPSEEK_CONFIG_ID,
+            "configs": [
+                provider_config_json(&deepseek_config(&server.uri())),
+                {
+                    "apiKey": "",
+                    "protocol": "chat_completions",
+                    "baseUrl": server.uri(),
+                    "displayName": "MiniMax no key",
+                    "id": no_key_config_id,
+                    "modelId": "MiniMax-M2.7",
+                    "providerId": "minimax",
+                    "modelDescriptor": {
+                        "protocol": "chat_completions",
+                        "conversationCapability": {
+                            "inputModalities": ["text"],
+                            "outputModalities": ["text"],
+                            "contextWindow": 128000,
+                            "maxOutputTokens": 8192,
+                            "streaming": true,
+                            "toolCalling": true,
+                            "reasoning": false,
+                            "promptCache": false,
+                            "structuredOutput": false
+                        },
+                        "contextWindow": 128000,
+                        "displayName": "MiniMax M2.7",
+                        "lifecycle": { "kind": "stable" },
+                        "maxOutputTokens": 8192,
+                        "modelId": "MiniMax-M2.7",
+                        "providerId": "minimax"
+                    }
+                }
+            ]
+        }),
+    );
+    let no_key = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: None,
+            agent_options: None,
+            context_references: None,
+            conversation_id: created.conversation.id.clone(),
+            model_config_id: no_key_config_id.to_owned(),
+            permission_mode: None,
+            prompt: "Should fail without key".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("model config without api key should fail closed");
+    assert_eq!(no_key.code, "INVALID_PAYLOAD");
+
+    let detail = get_conversation_with_runtime_state(
+        GetConversationRequest {
+            conversation_id: created.conversation.id,
+        },
+        &state,
+    )
+    .await
+    .expect("draft should still remain readable");
+    assert!(detail.conversation.messages.is_empty());
+    assert!(detail.conversation.model_config_id.is_none());
 }
 
 #[tokio::test]
@@ -222,6 +629,7 @@ async fn delete_conversation_with_runtime_state_removes_session_from_runtime_lis
             agent_options: None,
             context_references: None,
             conversation_id: conversation_id.clone(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
             prompt: "Create a conversation".to_owned(),
         },
@@ -265,6 +673,7 @@ async fn delete_conversation_with_runtime_state_removes_session_from_runtime_lis
             agent_options: None,
             context_references: None,
             conversation_id,
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
             prompt: "Do not recreate a deleted conversation".to_owned(),
         },
@@ -294,6 +703,7 @@ async fn get_and_delete_conversation_with_runtime_state_survive_runtime_option_c
             agent_options: None,
             context_references: None,
             conversation_id: conversation_id.clone(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
             prompt: "Create a conversation before changing runtime options".to_owned(),
         },
@@ -392,6 +802,7 @@ async fn get_conversation_with_runtime_state_returns_runtime_messages() {
             agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
             prompt: "Tell me status".to_owned(),
         },
@@ -447,6 +858,7 @@ async fn list_conversations_with_runtime_state_projects_runtime_summary() {
             agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
             prompt: "Tell me status\nwith details".to_owned(),
         },
@@ -504,6 +916,7 @@ async fn conversation_payloads_with_runtime_state_redact_private_paths() {
             agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
             prompt: "Read /Users/goya/.ssh/config".to_owned(),
         },
@@ -575,6 +988,7 @@ async fn get_conversation_with_runtime_state_includes_safe_client_message_id() {
             agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
             prompt: "Complete the task".to_owned(),
         },

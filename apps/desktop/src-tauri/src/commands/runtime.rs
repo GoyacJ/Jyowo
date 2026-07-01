@@ -42,8 +42,10 @@ pub(crate) struct ProviderConfigRevealTokenRecord {
 
 #[derive(Clone)]
 pub(crate) struct DesktopActiveRuntime {
+    default_model_config_id: Option<String>,
     default_model_id: String,
     default_protocol: ModelProtocol,
+    provider_config_fingerprint: Option<[u8; 32]>,
     harness: Option<Arc<Harness>>,
 }
 
@@ -56,6 +58,28 @@ pub(crate) struct ConversationSubscriptionHandle {
 pub(crate) struct McpDiagnosticSubscriptionHandle {
     pub(crate) task: JoinHandle<()>,
     pub(crate) window_label: String,
+}
+
+fn active_runtime_provider_binding(
+    workspace_root: &Path,
+    default_model_id: &str,
+    default_protocol: ModelProtocol,
+) -> Result<Option<(String, [u8; 32])>, CommandErrorPayload> {
+    let store = DesktopProviderSettingsStore::new(workspace_root.to_path_buf());
+    let Some(record) = store.load_record()? else {
+        return Ok(None);
+    };
+    let Some(config_id) = record.default_config_id.as_deref() else {
+        return Ok(None);
+    };
+    let config = provider_config_by_id(&record, config_id)?;
+    if config.model_id != default_model_id || config.protocol != default_protocol {
+        return Ok(None);
+    }
+    Ok(Some((
+        config.id.clone(),
+        provider_config_runtime_fingerprint(config)?,
+    )))
 }
 
 impl DesktopRuntimeState {
@@ -71,8 +95,10 @@ impl DesktopRuntimeState {
 
         Ok(Self {
             active_runtime: Arc::new(RwLock::new(DesktopActiveRuntime {
+                default_model_config_id: None,
                 default_model_id: "llama3.1".to_owned(),
                 default_protocol: ModelProtocol::ChatCompletions,
+                provider_config_fingerprint: None,
                 harness: None,
             })),
             automation_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -206,10 +232,16 @@ impl DesktopRuntimeState {
         let permission_resolver: Arc<dyn PermissionResolver> = stream_permission_runtime.clone();
 
         let provider_capability_routes = harness.provider_capability_routes();
+        let active_runtime_binding =
+            active_runtime_provider_binding(&workspace_root, &default_model_id, default_protocol)?;
         Ok(Self {
             active_runtime: Arc::new(RwLock::new(DesktopActiveRuntime {
+                default_model_config_id: active_runtime_binding
+                    .as_ref()
+                    .map(|binding| binding.0.clone()),
                 default_model_id,
                 default_protocol,
+                provider_config_fingerprint: active_runtime_binding.map(|binding| binding.1),
                 harness: Some(harness),
             })),
             automation_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -276,14 +308,50 @@ impl DesktopRuntimeState {
         default_model_id: String,
         default_protocol: ModelProtocol,
     ) {
+        let active_runtime_binding = active_runtime_provider_binding(
+            &self.workspace_root,
+            &default_model_id,
+            default_protocol,
+        )
+        .ok()
+        .flatten();
         *self
             .active_runtime
             .write()
             .expect("desktop active runtime lock should not be poisoned") = DesktopActiveRuntime {
+            default_model_config_id: active_runtime_binding
+                .as_ref()
+                .map(|binding| binding.0.clone()),
             default_model_id,
             default_protocol,
+            provider_config_fingerprint: active_runtime_binding.map(|binding| binding.1),
             harness: Some(harness),
         };
+    }
+
+    #[must_use]
+    pub fn active_conversation_runtime_for_model_config(
+        &self,
+        session_id: SessionId,
+        model_config_id: &str,
+        provider_config_fingerprint: [u8; 32],
+    ) -> Option<(Arc<Harness>, SessionOptions)> {
+        let active_runtime = self
+            .active_runtime
+            .read()
+            .expect("desktop active runtime lock should not be poisoned");
+        if active_runtime.default_model_config_id.as_deref() != Some(model_config_id)
+            || active_runtime.provider_config_fingerprint != Some(provider_config_fingerprint)
+        {
+            return None;
+        }
+        let harness = active_runtime.harness.as_ref().map(Arc::clone)?;
+        let options = self.conversation_session_options_for_model(
+            session_id,
+            active_runtime.default_model_id.clone(),
+            active_runtime.default_protocol,
+        );
+        Some((harness, options))
     }
 
     #[must_use]

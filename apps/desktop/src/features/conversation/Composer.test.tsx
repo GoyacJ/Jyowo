@@ -109,7 +109,7 @@ describe('Composer', () => {
   it('submits typed text as structured draft', async () => {
     const onSubmit = vi.fn()
 
-    render(<Composer onSubmit={onSubmit} />)
+    render(<Composer modelConfigId="provider-config-001" onSubmit={onSubmit} />)
 
     fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
       target: { value: 'Continue the setup' },
@@ -118,8 +118,10 @@ describe('Composer', () => {
 
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith({
+        agentOptions: undefined,
         attachments: [],
         contextReferences: [],
+        modelConfigId: 'provider-config-001',
         permissionMode: 'default',
         prompt: 'Continue the setup',
       }),
@@ -129,7 +131,7 @@ describe('Composer', () => {
   it('submits with Enter and keeps Shift Enter as newline', async () => {
     const onSubmit = vi.fn()
 
-    render(<Composer onSubmit={onSubmit} />)
+    render(<Composer modelConfigId="provider-config-001" onSubmit={onSubmit} />)
 
     const input = screen.getByPlaceholderText('Ask Jyowo anything about this project...')
     fireEvent.change(input, {
@@ -143,8 +145,10 @@ describe('Composer', () => {
 
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith({
+        agentOptions: undefined,
         attachments: [],
         contextReferences: [],
+        modelConfigId: 'provider-config-001',
         permissionMode: 'default',
         prompt: 'First line\nSecond line',
       }),
@@ -154,7 +158,7 @@ describe('Composer', () => {
   it('submits the selected permission mode from the toolbar', async () => {
     const onSubmit = vi.fn()
 
-    render(<Composer autoModeAvailable={false} onSubmit={onSubmit} />)
+    render(<Composer modelConfigId="provider-config-001" autoModeAvailable={false} onSubmit={onSubmit} />)
 
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Permission mode: Request approval' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: /Full access/i }))
@@ -165,8 +169,10 @@ describe('Composer', () => {
 
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith({
+        agentOptions: undefined,
         attachments: [],
         contextReferences: [],
+        modelConfigId: 'provider-config-001',
         permissionMode: 'bypass_permissions',
         prompt: 'Run without prompts',
       }),
@@ -174,7 +180,7 @@ describe('Composer', () => {
   })
 
   it('disables auto approval in the composer when the desktop build does not support it', async () => {
-    render(<Composer autoModeAvailable={false} onSubmit={vi.fn()} />)
+    render(<Composer modelConfigId="provider-config-001" autoModeAvailable={false} onSubmit={vi.fn()} />)
 
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Permission mode: Request approval' }))
 
@@ -187,7 +193,7 @@ describe('Composer', () => {
   it('does not submit Enter while IME composition is active', () => {
     const onSubmit = vi.fn()
 
-    render(<Composer onSubmit={onSubmit} />)
+    render(<Composer modelConfigId="provider-config-001" onSubmit={onSubmit} />)
 
     const input = screen.getByPlaceholderText('Ask Jyowo anything about this project...')
     fireEvent.change(input, {
@@ -201,7 +207,7 @@ describe('Composer', () => {
   it('blocks empty submit', () => {
     const onSubmit = vi.fn()
 
-    render(<Composer onSubmit={onSubmit} />)
+    render(<Composer modelConfigId="provider-config-001" onSubmit={onSubmit} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
@@ -209,7 +215,7 @@ describe('Composer', () => {
   })
 
   it('gives all context buttons accessible names', () => {
-    render(<Composer onSubmit={vi.fn()} />)
+    render(<Composer modelConfigId="provider-config-001" onSubmit={vi.fn()} />)
 
     expect(screen.getByRole('button', { name: 'Attach file' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Reference project object' })).toBeInTheDocument()
@@ -243,14 +249,14 @@ describe('Composer', () => {
   })
 
   it('disables attachments when the selected model only accepts text', () => {
-    render(<Composer modelCapability={textOnlyCapability} onSubmit={vi.fn()} />)
+    render(<Composer modelConfigId="provider-config-001" modelCapability={textOnlyCapability} onSubmit={vi.fn()} />)
 
     expect(screen.getByRole('button', { name: 'Attach file' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Reference project object' })).not.toBeDisabled()
   })
 
   it('disables attachments when the selected model capability is unknown', () => {
-    render(<Composer modelCapability={null} onSubmit={vi.fn()} />)
+    render(<Composer modelConfigId="provider-config-001" modelCapability={null} onSubmit={vi.fn()} />)
 
     expect(screen.getByRole('button', { name: 'Attach file' })).toBeDisabled()
   })
@@ -258,6 +264,7 @@ describe('Composer', () => {
   it('enables attachments when the selected model accepts media or files', () => {
     render(
       <Composer
+        modelConfigId="provider-config-001"
         modelCapability={{
           ...textOnlyCapability,
           inputModalities: ['text', 'image'],
@@ -274,6 +281,7 @@ describe('Composer', () => {
 
     render(
       <Composer
+        modelConfigId="provider-config-001"
         modelCapability={{
           ...textOnlyCapability,
           inputModalities: ['text', 'image', 'video', 'file'],
@@ -296,6 +304,7 @@ describe('Composer', () => {
 
     render(
       <Composer
+        modelConfigId="provider-config-001"
         onCreateAttachmentFromPath={vi.fn().mockResolvedValue({ attachment })}
         onPickAttachmentPath={vi.fn().mockResolvedValue('/tmp/notes.txt')}
         onSubmit={onSubmit}
@@ -324,6 +333,7 @@ describe('Composer', () => {
 
     render(
       <Composer
+        modelConfigId="provider-config-001"
         onListReferenceCandidates={vi.fn().mockResolvedValue(referenceCandidates)}
         onSubmit={onSubmit}
       />,
@@ -353,6 +363,7 @@ describe('Composer', () => {
 
     render(
       <Composer
+        modelConfigId="provider-config-001"
         onListReferenceCandidates={vi.fn().mockResolvedValue(referenceCandidates)}
         onSubmit={onSubmit}
       />,
@@ -394,6 +405,7 @@ describe('Composer', () => {
   it('disables context controls and chip removal while pending', async () => {
     const { rerender } = render(
       <Composer
+        modelConfigId="provider-config-001"
         onCreateAttachmentFromPath={vi.fn().mockResolvedValue({ attachment })}
         onPickAttachmentPath={vi.fn().mockResolvedValue('/tmp/notes.txt')}
         onSubmit={vi.fn()}
@@ -403,7 +415,7 @@ describe('Composer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Attach file' }))
     expect(await screen.findByText('notes.txt')).toBeInTheDocument()
 
-    rerender(<Composer onSubmit={vi.fn()} pending />)
+    rerender(<Composer modelConfigId="provider-config-001" onSubmit={vi.fn()} pending />)
 
     expect(screen.getByRole('button', { name: 'Attach file' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Reference project object' })).toBeDisabled()
@@ -411,12 +423,12 @@ describe('Composer', () => {
   })
 
   it('uses explicit composer modes for disabled and ready states', () => {
-    const { rerender } = render(<Composer mode={{ kind: 'running-disabled' }} onSubmit={vi.fn()} />)
+    const { rerender } = render(<Composer modelConfigId="provider-config-001" mode={{ kind: 'running-disabled' }} onSubmit={vi.fn()} />)
 
     expect(screen.getByPlaceholderText('Ask Jyowo anything about this project...')).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
 
-    rerender(<Composer mode={{ kind: 'clarification-reply' }} onSubmit={vi.fn()} />)
+    rerender(<Composer modelConfigId="provider-config-001" mode={{ kind: 'clarification-reply' }} onSubmit={vi.fn()} />)
 
     expect(screen.getByPlaceholderText('Ask Jyowo anything about this project...')).toBeEnabled()
   })
@@ -426,6 +438,7 @@ describe('Composer', () => {
 
     render(
       <Composer
+        modelConfigId="provider-config-001"
         mode={{ kind: 'running-disabled', canCancel: true }}
         onCancelRun={onCancelRun}
         onSubmit={vi.fn()}
@@ -441,6 +454,7 @@ describe('Composer', () => {
   it('keeps text and chips when submit fails', async () => {
     render(
       <Composer
+        modelConfigId="provider-config-001"
         onCreateAttachmentFromPath={vi.fn().mockResolvedValue({ attachment })}
         onPickAttachmentPath={vi.fn().mockResolvedValue('/tmp/notes.txt')}
         onSubmit={vi.fn().mockRejectedValue(new Error('Run failed'))}
@@ -459,7 +473,7 @@ describe('Composer', () => {
   })
 
   it('does not render a local runtime label inside the input surface', () => {
-    render(<Composer onSubmit={vi.fn()} />)
+    render(<Composer modelConfigId="provider-config-001" onSubmit={vi.fn()} />)
 
     expect(screen.queryByText('Local')).not.toBeInTheDocument()
   })
@@ -467,7 +481,7 @@ describe('Composer', () => {
   it('shows retry when an error is present', () => {
     const onRetry = vi.fn()
 
-    render(<Composer errorMessage="Run failed" onRetry={onRetry} onSubmit={vi.fn()} />)
+    render(<Composer modelConfigId="provider-config-001" errorMessage="Run failed" onRetry={onRetry} onSubmit={vi.fn()} />)
 
     expect(screen.getByText('Run failed')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
@@ -477,6 +491,7 @@ describe('Composer', () => {
   it('hides agent controls when capabilities are unavailable', () => {
     render(
       <Composer
+        modelConfigId="provider-config-001"
         agentCapabilities={{
           ...availableAgentCapabilities,
           agentTeamsAvailable: false,
@@ -494,6 +509,7 @@ describe('Composer', () => {
   it('disables subagents when settings turn the capability off', () => {
     render(
       <Composer
+        modelConfigId="provider-config-001"
         agentCapabilities={{
           ...availableAgentCapabilities,
           subagentsEnabled: false,
@@ -508,6 +524,7 @@ describe('Composer', () => {
   it('disables agent team when settings turn the capability off', () => {
     render(
       <Composer
+        modelConfigId="provider-config-001"
         agentCapabilities={{
           ...availableAgentCapabilities,
           agentTeamsEnabled: false,
@@ -521,7 +538,7 @@ describe('Composer', () => {
 
   it('shows team profile loading, error, and empty states', () => {
     const { rerender } = render(
-      <Composer agentCapabilities={availableAgentCapabilities} onSubmit={vi.fn()} />,
+      <Composer modelConfigId="provider-config-001" agentCapabilities={availableAgentCapabilities} onSubmit={vi.fn()} />,
     )
 
     useAgentProfilesMock.mockReturnValue({
@@ -531,7 +548,7 @@ describe('Composer', () => {
       profiles: [],
       workspacePath: '/tmp/jyowo-project',
     })
-    rerender(<Composer agentCapabilities={availableAgentCapabilities} onSubmit={vi.fn()} />)
+    rerender(<Composer modelConfigId="provider-config-001" agentCapabilities={availableAgentCapabilities} onSubmit={vi.fn()} />)
     expect(screen.getByText('Loading agent profiles...')).toBeInTheDocument()
 
     useAgentProfilesMock.mockReturnValue({
@@ -541,7 +558,7 @@ describe('Composer', () => {
       profiles: [],
       workspacePath: '/tmp/jyowo-project',
     })
-    rerender(<Composer agentCapabilities={availableAgentCapabilities} onSubmit={vi.fn()} />)
+    rerender(<Composer modelConfigId="provider-config-001" agentCapabilities={availableAgentCapabilities} onSubmit={vi.fn()} />)
     expect(screen.getByText('profiles unavailable')).toBeInTheDocument()
 
     useAgentProfilesMock.mockReturnValue({
@@ -551,14 +568,14 @@ describe('Composer', () => {
       profiles: [],
       workspacePath: '/tmp/jyowo-project',
     })
-    rerender(<Composer agentCapabilities={availableAgentCapabilities} onSubmit={vi.fn()} />)
+    rerender(<Composer modelConfigId="provider-config-001" agentCapabilities={availableAgentCapabilities} onSubmit={vi.fn()} />)
     expect(screen.getByText('No agent profiles available.')).toBeInTheDocument()
   })
 
   it('submits a complete teamConfig when agent team is allowed for the run', async () => {
     const onSubmit = vi.fn()
 
-    render(<Composer agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />)
+    render(<Composer modelConfigId="provider-config-001" agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />)
 
     fireEvent.click(screen.getByRole('checkbox', { name: /Agent team/i }))
     fireEvent.click(screen.getByRole('checkbox', { name: /Worker/i }))
@@ -602,7 +619,7 @@ describe('Composer', () => {
   it('clears teamConfig when agent team is toggled off', async () => {
     const onSubmit = vi.fn()
 
-    render(<Composer agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />)
+    render(<Composer modelConfigId="provider-config-001" agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />)
 
     fireEvent.click(screen.getByRole('checkbox', { name: /Agent team/i }))
     fireEvent.click(screen.getByRole('checkbox', { name: /Worker/i }))
@@ -628,7 +645,7 @@ describe('Composer', () => {
   it('rejects team submission when no member profile is selected', async () => {
     const onSubmit = vi.fn()
 
-    render(<Composer agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />)
+    render(<Composer modelConfigId="provider-config-001" agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />)
 
     fireEvent.click(screen.getByRole('checkbox', { name: /Agent team/i }))
     fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
@@ -643,7 +660,7 @@ describe('Composer', () => {
   it('rejects stale team profile ids before submit', async () => {
     const onSubmit = vi.fn()
     const { rerender } = render(
-      <Composer agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />,
+      <Composer modelConfigId="provider-config-001" agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />,
     )
 
     fireEvent.click(screen.getByRole('checkbox', { name: /Agent team/i }))
@@ -655,7 +672,7 @@ describe('Composer', () => {
       profiles: [leadProfile],
       workspacePath: '/tmp/jyowo-project',
     })
-    rerender(<Composer agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />)
+    rerender(<Composer modelConfigId="provider-config-001" agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />)
     fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
       target: { value: 'Coordinate work' },
     })
@@ -668,7 +685,7 @@ describe('Composer', () => {
   it('submits agentOptions when subagents are allowed for the run', async () => {
     const onSubmit = vi.fn()
 
-    render(<Composer agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />)
+    render(<Composer modelConfigId="provider-config-001" agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />)
 
     fireEvent.click(screen.getByRole('checkbox', { name: /Subagents/i }))
     fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
@@ -698,7 +715,7 @@ describe('Composer', () => {
   it('omits agentOptions when no run capability is selected', async () => {
     const onSubmit = vi.fn()
 
-    render(<Composer agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />)
+    render(<Composer modelConfigId="provider-config-001" agentCapabilities={availableAgentCapabilities} onSubmit={onSubmit} />)
 
     fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
       target: { value: 'Plain run' },

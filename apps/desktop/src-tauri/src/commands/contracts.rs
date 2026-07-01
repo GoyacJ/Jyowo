@@ -1272,21 +1272,6 @@ pub struct GetConversationResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SetConversationModelConfigRequest {
-    pub conversation_id: String,
-    pub model_config_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetConversationModelConfigResponse {
-    pub conversation_id: String,
-    pub model_config_id: String,
-    pub status: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct DeleteConversationRequest {
     pub conversation_id: String,
 }
@@ -1310,6 +1295,7 @@ pub struct StartRunRequest {
     #[serde(default)]
     pub context_references: Option<Vec<ContextReferencePayload>>,
     pub conversation_id: String,
+    pub model_config_id: String,
     #[serde(default)]
     pub permission_mode: Option<PermissionMode>,
     pub prompt: String,

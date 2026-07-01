@@ -308,7 +308,7 @@ function localSubmit(clientMessageId: string, prompt: string): ConversationTimel
   return {
     type: 'localSubmit',
     clientMessageId,
-    draft: { prompt },
+    draft: { modelConfigId: 'provider-config-001', prompt },
     at: timestamp,
   }
 }

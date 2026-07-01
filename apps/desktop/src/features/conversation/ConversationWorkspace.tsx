@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -25,6 +25,8 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
   const workspaceKey = timeline.workspacePath ?? 'none'
   const [composerPermissionMode, setComposerPermissionMode] = useState<PermissionMode>('default')
   const composerPermissionModeDirtyRef = useRef(false)
+  const [selectedModelConfigId, setSelectedModelConfigId] = useState('')
+  const selectedModelConfigDirtyRef = useRef(false)
   const providerSettingsQuery = useQuery({
     queryFn: () => commandClient.listProviderSettings(),
     queryKey: ['conversation-model-configs'],
@@ -39,27 +41,10 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
     },
     queryKey: ['conversation-execution-settings', workspaceKey],
   })
-  const setModelConfigMutation = useMutation({
-    mutationFn: (modelConfigId: string) => {
-      if (!timeline.conversation) {
-        throw new Error('No conversation selected')
-      }
-
-      return commandClient.setConversationModelConfig(timeline.conversation.id, modelConfigId)
-    },
-    onSuccess: async () => {
-      if (timeline.conversation) {
-        await queryClient.invalidateQueries({
-          queryKey: conversationQueryKeys.detail(workspaceKey, timeline.conversation.id),
-        })
-      }
-      await queryClient.invalidateQueries({ queryKey: ['conversation-model-configs'] })
-    },
-  })
-
   useEffect(() => {
     composerPermissionModeDirtyRef.current = false
     setComposerPermissionMode('default')
+    selectedModelConfigDirtyRef.current = false
   }, [workspaceKey])
 
   useEffect(() => {
@@ -69,6 +54,20 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
 
     setComposerPermissionMode(executionSettingsQuery.data.permissionMode)
   }, [executionSettingsQuery.data, workspaceKey])
+
+  useEffect(() => {
+    if (selectedModelConfigDirtyRef.current) {
+      return
+    }
+
+    setSelectedModelConfigId(
+      timeline.conversation?.modelConfigId ?? providerSettingsQuery.data?.defaultConfigId ?? '',
+    )
+  }, [
+    providerSettingsQuery.data?.defaultConfigId,
+    timeline.conversation?.id,
+    timeline.conversation?.modelConfigId,
+  ])
 
   if (timeline.isLoading) {
     return (
@@ -105,10 +104,8 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
       : activeConversation.title
   const configuredModelProfiles =
     providerSettingsQuery.data?.configs.filter((profile) => profile.hasApiKey) ?? []
-  const currentModelConfigId =
-    activeConversation.modelConfigId ?? providerSettingsQuery.data?.defaultConfigId ?? ''
   const currentModelProfile =
-    providerSettingsQuery.data?.configs.find((profile) => profile.id === currentModelConfigId) ??
+    configuredModelProfiles.find((profile) => profile.id === selectedModelConfigId) ??
     null
   const modelConfigs = configuredModelProfiles.map((profile) => ({
     id: profile.id,
@@ -122,18 +119,25 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
     (composerPermissionModeDirtyRef.current ||
       composerPermissionMode === executionSettings?.permissionMode)
   const composerDisabled =
-    timeline.composerMode.kind === 'running-disabled' || !composerPermissionModeReady
+    timeline.composerMode.kind === 'running-disabled' ||
+    !composerPermissionModeReady ||
+    !currentModelProfile
 
   function submitReviewContinue(prompt: string) {
     if (!composerPermissionModeReady) {
       return
     }
 
-    void timeline.submitPrompt(emptySubmit(prompt, composerPermissionMode))
+    void timeline.submitPrompt(emptySubmit(prompt, composerPermissionMode, selectedModelConfigId))
   }
 
-  function submitMessage(draft: ComposerSubmitPayload) {
-    return timeline.submitPrompt(draft)
+  async function submitMessage(draft: ComposerSubmitPayload) {
+    const response = await timeline.submitPrompt(draft)
+    await queryClient.invalidateQueries({
+      queryKey: conversationQueryKeys.detail(workspaceKey, activeConversation.id),
+    })
+    await queryClient.invalidateQueries({ queryKey: conversationQueryKeys.list(workspaceKey) })
+    return response
   }
 
   return (
@@ -162,9 +166,9 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
           cancelPending={timeline.isCancelling}
           modelCapability={currentModelProfile?.modelDescriptor?.conversationCapability ?? null}
           modelConfigDisabled={
-            timeline.isSubmitting || composerDisabled || setModelConfigMutation.isPending
+            timeline.isSubmitting || timeline.composerMode.kind === 'running-disabled'
           }
-          modelConfigId={currentModelConfigId}
+          modelConfigId={selectedModelConfigId}
           modelConfigs={modelConfigs}
           mode={timeline.composerMode}
           onCreateAttachmentFromPath={commandClient.createAttachmentFromPath}
@@ -172,7 +176,10 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
           onListReferenceCandidates={() =>
             commandClient.listReferenceCandidates({ conversationId: activeConversation.id })
           }
-          onModelConfigChange={(modelConfigId) => setModelConfigMutation.mutate(modelConfigId)}
+          onModelConfigChange={(modelConfigId) => {
+            selectedModelConfigDirtyRef.current = true
+            setSelectedModelConfigId(modelConfigId)
+          }}
           permissionMode={composerPermissionMode}
           autoModeAvailable={executionSettings?.autoModeAvailable ?? false}
           onPermissionModeChange={(nextMode) => {
@@ -187,10 +194,15 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
   )
 }
 
-function emptySubmit(prompt: string, permissionMode: PermissionMode): ComposerSubmitPayload {
+function emptySubmit(
+  prompt: string,
+  permissionMode: PermissionMode,
+  modelConfigId: string,
+): ComposerSubmitPayload {
   return {
     attachments: [],
     contextReferences: [],
+    modelConfigId,
     permissionMode,
     prompt,
   }

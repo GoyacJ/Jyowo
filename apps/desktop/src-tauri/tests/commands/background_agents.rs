@@ -273,6 +273,7 @@ async fn background_agent_manager_start_run_persists_record_before_execution() {
                 label: "sk-contextlabel1234567890".to_owned(),
             }]),
             conversation_id: conversation_id.to_string(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
             prompt: "Run in background\nsk-12345678901234567890".to_owned(),
         },

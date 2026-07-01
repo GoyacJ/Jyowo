@@ -253,37 +253,18 @@ pub(crate) async fn start_automation_conversation_run(
         client_message_id: None,
         context_references: None,
         conversation_id: conversation_id.clone(),
+        model_config_id: default_model_config_id_for_conversation_or_provider(
+            &parse_session_id(&conversation_id)?,
+            state,
+        )?,
         permission_mode: Some(permission_mode),
         prompt: automation.prompt.clone(),
     };
     let session_id = parse_session_id(&conversation_id)?;
     let input = build_conversation_turn_input(&request, state).await?;
     let _start_run_guard = state.start_run_lock.lock().await;
-    let (harness, mut options) =
-        if let Some(model_config_id) = conversation_model_config_id(&session_id, state)? {
-            let stream_permission_runtime =
-                state.stream_permission_runtime.as_ref().ok_or_else(|| {
-                    runtime_unavailable("Starting automation runs requires the desktop runtime.")
-                })?;
-            let (harness, model_id, protocol) = build_desktop_harness(
-                &state.workspace_root,
-                Arc::clone(stream_permission_runtime),
-                Some(&model_config_id),
-                Arc::clone(&state.provider_capability_routes),
-            )
-            .await?;
-            (
-                Arc::new(harness),
-                state.conversation_session_options_for_model(session_id, model_id, protocol),
-            )
-        } else {
-            let Some(runtime) = state.active_conversation_runtime(session_id) else {
-                return Err(runtime_unavailable(
-                    "Starting automation runs requires the runtime conversation facade.",
-                ));
-            };
-            runtime
-        };
+    let (harness, mut options, model_id, protocol) =
+        runtime_for_model_config(session_id, &request.model_config_id, state).await?;
     options = options
         .with_tool_profile(automation_effective_tool_profile(automation))
         .with_permission_mode(permission_mode);
@@ -295,6 +276,9 @@ pub(crate) async fn start_automation_conversation_run(
     let run_harness = Arc::clone(&harness);
     let run_session_options = options.clone();
     let run_options = ConversationRunOptions::from_session_options(&run_session_options)
+        .with_model_config_id(request.model_config_id)
+        .with_model_id(model_id)
+        .with_protocol(protocol)
         .with_permission_mode(permission_mode);
     let mut run_task = tokio::spawn(async move {
         run_harness

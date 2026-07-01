@@ -8,6 +8,11 @@ import { uiStore, useUiStore } from '@/shared/state/ui-store'
 import { createTestCommandClient, testJyowoProject } from '@/testing/command-client'
 import App from './App'
 
+const emptyProviderSettingsList = {
+  defaultConfigId: null,
+  configs: [],
+}
+
 const uiPreferencesStoreFixture = vi.hoisted(() => ({
   readUiPreferences: vi.fn<
     () => Promise<{
@@ -169,7 +174,9 @@ describe('App', () => {
         },
       },
     })
-    const commandClient = createTestCommandClient()
+    const commandClient = createTestCommandClient({
+      providerSettingsList: emptyProviderSettingsList,
+    })
 
     window.history.pushState(null, '', '/skills')
     const { rerender } = render(<App commandClient={commandClient} queryClient={queryClient} />)

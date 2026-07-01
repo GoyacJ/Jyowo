@@ -10,10 +10,12 @@ use jyowo_desktop_shell::commands::{
     list_background_agents_with_runtime_state, page_conversation_worktree_with_runtime_state,
     resolve_permission_with_runtime_state, resolve_start_run_agent_policy,
     set_execution_settings_with_store, start_run_with_runtime_state, BackgroundAgentIdRequest,
-    DesktopExecutionSettingsStore, DesktopRuntimeState, GetBackgroundAgentRequest,
-    ListBackgroundAgentsRequest, PageConversationWorktreeDirection,
-    PageConversationWorktreeRequest, ResolvePermissionRequest, SetExecutionSettingsRequest,
-    StartRunRequest,
+    ConversationModelCapabilityRecord, DesktopExecutionSettingsStore, DesktopProviderSettingsStore,
+    DesktopRuntimeState, GetBackgroundAgentRequest, ListBackgroundAgentsRequest,
+    PageConversationWorktreeDirection, PageConversationWorktreeRequest, ProviderConfigRecord,
+    ProviderModelDescriptorRecord, ProviderModelLifecycleRecord, ProviderModelModalityRecord,
+    ProviderSettingsRecord, ProviderSettingsStore, ResolvePermissionRequest,
+    SetExecutionSettingsRequest, StartRunRequest,
 };
 use jyowo_harness_sdk::ext::{
     ContentDelta, DecisionScope, DeferPolicy, Event, EventStore, HealthStatus, InferContext,
@@ -40,6 +42,7 @@ use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
 
 static WORKSPACE_COUNTER: Mutex<u64> = Mutex::new(0);
+const TEST_MODEL_CONFIG_ID: &str = "test-model-config";
 
 #[tokio::test]
 async fn agent_orchestration_e2e_real_subagent_spawn_projects_activity() {
@@ -90,6 +93,7 @@ async fn agent_orchestration_e2e_real_subagent_spawn_projects_activity() {
             client_message_id: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: Some(PermissionMode::BypassPermissions),
             prompt: "Delegate inspection".to_owned(),
         },
@@ -165,6 +169,7 @@ async fn agent_orchestration_e2e_real_run_scoped_team_persists_and_projects() {
             client_message_id: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: Some(PermissionMode::BypassPermissions),
             prompt: "Run with a scoped team".to_owned(),
         },
@@ -235,6 +240,7 @@ async fn agent_orchestration_e2e_real_background_agent_commands_and_recovery() {
             client_message_id: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
             prompt: "Run as a background agent".to_owned(),
         },
@@ -336,6 +342,7 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
             client_message_id: None,
             context_references: None,
             conversation_id: jyowo_harness_sdk::ext::SessionId::new().to_string(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
             prompt: "Run with disabled subagents".to_owned(),
         },
@@ -371,6 +378,7 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
             client_message_id: None,
             context_references: None,
             conversation_id: jyowo_harness_sdk::ext::SessionId::new().to_string(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
             prompt: "Run write-capable child without isolation".to_owned(),
         },
@@ -386,6 +394,7 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
             client_message_id: None,
             context_references: None,
             conversation_id: session_id.to_string(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
             prompt: "Trigger unsafe child action".to_owned(),
         },
@@ -473,6 +482,7 @@ async fn runtime_state_with_harness() -> DesktopRuntimeState {
 
 async fn runtime_state_with_harness_for_workspace(workspace: PathBuf) -> DesktopRuntimeState {
     std::fs::create_dir_all(&workspace).expect("workspace dir");
+    write_test_provider_settings(&workspace);
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
         default_timeout: Some(Duration::from_secs(5)),
         heartbeat_interval: None,
@@ -506,6 +516,7 @@ async fn runtime_state_with_scripted_model_for_workspace(
     responses: Vec<ScriptedResponse>,
 ) -> DesktopRuntimeState {
     std::fs::create_dir_all(&workspace).expect("workspace dir");
+    write_test_provider_settings(&workspace);
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
         default_timeout: Some(Duration::from_secs(5)),
         heartbeat_interval: None,
@@ -540,11 +551,53 @@ async fn runtime_state_with_scripted_model_for_workspace(
     .expect("state uses harness broker")
 }
 
+fn write_test_provider_settings(workspace: &Path) {
+    let workspace = workspace
+        .canonicalize()
+        .expect("test workspace should canonicalize");
+    DesktopProviderSettingsStore::new(workspace)
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "provider-test-token".to_owned(),
+                protocol: ModelProtocol::Messages,
+                base_url: None,
+                display_name: "Test provider".to_owned(),
+                id: TEST_MODEL_CONFIG_ID.to_owned(),
+                model_id: "test-model".to_owned(),
+                official_quota_api_key: None,
+                provider_id: "test".to_owned(),
+                model_descriptor: ProviderModelDescriptorRecord {
+                    protocol: ModelProtocol::Messages,
+                    conversation_capability: ConversationModelCapabilityRecord {
+                        input_modalities: vec![ProviderModelModalityRecord::Text],
+                        output_modalities: vec![ProviderModelModalityRecord::Text],
+                        context_window: 128_000,
+                        max_output_tokens: 8192,
+                        streaming: true,
+                        tool_calling: true,
+                        reasoning: false,
+                        prompt_cache: false,
+                        structured_output: true,
+                    },
+                    context_window: 128_000,
+                    display_name: "Test model".to_owned(),
+                    lifecycle: ProviderModelLifecycleRecord::Stable,
+                    max_output_tokens: 8192,
+                    model_id: "test-model".to_owned(),
+                    provider_id: "test".to_owned(),
+                },
+            }],
+        })
+        .expect("test provider settings save");
+}
+
 async fn runtime_state_with_session_routed_model(
     parent_session_id: jyowo_harness_sdk::ext::SessionId,
 ) -> DesktopRuntimeState {
     let workspace = unique_workspace("session-routed");
     std::fs::create_dir_all(&workspace).expect("workspace dir");
+    write_test_provider_settings(&workspace);
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
         default_timeout: Some(Duration::from_secs(5)),
         heartbeat_interval: None,

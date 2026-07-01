@@ -81,7 +81,6 @@ import type {
   SaveProviderCapabilityRouteResponse,
   SaveProviderSettingsResponse,
   SetAutomationEnabledResponse,
-  SetConversationModelConfigResponse,
   SetExecutionSettingsResponse,
   SetMcpServerEnabledResponse,
   SetProjectPluginsEnabledResponse,
@@ -118,12 +117,12 @@ const fixtureRunModelSnapshot = {
   providerId: 'openai',
   modelId: 'gpt-4.1',
   displayName: 'GPT-4.1',
-  protocol: 'responses',
+  protocol: 'responses' as const,
   contextWindow: 128000,
   maxOutputTokens: 16384,
   conversationCapability: {
-    inputModalities: ['text', 'image'],
-    outputModalities: ['text'],
+    inputModalities: ['text', 'image'] as Array<'text' | 'image'>,
+    outputModalities: ['text'] as Array<'text'>,
     contextWindow: 128000,
     maxOutputTokens: 16384,
     streaming: true,
@@ -517,8 +516,35 @@ const fixtureModelProviderCatalog: ModelProviderCatalogResponse = {
 }
 
 const fixtureProviderSettingsList: ListProviderSettingsResponse = {
-  defaultConfigId: null,
-  configs: [],
+  defaultConfigId: 'provider-config-001',
+  configs: [
+    {
+      protocol: 'responses',
+      displayName: 'OpenAI',
+      hasApiKey: true,
+      hasOfficialQuotaApiKey: false,
+      id: 'provider-config-001',
+      isDefault: true,
+      modelDescriptor: {
+        protocol: 'responses',
+        conversationCapability: {
+          ...textCapability,
+          inputModalities: ['text', 'image'],
+          maxOutputTokens: 16384,
+          structuredOutput: true,
+          toolCalling: true,
+        },
+        contextWindow: 128000,
+        displayName: 'GPT-4o mini',
+        lifecycle: { kind: 'stable' },
+        maxOutputTokens: 16384,
+        modelId: 'gpt-4o-mini',
+        runtimeStatus: { kind: 'runnable' },
+      },
+      modelId: 'gpt-4o-mini',
+      providerId: 'openai',
+    },
+  ],
 }
 
 const fixtureAgentCapabilities = {
@@ -2369,14 +2395,6 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
       await wait(options.delayMs)
       return { status: 'cleared' } satisfies ClearMcpDiagnosticsResponse
     },
-    async setConversationModelConfig(conversationId, modelConfigId) {
-      await wait(options.delayMs)
-      return {
-        conversationId,
-        modelConfigId,
-        status: 'saved',
-      } satisfies SetConversationModelConfigResponse
-    },
     async setSkillEnabled(id, enabled) {
       await wait(options.delayMs)
       const skill =
@@ -2783,7 +2801,6 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     deleteProviderCapabilityRoute: () => Promise.reject(error),
     setExecutionSettings: () => Promise.reject(error),
     setAutomationEnabled: () => Promise.reject(error),
-    setConversationModelConfig: () => Promise.reject(error),
     setSkillEnabled: () => Promise.reject(error),
     archiveBackgroundAgent: () => Promise.reject(error),
     cancelBackgroundAgent: () => Promise.reject(error),

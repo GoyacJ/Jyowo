@@ -66,8 +66,7 @@ use jyowo_desktop_shell::commands::{
     save_mcp_server_with_runtime_state, save_mcp_server_with_store,
     save_provider_capability_route_settings_with_store, save_provider_capability_route_with_store,
     save_provider_settings_with_runtime_state, save_provider_settings_with_store,
-    send_background_agent_input_with_runtime_state,
-    set_conversation_model_config_with_runtime_state, set_execution_settings_with_store,
+    send_background_agent_input_with_runtime_state, set_execution_settings_with_store,
     set_mcp_server_enabled_with_runtime_state, set_skill_enabled_with_runtime_state,
     spawn_automation_scheduler, spawn_automation_scheduler_on_tauri_runtime, start_run_payload,
     start_run_with_runtime_state, subscribe_conversation_events_for_window_with_runtime_state,
@@ -75,7 +74,7 @@ use jyowo_desktop_shell::commands::{
     update_memory_item_with_runtime_state, validate_provider_settings_payload,
     ArtifactSummaryPayload, AttachmentBlobRefPayload, AttachmentReferencePayload,
     BackgroundAgentIdRequest, BrowserMcpPresetId, CancelRunRequest, ContextReferencePayload,
-    ConversationEventBatchPayload, ConversationMetadataFile, ConversationModelCapabilityRecord,
+    ConversationEventBatchPayload, ConversationModelCapabilityRecord,
     CreateAttachmentFromPathRequest, DeleteAgentProfileRequest, DeleteConversationRequest,
     DeleteMcpServerRequest, DeleteMemoryItemRequest, DeleteProviderCapabilityRouteRequest,
     DeleteSkillRequest, DesktopConversationMetadataStore, DesktopExecutionSettingsStore,
@@ -95,10 +94,9 @@ use jyowo_desktop_shell::commands::{
     ProviderSettingsStore, ReplayTimelineRequest, RequestProviderConfigApiKeyRevealRequest,
     ResolvePermissionRequest, RestartMcpServerRequest, RunEvalCaseRequest, SaveAutomationRequest,
     SaveBrowserMcpPresetRequest, SaveMcpServerRequest, SaveProviderCapabilityRouteRequest,
-    SendBackgroundAgentInputRequest, SetAutomationEnabledRequest,
-    SetConversationModelConfigRequest, SetExecutionSettingsRequest, SetMcpServerEnabledRequest,
-    SetSkillEnabledRequest, SkillStore, SkillStoreRecord, StartRunRequest,
-    SubscribeConversationEventsRequest, UnsubscribeConversationEventsRequest,
+    SendBackgroundAgentInputRequest, SetAutomationEnabledRequest, SetExecutionSettingsRequest,
+    SetMcpServerEnabledRequest, SetSkillEnabledRequest, SkillStore, SkillStoreRecord,
+    StartRunRequest, SubscribeConversationEventsRequest, UnsubscribeConversationEventsRequest,
     UpdateMemoryItemRequest, ValidateProviderSettingsRequest,
 };
 use jyowo_desktop_shell::project_registry::ProjectRegistry;
@@ -136,6 +134,7 @@ static WORKSPACE_ROOT_ENV_LOCK: Mutex<()> = Mutex::new(());
 static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
 const WORKSPACE_ROOT_ENV: &str = "JYOWO_WORKSPACE_ROOT";
 const HOME_ENV: &str = "HOME";
+const TEST_MODEL_CONFIG_ID: &str = "test-model-config";
 
 #[path = "commands/activity_replay.rs"]
 mod activity_replay;
@@ -264,6 +263,91 @@ fn provider_settings_record_with_minimax_config(
             },
         }],
     }
+}
+
+fn test_provider_settings_record() -> ProviderSettingsRecord {
+    ProviderSettingsRecord {
+        default_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
+        configs: vec![ProviderConfigRecord {
+            api_key: "provider-test-token".to_owned(),
+            protocol: ModelProtocol::Messages,
+            base_url: None,
+            display_name: "Test provider".to_owned(),
+            id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_id: "test-model".to_owned(),
+            official_quota_api_key: None,
+            provider_id: "test".to_owned(),
+            model_descriptor: ProviderModelDescriptorRecord {
+                protocol: ModelProtocol::Messages,
+                conversation_capability: ConversationModelCapabilityRecord {
+                    input_modalities: vec![ProviderModelModalityRecord::Text],
+                    output_modalities: vec![ProviderModelModalityRecord::Text],
+                    context_window: 128_000,
+                    max_output_tokens: 16_384,
+                    streaming: true,
+                    tool_calling: true,
+                    reasoning: false,
+                    prompt_cache: false,
+                    structured_output: true,
+                },
+                context_window: 128_000,
+                display_name: "Test model".to_owned(),
+                lifecycle: ProviderModelLifecycleRecord::Stable,
+                max_output_tokens: 16_384,
+                model_id: "test-model".to_owned(),
+                provider_id: "test".to_owned(),
+            },
+        }],
+    }
+}
+
+fn chat_provider_config_record(
+    config_id: &str,
+    provider_id: &str,
+    model_id: &str,
+    display_name: &str,
+    base_url: Option<String>,
+    api_key: &str,
+) -> ProviderConfigRecord {
+    ProviderConfigRecord {
+        api_key: api_key.to_owned(),
+        protocol: ModelProtocol::ChatCompletions,
+        base_url,
+        display_name: display_name.to_owned(),
+        id: config_id.to_owned(),
+        model_id: model_id.to_owned(),
+        official_quota_api_key: None,
+        provider_id: provider_id.to_owned(),
+        model_descriptor: ProviderModelDescriptorRecord {
+            protocol: ModelProtocol::ChatCompletions,
+            conversation_capability: ConversationModelCapabilityRecord {
+                input_modalities: vec![ProviderModelModalityRecord::Text],
+                output_modalities: vec![ProviderModelModalityRecord::Text],
+                context_window: 128_000,
+                max_output_tokens: 8192,
+                streaming: true,
+                tool_calling: true,
+                reasoning: false,
+                prompt_cache: false,
+                structured_output: false,
+            },
+            context_window: 128_000,
+            display_name: display_name.to_owned(),
+            lifecycle: ProviderModelLifecycleRecord::Stable,
+            max_output_tokens: 8192,
+            model_id: model_id.to_owned(),
+            provider_id: provider_id.to_owned(),
+        },
+    }
+}
+
+fn write_test_provider_settings(workspace: &Path) {
+    let workspace = workspace
+        .canonicalize()
+        .expect("test workspace should canonicalize");
+    DesktopProviderSettingsStore::new(workspace)
+        .save_record(&test_provider_settings_record())
+        .expect("test provider settings should save");
 }
 
 fn minimax_image_route(config_id: &str, enabled: bool) -> ProviderCapabilityRoute {
@@ -1131,6 +1215,7 @@ async fn runtime_state_with_harness() -> DesktopRuntimeState {
 
 async fn runtime_state_with_harness_for_workspace(workspace: PathBuf) -> DesktopRuntimeState {
     std::fs::create_dir_all(&workspace).unwrap();
+    write_test_provider_settings(&workspace);
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
         default_timeout: Some(Duration::from_secs(5)),
         heartbeat_interval: None,
@@ -1164,6 +1249,7 @@ async fn runtime_state_with_memory_provider(
 ) -> DesktopRuntimeState {
     let workspace = unique_workspace("memory-provider");
     std::fs::create_dir_all(&workspace).unwrap();
+    write_test_provider_settings(&workspace);
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
         default_timeout: Some(Duration::from_secs(5)),
         heartbeat_interval: None,
@@ -1211,6 +1297,7 @@ async fn runtime_state_with_mcp_registry_for_workspace(
     server_ids_to_inject: Vec<McpServerId>,
 ) -> DesktopRuntimeState {
     std::fs::create_dir_all(&workspace).unwrap();
+    write_test_provider_settings(&workspace);
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
         default_timeout: Some(Duration::from_secs(5)),
         heartbeat_interval: None,
@@ -1255,6 +1342,7 @@ async fn runtime_state_with_scripted_model_for_workspace(
     responses: Vec<ScriptedResponse>,
 ) -> DesktopRuntimeState {
     std::fs::create_dir_all(&workspace).unwrap();
+    write_test_provider_settings(&workspace);
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
         default_timeout: Some(Duration::from_secs(5)),
         heartbeat_interval: None,

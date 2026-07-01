@@ -33,19 +33,17 @@ use jyowo_harness_sdk::AgentCapabilityResolutionContext;
 
 #[derive(Clone)]
 pub(crate) struct DesktopProviderCredentialResolver {
-    conversation_metadata_store: Arc<dyn ConversationMetadataStore>,
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
     provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
 }
 
 impl DesktopProviderCredentialResolver {
     pub(crate) fn new(
-        conversation_metadata_store: Arc<dyn ConversationMetadataStore>,
+        _conversation_metadata_store: Arc<dyn ConversationMetadataStore>,
         provider_settings_store: Arc<dyn ProviderSettingsStore>,
         provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
     ) -> Self {
         Self {
-            conversation_metadata_store,
             provider_settings_store,
             provider_capability_routes,
         }
@@ -113,25 +111,12 @@ impl ProviderCredentialResolverCap for DesktopProviderCredentialResolver {
                         "MiniMax provider config is not configured".to_owned(),
                     )
                 })?;
-            let bound_config_id = self
-                .conversation_metadata_store
-                .load_record()
-                .map_err(|error| ToolError::PermissionDenied(error.message))?
-                .conversations
-                .get(&context.session_id.to_string())
-                .and_then(|record| record.default_model_config_id.clone());
-            let selected = bound_config_id
+            let selected = context
+                .model_config_id
                 .as_deref()
                 .and_then(|config_id| {
                     record.configs.iter().find(|config| {
                         config.id == config_id && config.provider_id == context.provider_id
-                    })
-                })
-                .or_else(|| {
-                    record.default_config_id.as_deref().and_then(|config_id| {
-                        record.configs.iter().find(|config| {
-                            config.id == config_id && config.provider_id == context.provider_id
-                        })
                     })
                 })
                 .ok_or_else(|| {
@@ -1501,6 +1486,15 @@ pub(crate) fn provider_api_key_fingerprint(api_key: &str) -> [u8; 32] {
     *blake3::hash(api_key.as_bytes()).as_bytes()
 }
 
+pub(crate) fn provider_config_runtime_fingerprint(
+    config: &ProviderConfigRecord,
+) -> Result<[u8; 32], CommandErrorPayload> {
+    let bytes = serde_json::to_vec(config).map_err(|error| {
+        runtime_init_failed(format!("provider config fingerprint failed: {error}"))
+    })?;
+    Ok(*blake3::hash(&bytes).as_bytes())
+}
+
 pub(crate) fn prune_expired_provider_api_key_reveal_tokens(
     tokens: &mut HashMap<String, ProviderConfigRevealTokenRecord>,
     now: Instant,
@@ -2232,6 +2226,9 @@ pub(crate) fn model_from_provider_settings(
     selected_config_id: Option<&str>,
 ) -> Result<Option<(Arc<dyn ModelProvider>, String, ModelProtocol)>, CommandErrorPayload> {
     let Some(record) = store.load_record()? else {
+        if selected_config_id.is_some() {
+            return Err(runtime_init_failed("provider config is missing".to_owned()));
+        }
         return Ok(None);
     };
     let Some(config_id) = selected_config_id.or(record.default_config_id.as_deref()) else {

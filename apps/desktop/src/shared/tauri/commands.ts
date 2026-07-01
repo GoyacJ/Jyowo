@@ -1363,6 +1363,7 @@ const startRunRequestSchema = z
     clientMessageId: z.uuid().regex(uuidV4Pattern).optional(),
     conversationId: z.string().min(1),
     contextReferences: z.array(contextReferenceSchema).optional(),
+    modelConfigId: z.string().min(1),
     permissionMode: permissionModeSchema.optional(),
     prompt: z.string().min(1),
   })
@@ -1825,21 +1826,6 @@ const getProviderConfigApiKeyResponseSchema = z
   .object({
     apiKey: z.string(),
     configId: z.string().min(1),
-  })
-  .strict()
-
-const setConversationModelConfigRequestSchema = z
-  .object({
-    conversationId: z.string().min(1),
-    modelConfigId: z.string().min(1),
-  })
-  .strict()
-
-const setConversationModelConfigResponseSchema = z
-  .object({
-    conversationId: z.string().min(1),
-    modelConfigId: z.string().min(1),
-    status: z.literal('saved'),
   })
   .strict()
 
@@ -3128,9 +3114,6 @@ export type RequestProviderConfigApiKeyRevealResponse = z.infer<
   typeof requestProviderConfigApiKeyRevealResponseSchema
 >
 export type GetProviderConfigApiKeyResponse = z.infer<typeof getProviderConfigApiKeyResponseSchema>
-export type SetConversationModelConfigResponse = z.infer<
-  typeof setConversationModelConfigResponseSchema
->
 export type McpServerSummary = z.infer<typeof mcpServerSummarySchema>
 export type McpServerConfig = z.infer<typeof mcpServerConfigSchema>
 export type ListMcpServersResponse = z.infer<typeof listMcpServersResponseSchema>
@@ -3334,10 +3317,6 @@ export interface CommandClient {
     request: SetExecutionSettingsRequest,
   ) => Promise<SetExecutionSettingsResponse>
   setAutomationEnabled: (id: string, enabled: boolean) => Promise<SetAutomationEnabledResponse>
-  setConversationModelConfig: (
-    conversationId: string,
-    modelConfigId: string,
-  ) => Promise<SetConversationModelConfigResponse>
   setSkillEnabled: (id: string, enabled: boolean) => Promise<SetSkillEnabledResponse>
   archiveBackgroundAgent: (
     request: BackgroundAgentIdRequest,
@@ -3910,18 +3889,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'clear_mcp_diagnostics'
       const args = parseArgs(command, clearMcpDiagnosticsRequestSchema, { serverId })
       return parsePayload(command, clearMcpDiagnosticsResponseSchema, await invoke(command, args))
-    },
-    async setConversationModelConfig(conversationId, modelConfigId) {
-      const command = 'set_conversation_model_config'
-      const args = parseArgs(command, setConversationModelConfigRequestSchema, {
-        conversationId,
-        modelConfigId,
-      })
-      return parsePayload(
-        command,
-        setConversationModelConfigResponseSchema,
-        await invoke(command, args),
-      )
     },
     async setSkillEnabled(id, enabled) {
       const command = 'set_skill_enabled'

@@ -111,7 +111,6 @@ pub fn run() {
             commands::set_mcp_server_enabled,
             commands::set_automation_enabled,
             commands::set_execution_settings,
-            commands::set_conversation_model_config,
             commands::set_skill_enabled,
             commands::send_background_agent_input,
             commands::start_run,

@@ -112,12 +112,13 @@ mod tests;
 mod validation;
 
 use contracts::default_worktree_direction;
+pub(crate) use conversations::mark_conversation_metadata_active;
 use error::{invalid_payload, runtime_unavailable};
 use providers::{
     provider_capability_route_runtime_context, save_provider_settings_with_runtime_state_unlocked,
     sync_runtime_provider_capability_routes,
 };
-use runtime::build_desktop_harness;
+pub(crate) use runtime::build_desktop_harness;
 use validation::{ensure_non_empty, ensure_provider_settings};
 
 pub(crate) use agents::map_agent_runtime_error;
@@ -208,8 +209,7 @@ pub use contracts::{
     SaveBrowserMcpPresetRequest, SaveBrowserMcpPresetResponse, SaveMcpServerRequest,
     SaveMcpServerResponse, SaveProviderCapabilityRouteRequest, SaveProviderCapabilityRouteResponse,
     SaveProviderSettingsResponse, SendBackgroundAgentInputRequest, SetAutomationEnabledRequest,
-    SetAutomationEnabledResponse, SetConversationModelConfigRequest,
-    SetConversationModelConfigResponse, SetExecutionSettingsRequest, SetExecutionSettingsResponse,
+    SetAutomationEnabledResponse, SetExecutionSettingsRequest, SetExecutionSettingsResponse,
     SetMcpServerEnabledRequest, SetMcpServerEnabledResponse, SetPluginEnabledRequest,
     SetProjectPluginsEnabledRequest, SetProjectPluginsEnabledResponse, SetSkillEnabledRequest,
     SetSkillEnabledResponse, SkillCatalogInstallProgressEmitter,
@@ -233,8 +233,7 @@ pub use conversations::{
     list_reference_candidates_payload, list_reference_candidates_with_runtime_state,
     page_conversation_timeline_with_runtime_state, page_conversation_worktree_with_runtime_state,
     resolve_permission_for_window_with_runtime_state, resolve_permission_payload,
-    resolve_permission_with_runtime_state, resolve_start_run_agent_policy,
-    set_conversation_model_config_with_runtime_state, start_run_payload,
+    resolve_permission_with_runtime_state, resolve_start_run_agent_policy, start_run_payload,
     start_run_with_runtime_state, subscribe_conversation_events_for_window_with_runtime_state,
     subscribe_conversation_events_with_runtime_state,
     unsubscribe_conversation_events_for_window_with_runtime_state,
@@ -1464,23 +1463,6 @@ pub async fn get_conversation(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn set_conversation_model_config(
-    conversation_id: String,
-    model_config_id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<SetConversationModelConfigResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    set_conversation_model_config_with_runtime_state(
-        SetConversationModelConfigRequest {
-            conversation_id,
-            model_config_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
 pub async fn delete_conversation(
     conversation_id: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
@@ -1500,6 +1482,7 @@ pub async fn start_run(
     client_message_id: Option<String>,
     context_references: Option<Vec<ContextReferencePayload>>,
     conversation_id: String,
+    model_config_id: String,
     permission_mode: Option<PermissionMode>,
     prompt: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
@@ -1512,6 +1495,7 @@ pub async fn start_run(
             client_message_id,
             context_references,
             conversation_id,
+            model_config_id,
             permission_mode,
             prompt,
         },

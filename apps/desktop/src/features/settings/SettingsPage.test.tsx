@@ -12,6 +12,11 @@ import { createTestCommandClient } from '@/testing/command-client'
 
 import { SettingsPage } from './SettingsPage'
 
+const emptyProviderSettingsList = {
+  defaultConfigId: null,
+  configs: [],
+}
+
 function renderSettingsPage() {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -21,7 +26,9 @@ function renderSettingsPage() {
 
   function Wrapper({ children }: { children: ReactNode }) {
     return (
-      <CommandClientProvider client={createTestCommandClient()}>
+      <CommandClientProvider
+        client={createTestCommandClient({ providerSettingsList: emptyProviderSettingsList })}
+      >
         <QueryClientProvider client={queryClient}>
           <AppI18nProvider>{children}</AppI18nProvider>
         </QueryClientProvider>
