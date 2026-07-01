@@ -33,6 +33,19 @@ export const Idle: Story = {
   },
 }
 
+export const Running: Story = {
+  args: {
+    activeRunId: 'run-002',
+  },
+}
+
+export const Failed: Story = {
+  args: {
+    activeRunId: 'run-003',
+    errorMessage: 'Command failed during verification.',
+  },
+}
+
 function StoryFrame({ children }: { children: ReactNode }) {
   return (
     <main className="flex min-h-screen items-end bg-background text-foreground">

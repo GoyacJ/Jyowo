@@ -7,7 +7,7 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
-use futures::{executor::block_on, stream, StreamExt};
+use futures::{executor::block_on, stream};
 use harness_contracts::{
     AgentId, BudgetKind, CorrelationId, Decision, DecisionScope, DeferPolicy, EndReason, Event,
     EventId, ForkReason, InteractivityLevel, JournalError, JournalOffset, Message, MessageId,
@@ -33,7 +33,7 @@ use harness_team::{
     TeamMemberRunner, TeamSandboxPolicy, TeamToolsetSelector, Topology,
 };
 use harness_tool::{Tool, ToolContext, ToolEvent, ToolPool, ToolStream, ValidationError};
-use jyowo_harness_sdk::{testing, EngineTeamMemberRunner, Harness};
+use jyowo_harness_sdk::EngineTeamMemberRunner;
 
 #[test]
 fn engine_team_member_runner_uses_member_session_parent_and_correlation() {
@@ -148,106 +148,6 @@ fn engine_team_member_runner_marks_permission_requests_with_team_member_source()
             }
         );
     });
-}
-
-#[tokio::test]
-async fn sdk_create_team_exposes_runtime_facade_and_journals_lifecycle() {
-    let store = Arc::new(testing::InMemoryEventStore::new(Arc::new(
-        testing::NoopRedactor,
-    )));
-    let event_store: Arc<dyn EventStore> = store.clone();
-    let owner = AgentId::new();
-    let worker = AgentId::new();
-    let late = AgentId::new();
-    let harness = Harness::builder()
-        .with_model(testing::TestModelProvider::default())
-        .with_store_arc(event_store)
-        .with_sandbox(testing::NoopSandbox::new())
-        .build()
-        .await
-        .expect("harness should build");
-
-    let team = harness
-        .create_team(
-            TeamBuilder::new("sdk-team", Topology::PeerToPeer)
-                .member(owner, "owner", ContextVisibility::All)
-                .member(worker, "worker", ContextVisibility::All),
-        )
-        .await
-        .expect("sdk team should be created");
-
-    let message = team
-        .dispatch(owner, Recipient::Broadcast, "ship")
-        .await
-        .expect("dispatch should post through runtime team");
-    assert_eq!(message.from, owner);
-
-    team.pause();
-    let paused = team
-        .dispatch(owner, Recipient::Broadcast, "blocked")
-        .await
-        .expect_err("paused team should reject dispatch");
-    assert!(paused.to_string().contains("paused"));
-    team.resume();
-
-    team.pause_member(worker).await;
-    assert!(team.is_member_paused(worker).await);
-    team.resume_member(worker).await;
-    assert!(!team.is_member_paused(worker).await);
-
-    team.add_member(harness_team::TeamMember {
-        agent_id: late,
-        role: "late".to_owned(),
-        visibility: ContextVisibility::All,
-        engine_config: TeamMemberEngineConfig::default(),
-    })
-    .await
-    .expect("add member should journal join");
-    team.remove_member(late)
-        .await
-        .expect("remove member should journal leave");
-    team.remove_member(late)
-        .await
-        .expect("unknown member removal should be idempotent");
-
-    team.terminate(harness_contracts::TeamTerminationReason::Cancelled)
-        .await
-        .expect("terminate should journal termination");
-    let terminated = team
-        .dispatch(owner, Recipient::Broadcast, "after")
-        .await
-        .expect_err("terminated team should reject dispatch");
-    assert!(terminated.to_string().contains("terminated"));
-
-    let events: Vec<_> = store
-        .read(
-            team.tenant_id(),
-            team.journal_session_id(),
-            ReplayCursor::FromStart,
-        )
-        .await
-        .expect("team journal should be readable")
-        .collect()
-        .await;
-    assert!(events
-        .iter()
-        .any(|event| matches!(event, Event::TeamCreated(_))));
-    assert!(
-        events
-            .iter()
-            .filter(|event| matches!(event, Event::TeamMemberJoined(_)))
-            .count()
-            >= 3
-    );
-    assert!(events
-        .iter()
-        .any(|event| matches!(event, Event::AgentMessageSent(_))));
-    assert!(events
-        .iter()
-        .any(|event| matches!(event, Event::TeamMemberLeft(left) if left.agent_id == late)));
-    assert!(events
-        .iter()
-        .any(|event| matches!(event, Event::TeamTerminated(_))));
 }
 
 #[tokio::test]

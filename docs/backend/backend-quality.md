@@ -2,6 +2,8 @@
 
 This document defines backend tests, gates, CI, docs policy, and review checklist.
 
+Backend tests follow the project-wide strategy defined in [../testing/testing-strategy.md](../testing/testing-strategy.md). This section covers backend-specific requirements.
+
 ## Required Gates
 
 Root commands:
@@ -11,6 +13,7 @@ pnpm check:rust-deps
 pnpm check:backend-docs
 pnpm check:docs
 pnpm check:agent-orchestration-no-fakes
+pnpm check:agent-supervisor-sidecar
 pnpm check:rust
 pnpm check
 ```
@@ -34,6 +37,8 @@ cargo test --workspace
 ```
 
 `pnpm check` MUST run docs, desktop, and Rust gates.
+It also MUST run the agent orchestration no-fake and supervisor sidecar policy
+gates before desktop and Rust verification.
 
 ## Agent Orchestration Anti-fake Gate
 
@@ -120,14 +125,21 @@ Critical backend tests:
 ```text
 apps/desktop/src-tauri/tests/commands.rs
 crates/jyowo-harness-budget/tests/budget_contract.rs
-crates/jyowo-harness-contracts/tests/m1_contracts.rs
+crates/jyowo-harness-contracts/tests/core_contracts.rs
+crates/jyowo-harness-contracts/tests/tool_contracts.rs
 crates/jyowo-harness-contracts/tests/provider_capability_routes.rs
 crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs
 crates/jyowo-harness-journal/tests/conversation_read_model.rs
 crates/jyowo-harness-journal/tests/version.rs
 crates/jyowo-harness-sdk/tests/conversation_read_model.rs
 crates/jyowo-harness-observability/tests/journal_redactor_pipeline.rs
-crates/jyowo-harness-sdk/tests/runtime_assembly.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_agents.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_capability_routes.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_context.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_memory.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_observability.rs
+crates/jyowo-harness-sdk/tests/runtime_assembly_tools.rs
 crates/jyowo-harness-tool/tests/builtin_exec.rs
 crates/jyowo-harness-tool/tests/builtin_io.rs
 crates/jyowo-harness-tool/tests/orchestrator.rs
@@ -148,8 +160,6 @@ Allowed upstream-held transitive dependencies:
 |---|---:|---:|---|---|
 | `generic-array` | `0.14.7` | `0.14.9` | `crypto-common 0.1.7` | exact dependency required by the RustCrypto `digest 0.10` chain used by Tauri/Wry SHA-2 code |
 | `matchit` | `0.8.4` | `0.8.6` | `axum 0.8.9` | exact dependency selected by the latest stable Axum release |
-| `time` | `0.3.51` | `0.3.53` | `cookie 0.18.1` | Tauri cookie dependency calls the time 0.3.51 parsing API; newer time versions change the method signature |
-| `time-macros` | `0.2.30` | `0.2.31` | `time 0.3.51` | kept in lockstep with the Tauri-held time 0.3.51 dependency |
 | `toml` | `0.8.2` | `0.8.23` | `system-deps 6.2.2` | Linux GTK/Tauri build dependency chain |
 | `toml_datetime` | `0.6.3` | `0.6.11` | `proc-macro-crate 2.0.2` | exact dependency required by GTK proc-macro chain |
 | `toml_edit` | `0.20.2` | `0.20.7` | `proc-macro-crate 2.0.2` | exact dependency required by GTK proc-macro chain |

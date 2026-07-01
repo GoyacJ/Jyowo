@@ -11,6 +11,7 @@
 涉及前端时，按顺序读：
 
 ```text
+docs/testing/testing-strategy.md
 docs/frontend/agent-harness-frontend-development-guidelines.md
 docs/frontend/frontend-product-ux.md
 docs/frontend/frontend-engineering.md
@@ -21,6 +22,7 @@ docs/design2/antigravity_2_0_design_system_specification.md
 涉及后端时，按顺序读：
 
 ```text
+docs/testing/testing-strategy.md
 docs/backend/agent-harness-backend-development-guidelines.md
 docs/backend/backend-runtime.md
 docs/backend/backend-engineering.md
@@ -55,6 +57,10 @@ docs/backend/backend-quality.md
 - 不回滚用户或其他 agent 的改动。
 - 不提交生成物噪音。
 - 不引入未使用的依赖、import、变量或文件。
+
+涉及测试、门禁、CI、前端组件、后端 runtime、IPC、contract、安全边界时，必须读取 docs/testing/testing-strategy.md。
+新增或修改测试时必须遵守测试分类、命名、fixture、删除规则。
+不得因为功能完成而删除测试。
 
 ## 修改边界
 
@@ -155,6 +161,14 @@ pnpm check:backend-docs
 pnpm check:design2-docs
 pnpm check:desktop
 pnpm check:rust
+pnpm audit:tests
+pnpm check:test-architecture
+pnpm check:testing-docs
+pnpm check:agent-orchestration-no-fakes
+pnpm check:agent-supervisor-sidecar
+pnpm check:quick
+pnpm check:frontend:fast
+pnpm check:rust:fast
 ```
 
 Rust 门禁：
