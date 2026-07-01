@@ -11,6 +11,7 @@ import type {
   CommandClient,
   ConversationEventBatchPayload,
   ConversationTurn,
+  ListProviderSettingsResponse,
   ListProjectsResponse,
   ModelProviderCatalogResponse,
   PageConversationWorktreeResponse,
@@ -87,6 +88,44 @@ const openAiModelDescriptor: ModelCatalogEntry = {
   maxOutputTokens: 16384,
   modelId: 'gpt-5.4-mini',
   runtimeStatus: { kind: 'runnable' },
+}
+
+const switchableProviderSettings: ListProviderSettingsResponse = {
+  defaultConfigId: 'deepseek-config',
+  configs: [
+    {
+      protocol: 'chat_completions',
+      displayName: 'DeepSeek',
+      hasApiKey: true,
+      hasOfficialQuotaApiKey: false,
+      id: 'deepseek-config',
+      isDefault: true,
+      modelDescriptor: {
+        ...openAiModelDescriptor,
+        protocol: 'chat_completions',
+        displayName: 'DeepSeek V4 Flash',
+        modelId: 'deepseek-v4-flash',
+      },
+      modelId: 'deepseek-v4-flash',
+      providerId: 'deepseek',
+    },
+    {
+      protocol: 'chat_completions',
+      displayName: 'MiniMax',
+      hasApiKey: true,
+      hasOfficialQuotaApiKey: false,
+      id: 'minimax-config',
+      isDefault: false,
+      modelDescriptor: {
+        ...openAiModelDescriptor,
+        protocol: 'chat_completions',
+        displayName: 'MiniMax M3',
+        modelId: 'MiniMax-M3',
+      },
+      modelId: 'MiniMax-M3',
+      providerId: 'minimax',
+    },
+  ],
 }
 
 function flushAnimationFrames(frameCount = 2) {
@@ -307,6 +346,113 @@ describe('ConversationWorkspace', () => {
     const modelSelector = (await screen.findByLabelText('Model')) as HTMLSelectElement
 
     expect(modelSelector.value).toBe('')
+  })
+
+  it('keeps model selection local and submits the selected model config', async () => {
+    const commandClient = createTestCommandClient({
+      conversationWorktreePage: pageWithTurn('complete'),
+      providerSettingsList: switchableProviderSettings,
+    })
+    const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
+    const trackedClient = {
+      ...commandClient,
+      startRun: (request: Parameters<CommandClient['startRun']>[0]) => {
+        startRunCalls.push(request)
+        return Promise.resolve({ runId: 'run-001', status: 'started' })
+      },
+    } satisfies CommandClient
+
+    renderConversationWorkspace(trackedClient)
+
+    const modelSelector = (await screen.findByLabelText('Model')) as HTMLSelectElement
+    expect(modelSelector.value).toBe('deepseek-config')
+
+    fireEvent.change(modelSelector, { target: { value: 'minimax-config' } })
+    expect(startRunCalls).toHaveLength(0)
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+      target: { value: 'Use MiniMax for this run' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => {
+      expect(startRunCalls).toEqual([
+        expect.objectContaining({
+          modelConfigId: 'minimax-config',
+          prompt: 'Use MiniMax for this run',
+        }),
+      ])
+    })
+  })
+
+  it('invalidates conversation detail and list after a successful submit', async () => {
+    const commandClient = createTestCommandClient({
+      conversationWorktreePage: pageWithTurn('complete'),
+    })
+    const trackedClient = {
+      ...commandClient,
+      startRun: () => Promise.resolve({ runId: 'run-001', status: 'started' }),
+    } satisfies CommandClient
+    const { queryClient } = renderConversationWorkspace(trackedClient)
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
+
+    fireEvent.change(
+      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
+      {
+        target: { value: 'Refresh metadata defaults after submit' },
+      },
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => {
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: ['conversation', 'detail', '/Users/goya/Repo/Git/Jyowo', 'conversation-001'],
+      })
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: ['conversation', 'list', '/Users/goya/Repo/Git/Jyowo'],
+      })
+    })
+  })
+
+  it('disables send when no configured model has an API key', async () => {
+    const commandClient = createTestCommandClient({
+      conversationWorktreePage: pageWithTurn('complete'),
+      providerSettingsList: {
+        defaultConfigId: 'openai-work',
+        configs: [
+          {
+            protocol: 'responses',
+            displayName: 'OpenAI Work',
+            hasApiKey: false,
+            hasOfficialQuotaApiKey: false,
+            id: 'openai-work',
+            isDefault: true,
+            modelDescriptor: openAiModelDescriptor,
+            modelId: 'gpt-5.4-mini',
+            providerId: 'openai',
+          },
+        ],
+      },
+    })
+    const startRun = vi.fn(commandClient.startRun)
+    const trackedClient = {
+      ...commandClient,
+      startRun,
+    } satisfies CommandClient
+
+    renderConversationWorkspace(trackedClient)
+
+    fireEvent.change(
+      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
+      {
+        target: { value: 'This should stay disabled' },
+      },
+    )
+    const sendButton = screen.getByRole('button', { name: 'Send message' })
+
+    expect(sendButton).toBeDisabled()
+    fireEvent.click(sendButton)
+    expect(startRun).not.toHaveBeenCalled()
   })
 
   it('renders nested permission state and sends decisions through commands', async () => {
