@@ -15,6 +15,7 @@ docs/frontend/agent-harness-frontend-development-guidelines.md
 docs/frontend/frontend-product-ux.md
 docs/frontend/frontend-engineering.md
 docs/frontend/frontend-quality.md
+docs/design2/antigravity_2_0_design_system_specification.md
 ```
 
 涉及后端时，按顺序读：
@@ -151,6 +152,7 @@ pnpm check:docs
 pnpm check:agent-docs
 pnpm check:frontend-docs
 pnpm check:backend-docs
+pnpm check:design2-docs
 pnpm check:desktop
 pnpm check:rust
 ```
