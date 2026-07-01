@@ -38,6 +38,7 @@ async fn list_artifacts_with_runtime_state_ignores_assistant_outputs() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -102,6 +103,7 @@ async fn list_artifacts_with_runtime_state_projects_artifact_events() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,

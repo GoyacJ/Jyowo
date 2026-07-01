@@ -248,6 +248,7 @@ pub(crate) async fn start_automation_conversation_run(
     ensure_start_run_permission_mode(permission_mode)?;
     let conversation_id = state.default_conversation_id().to_string();
     let request = StartRunRequest {
+        agent_options: None,
         attachments: None,
         client_message_id: None,
         context_references: None,
@@ -299,6 +300,8 @@ pub(crate) async fn start_automation_conversation_run(
                 options: run_options,
                 input,
                 permission_mode_override: Some(permission_mode),
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
     });
@@ -315,6 +318,7 @@ pub(crate) async fn start_automation_conversation_run(
     drop(run_task);
 
     Ok(StartRunResponse {
+        background_agent_id: None,
         run_id: run_id.to_string(),
         status: "started",
     })

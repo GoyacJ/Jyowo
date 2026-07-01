@@ -95,6 +95,11 @@ function getActivityLabel(event: RunEvent): string {
     case 'permission.requested':
     case 'permission.resolved':
       return event.payload?.requestId ?? 'permission'
+    case 'background.started':
+      return event.payload?.title ?? event.payload?.backgroundAgentId ?? 'background'
+    case 'background.permission.requested':
+    case 'background.permission.resolved':
+      return event.payload?.requestId ?? 'background permission'
     case 'artifact.created':
     case 'artifact.updated':
       return event.payload?.artifactId ?? 'artifact'
@@ -133,6 +138,11 @@ function getWithheldActivityLabel(event: RunEvent): string {
     case 'permission.requested':
     case 'permission.resolved':
       return 'permission'
+    case 'background.started':
+      return 'background'
+    case 'background.permission.requested':
+    case 'background.permission.resolved':
+      return 'background permission'
     case 'artifact.created':
     case 'artifact.updated':
       return 'artifact'
@@ -162,6 +172,10 @@ function getActivityStatus(event: RunEvent): ActivityRailItem['status'] {
         return 'success'
       }
       return 'blocked'
+    case 'background.started':
+      return 'running'
+    case 'background.permission.requested':
+      return 'blocked'
     case 'tool.denied':
     case 'assistant.review.requested':
     case 'assistant.clarification.requested':
@@ -184,6 +198,7 @@ function getActivityStatus(event: RunEvent): ActivityRailItem['status'] {
       return 'success'
     case 'assistant.completed':
     case 'assistant.notice':
+    case 'background.permission.resolved':
     case 'permission.resolved':
     case 'run.ended':
     case 'tool.completed':
@@ -237,6 +252,37 @@ function getDetails(event: RunEvent): RunEventViewModel['details'] {
           },
         ],
       }
+    case 'background.permission.requested':
+      if (event.visibility === 'withheld') {
+        return undefined
+      }
+
+      return {
+        permissions: [
+          {
+            id: event.payload?.requestId ?? event.id,
+            label: 'background permission',
+            reason: event.payload?.reason,
+            risk: 'medium',
+            state: 'pending',
+          },
+        ],
+      }
+    case 'background.permission.resolved':
+      if (event.visibility === 'withheld') {
+        return undefined
+      }
+
+      return {
+        permissions: [
+          {
+            id: event.payload?.requestId ?? event.id,
+            label: 'background permission',
+            risk: 'medium',
+            state: event.payload?.decision === 'approve' ? 'approved' : 'denied',
+          },
+        ],
+      }
     case 'run.started':
     case 'run.ended':
     case 'user.message.appended':
@@ -253,6 +299,7 @@ function getDetails(event: RunEvent): RunEventViewModel['details'] {
     case 'tool.failed':
     case 'artifact.created':
     case 'artifact.updated':
+    case 'background.started':
     case 'engine.failed':
     case 'plugin.loaded':
     case 'plugin.rejected':

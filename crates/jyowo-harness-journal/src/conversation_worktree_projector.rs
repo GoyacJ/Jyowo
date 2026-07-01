@@ -3,8 +3,10 @@
 use std::collections::{HashMap, HashSet};
 
 use harness_contracts::{
-    ArtifactMediaKind, ArtifactMediaPreview, ArtifactSegment, ArtifactSource, ArtifactStatus,
-    AssistantNoticeCode, AssistantSegment, AssistantWork, AssistantWorkStatus, BlobId, BlobRef,
+    AgentActivityKind, AgentActivityPermissionState, AgentActivitySegment, AgentActivityStatus,
+    AgentTeamActivityDetails, AgentTeamMemberActivity, AgentTeamTaskActivity, ArtifactMediaKind,
+    ArtifactMediaPreview, ArtifactSegment, ArtifactSource, ArtifactStatus, AssistantNoticeCode,
+    AssistantSegment, AssistantWork, AssistantWorkStatus, BlobId, BlobRef,
     ClarificationRequestSegment, ConversationAttachmentReference, ConversationCursor,
     ConversationEventRef, ConversationTimelineEvent, ConversationTurn, ConversationTurnUserMessage,
     ConversationWorktreePage, ErrorSegment, NoticeSegment, ProcessDiffFile, ProcessSegment,
@@ -37,6 +39,8 @@ pub fn project_conversation_worktree_snapshot(
         turns: Vec::new(),
         run_turns: HashMap::new(),
         request_tools: HashMap::new(),
+        subagent_requests: HashMap::new(),
+        agent_tool_tasks: HashMap::new(),
         seen_event_ids: HashSet::new(),
         event_cursor: None,
         event_refs: Vec::new(),
@@ -80,6 +84,47 @@ pub fn project_conversation_worktree_snapshot(
             "assistant.notice" => state.project_notice(&event, event_ref),
             "run.ended" => state.project_run_ended(&event, event_ref),
             "engine.failed" => state.project_engine_failed(&event, event_ref),
+            "subagent.spawned" => state.project_subagent_spawned(&event, event_ref),
+            "subagent.announced" => state.project_subagent_announced(&event, event_ref),
+            "subagent.terminated" => state.project_subagent_terminated(&event, event_ref),
+            "subagent.stalled" => state.project_subagent_stalled(&event, event_ref),
+            "subagent.permission.forwarded" => {
+                state.project_subagent_permission_forwarded(&event, event_ref);
+            }
+            "subagent.permission.resolved" => {
+                state.project_subagent_permission_resolved(&event, event_ref);
+            }
+            "team.created" => state.project_team_created(&event, event_ref),
+            "team.member.joined" => state.project_team_member_joined(&event, event_ref),
+            "team.member.left" => state.project_team_member_left(&event, event_ref),
+            "team.member.stalled" => state.project_team_member_stalled(&event, event_ref),
+            "agent.message.sent" => state.project_team_message_sent(&event, event_ref),
+            "agent.message.routed" => state.project_team_message_routed(&event, event_ref),
+            "team.turn.completed" => state.project_team_turn_completed(&event, event_ref),
+            "team.task.updated" => state.project_team_task_updated(&event, event_ref),
+            "team.terminated" => state.project_team_terminated(&event, event_ref),
+            "background.started" => state.project_background_started(&event, event_ref),
+            "background.state.changed" => {
+                state.project_background_state_changed(&event, event_ref);
+            }
+            "background.input.requested" => {
+                state.project_background_input_requested(&event, event_ref);
+            }
+            "background.input.submitted" => {
+                state.project_background_input_submitted(&event, event_ref);
+            }
+            "background.permission.requested" => {
+                state.project_background_permission_requested(&event, event_ref);
+            }
+            "background.permission.resolved" => {
+                state.project_background_permission_resolved(&event, event_ref);
+            }
+            "background.cancelled" => state.project_background_cancelled(&event, event_ref),
+            "background.completed" => state.project_background_completed(&event, event_ref),
+            "background.failed" => state.project_background_failed(&event, event_ref),
+            "background.interrupted" => state.project_background_interrupted(&event, event_ref),
+            "background.archived" => state.project_background_archived(&event, event_ref),
+            "background.deleted" => state.project_background_deleted(&event, event_ref),
             _ => {}
         }
     }
@@ -111,6 +156,8 @@ struct ProjectionState<'a> {
     turns: Vec<ConversationTurn>,
     run_turns: HashMap<String, usize>,
     request_tools: HashMap<String, String>,
+    subagent_requests: HashMap<String, String>,
+    agent_tool_tasks: HashMap<String, (String, String)>,
     seen_event_ids: HashSet<String>,
     event_cursor: Option<ConversationCursor>,
     event_refs: Vec<ConversationEventRef>,
@@ -560,6 +607,7 @@ impl ProjectionState<'_> {
         };
         let tool_name =
             string_field(&event.payload, "toolName").unwrap_or_else(|| "Tool".to_owned());
+        let is_agent_tool = tool_name.eq_ignore_ascii_case("agent");
         let group = self.tool_group(&event.run_id, &tool_use_id, event_ref.clone());
         if group
             .attempts
@@ -586,6 +634,14 @@ impl ProjectionState<'_> {
             tool_step_title(&tool_name, ToolProcessPhase::Requested),
             tool_name,
         );
+        if is_agent_tool {
+            if let (Some(role), Some(task)) = (
+                string_field(&event.payload, "role"),
+                string_field(&event.payload, "taskSummary"),
+            ) {
+                self.agent_tool_tasks.insert(tool_use_id, (role, task));
+            }
+        }
     }
 
     fn update_tool_status(
@@ -1013,6 +1069,751 @@ impl ProjectionState<'_> {
                 body: ui_text("执行失败。可在详情中查看。"),
                 event_refs: vec![event_ref],
             }));
+    }
+
+    fn project_subagent_spawned(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(subagent_id) = string_field(&event.payload, "subagentId") else {
+            return;
+        };
+        let role = string_field(&event.payload, "role").unwrap_or_else(|| "Subagent".to_owned());
+        let task_summary = string_field(&event.payload, "taskSummary").or_else(|| {
+            string_field(&event.payload, "triggerToolUseId").and_then(|tool_use_id| {
+                self.agent_tool_tasks
+                    .get(&tool_use_id)
+                    .map(|(_, task)| task.clone())
+            })
+        });
+        let task_summary = task_summary.map(ui_text).unwrap_or_else(|| {
+            ui_text("Subagent task details withheld from conversation timeline.")
+        });
+        let order = self.next_segment_order(&event.run_id);
+        let assistant = self.assistant_work(event, event_ref.clone());
+        assistant
+            .segments
+            .push(AssistantSegment::AgentActivity(AgentActivitySegment {
+                id: format!("segment:agent:{subagent_id}"),
+                order,
+                activity_kind: AgentActivityKind::Subagent,
+                agent_id: subagent_id,
+                role: ui_text(role),
+                task_summary,
+                status: AgentActivityStatus::Running,
+                result_summary: None,
+                permission: None,
+                team: None,
+                event_refs: vec![event_ref],
+            }));
+    }
+
+    fn project_subagent_announced(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(subagent_id) = string_field(&event.payload, "subagentId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &subagent_id) else {
+            return;
+        };
+        segment.event_refs.push(event_ref.clone());
+        if bool_field(&event.payload, "redacted").unwrap_or(false) {
+            segment.status = AgentActivityStatus::Redacted;
+            segment.result_summary = Some(ui_text(
+                "Subagent result withheld from conversation timeline.",
+            ));
+            return;
+        }
+        if let Some(status) = string_field(&event.payload, "status") {
+            segment.status = subagent_announced_status(&status);
+        }
+        if let Some(summary) = string_field(&event.payload, "resultSummary") {
+            let safe_summary = ui_text(summary);
+            if safe_summary.as_str().contains("[REDACTED]") {
+                segment.status = AgentActivityStatus::Redacted;
+                segment.result_summary = Some(ui_text(
+                    "Subagent result withheld from conversation timeline.",
+                ));
+            } else {
+                segment.result_summary = Some(safe_summary);
+            }
+        }
+    }
+
+    fn project_subagent_terminated(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(subagent_id) = string_field(&event.payload, "subagentId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &subagent_id) else {
+            return;
+        };
+        segment.event_refs.push(event_ref);
+        if matches!(
+            segment.status,
+            AgentActivityStatus::Completed
+                | AgentActivityStatus::Failed
+                | AgentActivityStatus::Cancelled
+                | AgentActivityStatus::Redacted
+        ) {
+            return;
+        }
+        if let Some(reason) = string_field(&event.payload, "reason") {
+            segment.status = subagent_termination_status(&reason);
+        }
+    }
+
+    fn project_subagent_stalled(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(subagent_id) = string_field(&event.payload, "subagentId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &subagent_id) else {
+            return;
+        };
+        segment.event_refs.push(event_ref);
+        if !matches!(
+            segment.status,
+            AgentActivityStatus::Completed
+                | AgentActivityStatus::Failed
+                | AgentActivityStatus::Cancelled
+                | AgentActivityStatus::Redacted
+        ) {
+            segment.status = AgentActivityStatus::Stalled;
+        }
+    }
+
+    fn project_subagent_permission_forwarded(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(subagent_id) = string_field(&event.payload, "subagentId") else {
+            return;
+        };
+        let Some(request_id) = string_field(&event.payload, "requestId") else {
+            return;
+        };
+        self.subagent_requests
+            .insert(request_id.clone(), subagent_id.clone());
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &subagent_id) else {
+            return;
+        };
+        segment.status = AgentActivityStatus::WaitingPermission;
+        segment.permission = Some(AgentActivityPermissionState {
+            id: format!("permission:{request_id}"),
+            request_id,
+            status: ToolPermissionStatus::Pending,
+            summary: string_field(&event.payload, "reason").map(ui_text),
+            event_refs: vec![event_ref.clone()],
+        });
+        segment.event_refs.push(event_ref);
+    }
+
+    fn project_subagent_permission_resolved(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(request_id) = string_field(&event.payload, "requestId") else {
+            return;
+        };
+        let Some(subagent_id) = self.subagent_requests.get(&request_id).cloned() else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &subagent_id) else {
+            return;
+        };
+        let status = match string_field(&event.payload, "decision").as_deref() {
+            Some("approve" | "approved" | "allow") => ToolPermissionStatus::Approved,
+            Some("deny" | "denied") => ToolPermissionStatus::Denied,
+            Some("failed") => ToolPermissionStatus::Failed,
+            _ => ToolPermissionStatus::Denied,
+        };
+        if let Some(permission) = segment.permission.as_mut() {
+            permission.status = status;
+            permission.summary = None;
+            permission.event_refs.push(event_ref.clone());
+        }
+        segment.event_refs.push(event_ref);
+        if matches!(segment.status, AgentActivityStatus::WaitingPermission)
+            && matches!(status, ToolPermissionStatus::Approved)
+        {
+            segment.status = AgentActivityStatus::Running;
+        }
+    }
+
+    fn agent_activity_mut(
+        &mut self,
+        run_id: &str,
+        agent_id: &str,
+    ) -> Option<&mut AgentActivitySegment> {
+        let index = self.run_turns.get(run_id).copied()?;
+        let assistant = self.turns[index].assistant.as_mut()?;
+        assistant
+            .segments
+            .iter_mut()
+            .find_map(|segment| match segment {
+                AssistantSegment::AgentActivity(activity) if activity.agent_id == agent_id => {
+                    Some(activity)
+                }
+                _ => None,
+            })
+    }
+
+    fn project_team_created(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(team_id) = string_field(&event.payload, "teamId") else {
+            return;
+        };
+        let name = string_field(&event.payload, "name").unwrap_or_else(|| "Agent team".to_owned());
+        let topology = string_field(&event.payload, "topologyKind")
+            .unwrap_or_else(|| "coordinator_worker".to_owned());
+        let order = self.next_segment_order(&event.run_id);
+        let assistant = self.assistant_work(event, event_ref.clone());
+        assistant
+            .segments
+            .push(AssistantSegment::AgentActivity(AgentActivitySegment {
+                id: format!("segment:agent-team:{team_id}"),
+                order,
+                activity_kind: AgentActivityKind::AgentTeam,
+                agent_id: team_id,
+                role: ui_text(name),
+                task_summary: ui_text("Coordinating agent team."),
+                status: AgentActivityStatus::Running,
+                result_summary: None,
+                permission: None,
+                team: Some(AgentTeamActivityDetails {
+                    topology: ui_text(topology),
+                    lead: None,
+                    members: Vec::new(),
+                    current_tasks: Vec::new(),
+                    mailbox_count: 0,
+                    mailbox_summaries: Vec::new(),
+                }),
+                event_refs: vec![event_ref],
+            }));
+    }
+
+    fn project_team_member_joined(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(team_id) = string_field(&event.payload, "teamId") else {
+            return;
+        };
+        let Some(agent_id) = string_field(&event.payload, "agentId") else {
+            return;
+        };
+        let role = string_field(&event.payload, "role").unwrap_or_else(|| "Member".to_owned());
+        let member = AgentTeamMemberActivity {
+            agent_id,
+            role: ui_text(role),
+            status: AgentActivityStatus::Running,
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &team_id) else {
+            return;
+        };
+        if let Some(team) = segment.team.as_mut() {
+            if !team
+                .members
+                .iter()
+                .any(|existing| existing.agent_id == member.agent_id)
+            {
+                team.members.push(member.clone());
+            }
+            if team.lead.is_none() {
+                team.lead = Some(member);
+            }
+        }
+        segment.event_refs.push(event_ref);
+    }
+
+    fn project_team_member_left(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(team_id) = string_field(&event.payload, "teamId") else {
+            return;
+        };
+        let Some(agent_id) = string_field(&event.payload, "agentId") else {
+            return;
+        };
+        let status = match string_field(&event.payload, "reason").as_deref() {
+            Some("goal_achieved" | "goalAchieved") => AgentActivityStatus::Completed,
+            Some("interrupted" | "removed") => AgentActivityStatus::Cancelled,
+            Some("stalled_removed" | "stalledRemoved") => AgentActivityStatus::Stalled,
+            Some("quota_exceeded" | "quotaExceeded") | Some("error") => AgentActivityStatus::Failed,
+            _ => AgentActivityStatus::Cancelled,
+        };
+        self.update_team_member_status(&event.run_id, &team_id, &agent_id, status, event_ref);
+    }
+
+    fn project_team_member_stalled(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(team_id) = string_field(&event.payload, "teamId") else {
+            return;
+        };
+        let Some(agent_id) = string_field(&event.payload, "agentId") else {
+            return;
+        };
+        self.update_team_member_status(
+            &event.run_id,
+            &team_id,
+            &agent_id,
+            AgentActivityStatus::Stalled,
+            event_ref,
+        );
+    }
+
+    fn project_team_task_updated(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(team_id) = string_field(&event.payload, "teamId") else {
+            return;
+        };
+        let Some(task_id) = string_field(&event.payload, "taskId") else {
+            return;
+        };
+        let title = string_field(&event.payload, "title").unwrap_or_else(|| "Team task".to_owned());
+        let status = string_field(&event.payload, "status").unwrap_or_else(|| "running".to_owned());
+        let task = AgentTeamTaskActivity {
+            id: task_id,
+            title: ui_text(title),
+            status: ui_text(status),
+            assignee_profile_id: string_field(&event.payload, "assigneeProfileId"),
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &team_id) else {
+            return;
+        };
+        if let Some(team) = segment.team.as_mut() {
+            if let Some(existing) = team
+                .current_tasks
+                .iter_mut()
+                .find(|existing| existing.id == task.id)
+            {
+                *existing = task;
+            } else {
+                team.current_tasks.push(task);
+            }
+        }
+        segment.event_refs.push(event_ref);
+    }
+
+    fn project_team_message_sent(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(team_id) = string_field(&event.payload, "teamId") else {
+            return;
+        };
+        let message_id =
+            string_field(&event.payload, "messageId").unwrap_or_else(|| "message".to_owned());
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &team_id) else {
+            return;
+        };
+        if let Some(team) = segment.team.as_mut() {
+            team.mailbox_count = team.mailbox_count.saturating_add(1);
+            team.mailbox_summaries
+                .push(ui_text(format!("Queued message {message_id}.")));
+        }
+        segment.event_refs.push(event_ref);
+    }
+
+    fn project_team_message_routed(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(team_id) = string_field(&event.payload, "teamId") else {
+            return;
+        };
+        let message_id =
+            string_field(&event.payload, "messageId").unwrap_or_else(|| "message".to_owned());
+        let recipient_count = event
+            .payload
+            .get("resolvedRecipients")
+            .and_then(|value| value.as_array())
+            .map_or(0, Vec::len);
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &team_id) else {
+            return;
+        };
+        if let Some(team) = segment.team.as_mut() {
+            team.mailbox_count = team.mailbox_count.saturating_add(1);
+            let noun = if recipient_count == 1 {
+                "member"
+            } else {
+                "members"
+            };
+            team.mailbox_summaries.push(ui_text(format!(
+                "Routed message {message_id} to {recipient_count} {noun}."
+            )));
+        }
+        segment.event_refs.push(event_ref);
+    }
+
+    fn project_team_turn_completed(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(team_id) = string_field(&event.payload, "teamId") else {
+            return;
+        };
+        let participants: Vec<String> = event
+            .payload
+            .get("participatingAgents")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &team_id) else {
+            return;
+        };
+        if let Some(team) = segment.team.as_mut() {
+            for member in &mut team.members {
+                if participants
+                    .iter()
+                    .any(|agent_id| agent_id == &member.agent_id)
+                {
+                    member.status = AgentActivityStatus::Completed;
+                }
+            }
+            if let Some(lead) = team.lead.as_mut() {
+                if participants
+                    .iter()
+                    .any(|agent_id| agent_id == &lead.agent_id)
+                {
+                    lead.status = AgentActivityStatus::Completed;
+                }
+            }
+        }
+        segment.event_refs.push(event_ref);
+    }
+
+    fn project_team_terminated(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(team_id) = string_field(&event.payload, "teamId") else {
+            return;
+        };
+        let reason = string_field(&event.payload, "reason").unwrap_or_else(|| "error".to_owned());
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &team_id) else {
+            return;
+        };
+        segment.status = team_termination_status(&reason);
+        segment.result_summary = Some(ui_text(team_result_summary(&reason)));
+        segment.event_refs.push(event_ref);
+    }
+
+    fn project_background_started(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(background_agent_id) = string_field(&event.payload, "backgroundAgentId") else {
+            return;
+        };
+        let task_summary = string_field(&event.payload, "title")
+            .map(ui_text)
+            .unwrap_or_else(|| ui_text("Background agent started."));
+        let order = self.next_segment_order(&event.run_id);
+        let assistant = self.assistant_work(event, event_ref.clone());
+        assistant
+            .segments
+            .push(AssistantSegment::AgentActivity(AgentActivitySegment {
+                id: format!("segment:background-agent:{background_agent_id}"),
+                order,
+                activity_kind: AgentActivityKind::BackgroundAgent,
+                agent_id: background_agent_id,
+                role: ui_text("Background agent"),
+                task_summary,
+                status: AgentActivityStatus::Running,
+                result_summary: None,
+                permission: None,
+                team: None,
+                event_refs: vec![event_ref],
+            }));
+    }
+
+    fn project_background_state_changed(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(background_agent_id) = string_field(&event.payload, "backgroundAgentId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &background_agent_id) else {
+            return;
+        };
+        segment.event_refs.push(event_ref);
+        if is_terminal_agent_activity_status(segment.status) {
+            return;
+        }
+        if let Some(to) = string_field(&event.payload, "to") {
+            segment.status = background_agent_state_status(&to);
+        }
+        if matches!(
+            segment.status,
+            AgentActivityStatus::Failed
+                | AgentActivityStatus::Cancelled
+                | AgentActivityStatus::Stalled
+        ) {
+            segment.result_summary = string_field(&event.payload, "reason").map(ui_text);
+        }
+    }
+
+    fn project_background_input_requested(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(background_agent_id) = string_field(&event.payload, "backgroundAgentId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &background_agent_id) else {
+            return;
+        };
+        segment.event_refs.push(event_ref);
+        if !is_terminal_agent_activity_status(segment.status) {
+            segment.status = AgentActivityStatus::WaitingInput;
+        }
+    }
+
+    fn project_background_input_submitted(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(background_agent_id) = string_field(&event.payload, "backgroundAgentId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &background_agent_id) else {
+            return;
+        };
+        segment.event_refs.push(event_ref);
+        if matches!(segment.status, AgentActivityStatus::WaitingInput) {
+            segment.status = AgentActivityStatus::Running;
+        }
+    }
+
+    fn project_background_permission_requested(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(background_agent_id) = string_field(&event.payload, "backgroundAgentId") else {
+            return;
+        };
+        let Some(request_id) = string_field(&event.payload, "requestId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &background_agent_id) else {
+            return;
+        };
+        segment.status = AgentActivityStatus::WaitingPermission;
+        segment.permission = Some(AgentActivityPermissionState {
+            id: format!("permission:{request_id}"),
+            request_id,
+            status: ToolPermissionStatus::Pending,
+            summary: string_field(&event.payload, "reason").map(ui_text),
+            event_refs: vec![event_ref.clone()],
+        });
+        segment.event_refs.push(event_ref);
+    }
+
+    fn project_background_permission_resolved(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(background_agent_id) = string_field(&event.payload, "backgroundAgentId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &background_agent_id) else {
+            return;
+        };
+        let status = permission_status_from_decision(&event.payload);
+        if let Some(permission) = segment.permission.as_mut() {
+            permission.status = status;
+            permission.summary = None;
+            permission.event_refs.push(event_ref.clone());
+        }
+        segment.event_refs.push(event_ref);
+        if matches!(status, ToolPermissionStatus::Approved)
+            && matches!(segment.status, AgentActivityStatus::WaitingPermission)
+        {
+            segment.status = AgentActivityStatus::Running;
+        } else if matches!(
+            status,
+            ToolPermissionStatus::Denied | ToolPermissionStatus::Failed
+        ) {
+            segment.status = AgentActivityStatus::Failed;
+        }
+    }
+
+    fn project_background_cancelled(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(background_agent_id) = string_field(&event.payload, "backgroundAgentId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &background_agent_id) else {
+            return;
+        };
+        segment.event_refs.push(event_ref);
+        if !is_terminal_agent_activity_status(segment.status) {
+            segment.status = AgentActivityStatus::Cancelled;
+            segment.result_summary = string_field(&event.payload, "reason").map(ui_text);
+        }
+    }
+
+    fn project_background_completed(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(background_agent_id) = string_field(&event.payload, "backgroundAgentId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &background_agent_id) else {
+            return;
+        };
+        segment.event_refs.push(event_ref);
+        segment.status = AgentActivityStatus::Completed;
+        segment.result_summary = string_field(&event.payload, "summary").map(ui_text);
+    }
+
+    fn project_background_failed(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(background_agent_id) = string_field(&event.payload, "backgroundAgentId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &background_agent_id) else {
+            return;
+        };
+        segment.event_refs.push(event_ref);
+        segment.status = AgentActivityStatus::Failed;
+        segment.result_summary = string_field(&event.payload, "error").map(ui_text);
+    }
+
+    fn project_background_interrupted(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(background_agent_id) = string_field(&event.payload, "backgroundAgentId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &background_agent_id) else {
+            return;
+        };
+        segment.event_refs.push(event_ref);
+        if !is_terminal_agent_activity_status(segment.status) {
+            segment.status = AgentActivityStatus::Stalled;
+            segment.result_summary = string_field(&event.payload, "reason").map(ui_text);
+        }
+    }
+
+    fn project_background_archived(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(background_agent_id) = string_field(&event.payload, "backgroundAgentId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &background_agent_id) else {
+            return;
+        };
+        segment.event_refs.push(event_ref);
+        if !is_terminal_agent_activity_status(segment.status) {
+            segment.status = AgentActivityStatus::Cancelled;
+            segment.result_summary = Some(ui_text("Background agent archived."));
+        }
+    }
+
+    fn project_background_deleted(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(background_agent_id) = string_field(&event.payload, "backgroundAgentId") else {
+            return;
+        };
+        let Some(segment) = self.agent_activity_mut(&event.run_id, &background_agent_id) else {
+            return;
+        };
+        segment.event_refs.push(event_ref);
+        segment.status = AgentActivityStatus::Redacted;
+        segment.result_summary = Some(ui_text("Background agent record removed."));
+    }
+
+    fn update_team_member_status(
+        &mut self,
+        run_id: &str,
+        team_id: &str,
+        agent_id: &str,
+        status: AgentActivityStatus,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(segment) = self.agent_activity_mut(run_id, team_id) else {
+            return;
+        };
+        if let Some(team) = segment.team.as_mut() {
+            if let Some(member) = team
+                .members
+                .iter_mut()
+                .find(|member| member.agent_id == agent_id)
+            {
+                member.status = status;
+            }
+            if let Some(lead) = team.lead.as_mut() {
+                if lead.agent_id == agent_id {
+                    lead.status = status;
+                }
+            }
+        }
+        if matches!(
+            status,
+            AgentActivityStatus::Failed | AgentActivityStatus::Stalled
+        ) {
+            segment.status = status;
+        }
+        segment.event_refs.push(event_ref);
     }
 
     fn assistant_work(
@@ -2126,6 +2927,7 @@ fn renumber_segments(assistant: &mut AssistantWork) {
             AssistantSegment::ClarificationRequest(segment) => segment.order = order as u32,
             AssistantSegment::Notice(segment) => segment.order = order as u32,
             AssistantSegment::Error(segment) => segment.order = order as u32,
+            AssistantSegment::AgentActivity(segment) => segment.order = order as u32,
         }
     }
 }
@@ -2133,5 +2935,83 @@ fn renumber_segments(assistant: &mut AssistantWork) {
 fn renumber_process_steps(process: &mut ProcessSegment) {
     for (order, step) in process.steps.iter_mut().enumerate() {
         step.order = order as u32;
+    }
+}
+
+fn subagent_announced_status(status: &str) -> AgentActivityStatus {
+    match status {
+        "completed" => AgentActivityStatus::Completed,
+        "cancelled" => AgentActivityStatus::Cancelled,
+        "failed" => AgentActivityStatus::Failed,
+        "stalled" => AgentActivityStatus::Stalled,
+        "maxIterationsReached" | "max_iterations_reached" => AgentActivityStatus::Failed,
+        _ => AgentActivityStatus::Failed,
+    }
+}
+
+fn subagent_termination_status(reason: &str) -> AgentActivityStatus {
+    match reason {
+        "naturalCompletion" | "natural_completion" => AgentActivityStatus::Completed,
+        "parentCancelled" | "parent_cancelled" => AgentActivityStatus::Cancelled,
+        "stalled" => AgentActivityStatus::Stalled,
+        "bridgeBroken" | "bridge_broken" => AgentActivityStatus::Failed,
+        "failed" => AgentActivityStatus::Failed,
+        _ if reason.starts_with("adminInterrupted") || reason.starts_with("admin_interrupted") => {
+            AgentActivityStatus::Cancelled
+        }
+        _ => AgentActivityStatus::Failed,
+    }
+}
+
+fn permission_status_from_decision(payload: &Value) -> ToolPermissionStatus {
+    match string_field(payload, "decision").as_deref() {
+        Some("approve" | "approved" | "allow") => ToolPermissionStatus::Approved,
+        Some("deny" | "denied") => ToolPermissionStatus::Denied,
+        Some("failed") => ToolPermissionStatus::Failed,
+        _ => ToolPermissionStatus::Denied,
+    }
+}
+
+fn background_agent_state_status(state: &str) -> AgentActivityStatus {
+    match state {
+        "queued" | "running" | "cancelling" => AgentActivityStatus::Running,
+        "waiting_for_permission" => AgentActivityStatus::WaitingPermission,
+        "waiting_for_input" => AgentActivityStatus::WaitingInput,
+        "succeeded" => AgentActivityStatus::Completed,
+        "failed" => AgentActivityStatus::Failed,
+        "cancelled" | "archived" => AgentActivityStatus::Cancelled,
+        "paused" | "interrupted" | "recoverable" => AgentActivityStatus::Stalled,
+        _ => AgentActivityStatus::Stalled,
+    }
+}
+
+fn is_terminal_agent_activity_status(status: AgentActivityStatus) -> bool {
+    matches!(
+        status,
+        AgentActivityStatus::Completed
+            | AgentActivityStatus::Failed
+            | AgentActivityStatus::Cancelled
+            | AgentActivityStatus::Redacted
+    )
+}
+
+fn team_termination_status(reason: &str) -> AgentActivityStatus {
+    match reason {
+        "completed" => AgentActivityStatus::Completed,
+        "cancelled" => AgentActivityStatus::Cancelled,
+        "member_failed" | "memberFailed" | "timeout" | "idle_timeout" | "idleTimeout" => {
+            AgentActivityStatus::Failed
+        }
+        _ if reason.starts_with("error") => AgentActivityStatus::Failed,
+        _ => AgentActivityStatus::Failed,
+    }
+}
+
+fn team_result_summary(reason: &str) -> &'static str {
+    match team_termination_status(reason) {
+        AgentActivityStatus::Completed => "Team completed.",
+        AgentActivityStatus::Cancelled => "Team cancelled.",
+        AgentActivityStatus::Failed => "Team failed.",
+        _ => "Team stopped.",
     }
 }

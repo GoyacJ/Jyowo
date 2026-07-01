@@ -5,9 +5,9 @@ pub use harness_contracts::{MemberLeaveReason, TeamTerminationReason};
 #[cfg(feature = "agents-team")]
 pub use harness_team::{
     AgentMessage, ContextVisibility, CoordinatorWorkerRuntime, MessageBus, MessagePayload,
-    PeerToPeerRuntime, RoleRoutedRuntime, TeamBuilder, TeamMember, TeamMemberEngineConfig,
-    TeamMemberRunOutcome, TeamMemberRunRequest, TeamMemberRunner, TeamReport, TeamSandboxPolicy,
-    TeamSpec, TeamToolsetSelector, Topology,
+    PeerToPeerRuntime, RoleRoutedRuntime, TeamBuilder, TeamMember, TeamMemberCancellationToken,
+    TeamMemberEngineConfig, TeamMemberRunOutcome, TeamMemberRunRequest, TeamMemberRunner,
+    TeamReport, TeamSandboxPolicy, TeamSpec, TeamToolsetSelector, Topology,
 };
 
 #[cfg(feature = "agents-team")]
@@ -190,7 +190,12 @@ impl Team {
         &self,
         reason: TeamTerminationReason,
     ) -> Result<TeamReport, harness_team::TeamError> {
-        self.runtime.terminate(reason).await
+        match &self.execution {
+            TeamExecutionRuntime::CoordinatorWorker(runtime) => runtime.terminate(reason).await,
+            TeamExecutionRuntime::PeerToPeer(runtime) => runtime.terminate(reason).await,
+            TeamExecutionRuntime::RoleRouted(runtime) => runtime.terminate(reason).await,
+            TeamExecutionRuntime::MessageOnly => self.runtime.terminate(reason).await,
+        }
     }
 
     pub async fn members(&self) -> Vec<TeamMember> {

@@ -1,12 +1,19 @@
 import { Shield } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import type { PermissionMode, ToolProfile } from '@/shared/tauri/commands'
+import type {
+  AgentCapabilities,
+  AgentCapabilityUnavailableReason,
+  GetExecutionSettingsResponse,
+  PermissionMode,
+  ToolProfile,
+} from '@/shared/tauri/commands'
 import { getExecutionSettings, setExecutionSettings } from '@/shared/tauri/commands'
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
+import { Switch } from '@/shared/ui/switch'
 
 const permissionModeOptions = [
   { value: 'default', labelKey: 'execution.mode.standard.label' },
@@ -20,10 +27,43 @@ const toolProfileOptions = [
   { value: 'full', labelKey: 'execution.toolProfile.full.label' },
 ] as const satisfies ReadonlyArray<{ value: ToolProfile; labelKey: string }>
 
-const defaultAgentCapabilitySettings = {
+const agentCapabilityOptions = [
+  {
+    availableKey: 'subagentsAvailable',
+    descriptionKey: 'execution.agentCapabilities.subagents.description',
+    enabledKey: 'subagentsEnabled',
+    id: 'subagents',
+    labelKey: 'execution.agentCapabilities.subagents.label',
+  },
+  {
+    availableKey: 'agentTeamsAvailable',
+    descriptionKey: 'execution.agentCapabilities.agentTeams.description',
+    enabledKey: 'agentTeamsEnabled',
+    id: 'agentTeams',
+    labelKey: 'execution.agentCapabilities.agentTeams.label',
+  },
+  {
+    availableKey: 'backgroundAgentsAvailable',
+    descriptionKey: 'execution.agentCapabilities.backgroundAgents.description',
+    enabledKey: 'backgroundAgentsEnabled',
+    id: 'backgroundAgents',
+    labelKey: 'execution.agentCapabilities.backgroundAgents.label',
+  },
+] as const
+
+type AgentCapabilitySettings = Pick<
+  AgentCapabilities,
+  'agentTeamsEnabled' | 'backgroundAgentsEnabled' | 'subagentsEnabled'
+>
+
+const defaultAgentCapabilities: AgentCapabilities = {
+  agentTeamsAvailable: false,
   agentTeamsEnabled: false,
+  backgroundAgentsAvailable: false,
   backgroundAgentsEnabled: false,
+  subagentsAvailable: false,
   subagentsEnabled: false,
+  unavailableReasons: [],
 }
 
 export function ExecutionSettings() {
@@ -32,13 +72,19 @@ export function ExecutionSettings() {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [toolProfile, setToolProfile] = useState<ToolProfile>('full')
   const [contextCompressionTriggerPercent, setContextCompressionTriggerPercent] = useState(80)
-  const [agentCapabilitySettings, setAgentCapabilitySettings] = useState(
-    defaultAgentCapabilitySettings,
-  )
+  const [agentCapabilities, setAgentCapabilities] = useState(defaultAgentCapabilities)
   const [autoModeAvailable, setAutoModeAvailable] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  const applySettings = useCallback((settings: GetExecutionSettingsResponse) => {
+    setPermissionMode(settings.permissionMode)
+    setToolProfile(settings.toolProfile)
+    setContextCompressionTriggerPercent(Math.round(settings.contextCompressionTriggerRatio * 100))
+    setAgentCapabilities(settings.agentCapabilities)
+    setAutoModeAvailable(settings.autoModeAvailable)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -53,17 +99,7 @@ export function ExecutionSettings() {
           return
         }
 
-        setPermissionMode(settings.permissionMode)
-        setToolProfile(settings.toolProfile)
-        setContextCompressionTriggerPercent(
-          Math.round(settings.contextCompressionTriggerRatio * 100),
-        )
-        setAgentCapabilitySettings({
-          agentTeamsEnabled: settings.agentCapabilities.agentTeamsEnabled,
-          backgroundAgentsEnabled: settings.agentCapabilities.backgroundAgentsEnabled,
-          subagentsEnabled: settings.agentCapabilities.subagentsEnabled,
-        })
-        setAutoModeAvailable(settings.autoModeAvailable)
+        applySettings(settings)
       } catch (error) {
         if (!cancelled) {
           setErrorMessage(getCommandErrorMessage(error))
@@ -80,37 +116,44 @@ export function ExecutionSettings() {
     return () => {
       cancelled = true
     }
-  }, [commandClient])
+  }, [applySettings, commandClient])
 
   async function saveSettings(
     nextMode: PermissionMode,
     nextToolProfile: ToolProfile = toolProfile,
     nextContextCompressionTriggerPercent = contextCompressionTriggerPercent,
+    nextAgentCapabilitySettings: AgentCapabilitySettings = getAgentCapabilitySettings(
+      agentCapabilities,
+    ),
   ) {
+    const previousSettings = currentSettingsSnapshot({
+      agentCapabilities,
+      autoModeAvailable,
+      contextCompressionTriggerPercent,
+      permissionMode,
+      toolProfile,
+    })
     setSaving(true)
     setErrorMessage(null)
 
     try {
       const settings = await setExecutionSettings(
         {
-          ...agentCapabilitySettings,
+          ...nextAgentCapabilitySettings,
           contextCompressionTriggerRatio: nextContextCompressionTriggerPercent / 100,
           permissionMode: nextMode,
           toolProfile: nextToolProfile,
         },
         commandClient,
       )
-      setPermissionMode(settings.permissionMode)
-      setToolProfile(settings.toolProfile)
-      setContextCompressionTriggerPercent(Math.round(settings.contextCompressionTriggerRatio * 100))
-      setAgentCapabilitySettings({
-        agentTeamsEnabled: settings.agentCapabilities.agentTeamsEnabled,
-        backgroundAgentsEnabled: settings.agentCapabilities.backgroundAgentsEnabled,
-        subagentsEnabled: settings.agentCapabilities.subagentsEnabled,
-      })
-      setAutoModeAvailable(settings.autoModeAvailable)
-    } catch (error) {
-      setErrorMessage(getCommandErrorMessage(error))
+      applySettings(settings)
+    } catch {
+      try {
+        applySettings(await getExecutionSettings(commandClient))
+      } catch {
+        applySettings(previousSettings)
+      }
+      setErrorMessage(t('execution.saveError'))
     } finally {
       setSaving(false)
     }
@@ -204,6 +247,69 @@ export function ExecutionSettings() {
             })}
           </fieldset>
 
+          <fieldset className="space-y-3">
+            <legend className="font-medium text-sm">
+              {t('execution.agentCapabilities.label')}
+            </legend>
+            <div className="space-y-3">
+              {agentCapabilityOptions.map((option) => {
+                const checked = agentCapabilities[option.enabledKey]
+                const available = agentCapabilities[option.availableKey]
+                const disabled = saving || !available
+                const reasons = agentCapabilities.unavailableReasons.filter((reason) =>
+                  reasonMatchesCapability(reason, option.id),
+                )
+
+                return (
+                  <div
+                    className="flex items-start justify-between gap-4 rounded-md border border-border p-4"
+                    key={option.id}
+                  >
+                    <div className="space-y-1">
+                      <label
+                        className="block font-medium text-sm"
+                        htmlFor={`execution-${option.id}`}
+                      >
+                        {t(option.labelKey)}
+                      </label>
+                      <p className="text-muted-foreground text-sm">{t(option.descriptionKey)}</p>
+                      {!available && reasons.length > 0 ? (
+                        <ul className="space-y-1 text-destructive text-sm">
+                          {reasons.map((reason, index) => (
+                            <li key={`${reason.type}-${index}`}>
+                              {formatUnavailableReason(reason, t)}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                    <Switch
+                      checked={checked}
+                      disabled={disabled}
+                      id={`execution-${option.id}`}
+                      onCheckedChange={(nextEnabled) => {
+                        const nextAgentCapabilitySettings = {
+                          ...getAgentCapabilitySettings(agentCapabilities),
+                          [option.enabledKey]: nextEnabled,
+                        }
+                        setAgentCapabilities((current) => ({
+                          ...current,
+                          [option.enabledKey]: nextEnabled,
+                        }))
+                        void saveSettings(
+                          permissionMode,
+                          toolProfile,
+                          contextCompressionTriggerPercent,
+                          nextAgentCapabilitySettings,
+                        )
+                      }}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          </fieldset>
+
           <div className="space-y-2">
             <label
               className="block font-medium text-sm"
@@ -269,5 +375,74 @@ function permissionModeDescriptionKey(permissionMode: PermissionMode) {
       return 'execution.mode.auto.description'
     case 'bypass_permissions':
       return 'execution.mode.bypass.description'
+  }
+}
+
+function currentSettingsSnapshot({
+  agentCapabilities,
+  autoModeAvailable,
+  contextCompressionTriggerPercent,
+  permissionMode,
+  toolProfile,
+}: {
+  agentCapabilities: AgentCapabilities
+  autoModeAvailable: boolean
+  contextCompressionTriggerPercent: number
+  permissionMode: PermissionMode
+  toolProfile: ToolProfile
+}): GetExecutionSettingsResponse {
+  return {
+    agentCapabilities,
+    autoModeAvailable,
+    contextCompressionTriggerRatio: contextCompressionTriggerPercent / 100,
+    permissionMode,
+    toolProfile,
+  }
+}
+
+function getAgentCapabilitySettings(agentCapabilities: AgentCapabilities): AgentCapabilitySettings {
+  return {
+    agentTeamsEnabled: agentCapabilities.agentTeamsEnabled,
+    backgroundAgentsEnabled: agentCapabilities.backgroundAgentsEnabled,
+    subagentsEnabled: agentCapabilities.subagentsEnabled,
+  }
+}
+
+function reasonMatchesCapability(
+  reason: AgentCapabilityUnavailableReason,
+  capability: (typeof agentCapabilityOptions)[number]['id'],
+) {
+  if (reason.type === 'backgroundSupervisorUnavailable') {
+    return capability === 'backgroundAgents'
+  }
+
+  return reason.capability === capability
+}
+
+function formatUnavailableReason(
+  reason: AgentCapabilityUnavailableReason,
+  t: ReturnType<typeof useTranslation<'settings'>>['t'],
+) {
+  switch (reason.type) {
+    case 'notCompiled':
+      return t('execution.agentCapabilities.unavailable.notCompiled')
+    case 'runtimeStoreUnavailable':
+      return t('execution.agentCapabilities.unavailable.runtimeStoreUnavailable', {
+        message: reason.message,
+      })
+    case 'permissionRuntimeUnavailable':
+      return t('execution.agentCapabilities.unavailable.permissionRuntimeUnavailable')
+    case 'invalidAgentProfiles':
+      return t('execution.agentCapabilities.unavailable.invalidAgentProfiles', {
+        message: reason.message,
+      })
+    case 'backgroundSupervisorUnavailable':
+      return t('execution.agentCapabilities.unavailable.backgroundSupervisorUnavailable', {
+        message: reason.message,
+      })
+    case 'workspaceIsolationUnavailable':
+      return t('execution.agentCapabilities.unavailable.workspaceIsolationUnavailable', {
+        message: reason.message,
+      })
   }
 }

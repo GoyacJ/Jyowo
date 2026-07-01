@@ -11,10 +11,10 @@ use futures::{executor::block_on, stream, StreamExt};
 use harness_contracts::{
     AgentId, BudgetKind, CorrelationId, Decision, DecisionScope, DeferPolicy, EndReason, Event,
     EventId, ForkReason, InteractivityLevel, JournalError, JournalOffset, Message, MessageId,
-    MessagePart, MessageRole, ModelError, ModelRef, PermissionError, PermissionMode,
-    PermissionSubject, ProviderRestriction, Recipient, RunId, SessionId, StopReason, TeamId,
-    TenantId, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
+    MessagePart, MessageRole, ModelError, ModelRef, PermissionActorSource, PermissionError,
+    PermissionMode, PermissionSubject, ProviderRestriction, Recipient, RunId, SessionId,
+    StopReason, TeamId, TenantId, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
+    ToolResult, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
 };
 use harness_engine::{Engine, EngineId};
 use harness_hook::{HookDispatcher, HookRegistry};
@@ -86,6 +86,67 @@ fn engine_team_member_runner_uses_member_session_parent_and_correlation() {
                         && event.usage.as_ref().is_some_and(|usage| usage.output_tokens == 7)
             )
         }));
+    });
+}
+
+#[test]
+fn engine_team_member_runner_marks_permission_requests_with_team_member_source() {
+    block_on(async {
+        let mut harness = test_harness(Script::ToolThenText {
+            tool_name: "ask_user_tool".to_owned(),
+            body: "member answer".to_owned(),
+            usage: usage(4, 7, 13),
+        });
+        harness
+            .tools
+            .append_runtime_tool(Arc::new(TestTool::new("ask_user_tool")));
+        harness.rebuild();
+        let runner = EngineTeamMemberRunner::new(harness.engine.clone());
+        let tenant_id = TenantId::SINGLE;
+        let team_id = TeamId::new();
+        let agent_id = AgentId::new();
+        let role = "researcher sk-abcdefghijklmnopqrstuvwxyz".to_owned();
+        let session_id = SessionId::new();
+        let run_id = RunId::new();
+        let parent_run_id = RunId::new();
+        let correlation_id = CorrelationId::new();
+        let request = TeamMemberRunRequest::synthetic(
+            tenant_id,
+            team_id,
+            agent_id,
+            role.clone(),
+            session_id,
+            run_id,
+            Some(parent_run_id),
+            turn_input("dispatch goal"),
+            "dispatch goal",
+            correlation_id,
+            TeamMemberEngineConfig::default(),
+        );
+
+        let outcome = runner
+            .run_member(request)
+            .await
+            .expect("member engine run should succeed");
+
+        assert_eq!(outcome.body, "member answer");
+        let events = harness.store.events().await;
+        let permission_requested = events
+            .iter()
+            .find_map(|envelope| match &envelope.payload {
+                Event::PermissionRequested(event) => Some(event),
+                _ => None,
+            })
+            .expect("PermissionRequested should be persisted");
+        assert_eq!(
+            permission_requested.actor_source,
+            PermissionActorSource::TeamMember {
+                team_id,
+                agent_id,
+                role: "researcher [REDACTED]".to_owned(),
+                parent_run_id: Some(parent_run_id),
+            }
+        );
     });
 }
 

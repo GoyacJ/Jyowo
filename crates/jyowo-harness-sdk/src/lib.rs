@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agent_runtime;
 pub mod builder;
 pub mod builtin;
 pub mod error;
@@ -28,6 +29,12 @@ pub mod team;
 #[cfg(feature = "testing")]
 pub mod testing;
 
+pub use agent_runtime::{
+    delete_agent_profile, list_agent_profiles, resolve_agent_capabilities,
+    resolve_agent_capabilities_with_context, resolve_agent_runtime_policy, save_agent_profile,
+    AgentCapabilitiesInput, AgentCapabilityResolutionContext, AgentRuntimeFacadeError,
+    AgentRuntimePolicyError, ExecutionSettingsAgentInput, ResolvedAgentRuntimePolicy,
+};
 pub use builder::{HarnessBuilder, Set, Unset};
 pub use error::HarnessError;
 #[cfg(feature = "stream-permission")]
@@ -38,6 +45,17 @@ pub use harness::{
     ConversationTurnRequest, Harness, HarnessOptions, HarnessSamplingProvider, McpConfig,
     RuntimeSkillParameter, RuntimeSkillSummary, RuntimeSkillView, TenantPolicy,
     WorkspaceCreateRequest,
+};
+pub use harness_agent_runtime::{
+    default_agent_capability_environment, AgentCapabilityEnvironment, AgentCapabilityResolver,
+    ResolvedAgentCapabilityPolicy,
+};
+pub use harness_agent_runtime::{
+    AgentProfileRegistryError, AgentProfilesFile, AgentRuntimeStore, AgentRuntimeStoreError,
+};
+pub use harness_agent_runtime::{
+    BackgroundAgentManager, BackgroundAgentRecord, BackgroundAgentStartRequest,
+    BackgroundAgentTransitionError,
 };
 pub use harness_journal::{
     AuditFilter, AuditOrder, AuditPage, AuditQuery, AuditRecord, AuditScope,
@@ -68,14 +86,20 @@ pub use harness_contracts::{
 #[cfg(feature = "agents-team")]
 pub mod agents_team {
     use std::collections::HashSet;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::thread;
+    use std::time::Duration;
 
     use async_trait::async_trait;
     use futures::{stream, StreamExt};
     use harness_contracts::{
         AgentId, BudgetMetric, ContextVisibility, DeferPolicy, Event, MessageContent,
-        OverflowAction, ProviderRestriction, Recipient, ResultBudget, ToolDescriptor, ToolError,
-        ToolGroup, ToolOrigin, ToolProperties, ToolResult, TrustLevel, UsageSnapshot,
+        OverflowAction, PermissionActorSource, ProviderRestriction, Recipient, ResultBudget,
+        ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, TrustLevel,
+        UsageSnapshot,
     };
     use harness_engine::{Engine, EngineRunner, RunContext, SessionHandle};
     use harness_team::{
@@ -110,13 +134,25 @@ pub mod agents_team {
                 tenant_id: request.tenant_id,
                 session_id: request.session_id,
             };
+            let engine_cancellation = harness_engine::CancellationToken::new();
+            let _cancellation_bridge = TeamMemberCancellationBridge::spawn(
+                request.cancellation.clone(),
+                engine_cancellation.clone(),
+            );
             let ctx = RunContext::new(request.tenant_id, request.session_id, request.run_id)
                 .with_parent_run_id(request.parent_run_id)
                 .with_team_id(request.team_id)
+                .with_permission_actor_source(PermissionActorSource::TeamMember {
+                    team_id: request.team_id,
+                    agent_id: request.agent_id,
+                    role: request.role.clone(),
+                    parent_run_id: request.parent_run_id,
+                })
                 .with_correlation_id(request.correlation_id)
                 .with_permission_mode(request.engine_config.permission_mode)
                 .with_interactivity(request.engine_config.interactivity)
-                .with_budget_limits(team_member_budget_limits(&request.engine_config));
+                .with_budget_limits(team_member_budget_limits(&request.engine_config))
+                .with_cancellation(engine_cancellation);
             let mut stream = self
                 .run_engine(&engine, session, request.input, ctx)
                 .await?;
@@ -159,6 +195,58 @@ pub mod agents_team {
             ctx: RunContext,
         ) -> Result<harness_engine::EventStream, TeamError> {
             engine.run(session, input, ctx).await.map_err(team_error)
+        }
+    }
+
+    enum TeamMemberCancellationBridge {
+        Tokio(tokio::task::JoinHandle<()>),
+        Thread {
+            stop: Arc<AtomicBool>,
+            handle: Option<thread::JoinHandle<()>>,
+        },
+    }
+
+    impl TeamMemberCancellationBridge {
+        fn spawn(
+            member_cancellation: harness_team::TeamMemberCancellationToken,
+            engine_cancellation: harness_engine::CancellationToken,
+        ) -> Self {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                return Self::Tokio(handle.spawn(async move {
+                    member_cancellation.cancelled().await;
+                    engine_cancellation.cancel(harness_engine::InterruptCause::Parent);
+                }));
+            }
+
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_stop = Arc::clone(&stop);
+            let handle = thread::spawn(move || {
+                while !worker_stop.load(Ordering::SeqCst) {
+                    if member_cancellation.is_cancelled() {
+                        engine_cancellation.cancel(harness_engine::InterruptCause::Parent);
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+            });
+            Self::Thread {
+                stop,
+                handle: Some(handle),
+            }
+        }
+    }
+
+    impl Drop for TeamMemberCancellationBridge {
+        fn drop(&mut self) {
+            match self {
+                Self::Tokio(handle) => handle.abort(),
+                Self::Thread { stop, handle } => {
+                    stop.store(true, Ordering::SeqCst);
+                    if let Some(handle) = handle.take() {
+                        let _ = handle.join();
+                    }
+                }
+            }
         }
     }
 

@@ -31,6 +31,7 @@ fn permission_requested(
         presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
         interactivity: InteractivityLevel::FullyInteractive,
         auto_resolved: false,
+        actor_source: PermissionActorSource::ParentRun,
         causation_id: EventId::new(),
         at: harness_contracts::now(),
     })

@@ -81,6 +81,7 @@ async fn get_context_snapshot_with_runtime_state_does_not_project_assistant_repl
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -162,6 +163,7 @@ async fn get_context_snapshot_with_runtime_state_exposes_pending_decisions() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,

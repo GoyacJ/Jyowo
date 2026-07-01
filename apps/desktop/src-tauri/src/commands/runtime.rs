@@ -56,6 +56,13 @@ pub(crate) struct McpDiagnosticSubscriptionHandle {
 }
 
 impl DesktopRuntimeState {
+    #[must_use]
+    pub(crate) fn agent_capability_resolution_context(&self) -> AgentCapabilityResolutionContext {
+        AgentCapabilityResolutionContext {
+            stream_permission_runtime_available: self.stream_permission_runtime.is_some(),
+        }
+    }
+
     pub fn with_workspace_for_test(workspace_root: PathBuf) -> Result<Self, CommandErrorPayload> {
         let workspace_root = canonical_workspace_root(workspace_root, "workspace root".to_owned())?;
 
@@ -409,13 +416,37 @@ pub(crate) async fn runtime_state_from_stream_permission_runtime(
     )
     .await?;
 
-    DesktopRuntimeState::with_harness_stream_permission_runtime_and_model_for_workspace(
-        workspace_root,
-        Arc::new(harness),
-        stream_permission_runtime,
-        model_id,
-        protocol,
-    )
+    let state =
+        DesktopRuntimeState::with_harness_stream_permission_runtime_and_model_for_workspace(
+            workspace_root,
+            Arc::new(harness),
+            stream_permission_runtime,
+            model_id,
+            protocol,
+        )?;
+    Ok(state)
+}
+
+pub(crate) async fn ensure_agent_supervisor_sidecar_for_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    crate::agent_supervisor::launch_agent_supervisor_sidecar(app, state.workspace_root.clone())
+        .await
+        .map_err(|error| {
+            runtime_init_failed(format!("agent supervisor sidecar startup failed: {error}"))
+        })
+}
+
+pub fn agent_supervisor_sidecar_startup_result_for_project_command(
+    result: Result<(), crate::agent_supervisor::AgentSupervisorError>,
+) -> Result<(), CommandErrorPayload> {
+    if let Err(error) = result {
+        // Project switching is not the policy authority for background agents. Keep this
+        // command usable and let the capability resolver surface supervisor unavailability.
+        log::warn!("agent supervisor sidecar startup failed after project command: {error}");
+    }
+    Ok(())
 }
 
 pub(crate) async fn build_desktop_harness(

@@ -33,6 +33,8 @@ describe('RunEvent schema', () => {
       'tool',
       'engine',
       'policy',
+      'agent',
+      'background',
       'plugin',
     ])
     expect(() => runEventSourceSchema.parse('permission')).toThrow()
@@ -110,6 +112,115 @@ describe('RunEvent schema', () => {
       sessionId: 'conversation-001',
       permissionMode: 'bypass_permissions',
     })
+  })
+
+  it('accepts team member actor sources for permission requests', () => {
+    const permissionPayload = runEventFixtures[9].payload as Record<string, unknown>
+    const event = runEventSchema.parse({
+      ...runEventFixtures[9],
+      payload: {
+        ...permissionPayload,
+        actorSource: {
+          agentId: 'agent-001',
+          parentRunId: 'run-parent',
+          role: 'researcher',
+          teamId: 'team-001',
+          type: 'teamMember',
+        },
+      },
+    })
+
+    expect(event.payload).toMatchObject({
+      actorSource: {
+        agentId: 'agent-001',
+        parentRunId: 'run-parent',
+        role: 'researcher',
+        teamId: 'team-001',
+        type: 'teamMember',
+      },
+    })
+  })
+
+  it.each([
+    [
+      'background.started',
+      'background',
+      {
+        backgroundAgentId: 'bg-agent-001',
+        title: 'Background run',
+      },
+    ],
+    [
+      'background.permission.requested',
+      'policy',
+      {
+        backgroundAgentId: 'bg-agent-001',
+        reason: 'Permission required',
+        requestId: '01HZ0000000000000000000003',
+      },
+    ],
+    [
+      'background.permission.resolved',
+      'policy',
+      {
+        backgroundAgentId: 'bg-agent-001',
+        decision: 'approve',
+        requestId: '01HZ0000000000000000000003',
+      },
+    ],
+  ])('accepts %s events', (type, source, payload) => {
+    const event = runEventSchema.parse({
+      id: `evt-${type}`,
+      conversationSequence: 20,
+      runId: 'run-background',
+      sequence: 1,
+      timestamp: '2026-06-17T00:00:00.000Z',
+      type,
+      source,
+      visibility: 'public',
+      payload,
+    })
+
+    expect(event.payload).toEqual(payload)
+  })
+
+  it('rejects background permission events from non-policy sources', () => {
+    expect(() =>
+      runEventSchema.parse({
+        id: 'evt-background-permission',
+        conversationSequence: 21,
+        runId: 'run-background',
+        sequence: 2,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'background.permission.requested',
+        source: 'background',
+        visibility: 'public',
+        payload: {
+          backgroundAgentId: 'bg-agent-001',
+          reason: 'Permission required',
+          requestId: '01HZ0000000000000000000003',
+        },
+      }),
+    ).toThrow()
+  })
+
+  it('rejects background started events from non-background sources', () => {
+    expect(() =>
+      runEventSchema.parse({
+        id: 'evt-background-started',
+        conversationSequence: 22,
+        runId: 'run-background',
+        sequence: 1,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'background.started',
+        source: 'policy',
+        visibility: 'public',
+        payload: {
+          backgroundAgentId: 'bg-agent-001',
+          title: 'Background run',
+        },
+      }),
+    ).toThrow()
   })
 
   it.each([
@@ -1004,6 +1115,7 @@ describe('RunEvent schema', () => {
     const event = runEventSchema.parse({
       ...runEventFixtures[9],
       payload: {
+        actorSource: { type: 'parentRun' },
         decisionScope: 'current run',
         exposure: 'Can modify package metadata and lockfile.',
         operation: 'Install dependencies',

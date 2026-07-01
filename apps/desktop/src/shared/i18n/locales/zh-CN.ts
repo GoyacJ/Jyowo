@@ -144,6 +144,35 @@ export const zhCN = {
         waitingPermission: '等待权限 {{count}} 条',
       },
       tools: '工具',
+      agentActivity: {
+        openBackgroundAgent: '打开后台 Agent',
+        redacted: '子代理结果未显示在会话时间线中。',
+        team: {
+          topology: '拓扑',
+          lead: '负责人',
+          members: '成员',
+          tasks: '任务',
+          noTasks: '暂无活跃团队任务。',
+          mailbox: '信箱',
+          mailboxSummaries: '信箱摘要',
+        },
+        kind: {
+          subagent: '子代理',
+          agentTeam: '代理团队',
+          backgroundAgent: '后台代理',
+        },
+        status: {
+          loading: '加载中',
+          running: '运行中',
+          waitingPermission: '等待权限',
+          waitingInput: '等待输入',
+          completed: '已完成',
+          failed: '失败',
+          cancelled: '已取消',
+          stalled: '已停滞',
+          redacted: '已隐藏',
+        },
+      },
     },
     composer: {
       placeholder: '向 Jyowo 询问这个项目...',
@@ -173,6 +202,38 @@ export const zhCN = {
       noReferences: '未找到引用。',
       cancelRun: '取消运行',
       sendMessage: '发送消息',
+      agents: {
+        subagents: '子代理',
+        agentTeam: '代理团队',
+        backgroundRun: '后台运行',
+        workspaceIsolation: '工作区隔离',
+        unavailable: '当前桌面版本不可用',
+        disabledInSettings: '已在设置 > 通用 中关闭',
+        teamRequiresConfig: '启用代理团队前需要先配置团队。',
+        loadingProfiles: '正在加载代理档案...',
+        noProfiles: '暂无可用代理档案。',
+        selectMemberProfile: '至少选择一个成员档案。',
+        staleProfileId: '选中的代理档案已不可用。',
+        topology: '拓扑',
+        leadProfile: '负责人档案',
+        maxTurnsPerGoal: '每个目标最大轮数',
+        sharedMemory: '共享记忆',
+        topologyOptions: {
+          coordinatorWorker: '协调者-执行者',
+          peerToPeer: '对等协作',
+          roleRouted: '按角色路由',
+        },
+        sharedMemoryOptions: {
+          none: '无',
+          summariesOnly: '仅摘要',
+          redactedMailbox: '脱敏信箱',
+        },
+        isolation: {
+          readOnly: '只读',
+          patchOnly: '仅补丁',
+          gitWorktree: 'Git 工作树',
+        },
+      },
     },
     continue: '继续',
     modelConfig: '模型',
@@ -252,6 +313,7 @@ export const zhCN = {
       loading: '正在加载默认授权模式…',
       saving: '正在保存…',
       save: '保存默认模式',
+      saveError: '执行设置无法保存。',
       permissionMode: {
         label: '权限模式',
       },
@@ -276,6 +338,29 @@ export const zhCN = {
       contextCompressionTriggerRatio: {
         label: '上下文压缩触发比例',
         description: '当估算上下文达到模型窗口的这个占比时触发压缩。',
+      },
+      agentCapabilities: {
+        label: 'Agent 能力',
+        subagents: {
+          label: '子代理',
+          description: '允许运行把有边界的工作委派给子代理。',
+        },
+        agentTeams: {
+          label: '代理团队',
+          description: '允许运行使用负责人和成员代理组成的临时团队。',
+        },
+        backgroundAgents: {
+          label: '后台代理',
+          description: '允许符合条件的运行在后台继续执行。',
+        },
+        unavailable: {
+          notCompiled: '当前桌面版本未编译此能力。',
+          runtimeStoreUnavailable: '运行时存储不可用：{{message}}',
+          permissionRuntimeUnavailable: '权限运行时不可用。',
+          invalidAgentProfiles: '代理档案无效：{{message}}',
+          backgroundSupervisorUnavailable: '后台监督器不可用：{{message}}',
+          workspaceIsolationUnavailable: '工作区隔离不可用：{{message}}',
+        },
       },
       mode: {
         standard: {

@@ -26,8 +26,9 @@ image = { workspace = true }
 jyowo-harness-contracts = { path = "../../../crates/jyowo-harness-contracts" }
 jyowo-harness-plugin = { path = "../../../crates/jyowo-harness-plugin" }
 jyowo-harness-sandbox = { path = "../../../crates/jyowo-harness-sandbox", features = ["local-sandbox"] }
-jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "jsonl-store", "sqlite-store", "blob-file", "local-sandbox", "mcp-http", "mcp-stdio", "memory-external-slot", "provider-anthropic", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-km", "provider-local-llama", "provider-minimax", "minimax-tools", "seedance-tools", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "observability-redactor"] }
+jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "jsonl-store", "sqlite-store", "blob-file", "local-sandbox", "mcp-http", "mcp-stdio", "memory-external-slot", "provider-anthropic", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-km", "provider-local-llama", "provider-minimax", "minimax-tools", "seedance-tools", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "observability-redactor", "agents-subagent", "agents-team"] }
 jyowo-harness-tool = { path = "../../../crates/jyowo-harness-tool", default-features = false, features = ["builtin-toolset", "minimax-tools", "seedance-tools"] }
+log = { workspace = true }
 parking_lot = "0.12.5"
 oxideav-avif = { workspace = true }
 reqwest = { workspace = true }
@@ -36,16 +37,22 @@ serde_json = { workspace = true }
 tauri = { workspace = true, features = [] }
 tauri-plugin-dialog = { workspace = true }
 tauri-plugin-process = { workspace = true }
+tauri-plugin-shell = { workspace = true }
 tauri-plugin-store = { workspace = true }
 tauri-plugin-updater = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "signal"] }
+uuid = { workspace = true }
 zip = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
-jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "jsonl-store", "sqlite-store", "blob-file", "local-sandbox", "mcp-http", "mcp-stdio", "memory-external-slot", "provider-anthropic", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-km", "provider-local-llama", "provider-minimax", "minimax-tools", "seedance-tools", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "observability-redactor", "testing"] }
+futures = { workspace = true }
+jyowo-harness-journal = { path = "../../../crates/jyowo-harness-journal", features = ["in-memory"] }
+jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "jsonl-store", "sqlite-store", "blob-file", "local-sandbox", "mcp-http", "mcp-stdio", "memory-external-slot", "provider-anthropic", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-km", "provider-local-llama", "provider-minimax", "minimax-tools", "seedance-tools", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "observability-redactor", "agents-subagent", "agents-team", "testing"] }
 harness-skill = { package = "jyowo-harness-skill", path = "../../../crates/jyowo-harness-skill" }
+rusqlite = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

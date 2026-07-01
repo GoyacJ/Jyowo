@@ -50,6 +50,48 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     );
     insert_schema!(
         schemas,
+        "agent_capabilities_payload",
+        AgentCapabilitiesPayload
+    );
+    insert_schema!(schemas, "agent_profile", AgentProfile);
+    insert_schema!(schemas, "agent_profile_scope", AgentProfileScope);
+    insert_schema!(
+        schemas,
+        "agent_profile_model_override",
+        AgentProfileModelOverride
+    );
+    insert_schema!(
+        schemas,
+        "agent_profile_sandbox_inheritance",
+        AgentProfileSandboxInheritance
+    );
+    insert_schema!(
+        schemas,
+        "agent_profile_memory_scope",
+        AgentProfileMemoryScope
+    );
+    insert_schema!(
+        schemas,
+        "agent_profile_context_mode",
+        AgentProfileContextMode
+    );
+    insert_schema!(schemas, "agent_run_options", AgentRunOptions);
+    insert_schema!(schemas, "agent_team_run_config", AgentTeamRunConfig);
+    insert_schema!(schemas, "agent_team_topology", AgentTeamTopology);
+    insert_schema!(
+        schemas,
+        "agent_team_shared_memory_policy",
+        AgentTeamSharedMemoryPolicy
+    );
+    insert_schema!(schemas, "agent_use_policy", AgentUsePolicy);
+    insert_schema!(schemas, "background_run_policy", BackgroundRunPolicy);
+    insert_schema!(
+        schemas,
+        "agent_workspace_isolation_mode",
+        AgentWorkspaceIsolationMode
+    );
+    insert_schema!(
+        schemas,
         "provider_service_capability",
         ProviderServiceCapability
     );
@@ -120,6 +162,14 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "assistant_work", AssistantWork);
     insert_schema!(schemas, "assistant_work_status", AssistantWorkStatus);
     insert_schema!(schemas, "assistant_segment", AssistantSegment);
+    insert_schema!(schemas, "agent_activity_segment", AgentActivitySegment);
+    insert_schema!(schemas, "agent_activity_kind", AgentActivityKind);
+    insert_schema!(schemas, "agent_activity_status", AgentActivityStatus);
+    insert_schema!(
+        schemas,
+        "agent_activity_permission_state",
+        AgentActivityPermissionState
+    );
     insert_schema!(schemas, "process_segment", ProcessSegment);
     insert_schema!(schemas, "process_segment_status", ProcessSegmentStatus);
     insert_schema!(schemas, "process_step", ProcessStep);
@@ -434,7 +484,69 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "agent_message_sent", AgentMessageSentEvent);
     insert_schema!(schemas, "agent_message_routed", AgentMessageRoutedEvent);
     insert_schema!(schemas, "team_turn_completed", TeamTurnCompletedEvent);
+    insert_schema!(schemas, "team_task_updated", TeamTaskUpdatedEvent);
     insert_schema!(schemas, "team_terminated", TeamTerminatedEvent);
+    insert_schema!(schemas, "background_agent_state", BackgroundAgentState);
+    insert_schema!(
+        schemas,
+        "background_agent_started",
+        BackgroundAgentStartedEvent
+    );
+    insert_schema!(
+        schemas,
+        "background_agent_state_changed",
+        BackgroundAgentStateChangedEvent
+    );
+    insert_schema!(
+        schemas,
+        "background_agent_input_requested",
+        BackgroundAgentInputRequestedEvent
+    );
+    insert_schema!(
+        schemas,
+        "background_agent_input_submitted",
+        BackgroundAgentInputSubmittedEvent
+    );
+    insert_schema!(
+        schemas,
+        "background_agent_permission_requested",
+        BackgroundAgentPermissionRequestedEvent
+    );
+    insert_schema!(
+        schemas,
+        "background_agent_permission_resolved",
+        BackgroundAgentPermissionResolvedEvent
+    );
+    insert_schema!(
+        schemas,
+        "background_agent_cancelled",
+        BackgroundAgentCancelledEvent
+    );
+    insert_schema!(
+        schemas,
+        "background_agent_completed",
+        BackgroundAgentCompletedEvent
+    );
+    insert_schema!(
+        schemas,
+        "background_agent_failed",
+        BackgroundAgentFailedEvent
+    );
+    insert_schema!(
+        schemas,
+        "background_agent_interrupted",
+        BackgroundAgentInterruptedEvent
+    );
+    insert_schema!(
+        schemas,
+        "background_agent_archived",
+        BackgroundAgentArchivedEvent
+    );
+    insert_schema!(
+        schemas,
+        "background_agent_deleted",
+        BackgroundAgentDeletedEvent
+    );
     insert_schema!(schemas, "memory_upserted", MemoryUpsertedEvent);
     insert_schema!(schemas, "memory_exported", MemoryExportedEvent);
     insert_schema!(schemas, "memory_recalled", MemoryRecalledEvent);

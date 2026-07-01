@@ -5,6 +5,7 @@ fn start_run_payload_validates_prompt_and_requires_runtime() {
     let error = start_run_payload(StartRunRequest {
         client_message_id: None,
         attachments: None,
+        agent_options: None,
         context_references: Some(vec![ContextReferencePayload::WorkspaceFile {
             label: "Desktop app".to_owned(),
             path: "apps/desktop".to_owned(),
@@ -20,6 +21,7 @@ fn start_run_payload_validates_prompt_and_requires_runtime() {
     let error = start_run_payload(StartRunRequest {
         client_message_id: None,
         attachments: None,
+        agent_options: None,
         context_references: None,
         conversation_id: SessionId::new().to_string(),
         permission_mode: None,
@@ -32,6 +34,7 @@ fn start_run_payload_validates_prompt_and_requires_runtime() {
     let error = start_run_payload(StartRunRequest {
         client_message_id: Some("00000000-0000-1000-8000-000000000001".to_owned()),
         attachments: None,
+        agent_options: None,
         context_references: None,
         conversation_id: SessionId::new().to_string(),
         permission_mode: None,
@@ -165,6 +168,7 @@ async fn start_run_with_runtime_state_rejects_untrusted_attachment_id_before_rec
 
     let error = start_run_with_runtime_state(
         StartRunRequest {
+            agent_options: None,
             client_message_id: None,
             attachments: Some(vec![AttachmentReferencePayload {
                 id: "../escape".to_owned(),
@@ -209,6 +213,7 @@ async fn start_run_with_runtime_state_accepts_structured_context_and_attachments
         StartRunRequest {
             client_message_id: None,
             attachments: Some(vec![attachment]),
+            agent_options: None,
             context_references: Some(vec![ContextReferencePayload::WorkspaceFile {
                 label: "Notes".to_owned(),
                 path: "docs/notes.txt".to_owned(),
@@ -240,6 +245,7 @@ async fn start_run_with_runtime_state_rejects_workspace_file_reference_outside_w
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: Some(vec![ContextReferencePayload::WorkspaceFile {
                 label: "Outside".to_owned(),
                 path: external_file.to_string_lossy().to_string(),
@@ -273,6 +279,7 @@ async fn start_run_with_runtime_state_returns_real_run_id_for_conversation() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: Some(vec![ContextReferencePayload::WorkspaceFile {
                 label: "Desktop app".to_owned(),
                 path: "apps/desktop/src/main.tsx".to_owned(),
@@ -340,6 +347,7 @@ async fn subscribe_conversation_events_emits_live_batches_and_unsubscribes() {
     let started = start_run_with_runtime_state(
         StartRunRequest {
             attachments: None,
+            agent_options: None,
             client_message_id: Some("00000000-0000-4000-8000-000000000001".to_owned()),
             context_references: None,
             conversation_id: conversation_id.clone(),
@@ -468,6 +476,7 @@ async fn subscribe_conversation_events_accepts_cursor_after_replayed_permission_
     start_run_with_runtime_state(
         StartRunRequest {
             attachments: None,
+            agent_options: None,
             client_message_id: Some("00000000-0000-4000-8000-000000000001".to_owned()),
             context_references: None,
             conversation_id: conversation_id.clone(),
@@ -565,6 +574,7 @@ async fn start_run_with_runtime_state_exposes_runtime_permission_request_to_acti
             StartRunRequest {
                 client_message_id: None,
                 attachments: None,
+                agent_options: None,
                 context_references: None,
                 conversation_id: conversation_id.clone(),
                 permission_mode: None,
@@ -709,6 +719,7 @@ async fn cancel_run_with_runtime_state_cancels_active_run_through_sdk() {
             StartRunRequest {
                 client_message_id: None,
                 attachments: None,
+                agent_options: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
                 permission_mode: None,
@@ -1045,6 +1056,7 @@ async fn start_run_permission_mode_override_wins_over_saved_default() {
             background_agents_enabled: false,
         },
         &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        None,
     )
     .expect("execution settings should save");
     let session_id = SessionId::new();
@@ -1053,6 +1065,7 @@ async fn start_run_permission_mode_override_wins_over_saved_default() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             prompt: "Run a command".to_owned(),
@@ -1087,6 +1100,7 @@ async fn start_run_rejects_auto_without_runtime_support() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: SessionId::new().to_string(),
             prompt: "Run a command".to_owned(),
@@ -1122,6 +1136,7 @@ async fn start_run_bypass_permission_mode_finishes_without_pending_permission() 
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             prompt: "Run a command".to_owned(),
@@ -1204,4 +1219,612 @@ async fn runtime_state_rejects_harness_and_stream_permission_runtime_from_differ
     };
 
     assert_eq!(error.code, "RUNTIME_UNAVAILABLE");
+}
+
+fn write_test_supervisor_lock(workspace: &Path) -> TestSupervisorControl {
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("control bind");
+    listener.set_nonblocking(true).expect("control nonblocking");
+    let control_addr = listener.local_addr().expect("control addr");
+    let runtime_dir = workspace.join(".jyowo/runtime");
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+    let token = "test-background-supervisor-token";
+    let token_hash = blake3::hash(token.as_bytes()).to_hex().to_string();
+    let workspace_id = blake3::hash(workspace.display().to_string().as_bytes())
+        .to_hex()
+        .to_string();
+    std::fs::write(
+        runtime_dir.join("agent-supervisor.token"),
+        serde_json::json!({
+            "token": token,
+            "tokenHash": token_hash,
+            "tokenEpoch": 1,
+            "workspaceId": workspace_id,
+            "createdAt": chrono::Utc::now(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    write_test_supervisor_json_atomic(
+        &runtime_dir.join("agent-supervisor.lock"),
+        &serde_json::json!({
+            "status": "running",
+            "workspaceId": workspace_id,
+            "tokenHash": token_hash,
+            "tokenEpoch": 1,
+            "pid": std::process::id(),
+            "controlAddr": control_addr.to_string(),
+            "startedAt": chrono::Utc::now(),
+            "heartbeatAt": chrono::Utc::now(),
+        }),
+    )
+    .unwrap();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let thread = std::thread::spawn(move || {
+        while !thread_stop.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, peer)) => {
+                    let mut buffer = [0_u8; 8192];
+                    let Ok(read) = stream.read(&mut buffer) else {
+                        continue;
+                    };
+                    let request = serde_json::from_slice::<serde_json::Value>(&buffer[..read])
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                    let ok = peer.ip().is_loopback()
+                        && request.get("token").and_then(Value::as_str) == Some(token)
+                        && request.get("request").and_then(Value::as_str).is_some();
+                    let response = serde_json::json!({
+                        "ok": ok,
+                        "status": if ok { "running" } else { "unauthorized" },
+                    });
+                    let _ = stream.write_all(response.to_string().as_bytes());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    TestSupervisorControl {
+        stop,
+        thread: Some(thread),
+    }
+}
+
+struct TestSupervisorControl {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl TestSupervisorControl {
+    async fn shutdown(mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for TestSupervisorControl {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn write_test_supervisor_json_atomic(path: &Path, value: &Value) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("agent-supervisor-file");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let tmp_path = parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), nonce));
+    std::fs::write(&tmp_path, value.to_string())?;
+    std::fs::rename(&tmp_path, path)
+}
+
+fn sample_subagent_run_options() -> AgentRunOptions {
+    AgentRunOptions {
+        subagents: AgentUsePolicy::Allowed,
+        agent_team: AgentUsePolicy::Off,
+        team_config: None,
+        background: BackgroundRunPolicy::Foreground,
+        workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
+        max_depth: 2,
+        max_concurrent_subagents: 2,
+        max_team_members: 4,
+    }
+}
+
+fn sample_team_run_options() -> AgentRunOptions {
+    AgentRunOptions {
+        subagents: AgentUsePolicy::Allowed,
+        agent_team: AgentUsePolicy::Allowed,
+        team_config: Some(AgentTeamRunConfig {
+            topology: AgentTeamTopology::CoordinatorWorker,
+            lead_profile_id: "reviewer".to_owned(),
+            member_profile_ids: vec!["worker".to_owned()],
+            max_turns_per_goal: 4,
+            shared_memory_policy: AgentTeamSharedMemoryPolicy::SummariesOnly,
+        }),
+        background: BackgroundRunPolicy::Foreground,
+        workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
+        max_depth: 2,
+        max_concurrent_subagents: 2,
+        max_team_members: 4,
+    }
+}
+
+async fn enable_subagents_in_execution_settings(state: &DesktopRuntimeState) {
+    set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: true,
+            agent_teams_enabled: true,
+            background_agents_enabled: false,
+        },
+        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        Some(&AgentCapabilityResolutionContext {
+            stream_permission_runtime_available: true,
+        }),
+    )
+    .expect("execution settings should save");
+}
+
+#[test]
+fn start_run_agent_options_rejects_missing_team_config() {
+    let mut options = sample_subagent_run_options();
+    options.agent_team = AgentUsePolicy::Allowed;
+
+    let error = start_run_payload(StartRunRequest {
+        agent_options: Some(options),
+        attachments: None,
+        client_message_id: None,
+        context_references: None,
+        conversation_id: SessionId::new().to_string(),
+        permission_mode: None,
+        prompt: "Run with team".to_owned(),
+    })
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn start_run_agent_options_rejects_subagents_when_disabled_in_settings() {
+    let state = runtime_state_with_harness().await;
+    set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        },
+        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        Some(&AgentCapabilityResolutionContext {
+            stream_permission_runtime_available: true,
+        }),
+    )
+    .expect("execution settings should save");
+
+    let error = resolve_start_run_agent_policy(
+        &StartRunRequest {
+            agent_options: Some(sample_subagent_run_options()),
+            attachments: None,
+            client_message_id: None,
+            context_references: None,
+            conversation_id: SessionId::new().to_string(),
+            permission_mode: None,
+            prompt: "Run with subagents".to_owned(),
+        },
+        &state,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("subagents"));
+}
+
+#[tokio::test]
+async fn start_run_agent_options_rejects_invalid_numeric_limits() {
+    let state = runtime_state_with_harness().await;
+    enable_subagents_in_execution_settings(&state).await;
+    let mut options = sample_subagent_run_options();
+    options.max_team_members = 0;
+
+    let error = resolve_start_run_agent_policy(
+        &StartRunRequest {
+            agent_options: Some(options),
+            attachments: None,
+            client_message_id: None,
+            context_references: None,
+            conversation_id: SessionId::new().to_string(),
+            permission_mode: None,
+            prompt: "Run with invalid limits".to_owned(),
+        },
+        &state,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn start_run_agent_options_rejects_unknown_lead_profile_id() {
+    let state = runtime_state_with_harness().await;
+    enable_subagents_in_execution_settings(&state).await;
+    let mut options = sample_team_run_options();
+    options.team_config.as_mut().unwrap().lead_profile_id = "missing".to_owned();
+
+    let error = resolve_start_run_agent_policy(
+        &StartRunRequest {
+            agent_options: Some(options),
+            attachments: None,
+            client_message_id: None,
+            context_references: None,
+            conversation_id: SessionId::new().to_string(),
+            permission_mode: None,
+            prompt: "Run with unknown lead".to_owned(),
+        },
+        &state,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("missing"));
+}
+
+#[tokio::test]
+async fn start_run_agent_options_rejects_empty_member_profile_list() {
+    let state = runtime_state_with_harness().await;
+    enable_subagents_in_execution_settings(&state).await;
+    let mut options = sample_team_run_options();
+    options
+        .team_config
+        .as_mut()
+        .unwrap()
+        .member_profile_ids
+        .clear();
+
+    let error = resolve_start_run_agent_policy(
+        &StartRunRequest {
+            agent_options: Some(options),
+            attachments: None,
+            client_message_id: None,
+            context_references: None,
+            conversation_id: SessionId::new().to_string(),
+            permission_mode: None,
+            prompt: "Run with empty members".to_owned(),
+        },
+        &state,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn agent_team_runtime_start_run_rejects_team_config_when_team_use_is_off() {
+    let state = runtime_state_with_harness().await;
+    enable_subagents_in_execution_settings(&state).await;
+    let mut options = sample_team_run_options();
+    options.agent_team = AgentUsePolicy::Off;
+
+    let error = resolve_start_run_agent_policy(
+        &StartRunRequest {
+            agent_options: Some(options),
+            attachments: None,
+            client_message_id: None,
+            context_references: None,
+            conversation_id: SessionId::new().to_string(),
+            permission_mode: None,
+            prompt: "Run with unexpected team config".to_owned(),
+        },
+        &state,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("teamConfig"));
+}
+
+#[tokio::test]
+async fn agent_team_runtime_start_run_rejects_invalid_max_turns_per_goal() {
+    let state = runtime_state_with_harness().await;
+    enable_subagents_in_execution_settings(&state).await;
+    let mut options = sample_team_run_options();
+    options.team_config.as_mut().unwrap().max_turns_per_goal = 0;
+
+    let error = resolve_start_run_agent_policy(
+        &StartRunRequest {
+            agent_options: Some(options),
+            attachments: None,
+            client_message_id: None,
+            context_references: None,
+            conversation_id: SessionId::new().to_string(),
+            permission_mode: None,
+            prompt: "Run with invalid team turns".to_owned(),
+        },
+        &state,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("maxTurnsPerGoal"));
+}
+
+#[tokio::test]
+async fn agent_team_runtime_start_run_persists_team_task_and_mailbox() {
+    let workspace = unique_workspace("agent-team-runtime-start-run");
+    std::fs::create_dir_all(&workspace).unwrap();
+    jyowo_harness_sdk::list_agent_profiles(&workspace).expect("agent profiles should list");
+    let state = runtime_state_with_scripted_model_for_workspace(
+        workspace.clone(),
+        vec![
+            ScriptedResponse::Stream(vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("parent accepted".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ]),
+            ScriptedResponse::Stream(vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("team lead accepted".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ]),
+        ],
+    )
+    .await;
+    enable_subagents_in_execution_settings(&state).await;
+    let session_id = SessionId::new();
+
+    let started = start_run_with_runtime_state(
+        StartRunRequest {
+            agent_options: Some(sample_team_run_options()),
+            attachments: None,
+            client_message_id: None,
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            permission_mode: Some(PermissionMode::BypassPermissions),
+            prompt: "Run with agent team".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("team start_run should succeed");
+
+    let connection =
+        rusqlite::Connection::open(workspace.join(".jyowo/runtime/agent-runtime.sqlite"))
+            .expect("runtime sqlite opens");
+    let mut task_statement = connection
+        .prepare(
+            "SELECT task_id, team_id, status, assignee_profile_id
+             FROM agent_team_tasks
+             WHERE run_id = ?1",
+        )
+        .expect("task query prepares");
+    let mut task_rows = task_statement
+        .query([started.run_id.clone()])
+        .expect("task query runs");
+    let mut tasks = Vec::new();
+    while let Some(row) = task_rows.next().expect("task row loads") {
+        tasks.push((
+            row.get::<_, String>(0).expect("task_id"),
+            row.get::<_, String>(1).expect("team_id"),
+            row.get::<_, String>(2).expect("status"),
+            row.get::<_, Option<String>>(3)
+                .expect("assignee_profile_id"),
+        ));
+    }
+
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].2, "active");
+    assert_eq!(tasks[0].3.as_deref(), Some("reviewer"));
+
+    let mailbox_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM agent_team_mailbox WHERE team_id = ?1 AND summary = ?2",
+            rusqlite::params![tasks[0].1, "Team run queued"],
+            |row| row.get(0),
+        )
+        .expect("mailbox count loads");
+    assert_eq!(mailbox_count, 1);
+}
+
+#[tokio::test]
+async fn start_run_agent_options_returns_background_agent_id() {
+    let state = runtime_state_with_harness().await;
+    let supervisor = write_test_supervisor_lock(state.workspace_root());
+    set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: true,
+            agent_teams_enabled: false,
+            background_agents_enabled: true,
+        },
+        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        Some(&AgentCapabilityResolutionContext {
+            stream_permission_runtime_available: true,
+        }),
+    )
+    .expect("background settings should save");
+
+    let session_id = SessionId::new();
+    let mut options = sample_subagent_run_options();
+    options.background = BackgroundRunPolicy::Background;
+
+    let started = start_run_with_runtime_state(
+        StartRunRequest {
+            agent_options: Some(options),
+            attachments: None,
+            client_message_id: None,
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            permission_mode: None,
+            prompt: "Run in background".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("background start should succeed");
+
+    assert!(started.background_agent_id.is_some());
+    assert!(!started.run_id.is_empty());
+
+    supervisor.shutdown().await;
+}
+
+#[tokio::test]
+async fn workspace_isolation_rejects_git_worktree_in_non_git_workspace() {
+    let state = runtime_state_with_harness().await;
+    enable_subagents_in_execution_settings(&state).await;
+    let mut options = sample_subagent_run_options();
+    options.workspace_isolation = AgentWorkspaceIsolationMode::GitWorktree;
+
+    let error = resolve_start_run_agent_policy(
+        &StartRunRequest {
+            agent_options: Some(options),
+            attachments: None,
+            client_message_id: None,
+            context_references: None,
+            conversation_id: SessionId::new().to_string(),
+            permission_mode: None,
+            prompt: "Run with git worktree".to_owned(),
+        },
+        &state,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("git repository"));
+}
+
+#[tokio::test]
+async fn workspace_isolation_allows_patch_only_without_git_repository() {
+    let state = runtime_state_with_harness().await;
+    enable_subagents_in_execution_settings(&state).await;
+    let mut options = sample_subagent_run_options();
+    options.workspace_isolation = AgentWorkspaceIsolationMode::PatchOnly;
+
+    resolve_start_run_agent_policy(
+        &StartRunRequest {
+            agent_options: Some(options),
+            attachments: None,
+            client_message_id: None,
+            context_references: None,
+            conversation_id: SessionId::new().to_string(),
+            permission_mode: None,
+            prompt: "Run with patch-only isolation".to_owned(),
+        },
+        &state,
+    )
+    .expect("patch-only isolation should validate");
+}
+
+#[tokio::test]
+async fn subagent_runtime_start_run_invokes_agent_tool_in_scripted_flow() {
+    let workspace = unique_workspace("subagent-runtime");
+    std::fs::create_dir_all(&workspace).unwrap();
+    jyowo_harness_sdk::list_agent_profiles(&workspace).expect("agent profiles should list");
+
+    let agent_tool_use_id = ToolUseId::new();
+    let state = runtime_state_with_scripted_model_for_workspace(
+        workspace.clone(),
+        vec![
+            ScriptedResponse::Stream(vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::ToolUseComplete {
+                        id: agent_tool_use_id,
+                        name: "agent".to_owned(),
+                        input: json!({
+                            "role": "worker",
+                            "task": "inspect repository"
+                        }),
+                    },
+                },
+                ModelStreamEvent::MessageStop,
+            ]),
+            ScriptedResponse::Stream(vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("child done".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ]),
+            ScriptedResponse::Stream(vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("parent done".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ]),
+        ],
+    )
+    .await;
+    enable_subagents_in_execution_settings(&state).await;
+    let session_id = SessionId::new();
+
+    let _started = start_run_with_runtime_state(
+        StartRunRequest {
+            agent_options: Some(sample_subagent_run_options()),
+            attachments: None,
+            client_message_id: None,
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            permission_mode: Some(PermissionMode::BypassPermissions),
+            prompt: "Delegate inspection".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("start_run should accept subagent run options");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let harness = state.harness().expect("harness should be available");
+    loop {
+        let events: Vec<_> = harness
+            .event_store()
+            .read_envelopes(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+            .await
+            .expect("session envelopes should be readable")
+            .collect()
+            .await;
+        if events.iter().any(|envelope| match &envelope.payload {
+            Event::SubagentSpawned(_) | Event::SubagentAnnounced(_) => true,
+            Event::ToolUseRequested(requested) => requested.tool_name == "agent",
+            _ => false,
+        }) {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let event_types: Vec<_> = events
+                .iter()
+                .map(|envelope| format!("{:?}", envelope.payload))
+                .collect();
+            panic!("expected subagent lifecycle events, got: {event_types:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }

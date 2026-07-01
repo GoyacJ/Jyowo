@@ -1422,6 +1422,7 @@ mod capability_route_conversation {
             StartRunRequest {
                 client_message_id: None,
                 attachments: None,
+                agent_options: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
                 permission_mode: None,
@@ -1464,6 +1465,7 @@ mod capability_route_conversation {
             StartRunRequest {
                 client_message_id: None,
                 attachments: None,
+                agent_options: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
                 permission_mode: None,
@@ -1548,6 +1550,7 @@ mod capability_route_conversation {
             StartRunRequest {
                 client_message_id: None,
                 attachments: None,
+                agent_options: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
                 permission_mode: None,
@@ -1599,6 +1602,7 @@ mod capability_route_conversation {
             StartRunRequest {
                 client_message_id: None,
                 attachments: None,
+                agent_options: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
                 permission_mode: None,
@@ -1642,6 +1646,7 @@ mod capability_route_conversation {
             StartRunRequest {
                 client_message_id: None,
                 attachments: None,
+                agent_options: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
                 permission_mode: None,

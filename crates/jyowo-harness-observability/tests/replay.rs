@@ -5,20 +5,22 @@ use std::task::{Context, Poll};
 
 use futures::StreamExt;
 use harness_contracts::{
-    AgentId, AgentRef, AssistantMessageCompletedEvent, BlobId, BlobRef, ConfigHash,
-    ContextVisibility, DeferPolicy, EndReason, Event, MessageContent, MessageId, MessageMetadata,
-    ModelRef, NoopRedactor, PricingSnapshotId, RunEndedEvent, RunId, SessionCreatedEvent,
+    AgentId, AgentRef, AssistantMessageCompletedEvent, BackgroundAgentId,
+    BackgroundAgentInputSubmittedEvent, BlobId, BlobRef, ConfigHash, ContextVisibility,
+    DeferPolicy, EndReason, Event, MessageContent, MessageId, MessageMetadata, ModelRef,
+    NoopRedactor, PricingSnapshotId, RequestId, RunEndedEvent, RunId, SessionCreatedEvent,
     SessionEndedEvent, SessionId, SnapshotId, StopReason, SubagentAnnouncedEvent,
-    SubagentSpawnedEvent, SubagentStatus, TeamCreatedEvent, TeamMemberJoinedEvent,
+    SubagentSpawnedEvent, SubagentStatus, TeamCreatedEvent, TeamId, TeamMemberJoinedEvent,
     TeamTerminationReason, TeamTurnCompletedEvent, TenantId, ToolProperties, ToolResult,
-    ToolUseCompletedEvent, ToolUseId, ToolUseRequestedEvent, TopologyKind, UsageAccumulatedEvent,
-    UsageSnapshot, UserMessageAppendedEvent,
+    ToolUseCompletedEvent, ToolUseId, ToolUseRequestedEvent, TopologyKind, TranscriptRef,
+    UiSafeText, UsageAccumulatedEvent, UsageSnapshot, UserMessageAppendedEvent,
 };
 use harness_journal::{
     EventStore, InMemoryEventStore, Projection, ReplayCursor, SessionProjection,
 };
 use harness_observability::{
-    ExportFormat, PricingBillingMode, PricingSource, PricingTableEntry, ReplayEngine,
+    DefaultRedactor, ExportFormat, PricingBillingMode, PricingSource, PricingTableEntry,
+    ReplayEngine,
 };
 use rust_decimal::Decimal;
 use tokio::io::AsyncWrite;
@@ -424,6 +426,94 @@ async fn export_session_writes_har_archive() {
     assert_eq!(har["log"]["version"], "1.2");
     assert_eq!(har["log"]["creator"]["name"], "jyowo-harness-observability");
     assert_eq!(har["log"]["entries"].as_array().unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn export_session_withholds_child_agent_internals_from_json_lines_and_har() {
+    let tenant = TenantId::SINGLE;
+    let session = SessionId::new();
+    let subagent_id = harness_contracts::SubagentId::new();
+    let team_id = TeamId::new();
+    let background_agent_id = BackgroundAgentId::new();
+    let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(
+        DefaultRedactor::default(),
+    )));
+    let secret = "sk-abcdefghijklmnopqrstuvwxyz";
+    store
+        .append(
+            tenant,
+            session,
+            &[
+                Event::SubagentAnnounced(SubagentAnnouncedEvent {
+                    subagent_id,
+                    parent_session_id: session,
+                    status: SubagentStatus::Completed,
+                    summary: format!("done with {secret}"),
+                    result: Some(serde_json::json!({ "rawOutput": secret })),
+                    usage: usage(1, 1),
+                    transcript_ref: Some(transcript_ref()),
+                    context_report: None,
+                    renderer_id: "default".to_owned(),
+                    at: harness_contracts::now(),
+                }),
+                Event::TeamTurnCompleted(TeamTurnCompletedEvent {
+                    team_id,
+                    turn_id: RunId::new(),
+                    participating_agents: vec![AgentId::new()],
+                    usage: usage(1, 1),
+                    transcript_ref: Some(transcript_ref()),
+                    at: harness_contracts::now(),
+                }),
+                Event::BackgroundAgentInputSubmitted(BackgroundAgentInputSubmittedEvent {
+                    background_agent_id,
+                    request_id: RequestId::new(),
+                    input: UiSafeText::from_redacted_display(
+                        format!("continue with {secret}"),
+                        &DefaultRedactor::default(),
+                    ),
+                    at: harness_contracts::now(),
+                }),
+            ],
+        )
+        .await
+        .unwrap();
+    let engine = ReplayEngine::new(store);
+
+    let mut jsonl = MemoryWriter::default();
+    engine
+        .export_session(tenant, session, ExportFormat::JsonLines, &mut jsonl)
+        .await
+        .unwrap();
+    let mut har = MemoryWriter::default();
+    engine
+        .export_session(tenant, session, ExportFormat::Har, &mut har)
+        .await
+        .unwrap();
+    let exported = format!("{}\n{}", jsonl.into_string(), har.into_string());
+
+    assert!(exported.contains("subagent_announced"));
+    assert!(exported.contains("team_turn_completed"));
+    assert!(exported.contains("background_agent_input_submitted"));
+    assert!(exported.contains(&subagent_id.to_string()));
+    assert!(exported.contains(&team_id.to_string()));
+    assert!(exported.contains(&background_agent_id.to_string()));
+    assert!(!exported.contains(secret));
+    assert!(!exported.contains("rawOutput"));
+    assert!(!exported.contains("transcript_ref"));
+    assert!(!exported.contains("continue with"));
+}
+
+fn transcript_ref() -> TranscriptRef {
+    TranscriptRef {
+        blob: BlobRef {
+            id: BlobId::new(),
+            size: 10,
+            content_hash: [7; 32],
+            content_type: Some("application/json".to_owned()),
+        },
+        from_offset: harness_contracts::JournalOffset(1),
+        to_offset: harness_contracts::JournalOffset(2),
+    }
 }
 
 fn event_store() -> Arc<InMemoryEventStore> {

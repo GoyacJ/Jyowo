@@ -86,8 +86,16 @@ memory-consolidation = [
   "memory-external-slot",
   "jyowo-harness-memory/consolidation",
 ]
-agents-subagent = ["dep:jyowo-harness-subagent", "jyowo-harness-engine/subagent-tool"]
-agents-team = ["agents-subagent", "dep:jyowo-harness-team"]
+agents-subagent = [
+  "dep:jyowo-harness-subagent",
+  "jyowo-harness-engine/subagent-tool",
+  "jyowo-harness-agent-runtime/agents-subagent",
+]
+agents-team = [
+  "agents-subagent",
+  "dep:jyowo-harness-team",
+  "jyowo-harness-agent-runtime/agents-team",
+]
 observability-replay = ["jyowo-harness-observability/replay"]
 observability-otel = ["jyowo-harness-observability/otel"]
 observability-prometheus = ["jyowo-harness-observability/prometheus"]
@@ -126,6 +134,7 @@ testing = [
 ]
 
 [dependencies]
+jyowo-harness-agent-runtime = { path = "../jyowo-harness-agent-runtime" }
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
 jyowo-harness-context = { path = "../jyowo-harness-context" }
 jyowo-harness-engine = { path = "../jyowo-harness-engine" }

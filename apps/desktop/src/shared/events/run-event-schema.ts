@@ -9,6 +9,8 @@ export const runEventSourceSchema = z.enum([
   'tool',
   'engine',
   'policy',
+  'agent',
+  'background',
   'plugin',
 ])
 export const runEventContractTypeSchema = z.enum([
@@ -271,8 +273,43 @@ const toolFailedPayloadSchema = z
     toolUseId: z.string().min(1),
   })
   .strict()
+const permissionActorSourceSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('parentRun'),
+    })
+    .strict(),
+  z
+    .object({
+      parentRunId: z.string().min(1),
+      parentSessionId: z.string().min(1),
+      subagentId: z.string().min(1),
+      teamId: z.string().min(1).optional(),
+      teamMemberProfileId: z.string().min(1).optional(),
+      type: z.literal('subagent'),
+    })
+    .strict(),
+  z
+    .object({
+      agentId: z.string().min(1),
+      parentRunId: z.string().min(1).optional(),
+      role: permissionDisplayTextSchema,
+      teamId: z.string().min(1),
+      type: z.literal('teamMember'),
+    })
+    .strict(),
+  z
+    .object({
+      attemptId: z.string().min(1).optional(),
+      backgroundAgentId: z.string().min(1),
+      conversationId: z.string().min(1),
+      type: z.literal('backgroundAgent'),
+    })
+    .strict(),
+])
 const permissionRequestedPayloadSchema = z
   .object({
+    actorSource: permissionActorSourceSchema,
     autoResolved: z.boolean().optional().default(false),
     decisionScope: permissionDisplayTextSchema,
     diffSummary: permissionDisplayTextSchema.optional(),
@@ -288,6 +325,26 @@ const permissionRequestedPayloadSchema = z
   .strict()
 const permissionResolvedPayloadSchema = z
   .object({
+    decision: z.enum(['approve', 'deny']),
+    requestId: requestIdSchema,
+  })
+  .strict()
+const backgroundStartedPayloadSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
+    title: z.string().min(1),
+  })
+  .strict()
+const backgroundPermissionRequestedPayloadSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
+    reason: permissionDisplayTextSchema,
+    requestId: requestIdSchema,
+  })
+  .strict()
+const backgroundPermissionResolvedPayloadSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
     decision: z.enum(['approve', 'deny']),
     requestId: requestIdSchema,
   })
@@ -468,6 +525,9 @@ export const runEventSchema = z
     eventSchema('tool.failed', toolFailedPayloadSchema),
     eventSchema('permission.requested', permissionRequestedPayloadSchema),
     eventSchema('permission.resolved', permissionResolvedPayloadSchema),
+    eventSchema('background.started', backgroundStartedPayloadSchema),
+    eventSchema('background.permission.requested', backgroundPermissionRequestedPayloadSchema),
+    eventSchema('background.permission.resolved', backgroundPermissionResolvedPayloadSchema),
     eventSchema('artifact.created', artifactLifecyclePayloadSchema),
     eventSchema('artifact.updated', artifactLifecyclePayloadSchema),
     eventSchema('assistant.review.requested', assistantReviewRequestedPayloadSchema),
@@ -480,12 +540,23 @@ export const runEventSchema = z
   ])
   .superRefine((event, context) => {
     if (
-      (event.type === 'permission.requested' || event.type === 'permission.resolved') &&
+      (event.type === 'permission.requested' ||
+        event.type === 'permission.resolved' ||
+        event.type === 'background.permission.requested' ||
+        event.type === 'background.permission.resolved') &&
       event.source !== 'policy'
     ) {
       context.addIssue({
         code: 'custom',
         message: 'permission events must be emitted by policy',
+        path: ['source'],
+      })
+    }
+
+    if (event.type === 'background.started' && event.source !== 'background') {
+      context.addIssue({
+        code: 'custom',
+        message: 'background events must be emitted by background',
         path: ['source'],
       })
     }
@@ -656,6 +727,12 @@ export function getRunEventLabel(event: RunEvent): string {
       return 'Permission requested'
     case 'permission.resolved':
       return 'Permission resolved'
+    case 'background.started':
+      return 'Background started'
+    case 'background.permission.requested':
+      return 'Background permission requested'
+    case 'background.permission.resolved':
+      return 'Background permission resolved'
     case 'artifact.created':
       return 'Artifact created'
     case 'artifact.updated':

@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "apps/desktop/src-tauri",
+  "crates/jyowo-harness-agent-runtime",
   "crates/jyowo-harness-budget",
   "crates/jyowo-harness-context",
   "crates/jyowo-harness-contracts",
@@ -79,6 +80,7 @@ tauri = "2.11.2"
 tauri-build = "2.6.2"
 tauri-plugin-dialog = "2.4.3"
 tauri-plugin-process = "2.3.1"
+tauri-plugin-shell = "2.3.5"
 tauri-plugin-store = "2.4.3"
 tauri-plugin-updater = "2.10.1"
 tempfile = "3.27.0"

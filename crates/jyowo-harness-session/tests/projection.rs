@@ -5,11 +5,11 @@ use harness_contracts::{
     AssistantMessageCompletedEvent, CacheImpact, CompactOutcome, CompactTrigger,
     CompactionAppliedEvent, DecidedBy, Decision, DecisionScope, DeferPolicy, DeferredToolHint,
     EndReason, Event, EventId, MessageContent, MessageId, MessageMetadata, NoopRedactor,
-    PermissionRequestedEvent, PermissionResolvedEvent, PermissionSubject, RequestId, RunEndedEvent,
-    RunId, SessionCreatedEvent, SessionEndedEvent, SessionId, Severity, StopReason, TenantId,
-    ToolDeferredPoolChangedEvent, ToolPoolChangeSource, ToolProperties, ToolResult,
-    ToolSchemaMaterializedEvent, ToolUseCompletedEvent, ToolUseId, ToolUseRequestedEvent,
-    UsageSnapshot,
+    PermissionActorSource, PermissionRequestedEvent, PermissionResolvedEvent, PermissionSubject,
+    RequestId, RunEndedEvent, RunId, SessionCreatedEvent, SessionEndedEvent, SessionId, Severity,
+    StopReason, TenantId, ToolDeferredPoolChangedEvent, ToolPoolChangeSource, ToolProperties,
+    ToolResult, ToolSchemaMaterializedEvent, ToolUseCompletedEvent, ToolUseId,
+    ToolUseRequestedEvent, UsageSnapshot,
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_session::SessionProjection;
@@ -76,6 +76,7 @@ async fn projection_replay_is_idempotent() {
             presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
             interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
             auto_resolved: false,
+            actor_source: PermissionActorSource::ParentRun,
             causation_id: EventId::new(),
             at: harness_contracts::now(),
         }),

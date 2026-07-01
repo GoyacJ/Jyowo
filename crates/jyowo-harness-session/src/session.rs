@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use harness_contracts::{
     ConfigHash, ContextPatchRequest, ContextPatchSinkCap, ConversationAttachmentReference,
     DeferredToolsDeltaAttachment, EndReason, Event, InteractivityLevel, Message, MessageId,
-    MessagePart, PermissionMode, RunId, SessionCreatedEvent, SessionEndedEvent, SessionError,
-    SessionId, SnapshotId, TeamId, TenantId, ToolProfile, ToolSearchMode, UsageSnapshot,
-    WorkspaceId,
+    MessagePart, PermissionActorSource, PermissionMode, RunId, SessionCreatedEvent,
+    SessionEndedEvent, SessionError, SessionId, SnapshotId, TeamId, TenantId, ToolProfile,
+    ToolSearchMode, UsageSnapshot, WorkspaceId,
 };
 use harness_journal::EventStore;
 use harness_model::ModelProtocol;
@@ -40,6 +40,7 @@ pub struct SessionTurnContext {
     pub attachments: Vec<ConversationAttachmentReference>,
     pub turn_index: usize,
     pub permission_mode: PermissionMode,
+    pub permission_actor_source: PermissionActorSource,
     pub interactivity: InteractivityLevel,
     pub pending_deferred_tools_delta: Option<DeferredToolsDeltaAttachment>,
     pub context_seed: Vec<Message>,
@@ -454,6 +455,24 @@ impl Session {
         attachments: Vec<ConversationAttachmentReference>,
         permission_mode_override: Option<PermissionMode>,
     ) -> Result<(), SessionError> {
+        self.run_turn_parts_with_client_message_id_attachments_permission_mode_and_actor_source(
+            parts,
+            client_message_id,
+            attachments,
+            permission_mode_override,
+            PermissionActorSource::ParentRun,
+        )
+        .await
+    }
+
+    pub async fn run_turn_parts_with_client_message_id_attachments_permission_mode_and_actor_source(
+        &self,
+        parts: Vec<MessagePart>,
+        client_message_id: Option<String>,
+        attachments: Vec<ConversationAttachmentReference>,
+        permission_mode_override: Option<PermissionMode>,
+        permission_actor_source: PermissionActorSource,
+    ) -> Result<(), SessionError> {
         if self.state.lock().await.ended {
             return Err(SessionError::Message("session already ended".to_owned()));
         }
@@ -483,6 +502,7 @@ impl Session {
                 attachments,
                 turn_index: projection.messages.len(),
                 permission_mode,
+                permission_actor_source: permission_actor_source.clone(),
                 interactivity: self.options.interactivity,
                 pending_deferred_tools_delta,
                 context_seed: projection.messages.clone(),
@@ -512,6 +532,7 @@ impl Session {
             client_message_id,
             attachments,
             permission_mode,
+            permission_actor_source,
         )
         .await
     }

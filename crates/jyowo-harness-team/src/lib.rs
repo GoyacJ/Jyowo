@@ -44,6 +44,7 @@ use parking_lot::{Mutex as SyncMutex, MutexGuard as SyncMutexGuard};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex};
+use tokio_util::sync::CancellationToken as TokioCancellationToken;
 
 pub use harness_budget::{ResourceQuota, TokenBudget};
 pub use harness_contracts::{ContextVisibility, MessagePayload};
@@ -1393,6 +1394,7 @@ struct TeamInner {
     journal: TeamJournalContext,
     event_store: Arc<dyn EventStore>,
     blob_store: Arc<dyn BlobStore>,
+    workspace_root: PathBuf,
     paused: AtomicBool,
     paused_members: Mutex<HashSet<AgentId>>,
     lifecycle_state: Mutex<TeamLifecycleState>,
@@ -1425,6 +1427,25 @@ impl Team {
         event_store: Arc<dyn EventStore>,
         blob_store: Arc<dyn BlobStore>,
     ) -> Self {
+        Self::new_with_workspace_root(
+            spec,
+            bus,
+            journal,
+            event_store,
+            blob_store,
+            PathBuf::from("."),
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_workspace_root(
+        spec: TeamSpec,
+        bus: MessageBus,
+        journal: TeamJournalContext,
+        event_store: Arc<dyn EventStore>,
+        blob_store: Arc<dyn BlobStore>,
+        workspace_root: PathBuf,
+    ) -> Self {
         let mut bus_spec = spec.message_bus.clone();
         bus_spec.max_messages_per_correlation = spec.max_messages_per_correlation;
         let bus = bus.with_spec(bus_spec);
@@ -1435,6 +1456,7 @@ impl Team {
                 journal,
                 event_store,
                 blob_store,
+                workspace_root,
                 paused: AtomicBool::new(false),
                 paused_members: Mutex::new(HashSet::new()),
                 lifecycle_state: Mutex::new(TeamLifecycleState {
@@ -1589,7 +1611,7 @@ impl Team {
         let session_id = SessionId::new();
         Session::builder()
             .with_options(
-                SessionOptions::new(PathBuf::from("."))
+                SessionOptions::new(self.inner.workspace_root.clone())
                     .with_tenant_id(self.inner.journal.tenant_id)
                     .with_session_id(session_id),
             )
@@ -2581,6 +2603,7 @@ pub struct TeamMemberRunRequest {
     pub shared_memory: Option<SharedMemory>,
     pub team_control: Option<TeamControlHandle>,
     pub control_tools_enabled: bool,
+    pub cancellation: TeamMemberCancellationToken,
     memory_write_context: Option<TeamMemoryWriteContext>,
 }
 
@@ -2614,6 +2637,7 @@ impl TeamMemberRunRequest {
             shared_memory: None,
             team_control: None,
             control_tools_enabled: false,
+            cancellation: TeamMemberCancellationToken::new(),
             memory_write_context: None,
         }
     }
@@ -2633,6 +2657,54 @@ impl TeamMemberRunRequest {
         self.memory_write_context.ok_or_else(|| {
             TeamError::InvalidSpec("team memory write context is not runtime-issued".to_owned())
         })
+    }
+}
+
+#[derive(Clone)]
+pub struct TeamMemberCancellationToken {
+    inner: Arc<TeamMemberCancellationState>,
+}
+
+struct TeamMemberCancellationState {
+    token: TokioCancellationToken,
+}
+
+impl std::fmt::Debug for TeamMemberCancellationToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TeamMemberCancellationToken")
+            .field("cancelled", &self.is_cancelled())
+            .finish()
+    }
+}
+
+impl Default for TeamMemberCancellationToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TeamMemberCancellationToken {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(TeamMemberCancellationState {
+                token: TokioCancellationToken::new(),
+            }),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.inner.token.cancel();
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.token.is_cancelled()
+    }
+
+    pub async fn cancelled(&self) {
+        self.inner.token.cancelled().await;
     }
 }
 
@@ -2664,6 +2736,7 @@ struct TeamRuntimeCore {
     initialized: Mutex<bool>,
     member_activity: Mutex<HashMap<AgentId, DateTime<Utc>>>,
     shared_memory: Mutex<Option<SharedMemory>>,
+    active_member_cancellations: Mutex<HashMap<AgentId, TeamMemberCancellationToken>>,
 }
 
 impl TeamRuntimeCore {
@@ -2685,6 +2758,7 @@ impl TeamRuntimeCore {
             initialized: Mutex::new(false),
             member_activity: Mutex::new(HashMap::new()),
             shared_memory: Mutex::new(None),
+            active_member_cancellations: Mutex::new(HashMap::new()),
         }
     }
 
@@ -2750,7 +2824,7 @@ impl TeamRuntimeCore {
             let session_id = SessionId::new();
             Session::builder()
                 .with_options(
-                    SessionOptions::new(PathBuf::from("."))
+                    SessionOptions::new(self.inner.workspace_root.clone())
                         .with_tenant_id(self.inner.journal.tenant_id)
                         .with_session_id(session_id),
                 )
@@ -2844,6 +2918,11 @@ impl TeamRuntimeCore {
             .lock()
             .await
             .insert(member.agent_id, correlation_id);
+        let cancellation = TeamMemberCancellationToken::new();
+        self.active_member_cancellations
+            .lock()
+            .await
+            .insert(member.agent_id, cancellation.clone());
         let request = TeamMemberRunRequest {
             tenant_id: self.inner.journal.tenant_id,
             team_id,
@@ -2859,6 +2938,7 @@ impl TeamRuntimeCore {
             shared_memory,
             team_control: Some(self.control_handle()),
             control_tools_enabled,
+            cancellation,
             memory_write_context: None,
         };
         let request = TeamMemberRunRequest {
@@ -2868,6 +2948,10 @@ impl TeamRuntimeCore {
         let outcome = worker.run_member(request).await;
         self.inner
             .active_member_correlations
+            .lock()
+            .await
+            .remove(&member.agent_id);
+        self.active_member_cancellations
             .lock()
             .await
             .remove(&member.agent_id);
@@ -2944,7 +3028,7 @@ impl TeamRuntimeCore {
         let session_id = SessionId::new();
         Session::builder()
             .with_options(
-                SessionOptions::new(PathBuf::from("."))
+                SessionOptions::new(self.inner.workspace_root.clone())
                     .with_tenant_id(self.inner.journal.tenant_id)
                     .with_session_id(session_id),
             )
@@ -3209,6 +3293,16 @@ impl TeamRuntimeCore {
         let started_at = Instant::now();
         let correlation_id = CorrelationId::new();
         self.ensure_initialized(correlation_id).await?;
+        let cancellations = self
+            .active_member_cancellations
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for cancellation in cancellations {
+            cancellation.cancel();
+        }
         self.inner
             .terminate(
                 reason,

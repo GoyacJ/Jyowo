@@ -306,14 +306,22 @@ impl Harness {
             &model_snapshot.conversation_capability.input_modalities,
         );
         let session = self
-            .resume_sdk_session_from_projection(options.clone(), projection)
+            .resume_sdk_session_from_projection(
+                options.clone(),
+                projection,
+                #[cfg(feature = "agents-subagent")]
+                request.agent_run_options.as_ref(),
+            )
             .await?;
         session
-            .run_turn_parts_with_client_message_id_attachments_and_permission_mode(
+            .run_turn_parts_with_client_message_id_attachments_permission_mode_and_actor_source(
                 parts,
                 request.input.client_message_id.clone(),
                 request.input.attachments.clone(),
                 request.permission_mode_override,
+                request
+                    .permission_actor_source
+                    .unwrap_or(harness_contracts::PermissionActorSource::ParentRun),
             )
             .await?;
         let new_events = self
@@ -339,6 +347,23 @@ impl Harness {
                     "run did not emit RunStarted".to_owned(),
                 ))
             })?;
+        #[cfg(feature = "agents-team")]
+        if let Some(agent_run_options) = &request.agent_run_options {
+            if harness_agent_runtime::should_start_run_scoped_team(agent_run_options) {
+                let profiles = crate::list_agent_profiles(&options.workspace_root)
+                    .map_err(|error| HarnessError::Other(error.to_string()))?;
+                self.start_run_scoped_team(super::team_runtime::RunScopedTeamStartupRequest {
+                    agent_run_options: agent_run_options.clone(),
+                    profiles,
+                    run_id,
+                    conversation_session_id: options.session_id,
+                    goal: request.input.prompt.clone(),
+                    workspace_root: options.workspace_root.clone(),
+                    workspace_bootstrap: options.workspace_bootstrap.clone(),
+                })
+                .await?;
+            }
+        }
         let projection = session.projection().await;
         Ok(ConversationTurnReceipt {
             tenant_id: options.tenant_id,
@@ -395,13 +420,25 @@ impl Harness {
             .lock()
             .get(&run_id)
             .cloned();
-        let Some(active_run) = active_run else {
+
+        let mut cancelled = false;
+        if let Some(active_run) = active_run {
+            active_run.cancellation.cancel(InterruptCause::User);
+            cancelled = true;
+        }
+
+        #[cfg(feature = "agents-team")]
+        if self.has_active_run_team(run_id) {
+            self.cancel_active_run_team(run_id).await?;
+            cancelled = true;
+        }
+
+        if !cancelled {
             return Err(HarnessError::Session(SessionError::Message(format!(
                 "run is not active or cannot be cancelled through this facade: {run_id}"
             ))));
-        };
+        }
 
-        active_run.cancellation.cancel(InterruptCause::User);
         Ok(())
     }
 

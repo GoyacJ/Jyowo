@@ -150,6 +150,9 @@ pub struct ConversationTurnRequest {
     pub options: SessionOptions,
     pub input: ConversationTurnInput,
     pub permission_mode_override: Option<PermissionMode>,
+    pub permission_actor_source: Option<harness_contracts::PermissionActorSource>,
+    #[cfg(feature = "agents-subagent")]
+    pub agent_run_options: Option<harness_contracts::AgentRunOptions>,
 }
 
 impl ConversationTurnRequest {
@@ -159,6 +162,9 @@ impl ConversationTurnRequest {
             options,
             input: ConversationTurnInput::ask(prompt),
             permission_mode_override: None,
+            permission_actor_source: None,
+            #[cfg(feature = "agents-subagent")]
+            agent_run_options: None,
         }
     }
 }

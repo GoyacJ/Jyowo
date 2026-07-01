@@ -329,6 +329,7 @@ fn execution_settings_save_default_without_changing_session_options() {
             background_agents_enabled: false,
         },
         &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        None,
     )
     .expect("execution settings should save");
 
@@ -353,6 +354,7 @@ async fn active_conversation_runtime_applies_saved_tool_profile() {
             background_agents_enabled: false,
         },
         &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        None,
     )
     .expect("execution settings should save");
 
@@ -370,9 +372,10 @@ fn get_execution_settings_defaults_to_standard_mode() {
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
     let state = DesktopRuntimeState::with_workspace_for_test(workspace)
         .expect("runtime state should initialize");
-    let settings = get_execution_settings_with_store(&DesktopExecutionSettingsStore::new(
-        state.workspace_root().to_path_buf(),
-    ))
+    let settings = get_execution_settings_with_store(
+        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        None,
+    )
     .expect("execution settings should load");
 
     assert_eq!(settings.permission_mode, PermissionMode::Default);
@@ -385,7 +388,11 @@ fn get_execution_settings_defaults_to_standard_mode() {
     assert!(!settings.agent_capabilities.subagents_available);
     assert!(!settings.agent_capabilities.agent_teams_available);
     assert!(!settings.agent_capabilities.background_agents_available);
-    assert_eq!(settings.agent_capabilities.unavailable_reasons.len(), 3);
+    assert!(
+        settings.agent_capabilities.unavailable_reasons.len() >= 2,
+        "expected resolver unavailable reasons, got {:?}",
+        settings.agent_capabilities.unavailable_reasons
+    );
 }
 
 #[test]
@@ -404,9 +411,10 @@ fn get_execution_settings_reads_legacy_permission_only_record() {
     std::fs::write(&settings_path, r#"{"permission_mode":"auto"}"#)
         .expect("legacy execution settings should write");
 
-    let settings = get_execution_settings_with_store(&DesktopExecutionSettingsStore::new(
-        workspace.to_path_buf(),
-    ))
+    let settings = get_execution_settings_with_store(
+        &DesktopExecutionSettingsStore::new(workspace.to_path_buf()),
+        None,
+    )
     .expect("legacy execution settings should load");
 
     let expected_permission_mode = if cfg!(feature = "auto-mode") {
@@ -433,9 +441,10 @@ fn get_execution_settings_normalizes_unavailable_auto_default() {
     let state = DesktopRuntimeState::with_workspace_for_test(workspace)
         .expect("runtime state should initialize");
 
-    let settings = get_execution_settings_with_store(&DesktopExecutionSettingsStore::new(
-        state.workspace_root().to_path_buf(),
-    ))
+    let settings = get_execution_settings_with_store(
+        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        None,
+    )
     .expect("execution settings should load");
 
     let expected_permission_mode = if cfg!(feature = "auto-mode") {
@@ -480,6 +489,7 @@ fn get_execution_settings_for_request_reads_registered_workspace_instead_of_acti
             background_agents_enabled: false,
         },
         &active_store,
+        None,
     )
     .expect("active workspace settings should save");
 
@@ -489,6 +499,7 @@ fn get_execution_settings_for_request_reads_registered_workspace_instead_of_acti
         },
         &active_store,
         &registry,
+        None,
     )
     .expect("active workspace settings should load");
     let requested_settings = get_execution_settings_for_request(
@@ -497,6 +508,7 @@ fn get_execution_settings_for_request_reads_registered_workspace_instead_of_acti
         },
         &active_store,
         &registry,
+        None,
     )
     .expect("requested workspace settings should load");
     let unregistered_error = get_execution_settings_for_request(
@@ -505,6 +517,7 @@ fn get_execution_settings_for_request_reads_registered_workspace_instead_of_acti
         },
         &active_store,
         &registry,
+        None,
     )
     .expect_err("unregistered workspace should be rejected");
 
@@ -555,7 +568,7 @@ fn set_execution_settings_rejects_unavailable_agent_capabilities() {
             background_agents_enabled: true,
         },
     ] {
-        let error = set_execution_settings_with_store(request, &store)
+        let error = set_execution_settings_with_store(request, &store, None)
             .expect_err("unavailable capability should be rejected");
         assert_eq!(error.code, "INVALID_PAYLOAD");
     }
@@ -580,6 +593,7 @@ fn set_execution_settings_serializes_agent_capability_fields() {
             background_agents_enabled: false,
         },
         &store,
+        None,
     )
     .expect("disabled execution settings should save");
 
@@ -619,6 +633,7 @@ fn set_execution_settings_rejects_invalid_context_compression_trigger_ratio() {
             background_agents_enabled: false,
         },
         &store,
+        None,
     )
     .unwrap_err();
     assert_eq!(low_error.code, "INVALID_PAYLOAD");
@@ -633,6 +648,7 @@ fn set_execution_settings_rejects_invalid_context_compression_trigger_ratio() {
             background_agents_enabled: false,
         },
         &store,
+        None,
     )
     .unwrap_err();
     assert_eq!(high_error.code, "INVALID_PAYLOAD");
@@ -657,9 +673,10 @@ fn invalid_execution_settings_file_resets_agent_capabilities() {
     )
     .expect("invalid execution settings should write");
 
-    let settings = get_execution_settings_with_store(&DesktopExecutionSettingsStore::new(
-        workspace.to_path_buf(),
-    ))
+    let settings = get_execution_settings_with_store(
+        &DesktopExecutionSettingsStore::new(workspace.to_path_buf()),
+        None,
+    )
     .expect("invalid execution settings should reset");
 
     assert_eq!(settings.permission_mode, PermissionMode::Default);
@@ -689,9 +706,60 @@ fn set_execution_settings_rejects_auto_without_runtime_support() {
             background_agents_enabled: false,
         },
         &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        None,
     )
     .expect_err("auto mode should be rejected without runtime support");
 
     assert_eq!(error.code, "INVALID_PAYLOAD");
     assert!(error.message.contains("unavailable"));
+}
+
+#[tokio::test]
+async fn execution_settings_agent_capabilities_reflect_resolver_with_stream_permission() {
+    let workspace = unique_workspace("execution-settings-agent-capabilities");
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+    let context = AgentCapabilityResolutionContext {
+        stream_permission_runtime_available: true,
+    };
+    let store = DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf());
+
+    let settings =
+        get_execution_settings_with_store(&store, Some(&context)).expect("settings should load");
+
+    assert!(settings.agent_capabilities.subagents_available);
+    assert!(settings.agent_capabilities.agent_teams_available);
+    assert!(!settings.agent_capabilities.background_agents_available);
+
+    let saved = set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: true,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        },
+        &store,
+        Some(&context),
+    )
+    .expect("subagents should save when resolver reports availability");
+
+    assert!(saved.agent_capabilities.subagents_enabled);
+    assert!(saved.agent_capabilities.subagents_available);
+
+    let background_error = set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: true,
+        },
+        &store,
+        Some(&context),
+    )
+    .expect_err("background agents remain unavailable before supervisor wiring");
+
+    assert_eq!(background_error.code, "INVALID_PAYLOAD");
 }

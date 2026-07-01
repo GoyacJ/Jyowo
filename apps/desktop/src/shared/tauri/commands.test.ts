@@ -94,6 +94,18 @@ function validWorktreePage(): PageConversationWorktreeResponse {
               ],
               eventRefs: [{ eventId: 'event-006', cursor: cursor('', 6) }],
             },
+            {
+              kind: 'agentActivity',
+              id: 'segment:agent:subagent-001',
+              order: 3,
+              activityKind: 'subagent',
+              agentId: 'subagent-001',
+              role: 'Reviewer',
+              taskSummary: 'Review recent changes',
+              status: 'completed',
+              resultSummary: 'No blocking issues found.',
+              eventRefs: [{ eventId: 'event-008', cursor: cursor('', 8) }],
+            },
           ],
           eventRefs: [{ eventId: 'event-007', cursor: cursor('', 7) }],
         },
@@ -118,12 +130,17 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import { createTestCommandClient } from '@/testing/command-client'
 import {
+  archiveBackgroundAgent,
+  cancelBackgroundAgent,
   cancelRun,
   clearMcpDiagnostics,
   createAttachmentFromPath,
   createConversation,
   createInvokeCommandClient,
+  type DeleteAgentProfileRequest,
+  deleteAgentProfile,
   deleteAutomation,
+  deleteBackgroundAgent,
   deleteConversation,
   deleteMcpServer,
   deleteMemoryItem,
@@ -135,6 +152,7 @@ import {
   getAppInfo,
   getArtifactMediaPreview,
   getAttachmentMediaPreview,
+  getBackgroundAgent,
   getContextSnapshot,
   getConversation,
   getExecutionSettings,
@@ -152,9 +170,11 @@ import {
   installPluginFromPath,
   installSkillFromCatalog,
   listActivity,
+  listAgentProfiles,
   listArtifacts,
   listAutomationRuns,
   listAutomations,
+  listBackgroundAgents,
   listBrowserMcpPresets,
   listConversations,
   listEvalCases,
@@ -175,18 +195,25 @@ import {
   listSkills,
   type PageConversationWorktreeResponse,
   pageConversationWorktree,
+  parseAgentCapabilities,
+  parseAgentProfile,
+  parseAgentRunOptions,
+  pauseBackgroundAgent,
   reloadPlugin,
   requestProviderConfigApiKeyReveal,
   resolvePermission,
   restartMcpServer,
+  resumeBackgroundAgent,
   runAutomationNow,
   runEvalCase,
   type SaveAutomationRequest,
+  saveAgentProfile,
   saveAutomation,
   saveBrowserMcpPreset,
   saveMcpServer,
   saveProviderCapabilityRoute,
   saveProviderSettings,
+  sendBackgroundAgentInput,
   setAutomationEnabled,
   setExecutionSettings,
   setMcpServerEnabled,
@@ -809,6 +836,13 @@ describe('CommandClient', () => {
                   },
                 ],
               },
+              {
+                kind: 'agentActivity',
+                id: 'segment:agent:subagent-001',
+                activityKind: 'subagent',
+                agentId: 'subagent-001',
+                status: 'completed',
+              },
             ],
           },
         },
@@ -1389,6 +1423,55 @@ describe('CommandClient', () => {
         createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
       ),
     ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects invalid agent activity segment payloads', async () => {
+    const invalidCases = [
+      (page: ReturnType<typeof validWorktreePage>) => {
+        const assistant = page.turns[0].assistant
+        if (!assistant) {
+          throw new Error('assistant fixture missing')
+        }
+        assistant.segments.push({
+          kind: 'agentActivity',
+          id: 'segment:agent:invalid',
+          order: 4,
+          activityKind: 'unknown-kind',
+          agentId: 'subagent-002',
+          role: 'Reviewer',
+          taskSummary: 'Review recent changes',
+          status: 'running',
+        } as unknown as (typeof assistant.segments)[number])
+      },
+      (page: ReturnType<typeof validWorktreePage>) => {
+        const assistant = page.turns[0].assistant
+        if (!assistant) {
+          throw new Error('assistant fixture missing')
+        }
+        assistant.segments.push({
+          kind: 'agentActivity',
+          id: 'segment:agent:invalid-status',
+          order: 4,
+          activityKind: 'subagent',
+          agentId: 'subagent-002',
+          role: 'Reviewer',
+          taskSummary: 'Review recent changes',
+          status: 'unknown-status',
+        } as unknown as (typeof assistant.segments)[number])
+      },
+    ]
+
+    for (const mutate of invalidCases) {
+      const payload = clone(validWorktreePage())
+      mutate(payload)
+
+      await expect(
+        pageConversationWorktree(
+          { conversationId: 'conversation-001' },
+          createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+        ),
+      ).rejects.toThrow(TauriCommandPayloadError)
+    }
   })
 
   it('rejects raw RunEvent-shaped payloads as conversation worktree pages', async () => {
@@ -4267,5 +4350,541 @@ describe('CommandClient', () => {
       }),
     ).toThrow(TauriCommandPayloadError)
     expect(progressEvents).toEqual([])
+  })
+})
+
+describe('agent orchestration contracts', () => {
+  it('accepts all capability unavailable reason variants', () => {
+    expect(
+      parseAgentCapabilities({
+        agentTeamsAvailable: false,
+        agentTeamsEnabled: false,
+        backgroundAgentsAvailable: false,
+        backgroundAgentsEnabled: false,
+        subagentsAvailable: false,
+        subagentsEnabled: true,
+        unavailableReasons: [
+          { capability: 'subagents', type: 'notCompiled' },
+          { capability: 'subagents', type: 'runtimeStoreUnavailable', message: 'open failed' },
+          { capability: 'agentTeams', type: 'permissionRuntimeUnavailable' },
+          { capability: 'agentTeams', type: 'invalidAgentProfiles', message: 'bad profile' },
+          { message: 'supervisor missing', type: 'backgroundSupervisorUnavailable' },
+          {
+            capability: 'backgroundAgents',
+            message: 'worktree unavailable',
+            type: 'workspaceIsolationUnavailable',
+          },
+        ],
+      }),
+    ).toMatchObject({
+      unavailableReasons: [
+        { type: 'notCompiled' },
+        { type: 'runtimeStoreUnavailable' },
+        { type: 'permissionRuntimeUnavailable' },
+        { type: 'invalidAgentProfiles' },
+        { type: 'backgroundSupervisorUnavailable' },
+        { type: 'workspaceIsolationUnavailable' },
+      ],
+    })
+  })
+
+  it('rejects unknown capability unavailable reason type', () => {
+    expect(() =>
+      parseAgentCapabilities({
+        agentTeamsAvailable: false,
+        agentTeamsEnabled: false,
+        backgroundAgentsAvailable: false,
+        backgroundAgentsEnabled: false,
+        subagentsAvailable: false,
+        subagentsEnabled: false,
+        unavailableReasons: [{ capability: 'subagents', type: 'unknownReason' }],
+      }),
+    ).toThrow()
+  })
+
+  it('accepts valid run options with team config', () => {
+    expect(
+      parseAgentRunOptions({
+        agentTeam: 'allowed',
+        background: 'background',
+        maxConcurrentSubagents: 2,
+        maxDepth: 2,
+        maxTeamMembers: 4,
+        subagents: 'allowed',
+        teamConfig: {
+          leadProfileId: 'lead',
+          maxTurnsPerGoal: 4,
+          memberProfileIds: ['worker_a'],
+          sharedMemoryPolicy: 'summaries_only',
+          topology: 'coordinator_worker',
+        },
+        workspaceIsolation: 'git_worktree',
+      }),
+    ).toMatchObject({
+      background: 'background',
+      workspaceIsolation: 'git_worktree',
+    })
+  })
+
+  it('rejects unknown isolation mode', () => {
+    expect(() =>
+      parseAgentRunOptions({
+        agentTeam: 'off',
+        background: 'foreground',
+        maxConcurrentSubagents: 1,
+        maxDepth: 1,
+        maxTeamMembers: 2,
+        subagents: 'off',
+        workspaceIsolation: 'shared_checkout',
+      }),
+    ).toThrow()
+  })
+
+  it('rejects unknown team topology', () => {
+    expect(() =>
+      parseAgentRunOptions({
+        agentTeam: 'allowed',
+        background: 'foreground',
+        maxConcurrentSubagents: 1,
+        maxDepth: 1,
+        maxTeamMembers: 2,
+        subagents: 'allowed',
+        teamConfig: {
+          leadProfileId: 'lead',
+          maxTurnsPerGoal: 1,
+          memberProfileIds: ['worker_a'],
+          sharedMemoryPolicy: 'none',
+          topology: 'custom_mesh',
+        },
+        workspaceIsolation: 'read_only',
+      }),
+    ).toThrow()
+  })
+
+  it('rejects invalid profile id', () => {
+    expect(() =>
+      parseAgentProfile({
+        contextMode: 'minimal',
+        defaultWorkspaceIsolation: 'read_only',
+        description: 'bad id',
+        id: 'Invalid-ID',
+        maxDepth: 1,
+        maxTurns: 1,
+        memoryScope: 'none',
+        role: 'Worker',
+        sandboxInheritance: 'inherit_parent',
+        scope: 'user',
+        toolBlocklist: [],
+      }),
+    ).toThrow()
+  })
+
+  it('rejects empty team member list', () => {
+    expect(() =>
+      parseAgentRunOptions({
+        agentTeam: 'allowed',
+        background: 'foreground',
+        maxConcurrentSubagents: 1,
+        maxDepth: 1,
+        maxTeamMembers: 2,
+        subagents: 'allowed',
+        teamConfig: {
+          leadProfileId: 'lead',
+          maxTurnsPerGoal: 1,
+          memberProfileIds: [],
+          sharedMemoryPolicy: 'none',
+          topology: 'peer_to_peer',
+        },
+        workspaceIsolation: 'read_only',
+      }),
+    ).toThrow()
+  })
+
+  it('rejects negative concurrency values', () => {
+    expect(() =>
+      parseAgentRunOptions({
+        agentTeam: 'off',
+        background: 'foreground',
+        maxConcurrentSubagents: 0,
+        maxDepth: 1,
+        maxTeamMembers: 2,
+        subagents: 'off',
+        workspaceIsolation: 'read_only',
+      }),
+    ).toThrow()
+  })
+
+  it('rejects team allowed without team config', () => {
+    expect(() =>
+      parseAgentRunOptions({
+        agentTeam: 'allowed',
+        background: 'foreground',
+        maxConcurrentSubagents: 1,
+        maxDepth: 1,
+        maxTeamMembers: 2,
+        subagents: 'allowed',
+        workspaceIsolation: 'read_only',
+      }),
+    ).toThrow()
+  })
+
+  it('rejects invalid background policy string', () => {
+    expect(() =>
+      parseAgentRunOptions({
+        agentTeam: 'off',
+        background: 'detached',
+        maxConcurrentSubagents: 1,
+        maxDepth: 1,
+        maxTeamMembers: 2,
+        subagents: 'off',
+        workspaceIsolation: 'read_only',
+      }),
+    ).toThrow()
+  })
+
+  it('rejects unknown profile scope', () => {
+    expect(() =>
+      parseAgentProfile({
+        contextMode: 'minimal',
+        defaultWorkspaceIsolation: 'read_only',
+        description: 'scope',
+        id: 'worker',
+        maxDepth: 1,
+        maxTurns: 1,
+        memoryScope: 'none',
+        role: 'Worker',
+        sandboxInheritance: 'inherit_parent',
+        scope: 'workspace',
+        toolBlocklist: [],
+      }),
+    ).toThrow()
+  })
+
+  it('normalizes list agent profiles IPC payloads', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      profiles: [
+        {
+          contextMode: 'focused',
+          defaultWorkspaceIsolation: 'read_only',
+          description: 'Read-only review subagent',
+          id: 'reviewer',
+          maxDepth: 1,
+          maxTurns: 8,
+          memoryScope: 'read_only',
+          modelConfigOverride: {
+            modelId: null,
+            providerConfigId: null,
+          },
+          role: 'Reviewer',
+          sandboxInheritance: 'narrow_only',
+          scope: 'builtin',
+          toolAllowlist: null,
+          toolBlocklist: ['bash', 'write'],
+        },
+      ],
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listAgentProfiles(client)).resolves.toMatchObject({
+      profiles: [{ id: 'reviewer', scope: 'builtin' }],
+    })
+    expect(invoke).toHaveBeenCalledWith('list_agent_profiles')
+  })
+
+  it('accepts projected team activity segments without raw inter-agent messages', async () => {
+    const page = validWorktreePage()
+    const assistant = page.turns[0].assistant
+    if (!assistant) {
+      throw new Error('assistant fixture missing')
+    }
+    assistant.segments.push({
+      kind: 'agentActivity',
+      id: 'segment:agent-team:team-001',
+      order: 4,
+      activityKind: 'agentTeam',
+      agentId: 'team-001',
+      role: 'Migration team',
+      taskSummary: 'Coordinate the migration',
+      status: 'completed',
+      resultSummary: 'Team completed.',
+      team: {
+        topology: 'coordinator_worker',
+        lead: {
+          agentId: 'agent-lead',
+          role: 'Lead',
+          status: 'completed',
+        },
+        members: [
+          {
+            agentId: 'agent-lead',
+            role: 'Lead',
+            status: 'completed',
+          },
+          {
+            agentId: 'agent-worker',
+            role: 'Worker',
+            status: 'completed',
+          },
+        ],
+        currentTasks: [
+          {
+            id: 'task-1',
+            title: 'Audit composer payload',
+            status: 'completed',
+            assigneeProfileId: 'lead',
+          },
+        ],
+        mailboxCount: 1,
+        mailboxSummaries: ['Routed message message-1 to 1 member.'],
+      },
+      eventRefs: [{ eventId: 'event-009', cursor: cursor('', 9) }],
+    })
+    const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+
+    await expect(
+      pageConversationWorktree({ conversationId: 'conversation-001' }, client),
+    ).resolves.toMatchObject({
+      turns: [
+        {
+          assistant: {
+            segments: [
+              {},
+              {},
+              {},
+              {},
+              {
+                team: {
+                  mailboxSummaries: ['Routed message message-1 to 1 member.'],
+                },
+              },
+            ],
+          },
+        },
+      ],
+    })
+  })
+
+  it('rejects projected team activity segments that expose raw inter-agent messages', async () => {
+    const page = clone(validWorktreePage()) as unknown as {
+      turns: Array<{
+        assistant?: {
+          segments: unknown[]
+        }
+      }>
+    }
+    const assistant = page.turns[0]?.assistant
+    if (!assistant) {
+      throw new Error('assistant fixture missing')
+    }
+    assistant.segments.push({
+      kind: 'agentActivity',
+      id: 'segment:agent-team:team-001',
+      order: 4,
+      activityKind: 'agentTeam',
+      agentId: 'team-001',
+      role: 'Migration team',
+      taskSummary: 'Coordinate the migration',
+      status: 'running',
+      team: {
+        topology: 'coordinator_worker',
+        members: [],
+        currentTasks: [],
+        mailboxCount: 1,
+        mailboxSummaries: ['Safe summary only'],
+        rawMessages: ['secret raw payload'],
+      },
+    })
+    const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+
+    await expect(
+      pageConversationWorktree({ conversationId: 'conversation-001' }, client),
+    ).rejects.toBeInstanceOf(TauriCommandPayloadError)
+  })
+
+  it('validates save agent profile payloads before invoke', async () => {
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      saveAgentProfile(
+        {
+          contextMode: 'minimal',
+          defaultWorkspaceIsolation: 'read_only',
+          description: 'bad id',
+          id: 'Invalid-ID',
+          maxDepth: 1,
+          maxTurns: 1,
+          memoryScope: 'none',
+          role: 'Worker',
+          sandboxInheritance: 'inherit_parent',
+          scope: 'user',
+          toolBlocklist: [],
+        },
+        client,
+      ),
+    ).rejects.toBeInstanceOf(TauriCommandPayloadError)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('validates delete agent profile payloads before invoke', async () => {
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+    const invalidId: DeleteAgentProfileRequest['id'] = 'Invalid-ID'
+
+    await expect(deleteAgentProfile(invalidId, client)).rejects.toBeInstanceOf(
+      TauriCommandPayloadError,
+    )
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('accepts start run requests with agentOptions and backgroundAgentId', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      backgroundAgentId: 'bg-agent-001',
+      runId: 'run-001',
+      status: 'started',
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      startRun(
+        {
+          agentOptions: {
+            agentTeam: 'off',
+            background: 'background',
+            maxConcurrentSubagents: 2,
+            maxDepth: 2,
+            maxTeamMembers: 4,
+            subagents: 'allowed',
+            teamConfig: null,
+            workspaceIsolation: 'read_only',
+          },
+          conversationId: 'conversation-001',
+          prompt: 'Run',
+        },
+        client,
+      ),
+    ).resolves.toMatchObject({
+      backgroundAgentId: 'bg-agent-001',
+      runId: 'run-001',
+    })
+  })
+
+  it('accepts background agent command payloads and responses', async () => {
+    const runningAgent = {
+      backgroundAgentId: 'bg-agent-001',
+      conversationId: 'conversation-001',
+      createdAt: '2026-06-30T00:00:00.000Z',
+      parentRunId: 'run-001',
+      pendingInputRequestId: 'request-001',
+      pendingPermissionRequestId: 'permission-request-001',
+      state: 'running',
+      title: 'Run checks',
+      updatedAt: '2026-06-30T00:01:00.000Z',
+    } as const
+    const invoke = vi.fn(async (command: string) => {
+      switch (command) {
+        case 'list_background_agents':
+          return { agents: [runningAgent] }
+        case 'get_background_agent':
+          return { agent: runningAgent }
+        case 'pause_background_agent':
+          return { agent: { ...runningAgent, state: 'paused' } }
+        case 'resume_background_agent':
+          return { agent: { ...runningAgent, state: 'running' } }
+        case 'cancel_background_agent':
+          return { agent: { ...runningAgent, state: 'cancelled' } }
+        case 'send_background_agent_input':
+          return { agent: { ...runningAgent, state: 'running' } }
+        case 'archive_background_agent':
+          return { agent: { ...runningAgent, state: 'archived' } }
+        case 'delete_background_agent':
+          return { backgroundAgentId: 'bg-agent-001', status: 'deleted' }
+        default:
+          throw new Error(`unexpected command ${command}`)
+      }
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      listBackgroundAgents({ conversationId: 'conversation-001', includeArchived: true }, client),
+    ).resolves.toEqual({ agents: [runningAgent] })
+    await expect(
+      getBackgroundAgent({ backgroundAgentId: 'bg-agent-001' }, client),
+    ).resolves.toEqual({ agent: runningAgent })
+    await expect(
+      pauseBackgroundAgent({ backgroundAgentId: 'bg-agent-001' }, client),
+    ).resolves.toMatchObject({ agent: { state: 'paused' } })
+    await expect(
+      resumeBackgroundAgent({ backgroundAgentId: 'bg-agent-001' }, client),
+    ).resolves.toMatchObject({ agent: { state: 'running' } })
+    await expect(
+      sendBackgroundAgentInput(
+        {
+          backgroundAgentId: 'bg-agent-001',
+          input: 'Continue',
+          requestId: 'request-001',
+        },
+        client,
+      ),
+    ).resolves.toMatchObject({ agent: { state: 'running' } })
+    await expect(
+      cancelBackgroundAgent({ backgroundAgentId: 'bg-agent-001' }, client),
+    ).resolves.toMatchObject({ agent: { state: 'cancelled' } })
+    await expect(
+      archiveBackgroundAgent({ backgroundAgentId: 'bg-agent-001' }, client),
+    ).resolves.toMatchObject({ agent: { state: 'archived' } })
+    await expect(
+      deleteBackgroundAgent({ backgroundAgentId: 'bg-agent-001' }, client),
+    ).resolves.toEqual({
+      backgroundAgentId: 'bg-agent-001',
+      status: 'deleted',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('list_background_agents', {
+      conversationId: 'conversation-001',
+      includeArchived: true,
+    })
+    expect(invoke).not.toHaveBeenCalledWith('start_background_agent', expect.anything())
+  })
+
+  it('rejects invalid background agent command payloads', async () => {
+    const client = createInvokeCommandClient(vi.fn())
+
+    await expect(
+      pauseBackgroundAgent({ backgroundAgentId: '', conversationId: 'conversation-001' }, client),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      sendBackgroundAgentInput(
+        {
+          backgroundAgentId: 'bg-agent-001',
+          input: '',
+          requestId: 'request-001',
+        },
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects start run agentOptions when teamConfig is missing', async () => {
+    const client = createInvokeCommandClient(vi.fn())
+
+    await expect(
+      startRun(
+        {
+          agentOptions: {
+            agentTeam: 'allowed',
+            background: 'foreground',
+            maxConcurrentSubagents: 1,
+            maxDepth: 1,
+            maxTeamMembers: 2,
+            subagents: 'off',
+            workspaceIsolation: 'read_only',
+          },
+          conversationId: 'conversation-001',
+          prompt: 'Run',
+        },
+        client,
+      ),
+    ).rejects.toBeInstanceOf(TauriCommandPayloadError)
   })
 })

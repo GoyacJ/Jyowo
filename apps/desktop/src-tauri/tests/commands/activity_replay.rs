@@ -65,6 +65,7 @@ async fn list_activity_with_runtime_state_reads_journaled_permission_requests_by
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -167,6 +168,7 @@ async fn list_activity_with_runtime_state_reads_durable_run_events() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -244,6 +246,7 @@ async fn list_activity_with_runtime_state_does_not_expose_thinking_deltas() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -314,6 +317,7 @@ async fn get_replay_timeline_with_runtime_state_does_not_expose_raw_thinking_del
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -381,6 +385,7 @@ async fn list_activity_with_runtime_state_redacts_private_paths_from_assistant_d
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -931,6 +936,58 @@ async fn page_conversation_timeline_with_runtime_state_accepts_assistant_interac
 }
 
 #[tokio::test]
+async fn page_conversation_timeline_keeps_background_started_before_real_run_started() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let attempt_id = RunId::new();
+    let run_id = RunId::new();
+    let background_agent_id = harness_contracts::BackgroundAgentId::new();
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::BackgroundAgentStarted(harness_contracts::BackgroundAgentStartedEvent {
+                    background_agent_id,
+                    conversation_id: session_id,
+                    attempt_id,
+                    title: UiSafeText::from_trusted_redacted("Background run"),
+                    at: now(),
+                }),
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+            ],
+        )
+        .await
+        .expect("background and run events should append");
+
+    let page = page_conversation_timeline_with_runtime_state(
+        PageConversationTimelineRequest {
+            conversation_id: session_id.to_string(),
+            after_cursor: None,
+            limit: None,
+        },
+        &state,
+    )
+    .await
+    .expect("timeline page should load");
+
+    let background_started = page
+        .events
+        .iter()
+        .find(|event| event.event_type == "background.started")
+        .expect("background start should be preserved before the real run starts");
+    assert_eq!(
+        background_started.payload["backgroundAgentId"],
+        json!(background_agent_id.to_string())
+    );
+    assert_eq!(background_started.run_id, attempt_id.to_string());
+}
+
+#[tokio::test]
 async fn list_activity_with_runtime_state_filters_run_events_by_started_session() {
     let state = runtime_state_with_harness().await;
     let requested_session_id = SessionId::new();
@@ -1087,6 +1144,7 @@ async fn list_activity_with_runtime_state_includes_permission_auto_resolved() {
                     fingerprint: None,
                     interactivity: InteractivityLevel::FullyInteractive,
                     auto_resolved: true,
+                    actor_source: PermissionActorSource::ParentRun,
                     presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                     request_id,
                     run_id,
@@ -1124,6 +1182,7 @@ async fn list_activity_with_runtime_state_includes_permission_auto_resolved() {
         .expect("permission request should be projected");
 
     assert_eq!(permission_event.payload["autoResolved"], true);
+    assert_eq!(permission_event.payload["actorSource"]["type"], "parentRun");
     assert_eq!(
         permission_event.payload["reason"],
         "已按本次授权模式自动允许。"
@@ -1154,6 +1213,7 @@ async fn list_activity_with_runtime_state_redacts_permission_decision_scope_valu
                     fingerprint: None,
                     interactivity: InteractivityLevel::FullyInteractive,
                     auto_resolved: false,
+                    actor_source: PermissionActorSource::ParentRun,
                     presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                     request_id,
                     run_id,
@@ -1209,6 +1269,7 @@ async fn list_activity_with_runtime_state_redacts_file_permission_targets() {
                 fingerprint: None,
                 interactivity: InteractivityLevel::FullyInteractive,
                 auto_resolved: false,
+                actor_source: PermissionActorSource::ParentRun,
                 presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                 request_id,
                 run_id,
@@ -1383,6 +1444,7 @@ async fn public_runtime_event_views_redact_unsafe_tool_display_labels() {
                     presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                     interactivity: InteractivityLevel::FullyInteractive,
                     auto_resolved: false,
+                    actor_source: PermissionActorSource::ParentRun,
                     causation_id: EventId::new(),
                     at: now(),
                 }),
@@ -1511,6 +1573,7 @@ async fn page_conversation_worktree_with_runtime_state_returns_safe_turn_tree() 
                     presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                     interactivity: InteractivityLevel::FullyInteractive,
                     auto_resolved: false,
+                    actor_source: PermissionActorSource::ParentRun,
                     causation_id: EventId::new(),
                     at: now(),
                 }),
@@ -1672,6 +1735,7 @@ async fn list_activity_with_runtime_state_withholds_failed_run_end_reason() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -1837,6 +1901,7 @@ async fn list_activity_with_runtime_state_redacts_pending_permission_display_tex
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -1898,6 +1963,7 @@ async fn get_replay_timeline_with_runtime_state_reads_redacted_journal_events_wi
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -1969,6 +2035,7 @@ async fn get_replay_timeline_with_runtime_state_reads_beyond_first_event_page() 
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -2055,6 +2122,7 @@ async fn export_support_bundle_with_runtime_state_writes_redacted_files_under_wo
         StartRunRequest {
             client_message_id: None,
             attachments: None,
+            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             permission_mode: None,
@@ -2091,6 +2159,7 @@ async fn export_support_bundle_with_runtime_state_writes_redacted_files_under_wo
 
     assert!(!exported.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"));
     assert!(!exported.contains(secret_command));
+    assert!(!exported.contains("Run a command"));
     assert!(exported.contains("\"target\":\"git\""));
     assert!(exported.contains("\"redacted\":true"));
 
@@ -2104,6 +2173,165 @@ async fn export_support_bundle_with_runtime_state_writes_redacted_files_under_wo
     )
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn support_bundle_agent_redaction_exports_child_agent_summaries_without_internals() {
+    let _lock = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let workspace = unique_workspace("support-bundle-agent-redaction");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let subagent_id = harness_contracts::SubagentId::new();
+    let team_id = harness_contracts::TeamId::new();
+    let background_agent_id = harness_contracts::BackgroundAgentId::new();
+    let request_id = RequestId::new();
+    let secret = "sk-abcdefghijklmnopqrstuvwxyz";
+    open_conversation_session(&state, session_id).await;
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::RunStarted(test_run_started_event(session_id, run_id)),
+                Event::SubagentSpawned(harness_contracts::SubagentSpawnedEvent {
+                    subagent_id,
+                    parent_session_id: session_id,
+                    parent_run_id: run_id,
+                    agent_ref: harness_contracts::AgentRef {
+                        id: harness_contracts::AgentId::new(),
+                        name: format!("Reviewer {secret}"),
+                    },
+                    spec_snapshot_id: SnapshotId::new(),
+                    spec_hash: [0; 32],
+                    depth: 1,
+                    trigger_tool_use_id: None,
+                    trigger_tool_name: Some("agent".to_owned()),
+                    at: now(),
+                }),
+                Event::SubagentAnnounced(harness_contracts::SubagentAnnouncedEvent {
+                    subagent_id,
+                    parent_session_id: session_id,
+                    status: harness_contracts::SubagentStatus::Completed,
+                    summary: format!("child completed with {secret}"),
+                    result: Some(json!({ "rawOutput": secret })),
+                    usage: UsageSnapshot::default(),
+                    transcript_ref: Some(harness_contracts::TranscriptRef {
+                        blob: harness_contracts::BlobRef {
+                            id: harness_contracts::BlobId::new(),
+                            size: 64,
+                            content_hash: [1; 32],
+                            content_type: Some("application/json".to_owned()),
+                        },
+                        from_offset: harness_contracts::JournalOffset(1),
+                        to_offset: harness_contracts::JournalOffset(2),
+                    }),
+                    context_report: None,
+                    renderer_id: "default".to_owned(),
+                    at: now(),
+                }),
+                Event::TeamCreated(harness_contracts::TeamCreatedEvent {
+                    team_id,
+                    tenant_id: TenantId::SINGLE,
+                    name: format!("Team {secret}"),
+                    topology_kind: harness_contracts::TopologyKind::CoordinatorWorker,
+                    member_specs_hash: [0; 32],
+                    created_at: now(),
+                }),
+                Event::TeamTaskUpdated(harness_contracts::TeamTaskUpdatedEvent {
+                    team_id,
+                    task_id: format!("task-{secret}"),
+                    title: format!("Audit {secret}"),
+                    status: "running".to_owned(),
+                    assignee_profile_id: Some(format!("worker-{secret}")),
+                    at: now(),
+                }),
+                Event::PermissionRequested(harness_contracts::PermissionRequestedEvent {
+                    request_id,
+                    run_id,
+                    session_id,
+                    tenant_id: TenantId::SINGLE,
+                    tool_use_id: ToolUseId::new(),
+                    tool_name: "NeedsPermission".to_owned(),
+                    subject: harness_contracts::PermissionSubject::ToolInvocation {
+                        tool: "NeedsPermission".to_owned(),
+                        input: json!({}),
+                    },
+                    severity: harness_contracts::Severity::Medium,
+                    scope_hint: harness_contracts::DecisionScope::ToolName(
+                        "NeedsPermission".to_owned(),
+                    ),
+                    fingerprint: None,
+                    presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+                    interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
+                    auto_resolved: false,
+                    actor_source: PermissionActorSource::TeamMember {
+                        team_id,
+                        agent_id: harness_contracts::AgentId::new(),
+                        role: format!("reviewer {secret}"),
+                        parent_run_id: Some(run_id),
+                    },
+                    causation_id: EventId::new(),
+                    at: now(),
+                }),
+                Event::BackgroundAgentStarted(harness_contracts::BackgroundAgentStartedEvent {
+                    background_agent_id,
+                    conversation_id: session_id,
+                    attempt_id: run_id,
+                    title: UiSafeText::from_redacted_display(
+                        format!("Background {secret}"),
+                        &DefaultRedactor::default(),
+                    ),
+                    at: now(),
+                }),
+                Event::BackgroundAgentPermissionRequested(
+                    harness_contracts::BackgroundAgentPermissionRequestedEvent {
+                        background_agent_id,
+                        tenant_id: TenantId::SINGLE,
+                        conversation_id: session_id,
+                        request_id,
+                        attempt_id: Some(run_id),
+                        reason: UiSafeText::from_redacted_display(
+                            format!("permission {secret}"),
+                            &DefaultRedactor::default(),
+                        ),
+                        at: now(),
+                    },
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let payload = export_support_bundle_with_runtime_state(
+        ExportSupportBundleRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: Some(run_id.to_string()),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let bundle = std::fs::read_to_string(workspace.join(&payload.bundle_path)).unwrap();
+    let jsonl = std::fs::read_to_string(workspace.join(&payload.jsonl_path)).unwrap();
+    let exported = format!("{bundle}\n{jsonl}");
+
+    assert!(exported.contains("subagent.spawned"));
+    assert!(exported.contains("subagent.announced"));
+    assert!(exported.contains("team.task.updated"));
+    assert!(exported.contains("background.permission.requested"));
+    assert!(exported.contains(&subagent_id.to_string()));
+    assert!(exported.contains(&team_id.to_string()));
+    assert!(exported.contains(&background_agent_id.to_string()));
+    assert!(!exported.contains(secret));
+    assert!(!exported.contains("child completed"));
+    assert!(!exported.contains("rawOutput"));
+    assert!(!exported.contains("transcriptRef"));
 }
 
 #[cfg(unix)]

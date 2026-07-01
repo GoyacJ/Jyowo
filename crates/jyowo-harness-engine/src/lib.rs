@@ -21,3 +21,6 @@ pub use engine::*;
 pub use interrupt::*;
 pub use runner::*;
 pub use state::*;
+
+#[cfg(feature = "subagent-tool")]
+pub use engine::EngineBoundSubagentFactory;

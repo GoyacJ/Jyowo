@@ -60,12 +60,34 @@ describe('conversation timeline selectors', () => {
       }),
     ])
   })
+
+  it('selects pending permissions nested under agent activity segments', () => {
+    const state = {
+      ...createConversationTimelineState('conversation-001'),
+      turns: [turn({ segmentKind: 'agentActivity', agentActivityPermissionStatus: 'pending' })],
+    }
+
+    expect(selectPendingPermissions(state)).toEqual([
+      expect.objectContaining({
+        conversationId: 'conversation-001',
+        requestId: 'request-agent-001',
+        toolUseId: 'subagent-001',
+        turnId: 'turn:user-001',
+        toolAttempt: expect.objectContaining({
+          toolUseId: 'subagent-001',
+          toolName: 'Reviewer',
+          status: 'waitingPermission',
+        }),
+      }),
+    ])
+  })
 })
 
 function turn(input: {
+  agentActivityPermissionStatus?: 'pending' | 'approved'
   assistantStatus?: 'running' | 'complete' | 'failed' | 'cancelled'
   id?: string
-  segmentKind?: 'clarificationRequest'
+  segmentKind?: 'clarificationRequest' | 'agentActivity'
   toolPermissionStatus?: 'pending' | 'approved'
 }): ConversationTurn {
   return {
@@ -93,28 +115,46 @@ function turn(input: {
                 prompt: 'Which target?',
               },
             ]
-          : [
-              {
-                kind: 'toolGroup',
-                id: 'segment:tools:tool-use-001',
-                order: 0,
-                attempts: [
-                  {
-                    id: 'tool:tool-use-001',
-                    order: 0,
-                    toolUseId: 'tool-use-001',
-                    toolName: 'read_file',
-                    status: 'waitingPermission',
-                    permission: {
-                      id: 'permission:request-001',
-                      requestId: 'request-001',
-                      toolUseId: 'tool-use-001',
-                      status: input.toolPermissionStatus ?? 'approved',
-                    },
+          : input.segmentKind === 'agentActivity'
+            ? [
+                {
+                  kind: 'agentActivity',
+                  id: 'segment:agent:subagent-001',
+                  order: 0,
+                  activityKind: 'subagent',
+                  agentId: 'subagent-001',
+                  role: 'Reviewer',
+                  taskSummary: 'Review recent changes',
+                  status: 'waitingPermission',
+                  permission: {
+                    id: 'permission:request-agent-001',
+                    requestId: 'request-agent-001',
+                    status: input.agentActivityPermissionStatus ?? 'approved',
                   },
-                ],
-              },
-            ],
+                },
+              ]
+            : [
+                {
+                  kind: 'toolGroup',
+                  id: 'segment:tools:tool-use-001',
+                  order: 0,
+                  attempts: [
+                    {
+                      id: 'tool:tool-use-001',
+                      order: 0,
+                      toolUseId: 'tool-use-001',
+                      toolName: 'read_file',
+                      status: 'waitingPermission',
+                      permission: {
+                        id: 'permission:request-001',
+                        requestId: 'request-001',
+                        toolUseId: 'tool-use-001',
+                        status: input.toolPermissionStatus ?? 'approved',
+                      },
+                    },
+                  ],
+                },
+              ],
     },
   }
 }

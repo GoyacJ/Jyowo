@@ -70,6 +70,87 @@ Ownership rules:
 - `Redactor` runs before event persistence, logs, traces, export, and Replay output.
 - `Secret` values must remain outside prompts, logs, traces, test snapshots, screenshots, and serialized UI state.
 
+## Agent Orchestration Runtime
+
+Agent orchestration is backend-owned runtime behavior. React may expose controls
+and render projected state, but Rust owns capability resolution, start policy,
+background persistence, supervisor coordination, worktree isolation, and
+permission attribution.
+
+Domain ownership:
+
+- `jyowo-harness-agent-runtime` owns agent profiles, capability policy inputs,
+  durable background agent records, team persistence, and workspace write leases.
+- `jyowo-harness-subagent` owns child agent lifecycle and permission forwarding.
+- `jyowo-harness-team` owns run-scoped team membership, member routing,
+  mailbox/task state, quotas, and team termination.
+- `jyowo-harness-sdk` assembles these domains for application-facing calls.
+- Tauri commands expose IPC only. They must delegate agent orchestration behavior
+  through the SDK facade.
+
+Capability resolution:
+
+- settings switches for subagents, agent teams, and background agents must be
+  backed by Rust capability resolution.
+- capability availability must account for desktop feature flags, runtime
+  support, provider/model support, workspace state, and isolation requirements.
+- unavailable capability reasons are backend payloads. React must not invent
+  availability state.
+- per-run agent options are accepted only after Rust validates them against the
+  resolved capability set.
+
+Background agent persistence:
+
+- background agents are started through `start_run` with
+  `agentOptions.background = background`.
+- the durable registry is the source of truth for background agent list, detail,
+  input request, pause, resume, cancel, archive, and delete operations.
+- registry state changes must be journaled or auditable before the UI observes
+  them.
+- user-visible background status is projected from backend records and events,
+  not from frontend-local timers.
+
+Supervisor process boundary:
+
+- the agent supervisor sidecar is a process boundary for waking and executing
+  durable background work.
+- the supervisor may request work and report status, but it does not own policy.
+- Rust validates persisted payloads, workspace scope, live token scope, and
+  permission state before execution.
+- invalid queued payloads fail closed and record a redacted failure reason.
+
+Restart semantics:
+
+- active in-memory handles are single-process state and may be lost on restart.
+- durable background registry rows, journal events, audit state, permission
+  decisions, task/mailbox state, and worktree leases are restart-stable state.
+- startup recovery must classify interrupted background records and either
+  resume them through the runtime or mark them with a redacted terminal failure.
+- recovery must not replay unsafe child actions without a valid permission
+  decision.
+
+Worktree isolation:
+
+- write-capable parallel agent work requires an isolation lease for the target
+  checkout.
+- a same-checkout write conflict fails closed.
+- read-only agent work may run without a write lease only when policy marks it
+  read-only.
+- isolation enforcement belongs to Rust and must not be bypassed by command
+  payloads or UI state.
+
+Permission source attribution:
+
+- every agent-originated permission request must carry its authoritative actor
+  source.
+- subagent requests identify the child agent and parent session/run.
+- team member requests identify the team, member agent, role, and parent run
+  when present.
+- background agent requests identify the background agent and parent
+  conversation/run context.
+- role names and prompts are redacted before persistence and before UI
+  projection.
+
 ## Event Semantics
 
 `harness-contracts` is the canonical source for public event contracts and the

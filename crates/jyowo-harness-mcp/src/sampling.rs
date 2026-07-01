@@ -7,10 +7,10 @@ use std::{
 use async_trait::async_trait;
 use harness_contracts::{
     now, DecidedBy, Decision, DecisionScope, Event, EventId, FallbackPolicy, InteractivityLevel,
-    McpSamplingRequestedEvent, McpServerId, PermissionMode, PermissionRequestedEvent,
-    PermissionResolvedEvent, PermissionSubject, RequestId, RunId, SamplingBudgetDimension,
-    SamplingDenyReason, SamplingOutcome, SessionId, Severity, TenantId, TimeoutPolicy, ToolUseId,
-    TrustLevel,
+    McpSamplingRequestedEvent, McpServerId, NoopRedactor, PermissionActorSource, PermissionMode,
+    PermissionRequestedEvent, PermissionResolvedEvent, PermissionSubject, RequestId, RunId,
+    SamplingBudgetDimension, SamplingDenyReason, SamplingOutcome, SessionId, Severity, TenantId,
+    TimeoutPolicy, ToolUseId, TrustLevel, UiSafeText,
 };
 use harness_tool::{PermissionBroker, PermissionContext, PermissionRequest, RuleSnapshot};
 use serde_json::{json, Value};
@@ -483,6 +483,7 @@ pub struct SamplingJsonRpcHandler {
     run_id: Option<RunId>,
     server_id: McpServerId,
     permission_mode: PermissionMode,
+    permission_actor_source: PermissionActorSource,
     server_trust: TrustLevel,
     metrics_sink: Arc<dyn McpMetricsSink>,
     provider: Option<Arc<dyn SamplingProvider>>,
@@ -500,6 +501,7 @@ impl SamplingJsonRpcHandler {
             run_id: None,
             server_id: McpServerId("unknown".to_owned()),
             permission_mode: PermissionMode::Default,
+            permission_actor_source: PermissionActorSource::ParentRun,
             server_trust: TrustLevel::UserControlled,
             metrics_sink: Arc::new(NoopMcpMetricsSink),
             provider: None,
@@ -544,6 +546,15 @@ impl SamplingJsonRpcHandler {
     }
 
     #[must_use]
+    pub fn with_permission_actor_source(
+        mut self,
+        permission_actor_source: PermissionActorSource,
+    ) -> Self {
+        self.permission_actor_source = permission_actor_source;
+        self
+    }
+
+    #[must_use]
     pub fn with_server_trust(mut self, server_trust: TrustLevel) -> Self {
         self.server_trust = server_trust;
         self
@@ -583,6 +594,26 @@ impl SamplingJsonRpcHandler {
             Ok(request) => request,
             Err(error) => return JsonRpcResponse::failure(request.id, error),
         };
+        if sampling_request.run_id.is_none() {
+            let prompt_cache_namespace = self.policy.cache.namespace(&sampling_request);
+            self.record_sampling(McpMetricOutcome::Denied);
+            emit_sampling_event(
+                &sampling_request,
+                &prompt_cache_namespace,
+                SamplingOutcome::Denied {
+                    reason: SamplingDenyReason::PolicyDenied,
+                },
+                Arc::clone(&self.event_sink),
+            );
+            return JsonRpcResponse::failure(
+                request.id,
+                JsonRpcError {
+                    code: MCP_SAMPLING_DENIED_CODE,
+                    message: "sampling requires an authoritative run context".to_owned(),
+                    data: Some(json!({ "server_id": self.server_id.0 })),
+                },
+            );
+        }
 
         match self.policy.evaluate(
             sampling_request,
@@ -790,6 +821,9 @@ impl SamplingJsonRpcHandler {
         effective_timeout: Duration,
         prompt_cache_namespace: &str,
     ) -> SamplingApproval {
+        let Some(run_id) = request.run_id else {
+            return SamplingApproval::Denied;
+        };
         let tool_use_id = ToolUseId::new();
         let permission_request = PermissionRequest {
             request_id: request.request_id,
@@ -819,7 +853,7 @@ impl SamplingJsonRpcHandler {
                     previous_mode: None,
                     session_id: request.session_id,
                     tenant_id: TenantId::SINGLE,
-                    run_id: None,
+                    run_id: Some(run_id),
                     interactivity: InteractivityLevel::FullyInteractive,
                     timeout_policy: Some(TimeoutPolicy {
                         deadline_ms: effective_timeout.as_millis().min(u128::from(u64::MAX)) as u64,
@@ -866,6 +900,7 @@ impl SamplingJsonRpcHandler {
                 presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                 interactivity: InteractivityLevel::FullyInteractive,
                 auto_resolved: false,
+                actor_source: redacted_permission_actor_source(&self.permission_actor_source),
                 causation_id: EventId::new(),
                 at: now(),
             }));
@@ -911,13 +946,9 @@ impl SamplingJsonRpcHandler {
         let params =
             params.ok_or_else(|| invalid_params("sampling/createMessage missing params"))?;
         Ok(SamplingRequest {
-            session_id: parse_optional_id(params.get("session_id"))?.unwrap_or(self.session_id),
-            run_id: parse_optional_id(params.get("run_id"))?.or(self.run_id),
-            server_id: params
-                .get("server_id")
-                .and_then(Value::as_str)
-                .map(|value| McpServerId(value.to_owned()))
-                .unwrap_or_else(|| self.server_id.clone()),
+            session_id: self.session_id,
+            run_id: self.run_id,
+            server_id: self.server_id.clone(),
             request_id: parse_optional_id(params.get("request_id"))?.unwrap_or_else(RequestId::new),
             model_id: params
                 .get("model")
@@ -953,6 +984,49 @@ impl SamplingJsonRpcHandler {
 enum SamplingApproval {
     Allowed,
     Denied,
+}
+
+fn safe_actor_text(value: String) -> String {
+    UiSafeText::from_redacted_display(value, &NoopRedactor).into_string()
+}
+
+fn redacted_permission_actor_source(actor_source: &PermissionActorSource) -> PermissionActorSource {
+    match actor_source {
+        PermissionActorSource::ParentRun => PermissionActorSource::ParentRun,
+        PermissionActorSource::Subagent {
+            subagent_id,
+            parent_session_id,
+            parent_run_id,
+            team_id,
+            team_member_profile_id,
+        } => PermissionActorSource::Subagent {
+            subagent_id: *subagent_id,
+            parent_session_id: *parent_session_id,
+            parent_run_id: *parent_run_id,
+            team_id: *team_id,
+            team_member_profile_id: team_member_profile_id.clone().map(safe_actor_text),
+        },
+        PermissionActorSource::TeamMember {
+            team_id,
+            agent_id,
+            role,
+            parent_run_id,
+        } => PermissionActorSource::TeamMember {
+            team_id: *team_id,
+            agent_id: *agent_id,
+            role: safe_actor_text(role.clone()),
+            parent_run_id: *parent_run_id,
+        },
+        PermissionActorSource::BackgroundAgent {
+            background_agent_id,
+            conversation_id,
+            attempt_id,
+        } => PermissionActorSource::BackgroundAgent {
+            background_agent_id: *background_agent_id,
+            conversation_id: *conversation_id,
+            attempt_id: *attempt_id,
+        },
+    }
 }
 
 enum EffectiveSamplingAllow {

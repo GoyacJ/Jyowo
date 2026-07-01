@@ -23,15 +23,15 @@ use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
     AgentId, AgentRef, BudgetKind, CacheImpact, CapabilityRegistry, CorrelationId, DecidedBy,
     Decision, Event, ForkReason, JournalOffset, KillScope, Message, MessageContent, MessageId,
-    MessageMetadata, MessagePart, MessageRole, NoopRedactor, PermissionMode,
+    MessageMetadata, MessagePart, MessageRole, NoopRedactor, PermissionActorSource, PermissionMode,
     PermissionRequestedEvent, PermissionResolvedEvent, RunId, SandboxPolicy, SessionForkedEvent,
     SessionId, SessionSnapshotKind, SnapshotId, SubagentAnnouncedEvent, SubagentCapAnnouncement,
     SubagentContextReport, SubagentId, SubagentParentContext, SubagentPermissionForwardedEvent,
     SubagentPermissionResolvedEvent, SubagentRunnerCap, SubagentSpawnHandle,
     SubagentSpawnPausedEvent, SubagentSpawnedEvent, SubagentStalledEvent, SubagentTerminatedEvent,
-    SubagentTerminationReason, TenantId, ToolCapability, ToolDescriptor, ToolError, ToolGroup,
-    ToolOrigin, ToolProperties, ToolResult, ToolUseId, TranscriptRef, TurnInput, UsageSnapshot,
-    UserMessageAppendedEvent,
+    SubagentTerminationReason, TeamId, TenantId, ToolCapability, ToolDescriptor, ToolError,
+    ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TranscriptRef, TurnInput,
+    UsageSnapshot, UserMessageAppendedEvent,
 };
 use harness_journal::{AppendMetadata, EventStore, ReplayCursor};
 use harness_model::{AuxExecutor, AuxModelProvider, AuxTask, ModelProtocol, ModelRequest};
@@ -365,17 +365,47 @@ impl DelegationPolicy {
     {
         tools
             .into_iter()
-            .filter(|tool| {
-                !self.blocklist.contains(tool)
-                    && !spec.tool_blocklist.contains(*tool)
-                    && !matches!(
-                        &spec.toolset,
-                        ToolsetSelector::InheritWithBlocklist(blocklist)
-                            if blocklist.contains(*tool)
-                    )
-            })
+            .filter(|tool| self.allows_tool_name(spec, tool))
             .map(str::to_owned)
             .collect()
+    }
+
+    #[must_use]
+    pub fn filter_tool_descriptors<'a, I>(
+        &self,
+        spec: &SubagentSpec,
+        tools: I,
+    ) -> Vec<&'a ToolDescriptor>
+    where
+        I: IntoIterator<Item = &'a ToolDescriptor>,
+    {
+        tools
+            .into_iter()
+            .filter(|tool| {
+                self.allows_tool_name(spec, tool.name.as_str())
+                    && self.allows_tool_origin(spec, tool)
+            })
+            .collect()
+    }
+
+    fn allows_tool_name(&self, spec: &SubagentSpec, tool: &str) -> bool {
+        !self.blocklist.contains(tool)
+            && !spec.tool_blocklist.contains(tool)
+            && !matches!(
+                &spec.toolset,
+                ToolsetSelector::InheritWithBlocklist(blocklist) if blocklist.contains(tool)
+            )
+    }
+
+    fn allows_tool_origin(&self, spec: &SubagentSpec, tool: &ToolDescriptor) -> bool {
+        match &tool.origin {
+            ToolOrigin::Mcp(origin) => spec
+                .mcp_servers
+                .iter()
+                .chain(spec.required_mcp_servers.iter())
+                .any(|server| server.server_id() == origin.server_id.0.as_str()),
+            _ => !tool.name.starts_with("mcp__"),
+        }
     }
 }
 
@@ -400,6 +430,10 @@ pub struct ParentContext {
     pub sibling_count: u32,
     pub trigger_tool_use_id: Option<ToolUseId>,
     pub correlation_id: CorrelationId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<TeamId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_member_profile_id: Option<String>,
 }
 
 impl ParentContext {
@@ -413,6 +447,8 @@ impl ParentContext {
             sibling_count: 0,
             trigger_tool_use_id: None,
             correlation_id: CorrelationId::new(),
+            team_id: None,
+            team_member_profile_id: None,
         }
     }
 }
@@ -441,6 +477,8 @@ impl From<SubagentParentContext> for ParentContext {
             sibling_count: value.sibling_count,
             trigger_tool_use_id: value.trigger_tool_use_id,
             correlation_id: value.correlation_id,
+            team_id: None,
+            team_member_profile_id: None,
         }
     }
 }
@@ -453,6 +491,8 @@ pub struct SubagentPermissionBridge {
     parent_run_id: RunId,
     subagent_id: SubagentId,
     child_context: Option<ChildPermissionContext>,
+    team_id: Option<TeamId>,
+    team_member_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -480,7 +520,20 @@ impl SubagentPermissionBridge {
             parent_run_id,
             subagent_id,
             child_context: None,
+            team_id: None,
+            team_member_profile_id: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_team_attribution(
+        mut self,
+        team_id: TeamId,
+        team_member_profile_id: impl Into<String>,
+    ) -> Self {
+        self.team_id = Some(team_id);
+        self.team_member_profile_id = Some(team_member_profile_id.into());
+        self
     }
 
     #[must_use]
@@ -515,7 +568,7 @@ impl PermissionBroker for SubagentPermissionBridge {
             ctx.permission_mode,
             PermissionMode::BypassPermissions | PermissionMode::DontAsk
         );
-        let _ = self
+        if self
             .event_store
             .append_with_metadata(
                 self.tenant_id,
@@ -539,12 +592,23 @@ impl PermissionBroker for SubagentPermissionBridge {
                     presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                     interactivity: ctx.interactivity,
                     auto_resolved,
+                    actor_source: PermissionActorSource::Subagent {
+                        subagent_id: self.subagent_id,
+                        parent_session_id: self.parent_session_id,
+                        parent_run_id: self.parent_run_id,
+                        team_id: self.team_id,
+                        team_member_profile_id: self.team_member_profile_id.clone(),
+                    },
                     causation_id,
                     at: Utc::now(),
                 })],
             )
-            .await;
-        let _ = self
+            .await
+            .is_err()
+        {
+            return Decision::DenyOnce;
+        }
+        if self
             .event_store
             .append_with_metadata(
                 self.tenant_id,
@@ -562,11 +626,17 @@ impl PermissionBroker for SubagentPermissionBridge {
                         subject: request.subject.clone(),
                         presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                         timeout_policy: ctx.timeout_policy.clone(),
+                        team_id: self.team_id,
+                        team_member_profile_id: self.team_member_profile_id.clone(),
                         forwarded_at: Utc::now(),
                     },
                 )],
             )
-            .await;
+            .await
+            .is_err()
+        {
+            return Decision::DenyOnce;
+        }
 
         let decision = if self.hard_policy_denies(&request, &ctx).await {
             Decision::DenyOnce
@@ -577,7 +647,32 @@ impl PermissionBroker for SubagentPermissionBridge {
             parent_session_id: self.parent_session_id,
             original_decided_by: Box::new(parent_decided_by),
         };
-        let _ = self
+        if self
+            .event_store
+            .append_with_metadata(
+                self.tenant_id,
+                child_context.session,
+                AppendMetadata {
+                    run_id: Some(child_context.run),
+                    correlation_id: child_context.correlation,
+                    ..AppendMetadata::default()
+                },
+                &[Event::PermissionResolved(PermissionResolvedEvent {
+                    request_id: request.request_id,
+                    decision: decision.clone(),
+                    decided_by: forwarded_decided_by.clone(),
+                    scope: request.scope_hint.clone(),
+                    fingerprint: None,
+                    rationale: None,
+                    at: Utc::now(),
+                })],
+            )
+            .await
+            .is_err()
+        {
+            return Decision::DenyOnce;
+        }
+        if self
             .event_store
             .append_with_metadata(
                 self.tenant_id,
@@ -593,33 +688,18 @@ impl PermissionBroker for SubagentPermissionBridge {
                         subagent_id: self.subagent_id,
                         original_request_id: request.request_id,
                         decision: decision.clone(),
-                        decided_by: forwarded_decided_by.clone(),
+                        decided_by: forwarded_decided_by,
+                        team_id: self.team_id,
+                        team_member_profile_id: self.team_member_profile_id.clone(),
                         at: Utc::now(),
                     },
                 )],
             )
-            .await;
-        let _ = self
-            .event_store
-            .append_with_metadata(
-                self.tenant_id,
-                child_context.session,
-                AppendMetadata {
-                    run_id: Some(child_context.run),
-                    correlation_id: child_context.correlation,
-                    ..AppendMetadata::default()
-                },
-                &[Event::PermissionResolved(PermissionResolvedEvent {
-                    request_id: request.request_id,
-                    decision: decision.clone(),
-                    decided_by: forwarded_decided_by,
-                    scope: request.scope_hint,
-                    fingerprint: None,
-                    rationale: None,
-                    at: Utc::now(),
-                })],
-            )
-            .await;
+            .await
+            .is_err()
+        {
+            return Decision::DenyOnce;
+        }
         decision
     }
 
@@ -833,14 +913,9 @@ fn aux_summary_request(
             id: MessageId::new(),
             role: MessageRole::User,
             parts: vec![MessagePart::Text(format!(
-                "Summarize this subagent outcome for the parent agent.\nstatus: {:?}\nsummary: {}\nresult: {}",
+                "Summarize this subagent outcome for the parent agent.\nstatus: {:?}\nsubagent_id: {}\nraw child summary and result are withheld for safety.",
                 announcement.status,
-                announcement.summary,
-                announcement
-                    .result
-                    .as_ref()
-                    .map(Value::to_string)
-                    .unwrap_or_else(|| "null".to_owned())
+                announcement.subagent_id
             ))],
             created_at: harness_contracts::now(),
         }],
@@ -1845,12 +1920,37 @@ fn termination_reason_for_error(error: &SubagentError) -> SubagentTerminationRea
 
 pub struct SubagentRunnerCapAdapter {
     inner: Arc<dyn SubagentRunner>,
+    team_attribution: Option<SubagentTeamAttribution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SubagentTeamAttribution {
+    team_id: TeamId,
+    team_member_profile_id: String,
 }
 
 impl SubagentRunnerCapAdapter {
     #[must_use]
     pub fn from_runner(runner: Arc<dyn SubagentRunner>) -> Arc<dyn SubagentRunnerCap> {
-        Arc::new(Self { inner: runner })
+        Arc::new(Self {
+            inner: runner,
+            team_attribution: None,
+        })
+    }
+
+    #[must_use]
+    pub fn from_runner_with_team_attribution(
+        runner: Arc<dyn SubagentRunner>,
+        team_id: TeamId,
+        team_member_profile_id: impl Into<String>,
+    ) -> Arc<dyn SubagentRunnerCap> {
+        Arc::new(Self {
+            inner: runner,
+            team_attribution: Some(SubagentTeamAttribution {
+                team_id,
+                team_member_profile_id: team_member_profile_id.into(),
+            }),
+        })
     }
 }
 
@@ -1861,10 +1961,15 @@ impl SubagentRunnerCap for SubagentRunnerCapAdapter {
         parent: SubagentParentContext,
     ) -> BoxFuture<'static, Result<SubagentSpawnHandle, ToolError>> {
         let inner = Arc::clone(&self.inner);
+        let team_attribution = self.team_attribution.clone();
         Box::pin(async move {
             let spec: SubagentSpec = serde_json::from_value(spec)
                 .map_err(|error| ToolError::Validation(error.to_string()))?;
-            let parent_ctx = ParentContext::from(parent);
+            let mut parent_ctx = ParentContext::from(parent);
+            if let Some(attribution) = team_attribution {
+                parent_ctx.team_id = Some(attribution.team_id);
+                parent_ctx.team_member_profile_id = Some(attribution.team_member_profile_id);
+            }
             let input = turn_input(&spec.task);
             let handle = inner
                 .spawn(spec, input.clone(), parent_ctx)

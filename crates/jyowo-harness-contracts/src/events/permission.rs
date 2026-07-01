@@ -20,8 +20,51 @@ pub struct PermissionRequestedEvent {
     pub interactivity: InteractivityLevel,
     #[serde(default)]
     pub auto_resolved: bool,
+    #[serde(default, skip_serializing_if = "PermissionActorSource::is_parent_run")]
+    pub actor_source: PermissionActorSource,
     pub causation_id: EventId,
     pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum PermissionActorSource {
+    ParentRun,
+    Subagent {
+        subagent_id: SubagentId,
+        parent_session_id: SessionId,
+        parent_run_id: RunId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<TeamId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_member_profile_id: Option<String>,
+    },
+    TeamMember {
+        team_id: TeamId,
+        agent_id: AgentId,
+        role: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_run_id: Option<RunId>,
+    },
+    BackgroundAgent {
+        background_agent_id: BackgroundAgentId,
+        conversation_id: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_id: Option<RunId>,
+    },
+}
+
+impl Default for PermissionActorSource {
+    fn default() -> Self {
+        Self::ParentRun
+    }
+}
+
+impl PermissionActorSource {
+    #[must_use]
+    pub fn is_parent_run(&self) -> bool {
+        matches!(self, Self::ParentRun)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

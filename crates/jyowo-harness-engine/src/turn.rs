@@ -16,11 +16,11 @@ use harness_contracts::{
     HookOutcomeInconsistentEvent, HookOutcomeSummary, HookPermissionConflictEvent,
     HookReturnedUnsupportedEvent, HookRewroteInputEvent, HookTriggeredEvent, InteractivityLevel,
     Message, MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, ModelError,
-    ModelRef, PermissionMode, PermissionRequestSuppressedEvent, PermissionRequestedEvent,
-    PermissionResolvedEvent, PricingSnapshotId, RedactRules, Redactor, RequestId, RunEndedEvent,
-    RunId, RunStartedEvent, SessionId, StopReason, SuppressionReason, TeamId, TenantId,
-    ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolResultPart, ToolUseApprovedEvent,
-    ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
+    ModelRef, PermissionActorSource, PermissionMode, PermissionRequestSuppressedEvent,
+    PermissionRequestedEvent, PermissionResolvedEvent, PricingSnapshotId, RedactRules, Redactor,
+    RequestId, RunEndedEvent, RunId, RunStartedEvent, SessionId, StopReason, SuppressionReason,
+    TeamId, TenantId, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolResultPart,
+    ToolUseApprovedEvent, ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
     ToolUseRequestedEvent, TrustLevel, TurnInput, UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_hook::{
@@ -305,9 +305,20 @@ pub(crate) async fn run_turn(
         .await?;
 
         let mut model_call_started = Instant::now();
-        let mut stream = match engine.model.infer(request.clone(), infer_ctx.clone()).await {
-            Ok(stream) => stream,
-            Err(ModelError::ContextTooLong { tokens, max }) => {
+        let mut stream = match infer_or_interrupt(
+            engine,
+            &session,
+            &mut emitted,
+            &ctx,
+            request.clone(),
+            infer_ctx.clone(),
+            usage.clone(),
+        )
+        .await?
+        {
+            None => return Ok(Box::pin(stream::iter(emitted))),
+            Some(Ok(stream)) => stream,
+            Some(Err(ModelError::ContextTooLong { tokens, max })) => {
                 record_model_infer(
                     engine,
                     model_call_started.elapsed(),
@@ -360,9 +371,20 @@ pub(crate) async fn run_turn(
                     return Err(engine_error(error));
                 }
                 model_call_started = Instant::now();
-                match engine.model.infer(request.clone(), infer_ctx.clone()).await {
-                    Ok(stream) => stream,
-                    Err(error) => {
+                match infer_or_interrupt(
+                    engine,
+                    &session,
+                    &mut emitted,
+                    &ctx,
+                    request.clone(),
+                    infer_ctx.clone(),
+                    usage.clone(),
+                )
+                .await?
+                {
+                    None => return Ok(Box::pin(stream::iter(emitted))),
+                    Some(Ok(stream)) => stream,
+                    Some(Err(error)) => {
                         record_model_infer(
                             engine,
                             model_call_started.elapsed(),
@@ -394,7 +416,7 @@ pub(crate) async fn run_turn(
                     }
                 }
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 record_model_infer(
                     engine,
                     model_call_started.elapsed(),
@@ -433,7 +455,25 @@ pub(crate) async fn run_turn(
         let mut stop_reason = StopReason::EndTurn;
         let mut model_call_usage = UsageSnapshot::default();
 
-        while let Some(event) = stream.next().await {
+        loop {
+            let event = tokio::select! {
+                event = stream.next() => event,
+                cause = ctx.cancellation.cancelled() => {
+                    append_run_end(
+                        engine,
+                        &session,
+                        &mut emitted,
+                        ctx.run_id,
+                        end_reason_for_interrupt(cause),
+                        usage.clone(),
+                    )
+                    .await?;
+                    return Ok(Box::pin(stream::iter(emitted)));
+                }
+            };
+            let Some(event) = event else {
+                break;
+            };
             for aggregate in stream_aggregator.push(event) {
                 match aggregate {
                     StreamAggregate::MessageStart { usage: start_usage } => {
@@ -826,6 +866,8 @@ pub(crate) async fn run_turn(
             engine.event_store.clone(),
             ctx.run_id,
             ctx.interactivity,
+            ctx.permission_actor_source.clone(),
+            hook_redactor(engine),
         ));
         let (tool_event_emitter, mut tool_event_receiver) = ChannelToolEventEmitter::channel();
         let tool_interrupt = InterruptToken::new();
@@ -1957,6 +1999,32 @@ async fn append_interrupt_if_cancelled(
     Ok(true)
 }
 
+async fn infer_or_interrupt(
+    engine: &Engine,
+    session: &SessionHandle,
+    emitted: &mut Vec<Event>,
+    ctx: &RunContext,
+    request: ModelRequest,
+    infer_ctx: InferContext,
+    usage: UsageSnapshot,
+) -> Result<Option<Result<harness_model::ModelStream, ModelError>>, EngineError> {
+    tokio::select! {
+        result = engine.model.infer(request, infer_ctx) => Ok(Some(result)),
+        cause = ctx.cancellation.cancelled() => {
+            append_run_end(
+                engine,
+                session,
+                emitted,
+                ctx.run_id,
+                end_reason_for_interrupt(cause),
+                usage,
+            )
+            .await?;
+            Ok(None)
+        }
+    }
+}
+
 async fn finalize_run_error(
     engine: &Engine,
     session: &SessionHandle,
@@ -2161,6 +2229,49 @@ fn redact_json_strings(value: Value, redactor: &dyn Redactor) -> Value {
     }
 }
 
+fn redact_permission_actor_source(
+    actor_source: PermissionActorSource,
+    redactor: &dyn Redactor,
+) -> PermissionActorSource {
+    match actor_source {
+        PermissionActorSource::ParentRun => PermissionActorSource::ParentRun,
+        PermissionActorSource::Subagent {
+            subagent_id,
+            parent_session_id,
+            parent_run_id,
+            team_id,
+            team_member_profile_id,
+        } => PermissionActorSource::Subagent {
+            subagent_id,
+            parent_session_id,
+            parent_run_id,
+            team_id,
+            team_member_profile_id: team_member_profile_id
+                .map(|profile_id| redactor.redact(&profile_id, &RedactRules::default())),
+        },
+        PermissionActorSource::TeamMember {
+            team_id,
+            agent_id,
+            role,
+            parent_run_id,
+        } => PermissionActorSource::TeamMember {
+            team_id,
+            agent_id,
+            role: redactor.redact(&role, &RedactRules::default()),
+            parent_run_id,
+        },
+        PermissionActorSource::BackgroundAgent {
+            background_agent_id,
+            conversation_id,
+            attempt_id,
+        } => PermissionActorSource::BackgroundAgent {
+            background_agent_id,
+            conversation_id,
+            attempt_id,
+        },
+    }
+}
+
 fn redact_tool_result(result: ToolResult, redactor: &dyn Redactor) -> ToolResult {
     match result {
         ToolResult::Text(text) => ToolResult::Text(redactor.redact(&text, &RedactRules::default())),
@@ -2293,6 +2404,8 @@ struct RecordingPermissionBroker {
     requested_events: Mutex<Vec<Event>>,
     run_id: harness_contracts::RunId,
     interactivity: InteractivityLevel,
+    actor_source: PermissionActorSource,
+    redactor: Arc<dyn Redactor>,
 }
 
 impl RecordingPermissionBroker {
@@ -2302,6 +2415,8 @@ impl RecordingPermissionBroker {
         event_store: Arc<dyn EventStore>,
         run_id: harness_contracts::RunId,
         interactivity: InteractivityLevel,
+        actor_source: PermissionActorSource,
+        redactor: Arc<dyn Redactor>,
     ) -> Self {
         Self {
             inner,
@@ -2311,6 +2426,8 @@ impl RecordingPermissionBroker {
             requested_events: Mutex::new(Vec::new()),
             run_id,
             interactivity,
+            actor_source,
+            redactor,
         }
     }
 
@@ -2617,6 +2734,7 @@ impl RecordingPermissionBroker {
             ctx.tenant_id,
             ctx.session_id,
             auto_resolved,
+            redact_permission_actor_source(self.actor_source.clone(), self.redactor.as_ref()),
         );
         if self
             .event_store
@@ -2690,6 +2808,7 @@ fn permission_requested_event(
     tenant_id: TenantId,
     session_id: SessionId,
     auto_resolved: bool,
+    actor_source: PermissionActorSource,
 ) -> Event {
     Event::PermissionRequested(PermissionRequestedEvent {
         request_id: request.request_id,
@@ -2705,6 +2824,7 @@ fn permission_requested_event(
         presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
         interactivity,
         auto_resolved,
+        actor_source,
         causation_id: EventId::new(),
         at: harness_contracts::now(),
     })
@@ -3335,6 +3455,8 @@ mod tests {
             Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))),
             RunId::new(),
             InteractivityLevel::FullyInteractive,
+            PermissionActorSource::ParentRun,
+            Arc::new(NoopRedactor),
         );
         let request = permission_request();
         let ctx = permission_context_for(&request);

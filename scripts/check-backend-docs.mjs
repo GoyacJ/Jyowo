@@ -107,6 +107,7 @@ const expectedLayers = new Map([
   ['jyowo-harness-observability', 'L3'],
   ['jyowo-harness-plugin', 'L3'],
   ['jyowo-harness-subagent', 'L3'],
+  ['jyowo-harness-agent-runtime', 'L3'],
   ['jyowo-harness-team', 'L3'],
   ['jyowo-harness-sdk', 'L4'],
 ])

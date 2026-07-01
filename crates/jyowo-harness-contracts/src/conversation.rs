@@ -210,6 +210,94 @@ pub enum AssistantSegment {
     ClarificationRequest(ClarificationRequestSegment),
     Notice(NoticeSegment),
     Error(ErrorSegment),
+    AgentActivity(AgentActivitySegment),
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentActivityKind {
+    Subagent,
+    AgentTeam,
+    BackgroundAgent,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentActivityStatus {
+    Loading,
+    Running,
+    WaitingPermission,
+    WaitingInput,
+    Completed,
+    Failed,
+    Cancelled,
+    Stalled,
+    Redacted,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentActivityPermissionState {
+    pub id: String,
+    pub request_id: String,
+    pub status: ToolPermissionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<UiSafeText>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTeamMemberActivity {
+    pub agent_id: String,
+    pub role: UiSafeText,
+    pub status: AgentActivityStatus,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTeamTaskActivity {
+    pub id: String,
+    pub title: UiSafeText,
+    pub status: UiSafeText,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee_profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTeamActivityDetails {
+    pub topology: UiSafeText,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead: Option<AgentTeamMemberActivity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<AgentTeamMemberActivity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub current_tasks: Vec<AgentTeamTaskActivity>,
+    pub mailbox_count: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mailbox_summaries: Vec<UiSafeText>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentActivitySegment {
+    pub id: String,
+    pub order: u32,
+    pub activity_kind: AgentActivityKind,
+    pub agent_id: String,
+    pub role: UiSafeText,
+    pub task_summary: UiSafeText,
+    pub status: AgentActivityStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_summary: Option<UiSafeText>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<AgentActivityPermissionState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<AgentTeamActivityDetails>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_refs: Vec<ConversationEventRef>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

@@ -10,6 +10,7 @@ Root commands:
 pnpm check:rust-deps
 pnpm check:backend-docs
 pnpm check:docs
+pnpm check:agent-orchestration-no-fakes
 pnpm check:rust
 pnpm check
 ```
@@ -34,6 +35,36 @@ cargo test --workspace
 
 `pnpm check` MUST run docs, desktop, and Rust gates.
 
+## Agent Orchestration Anti-fake Gate
+
+`pnpm check:agent-orchestration-no-fakes` scans agent-orchestration production surfaces for:
+
+- Tauri agent command handlers that return fixed success without SDK or runtime delegation
+- hardcoded `subagents_available`, `agent_teams_available`, or `background_agents_available`
+  false availability values
+- temporary scanner allowlists for hardcoded agent capability availability fields
+- user-facing placeholder, experimental, unimplemented, or unfinished-work markers when agent-related context is nearby
+- production fake agent runners, fake background providers, or mock agent runtime descriptions
+- frontend-only agent capability availability state that is not backed by command responses
+
+The final scoped path list covers the desktop agent IPC modules, supervisor sidecar
+entrypoints and packaging config, frontend agent orchestration UI surfaces,
+Rust contracts, journal projection, agent runtime, SDK, subagent/team crates,
+the supervisor sidecar build script, and root `package.json`.
+
+The gate excludes docs, tests, fixtures, and unrelated placeholder UI. Generic
+terms such as `placeholder`, `fake`, `mock`, `noop`, `TODO`, `coming soon`, and
+`experimental` fail only when agent-related context is nearby.
+
+```text
+pnpm check:agent-orchestration-no-fakes
+```
+
+Each implementation task that changes agent orchestration behavior requires a
+read-only subagent audit before the task checklist is marked complete. The audit
+must report PASS or FAIL with file and line evidence. FAIL results must be fixed
+and re-audited before the task is closed.
+
 ## Test Coverage
 
 Backend tests must cover behavior at the owning layer.
@@ -51,11 +82,31 @@ Required test groups:
 | Conversation worktree | complete turn paging, event cursor reporting, stable node ids, nested tool permissions, safe process steps, artifact media metadata, and tool failure summaries |
 | Tauri command | command payload identity, shell metadata, SDK availability, replay-before-live conversation subscription, artifact media preview ownership checks, window-scoped event batches, unsubscribe cleanup, provider capability route validation, route option runtime support reporting, routed credential fail-closed behavior |
 | SDK | builder requirements, runtime assembly, test adapters, capability route filtering during ToolPool assembly |
+| Agent orchestration | capability resolution, per-run agent options, subagent tool exposure, run-scoped team task/mailbox persistence, background registry lifecycle, supervisor wake/recovery, worktree lease conflicts, and actor-source permission attribution |
 | Budget | quota serialization and token budget defaults |
 | Search | SQLite FTS5 indexing, query behavior, deleted item removal, visibility filtering |
 | Secret | explicit reveal handling, missing secret behavior, no raw Secret serialization |
 | Migration | forward migration, idempotence, incompatible schema rejection, rollback-safe failure |
 | Property | permission, redaction, budget, event ordering, and migration invariants |
+
+Required agent orchestration E2E scenarios:
+
+- subagent path: settings enable subagents, run-level subagent option is
+  accepted, the backend exposes the `agent` tool only when policy allows it, a
+  child action requests permission with `subagent` actor source, and a denied
+  child action does not execute.
+- team path: settings enable agent teams, a run-scoped team config creates team
+  members, task and mailbox state persist, cancellation reaches active members,
+  and conversation projection includes team activity.
+- background path: settings enable background agents, `start_run` creates a
+  durable background record, list/detail commands read registry state, pause,
+  resume, cancel, input, archive, and delete mutate durable records, and restart
+  recovery classifies interrupted records.
+- negative path: disabled settings reject per-run enable, unavailable runtime
+  disables switches, invalid payloads fail Zod/Rust validation, write-capable
+  work without isolation fails closed, duplicate write leases fail closed,
+  supervisor crash does not lose durable state, and unsafe permission denial
+  prevents execution.
 
 Snapshot tests use `insta` for public contract shapes, event JSON, schema exports,
 and representative error payloads. Snapshots must not contain secrets or private
@@ -97,6 +148,8 @@ Allowed upstream-held transitive dependencies:
 |---|---:|---:|---|---|
 | `generic-array` | `0.14.7` | `0.14.9` | `crypto-common 0.1.7` | exact dependency required by the RustCrypto `digest 0.10` chain used by Tauri/Wry SHA-2 code |
 | `matchit` | `0.8.4` | `0.8.6` | `axum 0.8.9` | exact dependency selected by the latest stable Axum release |
+| `time` | `0.3.51` | `0.3.52` | `cookie 0.18.1` | Tauri cookie dependency calls the time 0.3.51 parsing API; 0.3.52 changes the method signature |
+| `time-macros` | `0.2.30` | `0.2.31` | `time 0.3.51` | kept in lockstep with the Tauri-held time 0.3.51 dependency |
 | `toml` | `0.8.2` | `0.8.23` | `system-deps 6.2.2` | Linux GTK/Tauri build dependency chain |
 | `toml_datetime` | `0.6.3` | `0.6.11` | `proc-macro-crate 2.0.2` | exact dependency required by GTK proc-macro chain |
 | `toml_edit` | `0.20.2` | `0.20.7` | `proc-macro-crate 2.0.2` | exact dependency required by GTK proc-macro chain |

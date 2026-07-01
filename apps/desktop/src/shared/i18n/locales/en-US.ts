@@ -144,6 +144,35 @@ export const enUS = {
         waitingPermission: '{{count}} waiting for permission',
       },
       tools: 'Tools',
+      agentActivity: {
+        openBackgroundAgent: 'Open background agent',
+        redacted: 'Subagent result withheld from conversation timeline.',
+        team: {
+          topology: 'Topology',
+          lead: 'Lead',
+          members: 'Members',
+          tasks: 'Tasks',
+          noTasks: 'No active team tasks.',
+          mailbox: 'Mailbox',
+          mailboxSummaries: 'Mailbox summaries',
+        },
+        kind: {
+          subagent: 'Subagent',
+          agentTeam: 'Agent team',
+          backgroundAgent: 'Background agent',
+        },
+        status: {
+          loading: 'Loading',
+          running: 'Running',
+          waitingPermission: 'Waiting for permission',
+          waitingInput: 'Waiting for input',
+          completed: 'Completed',
+          failed: 'Failed',
+          cancelled: 'Cancelled',
+          stalled: 'Stalled',
+          redacted: 'Redacted',
+        },
+      },
     },
     composer: {
       placeholder: 'Ask Jyowo anything about this project...',
@@ -173,6 +202,38 @@ export const enUS = {
       noReferences: 'No references found.',
       cancelRun: 'Cancel run',
       sendMessage: 'Send message',
+      agents: {
+        subagents: 'Subagents',
+        agentTeam: 'Agent team',
+        backgroundRun: 'Run in background',
+        workspaceIsolation: 'Workspace isolation',
+        unavailable: 'Unavailable in this desktop build',
+        disabledInSettings: 'Disabled in Settings > General',
+        teamRequiresConfig: 'Team configuration is required before enabling agent teams.',
+        loadingProfiles: 'Loading agent profiles...',
+        noProfiles: 'No agent profiles available.',
+        selectMemberProfile: 'Select at least one member profile.',
+        staleProfileId: 'Selected agent profile is no longer available.',
+        topology: 'Topology',
+        leadProfile: 'Lead profile',
+        maxTurnsPerGoal: 'Max turns per goal',
+        sharedMemory: 'Shared memory',
+        topologyOptions: {
+          coordinatorWorker: 'Coordinator worker',
+          peerToPeer: 'Peer to peer',
+          roleRouted: 'Role routed',
+        },
+        sharedMemoryOptions: {
+          none: 'None',
+          summariesOnly: 'Summaries only',
+          redactedMailbox: 'Redacted mailbox',
+        },
+        isolation: {
+          readOnly: 'Read only',
+          patchOnly: 'Patch only',
+          gitWorktree: 'Git worktree',
+        },
+      },
     },
     continue: 'Continue',
     modelConfig: 'Model',
@@ -252,6 +313,7 @@ export const enUS = {
       loading: 'Loading default permission mode...',
       saving: 'Saving...',
       save: 'Save default mode',
+      saveError: 'Execution settings could not be saved.',
       permissionMode: {
         label: 'Permission mode',
       },
@@ -276,6 +338,29 @@ export const enUS = {
       contextCompressionTriggerRatio: {
         label: 'Context compression trigger ratio',
         description: 'Compress when the estimated context reaches this share of the model window.',
+      },
+      agentCapabilities: {
+        label: 'Agent capabilities',
+        subagents: {
+          label: 'Subagents',
+          description: 'Allow runs to delegate scoped work to subagents.',
+        },
+        agentTeams: {
+          label: 'Agent teams',
+          description: 'Allow run-scoped teams with lead and member agents.',
+        },
+        backgroundAgents: {
+          label: 'Background agents',
+          description: 'Allow eligible runs to continue in the background.',
+        },
+        unavailable: {
+          notCompiled: 'Capability is not compiled into this desktop build.',
+          runtimeStoreUnavailable: 'Runtime store unavailable: {{message}}',
+          permissionRuntimeUnavailable: 'Permission runtime unavailable.',
+          invalidAgentProfiles: 'Invalid agent profiles: {{message}}',
+          backgroundSupervisorUnavailable: 'Background supervisor unavailable: {{message}}',
+          workspaceIsolationUnavailable: 'Workspace isolation unavailable: {{message}}',
+        },
       },
       mode: {
         standard: {

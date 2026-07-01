@@ -81,3 +81,13 @@ pub struct TeamTerminatedEvent {
     pub reason: TeamTerminationReason,
     pub at: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TeamTaskUpdatedEvent {
+    pub team_id: TeamId,
+    pub task_id: String,
+    pub title: String,
+    pub status: String,
+    pub assignee_profile_id: Option<String>,
+    pub at: DateTime<Utc>,
+}

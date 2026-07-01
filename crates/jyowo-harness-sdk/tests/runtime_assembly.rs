@@ -52,7 +52,7 @@ use harness_tool::{
     default_result_budget, BuiltinToolset, PermissionCheck, SchemaResolverContext, Tool,
     ToolContext, ToolEvent, ToolRegistry, ToolStream, ValidationError,
 };
-use jyowo_harness_sdk::{prelude::*, testing::*};
+use jyowo_harness_sdk::{prelude::*, testing::*, AgentCapabilityResolutionContext};
 use serde_json::json;
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -108,6 +108,8 @@ fn conversation_turn_input_ask_mode_preserves_prompt_text() {
                 options: SessionOptions::new(&workspace).with_session_id(session_id),
                 input: ConversationTurnInput::ask("plain user question"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("turn should run");
@@ -161,6 +163,8 @@ fn conversation_turn_request_includes_prior_session_messages() {
                 options: SessionOptions::new(&workspace).with_session_id(session_id),
                 input: ConversationTurnInput::ask("first user question"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("first turn should run");
@@ -169,6 +173,8 @@ fn conversation_turn_request_includes_prior_session_messages() {
                 options: SessionOptions::new(&workspace).with_session_id(session_id),
                 input: ConversationTurnInput::ask("second user question"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("second turn should run");
@@ -221,6 +227,8 @@ fn conversation_session_budget_uses_model_window_and_trigger_ratio() {
                     "this message is intentionally long enough to cross the configured soft budget",
                 ),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("turn should run");
@@ -270,6 +278,8 @@ fn default_conversation_system_prompt_uses_agent_runtime_identity() {
                 options,
                 input: ConversationTurnInput::ask("hello"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("turn should run");
@@ -337,6 +347,8 @@ fn runtime_context_does_not_include_provider_credentials() {
                 options,
                 input: ConversationTurnInput::ask("hello"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("turn should run");
@@ -376,6 +388,8 @@ fn default_system_prompt_excludes_coding_partner_language() {
                 options,
                 input: ConversationTurnInput::ask("hello"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("turn should run");
@@ -451,9 +465,11 @@ async fn conversation_system_prompt_with_bootstrap(
         ConversationModelCapability::default(),
         vec![vec![ModelStreamEvent::MessageStop]],
     ));
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let event_store: Arc<dyn EventStore> = store.clone();
     let harness = Harness::builder()
         .with_model_arc(model.clone())
-        .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_store_arc(event_store)
         .with_sandbox(NoopSandbox::new())
         .build()
         .await
@@ -474,6 +490,8 @@ async fn conversation_system_prompt_with_bootstrap(
             options,
             input: ConversationTurnInput::ask("hello"),
             permission_mode_override: None,
+            permission_actor_source: None,
+            agent_run_options: None,
         })
         .await
         .expect("turn should run");
@@ -731,6 +749,8 @@ fn conversation_session_uses_descriptor_protocol_when_options_omit_protocol() {
                 options,
                 input: ConversationTurnInput::ask("plain user question"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("turn should run");
@@ -804,6 +824,8 @@ fn conversation_turn_input_renders_references_and_attachments_context_block() {
                     }],
                 },
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("turn should run");
@@ -955,6 +977,8 @@ fn conversation_facade_opens_submits_and_pages_session_events() {
                 options: SessionOptions::new(&workspace).with_session_id(session_id),
                 input: ConversationTurnInput::ask("use facade path"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("turn should run through the conversation facade");
@@ -1051,6 +1075,8 @@ fn conversation_facade_pages_and_deletes_when_model_runtime_defaults_change() {
                 options: changed_defaults_options.clone(),
                 input: ConversationTurnInput::ask("continue with the selected model"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("historical conversation submit must survive model default changes");
@@ -1096,6 +1122,8 @@ fn conversation_turn_permission_override_is_run_scoped() {
                 options: options.clone(),
                 input: ConversationTurnInput::ask("use full access for this run"),
                 permission_mode_override: Some(PermissionMode::BypassPermissions),
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("override turn should run");
@@ -1104,6 +1132,8 @@ fn conversation_turn_permission_override_is_run_scoped() {
                 options: options.clone(),
                 input: ConversationTurnInput::ask("use default permission mode again"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("next turn should run with session default");
@@ -1192,6 +1222,8 @@ fn legacy_conversation_session_hash_accepts_permission_mode_variant() {
                 options: current_options,
                 input: ConversationTurnInput::ask("continue old conversation"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("old session should continue under current default identity");
@@ -1231,6 +1263,8 @@ fn current_conversation_session_hash_rejects_permission_mode_variant() {
                 options: SessionOptions::new(&workspace).with_session_id(session_id),
                 input: ConversationTurnInput::ask("continue current conversation"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect_err("current hash should reject permission mode mismatch");
@@ -1354,6 +1388,8 @@ async fn conversation_facade_cancels_active_run_through_sdk_registry() {
                 options: SessionOptions::new(&run_workspace).with_session_id(session_id),
                 input: ConversationTurnInput::ask("cancel active facade run"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
     });
@@ -1415,6 +1451,8 @@ async fn conversation_facade_delete_cancels_active_run_and_blocks_late_appends()
                 options: SessionOptions::new(&run_workspace).with_session_id(session_id),
                 input: ConversationTurnInput::ask("delete active facade run"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
     });
@@ -1583,6 +1621,8 @@ fn conversation_facade_rejects_tenant_policy_bypass_before_reading_events() {
                     .with_session_id(session_id),
                 input: ConversationTurnInput::ask("must not read shared tenant"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect_err("restricted tenant policy must block submit before event replay");
@@ -1632,6 +1672,8 @@ fn conversation_facade_reopens_with_workspace_bound_options() {
                 options: options.clone(),
                 input: ConversationTurnInput::ask("use workspace model"),
                 permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: None,
             })
             .await
             .expect("workspace-bound conversation should submit");
@@ -3831,9 +3873,11 @@ async fn conversation_system_prompt_with_builtin_memory(
         ConversationModelCapability::default(),
         vec![vec![ModelStreamEvent::MessageStop]],
     ));
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let event_store: Arc<dyn EventStore> = store.clone();
     let harness = Harness::builder()
         .with_model_arc(model.clone())
-        .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_store_arc(event_store)
         .with_sandbox(NoopSandbox::new())
         .with_builtin_memory(builtin)
         .build()
@@ -3857,6 +3901,8 @@ async fn conversation_system_prompt_with_builtin_memory(
             options,
             input: ConversationTurnInput::ask("hello"),
             permission_mode_override: None,
+            permission_actor_source: None,
+            agent_run_options: None,
         })
         .await
         .expect("turn should run");
@@ -4690,6 +4736,42 @@ fn default_session_exposes_tracer_to_runtime() {
     });
 }
 
+#[test]
+fn harness_resolve_agent_capabilities_delegates_to_agent_runtime_policy() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-agent-capability-resolver");
+        std::fs::create_dir_all(&workspace).unwrap();
+        harness_agent_runtime::AgentRuntimeStore::open(&workspace).unwrap();
+
+        let mut harness_options = HarnessOptions::default();
+        harness_options.workspace_root = workspace.clone();
+        harness_options.model_id = "test-model".to_owned();
+
+        let harness = Harness::builder()
+            .with_options(harness_options)
+            .with_model(TestModelProvider::default())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+
+        let without_stream = harness.resolve_agent_capabilities(AgentCapabilityResolutionContext {
+            stream_permission_runtime_available: false,
+        });
+        assert!(!without_stream.subagents_available);
+
+        let with_stream = harness.resolve_agent_capabilities(AgentCapabilityResolutionContext {
+            stream_permission_runtime_available: true,
+        });
+        #[cfg(feature = "agents-subagent")]
+        assert!(with_stream.subagents_available);
+        #[cfg(feature = "agents-team")]
+        assert!(with_stream.agent_teams_available);
+        assert!(!with_stream.background_agents_available);
+    });
+}
+
 #[cfg(feature = "agents-subagent")]
 #[test]
 fn default_session_installs_agent_tool_when_subagent_runner_is_configured() {
@@ -4732,6 +4814,581 @@ fn default_session_installs_agent_tool_when_subagent_runner_is_configured() {
             .collect();
         assert!(tool_names.contains(&"agent"));
     });
+}
+
+#[cfg(feature = "agents-subagent")]
+#[test]
+fn session_installs_agent_tool_when_run_options_allow_subagents() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-agent-tool-run-options");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let model = Arc::new(TestModelProvider::default().with_events(vec![
+            ModelStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: ContentDelta::Text("ready".to_owned()),
+            },
+            ModelStreamEvent::MessageStop,
+        ]));
+
+        let harness = Harness::builder()
+            .with_model_arc(model.clone())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+
+        let options = SessionOptions::new(&workspace);
+        harness
+            .open_or_create_conversation_session(options.clone())
+            .await
+            .expect("conversation session should open");
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options,
+                input: ConversationTurnInput::ask("delegate work"),
+                permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: Some(harness_contracts::AgentRunOptions {
+                    subagents: harness_contracts::AgentUsePolicy::Allowed,
+                    agent_team: harness_contracts::AgentUsePolicy::Off,
+                    team_config: None,
+                    background: harness_contracts::BackgroundRunPolicy::Foreground,
+                    workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
+                    max_depth: 2,
+                    max_concurrent_subagents: 2,
+                    max_team_members: 4,
+                }),
+            })
+            .await
+            .expect("turn should run");
+
+        let requests = model.requests().await;
+        let tool_names: Vec<_> = requests[0]
+            .tools
+            .as_ref()
+            .expect("run with allowed subagents should expose tools")
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect();
+        assert!(tool_names.contains(&"agent"));
+    });
+}
+
+#[cfg(feature = "agents-subagent")]
+#[test]
+fn session_hides_agent_tool_when_run_options_disable_subagents() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-agent-tool-disabled-run-options");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let model = Arc::new(TestModelProvider::default().with_events(vec![
+            ModelStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: ContentDelta::Text("ready".to_owned()),
+            },
+            ModelStreamEvent::MessageStop,
+        ]));
+
+        let harness = Harness::builder()
+            .with_model_arc(model.clone())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+
+        let options = SessionOptions::new(&workspace);
+        harness
+            .open_or_create_conversation_session(options.clone())
+            .await
+            .expect("conversation session should open");
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options,
+                input: ConversationTurnInput::ask("no delegation"),
+                permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: Some(harness_contracts::AgentRunOptions {
+                    subagents: harness_contracts::AgentUsePolicy::Off,
+                    agent_team: harness_contracts::AgentUsePolicy::Off,
+                    team_config: None,
+                    background: harness_contracts::BackgroundRunPolicy::Foreground,
+                    workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
+                    max_depth: 2,
+                    max_concurrent_subagents: 2,
+                    max_team_members: 4,
+                }),
+            })
+            .await
+            .expect("turn should run");
+
+        let requests = model.requests().await;
+        let tool_names: Vec<_> = requests[0]
+            .tools
+            .as_ref()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .map(|tool| tool.name.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        assert!(!tool_names.contains(&"agent"));
+    });
+}
+
+#[cfg(feature = "agents-subagent")]
+#[test]
+fn session_hides_preinstalled_agent_tool_when_run_options_disable_subagents() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-agent-tool-disabled-preinstalled-runner");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let model = Arc::new(TestModelProvider::default().with_events(vec![
+            ModelStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: ContentDelta::Text("ready".to_owned()),
+            },
+            ModelStreamEvent::MessageStop,
+        ]));
+
+        let harness = Harness::builder()
+            .with_model_arc(model.clone())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .with_subagent_runner(Arc::new(ReadySubagentRunner))
+            .build()
+            .await
+            .expect("harness should build");
+
+        let options = SessionOptions::new(&workspace);
+        harness
+            .open_or_create_conversation_session(options.clone())
+            .await
+            .expect("conversation session should open");
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options,
+                input: ConversationTurnInput::ask("no delegation"),
+                permission_mode_override: None,
+                permission_actor_source: None,
+                agent_run_options: Some(harness_contracts::AgentRunOptions {
+                    subagents: harness_contracts::AgentUsePolicy::Off,
+                    agent_team: harness_contracts::AgentUsePolicy::Off,
+                    team_config: None,
+                    background: harness_contracts::BackgroundRunPolicy::Foreground,
+                    workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
+                    max_depth: 2,
+                    max_concurrent_subagents: 2,
+                    max_team_members: 4,
+                }),
+            })
+            .await
+            .expect("turn should run");
+
+        let requests = model.requests().await;
+        let tool_names: Vec<_> = requests[0]
+            .tools
+            .as_ref()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .map(|tool| tool.name.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        assert!(!tool_names.contains(&"agent"));
+    });
+}
+
+#[cfg(feature = "agents-team")]
+#[test]
+fn runtime_assembly_starts_run_scoped_agent_team_through_agent_runtime_store() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-runtime-assembly-agent-team");
+        std::fs::create_dir_all(&workspace).unwrap();
+        jyowo_harness_sdk::list_agent_profiles(&workspace).expect("agent profiles should list");
+        let model = Arc::new(TestModelProvider::default().with_events(vec![
+            ModelStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: ContentDelta::Text("parent accepted".to_owned()),
+            },
+            ModelStreamEvent::MessageStop,
+        ]));
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        let event_store: Arc<dyn EventStore> = store.clone();
+        let harness = Harness::builder()
+            .with_model_arc(model)
+            .with_store_arc(event_store)
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+        let session_id = SessionId::new();
+        let options = SessionOptions::new(&workspace).with_session_id(session_id);
+        harness
+            .open_or_create_conversation_session(options.clone())
+            .await
+            .expect("conversation session should open");
+
+        let receipt = harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options,
+                input: ConversationTurnInput::ask("Run a team review"),
+                permission_mode_override: Some(
+                    harness_contracts::PermissionMode::BypassPermissions,
+                ),
+                permission_actor_source: None,
+                agent_run_options: Some(harness_contracts::AgentRunOptions {
+                    subagents: harness_contracts::AgentUsePolicy::Allowed,
+                    agent_team: harness_contracts::AgentUsePolicy::Allowed,
+                    team_config: Some(harness_contracts::AgentTeamRunConfig {
+                        topology: harness_contracts::AgentTeamTopology::CoordinatorWorker,
+                        lead_profile_id: "reviewer".to_owned(),
+                        member_profile_ids: vec!["worker".to_owned()],
+                        max_turns_per_goal: 2,
+                        shared_memory_policy:
+                            harness_contracts::AgentTeamSharedMemoryPolicy::SummariesOnly,
+                    }),
+                    background: harness_contracts::BackgroundRunPolicy::Foreground,
+                    workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
+                    max_depth: 2,
+                    max_concurrent_subagents: 2,
+                    max_team_members: 4,
+                }),
+            })
+            .await
+            .expect("team turn should run");
+
+        let runtime_store =
+            harness_agent_runtime::AgentRuntimeStore::open(&workspace).expect("store opens");
+        let tasks = runtime_store
+            .with_connection(|connection| {
+                let mut statement = connection.prepare(
+                    "SELECT team_id, status, assignee_profile_id
+                     FROM agent_team_tasks
+                     WHERE run_id = ?1",
+                )?;
+                let mut rows = statement.query([receipt.run_id.to_string()])?;
+                let mut tasks = Vec::new();
+                while let Some(row) = rows.next()? {
+                    tasks.push((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ));
+                }
+                Ok(tasks)
+            })
+            .expect("tasks query succeeds");
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].1, "active");
+        assert_eq!(tasks[0].2.as_deref(), Some("reviewer"));
+
+        let mailbox = runtime_store
+            .list_agent_team_mailbox_for_team(&tasks[0].0)
+            .expect("mailbox loads");
+        assert_eq!(mailbox.len(), 1);
+        assert_eq!(mailbox[0].summary, "Team run queued");
+        let events = store
+            .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+            .await
+            .expect("events read")
+            .collect::<Vec<_>>()
+            .await;
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, Event::TeamCreated(_))));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, Event::TeamTaskUpdated(_))));
+    });
+}
+
+#[cfg(feature = "agents-team")]
+#[tokio::test]
+async fn runtime_assembly_cancels_active_run_scoped_team_after_parent_run_finishes() {
+    let workspace = unique_workspace("sdk-runtime-assembly-agent-team-cancel");
+    std::fs::create_dir_all(&workspace).unwrap();
+    jyowo_harness_sdk::list_agent_profiles(&workspace).expect("agent profiles should list");
+    let model = Arc::new(BlockingTeamMemberProvider::default());
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let event_store: Arc<dyn EventStore> = store.clone();
+    let harness = Harness::builder()
+        .with_model_arc(model.clone())
+        .with_store_arc(event_store)
+        .with_sandbox(NoopSandbox::new())
+        .build()
+        .await
+        .expect("harness should build");
+    let session_id = SessionId::new();
+    let options = SessionOptions::new(&workspace).with_session_id(session_id);
+    harness
+        .open_or_create_conversation_session(options.clone())
+        .await
+        .expect("conversation session should open");
+
+    let receipt = harness
+        .submit_conversation_turn(ConversationTurnRequest {
+            options,
+            input: ConversationTurnInput::ask("Run a cancellable team review"),
+            permission_mode_override: Some(PermissionMode::BypassPermissions),
+            permission_actor_source: None,
+            agent_run_options: Some(harness_contracts::AgentRunOptions {
+                subagents: harness_contracts::AgentUsePolicy::Allowed,
+                agent_team: harness_contracts::AgentUsePolicy::Allowed,
+                team_config: Some(harness_contracts::AgentTeamRunConfig {
+                    topology: harness_contracts::AgentTeamTopology::CoordinatorWorker,
+                    lead_profile_id: "reviewer".to_owned(),
+                    member_profile_ids: vec!["worker".to_owned()],
+                    max_turns_per_goal: 2,
+                    shared_memory_policy:
+                        harness_contracts::AgentTeamSharedMemoryPolicy::SummariesOnly,
+                }),
+                background: harness_contracts::BackgroundRunPolicy::Foreground,
+                workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
+                max_depth: 2,
+                max_concurrent_subagents: 2,
+                max_team_members: 4,
+            }),
+        })
+        .await
+        .expect("team turn should run");
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        model.member_started.notified(),
+    )
+    .await
+    .expect("member run should start");
+
+    harness
+        .cancel_conversation_run(receipt.run_id)
+        .await
+        .expect("active team should cancel after parent run finished");
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let parent_events = store
+                .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+                .await
+                .expect("events read")
+                .collect::<Vec<_>>()
+                .await;
+            let member_session_ids = parent_events.iter().filter_map(|event| match event {
+                Event::TeamMemberJoined(joined) => Some(joined.session_id),
+                _ => None,
+            });
+            for member_session_id in member_session_ids {
+                let events = store
+                    .read(TenantId::SINGLE, member_session_id, ReplayCursor::FromStart)
+                    .await
+                    .expect("events read")
+                    .collect::<Vec<_>>()
+                    .await;
+                if events.iter().any(|event| {
+                    matches!(
+                        event,
+                        Event::RunEnded(ended)
+                            if matches!(ended.reason, EndReason::Cancelled { .. })
+                    )
+                }) {
+                    return;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("member run should be interrupted by team cancellation without model release");
+
+    let events = store
+        .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .expect("events read")
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            Event::TeamTerminated(terminated)
+                if terminated.reason
+                    == harness_contracts::TeamTerminationReason::Cancelled
+        )
+    }));
+}
+
+#[cfg(feature = "agents-team")]
+#[tokio::test]
+async fn runtime_assembly_team_member_sessions_use_run_workspace_root() {
+    let workspace = unique_workspace("sdk-runtime-assembly-agent-team-workspace-root");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let bootstrap =
+        workspace_bootstrap_fixture(&workspace, "TEAM_MEMBER_WORKSPACE_ROOT_MARKER", None, None);
+    jyowo_harness_sdk::list_agent_profiles(&workspace).expect("agent profiles should list");
+    let model = Arc::new(CapabilityScriptedProvider::new(
+        ConversationModelCapability::default(),
+        vec![
+            vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("parent accepted".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ],
+            vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("member accepted".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ],
+        ],
+    ));
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let event_store: Arc<dyn EventStore> = store.clone();
+    let harness = Harness::builder()
+        .with_model_arc(model.clone())
+        .with_store_arc(event_store)
+        .with_sandbox(NoopSandbox::new())
+        .build()
+        .await
+        .expect("harness should build");
+    let session_id = SessionId::new();
+    let mut options = SessionOptions::new(&workspace).with_session_id(session_id);
+    options.workspace_bootstrap = Some(bootstrap);
+    harness
+        .open_or_create_conversation_session(options.clone())
+        .await
+        .expect("conversation session should open");
+
+    harness
+        .submit_conversation_turn(ConversationTurnRequest {
+            options,
+            input: ConversationTurnInput::ask("Run a workspace-root team review"),
+            permission_mode_override: Some(PermissionMode::BypassPermissions),
+            permission_actor_source: None,
+            agent_run_options: Some(harness_contracts::AgentRunOptions {
+                subagents: harness_contracts::AgentUsePolicy::Allowed,
+                agent_team: harness_contracts::AgentUsePolicy::Allowed,
+                team_config: Some(harness_contracts::AgentTeamRunConfig {
+                    topology: harness_contracts::AgentTeamTopology::CoordinatorWorker,
+                    lead_profile_id: "reviewer".to_owned(),
+                    member_profile_ids: vec!["worker".to_owned()],
+                    max_turns_per_goal: 2,
+                    shared_memory_policy:
+                        harness_contracts::AgentTeamSharedMemoryPolicy::SummariesOnly,
+                }),
+                background: harness_contracts::BackgroundRunPolicy::Foreground,
+                workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
+                max_depth: 2,
+                max_concurrent_subagents: 2,
+                max_team_members: 4,
+            }),
+        })
+        .await
+        .expect("team turn should run");
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if model.requests().await.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("member request should be recorded");
+    let requests = model.requests().await;
+    let member_system = requests[1].system.clone().unwrap_or_default();
+    assert!(member_system.contains("TEAM_MEMBER_WORKSPACE_ROOT_MARKER"));
+
+    let parent_events = store
+        .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .expect("parent events read")
+        .collect::<Vec<_>>()
+        .await;
+    let member_session_ids = parent_events
+        .iter()
+        .filter_map(|event| match event {
+            Event::TeamMemberJoined(joined) => Some(joined.session_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(!member_session_ids.is_empty());
+    for member_session_id in member_session_ids {
+        let member_events = store
+            .read(TenantId::SINGLE, member_session_id, ReplayCursor::FromStart)
+            .await
+            .expect("member events read")
+            .collect::<Vec<_>>()
+            .await;
+        let created = member_events
+            .iter()
+            .find_map(|event| match event {
+                Event::SessionCreated(created) => Some(created),
+                _ => None,
+            })
+            .expect("member session should have SessionCreated");
+        let canonical_workspace = workspace
+            .canonicalize()
+            .expect("workspace should canonicalize");
+        let expected_hash = session_options_hash(
+            &SessionOptions::new(canonical_workspace)
+                .with_tenant_id(TenantId::SINGLE)
+                .with_session_id(member_session_id),
+        );
+        assert_eq!(created.options_hash, expected_hash);
+    }
+}
+
+#[cfg(feature = "agents-team")]
+#[derive(Default)]
+struct BlockingTeamMemberProvider {
+    calls: AtomicUsize,
+    member_started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[cfg(feature = "agents-team")]
+#[async_trait]
+impl ModelProvider for BlockingTeamMemberProvider {
+    fn provider_id(&self) -> &str {
+        "test"
+    }
+
+    fn supported_models(&self) -> Vec<ModelDescriptor> {
+        TestModelProvider::default().supported_models()
+    }
+
+    async fn infer(
+        &self,
+        _req: ModelRequest,
+        _ctx: InferContext,
+    ) -> Result<ModelStream, ModelError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            return Ok(Box::pin(stream::iter(vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("parent accepted".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ])));
+        }
+
+        self.member_started.notify_waiters();
+        let release = Arc::clone(&self.release);
+        Ok(Box::pin(stream::once(async move {
+            release.notified().await;
+            ModelStreamEvent::MessageStop
+        })))
+    }
+
+    async fn health(&self) -> HealthStatus {
+        HealthStatus::Healthy
+    }
 }
 
 #[cfg(feature = "agents-subagent")]

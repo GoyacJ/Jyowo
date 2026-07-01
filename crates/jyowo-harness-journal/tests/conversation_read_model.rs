@@ -21,12 +21,22 @@ fn envelope(
     offset: u64,
     payload: Event,
 ) -> EventEnvelope {
+    envelope_with_run(tenant_id, session_id, offset, payload, None)
+}
+
+fn envelope_with_run(
+    tenant_id: TenantId,
+    session_id: SessionId,
+    offset: u64,
+    payload: Event,
+    run_id: Option<RunId>,
+) -> EventEnvelope {
     EventEnvelope {
         offset: JournalOffset(offset),
         event_id: EventId::new(),
         session_id,
         tenant_id,
-        run_id: None,
+        run_id,
         correlation_id: CorrelationId::new(),
         causation_id: None,
         schema_version: SchemaVersion::CURRENT,
@@ -1886,6 +1896,12 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
                 presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                 interactivity: InteractivityLevel::FullyInteractive,
                 auto_resolved: false,
+                actor_source: PermissionActorSource::TeamMember {
+                    team_id: TeamId::from_u128(30),
+                    agent_id: AgentId::from_u128(31),
+                    role: "researcher sk-abcdefghijklmnopqrstuvwxyz".to_owned(),
+                    parent_run_id: Some(run_id),
+                },
                 causation_id: EventId::new(),
                 at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(3),
             }),
@@ -2014,6 +2030,16 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
     assert_eq!(page.events[3].payload["operation"], "Execute command");
     assert_eq!(page.events[3].payload["target"], "rm");
     assert_eq!(page.events[3].payload["toolUseId"], tool_use_id.to_string());
+    assert_eq!(
+        page.events[3].payload["actorSource"],
+        serde_json::json!({
+            "type": "teamMember",
+            "teamId": TeamId::from_u128(30).to_string(),
+            "agentId": AgentId::from_u128(31).to_string(),
+            "role": "researcher [REDACTED]",
+            "parentRunId": run_id.to_string(),
+        })
+    );
     assert_eq!(page.events[4].payload["decision"], "deny");
     assert_eq!(page.events[5].payload["artifactId"], "artifact-001");
     assert_eq!(page.events[5].payload["title"], "Report");
@@ -2045,6 +2071,57 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
         page.events[8].payload["body"],
         "Tool output was summarized from [REDACTED]"
     );
+}
+
+#[tokio::test]
+async fn sqlite_conversation_read_model_redacts_team_task_assignee_profile_id() {
+    let root = temp_root("team-task-assignee-redaction");
+    let store = SqliteConversationReadModelStore::open(root.join("read-model.sqlite"))
+        .await
+        .expect("store opens");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let team_id = TeamId::new();
+
+    store
+        .apply_envelopes(
+            tenant_id,
+            session_id,
+            &[envelope_with_run(
+                tenant_id,
+                session_id,
+                0,
+                Event::TeamTaskUpdated(TeamTaskUpdatedEvent {
+                    team_id,
+                    task_id: "task-001".to_owned(),
+                    title: "Review".to_owned(),
+                    status: "running".to_owned(),
+                    assignee_profile_id: Some("sk-abcdefghijklmnopqrstuvwxyz".to_owned()),
+                    at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                }),
+                Some(run_id),
+            )],
+            None,
+        )
+        .await
+        .expect("projection applies");
+
+    let page = store
+        .page_timeline(tenant_id, session_id, None, 20)
+        .await
+        .expect("timeline loads");
+    let event = page
+        .events
+        .iter()
+        .find(|event| event.event_type == "team.task.updated")
+        .expect("team task event is projected");
+
+    assert_eq!(event.payload["assigneeProfileId"], "[REDACTED]");
+    assert!(!event
+        .payload
+        .to_string()
+        .contains("sk-abcdefghijklmnopqrstuvwxyz"));
 }
 
 #[tokio::test]
@@ -2115,4 +2192,450 @@ async fn sqlite_conversation_read_model_omits_empty_assistant_review_body() {
     assert_eq!(review.payload["requestId"], request_id.to_string());
     assert_eq!(review.payload["title"], "Review changes");
     assert!(review.payload.get("body").is_none());
+}
+
+#[tokio::test]
+async fn sqlite_conversation_read_model_projects_subagent_agent_activity() {
+    let root = temp_root("subagent-agent-activity");
+    let store = SqliteConversationReadModelStore::open(root.join("read-model.sqlite"))
+        .await
+        .expect("store opens");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let subagent_id = SubagentId::new();
+    let tool_use_id = ToolUseId::new();
+
+    let envelopes = vec![
+        envelope(
+            tenant_id,
+            session_id,
+            0,
+            user_message(run_id, MessageId::new(), "Delegate review"),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            1,
+            Event::ToolUseRequested(ToolUseRequestedEvent {
+                run_id,
+                tool_use_id,
+                tool_name: "agent".to_owned(),
+                input: serde_json::json!({
+                    "role": "Reviewer",
+                    "task": "Review recent changes",
+                }),
+                properties: tool_properties(),
+                causation_id: EventId::new(),
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(1),
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            2,
+            Event::SubagentSpawned(SubagentSpawnedEvent {
+                subagent_id,
+                parent_session_id: session_id,
+                parent_run_id: run_id,
+                agent_ref: AgentRef {
+                    id: AgentId::new(),
+                    name: "Reviewer".to_owned(),
+                },
+                spec_snapshot_id: SnapshotId::from_u128(1),
+                spec_hash: [0; 32],
+                depth: 1,
+                trigger_tool_use_id: Some(tool_use_id),
+                trigger_tool_name: Some("agent".to_owned()),
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(2),
+            }),
+        ),
+        envelope_with_run(
+            tenant_id,
+            session_id,
+            3,
+            Event::SubagentAnnounced(SubagentAnnouncedEvent {
+                subagent_id,
+                parent_session_id: session_id,
+                status: SubagentStatus::Completed,
+                summary: "No blocking issues found.".to_owned(),
+                result: None,
+                usage: UsageSnapshot::default(),
+                transcript_ref: None,
+                context_report: None,
+                renderer_id: "default".to_owned(),
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(3),
+            }),
+            Some(run_id),
+        ),
+    ];
+
+    store
+        .apply_envelopes(tenant_id, session_id, &envelopes, None)
+        .await
+        .expect("projection applies");
+
+    let page = store
+        .page_worktree(
+            tenant_id,
+            session_id,
+            None,
+            ConversationTurnPageDirection::After,
+            1,
+        )
+        .await
+        .expect("worktree page loads");
+    let assistant = page.turns[0].assistant.as_ref().expect("assistant exists");
+    let segment = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::AgentActivity(activity) => Some(activity),
+            _ => None,
+        })
+        .expect("agent activity segment exists");
+
+    assert_eq!(segment.activity_kind, AgentActivityKind::Subagent);
+    assert_eq!(segment.agent_id, subagent_id.to_string());
+    assert_eq!(segment.task_summary.as_str(), "Review recent changes");
+    assert_eq!(segment.status, AgentActivityStatus::Completed);
+    assert_eq!(
+        segment.result_summary.as_ref().map(|value| value.as_str()),
+        Some("No blocking issues found.")
+    );
+    assert_eq!(page.event_cursor.unwrap().conversation_sequence, 4);
+}
+
+#[tokio::test]
+async fn sqlite_conversation_read_model_worktree_keeps_agent_activity_after_page_slice() {
+    let root = temp_root("subagent-worktree-slice");
+    let store = SqliteConversationReadModelStore::open(root.join("read-model.sqlite"))
+        .await
+        .expect("store opens");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let run_1 = RunId::new();
+    let run_2 = RunId::new();
+    let subagent_id = SubagentId::new();
+
+    let envelopes = vec![
+        envelope(
+            tenant_id,
+            session_id,
+            0,
+            user_message(run_1, MessageId::new(), "first"),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            1,
+            Event::SubagentSpawned(SubagentSpawnedEvent {
+                subagent_id,
+                parent_session_id: session_id,
+                parent_run_id: run_1,
+                agent_ref: AgentRef {
+                    id: AgentId::new(),
+                    name: "Worker".to_owned(),
+                },
+                spec_snapshot_id: SnapshotId::from_u128(1),
+                spec_hash: [0; 32],
+                depth: 1,
+                trigger_tool_use_id: None,
+                trigger_tool_name: Some("agent".to_owned()),
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(1),
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            2,
+            user_message(run_2, MessageId::new(), "second"),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            3,
+            assistant_message(run_2, MessageId::new(), "second answer"),
+        ),
+    ];
+
+    store
+        .apply_envelopes(tenant_id, session_id, &envelopes, None)
+        .await
+        .expect("projection applies");
+
+    let first = store
+        .page_worktree(
+            tenant_id,
+            session_id,
+            None,
+            ConversationTurnPageDirection::After,
+            1,
+        )
+        .await
+        .expect("first page loads");
+    let segment = first.turns[0]
+        .assistant
+        .as_ref()
+        .and_then(|assistant| {
+            assistant.segments.iter().find_map(|segment| match segment {
+                AssistantSegment::AgentActivity(activity) => Some(activity.agent_id.clone()),
+                _ => None,
+            })
+        })
+        .expect("first page keeps agent activity");
+    assert_eq!(segment, subagent_id.to_string());
+    assert!(first.has_more_after);
+
+    let second = store
+        .page_worktree(
+            tenant_id,
+            session_id,
+            first.page_cursor,
+            ConversationTurnPageDirection::After,
+            1,
+        )
+        .await
+        .expect("second page loads");
+    assert_eq!(second.turns[0].user.body.as_str(), "second");
+    assert_eq!(second.event_cursor.unwrap().conversation_sequence, 4);
+}
+
+#[tokio::test]
+async fn read_model_projects_background_lifecycle_events_into_worktree_activity() {
+    let root = temp_root("background-lifecycle");
+    let store = SqliteConversationReadModelStore::open(&root)
+        .await
+        .expect("store opens");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let background_agent_id = BackgroundAgentId::new();
+    let input_request_id = RequestId::new();
+    let permission_request_id = RequestId::new();
+    let at = chrono::DateTime::<chrono::Utc>::UNIX_EPOCH;
+    let envelopes = vec![
+        envelope(
+            tenant_id,
+            session_id,
+            0,
+            user_message(run_id, MessageId::new(), "run in background"),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            1,
+            Event::BackgroundAgentStarted(BackgroundAgentStartedEvent {
+                background_agent_id,
+                conversation_id: session_id,
+                attempt_id: run_id,
+                title: UiSafeText::from_trusted_redacted("Background checks"),
+                at,
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            2,
+            Event::BackgroundAgentInputRequested(BackgroundAgentInputRequestedEvent {
+                background_agent_id,
+                request_id: input_request_id,
+                prompt: UiSafeText::from_trusted_redacted("Need branch name"),
+                at,
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            3,
+            Event::BackgroundAgentInputSubmitted(BackgroundAgentInputSubmittedEvent {
+                background_agent_id,
+                request_id: input_request_id,
+                input: UiSafeText::from_trusted_redacted("feature/background"),
+                at,
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            4,
+            Event::BackgroundAgentPermissionRequested(BackgroundAgentPermissionRequestedEvent {
+                background_agent_id,
+                tenant_id,
+                conversation_id: session_id,
+                request_id: permission_request_id,
+                attempt_id: Some(run_id),
+                reason: UiSafeText::from_trusted_redacted("Needs file write approval"),
+                at,
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            5,
+            Event::BackgroundAgentPermissionResolved(BackgroundAgentPermissionResolvedEvent {
+                background_agent_id,
+                tenant_id,
+                conversation_id: session_id,
+                request_id: permission_request_id,
+                attempt_id: Some(run_id),
+                decision: Decision::AllowOnce,
+                at,
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            6,
+            Event::BackgroundAgentCompleted(BackgroundAgentCompletedEvent {
+                background_agent_id,
+                summary: Some(UiSafeText::from_trusted_redacted(
+                    "Background checks completed",
+                )),
+                at,
+            }),
+        ),
+    ];
+
+    store
+        .apply_envelopes(tenant_id, session_id, &envelopes, None)
+        .await
+        .expect("projection applies");
+
+    let page = store
+        .page_worktree(
+            tenant_id,
+            session_id,
+            None,
+            ConversationTurnPageDirection::After,
+            10,
+        )
+        .await
+        .expect("worktree page loads");
+    let segment = page.turns[0]
+        .assistant
+        .as_ref()
+        .and_then(|assistant| {
+            assistant.segments.iter().find_map(|segment| match segment {
+                AssistantSegment::AgentActivity(activity) => Some(activity),
+                _ => None,
+            })
+        })
+        .expect("background activity segment exists");
+
+    assert_eq!(segment.activity_kind, AgentActivityKind::BackgroundAgent);
+    assert_eq!(segment.status, AgentActivityStatus::Completed);
+    assert_eq!(
+        segment.result_summary.as_ref().map(UiSafeText::as_str),
+        Some("Background checks completed")
+    );
+    let permission = segment.permission.as_ref().expect("permission tracked");
+    assert_eq!(permission.request_id, permission_request_id.to_string());
+    assert_eq!(permission.status, ToolPermissionStatus::Approved);
+}
+
+#[tokio::test]
+async fn read_model_projects_background_lifecycle_events_to_latest_attempt_context() {
+    let root = temp_root("background-lifecycle-latest-attempt");
+    let store = SqliteConversationReadModelStore::open(&root)
+        .await
+        .expect("store opens");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let first_run_id = RunId::new();
+    let resumed_run_id = RunId::new();
+    let background_agent_id = BackgroundAgentId::new();
+    let at = chrono::DateTime::<chrono::Utc>::UNIX_EPOCH;
+    let envelopes = vec![
+        envelope(
+            tenant_id,
+            session_id,
+            0,
+            user_message(first_run_id, MessageId::new(), "run in background"),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            1,
+            Event::BackgroundAgentStarted(BackgroundAgentStartedEvent {
+                background_agent_id,
+                conversation_id: session_id,
+                attempt_id: first_run_id,
+                title: UiSafeText::from_trusted_redacted("Background checks"),
+                at,
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            2,
+            Event::BackgroundAgentInterrupted(BackgroundAgentInterruptedEvent {
+                background_agent_id,
+                reason: UiSafeText::from_trusted_redacted("process restart"),
+                at,
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            3,
+            Event::BackgroundAgentStarted(BackgroundAgentStartedEvent {
+                background_agent_id,
+                conversation_id: session_id,
+                attempt_id: resumed_run_id,
+                title: UiSafeText::from_trusted_redacted("Background checks"),
+                at,
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            4,
+            Event::BackgroundAgentCompleted(BackgroundAgentCompletedEvent {
+                background_agent_id,
+                summary: Some(UiSafeText::from_trusted_redacted(
+                    "Resumed attempt completed",
+                )),
+                at,
+            }),
+        ),
+    ];
+
+    store
+        .apply_envelopes(tenant_id, session_id, &envelopes, None)
+        .await
+        .expect("projection applies");
+
+    let page = store
+        .page_worktree(
+            tenant_id,
+            session_id,
+            None,
+            ConversationTurnPageDirection::After,
+            10,
+        )
+        .await
+        .expect("worktree page loads");
+    let resumed_segment = page
+        .turns
+        .iter()
+        .find_map(|turn| {
+            let assistant = turn.assistant.as_ref()?;
+            (assistant.run_id == resumed_run_id.to_string()).then(|| {
+                assistant.segments.iter().find_map(|segment| match segment {
+                    AssistantSegment::AgentActivity(activity) => Some(activity),
+                    _ => None,
+                })
+            })?
+        })
+        .expect("resumed attempt activity segment exists");
+
+    assert_eq!(resumed_segment.status, AgentActivityStatus::Completed);
+    assert_eq!(
+        resumed_segment
+            .result_summary
+            .as_ref()
+            .map(UiSafeText::as_str),
+        Some("Resumed attempt completed")
+    );
 }
