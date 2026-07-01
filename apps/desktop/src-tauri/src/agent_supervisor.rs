@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,6 +16,7 @@ use jyowo_harness_sdk::{
     AgentRuntimeStore, BackgroundAgentManager, BackgroundAgentRecord, ConversationRunOptions,
     ConversationTurnRequest, Harness, SessionOptions, StreamPermissionRuntime,
 };
+use parking_lot::Mutex as ParkingMutex;
 use serde::{Deserialize, Serialize};
 use tauri::Runtime;
 use tauri_plugin_shell::process::CommandEvent;
@@ -69,6 +71,8 @@ struct SupervisorControlRequest {
 enum SupervisorControlRequestKind {
     Status,
     Wake,
+    CancelBackgroundAgent { background_agent_id: String },
+    PauseBackgroundAgent { background_agent_id: String },
     Shutdown,
 }
 
@@ -90,7 +94,15 @@ struct SupervisorToken {
 struct SupervisorBackend {
     store: Arc<AgentRuntimeStore>,
     harness: Arc<Harness>,
+    active_runs: Arc<ParkingMutex<HashMap<String, ActiveBackgroundRun>>>,
     _runtime_state: crate::commands::DesktopRuntimeState,
+}
+
+#[derive(Clone)]
+struct ActiveBackgroundRun {
+    harness: Arc<Harness>,
+    run_id: Option<jyowo_harness_sdk::ext::RunId>,
+    cancel_requested: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -541,6 +553,7 @@ async fn open_supervisor_backend(
     Ok(SupervisorBackend {
         store,
         harness,
+        active_runs: Arc::new(ParkingMutex::new(HashMap::new())),
         _runtime_state: runtime_state,
     })
 }
@@ -614,6 +627,20 @@ async fn handle_control_connection(
             run_background_supervisor_scan(&workspace_root, &backend).await;
             "running"
         }
+        SupervisorControlRequestKind::CancelBackgroundAgent {
+            background_agent_id,
+        } => match cancel_active_background_run(&backend, &background_agent_id).await {
+            Ok(true) => "cancelled",
+            Ok(false) => "not_active",
+            Err(_) => "cancel_failed",
+        },
+        SupervisorControlRequestKind::PauseBackgroundAgent {
+            background_agent_id,
+        } => match cancel_active_background_run(&backend, &background_agent_id).await {
+            Ok(true) => "paused",
+            Ok(false) => "not_active",
+            Err(_) => "pause_failed",
+        },
         SupervisorControlRequestKind::Shutdown => "shutdown_requested",
     };
     let _ = write_control_response(&mut stream, true, status).await;
@@ -645,6 +672,107 @@ pub async fn wake_agent_supervisor(workspace_root: &Path) -> Result<bool, AgentS
         Ok(response) => Ok(response.ok),
         Err(_) => Ok(false),
     }
+}
+
+pub async fn cancel_background_agent_run(
+    workspace_root: &Path,
+    background_agent_id: &str,
+) -> Result<bool, AgentSupervisorError> {
+    send_background_agent_control(
+        workspace_root,
+        SupervisorControlRequestKind::CancelBackgroundAgent {
+            background_agent_id: background_agent_id.to_owned(),
+        },
+    )
+    .await
+}
+
+pub async fn pause_background_agent_run(
+    workspace_root: &Path,
+    background_agent_id: &str,
+) -> Result<bool, AgentSupervisorError> {
+    send_background_agent_control(
+        workspace_root,
+        SupervisorControlRequestKind::PauseBackgroundAgent {
+            background_agent_id: background_agent_id.to_owned(),
+        },
+    )
+    .await
+}
+
+pub fn requeue_background_agent_supervisor_payload(
+    workspace_root: &Path,
+    background_agent_id: &str,
+) -> Result<bool, AgentSupervisorError> {
+    let store = AgentRuntimeStore::open(workspace_root)
+        .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?;
+    let Some(record) = store
+        .get_background_agent(background_agent_id)
+        .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?
+    else {
+        return Ok(false);
+    };
+    let payload = set_background_supervisor_payload_status(
+        &record.payload_json,
+        "queued",
+        record.run_id.as_deref(),
+    )?;
+    store
+        .update_background_agent_payload_json(
+            background_agent_id,
+            &payload,
+            &Utc::now().to_rfc3339(),
+        )
+        .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?;
+    Ok(true)
+}
+
+async fn send_background_agent_control(
+    workspace_root: &Path,
+    request: SupervisorControlRequestKind,
+) -> Result<bool, AgentSupervisorError> {
+    let Some(lock) = read_supervisor_lock(workspace_root)? else {
+        return Ok(false);
+    };
+    let Some(token) = read_supervisor_token(workspace_root)? else {
+        return Ok(false);
+    };
+    if lock.workspace_id != workspace_id(workspace_root)
+        || token.workspace_id != lock.workspace_id
+        || token.token_epoch != lock.token_epoch
+        || token.token_hash != lock.token_hash
+        || hash_token(&token.token) != lock.token_hash
+    {
+        return Ok(false);
+    }
+    let control_addr = parse_loopback_control_addr(&lock.control_addr)?;
+    match send_control_request(control_addr, &token.token, request).await {
+        Ok(response) => Ok(response.ok),
+        Err(_) => Ok(false),
+    }
+}
+
+async fn cancel_active_background_run(
+    backend: &SupervisorBackend,
+    background_agent_id: &str,
+) -> Result<bool, AgentSupervisorError> {
+    let active = {
+        let mut active_runs = backend.active_runs.lock();
+        let Some(active) = active_runs.get_mut(background_agent_id) else {
+            return Ok(false);
+        };
+        active.cancel_requested = true;
+        active.clone()
+    };
+    let Some(run_id) = active.run_id else {
+        return Ok(true);
+    };
+    active
+        .harness
+        .cancel_conversation_run(run_id)
+        .await
+        .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?;
+    Ok(true)
 }
 
 async fn run_background_supervisor_scan(workspace_root: &Path, backend: &SupervisorBackend) {
@@ -791,15 +919,38 @@ async fn run_claimed_background_record(
         .with_protocol(protocol)
         .with_permission_mode(execution.permission_mode);
     run_options.agent_run_options = Some(execution.agent_run_options);
-    let receipt = harness
-        .submit_conversation_turn(ConversationTurnRequest {
-            options: session_options,
-            run_options,
-            input: execution.input,
-            permission_actor_source: Some(permission_actor_source),
-        })
-        .await
-        .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?;
+    let after_event_id =
+        crate::commands::conversation_tail_event_id(&harness, session_options.clone())
+            .await
+            .map_err(|error| AgentSupervisorError::Runtime(error.message))?;
+    backend.active_runs.lock().insert(
+        record.background_agent_id.clone(),
+        ActiveBackgroundRun {
+            harness: Arc::clone(&harness),
+            run_id: None,
+            cancel_requested: false,
+        },
+    );
+    let run_harness = Arc::clone(&harness);
+    let run_session_options = session_options.clone();
+    let mut run_task = tokio::spawn(async move {
+        run_harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: run_session_options,
+                run_options,
+                input: execution.input,
+                permission_actor_source: Some(permission_actor_source),
+            })
+            .await
+    });
+    let run_id = crate::commands::wait_for_started_conversation_run(
+        &harness,
+        session_options.clone(),
+        after_event_id,
+        &mut run_task,
+    )
+    .await
+    .map_err(|error| AgentSupervisorError::Runtime(error.message))?;
     crate::commands::mark_conversation_metadata_active(
         session_id,
         Some(model_config_id),
@@ -811,10 +962,44 @@ async fn run_claimed_background_record(
         .store
         .update_background_agent_run_id(
             &record.background_agent_id,
-            &receipt.run_id.to_string(),
+            &run_id.to_string(),
             &Utc::now().to_rfc3339(),
         )
         .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?;
+    let cancel_after_start = {
+        let mut active_runs = backend.active_runs.lock();
+        match active_runs.get_mut(&record.background_agent_id) {
+            Some(active) => {
+                active.run_id = Some(run_id);
+                active.cancel_requested
+            }
+            None => {
+                active_runs.insert(
+                    record.background_agent_id.clone(),
+                    ActiveBackgroundRun {
+                        harness: Arc::clone(&harness),
+                        run_id: Some(run_id),
+                        cancel_requested: false,
+                    },
+                );
+                false
+            }
+        }
+    };
+    if cancel_after_start || !background_agent_can_finish(backend, &record.background_agent_id)? {
+        let _ = harness.cancel_conversation_run(run_id).await;
+    }
+    let receipt = run_task
+        .await
+        .map_err(|error| AgentSupervisorError::Runtime(error.to_string()));
+    backend
+        .active_runs
+        .lock()
+        .remove(&record.background_agent_id);
+    let receipt = receipt?.map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?;
+    if !background_agent_can_finish(backend, &record.background_agent_id)? {
+        return Ok(());
+    }
     let completed_payload = set_background_supervisor_payload_status(
         running_payload,
         "completed",
@@ -833,6 +1018,23 @@ async fn run_claimed_background_record(
         .await
         .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?;
     Ok(())
+}
+
+fn background_agent_can_finish(
+    backend: &SupervisorBackend,
+    background_agent_id: &str,
+) -> Result<bool, AgentSupervisorError> {
+    let Some(record) = backend
+        .store
+        .get_background_agent(background_agent_id)
+        .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?
+    else {
+        return Ok(false);
+    };
+    Ok(matches!(
+        record.state,
+        BackgroundAgentState::Running | BackgroundAgentState::Queued
+    ))
 }
 
 fn parse_background_agent_id(value: &str) -> Result<BackgroundAgentId, AgentSupervisorError> {
@@ -855,6 +1057,13 @@ async fn fail_background_record(
     payload_json: &str,
     reason: &str,
 ) -> Result<(), AgentSupervisorError> {
+    backend
+        .active_runs
+        .lock()
+        .remove(&record.background_agent_id);
+    if !background_agent_can_finish(backend, &record.background_agent_id)? {
+        return Ok(());
+    }
     if let Ok(failed_payload) =
         set_background_supervisor_payload_status(payload_json, "failed", record.run_id.as_deref())
     {

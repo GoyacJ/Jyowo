@@ -212,6 +212,7 @@ import {
   runAutomationNow,
   runEvalCase,
   type SaveAutomationRequest,
+  type StartRunRequest,
   saveAgentProfile,
   saveAutomation,
   saveBrowserMcpPreset,
@@ -4842,18 +4843,19 @@ describe('agent orchestration contracts', () => {
     ).toThrow()
   })
 
-  it('rejects team allowed without team config', () => {
-    expect(() =>
-      parseAgentRunOptions({
-        agentTeam: 'allowed',
-        background: 'foreground',
-        maxConcurrentSubagents: 1,
-        maxDepth: 1,
-        maxTeamMembers: 2,
-        subagents: 'allowed',
-        workspaceIsolation: 'read_only',
-      }),
-    ).toThrow()
+  it('accepts team allowed without eager team config', () => {
+    const parsed = parseAgentRunOptions({
+      agentTeam: 'allowed',
+      background: 'foreground',
+      maxConcurrentSubagents: 1,
+      maxDepth: 1,
+      maxTeamMembers: 2,
+      subagents: 'allowed',
+      workspaceIsolation: 'read_only',
+    })
+
+    expect(parsed).toMatchObject({ agentTeam: 'allowed' })
+    expect(parsed).not.toHaveProperty('teamConfig')
   })
 
   it('rejects invalid background policy string', () => {
@@ -5065,7 +5067,7 @@ describe('agent orchestration contracts', () => {
     expect(invoke).not.toHaveBeenCalled()
   })
 
-  it('accepts start run requests with agentOptions and backgroundAgentId', async () => {
+  it('accepts start run requests without per-run agent options', async () => {
     const invoke = vi.fn().mockResolvedValue({
       backgroundAgentId: 'bg-agent-001',
       runId: 'run-001',
@@ -5076,16 +5078,6 @@ describe('agent orchestration contracts', () => {
     await expect(
       startRun(
         {
-          agentOptions: {
-            agentTeam: 'off',
-            background: 'background',
-            maxConcurrentSubagents: 2,
-            maxDepth: 2,
-            maxTeamMembers: 4,
-            subagents: 'allowed',
-            teamConfig: null,
-            workspaceIsolation: 'read_only',
-          },
           conversationId: 'conversation-001',
           modelConfigId: 'provider-config-001',
           prompt: 'Run',
@@ -5095,6 +5087,11 @@ describe('agent orchestration contracts', () => {
     ).resolves.toMatchObject({
       backgroundAgentId: 'bg-agent-001',
       runId: 'run-001',
+    })
+    expect(invoke).toHaveBeenCalledWith('start_run', {
+      conversationId: 'conversation-001',
+      modelConfigId: 'provider-config-001',
+      prompt: 'Run',
     })
   })
 
@@ -5194,25 +5191,26 @@ describe('agent orchestration contracts', () => {
     ).rejects.toThrow(TauriCommandPayloadError)
   })
 
-  it('rejects start run agentOptions when teamConfig is missing', async () => {
+  it('rejects start run agentOptions at the desktop IPC boundary', async () => {
     const client = createInvokeCommandClient(vi.fn())
 
     await expect(
       startRun(
         {
           agentOptions: {
-            agentTeam: 'allowed',
-            background: 'foreground',
-            maxConcurrentSubagents: 1,
-            maxDepth: 1,
+            agentTeam: 'off',
+            background: 'background',
+            maxConcurrentSubagents: 2,
+            maxDepth: 2,
             maxTeamMembers: 2,
-            subagents: 'off',
+            subagents: 'allowed',
+            teamConfig: null,
             workspaceIsolation: 'read_only',
           },
           conversationId: 'conversation-001',
           modelConfigId: 'provider-config-001',
           prompt: 'Run',
-        },
+        } as unknown as StartRunRequest,
         client,
       ),
     ).rejects.toBeInstanceOf(TauriCommandPayloadError)

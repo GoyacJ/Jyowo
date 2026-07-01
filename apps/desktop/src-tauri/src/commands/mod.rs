@@ -13,17 +13,17 @@ use bytes::Bytes;
 use chrono::{DateTime, NaiveDate, Utc};
 use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
 use harness_contracts::{
-    validate_agent_profile, validate_agent_run_options, validate_provider_capability_route,
-    AgentCapabilityUnavailableReason, AgentProfile, AgentProfileScope, AgentRunOptions,
-    AutomationRunRecord, AutomationRunStatus, AutomationSpec, AutomationWorkspaceScope,
-    BackgroundAgentState, CapabilityRouteKind, ConversationCursor, ConversationMessageAuthor,
-    ConversationTurnCursor, ConversationWorktreePage, DiagnosticsRawOutput, DiagnosticsRunRequest,
-    DiagnosticsRunnerCap, DiagnosticsRunnerKind, ListProviderCapabilityRouteOptionsResponse,
-    LocalIsolationTag, MissedRunPolicy, PluginCapabilitiesSummary, PluginConfigUpdate,
-    PluginDetail, PluginId, PluginInstallReport, PluginOperationResult, PluginOperationStatus,
-    PluginSummary, ProviderCapabilityRoute, ProviderCapabilityRouteOption,
-    ProviderCapabilityRouteSettings, ProviderProbeSnapshot, ProviderServiceAdapterAvailability,
-    RejectionReason, SandboxError, SandboxMode, ToolGroup, TrustLevel, UiSafeText, WorkspaceAccess,
+    validate_agent_profile, validate_provider_capability_route, AgentCapabilityUnavailableReason,
+    AgentProfile, AgentProfileScope, AgentRunOptions, AutomationRunRecord, AutomationRunStatus,
+    AutomationSpec, AutomationWorkspaceScope, BackgroundAgentState, CapabilityRouteKind,
+    ConversationCursor, ConversationMessageAuthor, ConversationTurnCursor,
+    ConversationWorktreePage, DiagnosticsRawOutput, DiagnosticsRunRequest, DiagnosticsRunnerCap,
+    DiagnosticsRunnerKind, ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag,
+    MissedRunPolicy, PluginCapabilitiesSummary, PluginConfigUpdate, PluginDetail, PluginId,
+    PluginInstallReport, PluginOperationResult, PluginOperationStatus, PluginSummary,
+    ProviderCapabilityRoute, ProviderCapabilityRouteOption, ProviderCapabilityRouteSettings,
+    ProviderProbeSnapshot, ProviderServiceAdapterAvailability, RejectionReason, SandboxError,
+    SandboxMode, ToolGroup, TrustLevel, UiSafeText, WorkspaceAccess,
 };
 use harness_plugin::{
     CargoExtensionManifestLoader, CargoExtensionRuntimeLoader, DiscoverySource, FileManifestLoader,
@@ -112,7 +112,10 @@ mod tests;
 mod validation;
 
 use contracts::default_worktree_direction;
-pub(crate) use conversations::mark_conversation_metadata_active;
+pub(crate) use conversations::{
+    conversation_tail_event_id, mark_conversation_metadata_active,
+    wait_for_started_conversation_run,
+};
 use error::{invalid_payload, runtime_unavailable};
 use providers::{
     provider_capability_route_runtime_context, save_provider_settings_with_runtime_state_unlocked,
@@ -1478,7 +1481,6 @@ pub async fn delete_conversation(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn start_run(
     attachments: Option<Vec<AttachmentReferencePayload>>,
-    agent_options: Option<AgentRunOptions>,
     client_message_id: Option<String>,
     context_references: Option<Vec<ContextReferencePayload>>,
     conversation_id: String,
@@ -1490,7 +1492,6 @@ pub async fn start_run(
     let runtime_state = runtime_handle.read().await;
     start_run_with_runtime_state(
         StartRunRequest {
-            agent_options,
             attachments,
             client_message_id,
             context_references,

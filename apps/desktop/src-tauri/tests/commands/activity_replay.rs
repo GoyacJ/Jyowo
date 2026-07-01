@@ -65,7 +65,6 @@ async fn list_activity_with_runtime_state_reads_journaled_permission_requests_by
         StartRunRequest {
             client_message_id: None,
             attachments: None,
-            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
@@ -169,7 +168,6 @@ async fn list_activity_with_runtime_state_reads_durable_run_events() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
-            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
@@ -248,7 +246,6 @@ async fn list_activity_with_runtime_state_does_not_expose_thinking_deltas() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
-            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
@@ -320,7 +317,6 @@ async fn get_replay_timeline_with_runtime_state_does_not_expose_raw_thinking_del
         StartRunRequest {
             client_message_id: None,
             attachments: None,
-            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
@@ -389,7 +385,6 @@ async fn list_activity_with_runtime_state_redacts_private_paths_from_assistant_d
         StartRunRequest {
             client_message_id: None,
             attachments: None,
-            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
@@ -1740,7 +1735,6 @@ async fn list_activity_with_runtime_state_withholds_failed_run_end_reason() {
         StartRunRequest {
             client_message_id: None,
             attachments: None,
-            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
@@ -1907,7 +1901,6 @@ async fn list_activity_with_runtime_state_redacts_pending_permission_display_tex
         StartRunRequest {
             client_message_id: None,
             attachments: None,
-            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
@@ -1970,7 +1963,6 @@ async fn get_replay_timeline_with_runtime_state_reads_redacted_journal_events_wi
         StartRunRequest {
             client_message_id: None,
             attachments: None,
-            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
@@ -2043,7 +2035,6 @@ async fn get_replay_timeline_with_runtime_state_reads_beyond_first_event_page() 
         StartRunRequest {
             client_message_id: None,
             attachments: None,
-            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
@@ -2131,7 +2122,6 @@ async fn export_support_bundle_with_runtime_state_writes_redacted_files_under_wo
         StartRunRequest {
             client_message_id: None,
             attachments: None,
-            agent_options: None,
             context_references: None,
             conversation_id: session_id.to_string(),
             model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),

@@ -248,7 +248,6 @@ pub(crate) async fn start_automation_conversation_run(
     ensure_start_run_permission_mode(permission_mode)?;
     let conversation_id = state.default_conversation_id().to_string();
     let request = StartRunRequest {
-        agent_options: None,
         attachments: None,
         client_message_id: None,
         context_references: None,

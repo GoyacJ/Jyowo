@@ -160,6 +160,240 @@ pub(super) fn subagent_tool_should_be_enabled(
     }
 }
 
+#[cfg(feature = "agents-team")]
+const AGENT_TEAM_RUNNER_CAPABILITY: &str = "jyowo.agent_team.runner";
+
+#[cfg(feature = "agents-team")]
+#[async_trait]
+trait AgentTeamRunnerCap: Send + Sync + 'static {
+    async fn start_team(
+        &self,
+        request: AgentTeamToolStartRequest,
+    ) -> Result<harness_contracts::TeamId, ToolError>;
+}
+
+#[cfg(feature = "agents-team")]
+#[derive(Clone)]
+struct AgentTeamToolStartRequest {
+    run_id: RunId,
+    conversation_session_id: SessionId,
+    goal: String,
+    topology: harness_contracts::AgentTeamTopology,
+    max_turns_per_goal: u32,
+    workspace_root: PathBuf,
+}
+
+#[cfg(feature = "agents-team")]
+struct SdkAgentTeamRunner {
+    harness: Harness,
+    agent_run_options: harness_contracts::AgentRunOptions,
+    workspace_bootstrap: Option<WorkspaceBootstrap>,
+}
+
+#[cfg(feature = "agents-team")]
+#[async_trait]
+impl AgentTeamRunnerCap for SdkAgentTeamRunner {
+    async fn start_team(
+        &self,
+        request: AgentTeamToolStartRequest,
+    ) -> Result<harness_contracts::TeamId, ToolError> {
+        if self.harness.has_active_run_team(request.run_id) {
+            return Err(ToolError::Validation(
+                "an agent team is already active for this run".to_owned(),
+            ));
+        }
+        let profiles = crate::list_agent_profiles(&request.workspace_root)
+            .map_err(|error| ToolError::Internal(error.to_string()))?;
+        let mut agent_run_options = self.agent_run_options.clone();
+        agent_run_options.agent_team = harness_contracts::AgentUsePolicy::Allowed;
+        agent_run_options.team_config = Some(harness_contracts::AgentTeamRunConfig {
+            topology: request.topology,
+            lead_profile_id: "reviewer".to_owned(),
+            member_profile_ids: vec!["worker".to_owned()],
+            max_turns_per_goal: request.max_turns_per_goal,
+            shared_memory_policy: harness_contracts::AgentTeamSharedMemoryPolicy::SummariesOnly,
+        });
+        let team = self
+            .harness
+            .start_run_scoped_team(super::team_runtime::RunScopedTeamStartupRequest {
+                agent_run_options,
+                profiles,
+                run_id: request.run_id,
+                conversation_session_id: request.conversation_session_id,
+                goal: request.goal,
+                workspace_root: request.workspace_root,
+                workspace_bootstrap: self.workspace_bootstrap.clone(),
+            })
+            .await
+            .map_err(|error| ToolError::Internal(error.to_string()))?;
+        Ok(team.spec().team_id)
+    }
+}
+
+#[cfg(feature = "agents-team")]
+pub(super) fn install_agent_team_tool_for_run(
+    harness: Harness,
+    cap_registry: &mut CapabilityRegistry,
+    tools: &mut ToolPool,
+    agent_run_options: &harness_contracts::AgentRunOptions,
+    workspace_bootstrap: Option<WorkspaceBootstrap>,
+) {
+    cap_registry.install::<dyn AgentTeamRunnerCap>(
+        ToolCapability::Custom(AGENT_TEAM_RUNNER_CAPABILITY.to_owned()),
+        Arc::new(SdkAgentTeamRunner {
+            harness,
+            agent_run_options: agent_run_options.clone(),
+            workspace_bootstrap,
+        }),
+    );
+    tools.append_runtime_tool(Arc::new(AgentTeamTool::default()));
+}
+
+#[cfg(feature = "agents-team")]
+struct AgentTeamTool {
+    descriptor: ToolDescriptor,
+}
+
+#[cfg(feature = "agents-team")]
+impl Default for AgentTeamTool {
+    fn default() -> Self {
+        Self {
+            descriptor: ToolDescriptor {
+                name: "agent_team".to_owned(),
+                display_name: "Agent Team".to_owned(),
+                description: "Start one run-scoped agent team for a coordinated goal.".to_owned(),
+                category: "builtin".to_owned(),
+                group: ToolGroup::Coordinator,
+                version: "0.1.0".to_owned(),
+                input_schema: json!({
+                    "type": "object",
+                    "required": ["goal"],
+                    "properties": {
+                        "goal": { "type": "string", "minLength": 1 },
+                        "topology": {
+                            "type": "string",
+                            "enum": ["coordinator_worker", "peer_to_peer", "role_routed"]
+                        },
+                        "maxTurnsPerGoal": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 4
+                        }
+                    },
+                    "additionalProperties": false
+                }),
+                output_schema: None,
+                dynamic_schema: false,
+                properties: ToolProperties {
+                    is_concurrency_safe: false,
+                    is_read_only: false,
+                    is_destructive: false,
+                    long_running: None,
+                    defer_policy: harness_contracts::DeferPolicy::AlwaysLoad,
+                },
+                trust_level: harness_contracts::TrustLevel::AdminTrusted,
+                required_capabilities: vec![ToolCapability::Custom(
+                    AGENT_TEAM_RUNNER_CAPABILITY.to_owned(),
+                )],
+                budget: harness_contracts::ResultBudget {
+                    metric: harness_contracts::BudgetMetric::Chars,
+                    limit: 4_000,
+                    on_overflow: harness_contracts::OverflowAction::Offload,
+                    preview_head_chars: 1_000,
+                    preview_tail_chars: 1_000,
+                },
+                provider_restriction: harness_contracts::ProviderRestriction::All,
+                origin: ToolOrigin::Builtin,
+                search_hint: Some("start coordinated agent team".to_owned()),
+                service_binding: None,
+            },
+        }
+    }
+}
+
+#[cfg(feature = "agents-team")]
+#[async_trait]
+impl Tool for AgentTeamTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn validate(&self, input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
+        let goal = input
+            .get("goal")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if goal.is_empty() {
+            return Err(ValidationError::Message("goal is required".to_owned()));
+        }
+        if let Some(max_turns) = input.get("maxTurnsPerGoal").and_then(Value::as_u64) {
+            if max_turns == 0 {
+                return Err(ValidationError::Message(
+                    "maxTurnsPerGoal must be at least 1".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
+        PermissionCheck::Allowed
+    }
+
+    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+        let goal = input
+            .get("goal")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::Validation("goal is required".to_owned()))?
+            .trim()
+            .to_owned();
+        let topology = match input.get("topology").and_then(Value::as_str) {
+            Some("peer_to_peer") => harness_contracts::AgentTeamTopology::PeerToPeer,
+            Some("role_routed") => harness_contracts::AgentTeamTopology::RoleRouted,
+            Some("coordinator_worker") | None => {
+                harness_contracts::AgentTeamTopology::CoordinatorWorker
+            }
+            Some(other) => {
+                return Err(ToolError::Validation(format!(
+                    "unsupported team topology: {other}"
+                )));
+            }
+        };
+        let max_turns_per_goal = input
+            .get("maxTurnsPerGoal")
+            .and_then(Value::as_u64)
+            .unwrap_or(4)
+            .try_into()
+            .map_err(|_| ToolError::Validation("maxTurnsPerGoal is too large".to_owned()))?;
+        let runner = ctx.capability::<dyn AgentTeamRunnerCap>(ToolCapability::Custom(
+            AGENT_TEAM_RUNNER_CAPABILITY.to_owned(),
+        ))?;
+        let team_id = runner
+            .start_team(AgentTeamToolStartRequest {
+                run_id: ctx.run_id,
+                conversation_session_id: ctx.session_id,
+                goal: goal.clone(),
+                topology,
+                max_turns_per_goal,
+                workspace_root: ctx.workspace_root,
+            })
+            .await?;
+        Ok(Box::pin(futures::stream::iter([ToolEvent::Final(
+            ToolResult::Structured(json!({
+                "team_id": team_id.to_string(),
+                "status": "started",
+                "goal": goal,
+                "leadProfileId": "reviewer",
+                "memberProfileIds": ["worker"],
+                "topology": topology,
+                "sharedMemoryPolicy": "summaries_only",
+                "maxTurnsPerGoal": max_turns_per_goal
+            })),
+        )])))
+    }
+}
+
 #[cfg(feature = "tool-search")]
 #[derive(Clone)]
 struct SdkToolSearchRuntime {

@@ -542,7 +542,7 @@ impl Harness {
             session_id: options.session_id,
             tenant_id: options.tenant_id,
         };
-        let tools = ToolPool::assemble(
+        let mut tools = ToolPool::assemble(
             &tool_registry_snapshot,
             &tool_filter,
             &run_options.tool_search,
@@ -552,8 +552,6 @@ impl Harness {
         .await
         .map_err(HarnessError::Tool)?;
         #[cfg(feature = "tool-search")]
-        let mut tools = tools;
-        #[cfg(feature = "tool-search")]
         self.install_tool_search_runtime(
             options,
             &run_options.tool_search,
@@ -561,6 +559,18 @@ impl Harness {
             &mut cap_registry,
             &model_snapshot,
         );
+        #[cfg(feature = "agents-team")]
+        if let Some(agent_run_options) = run_options.agent_run_options.as_ref() {
+            if agent_run_options.agent_team == harness_contracts::AgentUsePolicy::Allowed {
+                super::tool_pool::install_agent_team_tool_for_run(
+                    self.clone(),
+                    &mut cap_registry,
+                    &mut tools,
+                    agent_run_options,
+                    options.workspace_bootstrap.clone(),
+                );
+            }
+        }
 
         #[cfg(feature = "agents-subagent")]
         let harness_has_subagent_runner = self

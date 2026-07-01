@@ -1351,13 +1351,6 @@ const agentRunOptionsSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (value.agentTeam === 'allowed' && !value.teamConfig) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'teamConfig is required when agentTeam is allowed',
-        path: ['teamConfig'],
-      })
-    }
     if (value.agentTeam === 'off' && value.teamConfig) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -1369,7 +1362,6 @@ const agentRunOptionsSchema = z
 
 const startRunRequestSchema = z
   .object({
-    agentOptions: agentRunOptionsSchema.optional(),
     attachments: z.array(attachmentReferenceSchema).optional(),
     clientMessageId: z.uuid().regex(uuidV4Pattern).optional(),
     conversationId: z.string().min(1),
@@ -3096,7 +3088,6 @@ export type AgentCapabilityUnavailableReason = z.infer<
 >
 export type AgentProfile = z.infer<typeof agentProfileSchema>
 export type AgentRunOptions = z.infer<typeof agentRunOptionsSchema>
-export type AgentWorkspaceIsolationMode = z.infer<typeof agentWorkspaceIsolationModeSchema>
 export type ListAgentProfilesResponse = z.infer<typeof listAgentProfilesResponseSchema>
 export type SaveAgentProfileResponse = z.infer<typeof saveAgentProfileResponseSchema>
 export type DeleteAgentProfileRequest = z.infer<typeof deleteAgentProfileRequestSchema>

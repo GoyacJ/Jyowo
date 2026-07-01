@@ -269,21 +269,13 @@ fn sample_team_options() -> AgentRunOptions {
 }
 
 #[test]
-fn merge_defaults_subagents_from_settings_when_agent_options_omitted() {
+fn merge_defaults_agent_capabilities_from_settings_when_agent_options_omitted() {
     let workspace = tempdir().expect("tempdir");
     let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
     let policy = AgentRuntimePolicyResolver::merge(
-        &ExecutionSettingsAgentInput {
-            subagents_enabled: true,
-            agent_teams_enabled: false,
-            background_agents_enabled: false,
-        },
+        &enabled_settings(),
         None,
-        &AgentCapabilitiesInput {
-            subagents_available: true,
-            agent_teams_available: false,
-            background_agents_available: false,
-        },
+        &all_available_capabilities(),
         &["reviewer".to_owned(), "worker".to_owned()],
         "conversation-1",
         workspace.path(),
@@ -291,8 +283,10 @@ fn merge_defaults_subagents_from_settings_when_agent_options_omitted() {
     .expect("defaults should merge");
 
     assert_eq!(policy.options.subagents, AgentUsePolicy::Allowed);
-    assert_eq!(policy.options.agent_team, AgentUsePolicy::Off);
-    assert!(policy.background_agent_id.is_none());
+    assert_eq!(policy.options.agent_team, AgentUsePolicy::Allowed);
+    assert!(policy.options.team_config.is_none());
+    assert_eq!(policy.options.background, BackgroundRunPolicy::Background);
+    assert!(policy.background_agent_id.is_some());
 }
 
 #[test]
@@ -369,13 +363,13 @@ fn merge_rejects_invalid_numeric_limits() {
 }
 
 #[test]
-fn merge_rejects_missing_team_config() {
+fn merge_allows_agent_team_without_team_config_for_model_visible_team_tool() {
     let workspace = tempdir().expect("tempdir");
     let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
     let mut options = sample_subagent_options();
     options.agent_team = AgentUsePolicy::Allowed;
 
-    let error = AgentRuntimePolicyResolver::merge(
+    let policy = AgentRuntimePolicyResolver::merge(
         &enabled_settings(),
         Some(&options),
         &all_available_capabilities(),
@@ -383,12 +377,10 @@ fn merge_rejects_missing_team_config() {
         "conversation-1",
         workspace.path(),
     )
-    .unwrap_err();
+    .expect("team tool availability should not require eager team config");
 
-    assert_eq!(
-        error,
-        AgentRuntimePolicyError::Validation(AgentOrchestrationValidationError::MissingTeamConfig)
-    );
+    assert_eq!(policy.options.agent_team, AgentUsePolicy::Allowed);
+    assert!(policy.options.team_config.is_none());
 }
 
 #[test]

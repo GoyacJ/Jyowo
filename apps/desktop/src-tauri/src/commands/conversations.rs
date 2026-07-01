@@ -414,7 +414,6 @@ pub fn start_run_payload(
     }
     validate_context_reference_payloads(request.context_references.as_deref())?;
     validate_attachment_reference_payloads(request.attachments.as_deref())?;
-    validate_start_run_agent_options_shape(request.agent_options.as_ref())?;
 
     Err(runtime_unavailable(
         "Starting runs requires the runtime conversation facade.",
@@ -663,15 +662,6 @@ fn safe_redacted_string(value: &str, redactor: &dyn harness_contracts::Redactor)
     harness_contracts::UiSafeText::from_redacted_display(value, redactor).into_string()
 }
 
-pub(crate) fn validate_start_run_agent_options_shape(
-    agent_options: Option<&AgentRunOptions>,
-) -> Result<(), CommandErrorPayload> {
-    if let Some(options) = agent_options {
-        validate_agent_run_options(options).map_err(|error| invalid_payload(error.to_string()))?;
-    }
-    Ok(())
-}
-
 pub fn resolve_start_run_agent_policy(
     request: &StartRunRequest,
     state: &DesktopRuntimeState,
@@ -700,7 +690,7 @@ pub fn resolve_start_run_agent_policy(
     resolve_agent_runtime_policy(
         state.workspace_root(),
         &settings_input,
-        request.agent_options.as_ref(),
+        None,
         &capabilities,
         &profile_ids,
         &request.conversation_id,
@@ -1069,6 +1059,7 @@ pub async fn resolve_permission_with_runtime_state(
     }
 
     resolver.resolve_permission(request_id, decision).await?;
+    let _ = crate::agent_supervisor::wake_agent_supervisor(state.workspace_root()).await;
 
     Ok(ResolvePermissionResponse {
         decision: request.decision,

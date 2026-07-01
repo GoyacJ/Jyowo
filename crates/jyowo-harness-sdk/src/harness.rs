@@ -42,7 +42,8 @@ use harness_contracts::{
     PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginRejectedEvent,
     ProviderCapabilityRouteSettings, RedactPatternSet, RedactRules, RedactScope, Redactor,
     RejectionReason, RunId, RunModelSnapshot, RunScopedProcessRegistryCap, SessionError, SessionId,
-    TenantId, ToolCapability, ToolProfile, ToolSearchMode, TrustLevel, TurnInput,
+    TenantId, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProfile,
+    ToolProperties, ToolResult, ToolSearchMode, TrustLevel, TurnInput,
     RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
 #[cfg(feature = "sqlite-store")]
@@ -114,8 +115,9 @@ use harness_skill::{
     SkillSourceConfig, SkillThreatEventScope, SkillValidator,
 };
 use harness_tool::{
-    DefaultRunScopedProcessRegistry, SchemaResolverContext, ToolPool, ToolPoolFilter,
-    ToolPoolModelProfile, ToolRegistry, ToolRegistrySnapshot,
+    DefaultRunScopedProcessRegistry, PermissionCheck, SchemaResolverContext, Tool, ToolContext,
+    ToolEvent, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolRegistrySnapshot,
+    ToolStream, ValidationError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

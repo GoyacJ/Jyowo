@@ -152,7 +152,7 @@ fn run_options_team_allowed_with_team_config_roundtrips() {
 }
 
 #[test]
-fn run_options_team_allowed_missing_team_config_fails_validation() {
+fn run_options_team_allowed_without_team_config_validates_for_model_visible_tool() {
     let options = AgentRunOptions {
         subagents: AgentUsePolicy::Allowed,
         agent_team: AgentUsePolicy::Allowed,
@@ -164,10 +164,7 @@ fn run_options_team_allowed_missing_team_config_fails_validation() {
         max_team_members: 2,
     };
 
-    assert_eq!(
-        validate_agent_run_options(&options).unwrap_err(),
-        AgentOrchestrationValidationError::MissingTeamConfig
-    );
+    validate_agent_run_options(&options).expect("team tool availability validates");
 }
 
 #[test]

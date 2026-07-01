@@ -4,9 +4,6 @@ import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/shared/lib/utils'
 import type {
-  AgentCapabilities,
-  AgentRunOptions,
-  AgentWorkspaceIsolationMode,
   AttachmentInputModality,
   AttachmentReference,
   ContextReference,
@@ -25,8 +22,6 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/ui/popover'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shared/ui/tooltip'
 
-import { useAgentProfiles } from './use-agent-profiles'
-
 export type ComposerSubmitPayload = Omit<StartRunRequest, 'conversationId'>
 export type ComposerMode =
   | { kind: 'ready' }
@@ -43,24 +38,8 @@ type ComposerDraft = {
   text: string
 }
 
-type ComposerAgentToggleState = {
-  agentTeamAllowed: boolean
-  backgroundRun: boolean
-  leadProfileId: string
-  maxTurnsPerGoal: number
-  memberProfileIds: string[]
-  sharedMemoryPolicy: AgentTeamSharedMemoryPolicy
-  subagentsAllowed: boolean
-  topology: AgentTeamTopology
-  workspaceIsolation: AgentWorkspaceIsolationMode
-}
-
-type AgentTeamTopology = NonNullable<AgentRunOptions['teamConfig']>['topology']
-type AgentTeamSharedMemoryPolicy = NonNullable<AgentRunOptions['teamConfig']>['sharedMemoryPolicy']
-
 type ComposerProps = {
   onSubmit: (draft: ComposerSubmitPayload) => Promise<void> | void
-  agentCapabilities?: AgentCapabilities | null
   mode?: ComposerMode
   pending?: boolean
   disabled?: boolean
@@ -101,7 +80,6 @@ const emptyReferenceCandidates: ListReferenceCandidatesResponse = {
 
 export function Composer({
   onSubmit,
-  agentCapabilities = null,
   mode,
   pending = false,
   disabled = false,
@@ -122,21 +100,7 @@ export function Composer({
   onPermissionModeChange,
 }: ComposerProps) {
   const { t } = useTranslation(['common', 'conversation'])
-  const agentProfiles = useAgentProfiles({
-    enabled: Boolean(agentCapabilities?.agentTeamsAvailable),
-  })
   const [draft, setDraft] = useState<ComposerDraft>(emptyDraft)
-  const [agentToggles, setAgentToggles] = useState<ComposerAgentToggleState>({
-    agentTeamAllowed: false,
-    backgroundRun: false,
-    leadProfileId: '',
-    maxTurnsPerGoal: 4,
-    memberProfileIds: [],
-    sharedMemoryPolicy: 'summaries_only',
-    subagentsAllowed: false,
-    topology: 'coordinator_worker',
-    workspaceIsolation: 'read_only',
-  })
   const [composerError, setComposerError] = useState<string | null>(null)
   const [localPermissionMode, setLocalPermissionMode] = useState<PermissionMode>('default')
   const selectedPermissionMode = permissionMode ?? localPermissionMode
@@ -159,18 +123,7 @@ export function Composer({
       return
     }
 
-    const agentOptions = buildAgentRunOptions(
-      agentCapabilities,
-      agentToggles,
-      agentProfiles.profiles,
-    )
-    if (agentOptions.status === 'error') {
-      setComposerError(t(`conversation:composer.agents.${agentOptions.messageKey}`))
-      return
-    }
-
     const payload: ComposerSubmitPayload = {
-      agentOptions: agentOptions.options,
       attachments: draft.attachments,
       contextReferences: draft.contextReferences,
       modelConfigId: selectedModelConfigId,
@@ -300,12 +253,8 @@ export function Composer({
 
       <div className="mt-1 flex items-center justify-between">
         <ComposerToolbar
-          agentCapabilities={agentCapabilities}
-          agentToggles={agentToggles}
-          agentProfiles={agentProfiles}
           disabled={isDisabled}
           supportsAttachments={supportsAttachments}
-          onAgentTogglesChange={setAgentToggles}
           onAttachFile={handleAttachFile}
           onListReferenceCandidates={onListReferenceCandidates}
           modelConfigDisabled={modelConfigDisabled}
@@ -375,9 +324,6 @@ function getAcceptedAttachmentModalities(
 }
 
 function ComposerToolbar({
-  agentCapabilities,
-  agentToggles,
-  agentProfiles,
   disabled,
   autoModeAvailable,
   modelConfigDisabled,
@@ -385,16 +331,12 @@ function ComposerToolbar({
   modelConfigs,
   permissionMode,
   supportsAttachments,
-  onAgentTogglesChange,
   onAttachFile,
   onListReferenceCandidates,
   onModelConfigChange,
   onPermissionModeChange,
   onSelectReference,
 }: {
-  agentCapabilities: AgentCapabilities | null
-  agentToggles: ComposerAgentToggleState
-  agentProfiles: ReturnType<typeof useAgentProfiles>
   disabled: boolean
   autoModeAvailable: boolean
   modelConfigDisabled: boolean
@@ -402,7 +344,6 @@ function ComposerToolbar({
   modelConfigs: Array<{ id: string; label: string }>
   permissionMode: PermissionMode
   supportsAttachments: boolean
-  onAgentTogglesChange: (next: ComposerAgentToggleState) => void
   onAttachFile: () => void
   onListReferenceCandidates?: () => Promise<ListReferenceCandidatesResponse>
   onModelConfigChange?: (modelConfigId: string) => void
@@ -426,13 +367,6 @@ function ComposerToolbar({
           onListReferenceCandidates={onListReferenceCandidates}
           onSelectReference={onSelectReference}
         />
-        <ComposerAgentControls
-          agentCapabilities={agentCapabilities}
-          agentToggles={agentToggles}
-          agentProfiles={agentProfiles}
-          disabled={disabled}
-          onAgentTogglesChange={onAgentTogglesChange}
-        />
         {modelConfigs.length > 0 ? (
           <select
             aria-label={t('modelConfig')}
@@ -452,403 +386,6 @@ function ComposerToolbar({
       </div>
     </TooltipProvider>
   )
-}
-
-function ComposerAgentControls({
-  agentCapabilities,
-  agentToggles,
-  agentProfiles,
-  disabled,
-  onAgentTogglesChange,
-}: {
-  agentCapabilities: AgentCapabilities | null
-  agentToggles: ComposerAgentToggleState
-  agentProfiles: ReturnType<typeof useAgentProfiles>
-  disabled: boolean
-  onAgentTogglesChange: (next: ComposerAgentToggleState) => void
-}) {
-  const { t } = useTranslation('conversation')
-
-  if (!agentCapabilities) {
-    return null
-  }
-
-  const showSubagents = agentCapabilities.subagentsAvailable
-  const showAgentTeam = agentCapabilities.agentTeamsAvailable
-  const showBackground = agentCapabilities.backgroundAgentsAvailable
-  const showWriteIsolation = isWriteCapableAgentMode(agentCapabilities, agentToggles)
-
-  if (!showSubagents && !showAgentTeam && !showBackground) {
-    return null
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      {showSubagents ? (
-        <ComposerAgentToggle
-          checked={agentToggles.subagentsAllowed}
-          disabled={disabled || !agentCapabilities.subagentsEnabled}
-          label={t('composer.agents.subagents')}
-          offReason={
-            !agentCapabilities.subagentsEnabled
-              ? t('composer.agents.disabledInSettings')
-              : t('composer.agents.unavailable')
-          }
-          onCheckedChange={(checked) =>
-            onAgentTogglesChange({
-              ...agentToggles,
-              subagentsAllowed: checked,
-            })
-          }
-        />
-      ) : null}
-      {showAgentTeam ? (
-        <ComposerAgentToggle
-          checked={agentToggles.agentTeamAllowed}
-          disabled={
-            disabled ||
-            !agentCapabilities.agentTeamsEnabled ||
-            agentProfiles.isLoading ||
-            agentProfiles.isEmpty ||
-            Boolean(agentProfiles.error)
-          }
-          label={t('composer.agents.agentTeam')}
-          offReason={
-            !agentCapabilities.agentTeamsEnabled
-              ? t('composer.agents.disabledInSettings')
-              : agentProfiles.isLoading
-                ? t('composer.agents.loadingProfiles')
-                : agentProfiles.error
-                  ? agentProfiles.error.message
-                  : agentProfiles.isEmpty
-                    ? t('composer.agents.noProfiles')
-                    : t('composer.agents.unavailable')
-          }
-          onCheckedChange={(checked) =>
-            onAgentTogglesChange({
-              ...agentToggles,
-              agentTeamAllowed: checked,
-              leadProfileId:
-                checked && !agentToggles.leadProfileId
-                  ? (agentProfiles.profiles[0]?.id ?? '')
-                  : agentToggles.leadProfileId,
-              memberProfileIds: checked ? agentToggles.memberProfileIds : [],
-            })
-          }
-        />
-      ) : null}
-      {showBackground ? (
-        <ComposerAgentToggle
-          checked={agentToggles.backgroundRun}
-          disabled={disabled || !agentCapabilities.backgroundAgentsEnabled}
-          label={t('composer.agents.backgroundRun')}
-          offReason={
-            !agentCapabilities.backgroundAgentsEnabled
-              ? t('composer.agents.disabledInSettings')
-              : t('composer.agents.unavailable')
-          }
-          onCheckedChange={(checked) =>
-            onAgentTogglesChange({
-              ...agentToggles,
-              backgroundRun: checked,
-            })
-          }
-        />
-      ) : null}
-      {showWriteIsolation ? (
-        <select
-          aria-label={t('composer.agents.workspaceIsolation')}
-          className="h-8 max-w-[180px] rounded-md border border-border bg-background px-2 text-foreground text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={disabled}
-          onChange={(event) =>
-            onAgentTogglesChange({
-              ...agentToggles,
-              workspaceIsolation: event.target.value as AgentWorkspaceIsolationMode,
-            })
-          }
-          value={agentToggles.workspaceIsolation}
-        >
-          <option value="read_only">{t('composer.agents.isolation.readOnly')}</option>
-          <option value="patch_only">{t('composer.agents.isolation.patchOnly')}</option>
-          <option value="git_worktree">{t('composer.agents.isolation.gitWorktree')}</option>
-        </select>
-      ) : null}
-      {showAgentTeam ? <TeamProfileState profiles={agentProfiles} /> : null}
-      {agentToggles.agentTeamAllowed && agentCapabilities.agentTeamsEnabled ? (
-        <TeamRunControls
-          agentToggles={agentToggles}
-          disabled={disabled}
-          profiles={agentProfiles.profiles}
-          onAgentTogglesChange={onAgentTogglesChange}
-        />
-      ) : null}
-    </div>
-  )
-}
-
-function TeamProfileState({ profiles }: { profiles: ReturnType<typeof useAgentProfiles> }) {
-  const { t } = useTranslation('conversation')
-
-  if (profiles.isLoading) {
-    return <span className="text-xs">{t('composer.agents.loadingProfiles')}</span>
-  }
-  if (profiles.error) {
-    return <span className="text-destructive text-xs">{profiles.error.message}</span>
-  }
-  if (profiles.isEmpty) {
-    return <span className="text-xs">{t('composer.agents.noProfiles')}</span>
-  }
-  return null
-}
-
-function TeamRunControls({
-  agentToggles,
-  disabled,
-  profiles,
-  onAgentTogglesChange,
-}: {
-  agentToggles: ComposerAgentToggleState
-  disabled: boolean
-  profiles: ReturnType<typeof useAgentProfiles>['profiles']
-  onAgentTogglesChange: (next: ComposerAgentToggleState) => void
-}) {
-  const { t } = useTranslation('conversation')
-  const leadProfileId = profiles.some((profile) => profile.id === agentToggles.leadProfileId)
-    ? agentToggles.leadProfileId
-    : (profiles[0]?.id ?? '')
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <select
-        aria-label={t('composer.agents.topology')}
-        className="h-8 max-w-[180px] rounded-md border border-border bg-background px-2 text-foreground text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-        disabled={disabled}
-        onChange={(event) =>
-          onAgentTogglesChange({
-            ...agentToggles,
-            topology: event.target.value as AgentTeamTopology,
-          })
-        }
-        value={agentToggles.topology}
-      >
-        <option value="coordinator_worker">
-          {t('composer.agents.topologyOptions.coordinatorWorker')}
-        </option>
-        <option value="peer_to_peer">{t('composer.agents.topologyOptions.peerToPeer')}</option>
-        <option value="role_routed">{t('composer.agents.topologyOptions.roleRouted')}</option>
-      </select>
-      <select
-        aria-label={t('composer.agents.leadProfile')}
-        className="h-8 max-w-[180px] rounded-md border border-border bg-background px-2 text-foreground text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-        disabled={disabled}
-        onChange={(event) =>
-          onAgentTogglesChange({
-            ...agentToggles,
-            leadProfileId: event.target.value,
-            memberProfileIds: agentToggles.memberProfileIds.filter(
-              (profileId) => profileId !== event.target.value,
-            ),
-          })
-        }
-        value={leadProfileId}
-      >
-        {profiles.map((profile) => (
-          <option key={profile.id} value={profile.id}>
-            {profile.role}
-          </option>
-        ))}
-      </select>
-      {profiles
-        .filter((profile) => profile.id !== leadProfileId)
-        .map((profile) => (
-          <label
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2 text-foreground text-xs"
-            key={profile.id}
-          >
-            <input
-              checked={agentToggles.memberProfileIds.includes(profile.id)}
-              className="size-3.5 accent-primary disabled:cursor-not-allowed"
-              disabled={disabled}
-              onChange={(event) =>
-                onAgentTogglesChange({
-                  ...agentToggles,
-                  memberProfileIds: event.target.checked
-                    ? [...agentToggles.memberProfileIds, profile.id]
-                    : agentToggles.memberProfileIds.filter((profileId) => profileId !== profile.id),
-                })
-              }
-              type="checkbox"
-            />
-            <span>{profile.role}</span>
-          </label>
-        ))}
-      <input
-        aria-label={t('composer.agents.maxTurnsPerGoal')}
-        className="h-8 w-20 rounded-md border border-border bg-background px-2 text-foreground text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-        disabled={disabled}
-        min={1}
-        onChange={(event) =>
-          onAgentTogglesChange({
-            ...agentToggles,
-            maxTurnsPerGoal: Number.parseInt(event.target.value, 10) || 1,
-          })
-        }
-        type="number"
-        value={agentToggles.maxTurnsPerGoal}
-      />
-      <select
-        aria-label={t('composer.agents.sharedMemory')}
-        className="h-8 max-w-[180px] rounded-md border border-border bg-background px-2 text-foreground text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-        disabled={disabled}
-        onChange={(event) =>
-          onAgentTogglesChange({
-            ...agentToggles,
-            sharedMemoryPolicy: event.target.value as AgentTeamSharedMemoryPolicy,
-          })
-        }
-        value={agentToggles.sharedMemoryPolicy}
-      >
-        <option value="none">{t('composer.agents.sharedMemoryOptions.none')}</option>
-        <option value="summaries_only">
-          {t('composer.agents.sharedMemoryOptions.summariesOnly')}
-        </option>
-        <option value="redacted_mailbox">
-          {t('composer.agents.sharedMemoryOptions.redactedMailbox')}
-        </option>
-      </select>
-    </div>
-  )
-}
-
-function ComposerAgentToggle({
-  checked,
-  disabled,
-  label,
-  offReason,
-  onCheckedChange,
-}: {
-  checked: boolean
-  disabled: boolean
-  label: string
-  offReason: string
-  onCheckedChange: (checked: boolean) => void
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <label className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2 text-foreground text-xs">
-          <input
-            checked={checked}
-            className="size-3.5 accent-primary disabled:cursor-not-allowed"
-            disabled={disabled}
-            onChange={(event) => onCheckedChange(event.target.checked)}
-            type="checkbox"
-          />
-          <span>{label}</span>
-        </label>
-      </TooltipTrigger>
-      {disabled ? <TooltipContent>{offReason}</TooltipContent> : null}
-    </Tooltip>
-  )
-}
-
-function isWriteCapableAgentMode(
-  agentCapabilities: AgentCapabilities,
-  agentToggles: ComposerAgentToggleState,
-): boolean {
-  const subagentsActive =
-    agentToggles.subagentsAllowed &&
-    agentCapabilities.subagentsEnabled &&
-    agentCapabilities.subagentsAvailable
-  const backgroundActive =
-    agentToggles.backgroundRun &&
-    agentCapabilities.backgroundAgentsEnabled &&
-    agentCapabilities.backgroundAgentsAvailable
-  const teamActive =
-    agentToggles.agentTeamAllowed &&
-    agentCapabilities.agentTeamsEnabled &&
-    agentCapabilities.agentTeamsAvailable
-
-  return subagentsActive || backgroundActive || teamActive
-}
-
-type AgentRunOptionsBuildResult =
-  | { status: 'ok'; options: AgentRunOptions | undefined }
-  | { status: 'error'; messageKey: 'selectMemberProfile' | 'staleProfileId' }
-
-function buildAgentRunOptions(
-  agentCapabilities: AgentCapabilities | null,
-  agentToggles: ComposerAgentToggleState,
-  profiles: ReturnType<typeof useAgentProfiles>['profiles'],
-): AgentRunOptionsBuildResult {
-  if (!agentCapabilities) {
-    return { status: 'ok', options: undefined }
-  }
-
-  const anyAvailable =
-    agentCapabilities.subagentsAvailable ||
-    agentCapabilities.agentTeamsAvailable ||
-    agentCapabilities.backgroundAgentsAvailable
-
-  if (!anyAvailable) {
-    return { status: 'ok', options: undefined }
-  }
-
-  const subagentsAllowed =
-    agentToggles.subagentsAllowed &&
-    agentCapabilities.subagentsEnabled &&
-    agentCapabilities.subagentsAvailable
-  const backgroundAllowed =
-    agentToggles.backgroundRun &&
-    agentCapabilities.backgroundAgentsEnabled &&
-    agentCapabilities.backgroundAgentsAvailable
-  const teamAllowed =
-    agentToggles.agentTeamAllowed &&
-    agentCapabilities.agentTeamsEnabled &&
-    agentCapabilities.agentTeamsAvailable
-
-  if (!subagentsAllowed && !backgroundAllowed && !teamAllowed) {
-    return { status: 'ok', options: undefined }
-  }
-
-  const profileIds = new Set(profiles.map((profile) => profile.id))
-  const leadProfileId = agentToggles.leadProfileId || profiles[0]?.id || ''
-  const memberProfileIds = agentToggles.memberProfileIds.filter(
-    (profileId) => profileId !== leadProfileId,
-  )
-  if (teamAllowed) {
-    if (!leadProfileId || !profileIds.has(leadProfileId)) {
-      return { status: 'error', messageKey: 'staleProfileId' }
-    }
-    if (memberProfileIds.length === 0) {
-      return { status: 'error', messageKey: 'selectMemberProfile' }
-    }
-    if (memberProfileIds.some((profileId) => !profileIds.has(profileId))) {
-      return { status: 'error', messageKey: 'staleProfileId' }
-    }
-  }
-
-  return {
-    status: 'ok',
-    options: {
-      agentTeam: teamAllowed ? 'allowed' : 'off',
-      background: backgroundAllowed ? 'background' : 'foreground',
-      maxConcurrentSubagents: 2,
-      maxDepth: 2,
-      maxTeamMembers: 4,
-      subagents: subagentsAllowed ? 'allowed' : 'off',
-      teamConfig: teamAllowed
-        ? {
-            leadProfileId,
-            maxTurnsPerGoal: agentToggles.maxTurnsPerGoal,
-            memberProfileIds,
-            sharedMemoryPolicy: agentToggles.sharedMemoryPolicy,
-            topology: agentToggles.topology,
-          }
-        : null,
-      workspaceIsolation: agentToggles.workspaceIsolation,
-    },
-  }
 }
 
 const composerPermissionModeOptions = [

@@ -4,8 +4,7 @@ use futures::stream;
 use futures::StreamExt;
 use harness_contracts::{
     AgentProfile, AgentProfileContextMode, AgentProfileMemoryScope, AgentProfileSandboxInheritance,
-    AgentProfileScope, AgentRunOptions, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy,
-    AgentTeamTopology, AgentUsePolicy, AgentWorkspaceIsolationMode,
+    AgentProfileScope, AgentUsePolicy, AgentWorkspaceIsolationMode,
     AssistantClarificationRequestedEvent, AssistantDeltaProducedEvent,
     AssistantMessageCompletedEvent, AssistantNoticeEvent, AssistantReviewRequestedEvent,
     AutomationRunStatus, AutomationSchedule, AutomationSpec, AutomationWorkspaceScope,

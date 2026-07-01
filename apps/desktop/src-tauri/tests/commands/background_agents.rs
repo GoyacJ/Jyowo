@@ -260,12 +260,9 @@ async fn background_agent_manager_start_run_persists_record_before_execution() {
     .unwrap();
 
     let conversation_id = SessionId::new();
-    let mut options = sample_subagent_run_options();
-    options.background = BackgroundRunPolicy::Background;
 
     let started = start_run_with_runtime_state(
         StartRunRequest {
-            agent_options: Some(options),
             attachments: Some(vec![attachment.clone()]),
             client_message_id: None,
             context_references: Some(vec![ContextReferencePayload::WorkspaceFile {
@@ -610,17 +607,4 @@ async fn create_background_agent_record(
         })
         .await
         .expect("background agent starts")
-}
-
-fn sample_subagent_run_options() -> AgentRunOptions {
-    AgentRunOptions {
-        subagents: AgentUsePolicy::Allowed,
-        agent_team: AgentUsePolicy::Off,
-        team_config: None,
-        background: BackgroundRunPolicy::Foreground,
-        workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
-        max_depth: 2,
-        max_concurrent_subagents: 2,
-        max_team_members: 4,
-    }
 }

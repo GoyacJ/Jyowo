@@ -594,20 +594,31 @@ Modify:
 - `crates/jyowo-harness-tool/tests/orchestrator.rs`
 - `crates/jyowo-harness-engine/src/engine.rs`
 - `crates/jyowo-harness-engine/src/turn.rs`
+- `crates/jyowo-harness-agent-runtime/src/policy.rs`
+- `crates/jyowo-harness-agent-runtime/src/subagents.rs`
+- `crates/jyowo-harness-agent-runtime/src/teams.rs`
+- `crates/jyowo-harness-agent-runtime/src/background.rs`
+- `crates/jyowo-harness-team/src/lib.rs`
 - `crates/jyowo-harness-session/src/turn.rs`
 - `crates/jyowo-harness-sdk/src/builder.rs`
 - `crates/jyowo-harness-sdk/src/builtin.rs`
 - `crates/jyowo-harness-sdk/src/ext.rs`
 - `crates/jyowo-harness-sdk/src/harness/session_runtime.rs`
+- `crates/jyowo-harness-sdk/src/harness/permissions.rs`
+- `crates/jyowo-harness-sdk/src/harness/tool_pool.rs`
+- `crates/jyowo-harness-sdk/tests/agents_team.rs`
 - `crates/jyowo-harness-sdk/tests/runtime_assembly.rs`
 - `apps/desktop/src-tauri/src/commands/mod.rs`
 - `apps/desktop/src-tauri/src/commands/runtime.rs`
 - `apps/desktop/src-tauri/src/commands/conversations.rs`
 - `apps/desktop/src-tauri/src/commands/providers.rs`
+- `apps/desktop/src-tauri/src/commands/background_agents.rs`
 - `apps/desktop/src-tauri/src/lib.rs`
 - `apps/desktop/src-tauri/tests/commands.rs`
 - `apps/desktop/src-tauri/tests/commands/runs_permissions.rs`
-- `apps/desktop/src-tauri/tests/commands/automations.rs`
+- `apps/desktop/src-tauri/tests/commands/providers.rs`
+- `apps/desktop/src-tauri/tests/commands/background_agents.rs`
+- `apps/desktop/src-tauri/tests/commands/automations.rs` only if Task 2 intentionally migrates automation workspace policy.
 - `apps/desktop/src/shared/tauri/commands.ts`
 - `apps/desktop/src/shared/tauri/commands.test.ts`
 - `apps/desktop/src/testing/command-client.ts`
@@ -745,6 +756,8 @@ git commit -m "docs(sandbox): define fail-closed sandbox policy"
 - Create: `crates/jyowo-harness-sandbox/src/filesystem_policy.rs`
 - Modify: `crates/jyowo-harness-sandbox/src/lib.rs`
 - Test: `crates/jyowo-harness-sandbox/tests/filesystem_policy.rs`
+- Modify only if automation workspace policy is intentionally migrated: `crates/jyowo-harness-contracts/src/automation.rs`
+- Modify only if automation workspace policy is intentionally migrated: `apps/desktop/src-tauri/src/commands/validation.rs`
 
 - [ ] **Step 1: Task intent check**
 
@@ -816,6 +829,8 @@ pub workspace_access: WorkspaceAccess
 ```
 
 from `ExecSpec`.
+
+This removal applies to process sandbox authority. `Automation.workspace_access` is a separate scheduler contract and must not be treated as process sandbox authority. If Task 2 keeps `Automation.workspace_access`, document that boundary in the Task 2 audit file and keep the final grep gate scoped so automation validation is not a false positive. If Task 2 migrates automation too, migrate it explicitly with contract tests; do not remove it as a side effect of fixing `ExecSpec`.
 
 Update fingerprinting to hash:
 
@@ -891,6 +906,8 @@ Rules:
 - [ ] **Step 6: Update all compile errors intentionally**
 
 Update call sites in sandbox, engine, SDK, tool, plugin, and subagent code to use `spec.policy.filesystem`.
+
+Also update agent runtime, desktop run assembly, and any team-run construction path that currently derives filesystem authority from `workspace_access`, `SandboxScope`, or `denied_host_paths`.
 
 Do not add adapter methods named like `workspace_access_compat`.
 
@@ -1206,6 +1223,13 @@ git commit -m "feat(sandbox): require local OS isolation"
 - Modify: `crates/jyowo-harness-tool/src/orchestrator.rs`
 - Modify: `crates/jyowo-harness-engine/src/turn.rs`
 - Modify: `crates/jyowo-harness-session/src/turn.rs`
+- Modify: `crates/jyowo-harness-sdk/src/builder.rs`
+- Modify: `crates/jyowo-harness-sdk/src/ext.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/permissions.rs`
+- Modify: `crates/jyowo-harness-subagent/src/lib.rs`
+- Modify: `crates/jyowo-harness-mcp/src/sampling.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/conversations.rs`
 - Test: `crates/jyowo-harness-sandbox/tests/process_authorization.rs`
 - Modify: `crates/jyowo-harness-sandbox/tests/local.rs`
 - Modify: `crates/jyowo-harness-sandbox/tests/docker.rs`
@@ -1213,6 +1237,13 @@ git commit -m "feat(sandbox): require local OS isolation"
 - Modify: `crates/jyowo-harness-permission/tests/contract.rs`
 - Modify: `crates/jyowo-harness-tool/tests/orchestrator.rs`
 - Modify: `crates/jyowo-harness-tool/tests/builtin_exec.rs`
+- Modify: `crates/jyowo-harness-sdk/tests/facade.rs`
+- Modify: `crates/jyowo-harness-sdk/tests/agents_team.rs`
+- Modify: `crates/jyowo-harness-subagent/tests/permission_bridge.rs`
+- Modify: `crates/jyowo-harness-mcp/tests/sampling.rs`
+- Modify: `crates/jyowo-harness-agent-runtime/tests/subagents.rs`
+- Modify affected desktop command tests under `apps/desktop/src-tauri/tests/commands`
+- Modify affected `PermissionBroker` test implementations under `crates/jyowo-harness-tool-search/tests`
 
 - [ ] **Step 1: Task intent check**
 
@@ -1267,7 +1298,7 @@ Remove the old broad `supports_network` field from process-sandbox capability ch
 
 Update `RequiredSandboxCapabilities` and every call site that currently reads `supports_network` to use the precise network capability required by the policy. `NetworkAccess::None` must check `supports_network_none`; `NetworkAccess::Unrestricted` must check `supports_network_unrestricted` plus a verified process grant; `LoopbackOnly` and `AllowList` must check their own precise flags and fail closed while those flags are false.
 
-Add a review assertion that `rg -n "\\bsupports_network\\b" crates apps` has no production matches after this task, except renamed non-process capability text that the task explicitly documents.
+Add a review assertion that production code has no broad `supports_network` matches after this task, except renamed non-process capability text that the task explicitly documents. The assertion must exclude tests, fixtures, generated output, docs, and comments-only audit text; it must not fail because migration tests still mention the removed field.
 
 - [ ] **Step 4: Return stable permission decision records**
 
@@ -1286,6 +1317,7 @@ pub struct PermissionDecision {
 Rules:
 
 - `PermissionBroker::decide` must return `PermissionDecision`, not a bare `Decision`.
+- Update every `PermissionBroker` implementor and wrapper in the workspace, including permission, SDK, subagent, MCP sampling, tool-search tests, agent-runtime tests, desktop command tests, and any local test broker. Do not add a compatibility trait or adapter returning bare `Decision`.
 - `PersistedDecision`, `PermissionResolvedEvent`, `ToolUseApprovedEvent`, permission audit records, and process network grants must use `PermissionDecision.decision_id`.
 - Deduplicated or reused allow decisions must carry the original decision id or an explicit `original_decision_id`; they must not allocate a fresh approval id.
 - `DecisionId::new()` is allowed only at the point where a new broker decision record is created.
@@ -1415,6 +1447,10 @@ cargo test -p jyowo-harness-permission process_network_grant -- --nocapture
 cargo test -p jyowo-harness-permission permission_decision_id -- --nocapture
 cargo test -p jyowo-harness-tool process_network_orchestration -- --nocapture
 cargo test -p jyowo-harness-tool web_search_uses_network_permission_and_backend -- --nocapture
+cargo test -p jyowo-harness-sdk permission_decision_id -- --nocapture
+cargo test -p jyowo-harness-subagent permission_bridge -- --nocapture
+cargo test -p jyowo-harness-mcp sampling_permission_decision_id -- --nocapture
+cargo test -p jyowo-desktop-shell permission_decision_id -- --nocapture
 pnpm check:rust
 ```
 
@@ -1427,7 +1463,7 @@ Run the required exit analysis, code-review-expert audit, and security-review au
 - [ ] **Step 10: Commit**
 
 ```bash
-git add crates/jyowo-harness-contracts crates/jyowo-harness-sandbox crates/jyowo-harness-permission crates/jyowo-harness-tool crates/jyowo-harness-engine crates/jyowo-harness-session docs/superpowers/audits/sandbox-hardening/task-4.md
+git add crates/jyowo-harness-contracts crates/jyowo-harness-sandbox crates/jyowo-harness-permission crates/jyowo-harness-tool crates/jyowo-harness-engine crates/jyowo-harness-session crates/jyowo-harness-sdk crates/jyowo-harness-subagent crates/jyowo-harness-mcp crates/jyowo-harness-tool-search crates/jyowo-harness-agent-runtime apps/desktop/src-tauri docs/superpowers/audits/sandbox-hardening/task-4.md
 git commit -m "feat(sandbox): enforce process network capabilities"
 ```
 
@@ -1850,7 +1886,7 @@ git commit -m "feat(sandbox): harden ssh workspace policy"
 - Modify: `apps/desktop/src-tauri/src/commands/providers.rs`
 - Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs` only if adding `get_sandbox_status`
-- Test: `apps/desktop/src-tauri/tests/commands/automations.rs`
+- Test: `apps/desktop/src-tauri/tests/commands/providers.rs`
 - Modify: `apps/desktop/src/shared/tauri/commands.ts`
 - Modify: `apps/desktop/src/shared/tauri/commands.test.ts`
 - Modify: `apps/desktop/src/testing/command-client.ts`
@@ -1918,7 +1954,7 @@ Do not add a live sandbox probe to `SetExecutionSettingsResponse`. If frontend n
 pub async fn get_sandbox_status(...) -> Result<SandboxExplainPayload, CommandErrorPayload>
 ```
 
-If this command is added, expose its wrapper from `commands/mod.rs`, register it in `apps/desktop/src-tauri/src/lib.rs`, and add command tests in the split command test module that owns sandbox/execution-settings behavior.
+If this command is added, expose its wrapper from `commands/mod.rs`, register it in `apps/desktop/src-tauri/src/lib.rs`, and add command tests in `apps/desktop/src-tauri/tests/commands/providers.rs`, which owns provider and execution-settings command behavior. Do not put sandbox diagnostics tests in `automations.rs` unless the implementation also changes automation commands.
 
 `set_execution_settings` may validate settings shape and persist config, but it must not fail only because `sandbox-exec`, `bwrap`, Docker, or SSH is unavailable.
 
@@ -1996,6 +2032,9 @@ git commit -m "feat(sandbox): expose safe policy diagnostics"
 - Modify: `crates/jyowo-harness-agent-runtime/tests/subagents.rs`
 - Modify: `crates/jyowo-harness-agent-runtime/tests/agents_team.rs`
 - Modify: `crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs`
+- Modify: `crates/jyowo-harness-team/src/lib.rs`
+- Modify: `crates/jyowo-harness-team/tests/contract.rs`
+- Modify: `crates/jyowo-harness-team/tests/api.rs`
 - Modify: `crates/jyowo-harness-engine/src/engine.rs`
 - Modify: `crates/jyowo-harness-engine/src/turn.rs`
 - Modify: `crates/jyowo-harness-subagent/src/lib.rs`
@@ -2005,6 +2044,7 @@ git commit -m "feat(sandbox): expose safe policy diagnostics"
 - Modify: `crates/jyowo-harness-sdk/src/harness/session_runtime.rs`
 - Modify: `crates/jyowo-harness-sdk/src/harness/tool_pool.rs`
 - Modify: `crates/jyowo-harness-sdk/tests/runtime_assembly.rs`
+- Modify: `crates/jyowo-harness-sdk/tests/agents_team.rs`
 - Modify: `crates/jyowo-harness-session/src/turn.rs`
 - Modify: `crates/jyowo-harness-session/tests/run_turn.rs`
 - Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
@@ -2026,18 +2066,23 @@ Add tests proving:
 - subagent `Require` fails closed if parent sandbox lacks network-none or filesystem enforcement.
 - subagent `Override` cannot remove protected filesystem denies.
 - team member and background-agent runs inherit the parent run sandbox through the same merge helper.
+- `TeamSandboxPolicy::Empty` cannot call `EngineBuilder::without_sandbox`. Because the project is still in development, either remove the variant from the public team contract and update schema/tests, or make it a fail-closed request error. Do not keep a compatibility path that disables sandbox inheritance.
 - plugin sidecar uses the same protected default policy.
 - session turn execution passes the configured sandbox into tool context.
 - no path calls `without_sandbox` except tests that intentionally assert missing sandbox rejection.
+
+Name the new agent-runtime, team, and SDK team tests with a `sandbox_inheritance_` prefix so the targeted cargo filters below execute the intended coverage instead of passing with zero matching tests.
 
 Run:
 
 ```bash
 cargo test -p jyowo-harness-sandbox policy_merge -- --nocapture
-cargo test -p jyowo-harness-agent-runtime sandbox -- --nocapture
+cargo test -p jyowo-harness-agent-runtime sandbox_inheritance -- --nocapture
+cargo test -p jyowo-harness-team sandbox_inheritance -- --nocapture
 cargo test -p jyowo-harness-subagent sandbox -- --nocapture
 cargo test -p jyowo-harness-plugin sandbox -- --nocapture
 cargo test -p jyowo-harness-session sandbox -- --nocapture
+cargo test -p jyowo-harness-sdk sandbox_inheritance -- --nocapture
 cargo test -p jyowo-harness-sdk runtime_assembly -- --nocapture
 ```
 
@@ -2051,7 +2096,7 @@ Layering rule:
 
 - `policy_merge.rs` is an L1 helper and may depend only on L0 contracts and L1-local sandbox types.
 - It must not import or pattern-match on `SandboxInheritance`, `RequiredSandboxCapabilities`, subagent lifecycle types, plugin types, session turn types, or engine builder types.
-- Mapping `SandboxInheritance::{Inherit, Empty, Require, Override}` and agent profile `AgentProfileSandboxInheritance` to parent/child `SandboxPolicy` values belongs in engine/subagent/session/plugin/agent-runtime call sites.
+- Mapping `SandboxInheritance::{Inherit, Empty, Require, Override}`, `TeamSandboxPolicy::{Inherit, Empty, RequireBackend}`, and agent profile `AgentProfileSandboxInheritance` to parent/child `SandboxPolicy` values belongs in engine/subagent/session/plugin/agent-runtime/team/SDK call sites.
 - Higher layers may call `merge_sandbox_policy_for_child(parent, child)`, but the sandbox crate must remain unaware of which higher-level domain requested the merge.
 
 Implement:
@@ -2074,18 +2119,24 @@ Rules:
 
 - [ ] **Step 4: Update inheritance call sites**
 
-Replace ad hoc sandbox capability checks in engine, subagent, team, background-agent, plugin, and session paths with the shared capability and policy merge helpers.
+Replace ad hoc sandbox capability checks in engine, subagent, team, background-agent, plugin, and session paths with the shared capability and policy merge helpers. Update the SDK team-member runner path that currently maps `TeamSandboxPolicy::Empty` to `builder.without_sandbox()`; this path is part of production sandbox inheritance.
 
 - [ ] **Step 5: Run gates**
 
 ```bash
 cargo fmt --all --check
 cargo test -p jyowo-harness-sandbox policy_merge -- --nocapture
-cargo test -p jyowo-harness-agent-runtime sandbox -- --nocapture
+cargo test -p jyowo-harness-agent-runtime sandbox_inheritance -- --nocapture
+cargo test -p jyowo-harness-team sandbox_inheritance -- --nocapture
 cargo test -p jyowo-harness-subagent sandbox -- --nocapture
 cargo test -p jyowo-harness-plugin sandbox -- --nocapture
 cargo test -p jyowo-harness-session sandbox -- --nocapture
+cargo test -p jyowo-harness-sdk sandbox_inheritance -- --nocapture
 cargo test -p jyowo-harness-sdk runtime_assembly -- --nocapture
+if ! rg -n "sandbox_inheritance_" crates/jyowo-harness-agent-runtime/tests crates/jyowo-harness-team/tests crates/jyowo-harness-sdk/tests/agents_team.rs; then
+  echo "Task 10 targeted tests must use the sandbox_inheritance_ prefix in agent-runtime, team, and SDK team tests."
+  exit 1
+fi
 if rg -n "harness_(subagent|engine|plugin|session)|SandboxInheritance|RequiredSandboxCapabilities" crates/jyowo-harness-sandbox/src/policy_merge.rs; then
   echo "L1 sandbox policy merge production code must not depend on higher-layer inheritance types."
   exit 1
@@ -2102,7 +2153,7 @@ Run the required exit analysis, code-review-expert audit, and security-review au
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/jyowo-harness-sandbox crates/jyowo-harness-engine crates/jyowo-harness-subagent crates/jyowo-harness-plugin crates/jyowo-harness-session docs/superpowers/audits/sandbox-hardening/task-10.md
+git add crates/jyowo-harness-sandbox crates/jyowo-harness-agent-runtime crates/jyowo-harness-team crates/jyowo-harness-engine crates/jyowo-harness-subagent crates/jyowo-harness-plugin crates/jyowo-harness-sdk crates/jyowo-harness-session apps/desktop/src-tauri docs/superpowers/audits/sandbox-hardening/task-10.md
 git commit -m "feat(sandbox): enforce inherited child policy"
 ```
 
@@ -2245,7 +2296,7 @@ if rg -n --pcre2 "(?i)\\b(authorization|cookie)\\b\\s*[:=]\\s*['\"][^'\"]{8,}['\
   exit 1
 fi
 
-unsafe_sandbox_matches="$(rg -n "LocalSandbox::new\\(workspace_root\\)|with_sandbox\\(LocalSandbox::new|NetworkAccess::AllowList\\([^)]*\\).*Ok\\(|workspace_access|denied_host_paths|SandboxScope" crates apps \
+unsafe_sandbox_matches="$(rg -n "LocalSandbox::new\\(workspace_root\\)|with_sandbox\\(LocalSandbox::new|NetworkAccess::AllowList\\([^)]*\\).*Ok\\(|workspace_access|denied_host_paths|pub scope:\\s*SandboxScope|SandboxScope::" crates apps \
   -g '!target/**' \
   -g '!node_modules/**' \
   -g '!**/tests/**' \
@@ -2253,16 +2304,24 @@ unsafe_sandbox_matches="$(rg -n "LocalSandbox::new\\(workspace_root\\)|with_sand
   -g '!*.test.ts' \
   -g '!*.test.tsx' \
   -g '!*.spec.ts' \
-  -g '!*.spec.tsx' || true)"
+  -g '!*.spec.tsx' \
+  -g '!crates/jyowo-harness-contracts/src/automation.rs' \
+  -g '!apps/desktop/src-tauri/src/commands/validation.rs' || true)"
 if [ -n "$unsafe_sandbox_matches" ]; then
   printf '%s\n' "$unsafe_sandbox_matches"
-  echo "Unsafe sandbox compatibility names remain in production code. Move legacy references to tests/docs or remove them."
+  echo "Unsafe process sandbox compatibility names remain in production code. Automation workspaceAccess is a separate scheduler contract and must not authorize process sandbox policy."
   exit 1
 fi
 
 if rg -n "\\bsupports_network\\b" crates apps \
   -g '!target/**' \
-  -g '!node_modules/**'; then
+  -g '!node_modules/**' \
+  -g '!**/tests/**' \
+  -g '!**/test/**' \
+  -g '!*.test.ts' \
+  -g '!*.test.tsx' \
+  -g '!*.spec.ts' \
+  -g '!*.spec.tsx'; then
   echo "Broad supports_network capability must not remain in production process sandbox code."
   exit 1
 fi
@@ -2316,7 +2375,7 @@ Expected:
 
 - targeted secret searches have no raw secret assignment, credential header value, bearer token, or leaked credential; benign examples must live in reviewed allowlist fixtures.
 - sandbox search has no unsafe main harness `LocalSandbox::new(workspace_root)`.
-- old split authority names are gone from production policy code.
+- old split authority names are gone from production process sandbox code. `Automation.workspace_access` may remain only as a scheduler contract, with tests proving it does not authorize process sandbox policy.
 - the old broad `supports_network` capability is gone from production process sandbox code.
 - remaining mentions are docs explaining removed behavior or tests asserting migration.
 - `issue_process_network_grant` appears only after a `PermissionSubject::ProcessNetworkAccess` allow decision and in tests that prove rejection paths.
@@ -2332,7 +2391,10 @@ Run the required exit analysis, code-review-expert audit, and security-review au
 If Task 12 changed only docs or snapshots:
 
 ```bash
-git diff --name-only main...HEAD > /tmp/sandbox-hardening-files.txt
+{
+  git diff --name-only
+  git ls-files --others --exclude-standard
+} | sort -u > /tmp/sandbox-hardening-files.txt
 sed -n '1,200p' /tmp/sandbox-hardening-files.txt
 # Review the list before staging. Delete unrelated files, temp files, logs, target output,
 # and unknown generated noise from /tmp/sandbox-hardening-files.txt before continuing.
@@ -2340,7 +2402,7 @@ xargs git add -- < /tmp/sandbox-hardening-files.txt
 git commit -m "test(sandbox): complete hardening verification"
 ```
 
-Before staging, run `git status --short` and verify `/tmp/sandbox-hardening-files.txt` contains only Task 12 implementation, tests, scripts, docs, schema, or lockfile changes. Do not use `git add .` or broad directory staging.
+Before staging, run `git status --short` and verify `/tmp/sandbox-hardening-files.txt` contains only current Task 12 unstaged or untracked implementation, tests, scripts, docs, schema, or lockfile changes. Do not use `git diff --name-only main...HEAD`, `git add .`, or broad directory staging, because earlier task commits on the feature branch must not be restaged as Task 12 changes.
 
 If Task 12 changed only the task audit file, commit `docs/superpowers/audits/sandbox-hardening/task-12.md`.
 

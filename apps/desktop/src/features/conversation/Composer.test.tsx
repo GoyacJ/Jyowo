@@ -1,21 +1,11 @@
 import '@testing-library/jest-dom/vitest'
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import type {
-  AgentCapabilities,
-  AgentProfile,
-  ConversationModelCapability,
-} from '@/shared/tauri/commands'
+import type { ConversationModelCapability } from '@/shared/tauri/commands'
 
 import { Composer } from './Composer'
-
-const useAgentProfilesMock = vi.hoisted(() => vi.fn())
-
-vi.mock('./use-agent-profiles', () => ({
-  useAgentProfiles: useAgentProfilesMock,
-}))
 
 const attachment = {
   blobRef: {
@@ -57,55 +47,7 @@ const referenceCandidates = {
   tools: [{ id: 'builtin.grep', label: 'Search files' }],
 }
 
-const availableAgentCapabilities: AgentCapabilities = {
-  agentTeamsAvailable: true,
-  agentTeamsEnabled: true,
-  backgroundAgentsAvailable: false,
-  backgroundAgentsEnabled: false,
-  subagentsAvailable: true,
-  subagentsEnabled: true,
-  unavailableReasons: [],
-}
-
-const leadProfile: AgentProfile = {
-  contextMode: 'focused',
-  defaultWorkspaceIsolation: 'read_only',
-  description: 'Leads team runs',
-  id: 'lead',
-  maxDepth: 2,
-  maxTurns: 8,
-  memoryScope: 'read_only',
-  role: 'Lead',
-  sandboxInheritance: 'inherit_parent',
-  scope: 'builtin',
-  toolBlocklist: [],
-}
-
-const workerProfile: AgentProfile = {
-  contextMode: 'minimal',
-  defaultWorkspaceIsolation: 'read_only',
-  description: 'Executes delegated work',
-  id: 'worker',
-  maxDepth: 1,
-  maxTurns: 6,
-  memoryScope: 'none',
-  role: 'Worker',
-  sandboxInheritance: 'narrow_only',
-  scope: 'builtin',
-  toolBlocklist: [],
-}
-
 describe('Composer', () => {
-  beforeEach(() => {
-    useAgentProfilesMock.mockReturnValue({
-      error: null,
-      isEmpty: false,
-      isLoading: false,
-      profiles: [leadProfile, workerProfile],
-      workspacePath: '/tmp/jyowo-project',
-    })
-  })
-
   it('submits typed text as structured draft', async () => {
     const onSubmit = vi.fn()
 
@@ -118,7 +60,6 @@ describe('Composer', () => {
 
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith({
-        agentOptions: undefined,
         attachments: [],
         contextReferences: [],
         modelConfigId: 'provider-config-001',
@@ -145,7 +86,6 @@ describe('Composer', () => {
 
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith({
-        agentOptions: undefined,
         attachments: [],
         contextReferences: [],
         modelConfigId: 'provider-config-001',
@@ -175,7 +115,6 @@ describe('Composer', () => {
 
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith({
-        agentOptions: undefined,
         attachments: [],
         contextReferences: [],
         modelConfigId: 'provider-config-001',
@@ -523,296 +462,18 @@ describe('Composer', () => {
     expect(onRetry).toHaveBeenCalledTimes(1)
   })
 
-  it('hides agent controls when capabilities are unavailable', () => {
-    render(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={{
-          ...availableAgentCapabilities,
-          agentTeamsAvailable: false,
-          backgroundAgentsAvailable: false,
-          subagentsAvailable: false,
-        }}
-        onSubmit={vi.fn()}
-      />,
-    )
+  it('does not render agent controls in the input surface', () => {
+    render(<Composer modelConfigId="provider-config-001" onSubmit={vi.fn()} />)
 
     expect(screen.queryByText('Subagents')).not.toBeInTheDocument()
     expect(screen.queryByText('Agent team')).not.toBeInTheDocument()
+    expect(screen.queryByText('Background run')).not.toBeInTheDocument()
   })
 
-  it('disables subagents when settings turn the capability off', () => {
-    render(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={{
-          ...availableAgentCapabilities,
-          subagentsEnabled: false,
-        }}
-        onSubmit={vi.fn()}
-      />,
-    )
-
-    expect(screen.getByRole('checkbox', { name: /Subagents/i })).toBeDisabled()
-  })
-
-  it('disables agent team when settings turn the capability off', () => {
-    render(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={{
-          ...availableAgentCapabilities,
-          agentTeamsEnabled: false,
-        }}
-        onSubmit={vi.fn()}
-      />,
-    )
-
-    expect(screen.getByRole('checkbox', { name: /Agent team/i })).toBeDisabled()
-  })
-
-  it('shows team profile loading, error, and empty states', () => {
-    const { rerender } = render(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={availableAgentCapabilities}
-        onSubmit={vi.fn()}
-      />,
-    )
-
-    useAgentProfilesMock.mockReturnValue({
-      error: null,
-      isEmpty: false,
-      isLoading: true,
-      profiles: [],
-      workspacePath: '/tmp/jyowo-project',
-    })
-    rerender(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={availableAgentCapabilities}
-        onSubmit={vi.fn()}
-      />,
-    )
-    expect(screen.getByText('Loading agent profiles...')).toBeInTheDocument()
-
-    useAgentProfilesMock.mockReturnValue({
-      error: new Error('profiles unavailable'),
-      isEmpty: false,
-      isLoading: false,
-      profiles: [],
-      workspacePath: '/tmp/jyowo-project',
-    })
-    rerender(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={availableAgentCapabilities}
-        onSubmit={vi.fn()}
-      />,
-    )
-    expect(screen.getByText('profiles unavailable')).toBeInTheDocument()
-
-    useAgentProfilesMock.mockReturnValue({
-      error: null,
-      isEmpty: true,
-      isLoading: false,
-      profiles: [],
-      workspacePath: '/tmp/jyowo-project',
-    })
-    rerender(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={availableAgentCapabilities}
-        onSubmit={vi.fn()}
-      />,
-    )
-    expect(screen.getByText('No agent profiles available.')).toBeInTheDocument()
-  })
-
-  it('submits a complete teamConfig when agent team is allowed for the run', async () => {
+  it('omits agentOptions from submitted payload', async () => {
     const onSubmit = vi.fn()
 
-    render(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={availableAgentCapabilities}
-        onSubmit={onSubmit}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('checkbox', { name: /Agent team/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /Worker/i }))
-    fireEvent.change(screen.getByLabelText('Max turns per goal'), { target: { value: '5' } })
-    fireEvent.change(screen.getByLabelText('Topology'), {
-      target: { value: 'role_routed' },
-    })
-    fireEvent.change(screen.getByLabelText('Shared memory'), {
-      target: { value: 'redacted_mailbox' },
-    })
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
-      target: { value: 'Coordinate work' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
-
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({
-          agentOptions: {
-            agentTeam: 'allowed',
-            background: 'foreground',
-            maxConcurrentSubagents: 2,
-            maxDepth: 2,
-            maxTeamMembers: 4,
-            subagents: 'off',
-            teamConfig: {
-              leadProfileId: 'lead',
-              maxTurnsPerGoal: 5,
-              memberProfileIds: ['worker'],
-              sharedMemoryPolicy: 'redacted_mailbox',
-              topology: 'role_routed',
-            },
-            workspaceIsolation: 'read_only',
-          },
-          prompt: 'Coordinate work',
-        }),
-      ),
-    )
-  })
-
-  it('clears teamConfig when agent team is toggled off', async () => {
-    const onSubmit = vi.fn()
-
-    render(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={availableAgentCapabilities}
-        onSubmit={onSubmit}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('checkbox', { name: /Agent team/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /Worker/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /Agent team/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /Subagents/i }))
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
-      target: { value: 'Delegate without team' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
-
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({
-          agentOptions: expect.objectContaining({
-            agentTeam: 'off',
-            teamConfig: null,
-          }),
-        }),
-      ),
-    )
-  })
-
-  it('rejects team submission when no member profile is selected', async () => {
-    const onSubmit = vi.fn()
-
-    render(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={availableAgentCapabilities}
-        onSubmit={onSubmit}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('checkbox', { name: /Agent team/i }))
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
-      target: { value: 'Coordinate work' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
-
-    await waitFor(() => expect(onSubmit).not.toHaveBeenCalled())
-    expect(screen.getByText('Select at least one member profile.')).toBeInTheDocument()
-  })
-
-  it('rejects stale team profile ids before submit', async () => {
-    const onSubmit = vi.fn()
-    const { rerender } = render(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={availableAgentCapabilities}
-        onSubmit={onSubmit}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('checkbox', { name: /Agent team/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /Worker/i }))
-    useAgentProfilesMock.mockReturnValue({
-      error: null,
-      isEmpty: false,
-      isLoading: false,
-      profiles: [leadProfile],
-      workspacePath: '/tmp/jyowo-project',
-    })
-    rerender(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={availableAgentCapabilities}
-        onSubmit={onSubmit}
-      />,
-    )
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
-      target: { value: 'Coordinate work' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
-
-    await waitFor(() => expect(onSubmit).not.toHaveBeenCalled())
-    expect(screen.getByText('Selected agent profile is no longer available.')).toBeInTheDocument()
-  })
-
-  it('submits agentOptions when subagents are allowed for the run', async () => {
-    const onSubmit = vi.fn()
-
-    render(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={availableAgentCapabilities}
-        onSubmit={onSubmit}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('checkbox', { name: /Subagents/i }))
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
-      target: { value: 'Delegate work' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
-
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({
-          agentOptions: {
-            agentTeam: 'off',
-            background: 'foreground',
-            maxConcurrentSubagents: 2,
-            maxDepth: 2,
-            maxTeamMembers: 4,
-            subagents: 'allowed',
-            teamConfig: null,
-            workspaceIsolation: 'read_only',
-          },
-          prompt: 'Delegate work',
-        }),
-      ),
-    )
-  })
-
-  it('omits agentOptions when no run capability is selected', async () => {
-    const onSubmit = vi.fn()
-
-    render(
-      <Composer
-        modelConfigId="provider-config-001"
-        agentCapabilities={availableAgentCapabilities}
-        onSubmit={onSubmit}
-      />,
-    )
+    render(<Composer modelConfigId="provider-config-001" onSubmit={onSubmit} />)
 
     fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
       target: { value: 'Plain run' },
@@ -822,10 +483,10 @@ describe('Composer', () => {
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({
-          agentOptions: undefined,
           prompt: 'Plain run',
         }),
       ),
     )
+    expect(onSubmit.mock.calls[0][0]).not.toHaveProperty('agentOptions')
   })
 })

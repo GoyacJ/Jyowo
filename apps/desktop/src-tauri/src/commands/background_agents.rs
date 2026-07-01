@@ -80,38 +80,59 @@ pub async fn pause_background_agent_with_runtime_state(
     request: BackgroundAgentIdRequest,
     state: &DesktopRuntimeState,
 ) -> Result<BackgroundAgentActionResponse, CommandErrorPayload> {
-    with_background_agent_manager(request, state, |manager, background_agent_id| {
+    let background_agent_id = request.background_agent_id.clone();
+    let response = with_background_agent_manager(request, state, |manager, background_agent_id| {
         Box::pin(async move { manager.pause(&background_agent_id, "paused by user").await })
     })
-    .await
+    .await?;
+    let _ = crate::agent_supervisor::pause_background_agent_run(
+        state.workspace_root(),
+        &background_agent_id,
+    )
+    .await;
+    Ok(response)
 }
 
 pub async fn resume_background_agent_with_runtime_state(
     request: BackgroundAgentIdRequest,
     state: &DesktopRuntimeState,
 ) -> Result<BackgroundAgentActionResponse, CommandErrorPayload> {
-    with_background_agent_manager(request, state, |manager, background_agent_id| {
+    let background_agent_id = request.background_agent_id.clone();
+    let response = with_background_agent_manager(request, state, |manager, background_agent_id| {
         Box::pin(async move {
             manager
                 .resume(&background_agent_id, "resumed by user")
                 .await
         })
     })
-    .await
+    .await?;
+    let _ = crate::agent_supervisor::requeue_background_agent_supervisor_payload(
+        state.workspace_root(),
+        &background_agent_id,
+    );
+    let _ = crate::agent_supervisor::wake_agent_supervisor(state.workspace_root()).await;
+    Ok(response)
 }
 
 pub async fn cancel_background_agent_with_runtime_state(
     request: BackgroundAgentIdRequest,
     state: &DesktopRuntimeState,
 ) -> Result<BackgroundAgentActionResponse, CommandErrorPayload> {
-    with_background_agent_manager(request, state, |manager, background_agent_id| {
+    let background_agent_id = request.background_agent_id.clone();
+    let response = with_background_agent_manager(request, state, |manager, background_agent_id| {
         Box::pin(async move {
             manager
                 .cancel(&background_agent_id, "cancelled by user")
                 .await
         })
     })
-    .await
+    .await?;
+    let _ = crate::agent_supervisor::cancel_background_agent_run(
+        state.workspace_root(),
+        &background_agent_id,
+    )
+    .await;
+    Ok(response)
 }
 
 pub async fn send_background_agent_input_with_runtime_state(
@@ -133,6 +154,11 @@ pub async fn send_background_agent_input_with_runtime_state(
         .send_input(&request.background_agent_id, request_id, &request.input)
         .await
         .map_err(map_background_agent_error)?;
+    let _ = crate::agent_supervisor::requeue_background_agent_supervisor_payload(
+        state.workspace_root(),
+        &request.background_agent_id,
+    );
+    let _ = crate::agent_supervisor::wake_agent_supervisor(state.workspace_root()).await;
 
     Ok(BackgroundAgentActionResponse {
         agent: background_agent_payload(agent),

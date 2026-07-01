@@ -33,7 +33,13 @@ Use these external behaviors as design constraints, not as copied implementation
 - The base system prompt already says memory is auxiliary context and not a fact source: `crates/jyowo-harness-sdk/src/system_prompt.rs`.
 - Desktop UI can list, inspect, edit, delete, and export memory, but cannot create a memory or review generated candidates: `apps/desktop/src/features/memory/MemoryBrowser.tsx`.
 - Tool-result memory recall currently depends on the hardcoded Chinese phrase `需要查阅历史`: `crates/jyowo-harness-context/src/engine.rs`.
-- `crates/jyowo-harness-memory/README.md` points to a missing architecture doc.
+- Agent orchestration is already present in the workspace through `crates/jyowo-harness-agent-runtime`: `Cargo.toml`.
+- `start_run` already accepts per-run `agentOptions` through `StartRunRequest.agent_options`: `apps/desktop/src-tauri/src/commands/contracts.rs`.
+- SDK run execution already carries `ConversationRunOptions.agent_run_options`, and `session_runtime.rs` installs the subagent runner from those run options.
+- Frontend IPC already has `agentRunOptionsSchema` and `startRunRequestSchema.agentOptions`: `apps/desktop/src/shared/tauri/commands.ts`.
+- `AgentTeamSharedMemoryPolicy` currently belongs to agent team runtime mailbox/summaries behavior. It is not the durable memory policy for this plan.
+- Desktop command memory tests already exist at `apps/desktop/src-tauri/tests/commands/memory.rs` and currently use `InMemoryMemoryProvider`.
+- `crates/jyowo-harness-memory/README.md` and `crates/jyowo-harness-memory/src/lib.rs` point to a missing architecture doc.
 
 ## Non-Negotiable Rules
 
@@ -47,6 +53,9 @@ Use these external behaviors as design constraints, not as copied implementation
 - No `#[ignore]`, no skipped tests, no compatibility shim that keeps the broken desktop in-memory default as the real path.
 - Breaking refactor is allowed when it removes technical debt and simplifies the memory flow. Do not keep dual legacy paths unless a test proves both are required.
 - Every task must end with a fresh subagent audit. A task is not complete until the audit returns PASS or all findings are fixed and re-audited.
+- Memory work must not delete, overwrite, bypass, or locally reimplement agent orchestration behavior: `agentOptions`, background agents, team config, agent profiles, the agent runtime resolver, capability validation, and actor attribution must remain intact.
+- When touching `apps/desktop/src-tauri/src/commands/contracts.rs`, `apps/desktop/src-tauri/src/commands/conversations.rs`, or `apps/desktop/src/shared/tauri/commands.ts`, preserve the existing agent orchestration schema, mapping, validation, and start-run paths.
+- Do not reuse `AgentTeamSharedMemoryPolicy` as a durable memory on/off switch. It controls agent-team shared mailbox/summaries only.
 
 ## Required Worktree Setup
 
@@ -138,7 +147,7 @@ Design units:
 - `MemoryStore` remains the storage/retrieval trait.
 - `SqliteMemoryProvider` implements durable provider behavior.
 - `MemoryRecallRanker` owns lexical scoring, recency, confidence, TTL, and deterministic ordering.
-- `MemoryRuntimeConfig` owns use/generate/session controls.
+- `MemoryRuntimeConfig` owns use/generate/default/per-run controls.
 - `MemoryGenerationWorker` owns session-end idle generation and candidate creation.
 - `MemoryCandidateStore` is a real trait boundary. `MemoryManager` must use this trait, not downcast to `SqliteMemoryProvider`.
 - `MemoryCandidateStore` must remain separate from `MemoryProvider`; do not extend `MemoryProvider` with candidate methods because plugin memory providers already implement the existing provider trait.
@@ -153,6 +162,8 @@ Design units:
 - `MemoryContextTaint` records whether a session used external content.
 - Desktop commands are IPC adapters only.
 - React renders and sends commands only; it does not decide memory policy.
+- Public memory management DTOs live in `jyowo-harness-contracts` and are re-exported by SDK. `jyowo-harness-memory` may own internal domain structs and storage traits, but it must not become the public serde source of truth.
+- Memory implementation composes with existing agent orchestration. It must not own, mutate, or reinterpret agent runtime options, background agent records, team config, or profile resolution.
 
 Storage path:
 
@@ -242,14 +253,21 @@ CREATE TABLE memory_settings (
 SQLite schema versioning:
 
 ```text
-Set PRAGMA user_version = 1 after schema initialization.
-On open, read PRAGMA user_version before creating or mutating tables.
-Empty database or user_version = 0 -> initialize schema transactionally and set user_version = 1.
-user_version = 1 -> verify required tables/indexes/triggers exist.
-user_version > 1 -> fail closed with MemoryError::UnsupportedSchemaVersion.
+Use a local schema_version table, matching the existing jyowo-harness-agent-runtime store pattern.
+This is a documented exception to backend docs' general refinery preference for this plan.
+Do not use SQLite `user_version` pragma and do not mix both strategies.
+
+CREATE TABLE IF NOT EXISTS schema_version (
+  version INTEGER NOT NULL
+);
+
+CURRENT_MEMORY_SCHEMA_VERSION = 1
+No schema_version row -> initialize v1 schema transactionally, then insert version 1.
+version = 1 -> verify required tables, indexes, triggers, and FTS table exist.
+version > CURRENT_MEMORY_SCHEMA_VERSION -> fail closed with MemoryError::UnsupportedSchemaVersion.
 ```
 
-Tests must cover empty database initialization, reopen with `user_version = 1`, and fail-closed behavior for a higher unsupported version. Do not silently drop or rebuild an existing non-empty database.
+Tests must cover missing schema version, reopen with version 1, and fail-closed behavior for a higher unsupported version. Do not silently drop or rebuild an existing non-empty database.
 
 FTS maintenance must use SQLite triggers or explicit updates inside the same transaction. Choose one and test insert/update/delete behavior.
 
@@ -288,9 +306,9 @@ Create:
 - `crates/jyowo-harness-memory/src/ranking.rs`
   Deterministic lexical scoring and recall ranking.
 - `crates/jyowo-harness-memory/src/config.rs`
-  `MemoryRuntimeConfig`, `MemoryGenerationConfig`, scope merge helpers, validation.
+  Internal memory config merge helpers, settings-store trait, and validation using canonical contract DTOs.
 - `crates/jyowo-harness-memory/src/generation.rs`
-  Generation candidate types, extractor interface, real model-driven worker integration boundaries.
+  Internal generation candidate storage traits, extractor interface, real model-driven worker integration boundaries.
 - `crates/jyowo-harness-memory/src/taint.rs`
   `MemoryContextTaint` and persistence eligibility decisions.
 - `crates/jyowo-harness-memory/tests/sqlite_store.rs`
@@ -301,6 +319,8 @@ Create:
 - `crates/jyowo-harness-sdk/tests/memory_runtime_config.rs`
 - `crates/jyowo-harness-sdk/tests/memory_generation_worker.rs`
 - `crates/jyowo-harness-sdk/tests/memory_management.rs`
+- `crates/jyowo-harness-contracts/src/memory_management.rs`
+- `crates/jyowo-harness-contracts/tests/memory_management_contracts.rs`
 - `docs/architecture/harness/crates/harness-memory.md`
 
 Modify:
@@ -314,6 +334,7 @@ Modify:
 - `crates/jyowo-harness-contracts/src/events/memory.rs`
 - `crates/jyowo-harness-contracts/src/events/types.rs`
 - `crates/jyowo-harness-contracts/src/lib.rs`
+- `crates/jyowo-harness-contracts/src/schema_export.rs`
 - `crates/jyowo-harness-sdk/Cargo.toml`
 - `crates/jyowo-harness-sdk/src/builder.rs`
 - `crates/jyowo-harness-sdk/src/harness.rs` only for `HarnessInner` field wiring; keep memory behavior in split `harness/` modules.
@@ -362,6 +383,7 @@ Modify:
 pnpm check:agent-docs
 pnpm check:backend-docs
 pnpm check:frontend-docs
+pnpm check:agent-orchestration-no-fakes
 cargo test -p jyowo-harness-memory
 cargo test -p jyowo-harness-memory --no-default-features --features external-slot
 pnpm check:desktop
@@ -384,8 +406,11 @@ git commit --allow-empty -m "chore: establish memory system worktree baseline"
 - Modify: `crates/jyowo-harness-contracts/src/enums.rs`
 - Modify: `crates/jyowo-harness-contracts/src/events/memory.rs`
 - Modify: `crates/jyowo-harness-contracts/src/events/types.rs`
+- Create: `crates/jyowo-harness-contracts/src/memory_management.rs`
 - Modify: `crates/jyowo-harness-contracts/src/lib.rs`
+- Modify: `crates/jyowo-harness-contracts/src/schema_export.rs`
 - Modify: `crates/jyowo-harness-memory/src/types.rs`
+- Test: `crates/jyowo-harness-contracts/tests/memory_management_contracts.rs`
 - Test: `crates/jyowo-harness-memory/tests/api_contract.rs`
 - Test: `crates/jyowo-harness-memory/tests/contract.rs`
 
@@ -463,6 +488,7 @@ cargo test -p jyowo-harness-memory memory_contract --test contract -- --nocaptur
 Expected: fail because new fields/types do not exist.
 
 - [ ] Implement the contract additions exactly in contracts first, then memory types.
+- [ ] Export new public memory schemas from `crates/jyowo-harness-contracts/src/schema_export.rs`. Contract tests must verify serde shape and schema export names.
 - [ ] Do not add any raw URI or raw absolute path field to memory evidence. Use `MemorySourceRef::ExternalHost` for web/MCP origin host and `MemorySourceRef::RedactedLabel` for user-visible labels that have already passed the redactor.
 - [ ] Update all existing test builders for `MemoryRecord` and `MemorySummary` with real evidence values. Do not use empty evidence for records whose source is external or derived.
 - [ ] Ensure serde names are snake_case and stable.
@@ -514,7 +540,7 @@ sqlite_provider_updates_content_without_changing_id_or_created_at
 sqlite_provider_delete_removes_record_fts_and_evidence
 sqlite_provider_rejects_expired_ttl_records_on_recall
 sqlite_provider_records_access_count_and_last_accessed_at_after_recall
-sqlite_provider_initializes_user_version_and_reopens_supported_schema
+sqlite_provider_initializes_schema_version_and_reopens_supported_schema
 sqlite_provider_rejects_unsupported_future_schema_version
 ```
 
@@ -687,6 +713,9 @@ git commit -m "feat(memory): rank sqlite recall results"
 - Create: `crates/jyowo-harness-memory/src/config.rs`
 - Modify: `crates/jyowo-harness-memory/src/lib.rs`
 - Modify: `crates/jyowo-harness-memory/src/sqlite.rs`
+- Modify: `crates/jyowo-harness-contracts/src/memory_management.rs`
+- Modify: `crates/jyowo-harness-contracts/src/lib.rs`
+- Modify: `crates/jyowo-harness-contracts/src/schema_export.rs`
 - Modify: `crates/jyowo-harness-sdk/src/builder.rs`
 - Modify: `crates/jyowo-harness-sdk/src/harness.rs` only for `HarnessInner` field wiring.
 - Modify: `crates/jyowo-harness-sdk/src/harness/memory.rs`
@@ -696,6 +725,7 @@ git commit -m "feat(memory): rank sqlite recall results"
 - Modify: `crates/jyowo-harness-sdk/src/system_prompt.rs`
 - Test: `crates/jyowo-harness-memory/tests/config.rs`
 - Test: `crates/jyowo-harness-memory/tests/settings_store.rs`
+- Test: `crates/jyowo-harness-contracts/tests/memory_management_contracts.rs`
 - Test: `crates/jyowo-harness-sdk/tests/memory_runtime_config.rs`
 - Test: `crates/jyowo-harness-sdk/tests/runtime_assembly.rs`
 
@@ -704,8 +734,8 @@ git commit -m "feat(memory): rank sqlite recall results"
 Required config shape:
 
 ```rust
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct MemoryRuntimeConfig {
     pub use_memory: bool,
     pub generate_memory: bool,
@@ -713,10 +743,22 @@ pub struct MemoryRuntimeConfig {
     pub min_generation_turns: u32,
     pub generation_idle_ms: u64,
     pub min_rate_limit_remaining_percent: u8,
-    pub extraction_model_route: Option<String>,
-    pub consolidation_model_route: Option<String>,
+    pub extraction_model_config_id: Option<String>,
+    pub consolidation_model_config_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryConfigScope {
+    Global,
+    Workspace,
+    Project,
 }
 ```
+
+`MemoryRuntimeConfig` and `MemoryConfigScope` are public settings/SDK DTOs. Define them in `crates/jyowo-harness-contracts/src/memory_management.rs`, export them from `lib.rs`, include them in `schema_export.rs`, and re-export them through `jyowo-harness-sdk/src/ext.rs`. `crates/jyowo-harness-memory/src/config.rs` may define internal merge helpers and `MemorySettingsStore`, but it must use the canonical contract types instead of defining a second public serde shape.
+
+`extraction_model_config_id` and `consolidation_model_config_id` are references to existing provider/model configuration ids or existing capability-route bindings. They are not arbitrary route strings and must not introduce a parallel model routing system.
 
 Defaults:
 
@@ -727,8 +769,8 @@ disable_generation_on_external_context = true
 min_generation_turns = 3
 generation_idle_ms = 5000
 min_rate_limit_remaining_percent = 10
-extraction_model_route = None
-consolidation_model_route = None
+extraction_model_config_id = None
+consolidation_model_config_id = None
 ```
 
 Rationale: Jyowo is local/dev-stage, so recall can be on when provider exists; generation remains off until configured.
@@ -736,6 +778,7 @@ Rationale: Jyowo is local/dev-stage, so recall can be on when provider exists; g
 - [ ] Run failing tests:
 
 ```bash
+cargo test -p jyowo-harness-contracts memory_management_contracts --test memory_management_contracts -- --nocapture
 cargo test -p jyowo-harness-memory --features sqlite memory_runtime_config --test config -- --nocapture
 cargo test -p jyowo-harness-sdk --features testing,memory-external-slot,memory-sqlite memory_runtime_config --test memory_runtime_config -- --nocapture
 ```
@@ -748,17 +791,10 @@ Expected: fail because config does not exist.
 memory-sqlite = ["jyowo-harness-memory/sqlite"]
 ```
 
-- [ ] Add a settings-store trait in `crates/jyowo-harness-memory/src/config.rs`:
+- [ ] Add a settings-store trait in `crates/jyowo-harness-memory/src/config.rs` using canonical contract DTOs:
 
 ```rust
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MemoryConfigScope {
-    Global,
-    Workspace,
-    Project,
-    Session,
-}
+use harness_contracts::{MemoryConfigScope, MemoryRuntimeConfig};
 
 #[async_trait]
 pub trait MemorySettingsStore: Send + Sync + 'static {
@@ -777,7 +813,7 @@ pub trait MemorySettingsStore: Send + Sync + 'static {
 }
 ```
 
-`SqliteMemoryProvider` must implement `MemorySettingsStore`. SDK must receive this settings store through explicit builder wiring and read persisted settings before deciding whether to construct a `MemoryManager`.
+`SqliteMemoryProvider` must implement `MemorySettingsStore`. SDK must receive this settings store through explicit builder wiring and read persisted workspace/project settings before deciding whether to construct a `MemoryManager`.
 
 Required SDK wiring:
 
@@ -812,15 +848,22 @@ Do not open SQLite ad hoc inside Tauri commands or inside settings facade method
 
 If `get_memory_settings` or `update_memory_settings` is called without a configured `MemorySettingsStore`, return a fail-closed `MemoryError::SettingsStoreNotConfigured` through `HarnessError::Memory`. Do not silently fall back to defaults for writes.
 
-- [ ] Add memory config to `HarnessOptions` and session override to `SessionOptions` if `SessionOptions` is the existing per-session control point. Do not create a frontend-only setting.
+- [ ] Add `HarnessOptions.memory` only for global/default memory config.
+- [ ] Persist workspace/project settings through `MemorySettingsStore`.
+- [ ] Add per-run memory override only if a real product/API path requires it. If added, it must live in `ConversationRunOptions.memory`, not in `SessionOptions`.
+- [ ] Do not create a frontend-only memory setting.
+- [ ] Do not let memory config enter `session_options_hash`. `SessionOptions` is session identity/defaults, not run-level memory execution control.
+- [ ] If run-level memory config changes execution, include the resolved effective memory config in the run effective config hash through `ConversationRunOptions` hashing.
 - [ ] Implement merge order:
 
 ```text
 hardcoded safe defaults
   < HarnessOptions.memory
-  < workspace/project persisted setting
-  < SessionOptions.memory override
+  < workspace/project persisted settings
+  < ConversationRunOptions.memory per-run override
 ```
+
+If no per-run override is implemented, do not add a frontend-only substitute for it.
 
 - [ ] Ensure `MemoryManager` is not created when `use_memory = false`.
 - [ ] Ensure `get_memory_settings` and `update_memory_settings` still work when `use_memory = false`; they use `MemorySettingsStore`, not `MemoryManager`, and they must not call `memory_manager_for_session`.
@@ -833,14 +876,16 @@ memory_generation: enabled|disabled
 memory_external_context_generation: disabled|allowed
 ```
 
-Do not render secrets or model route values.
+Do not render secrets, provider credential material, or raw model config ids.
 
 - [ ] Run:
 
 ```bash
 cargo test -p jyowo-harness-memory --features sqlite memory_runtime_config --test config -- --nocapture
+cargo test -p jyowo-harness-contracts memory_management_contracts --test memory_management_contracts -- --nocapture
 cargo test -p jyowo-harness-sdk --features testing,memory-external-slot,memory-sqlite memory_runtime_config --test memory_runtime_config -- --nocapture
 cargo test -p jyowo-harness-sdk --features testing,memory-external-slot,memory-sqlite runtime_assembly --test runtime_assembly -- --nocapture
+pnpm check:agent-orchestration-no-fakes
 git diff --check
 ```
 
@@ -848,7 +893,7 @@ git diff --check
 - [ ] Commit:
 
 ```bash
-git add crates/jyowo-harness-memory crates/jyowo-harness-sdk
+git add crates/jyowo-harness-contracts crates/jyowo-harness-memory crates/jyowo-harness-sdk
 git commit -m "feat(memory): add runtime controls"
 ```
 
@@ -979,7 +1024,7 @@ candidate_reject_does_not_create_memory_record
 candidate_content_is_scanned_before_persist
 candidate_generation_skips_short_sessions
 candidate_generation_skips_external_tainted_sessions_by_default
-candidate_generation_requires_real_extraction_model_route
+candidate_generation_requires_validated_extraction_model_config_or_capability_route
 candidate_accept_preserves_proposed_confidence_and_tags
 candidate_generation_key_prevents_duplicates_across_repeated_session_end
 generation_worker_reads_external_taint_from_sdk_session_summary_state
@@ -1112,10 +1157,11 @@ Pass those three trait objects through the SDK builder. Do not create three sepa
   - Waits `generation_idle_ms`.
   - Skips when `turn_count < min_generation_turns`.
   - Skips when `generate_memory = false`.
-  - Skips when route is absent; emit degraded/skipped event. Do not create heuristic candidates.
+  - Skips when validated extraction model config/capability route is absent; emit degraded/skipped event. Do not create heuristic candidates.
   - Reads `MemoryContextTaint` from the SDK session summary state produced by Task 5.
   - Skips when external taint exists and disable flag is true.
-  - Uses configured real model route through existing model provider path.
+  - Uses existing provider settings, `modelConfigId`, or provider capability-route validation. Do not construct a provider from arbitrary strings.
+  - Fails closed or emits a degraded/skipped event when config is missing, credentials are missing, provider capability validation fails, or no runtime adapter exists. Do not generate candidates in these cases.
   - Parses model output as strict JSON candidate array.
   - Runs redaction/threat scanning before storing candidates.
   - Computes `generation_key` after redaction and trusted visibility mapping.
@@ -1157,6 +1203,7 @@ cargo test -p jyowo-harness-memory --features sqlite,consolidation,threat-scanne
 cargo test -p jyowo-harness-sdk --features testing,memory-external-slot,memory-sqlite,memory-consolidation memory_generation_worker --test memory_generation_worker -- --nocapture
 cargo test -p jyowo-harness-memory --features sqlite,consolidation,threat-scanner
 cargo test -p jyowo-harness-sdk --features testing,memory-external-slot,memory-sqlite,memory-consolidation
+pnpm check:agent-orchestration-no-fakes
 git diff --check
 ```
 
@@ -1222,6 +1269,7 @@ Use `SqliteMemoryProvider::open_with_provider_id(path, "desktop-memory")` only i
 - [ ] Add a desktop storage helper if necessary. Keep path construction in Tauri shell, not inside lower crates.
 - [ ] Reuse one SQLite provider instance per desktop runtime. Pass the same concrete `Arc<SqliteMemoryProvider>` into the SDK as `MemoryProvider`, `MemoryCandidateStore`, and `MemorySettingsStore`. Do not create a new provider per browser command.
 - [ ] Keep Tauri command wrappers in `apps/desktop/src-tauri/src/commands/mod.rs`. Memory command business logic belongs in `apps/desktop/src-tauri/src/commands/memory.rs`; runtime provider assembly belongs in `apps/desktop/src-tauri/src/commands/runtime.rs`.
+- [ ] Preserve existing agent orchestration runtime wiring while editing SDK builder/runtime and desktop runtime assembly. Do not remove or bypass background agent registry setup, agent runtime resolver wiring, team runtime wiring, or `agentOptions` validation.
 - [ ] Ensure exports use redacted payloads and do not include full private absolute paths in frontend response.
 - [ ] Run:
 
@@ -1229,6 +1277,7 @@ Use `SqliteMemoryProvider::open_with_provider_id(path, "desktop-memory")` only i
 cargo test -p jyowo-desktop-shell desktop_memory --test commands -- --nocapture
 cargo test -p jyowo-desktop-shell memory --test commands -- --nocapture
 pnpm check:rust
+pnpm check:agent-orchestration-no-fakes
 git diff --check
 ```
 
@@ -1247,8 +1296,13 @@ git commit -m "feat(memory): persist desktop memory"
 - Modify: `apps/desktop/src-tauri/src/commands/contracts.rs`
 - Modify: `apps/desktop/src-tauri/src/commands/memory.rs`
 - Modify: `apps/desktop/src-tauri/src/commands/mod.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/conversations.rs` only if per-run memory override is added to `start_run`; preserve all existing `agentOptions` mapping.
 - Modify: `apps/desktop/src-tauri/tests/commands.rs` only if shared helpers, imports, or module registration change.
 - Modify: `apps/desktop/src-tauri/tests/commands/memory.rs`
+- Create/Modify: `crates/jyowo-harness-contracts/src/memory_management.rs`
+- Modify: `crates/jyowo-harness-contracts/src/lib.rs`
+- Modify: `crates/jyowo-harness-contracts/src/schema_export.rs`
+- Test: `crates/jyowo-harness-contracts/tests/memory_management_contracts.rs`
 - Modify: `crates/jyowo-harness-memory/src/types.rs`
 - Modify: `crates/jyowo-harness-memory/src/generation.rs`
 - Modify: `crates/jyowo-harness-memory/src/config.rs`
@@ -1322,28 +1376,29 @@ Expected: fail because create/candidate APIs and UI do not exist.
 Canonical Rust DTO ownership:
 
 ```text
-crates/jyowo-harness-memory/src/types.rs
+crates/jyowo-harness-contracts/src/memory_management.rs
   - MemoryVisibilityScope
   - CreateMemoryItemRequest
-  - MemoryItemResponse if a response wrapper is needed
-
-crates/jyowo-harness-memory/src/generation.rs
   - MemoryCandidate
   - MemoryCandidateStatus
-  - candidate list/accept/reject response DTOs if wrappers are needed
-
-crates/jyowo-harness-memory/src/config.rs
   - MemoryRuntimeConfig
   - MemoryConfigScope
+  - MemoryItemResponse if a response wrapper is needed
+  - candidate list/accept/reject response DTOs if wrappers are needed
   - memory settings request/response DTOs if wrappers are needed
+
+crates/jyowo-harness-memory/src/types.rs / generation.rs / config.rs
+  - internal domain structs, storage traits, merge helpers, and conversions only
 ```
 
-`crates/jyowo-harness-sdk/src/ext.rs` must re-export these canonical memory DTOs. `apps/desktop/src-tauri/src/commands/contracts.rs` may define thin IPC envelopes, and `apps/desktop/src-tauri/src/commands/memory.rs` may map payloads. They must import canonical DTOs through `jyowo_harness_sdk::ext` and must not define duplicate Rust structs or enums with the same wire shape.
+`crates/jyowo-harness-contracts/src/memory_management.rs` must derive `Serialize`, `Deserialize`, and `JsonSchema` for public DTOs. Update `schema_export.rs` and contract tests for every exported memory management DTO.
 
-Required SDK DTO shapes in `jyowo-harness-memory`:
+`crates/jyowo-harness-sdk/src/ext.rs` must re-export these canonical contract DTOs. `apps/desktop/src-tauri/src/commands/contracts.rs` may define thin IPC envelopes, and `apps/desktop/src-tauri/src/commands/memory.rs` may map payloads. They must import canonical DTOs through `jyowo_harness_sdk::ext` and must not define duplicate Rust structs or enums with the same wire shape.
+
+Required contract DTO shapes:
 
 ```rust
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryVisibilityScope {
     Private,
@@ -1352,7 +1407,7 @@ pub enum MemoryVisibilityScope {
     Tenant,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct CreateMemoryItemRequest {
     pub kind: MemoryKind,
@@ -1376,6 +1431,8 @@ pub async fn update_memory_settings(&self, scope: MemoryConfigScope, scope_id: &
 ```
 
 Tauri command request/response types must use the canonical DTOs or thin wrappers that contain only command transport fields such as `id`; wrappers must not duplicate `MemoryVisibilityScope`, candidate status, settings shape, `MemoryKind`, `MemorySource`, or evidence fields.
+
+When adding memory fields to `start_run`, preserve the existing `agentOptions` request field, Rust `StartRunRequest.agent_options`, `ConversationRunOptions.agent_run_options`, frontend `agentRunOptionsSchema`, and background-agent response path.
 
 Required commands:
 
@@ -1402,9 +1459,11 @@ update_memory_settings
 
 ```bash
 cargo test -p jyowo-desktop-shell memory --test commands -- --nocapture
+cargo test -p jyowo-harness-contracts memory_management_contracts --test memory_management_contracts -- --nocapture
 cargo test -p jyowo-harness-sdk --features testing,memory-external-slot,memory-sqlite memory_management --test memory_management -- --nocapture
 pnpm --dir apps/desktop vitest run src/shared/tauri/commands.test.ts src/features/memory/MemoryBrowser.test.tsx
 pnpm check:desktop
+pnpm check:agent-orchestration-no-fakes
 git diff --check
 ```
 
@@ -1412,7 +1471,7 @@ git diff --check
 - [ ] Commit:
 
 ```bash
-git add apps/desktop crates/jyowo-harness-memory crates/jyowo-harness-sdk
+git add apps/desktop crates/jyowo-harness-contracts crates/jyowo-harness-memory crates/jyowo-harness-sdk
 git commit -m "feat(memory): add memory management UI"
 ```
 
@@ -1422,6 +1481,7 @@ git commit -m "feat(memory): add memory management UI"
 
 - Create: `docs/architecture/harness/crates/harness-memory.md`
 - Modify: `crates/jyowo-harness-memory/README.md`
+- Modify: `crates/jyowo-harness-memory/src/lib.rs`
 - Modify: `scripts/check-backend-docs.mjs`
 - Test: docs gates
 
@@ -1451,6 +1511,7 @@ Memory is auxiliary recall context. It is never a policy authority and cannot ov
 ```
 
 - [ ] Update README `SPEC:` link to the new doc.
+- [ ] Verify `crates/jyowo-harness-memory/src/lib.rs` has a valid `SPEC:` target pointing to the new doc. Update it if the path or filename changed.
 - [ ] Update `scripts/check-backend-docs.mjs` so `requiredArchitectureDocs` includes `docs/architecture/harness/crates/harness-memory.md`. Do not add an orphan Markdown file.
 - [ ] If `scripts/check-backend-docs.mjs` has already been changed by an earlier task, verify with `rg -n "harness-memory.md" scripts/check-backend-docs.mjs` before running docs gates.
 - [ ] Run:
@@ -1467,7 +1528,7 @@ git diff --check
 - [ ] Commit:
 
 ```bash
-git add docs crates/jyowo-harness-memory/README.md scripts/check-backend-docs.mjs
+git add docs crates/jyowo-harness-memory/README.md crates/jyowo-harness-memory/src/lib.rs scripts/check-backend-docs.mjs
 git commit -m "docs(memory): document memory architecture"
 ```
 
@@ -1513,6 +1574,7 @@ pnpm check:docs
 pnpm check:agent-docs
 pnpm check:frontend-docs
 pnpm check:backend-docs
+pnpm check:agent-orchestration-no-fakes
 pnpm check:desktop
 pnpm check:rust
 cargo fmt --all --check
@@ -1570,7 +1632,7 @@ Before `git add`, `git status --short` must contain only files intentionally cha
 - Generated memory is candidate-first, redacted, provenance-backed, and disabled unless config allows generation.
 - External-context sessions do not generate durable memory by default.
 - Hardcoded Chinese recall trigger is gone.
-- Memory settings support recall use, generation use, external-context disable, idle delay, minimum turns, and model route selection.
+- Memory settings support recall use, generation use, external-context disable, idle delay, minimum turns, and validated existing provider/model config selection.
 - Memory evidence/provenance is persisted and shown as counts/metadata, not raw sensitive snippets.
 - Memory export is redacted and audited.
 - `harness-memory` architecture doc exists and README link is valid.

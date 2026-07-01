@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
-    AgentRunOptions, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy, AgentTeamTopology,
     AgentUsePolicy, AgentWorkspaceIsolationMode, BackgroundAgentState, BackgroundRunPolicy,
     PermissionActorSource,
 };
@@ -88,7 +87,6 @@ async fn agent_orchestration_e2e_real_subagent_spawn_projects_activity() {
 
     start_run_with_runtime_state(
         StartRunRequest {
-            agent_options: Some(sample_subagent_run_options()),
             attachments: None,
             client_message_id: None,
             context_references: None,
@@ -139,13 +137,21 @@ async fn agent_orchestration_e2e_real_subagent_spawn_projects_activity() {
 async fn agent_orchestration_e2e_real_run_scoped_team_persists_and_projects() {
     let workspace = unique_workspace("real-team");
     jyowo_harness_sdk::list_agent_profiles(&workspace).expect("agent profiles initialize");
+    let agent_team_tool_use_id = ToolUseId::new();
     let state = runtime_state_with_scripted_model_for_workspace(
         workspace.clone(),
         vec![
             ScriptedResponse::Stream(vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
-                    delta: ContentDelta::Text("parent accepted team".to_owned()),
+                    delta: ContentDelta::ToolUseComplete {
+                        id: agent_team_tool_use_id,
+                        name: "agent_team".to_owned(),
+                        input: json!({
+                            "goal": "Run with a scoped team",
+                            "maxTurnsPerGoal": 4
+                        }),
+                    },
                 },
                 ModelStreamEvent::MessageStop,
             ]),
@@ -164,7 +170,6 @@ async fn agent_orchestration_e2e_real_run_scoped_team_persists_and_projects() {
 
     let started = start_run_with_runtime_state(
         StartRunRequest {
-            agent_options: Some(sample_team_run_options()),
             attachments: None,
             client_message_id: None,
             context_references: None,
@@ -230,12 +235,9 @@ async fn agent_orchestration_e2e_real_background_agent_commands_and_recovery() {
     let supervisor = write_test_supervisor_lock(state.workspace_root());
     enable_agent_execution_settings(&state, true).await;
     let session_id = jyowo_harness_sdk::ext::SessionId::new();
-    let mut options = sample_subagent_run_options();
-    options.background = BackgroundRunPolicy::Background;
 
     let started = start_run_with_runtime_state(
         StartRunRequest {
-            agent_options: Some(options),
             attachments: None,
             client_message_id: None,
             context_references: None,
@@ -335,9 +337,8 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
         }),
     )
     .expect("disabled settings save");
-    let disabled_error = resolve_start_run_agent_policy(
+    let disabled_policy = resolve_start_run_agent_policy(
         &StartRunRequest {
-            agent_options: Some(sample_subagent_run_options()),
             attachments: None,
             client_message_id: None,
             context_references: None,
@@ -348,8 +349,13 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
         },
         &state,
     )
-    .expect_err("per-run subagent enable is rejected when disabled globally");
-    assert_eq!(disabled_error.code, "INVALID_PAYLOAD");
+    .expect("disabled settings should resolve to foreground policy");
+    assert_eq!(disabled_policy.options.subagents, AgentUsePolicy::Off);
+    assert_eq!(disabled_policy.options.agent_team, AgentUsePolicy::Off);
+    assert_eq!(
+        disabled_policy.options.background,
+        BackgroundRunPolicy::Foreground
+    );
 
     let unavailable_error = set_execution_settings_with_store(
         SetExecutionSettingsRequest {
@@ -369,27 +375,27 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
     assert_eq!(unavailable_error.code, "INVALID_PAYLOAD");
 
     enable_agent_execution_settings(&state, false).await;
-    let mut write_without_isolation = sample_subagent_run_options();
-    write_without_isolation.workspace_isolation = AgentWorkspaceIsolationMode::GitWorktree;
-    let isolation_error = resolve_start_run_agent_policy(
+    let enabled_policy = resolve_start_run_agent_policy(
         &StartRunRequest {
-            agent_options: Some(write_without_isolation),
             attachments: None,
             client_message_id: None,
             context_references: None,
             conversation_id: jyowo_harness_sdk::ext::SessionId::new().to_string(),
             model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
             permission_mode: None,
-            prompt: "Run write-capable child without isolation".to_owned(),
+            prompt: "Run configured child".to_owned(),
         },
         &state,
     )
-    .expect_err("write-capable child without usable isolation fails closed");
-    assert_eq!(isolation_error.code, "INVALID_PAYLOAD");
+    .expect("enabled settings should resolve agent policy");
+    assert_eq!(enabled_policy.options.subagents, AgentUsePolicy::Allowed);
+    assert_eq!(
+        enabled_policy.options.workspace_isolation,
+        AgentWorkspaceIsolationMode::ReadOnly
+    );
 
     start_run_with_runtime_state(
         StartRunRequest {
-            agent_options: Some(sample_subagent_run_options()),
             attachments: None,
             client_message_id: None,
             context_references: None,
@@ -655,38 +661,6 @@ async fn enable_agent_execution_settings(state: &DesktopRuntimeState, background
         }),
     )
     .expect("execution settings save");
-}
-
-fn sample_subagent_run_options() -> AgentRunOptions {
-    AgentRunOptions {
-        subagents: AgentUsePolicy::Allowed,
-        agent_team: AgentUsePolicy::Off,
-        team_config: None,
-        background: BackgroundRunPolicy::Foreground,
-        workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
-        max_depth: 2,
-        max_concurrent_subagents: 2,
-        max_team_members: 4,
-    }
-}
-
-fn sample_team_run_options() -> AgentRunOptions {
-    AgentRunOptions {
-        subagents: AgentUsePolicy::Allowed,
-        agent_team: AgentUsePolicy::Allowed,
-        team_config: Some(AgentTeamRunConfig {
-            topology: AgentTeamTopology::CoordinatorWorker,
-            lead_profile_id: "reviewer".to_owned(),
-            member_profile_ids: vec!["worker".to_owned()],
-            max_turns_per_goal: 4,
-            shared_memory_policy: AgentTeamSharedMemoryPolicy::SummariesOnly,
-        }),
-        background: BackgroundRunPolicy::Foreground,
-        workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
-        max_depth: 2,
-        max_concurrent_subagents: 2,
-        max_team_members: 4,
-    }
 }
 
 async fn read_events(

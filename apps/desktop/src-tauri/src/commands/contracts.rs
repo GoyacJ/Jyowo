@@ -1284,12 +1284,10 @@ pub struct DeleteConversationResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StartRunRequest {
     #[serde(default)]
     pub attachments: Option<Vec<AttachmentReferencePayload>>,
-    #[serde(default)]
-    pub agent_options: Option<AgentRunOptions>,
     #[serde(default)]
     pub client_message_id: Option<String>,
     #[serde(default)]

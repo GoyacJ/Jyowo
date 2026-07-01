@@ -239,9 +239,6 @@ pub fn validate_agent_run_options(
     options: &AgentRunOptions,
 ) -> Result<(), AgentOrchestrationValidationError> {
     match (options.agent_team, options.team_config.as_ref()) {
-        (AgentUsePolicy::Allowed, None) => {
-            return Err(AgentOrchestrationValidationError::MissingTeamConfig);
-        }
         (AgentUsePolicy::Off, Some(_)) => {
             return Err(AgentOrchestrationValidationError::UnexpectedTeamConfig);
         }

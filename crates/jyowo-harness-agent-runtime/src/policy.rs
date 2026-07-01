@@ -350,9 +350,17 @@ fn default_agent_run_options_from_settings(
         } else {
             AgentUsePolicy::Off
         },
-        agent_team: AgentUsePolicy::Off,
+        agent_team: if settings.agent_teams_enabled {
+            AgentUsePolicy::Allowed
+        } else {
+            AgentUsePolicy::Off
+        },
         team_config: None,
-        background: BackgroundRunPolicy::Foreground,
+        background: if settings.background_agents_enabled {
+            BackgroundRunPolicy::Background
+        } else {
+            BackgroundRunPolicy::Foreground
+        },
         workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
         max_depth: DEFAULT_MAX_DEPTH,
         max_concurrent_subagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
