@@ -323,6 +323,8 @@ pub(crate) async fn run_turn(
                 redactor: runtime.redactor.clone(),
                 interrupt: InterruptToken::new(),
                 parent_run: None,
+                model: session.turn_model_snapshot(),
+                model_config_id: session.turn_model_config_id(),
             },
             permission_context: permission_context(session, run_id, permission_mode),
             blob_store: runtime.blob_store.clone(),

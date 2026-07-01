@@ -17,8 +17,8 @@ use harness_contracts::{
     MessagePart, ModelError, PermissionMode, PluginId, ProviderRestriction, RedactRules, Redactor,
     RequestId, SessionCreatedEvent, SessionSummaryView, SnapshotId, SteeringBody, SteeringKind,
     SteeringSource, TeamId, TenantId, ToolDeferredPoolChangedEvent, ToolDescriptor, ToolGroup,
-    ToolOrigin, ToolPoolChangeSource, ToolProperties, ToolResult, ToolSearchMode, ToolUseId,
-    TrustLevel, UsageSnapshot,
+    ToolOrigin, ToolPoolChangeSource, ToolProfile, ToolProperties, ToolResult, ToolSearchMode,
+    ToolUseId, TrustLevel, UsageSnapshot,
 };
 use harness_hook::HookRegistry;
 use harness_journal::{EventStore, ReplayCursor};
@@ -56,6 +56,33 @@ use jyowo_harness_sdk::{prelude::*, testing::*, AgentCapabilityResolutionContext
 use serde_json::json;
 use serde_json::Value;
 use tokio::sync::Notify;
+
+fn conversation_turn_request(
+    options: SessionOptions,
+    input: ConversationTurnInput,
+    permission_mode: Option<PermissionMode>,
+    permission_actor_source: Option<harness_contracts::PermissionActorSource>,
+    agent_run_options: Option<harness_contracts::AgentRunOptions>,
+) -> ConversationTurnRequest {
+    let mut run_options = ConversationRunOptions::from_session_options(&options);
+    if let Some(permission_mode) = permission_mode {
+        run_options = run_options.with_permission_mode(permission_mode);
+    }
+    #[cfg(feature = "agents-subagent")]
+    {
+        run_options.agent_run_options = agent_run_options;
+    }
+    #[cfg(not(feature = "agents-subagent"))]
+    {
+        let _ = agent_run_options;
+    }
+    ConversationTurnRequest {
+        options,
+        run_options,
+        input,
+        permission_actor_source,
+    }
+}
 
 #[test]
 fn knowledge_retrieval_context_patch_source_has_sdk_facing_shape() {
@@ -104,13 +131,13 @@ fn conversation_turn_input_ask_mode_preserves_prompt_text() {
             .await
             .expect("session should open");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: SessionOptions::new(&workspace).with_session_id(session_id),
-                input: ConversationTurnInput::ask("plain user question"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+            .submit_conversation_turn(conversation_turn_request(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+                ConversationTurnInput::ask("plain user question"),
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("turn should run");
 
@@ -159,23 +186,23 @@ fn conversation_turn_request_includes_prior_session_messages() {
             .await
             .expect("session should open");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: SessionOptions::new(&workspace).with_session_id(session_id),
-                input: ConversationTurnInput::ask("first user question"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+            .submit_conversation_turn(conversation_turn_request(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+                ConversationTurnInput::ask("first user question"),
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("first turn should run");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: SessionOptions::new(&workspace).with_session_id(session_id),
-                input: ConversationTurnInput::ask("second user question"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+            .submit_conversation_turn(conversation_turn_request(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+                ConversationTurnInput::ask("second user question"),
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("second turn should run");
 
@@ -221,15 +248,15 @@ fn conversation_session_budget_uses_model_window_and_trigger_ratio() {
             .await
             .expect("session should open");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
+            .submit_conversation_turn(conversation_turn_request(
                 options,
-                input: ConversationTurnInput::ask(
+                ConversationTurnInput::ask(
                     "this message is intentionally long enough to cross the configured soft budget",
                 ),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("turn should run");
 
@@ -274,13 +301,13 @@ fn default_conversation_system_prompt_uses_agent_runtime_identity() {
             .await
             .expect("session should open");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
+            .submit_conversation_turn(conversation_turn_request(
                 options,
-                input: ConversationTurnInput::ask("hello"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+                ConversationTurnInput::ask("hello"),
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("turn should run");
 
@@ -343,13 +370,13 @@ fn runtime_context_does_not_include_provider_credentials() {
             .await
             .expect("session should open");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
+            .submit_conversation_turn(conversation_turn_request(
                 options,
-                input: ConversationTurnInput::ask("hello"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+                ConversationTurnInput::ask("hello"),
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("turn should run");
 
@@ -384,13 +411,13 @@ fn default_system_prompt_excludes_coding_partner_language() {
             .await
             .expect("session should open");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
+            .submit_conversation_turn(conversation_turn_request(
                 options,
-                input: ConversationTurnInput::ask("hello"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+                ConversationTurnInput::ask("hello"),
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("turn should run");
 
@@ -486,13 +513,13 @@ async fn conversation_system_prompt_with_bootstrap(
         .await
         .expect("session should open");
     harness
-        .submit_conversation_turn(ConversationTurnRequest {
+        .submit_conversation_turn(conversation_turn_request(
             options,
-            input: ConversationTurnInput::ask("hello"),
-            permission_mode_override: None,
-            permission_actor_source: None,
-            agent_run_options: None,
-        })
+            ConversationTurnInput::ask("hello"),
+            None,
+            None,
+            None,
+        ))
         .await
         .expect("turn should run");
 
@@ -745,13 +772,13 @@ fn conversation_session_uses_descriptor_protocol_when_options_omit_protocol() {
             .await
             .expect("session should open");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
+            .submit_conversation_turn(conversation_turn_request(
                 options,
-                input: ConversationTurnInput::ask("plain user question"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+                ConversationTurnInput::ask("plain user question"),
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("turn should run");
 
@@ -792,9 +819,9 @@ fn conversation_turn_input_renders_references_and_attachments_context_block() {
             .await
             .expect("session should open");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: SessionOptions::new(&workspace).with_session_id(session_id),
-                input: ConversationTurnInput {
+            .submit_conversation_turn(conversation_turn_request(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+                ConversationTurnInput {
                     client_message_id: None,
                     prompt: "use these references".to_owned(),
                     context_references: vec![
@@ -823,10 +850,10 @@ fn conversation_turn_input_renders_references_and_attachments_context_block() {
                         blob_ref: test_blob_ref(12, "text/plain"),
                     }],
                 },
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("turn should run");
 
@@ -973,13 +1000,13 @@ fn conversation_facade_opens_submits_and_pages_session_events() {
         assert_eq!(opened.message_count, 0);
 
         let submitted = harness
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: SessionOptions::new(&workspace).with_session_id(session_id),
-                input: ConversationTurnInput::ask("use facade path"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+            .submit_conversation_turn(conversation_turn_request(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+                ConversationTurnInput::ask("use facade path"),
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("turn should run through the conversation facade");
         assert_eq!(submitted.session_id, session_id);
@@ -1071,13 +1098,13 @@ fn conversation_facade_pages_and_deletes_when_model_runtime_defaults_change() {
             .any(|envelope| matches!(envelope.payload, Event::SessionCreated(_))));
 
         let submitted = harness
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: changed_defaults_options.clone(),
-                input: ConversationTurnInput::ask("continue with the selected model"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+            .submit_conversation_turn(conversation_turn_request(
+                changed_defaults_options.clone(),
+                ConversationTurnInput::ask("continue with the selected model"),
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("historical conversation submit must survive model default changes");
         assert_eq!(submitted.session_id, session_id);
@@ -1118,23 +1145,23 @@ fn conversation_turn_permission_override_is_run_scoped() {
             .await
             .expect("session should open");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: options.clone(),
-                input: ConversationTurnInput::ask("use full access for this run"),
-                permission_mode_override: Some(PermissionMode::BypassPermissions),
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+            .submit_conversation_turn(conversation_turn_request(
+                options.clone(),
+                ConversationTurnInput::ask("use full access for this run"),
+                Some(PermissionMode::BypassPermissions),
+                None,
+                None,
+            ))
             .await
             .expect("override turn should run");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: options.clone(),
-                input: ConversationTurnInput::ask("use default permission mode again"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+            .submit_conversation_turn(conversation_turn_request(
+                options.clone(),
+                ConversationTurnInput::ask("use default permission mode again"),
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("next turn should run with session default");
 
@@ -1203,13 +1230,13 @@ fn conversation_session_hash_allows_permission_mode_variant() {
             .expect("session should be created");
 
         let receipt = harness
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: SessionOptions::new(&workspace).with_session_id(session_id),
-                input: ConversationTurnInput::ask("continue current conversation"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+            .submit_conversation_turn(conversation_turn_request(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+                ConversationTurnInput::ask("continue current conversation"),
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("permission mode changes are run-level and must not reject the session");
 
@@ -1238,6 +1265,186 @@ fn session_options_hash_ignores_run_level_options() {
 
     assert_eq!(default_hash, permission_hash);
     assert_eq!(default_hash, compression_hash);
+}
+
+#[test]
+fn runtime_assembly_conversation_allows_provider_model_switch_per_run() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-runtime-assembly-run-model-switch");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        let deepseek = Arc::new(
+            CapabilityScriptedProvider::new(
+                ConversationModelCapability::default(),
+                vec![vec![ModelStreamEvent::MessageStop]],
+            )
+            .with_identity("deepseek", "deepseek-chat", "DeepSeek Chat"),
+        );
+        let minimax = Arc::new(
+            CapabilityScriptedProvider::new(
+                ConversationModelCapability::default(),
+                vec![vec![ModelStreamEvent::MessageStop]],
+            )
+            .with_identity("minimax", "minimax-m3", "MiniMax M3"),
+        );
+        let deepseek_harness = Harness::builder()
+            .with_model_arc(deepseek)
+            .with_store_arc(store.clone())
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("deepseek harness should build");
+        let minimax_harness = Harness::builder()
+            .with_model_arc(minimax)
+            .with_store_arc(store.clone())
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("minimax harness should build");
+        let identity_options = SessionOptions::new(&workspace).with_session_id(session_id);
+        let deepseek_options = identity_options.clone().with_model_id("deepseek-chat");
+        deepseek_harness
+            .open_or_create_conversation_session(deepseek_options.clone())
+            .await
+            .expect("conversation session should open with first run model");
+
+        let deepseek_run_options = ConversationRunOptions::from_session_options(&deepseek_options)
+            .with_model_config_id("deepseek-config");
+        deepseek_harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: identity_options.clone(),
+                run_options: deepseek_run_options,
+                input: ConversationTurnInput::ask("first run"),
+                permission_actor_source: None,
+            })
+            .await
+            .expect("deepseek run should submit");
+
+        let minimax_options = identity_options.clone().with_model_id("minimax-m3");
+        let minimax_run_options = ConversationRunOptions::from_session_options(&minimax_options)
+            .with_model_config_id("minimax-config");
+        let second = minimax_harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: identity_options,
+                run_options: minimax_run_options,
+                input: ConversationTurnInput::ask("second run"),
+                permission_actor_source: None,
+            })
+            .await
+            .expect("minimax run should not hit session options mismatch");
+        assert_eq!(second.session_id, session_id);
+
+        let run_models: Vec<_> = store
+            .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+            .await
+            .expect("events should be readable")
+            .filter_map(|event| async move {
+                match event {
+                    Event::RunStarted(started) => Some(started.model),
+                    _ => None,
+                }
+            })
+            .collect()
+            .await;
+        assert_eq!(run_models.len(), 2);
+        assert_eq!(run_models[0].provider_id, "deepseek");
+        assert_eq!(run_models[0].model_id, "deepseek-chat");
+        assert_eq!(
+            run_models[0].model_config_id.as_deref(),
+            Some("deepseek-config")
+        );
+        assert_eq!(run_models[1].provider_id, "minimax");
+        assert_eq!(run_models[1].model_id, "minimax-m3");
+        assert_eq!(
+            run_models[1].model_config_id.as_deref(),
+            Some("minimax-config")
+        );
+    });
+}
+
+#[test]
+fn runtime_assembly_run_config_changes_do_not_block_session_and_change_run_hash() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-runtime-assembly-run-config-hash");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![
+                vec![ModelStreamEvent::MessageStop],
+                vec![ModelStreamEvent::MessageStop],
+            ],
+        ));
+        let harness = Harness::builder()
+            .with_model_arc(model)
+            .with_store_arc(store.clone())
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+        let options = SessionOptions::new(&workspace).with_session_id(session_id);
+        harness
+            .open_or_create_conversation_session(options.clone().with_model_id("test-model"))
+            .await
+            .expect("conversation session should open");
+
+        let first_run_options = ConversationRunOptions::from_session_options(
+            &options.clone().with_model_id("test-model"),
+        )
+        .with_permission_mode(PermissionMode::Default)
+        .with_tool_profile(ToolProfile::Full)
+        .with_context_compression_trigger_ratio(0.8);
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options: options.clone(),
+                run_options: first_run_options,
+                input: ConversationTurnInput::ask("first config"),
+                permission_actor_source: None,
+            })
+            .await
+            .expect("first run should submit");
+
+        let second_run_options = ConversationRunOptions::from_session_options(
+            &options.clone().with_model_id("test-model"),
+        )
+        .with_permission_mode(PermissionMode::BypassPermissions)
+        .with_tool_profile(ToolProfile::Minimal)
+        .with_context_compression_trigger_ratio(0.6);
+        harness
+            .submit_conversation_turn(ConversationTurnRequest {
+                options,
+                run_options: second_run_options,
+                input: ConversationTurnInput::ask("second config"),
+                permission_actor_source: None,
+            })
+            .await
+            .expect("run-level config changes must not reject the session");
+
+        let run_starts: Vec<_> = store
+            .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+            .await
+            .expect("events should be readable")
+            .filter_map(|event| async move {
+                match event {
+                    Event::RunStarted(started) => Some(started),
+                    _ => None,
+                }
+            })
+            .collect()
+            .await;
+        assert_eq!(run_starts.len(), 2);
+        assert_ne!(
+            run_starts[0].effective_config_hash,
+            run_starts[1].effective_config_hash
+        );
+        assert_eq!(run_starts[0].permission_mode, PermissionMode::Default);
+        assert_eq!(
+            run_starts[1].permission_mode,
+            PermissionMode::BypassPermissions
+        );
+    });
 }
 
 #[test]
@@ -1326,13 +1533,13 @@ async fn conversation_facade_cancels_active_run_through_sdk_registry() {
     let run_workspace = workspace.clone();
     let submitted = tokio::spawn(async move {
         run_harness
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: SessionOptions::new(&run_workspace).with_session_id(session_id),
-                input: ConversationTurnInput::ask("cancel active facade run"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+            .submit_conversation_turn(conversation_turn_request(
+                SessionOptions::new(&run_workspace).with_session_id(session_id),
+                ConversationTurnInput::ask("cancel active facade run"),
+                None,
+                None,
+                None,
+            ))
             .await
     });
 
@@ -1389,13 +1596,13 @@ async fn conversation_facade_delete_cancels_active_run_and_blocks_late_appends()
     let run_workspace = workspace.clone();
     let submitted = tokio::spawn(async move {
         run_harness
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: SessionOptions::new(&run_workspace).with_session_id(session_id),
-                input: ConversationTurnInput::ask("delete active facade run"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+            .submit_conversation_turn(conversation_turn_request(
+                SessionOptions::new(&run_workspace).with_session_id(session_id),
+                ConversationTurnInput::ask("delete active facade run"),
+                None,
+                None,
+                None,
+            ))
             .await
     });
 
@@ -1557,15 +1764,15 @@ fn conversation_facade_rejects_tenant_policy_bypass_before_reading_events() {
         assert!(matches!(error, HarnessError::InvalidTenant(tenant) if tenant == TenantId::SHARED));
 
         let error = restricted
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: SessionOptions::new(&workspace)
+            .submit_conversation_turn(conversation_turn_request(
+                SessionOptions::new(&workspace)
                     .with_tenant_id(TenantId::SHARED)
                     .with_session_id(session_id),
-                input: ConversationTurnInput::ask("must not read shared tenant"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+                ConversationTurnInput::ask("must not read shared tenant"),
+                None,
+                None,
+                None,
+            ))
             .await
             .expect_err("restricted tenant policy must block submit before event replay");
         assert!(matches!(error, HarnessError::InvalidTenant(tenant) if tenant == TenantId::SHARED));
@@ -1610,13 +1817,13 @@ fn conversation_facade_reopens_with_workspace_bound_options() {
             .await
             .expect("workspace-bound conversation should open");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
-                options: options.clone(),
-                input: ConversationTurnInput::ask("use workspace model"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: None,
-            })
+            .submit_conversation_turn(conversation_turn_request(
+                options.clone(),
+                ConversationTurnInput::ask("use workspace model"),
+                None,
+                None,
+                None,
+            ))
             .await
             .expect("workspace-bound conversation should submit");
 
@@ -3839,13 +4046,13 @@ async fn conversation_system_prompt_with_builtin_memory(
         .await
         .expect("session should open");
     harness
-        .submit_conversation_turn(ConversationTurnRequest {
+        .submit_conversation_turn(conversation_turn_request(
             options,
-            input: ConversationTurnInput::ask("hello"),
-            permission_mode_override: None,
-            permission_actor_source: None,
-            agent_run_options: None,
-        })
+            ConversationTurnInput::ask("hello"),
+            None,
+            None,
+            None,
+        ))
         .await
         .expect("turn should run");
 
@@ -4786,12 +4993,12 @@ fn session_installs_agent_tool_when_run_options_allow_subagents() {
             .await
             .expect("conversation session should open");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
+            .submit_conversation_turn(conversation_turn_request(
                 options,
-                input: ConversationTurnInput::ask("delegate work"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: Some(harness_contracts::AgentRunOptions {
+                ConversationTurnInput::ask("delegate work"),
+                None,
+                None,
+                Some(harness_contracts::AgentRunOptions {
                     subagents: harness_contracts::AgentUsePolicy::Allowed,
                     agent_team: harness_contracts::AgentUsePolicy::Off,
                     team_config: None,
@@ -4801,7 +5008,7 @@ fn session_installs_agent_tool_when_run_options_allow_subagents() {
                     max_concurrent_subagents: 2,
                     max_team_members: 4,
                 }),
-            })
+            ))
             .await
             .expect("turn should run");
 
@@ -4845,12 +5052,12 @@ fn session_hides_agent_tool_when_run_options_disable_subagents() {
             .await
             .expect("conversation session should open");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
+            .submit_conversation_turn(conversation_turn_request(
                 options,
-                input: ConversationTurnInput::ask("no delegation"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: Some(harness_contracts::AgentRunOptions {
+                ConversationTurnInput::ask("no delegation"),
+                None,
+                None,
+                Some(harness_contracts::AgentRunOptions {
                     subagents: harness_contracts::AgentUsePolicy::Off,
                     agent_team: harness_contracts::AgentUsePolicy::Off,
                     team_config: None,
@@ -4860,7 +5067,7 @@ fn session_hides_agent_tool_when_run_options_disable_subagents() {
                     max_concurrent_subagents: 2,
                     max_team_members: 4,
                 }),
-            })
+            ))
             .await
             .expect("turn should run");
 
@@ -4908,12 +5115,12 @@ fn session_hides_preinstalled_agent_tool_when_run_options_disable_subagents() {
             .await
             .expect("conversation session should open");
         harness
-            .submit_conversation_turn(ConversationTurnRequest {
+            .submit_conversation_turn(conversation_turn_request(
                 options,
-                input: ConversationTurnInput::ask("no delegation"),
-                permission_mode_override: None,
-                permission_actor_source: None,
-                agent_run_options: Some(harness_contracts::AgentRunOptions {
+                ConversationTurnInput::ask("no delegation"),
+                None,
+                None,
+                Some(harness_contracts::AgentRunOptions {
                     subagents: harness_contracts::AgentUsePolicy::Off,
                     agent_team: harness_contracts::AgentUsePolicy::Off,
                     team_config: None,
@@ -4923,7 +5130,7 @@ fn session_hides_preinstalled_agent_tool_when_run_options_disable_subagents() {
                     max_concurrent_subagents: 2,
                     max_team_members: 4,
                 }),
-            })
+            ))
             .await
             .expect("turn should run");
 
@@ -4973,14 +5180,12 @@ fn runtime_assembly_starts_run_scoped_agent_team_through_agent_runtime_store() {
             .expect("conversation session should open");
 
         let receipt = harness
-            .submit_conversation_turn(ConversationTurnRequest {
+            .submit_conversation_turn(conversation_turn_request(
                 options,
-                input: ConversationTurnInput::ask("Run a team review"),
-                permission_mode_override: Some(
-                    harness_contracts::PermissionMode::BypassPermissions,
-                ),
-                permission_actor_source: None,
-                agent_run_options: Some(harness_contracts::AgentRunOptions {
+                ConversationTurnInput::ask("Run a team review"),
+                Some(harness_contracts::PermissionMode::BypassPermissions),
+                None,
+                Some(harness_contracts::AgentRunOptions {
                     subagents: harness_contracts::AgentUsePolicy::Allowed,
                     agent_team: harness_contracts::AgentUsePolicy::Allowed,
                     team_config: Some(harness_contracts::AgentTeamRunConfig {
@@ -4997,7 +5202,7 @@ fn runtime_assembly_starts_run_scoped_agent_team_through_agent_runtime_store() {
                     max_concurrent_subagents: 2,
                     max_team_members: 4,
                 }),
-            })
+            ))
             .await
             .expect("team turn should run");
 
@@ -5071,12 +5276,12 @@ async fn runtime_assembly_cancels_active_run_scoped_team_after_parent_run_finish
         .expect("conversation session should open");
 
     let receipt = harness
-        .submit_conversation_turn(ConversationTurnRequest {
+        .submit_conversation_turn(conversation_turn_request(
             options,
-            input: ConversationTurnInput::ask("Run a cancellable team review"),
-            permission_mode_override: Some(PermissionMode::BypassPermissions),
-            permission_actor_source: None,
-            agent_run_options: Some(harness_contracts::AgentRunOptions {
+            ConversationTurnInput::ask("Run a cancellable team review"),
+            Some(PermissionMode::BypassPermissions),
+            None,
+            Some(harness_contracts::AgentRunOptions {
                 subagents: harness_contracts::AgentUsePolicy::Allowed,
                 agent_team: harness_contracts::AgentUsePolicy::Allowed,
                 team_config: Some(harness_contracts::AgentTeamRunConfig {
@@ -5093,7 +5298,7 @@ async fn runtime_assembly_cancels_active_run_scoped_team_after_parent_run_finish
                 max_concurrent_subagents: 2,
                 max_team_members: 4,
             }),
-        })
+        ))
         .await
         .expect("team turn should run");
 
@@ -5205,12 +5410,12 @@ async fn runtime_assembly_team_member_sessions_use_run_workspace_root() {
         .expect("conversation session should open");
 
     harness
-        .submit_conversation_turn(ConversationTurnRequest {
+        .submit_conversation_turn(conversation_turn_request(
             options,
-            input: ConversationTurnInput::ask("Run a workspace-root team review"),
-            permission_mode_override: Some(PermissionMode::BypassPermissions),
-            permission_actor_source: None,
-            agent_run_options: Some(harness_contracts::AgentRunOptions {
+            ConversationTurnInput::ask("Run a workspace-root team review"),
+            Some(PermissionMode::BypassPermissions),
+            None,
+            Some(harness_contracts::AgentRunOptions {
                 subagents: harness_contracts::AgentUsePolicy::Allowed,
                 agent_team: harness_contracts::AgentUsePolicy::Allowed,
                 team_config: Some(harness_contracts::AgentTeamRunConfig {
@@ -5227,7 +5432,7 @@ async fn runtime_assembly_team_member_sessions_use_run_workspace_root() {
                 max_concurrent_subagents: 2,
                 max_team_members: 4,
             }),
-        })
+        ))
         .await
         .expect("team turn should run");
 
@@ -6058,6 +6263,9 @@ impl Tool for DeferredDeltaEmitterTool {
 }
 
 struct CapabilityScriptedProvider {
+    provider_id: String,
+    model_id: String,
+    display_name: String,
     protocol: ModelProtocol,
     capabilities: ConversationModelCapability,
     context_window: u32,
@@ -6072,6 +6280,9 @@ impl CapabilityScriptedProvider {
         responses: Vec<Vec<ModelStreamEvent>>,
     ) -> Self {
         Self {
+            provider_id: "test".to_owned(),
+            model_id: "test-model".to_owned(),
+            display_name: "Test model".to_owned(),
             protocol: ModelProtocol::Messages,
             capabilities,
             context_window: 128_000,
@@ -6079,6 +6290,18 @@ impl CapabilityScriptedProvider {
             responses: tokio::sync::Mutex::new(responses),
             requests: tokio::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    fn with_identity(
+        mut self,
+        provider_id: impl Into<String>,
+        model_id: impl Into<String>,
+        display_name: impl Into<String>,
+    ) -> Self {
+        self.provider_id = provider_id.into();
+        self.model_id = model_id.into();
+        self.display_name = display_name.into();
+        self
     }
 
     fn with_protocol(mut self, protocol: ModelProtocol) -> Self {
@@ -6100,14 +6323,14 @@ impl CapabilityScriptedProvider {
 #[async_trait]
 impl ModelProvider for CapabilityScriptedProvider {
     fn provider_id(&self) -> &str {
-        "test"
+        &self.provider_id
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
-            provider_id: "test".to_owned(),
-            model_id: "test-model".to_owned(),
-            display_name: "Test model".to_owned(),
+            provider_id: self.provider_id.clone(),
+            model_id: self.model_id.clone(),
+            display_name: self.display_name.clone(),
             protocol: self.protocol,
             context_window: self.context_window,
             max_output_tokens: self.max_output_tokens,

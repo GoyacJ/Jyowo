@@ -1953,6 +1953,8 @@ mod tests {
             redactor: Arc::new(harness_contracts::NoopRedactor),
             interrupt: crate::InterruptToken::new(),
             parent_run: None,
+            model: None,
+            model_config_id: None,
         }
     }
 

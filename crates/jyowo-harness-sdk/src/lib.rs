@@ -41,10 +41,10 @@ pub use error::HarnessError;
 pub use harness::StreamPermissionRuntime;
 pub use harness::{
     filter_unrouted_service_tools, ConversationEventsPage, ConversationEventsPageRequest,
-    ConversationSession, ConversationSessionSummary, ConversationTurnReceipt,
-    ConversationTurnRequest, Harness, HarnessOptions, HarnessSamplingProvider, McpConfig,
-    RuntimeSkillParameter, RuntimeSkillSummary, RuntimeSkillView, TenantPolicy,
-    WorkspaceCreateRequest,
+    ConversationRunOptions, ConversationSession, ConversationSessionSummary,
+    ConversationTurnReceipt, ConversationTurnRequest, Harness, HarnessOptions,
+    HarnessSamplingProvider, McpConfig, RuntimeSkillParameter, RuntimeSkillSummary,
+    RuntimeSkillView, TenantPolicy, WorkspaceCreateRequest,
 };
 pub use harness_agent_runtime::{
     default_agent_capability_environment, AgentCapabilityEnvironment, AgentCapabilityResolver,

@@ -877,6 +877,8 @@ impl EngineEmbeddedToolDispatcher {
                         redactor: self.redactor,
                         interrupt: harness_tool::InterruptToken::default(),
                         parent_run: None,
+                        model: None,
+                        model_config_id: None,
                     },
                     permission_context: embedded_permission_context(
                         request.tenant_id,

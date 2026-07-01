@@ -352,6 +352,8 @@ fn tool_context() -> ToolContext {
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::new(),
         parent_run: None,
+        model: None,
+        model_config_id: None,
     }
 }
 

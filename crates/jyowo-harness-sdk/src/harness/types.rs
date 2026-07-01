@@ -145,26 +145,127 @@ pub struct ConversationSessionSummary {
     pub event_count: u64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConversationTurnRequest {
-    pub options: SessionOptions,
-    pub input: ConversationTurnInput,
-    pub permission_mode_override: Option<PermissionMode>,
-    pub permission_actor_source: Option<harness_contracts::PermissionActorSource>,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConversationRunOptions {
+    pub model_config_id: Option<String>,
+    pub model_id: Option<String>,
+    pub protocol: Option<ModelProtocol>,
+    pub tool_search: ToolSearchMode,
+    pub tool_profile: ToolProfile,
+    pub permission_mode: PermissionMode,
+    pub interactivity: InteractivityLevel,
+    pub context_compression_trigger_ratio: f32,
+    pub model_extra: Value,
+    pub max_iterations: u32,
+    pub system_prompt_addendum: Option<String>,
     #[cfg(feature = "agents-subagent")]
     pub agent_run_options: Option<harness_contracts::AgentRunOptions>,
 }
 
-impl ConversationTurnRequest {
-    #[must_use]
-    pub fn from_prompt(options: SessionOptions, prompt: impl Into<String>) -> Self {
+impl Default for ConversationRunOptions {
+    fn default() -> Self {
         Self {
-            options,
-            input: ConversationTurnInput::ask(prompt),
-            permission_mode_override: None,
-            permission_actor_source: None,
+            model_config_id: None,
+            model_id: None,
+            protocol: None,
+            tool_search: ToolSearchMode::default(),
+            tool_profile: ToolProfile::Full,
+            permission_mode: PermissionMode::Default,
+            interactivity: InteractivityLevel::NoInteractive,
+            context_compression_trigger_ratio: 0.8,
+            model_extra: Value::Null,
+            max_iterations: 0,
+            system_prompt_addendum: None,
             #[cfg(feature = "agents-subagent")]
             agent_run_options: None,
+        }
+    }
+}
+
+impl ConversationRunOptions {
+    #[must_use]
+    pub fn from_session_options(options: &SessionOptions) -> Self {
+        Self {
+            model_config_id: None,
+            model_id: options.model_id.clone(),
+            protocol: options.protocol,
+            tool_search: options.tool_search.clone(),
+            tool_profile: options.tool_profile.clone(),
+            permission_mode: options.permission_mode,
+            interactivity: options.interactivity,
+            context_compression_trigger_ratio: options.context_compression_trigger_ratio,
+            model_extra: options.model_extra.clone(),
+            max_iterations: options.max_iterations,
+            system_prompt_addendum: options.system_prompt_addendum.clone(),
+            #[cfg(feature = "agents-subagent")]
+            agent_run_options: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_model_id(mut self, model_id: impl Into<String>) -> Self {
+        self.model_id = Some(model_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_model_config_id(mut self, model_config_id: impl Into<String>) -> Self {
+        self.model_config_id = Some(model_config_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_protocol(mut self, protocol: ModelProtocol) -> Self {
+        self.protocol = Some(protocol);
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_profile(mut self, tool_profile: ToolProfile) -> Self {
+        self.tool_profile = tool_profile;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_search(mut self, tool_search: ToolSearchMode) -> Self {
+        self.tool_search = tool_search;
+        self
+    }
+
+    #[must_use]
+    pub fn with_permission_mode(mut self, permission_mode: PermissionMode) -> Self {
+        self.permission_mode = permission_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_context_compression_trigger_ratio(mut self, ratio: f32) -> Self {
+        self.context_compression_trigger_ratio = ratio;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationTurnRequest {
+    pub options: SessionOptions,
+    pub run_options: ConversationRunOptions,
+    pub input: ConversationTurnInput,
+    pub permission_actor_source: Option<harness_contracts::PermissionActorSource>,
+}
+
+impl ConversationTurnRequest {
+    #[must_use]
+    pub fn from_prompt(
+        options: SessionOptions,
+        run_options: ConversationRunOptions,
+        prompt: impl Into<String>,
+    ) -> Self {
+        Self {
+            options,
+            run_options,
+            input: ConversationTurnInput::ask(prompt),
+            permission_actor_source: None,
         }
     }
 }

@@ -63,9 +63,9 @@ use jyowo_harness_sdk::{
     resolve_agent_runtime_policy, AgentCapabilitiesInput, AgentCapabilityResolutionContext,
     AgentRuntimePolicyError, AgentRuntimeStore, BackgroundAgentManager,
     BackgroundAgentStartRequest, ConversationAttachmentReference, ConversationContextReference,
-    ConversationEventsPageRequest, ConversationTurnInput, ConversationTurnPageDirection,
-    ConversationTurnRequest, ExecutionSettingsAgentInput, Harness, McpConfig,
-    ResolvedAgentRuntimePolicy, RuntimeSkillSummary, RuntimeSkillView, SessionOptions,
+    ConversationEventsPageRequest, ConversationRunOptions, ConversationTurnInput,
+    ConversationTurnPageDirection, ConversationTurnRequest, ExecutionSettingsAgentInput, Harness,
+    McpConfig, ResolvedAgentRuntimePolicy, RuntimeSkillSummary, RuntimeSkillView, SessionOptions,
     StreamPermissionRuntime,
 };
 use parking_lot::{Mutex as ParkingMutex, RwLock as ParkingRwLock};

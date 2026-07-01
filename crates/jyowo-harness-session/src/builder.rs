@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use harness_contracts::SessionError;
 #[cfg(feature = "steering")]
 use harness_contracts::SteeringPolicy;
+use harness_contracts::{ConfigHash, RunModelSnapshot, SessionError};
 use harness_journal::EventStore;
 
 use crate::{
@@ -16,10 +16,13 @@ pub struct SessionBuilder {
     event_store: Option<Arc<dyn EventStore>>,
     turn_runtime: Option<SessionTurnRuntime>,
     turn_runner: Option<Arc<dyn SessionTurnRunner>>,
+    turn_model_snapshot: Option<RunModelSnapshot>,
+    turn_model_config_id: Option<String>,
     skill_reload_cap: Option<Arc<dyn SkillReloadCap>>,
     projection: Option<SessionProjection>,
     effective_prompt_inputs_hash: Option<[u8; 32]>,
     runtime_prompt_context_hash: Option<[u8; 32]>,
+    effective_config_hash: Option<ConfigHash>,
     #[cfg(feature = "steering")]
     steering_policy: Option<SteeringPolicy>,
 }
@@ -50,6 +53,13 @@ impl SessionBuilder {
     }
 
     #[must_use]
+    pub fn with_turn_model_snapshot(mut self, snapshot: RunModelSnapshot) -> Self {
+        self.turn_model_config_id = snapshot.model_config_id.clone();
+        self.turn_model_snapshot = Some(snapshot);
+        self
+    }
+
+    #[must_use]
     pub fn with_skill_reload_cap(mut self, skill_reload_cap: Arc<dyn SkillReloadCap>) -> Self {
         self.skill_reload_cap = Some(skill_reload_cap);
         self
@@ -70,6 +80,12 @@ impl SessionBuilder {
     #[must_use]
     pub fn with_runtime_prompt_context_hash(mut self, hash: [u8; 32]) -> Self {
         self.runtime_prompt_context_hash = Some(hash);
+        self
+    }
+
+    #[must_use]
+    pub fn with_effective_config_hash(mut self, hash: ConfigHash) -> Self {
+        self.effective_config_hash = Some(hash);
         self
     }
 
@@ -116,9 +132,12 @@ impl SessionBuilder {
                 event_store,
                 self.turn_runtime,
                 self.turn_runner,
+                self.turn_model_snapshot,
+                self.turn_model_config_id,
                 self.skill_reload_cap,
                 self.effective_prompt_inputs_hash,
                 self.runtime_prompt_context_hash,
+                self.effective_config_hash,
                 projection,
             )
             .await;
@@ -132,9 +151,12 @@ impl SessionBuilder {
                 event_store,
                 self.turn_runtime,
                 self.turn_runner,
+                self.turn_model_snapshot,
+                self.turn_model_config_id,
                 self.skill_reload_cap,
                 self.effective_prompt_inputs_hash,
                 self.runtime_prompt_context_hash,
+                self.effective_config_hash,
                 self.steering_policy.unwrap_or_default(),
             )
             .await
@@ -147,9 +169,12 @@ impl SessionBuilder {
                 event_store,
                 self.turn_runtime,
                 self.turn_runner,
+                self.turn_model_snapshot,
+                self.turn_model_config_id,
                 self.skill_reload_cap,
                 self.effective_prompt_inputs_hash,
                 self.runtime_prompt_context_hash,
+                self.effective_config_hash,
             )
             .await
         }

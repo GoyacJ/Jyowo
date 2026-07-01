@@ -21,8 +21,6 @@ use harness_context::{ContextEngine, TokenBudget};
 use harness_contracts::BlobRef;
 #[cfg(feature = "tool-search")]
 use harness_contracts::CacheImpact;
-#[cfg(feature = "mcp-server-adapter")]
-use harness_contracts::ConfigHash;
 #[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
 use harness_contracts::MemdirFileTag;
 #[cfg(not(feature = "observability-redactor"))]
@@ -40,11 +38,12 @@ use harness_contracts::{
     ConversationTurnInput, Decision, Event, EventId, HarnessError, HookEventKind,
     InteractivityLevel, JournalOffset, ManifestOriginRef, ManifestValidationFailedEvent,
     McpServerId, Message, MessageContent, MessageId, MessagePart, MessageRole, ModelModality,
-    PermissionError, PermissionMode, PluginCapabilitiesSummary, PluginFailedEvent,
+    ModelProtocol, PermissionError, PermissionMode, PluginCapabilitiesSummary, PluginFailedEvent,
     PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginRejectedEvent,
     ProviderCapabilityRouteSettings, RedactPatternSet, RedactRules, RedactScope, Redactor,
-    RejectionReason, RunId, RunScopedProcessRegistryCap, SessionError, SessionId, TenantId,
-    ToolCapability, ToolSearchMode, TrustLevel, TurnInput, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
+    RejectionReason, RunId, RunModelSnapshot, RunScopedProcessRegistryCap, SessionError, SessionId,
+    TenantId, ToolCapability, ToolProfile, ToolSearchMode, TrustLevel, TurnInput,
+    RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
 #[cfg(feature = "sqlite-store")]
 use harness_contracts::{
@@ -101,13 +100,12 @@ use harness_plugin::{
     PluginEventSink,
 };
 use harness_sandbox::SandboxBackend;
-#[cfg(feature = "mcp-server-adapter")]
-use harness_session::session_effective_config_hash;
 #[cfg(feature = "agents-team")]
 use harness_session::WorkspaceBootstrap;
 use harness_session::{
-    session_options_hash, Session, SessionOptions, SessionProjection, SessionTurnContext,
-    SessionTurnRunner, SkillReloadCap, Workspace, WorkspaceRegistry, WorkspaceSpec,
+    run_effective_config_hash, session_options_hash, Session, SessionOptions, SessionProjection,
+    SessionTurnContext, SessionTurnRunner, SkillReloadCap, Workspace, WorkspaceRegistry,
+    WorkspaceSpec,
 };
 use harness_skill::{
     parse_skill_markdown, BuiltinHookKind, DirectorySourceKind, Skill, SkillHookBinding,
@@ -168,9 +166,10 @@ pub use self::permissions::StreamPermissionRuntime;
 pub use self::sampling::HarnessSamplingProvider;
 pub use self::tool_pool::filter_unrouted_service_tools;
 pub use self::types::{
-    ConversationEventsPage, ConversationEventsPageRequest, ConversationSession,
-    ConversationSessionSummary, ConversationTurnReceipt, ConversationTurnRequest, HarnessOptions,
-    McpConfig, RuntimeSkillParameter, RuntimeSkillSummary, RuntimeSkillView, TenantPolicy,
+    ConversationEventsPage, ConversationEventsPageRequest, ConversationRunOptions,
+    ConversationSession, ConversationSessionSummary, ConversationTurnReceipt,
+    ConversationTurnRequest, HarnessOptions, McpConfig, RuntimeSkillParameter, RuntimeSkillSummary,
+    RuntimeSkillView, TenantPolicy,
 };
 pub use self::workspace::WorkspaceCreateRequest;
 pub use crate::agent_runtime::AgentCapabilityResolutionContext;

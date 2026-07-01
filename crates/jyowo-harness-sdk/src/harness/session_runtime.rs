@@ -6,6 +6,7 @@ pub(super) struct SdkSessionState {
 
 pub(super) struct SessionEngine {
     pub(super) engine: Engine,
+    pub(super) model_snapshot: ModelRuntimeSnapshot,
     pub(super) runtime_prompt_context_hash: [u8; 32],
 }
 
@@ -24,15 +25,15 @@ impl Harness {
         let pending_session_events = Arc::new(PendingSessionEvents::default());
         let prompt_inputs = self.load_effective_prompt_inputs(&options)?;
         let prompt_inputs_hash = effective_prompt_inputs_hash(&prompt_inputs);
+        let run_options = ConversationRunOptions::from_session_options(&options);
         #[cfg(feature = "memory-external-slot")]
         let session_engine = self
             .engine_for_session(
                 &options,
+                &run_options,
                 &prompt_inputs,
                 memory_manager.clone(),
                 Some(Arc::clone(&pending_session_events)),
-                #[cfg(feature = "agents-subagent")]
-                None,
                 #[cfg(feature = "agents-subagent")]
                 None,
             )
@@ -41,10 +42,9 @@ impl Harness {
         let session_engine = self
             .engine_for_session(
                 &options,
+                &run_options,
                 &prompt_inputs,
                 Some(Arc::clone(&pending_session_events)),
-                #[cfg(feature = "agents-subagent")]
-                None,
                 #[cfg(feature = "agents-subagent")]
                 None,
             )
@@ -253,25 +253,23 @@ impl Harness {
     pub(super) async fn resume_sdk_session_from_projection(
         &self,
         options: SessionOptions,
+        run_options: &ConversationRunOptions,
         projection: SessionProjection,
-        #[cfg(feature = "agents-subagent")] agent_run_options: Option<
-            &harness_contracts::AgentRunOptions,
-        >,
     ) -> Result<Session, HarnessError> {
         let limit_permit = self.inner.session_limits.try_acquire()?;
         let prompt_inputs = self.load_effective_prompt_inputs(&options)?;
         let prompt_inputs_hash = effective_prompt_inputs_hash(&prompt_inputs);
+        let run_options_hash = conversation_run_options_hash(run_options);
         #[cfg(feature = "memory-external-slot")]
         let memory_manager = self.memory_manager_for_session(&options).await?;
         #[cfg(feature = "memory-external-slot")]
         let session_engine = self
             .engine_for_session(
                 &options,
+                run_options,
                 &prompt_inputs,
                 memory_manager.clone(),
                 None,
-                #[cfg(feature = "agents-subagent")]
-                agent_run_options,
                 #[cfg(feature = "agents-subagent")]
                 None,
             )
@@ -280,24 +278,31 @@ impl Harness {
         let session_engine = self
             .engine_for_session(
                 &options,
+                run_options,
                 &prompt_inputs,
                 None,
-                #[cfg(feature = "agents-subagent")]
-                agent_run_options,
                 #[cfg(feature = "agents-subagent")]
                 None,
             )
             .await?;
+        let run_model = run_model_snapshot(&session_engine.model_snapshot, run_options);
+        let effective_config_hash = run_effective_config_hash(
+            session_options_hash(&options),
+            run_options_hash,
+            Some(prompt_inputs_hash),
+            Some(session_engine.runtime_prompt_context_hash),
+        );
+        let turn_options = session_options_for_run(options, run_options);
         let event_store: Arc<dyn EventStore> = Arc::new(LifecycleHookEventStore {
             inner: Arc::clone(&self.inner.event_store),
             hooks: HookDispatcher::new(self.inner.hook_registry.snapshot()),
-            tenant_id: options.tenant_id,
-            session_id: options.session_id,
+            tenant_id: turn_options.tenant_id,
+            session_id: turn_options.session_id,
             #[cfg(feature = "memory-external-slot")]
-            user_id: options.user_id.clone(),
+            user_id: turn_options.user_id.clone(),
             #[cfg(feature = "memory-external-slot")]
-            team_id: options.team_id,
-            workspace_root: options.workspace_root.clone(),
+            team_id: turn_options.team_id,
+            workspace_root: turn_options.workspace_root.clone(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
@@ -306,9 +311,11 @@ impl Harness {
             memory_manager,
         });
         let session = Session::builder()
-            .with_options(options)
+            .with_options(turn_options)
             .with_effective_prompt_inputs_hash(prompt_inputs_hash)
             .with_runtime_prompt_context_hash(session_engine.runtime_prompt_context_hash)
+            .with_effective_config_hash(effective_config_hash)
+            .with_turn_model_snapshot(run_model)
             .with_event_store(event_store)
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine: session_engine.engine,
@@ -403,12 +410,10 @@ impl Harness {
     pub(super) async fn engine_for_session(
         &self,
         options: &SessionOptions,
+        run_options: &ConversationRunOptions,
         prompt_inputs: &EffectiveSystemPromptInputs,
         memory_manager: Option<Arc<harness_memory::MemoryManager>>,
         pending_session_events: Option<Arc<PendingSessionEvents>>,
-        #[cfg(feature = "agents-subagent")] agent_run_options: Option<
-            &harness_contracts::AgentRunOptions,
-        >,
         #[cfg(feature = "agents-subagent")] subagent_team_attribution: Option<
             harness_agent_runtime::SubagentTeamAttribution,
         >,
@@ -417,11 +422,10 @@ impl Harness {
         let context = self.context_engine(options, memory_manager).await?;
         self.engine_for_session_with_context(
             options,
+            run_options,
             prompt_inputs,
             context,
             pending_session_events,
-            #[cfg(feature = "agents-subagent")]
-            agent_run_options,
             #[cfg(feature = "agents-subagent")]
             subagent_team_attribution,
         )
@@ -432,11 +436,9 @@ impl Harness {
     pub(super) async fn engine_for_session(
         &self,
         options: &SessionOptions,
+        run_options: &ConversationRunOptions,
         prompt_inputs: &EffectiveSystemPromptInputs,
         pending_session_events: Option<Arc<PendingSessionEvents>>,
-        #[cfg(feature = "agents-subagent")] agent_run_options: Option<
-            &harness_contracts::AgentRunOptions,
-        >,
         #[cfg(feature = "agents-subagent")] subagent_team_attribution: Option<
             harness_agent_runtime::SubagentTeamAttribution,
         >,
@@ -445,11 +447,10 @@ impl Harness {
         let context = self.context_engine(options).await?;
         self.engine_for_session_with_context(
             options,
+            run_options,
             prompt_inputs,
             context,
             pending_session_events,
-            #[cfg(feature = "agents-subagent")]
-            agent_run_options,
             #[cfg(feature = "agents-subagent")]
             subagent_team_attribution,
         )
@@ -459,12 +460,10 @@ impl Harness {
     async fn engine_for_session_with_context(
         &self,
         options: &SessionOptions,
+        run_options: &ConversationRunOptions,
         prompt_inputs: &EffectiveSystemPromptInputs,
         context: ContextEngine,
         pending_session_events: Option<Arc<PendingSessionEvents>>,
-        #[cfg(feature = "agents-subagent")] agent_run_options: Option<
-            &harness_contracts::AgentRunOptions,
-        >,
         #[cfg(feature = "agents-subagent")] subagent_team_attribution: Option<
             harness_agent_runtime::SubagentTeamAttribution,
         >,
@@ -507,16 +506,16 @@ impl Harness {
             );
         }
         self.inject_mcp_tools().await?;
-        let model_id = options
+        let model_id = run_options
             .model_id
             .clone()
             .unwrap_or_else(|| self.inner.options.model_id.clone());
         let model_snapshot = snapshot_for_supported_model(self.inner.model.as_ref(), &model_id)?;
-        let protocol = options.protocol.unwrap_or(model_snapshot.protocol);
+        let protocol = run_options.protocol.unwrap_or(model_snapshot.protocol);
         self.enforce_provider_allowed(&model_snapshot.provider_id)?;
         let context = context.clone_with_budget(context_budget_for_model(
             &model_snapshot,
-            options.context_compression_trigger_ratio,
+            run_options.context_compression_trigger_ratio,
         ));
         if !cap_registry.contains(&ToolCapability::ContextPatchSink) {
             cap_registry.install::<dyn ContextPatchSinkCap>(
@@ -537,7 +536,7 @@ impl Harness {
             &*self.inner.provider_capability_routes.read(),
         );
         apply_tenant_tool_filter(&mut tool_filter, &self.inner.options.tenant_policy);
-        tool_filter.intersect_with(ToolPoolFilter::from_profile(&options.tool_profile));
+        tool_filter.intersect_with(ToolPoolFilter::from_profile(&run_options.tool_profile));
         let schema_context = SchemaResolverContext {
             run_id: RunId::new(),
             session_id: options.session_id,
@@ -546,7 +545,7 @@ impl Harness {
         let tools = ToolPool::assemble(
             &tool_registry_snapshot,
             &tool_filter,
-            &options.tool_search,
+            &run_options.tool_search,
             &model_profile,
             &schema_context,
         )
@@ -555,7 +554,13 @@ impl Harness {
         #[cfg(feature = "tool-search")]
         let mut tools = tools;
         #[cfg(feature = "tool-search")]
-        self.install_tool_search_runtime(options, &mut tools, &mut cap_registry, &model_snapshot);
+        self.install_tool_search_runtime(
+            options,
+            &run_options.tool_search,
+            &mut tools,
+            &mut cap_registry,
+            &model_snapshot,
+        );
 
         #[cfg(feature = "agents-subagent")]
         let harness_has_subagent_runner = self
@@ -565,11 +570,11 @@ impl Harness {
         #[cfg(feature = "agents-subagent")]
         let mut subagent_assembly = None;
         #[cfg(feature = "agents-subagent")]
-        if let Some(run_options) = agent_run_options {
-            if harness_agent_runtime::should_install_subagent_runner(run_options) {
+        if let Some(agent_run_options) = run_options.agent_run_options.as_ref() {
+            if harness_agent_runtime::should_install_subagent_runner(agent_run_options) {
                 subagent_assembly = Some(super::tool_pool::install_subagent_runner_for_run(
                     &mut cap_registry,
-                    run_options,
+                    agent_run_options,
                     self.conversation_deletion_guarded_event_store(),
                     &options.workspace_root,
                     subagent_team_attribution.clone(),
@@ -579,13 +584,16 @@ impl Harness {
         #[cfg(feature = "agents-subagent")]
         let subagent_tool_enabled = super::tool_pool::subagent_tool_should_be_enabled(
             harness_has_subagent_runner,
-            agent_run_options,
+            run_options.agent_run_options.as_ref(),
         );
         #[cfg(not(feature = "agents-subagent"))]
         let subagent_tool_enabled = false;
 
         let runtime_context = build_runtime_prompt_context(
             options,
+            run_options.permission_mode,
+            run_options.interactivity,
+            &run_options.tool_search,
             &model_snapshot,
             &model_id,
             protocol,
@@ -611,17 +619,22 @@ impl Harness {
             .with_permission_broker(Arc::clone(&self.inner.permission_broker))
             .with_workspace_root(&options.workspace_root)
             .with_model_id(model_id)
-            .with_model_snapshot(model_snapshot)
-            .with_model_extra(options.model_extra.clone())
+            .with_model_snapshot(model_snapshot.clone())
+            .with_model_extra(run_options.model_extra.clone())
             .with_protocol(protocol)
             .with_system_prompt(
-                self.session_system_prompt(options, runtime_context, prompt_inputs)
-                    .await?,
+                self.session_system_prompt(
+                    options,
+                    runtime_context,
+                    prompt_inputs,
+                    run_options.system_prompt_addendum.clone(),
+                )
+                .await?,
             )
             .with_sandbox(Arc::clone(&self.inner.sandbox))
             .with_cap_registry(Arc::new(cap_registry));
-        if options.max_iterations > 0 {
-            builder = builder.with_max_iterations(options.max_iterations);
+        if run_options.max_iterations > 0 {
+            builder = builder.with_max_iterations(run_options.max_iterations);
         }
         #[cfg(feature = "agents-subagent")]
         if enable_subagent_tool {
@@ -651,6 +664,7 @@ impl Harness {
         }
         Ok(SessionEngine {
             engine,
+            model_snapshot,
             runtime_prompt_context_hash,
         })
     }
@@ -682,9 +696,10 @@ impl Harness {
         options: &SessionOptions,
         runtime_context: RuntimePromptContext,
         prompt_inputs: &EffectiveSystemPromptInputs,
+        system_prompt_addendum: Option<String>,
     ) -> Result<Option<String>, HarnessError> {
         let mut inputs = prompt_inputs.clone();
-        inputs.session_addendum = options.system_prompt_addendum.clone();
+        inputs.session_addendum = system_prompt_addendum;
         inputs.builtin_memory_inner = self.builtin_system_prompt(options).await?;
         let rendered = SystemPromptBuilder::new()
             .with_runtime_context(runtime_context)
@@ -723,6 +738,44 @@ pub(super) fn snapshot_for_supported_model(
             )))
         })?;
     Ok(ModelRuntimeSnapshot::from_descriptor(descriptor))
+}
+
+pub(super) fn session_options_for_run(
+    mut options: SessionOptions,
+    run_options: &ConversationRunOptions,
+) -> SessionOptions {
+    options.tool_search = run_options.tool_search.clone();
+    options.tool_profile = run_options.tool_profile.clone();
+    options.model_id = run_options.model_id.clone();
+    options.protocol = run_options.protocol;
+    options.model_extra = run_options.model_extra.clone();
+    options.permission_mode = run_options.permission_mode;
+    options.interactivity = run_options.interactivity;
+    options.system_prompt_addendum = run_options.system_prompt_addendum.clone();
+    options.max_iterations = run_options.max_iterations;
+    options.context_compression_trigger_ratio = run_options.context_compression_trigger_ratio;
+    options
+}
+
+pub(super) fn conversation_run_options_hash(run_options: &ConversationRunOptions) -> [u8; 32] {
+    let bytes = serde_json::to_vec(run_options).unwrap_or_default();
+    blake3::hash(&bytes).into()
+}
+
+pub(super) fn run_model_snapshot(
+    model_snapshot: &ModelRuntimeSnapshot,
+    run_options: &ConversationRunOptions,
+) -> RunModelSnapshot {
+    RunModelSnapshot {
+        model_config_id: run_options.model_config_id.clone(),
+        provider_id: model_snapshot.provider_id.clone(),
+        model_id: model_snapshot.model_id.clone(),
+        display_name: model_snapshot.display_name.clone(),
+        protocol: run_options.protocol.unwrap_or(model_snapshot.protocol),
+        context_window: model_snapshot.context_window,
+        max_output_tokens: model_snapshot.max_output_tokens,
+        conversation_capability: model_snapshot.conversation_capability.clone(),
+    }
 }
 
 fn context_budget_for_model(
@@ -903,6 +956,11 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
                 ctx.started_from_scope_set,
             )
             .with_context_seed(ctx.context_seed.clone());
+        let run_ctx = if let Some(model) = ctx.model.clone() {
+            run_ctx.with_model_snapshot(model)
+        } else {
+            run_ctx
+        };
         let engine = self.engine_with_turn_skill_snapshot()?;
         #[cfg(feature = "steering-queue")]
         let mut engine = engine;

@@ -284,6 +284,10 @@ impl Harness {
         }
 
         let options = self.effective_sdk_session_options(request.options)?;
+        let mut run_options = request.run_options;
+        if !self.inner.options.tool_search_enabled {
+            run_options.tool_search = ToolSearchMode::Disabled;
+        }
         self.ensure_conversation_session_not_deleted(options.tenant_id, options.session_id)?;
         let state = self
             .read_sdk_session_state(&options)
@@ -296,7 +300,7 @@ impl Harness {
             )));
         }
         let last_offset = projection.last_offset;
-        let model_id = options
+        let model_id = run_options
             .model_id
             .clone()
             .unwrap_or_else(|| self.inner.options.model_id.clone());
@@ -306,19 +310,14 @@ impl Harness {
             &model_snapshot.conversation_capability.input_modalities,
         );
         let session = self
-            .resume_sdk_session_from_projection(
-                options.clone(),
-                projection,
-                #[cfg(feature = "agents-subagent")]
-                request.agent_run_options.as_ref(),
-            )
+            .resume_sdk_session_from_projection(options.clone(), &run_options, projection)
             .await?;
         session
             .run_turn_parts_with_client_message_id_attachments_permission_mode_and_actor_source(
                 parts,
                 request.input.client_message_id.clone(),
                 request.input.attachments.clone(),
-                request.permission_mode_override,
+                None,
                 request
                     .permission_actor_source
                     .unwrap_or(harness_contracts::PermissionActorSource::ParentRun),
@@ -348,7 +347,7 @@ impl Harness {
                 ))
             })?;
         #[cfg(feature = "agents-team")]
-        if let Some(agent_run_options) = &request.agent_run_options {
+        if let Some(agent_run_options) = &run_options.agent_run_options {
             if harness_agent_runtime::should_start_run_scoped_team(agent_run_options) {
                 let profiles = crate::list_agent_profiles(&options.workspace_root)
                     .map_err(|error| HarnessError::Other(error.to_string()))?;

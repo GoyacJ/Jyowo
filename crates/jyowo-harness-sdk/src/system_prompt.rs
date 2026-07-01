@@ -133,6 +133,9 @@ impl SystemPromptBuilder {
 
 pub(crate) fn build_runtime_prompt_context(
     options: &SessionOptions,
+    permission_mode: PermissionMode,
+    interactivity: InteractivityLevel,
+    tool_search: &ToolSearchMode,
     model_snapshot: &ModelRuntimeSnapshot,
     selected_model_id: &str,
     protocol: ModelProtocol,
@@ -147,9 +150,9 @@ pub(crate) fn build_runtime_prompt_context(
         } else {
             "tenant"
         },
-        permission_mode: permission_mode_prompt_name(options.permission_mode).to_owned(),
-        interactivity: interactivity_prompt_name(options.interactivity).to_owned(),
-        tool_search: tool_search_prompt_name(&options.tool_search).to_owned(),
+        permission_mode: permission_mode_prompt_name(permission_mode).to_owned(),
+        interactivity: interactivity_prompt_name(interactivity).to_owned(),
+        tool_search: tool_search_prompt_name(tool_search).to_owned(),
         model_provider: model_snapshot.provider_id.clone(),
         model_id: selected_model_id.to_owned(),
         model_protocol: model_protocol_prompt_name(protocol).to_owned(),
@@ -765,6 +768,9 @@ mod tests {
 
         let context = build_runtime_prompt_context(
             &options,
+            options.permission_mode,
+            options.interactivity,
+            &options.tool_search,
             &snapshot,
             "selected-model",
             ModelProtocol::Messages,

@@ -409,16 +409,18 @@ pub async fn start_run_with_runtime_state(
     }
     let after_event_id = conversation_tail_event_id(&harness, options.clone()).await?;
     let run_harness = Arc::clone(&harness);
-    let run_options = options.clone();
+    let run_session_options = options.clone();
     let run_agent_options = agent_policy.options;
+    let mut run_options = ConversationRunOptions::from_session_options(&run_session_options)
+        .with_permission_mode(permission_mode);
+    run_options.agent_run_options = Some(run_agent_options);
     let mut run_task = tokio::spawn(async move {
         run_harness
             .submit_conversation_turn(ConversationTurnRequest {
-                options: run_options,
+                options: run_session_options,
+                run_options,
                 input,
-                permission_mode_override: Some(permission_mode),
                 permission_actor_source: None,
-                agent_run_options: Some(run_agent_options),
             })
             .await
     });

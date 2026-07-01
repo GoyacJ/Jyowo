@@ -293,15 +293,16 @@ pub(crate) async fn start_automation_conversation_run(
         .map_err(|error| runtime_operation_failed(format!("conversation open failed: {error}")))?;
     let after_event_id = conversation_tail_event_id(&harness, options.clone()).await?;
     let run_harness = Arc::clone(&harness);
-    let run_options = options.clone();
+    let run_session_options = options.clone();
+    let run_options = ConversationRunOptions::from_session_options(&run_session_options)
+        .with_permission_mode(permission_mode);
     let mut run_task = tokio::spawn(async move {
         run_harness
             .submit_conversation_turn(ConversationTurnRequest {
-                options: run_options,
+                options: run_session_options,
+                run_options,
                 input,
-                permission_mode_override: Some(permission_mode),
                 permission_actor_source: None,
-                agent_run_options: None,
             })
             .await
     });

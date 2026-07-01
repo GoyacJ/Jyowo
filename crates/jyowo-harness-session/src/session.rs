@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use harness_contracts::{
     ConfigHash, ContextPatchRequest, ContextPatchSinkCap, ConversationAttachmentReference,
     DeferredToolsDeltaAttachment, EndReason, Event, InteractivityLevel, Message, MessageId,
-    MessagePart, ModelProtocol, PermissionActorSource, PermissionMode, RunId, SessionCreatedEvent,
-    SessionEndedEvent, SessionError, SessionId, SnapshotId, TeamId, TenantId, ToolProfile,
-    ToolSearchMode, UsageSnapshot, WorkspaceId,
+    MessagePart, ModelProtocol, PermissionActorSource, PermissionMode, RunId, RunModelSnapshot,
+    SessionCreatedEvent, SessionEndedEvent, SessionError, SessionId, SnapshotId, TeamId, TenantId,
+    ToolProfile, ToolSearchMode, UsageSnapshot, WorkspaceId,
 };
 use harness_journal::EventStore;
 use harness_skill::SkillRegistration;
@@ -43,6 +43,8 @@ pub struct SessionTurnContext {
     pub interactivity: InteractivityLevel,
     pub pending_deferred_tools_delta: Option<DeferredToolsDeltaAttachment>,
     pub context_seed: Vec<Message>,
+    pub model: Option<RunModelSnapshot>,
+    pub model_config_id: Option<String>,
     #[cfg(feature = "steering")]
     pub steering_merge: Option<SynthesizedUserMessage>,
 }
@@ -247,6 +249,8 @@ pub struct Session {
     options: SessionOptions,
     paths: SessionPaths,
     config_snapshot: SessionConfigSnapshot,
+    turn_model_snapshot: Option<RunModelSnapshot>,
+    turn_model_config_id: Option<String>,
     event_store: Arc<dyn EventStore>,
     snapshot_tx: watch::Sender<SnapshotId>,
     snapshot_rx: watch::Receiver<SnapshotId>,
@@ -284,9 +288,12 @@ impl Session {
         event_store: Arc<dyn EventStore>,
         turn_runtime: Option<SessionTurnRuntime>,
         turn_runner: Option<Arc<dyn SessionTurnRunner>>,
+        turn_model_snapshot: Option<RunModelSnapshot>,
+        turn_model_config_id: Option<String>,
         skill_reload_cap: Option<Arc<dyn SkillReloadCap>>,
         effective_prompt_inputs_hash: Option<[u8; 32]>,
         runtime_prompt_context_hash: Option<[u8; 32]>,
+        effective_config_hash: Option<ConfigHash>,
         #[cfg(feature = "steering")] steering_policy: harness_contracts::SteeringPolicy,
     ) -> Result<Self, SessionError> {
         let projection = SessionProjection::empty(options.tenant_id, options.session_id);
@@ -295,11 +302,14 @@ impl Session {
             &options,
             effective_prompt_inputs_hash,
             runtime_prompt_context_hash,
+            effective_config_hash,
         );
         let session = Self {
             options,
             paths,
             config_snapshot,
+            turn_model_snapshot,
+            turn_model_config_id,
             event_store,
             snapshot_tx,
             snapshot_rx,
@@ -323,9 +333,12 @@ impl Session {
         event_store: Arc<dyn EventStore>,
         turn_runtime: Option<SessionTurnRuntime>,
         turn_runner: Option<Arc<dyn SessionTurnRunner>>,
+        turn_model_snapshot: Option<RunModelSnapshot>,
+        turn_model_config_id: Option<String>,
         skill_reload_cap: Option<Arc<dyn SkillReloadCap>>,
         effective_prompt_inputs_hash: Option<[u8; 32]>,
         runtime_prompt_context_hash: Option<[u8; 32]>,
+        effective_config_hash: Option<ConfigHash>,
         projection: SessionProjection,
     ) -> Result<Self, SessionError> {
         let (snapshot_tx, snapshot_rx) = watch::channel(projection.snapshot_id);
@@ -334,6 +347,7 @@ impl Session {
                 &options,
                 effective_prompt_inputs_hash,
                 runtime_prompt_context_hash,
+                effective_config_hash,
             ),
             options,
             paths,
@@ -342,6 +356,8 @@ impl Session {
             snapshot_rx,
             turn_runtime,
             turn_runner,
+            turn_model_snapshot,
+            turn_model_config_id,
             skill_reload_cap,
             #[cfg(feature = "steering")]
             steering: SteeringQueue::default(),
@@ -402,6 +418,14 @@ impl Session {
 
     pub(crate) fn runtime_prompt_context_hash(&self) -> Option<[u8; 32]> {
         self.config_snapshot.runtime_prompt_context_hash
+    }
+
+    pub(crate) fn turn_model_snapshot(&self) -> Option<RunModelSnapshot> {
+        self.turn_model_snapshot.clone()
+    }
+
+    pub(crate) fn turn_model_config_id(&self) -> Option<String> {
+        self.turn_model_config_id.clone()
     }
 
     #[cfg(feature = "steering")]
@@ -507,6 +531,8 @@ impl Session {
                 context_seed: projection.messages.clone(),
                 user_id: self.options.user_id.clone(),
                 team_id: self.options.team_id,
+                model: self.turn_model_snapshot.clone(),
+                model_config_id: self.turn_model_config_id.clone(),
                 #[cfg(feature = "steering")]
                 steering_merge,
             };
@@ -670,13 +696,16 @@ impl SessionConfigSnapshot {
         options: &SessionOptions,
         effective_prompt_inputs_hash: Option<[u8; 32]>,
         runtime_prompt_context_hash: Option<[u8; 32]>,
+        effective_config_hash: Option<ConfigHash>,
     ) -> Self {
         let options_hash = session_options_hash(options);
-        let effective_config_hash = effective_config_hash(
-            options_hash,
-            effective_prompt_inputs_hash,
-            runtime_prompt_context_hash,
-        );
+        let effective_config_hash = effective_config_hash.unwrap_or_else(|| {
+            session_effective_config_hash_from_parts(
+                options_hash,
+                effective_prompt_inputs_hash,
+                runtime_prompt_context_hash,
+            )
+        });
         Self {
             config_snapshot_id: config_snapshot_id(effective_config_hash),
             effective_config_hash,
@@ -693,7 +722,7 @@ pub fn session_effective_config_hash(
     effective_prompt_inputs_hash: Option<[u8; 32]>,
     runtime_prompt_context_hash: Option<[u8; 32]>,
 ) -> ConfigHash {
-    effective_config_hash(
+    session_effective_config_hash_from_parts(
         session_options_hash(options),
         effective_prompt_inputs_hash,
         runtime_prompt_context_hash,
@@ -716,7 +745,7 @@ pub fn session_options_hash(options: &SessionOptions) -> [u8; 32] {
     }))
 }
 
-fn effective_config_hash(
+fn session_effective_config_hash_from_parts(
     options_hash: [u8; 32],
     effective_prompt_inputs_hash: Option<[u8; 32]>,
     runtime_prompt_context_hash: Option<[u8; 32]>,
@@ -728,6 +757,23 @@ fn effective_config_hash(
         "runtime_prompt_context_hash": runtime_prompt_context_hash,
         "source_refs": [],
         "started_from_scope_set": ["sdk:session_options"],
+    })))
+}
+
+pub fn run_effective_config_hash(
+    session_identity_hash: [u8; 32],
+    run_options_hash: [u8; 32],
+    effective_prompt_inputs_hash: Option<[u8; 32]>,
+    runtime_prompt_context_hash: Option<[u8; 32]>,
+) -> ConfigHash {
+    ConfigHash(hash_json(&json!({
+        "kind": "sdk_run_effective_config",
+        "session_identity_hash": session_identity_hash,
+        "run_options_hash": run_options_hash,
+        "effective_prompt_inputs_hash": effective_prompt_inputs_hash,
+        "runtime_prompt_context_hash": runtime_prompt_context_hash,
+        "source_refs": [],
+        "started_from_scope_set": ["sdk:run_options"],
     })))
 }
 

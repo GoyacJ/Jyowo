@@ -1154,6 +1154,8 @@ fn tool_ctx() -> ToolContext {
         redactor: Arc::new(TestRedactor),
         interrupt: InterruptToken::default(),
         parent_run: None,
+        model: None,
+        model_config_id: None,
     }
 }
 

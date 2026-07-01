@@ -286,6 +286,8 @@ async fn try_execute(
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::new(),
         parent_run: None,
+        model: None,
+        model_config_id: None,
     };
     tool.validate(&input, &ctx).await.unwrap();
     let mut stream = tool.execute(input, ctx).await?;

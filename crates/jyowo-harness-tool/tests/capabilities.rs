@@ -161,6 +161,8 @@ fn tool_ctx(cap_registry: CapabilityRegistry) -> ToolContext {
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
         parent_run: None,
+        model: None,
+        model_config_id: None,
     }
 }
 

@@ -470,6 +470,11 @@ impl Harness {
         if !self.inner.options.tool_search_enabled {
             options.tool_search = ToolSearchMode::Disabled;
         }
+        let mut run_options = ConversationRunOptions::from_session_options(&options);
+        #[cfg(feature = "agents-subagent")]
+        {
+            run_options.agent_run_options = nested_subagent_options.cloned();
+        }
         #[cfg(feature = "agents-subagent")]
         let subagent_team_attribution = nested_subagent_options.and_then(|_| {
             team_member_profile_id.map(|profile_id| {
@@ -487,11 +492,10 @@ impl Harness {
         let session_engine = self
             .engine_for_session(
                 &options,
+                &run_options,
                 &prompt_inputs,
                 memory_manager,
                 None,
-                #[cfg(feature = "agents-subagent")]
-                nested_subagent_options,
                 #[cfg(feature = "agents-subagent")]
                 subagent_team_attribution.clone(),
             )
@@ -500,10 +504,9 @@ impl Harness {
         let session_engine = self
             .engine_for_session(
                 &options,
+                &run_options,
                 &prompt_inputs,
                 None,
-                #[cfg(feature = "agents-subagent")]
-                nested_subagent_options,
                 #[cfg(feature = "agents-subagent")]
                 subagent_team_attribution,
             )

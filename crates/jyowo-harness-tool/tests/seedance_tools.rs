@@ -327,6 +327,8 @@ fn ctx_with_cap_registry(cap_registry: CapabilityRegistry) -> ToolContext {
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::new(),
         parent_run: None,
+        model: None,
+        model_config_id: None,
     }
 }
 

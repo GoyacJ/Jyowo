@@ -987,6 +987,8 @@ fn orchestrator_ctx_with_interrupt(
             redactor: Arc::new(harness_contracts::NoopRedactor),
             interrupt,
             parent_run: None,
+            model: None,
+            model_config_id: None,
         },
         permission_context: PermissionContext {
             permission_mode: PermissionMode::Default,

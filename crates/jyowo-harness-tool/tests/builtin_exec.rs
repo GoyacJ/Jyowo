@@ -713,6 +713,8 @@ fn tool_ctx_with_root(
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
         parent_run: None,
+        model: None,
+        model_config_id: None,
     }
 }
 
@@ -740,6 +742,8 @@ fn orchestrator_ctx(
             redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
             interrupt: InterruptToken::default(),
             parent_run: None,
+            model: None,
+            model_config_id: None,
         },
         permission_context: PermissionContext {
             permission_mode: PermissionMode::Default,

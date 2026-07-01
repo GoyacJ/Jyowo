@@ -2376,6 +2376,8 @@ pub mod testing {
             redactor: Arc::new(NoopRedactor),
             interrupt: harness_tool::InterruptToken::new(),
             parent_run: None,
+            model: None,
+            model_config_id: None,
         }
     }
 

@@ -25,11 +25,12 @@ impl Harness {
     pub(super) fn install_tool_search_runtime(
         &self,
         options: &SessionOptions,
+        tool_search: &ToolSearchMode,
         tools: &mut ToolPool,
         cap_registry: &mut CapabilityRegistry,
         model_snapshot: &ModelRuntimeSnapshot,
     ) {
-        if matches!(options.tool_search, ToolSearchMode::Disabled) {
+        if matches!(tool_search, ToolSearchMode::Disabled) {
             return;
         }
         if let Some(allowed_tools) = &self.inner.options.tenant_policy.allowed_tools {

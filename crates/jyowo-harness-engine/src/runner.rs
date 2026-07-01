@@ -1,6 +1,6 @@
 use harness_contracts::{
     ConfigHash, CorrelationId, InteractivityLevel, Message, PermissionActorSource, PermissionMode,
-    RunId, SessionId, SnapshotId, TeamId, TenantId, TurnInput,
+    RunId, RunModelSnapshot, SessionId, SnapshotId, TeamId, TenantId, TurnInput,
 };
 use std::time::Duration;
 
@@ -55,6 +55,8 @@ pub struct RunContext {
     pub effective_config_hash: ConfigHash,
     pub started_from_scope_set: Vec<String>,
     pub context_seed: Vec<Message>,
+    pub model: Option<RunModelSnapshot>,
+    pub model_config_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
@@ -86,6 +88,8 @@ impl RunContext {
             effective_config_hash: ConfigHash([0; 32]),
             started_from_scope_set: Vec::new(),
             context_seed: Vec::new(),
+            model: None,
+            model_config_id: None,
         }
     }
 
@@ -180,6 +184,13 @@ impl RunContext {
     #[must_use]
     pub fn with_context_seed(mut self, context_seed: Vec<Message>) -> Self {
         self.context_seed = context_seed;
+        self
+    }
+
+    #[must_use]
+    pub fn with_model_snapshot(mut self, model: RunModelSnapshot) -> Self {
+        self.model_config_id = model.model_config_id.clone();
+        self.model = Some(model);
         self
     }
 }

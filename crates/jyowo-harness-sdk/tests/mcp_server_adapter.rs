@@ -179,7 +179,7 @@ fn harness_mcp_messages_send_resumes_workspace_bootstrap() {
 }
 
 #[test]
-fn harness_mcp_messages_send_rejects_changed_workspace_bootstrap() {
+fn harness_mcp_messages_send_allows_changed_workspace_bootstrap() {
     tokio_runtime().block_on(async {
         let root = unique_workspace("sdk-mcp-server-adapter-workspace-resume-changed");
         std::fs::create_dir_all(&root).unwrap();
@@ -211,23 +211,23 @@ fn harness_mcp_messages_send_rejects_changed_workspace_bootstrap() {
             .expect("workspace session should be created");
         std::fs::write(root.join("AGENTS.md"), "workspace MCP resume rule v2").unwrap();
 
-        let error = harness
+        harness
             .call_harness_tool(
                 &McpServerRequestContext::default().with_tenant_id(TenantId::SINGLE),
                 ExposedCapability::MessagesSend,
                 json!({"session_id": session_id.to_string(), "message": "use workspace"}),
             )
             .await
-            .expect_err("messages_send should reject changed workspace prompt inputs");
+            .expect("messages_send should resume with changed workspace prompt inputs");
 
-        assert!(error
-            .to_string()
-            .contains("session effective config does not match"));
+        let requests = model.requests().await;
+        let system = requests[0].system.as_deref().unwrap_or_default();
+        assert!(system.contains("workspace MCP resume rule v2"));
     });
 }
 
 #[test]
-fn harness_mcp_messages_send_rejects_model_protocol_hash_variants() {
+fn harness_mcp_messages_send_allows_model_protocol_hash_variants() {
     tokio_runtime().block_on(async {
         let root = unique_workspace("sdk-mcp-server-adapter-model-protocol-resume");
         std::fs::create_dir_all(&root).unwrap();
@@ -250,17 +250,14 @@ fn harness_mcp_messages_send_rejects_model_protocol_hash_variants() {
             )
             .await
             .expect("model variant session should be created");
-        let model_error = harness
+        harness
             .call_harness_tool(
                 &context,
                 ExposedCapability::MessagesSend,
                 json!({"session_id": model_session_id.to_string(), "message": "resume"}),
             )
             .await
-            .expect_err("messages_send should reject model hash variant");
-        assert!(model_error
-            .to_string()
-            .contains("session options do not match a resumable workspace context"));
+            .expect("messages_send should resume model hash variant");
 
         let protocol_session_id = SessionId::new();
         harness
@@ -271,17 +268,14 @@ fn harness_mcp_messages_send_rejects_model_protocol_hash_variants() {
             )
             .await
             .expect("protocol variant session should be created");
-        let protocol_error = harness
+        harness
             .call_harness_tool(
                 &context,
                 ExposedCapability::MessagesSend,
                 json!({"session_id": protocol_session_id.to_string(), "message": "resume"}),
             )
             .await
-            .expect_err("messages_send should reject protocol hash variant");
-        assert!(protocol_error
-            .to_string()
-            .contains("session options do not match a resumable workspace context"));
+            .expect("messages_send should resume protocol hash variant");
     });
 }
 

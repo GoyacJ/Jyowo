@@ -249,6 +249,8 @@ fn tool_ctx_at(workspace_root: impl AsRef<Path>, cap_registry: CapabilityRegistr
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
         parent_run: None,
+        model: None,
+        model_config_id: None,
     }
 }
 

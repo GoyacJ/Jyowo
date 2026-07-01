@@ -60,9 +60,12 @@ impl Session {
             self.event_store().clone(),
             self.turn_runtime(),
             self.turn_runner(),
+            self.turn_model_snapshot(),
+            self.turn_model_config_id(),
             self.skill_reload_cap(),
             self.effective_prompt_inputs_hash(),
             self.runtime_prompt_context_hash(),
+            Some(self.effective_config_hash()),
             child_projection,
         )
         .await

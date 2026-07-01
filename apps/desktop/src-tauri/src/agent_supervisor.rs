@@ -12,8 +12,8 @@ use harness_contracts::{
 use jyowo_harness_sdk::builtin::{DefaultRedactor, JsonlEventStore};
 use jyowo_harness_sdk::ext::{EventStore, Redactor, SessionId, TenantId};
 use jyowo_harness_sdk::{
-    AgentRuntimeStore, BackgroundAgentManager, BackgroundAgentRecord, ConversationTurnRequest,
-    Harness, SessionOptions, StreamPermissionRuntime,
+    AgentRuntimeStore, BackgroundAgentManager, BackgroundAgentRecord, ConversationRunOptions,
+    ConversationTurnRequest, Harness, SessionOptions, StreamPermissionRuntime,
 };
 use serde::{Deserialize, Serialize};
 use tauri::Runtime;
@@ -764,14 +764,16 @@ async fn run_claimed_background_record(
         conversation_id: session_options.session_id,
         attempt_id: parse_background_agent_attempt_id(record),
     };
+    let mut run_options = ConversationRunOptions::from_session_options(&session_options)
+        .with_permission_mode(execution.permission_mode);
+    run_options.agent_run_options = Some(execution.agent_run_options);
     let receipt = backend
         .harness
         .submit_conversation_turn(ConversationTurnRequest {
             options: session_options,
+            run_options,
             input: execution.input,
-            permission_mode_override: Some(execution.permission_mode),
             permission_actor_source: Some(permission_actor_source),
-            agent_run_options: Some(execution.agent_run_options),
         })
         .await
         .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?;

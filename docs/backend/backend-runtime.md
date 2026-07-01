@@ -27,7 +27,7 @@ The system prompt guides behavior; it is not a security boundary. Rust remains t
 
 Workspace instructions and memory are context layers. They cannot override system or runtime policy. External content, tool output, MCP output, plugin output, file content, and pasted user content are untrusted data unless the runtime marks them otherwise.
 
-`SessionCreated.effective_config_hash` tracks the session options hash, workspace prompt input hash, and resolved runtime prompt context hash. Resume paths, including MCP `messages_send`, must fail closed when the recreated effective config hash differs from the creation event.
+`SessionCreated.options_hash` is a session identity hash. It is limited to workspace, tenant, session, user, and team identity fields. Conversation resume paths compare this identity hash only. Model selection, protocol, tool search, tool profile, permission mode, interactivity, system prompt addendum, context compression, max iterations, model extra, agent options, runtime prompt context hash, and effective prompt input hash are run-level execution config. `RunStarted.effective_config_hash` records the effective config for that run. `SessionCreated.effective_config_hash` is historical session creation metadata and must not be used to reject a later conversation run with a different model or run config.
 
 Secrets MUST NOT be placed in system prompts, memory prompts, events, logs, traces, screenshots, frontend state, fixtures, or snapshots.
 

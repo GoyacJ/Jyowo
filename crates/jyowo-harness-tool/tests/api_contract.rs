@@ -115,6 +115,8 @@ async fn tool_context_retrieves_capabilities_and_reports_missing_handles() {
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
         parent_run: None,
+        model: None,
+        model_config_id: None,
     };
 
     let recovered = ctx

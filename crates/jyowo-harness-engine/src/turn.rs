@@ -77,7 +77,7 @@ pub(crate) async fn run_turn(
         session_id: session.session_id,
         tenant_id: session.tenant_id,
         parent_run_id: ctx.parent_run_id,
-        model: RunModelSnapshot {
+        model: ctx.model.clone().unwrap_or_else(|| RunModelSnapshot {
             model_config_id: None,
             provider_id: engine.model_snapshot.provider_id.clone(),
             model_id: engine.model_snapshot.model_id.clone(),
@@ -86,7 +86,7 @@ pub(crate) async fn run_turn(
             context_window: engine.model_snapshot.context_window,
             max_output_tokens: engine.model_snapshot.max_output_tokens,
             conversation_capability: engine.model_snapshot.conversation_capability.clone(),
-        },
+        }),
         input: input.clone(),
         snapshot_id: ctx.config_snapshot_id,
         effective_config_hash: ctx.effective_config_hash,
@@ -895,6 +895,8 @@ pub(crate) async fn run_turn(
                         run_id: ctx.run_id,
                         session_id: session.session_id,
                         tenant_id: session.tenant_id,
+                        model: ctx.model.clone(),
+                        model_config_id: ctx.model_config_id.clone(),
                         correlation_id,
                         agent_id: harness_contracts::AgentId::from_u128(1),
                         subagent_depth: ctx.subagent_depth,

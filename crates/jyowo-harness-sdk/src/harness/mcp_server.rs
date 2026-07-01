@@ -1,10 +1,12 @@
+use super::session_runtime::{
+    conversation_run_options_hash, run_model_snapshot, session_options_for_run,
+};
 use super::*;
 
 #[cfg(feature = "mcp-server-adapter")]
 struct McpSessionReplay {
     projection: SessionProjection,
     created_options_hash: [u8; 32],
-    created_effective_config_hash: ConfigHash,
 }
 
 #[async_trait]
@@ -144,7 +146,6 @@ impl Harness {
                 session_id,
                 projection,
                 replay.created_options_hash,
-                replay.created_effective_config_hash,
             )
             .await?;
         session
@@ -451,13 +452,11 @@ impl Harness {
             )));
         }
         let created_options_hash = created.options_hash;
-        let created_effective_config_hash = created.effective_config_hash;
         let projection = SessionProjection::replay(envelopes)
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         Ok(McpSessionReplay {
             projection,
             created_options_hash,
-            created_effective_config_hash,
         })
     }
 
@@ -506,7 +505,6 @@ impl Harness {
         session_id: harness_contracts::SessionId,
         projection: SessionProjection,
         created_options_hash: [u8; 32],
-        created_effective_config_hash: ConfigHash,
     ) -> Result<Session, McpServerError> {
         let options =
             self.mcp_resume_options_for_hash(tenant_id, session_id, created_options_hash)?;
@@ -516,6 +514,8 @@ impl Harness {
             .load_effective_prompt_inputs(&options)
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         let prompt_inputs_hash = effective_prompt_inputs_hash(&prompt_inputs);
+        let run_options = ConversationRunOptions::from_session_options(&options);
+        let run_options_hash = conversation_run_options_hash(&run_options);
         let limit_permit = self
             .inner
             .session_limits
@@ -530,10 +530,9 @@ impl Harness {
         let session_engine = self
             .engine_for_session(
                 &options,
+                &run_options,
                 &prompt_inputs,
                 memory_manager.clone(),
-                None,
-                #[cfg(feature = "agents-subagent")]
                 None,
                 #[cfg(feature = "agents-subagent")]
                 None,
@@ -544,35 +543,32 @@ impl Harness {
         let session_engine = self
             .engine_for_session(
                 &options,
+                &run_options,
                 &prompt_inputs,
-                None,
-                #[cfg(feature = "agents-subagent")]
                 None,
                 #[cfg(feature = "agents-subagent")]
                 None,
             )
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
-        let effective_config_hash = session_effective_config_hash(
-            &options,
+        let run_model = run_model_snapshot(&session_engine.model_snapshot, &run_options);
+        let effective_config_hash = run_effective_config_hash(
+            session_options_hash(&options),
+            run_options_hash,
             Some(prompt_inputs_hash),
             Some(session_engine.runtime_prompt_context_hash),
         );
-        if effective_config_hash != created_effective_config_hash {
-            return Err(McpServerError::InvalidParams(
-                "session effective config does not match the existing session".to_owned(),
-            ));
-        }
+        let turn_options = session_options_for_run(options, &run_options);
         let event_store: Arc<dyn EventStore> = Arc::new(LifecycleHookEventStore {
             inner: Arc::clone(&self.inner.event_store),
             hooks: HookDispatcher::new(self.inner.hook_registry.snapshot()),
-            tenant_id: options.tenant_id,
-            session_id: options.session_id,
+            tenant_id: turn_options.tenant_id,
+            session_id: turn_options.session_id,
             #[cfg(feature = "memory-external-slot")]
-            user_id: options.user_id.clone(),
+            user_id: turn_options.user_id.clone(),
             #[cfg(feature = "memory-external-slot")]
-            team_id: options.team_id,
-            workspace_root: options.workspace_root.clone(),
+            team_id: turn_options.team_id,
+            workspace_root: turn_options.workspace_root.clone(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
@@ -581,9 +577,11 @@ impl Harness {
             memory_manager,
         });
         let session = Session::builder()
-            .with_options(options)
+            .with_options(turn_options)
             .with_effective_prompt_inputs_hash(prompt_inputs_hash)
             .with_runtime_prompt_context_hash(session_engine.runtime_prompt_context_hash)
+            .with_effective_config_hash(effective_config_hash)
+            .with_turn_model_snapshot(run_model)
             .with_event_store(event_store)
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine: session_engine.engine,
