@@ -1551,7 +1551,7 @@ mod capability_route_conversation {
             routes: vec![minimax_image_route("minimax-image", true)],
         }));
         let resolver = desktop_provider_credential_resolver_with_stores(
-            Arc::new(DesktopConversationModelConfigStore::new(workspace.clone())),
+            Arc::new(DesktopConversationMetadataStore::new(workspace.clone())),
             Arc::new(DesktopProviderSettingsStore::new(workspace.clone())),
             Arc::clone(&routes),
         );
@@ -1731,7 +1731,7 @@ mod provider_credential_route {
         provider_store
             .save_record(&provider_settings)
             .expect("provider settings should save");
-        let conversation_store = DesktopConversationModelConfigStore::new(workspace);
+        let conversation_store = DesktopConversationMetadataStore::new(workspace);
         let resolver = desktop_provider_credential_resolver_with_stores(
             Arc::new(conversation_store),
             Arc::new(provider_store),
@@ -1745,6 +1745,7 @@ mod provider_credential_route {
                 session_id,
                 run_id: RunId::new(),
                 provider_id: "minimax".to_owned(),
+                model_config_id: None,
                 operation_id: None,
                 route_kind: None,
             })
@@ -1764,7 +1765,7 @@ mod provider_credential_route {
         provider_store
             .save_record(&provider_settings)
             .expect("provider settings should save");
-        let conversation_store = DesktopConversationModelConfigStore::new(workspace);
+        let conversation_store = DesktopConversationMetadataStore::new(workspace);
         let resolver = desktop_provider_credential_resolver_with_stores(
             Arc::new(conversation_store),
             Arc::new(provider_store),
@@ -1777,6 +1778,7 @@ mod provider_credential_route {
                 session_id: SessionId::new(),
                 run_id: RunId::new(),
                 provider_id: "minimax".to_owned(),
+                model_config_id: None,
                 operation_id: Some("minimax.image_generation".to_owned()),
                 route_kind: Some(CapabilityRouteKind::ImageGeneration),
             })
@@ -1803,7 +1805,7 @@ mod provider_credential_route {
             routes: vec![minimax_image_route("minimax-image", true)],
         }));
         let resolver = desktop_provider_credential_resolver_with_stores(
-            Arc::new(DesktopConversationModelConfigStore::new(workspace)),
+            Arc::new(DesktopConversationMetadataStore::new(workspace)),
             Arc::new(provider_store),
             routes,
         );
@@ -1814,6 +1816,7 @@ mod provider_credential_route {
                 session_id: SessionId::new(),
                 run_id: RunId::new(),
                 provider_id: "minimax".to_owned(),
+                model_config_id: None,
                 operation_id: Some("minimax.image_generation".to_owned()),
                 route_kind: Some(CapabilityRouteKind::ImageGeneration),
             })
@@ -1840,7 +1843,7 @@ mod provider_credential_route {
             routes: vec![minimax_image_route("minimax-image", true)],
         }));
         let resolver = desktop_provider_credential_resolver_with_stores(
-            Arc::new(DesktopConversationModelConfigStore::new(workspace)),
+            Arc::new(DesktopConversationMetadataStore::new(workspace)),
             Arc::new(provider_store),
             routes,
         );
@@ -1851,6 +1854,7 @@ mod provider_credential_route {
                 session_id: SessionId::new(),
                 run_id: RunId::new(),
                 provider_id: "openai".to_owned(),
+                model_config_id: None,
                 operation_id: Some("minimax.image_generation".to_owned()),
                 route_kind: Some(CapabilityRouteKind::ImageGeneration),
             })
@@ -1876,7 +1880,7 @@ mod provider_credential_route {
             routes: vec![minimax_image_route("minimax-image", false)],
         }));
         let resolver = desktop_provider_credential_resolver_with_stores(
-            Arc::new(DesktopConversationModelConfigStore::new(workspace)),
+            Arc::new(DesktopConversationMetadataStore::new(workspace)),
             Arc::new(provider_store),
             routes,
         );
@@ -1887,6 +1891,7 @@ mod provider_credential_route {
                 session_id: SessionId::new(),
                 run_id: RunId::new(),
                 provider_id: "minimax".to_owned(),
+                model_config_id: None,
                 operation_id: Some("minimax.image_generation".to_owned()),
                 route_kind: Some(CapabilityRouteKind::ImageGeneration),
             })
@@ -1908,7 +1913,7 @@ mod provider_credential_route {
             ))
             .expect("provider settings should save");
         let resolver = desktop_provider_credential_resolver_with_stores(
-            Arc::new(DesktopConversationModelConfigStore::new(workspace)),
+            Arc::new(DesktopConversationMetadataStore::new(workspace)),
             Arc::new(provider_store),
             empty_provider_capability_routes(),
         );
@@ -1919,6 +1924,7 @@ mod provider_credential_route {
                 session_id: SessionId::new(),
                 run_id: RunId::new(),
                 provider_id: "minimax".to_owned(),
+                model_config_id: None,
                 operation_id: Some("minimax.image_generation".to_owned()),
                 route_kind: Some(CapabilityRouteKind::ImageGeneration),
             })
@@ -2238,18 +2244,21 @@ async fn set_conversation_model_config_with_runtime_state_persists_selection() {
     assert_eq!(payload.conversation_id, conversation_id);
     assert_eq!(payload.model_config_id, "openai-work");
     assert_eq!(payload.status, "saved");
-    let saved: HashMap<String, String> = serde_json::from_slice(
+    let saved: ConversationMetadataFile = serde_json::from_slice(
         &std::fs::read(
             workspace
                 .join(".jyowo")
                 .join("runtime")
-                .join("conversation-model-settings.json"),
+                .join("conversation-metadata.json"),
         )
         .unwrap(),
     )
     .unwrap();
     assert_eq!(
-        saved.get(&payload.conversation_id).map(String::as_str),
+        saved
+            .conversations
+            .get(&payload.conversation_id)
+            .and_then(|record| record.default_model_config_id.as_deref()),
         Some("openai-work")
     );
 }
@@ -2293,7 +2302,7 @@ async fn set_conversation_model_config_with_runtime_state_rejects_unknown_conver
     assert!(!workspace
         .join(".jyowo")
         .join("runtime")
-        .join("conversation-model-settings.json")
+        .join("conversation-metadata.json")
         .exists());
 }
 

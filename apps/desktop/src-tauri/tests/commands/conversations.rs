@@ -3,12 +3,19 @@ use super::*;
 #[tokio::test]
 async fn list_conversations_with_runtime_state_returns_startable_conversation_id() {
     let state = runtime_state_with_harness().await;
+    let created = create_conversation_with_runtime_state(&state)
+        .await
+        .expect("draft conversation should be created");
     let payload = list_conversations_with_runtime_state(&state).await;
-    let conversation_id = payload.conversations[0].id.clone();
+    let conversation_id = created.conversation.id;
 
     let session_id =
         SessionId::parse(&conversation_id).expect("conversation id should be a session id");
     assert_eq!(session_id.to_string(), conversation_id);
+    assert!(payload
+        .conversations
+        .iter()
+        .any(|conversation| conversation.id == conversation_id));
 
     let run = start_run_with_runtime_state(
         StartRunRequest {
@@ -32,18 +39,43 @@ async fn list_conversations_with_runtime_state_returns_startable_conversation_id
             .to_string(),
         run.run_id
     );
+    let detail = get_conversation_with_runtime_state(
+        GetConversationRequest {
+            conversation_id: session_id.to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("started draft conversation should read runtime messages");
+    assert!(!detail.conversation.messages.is_empty());
 }
 
 #[tokio::test]
-async fn create_conversation_with_runtime_state_persists_empty_runtime_session() {
+async fn create_conversation_with_runtime_state_persists_draft_metadata_only() {
     let state = runtime_state_with_harness().await;
 
     let created = create_conversation_with_runtime_state(&state)
         .await
-        .expect("create conversation should create a runtime session");
+        .expect("create conversation should write draft metadata");
     let conversation_id = created.conversation.id.clone();
     assert!(created.conversation.is_empty);
-    SessionId::parse(&conversation_id).expect("conversation id should be a session id");
+    let session_id =
+        SessionId::parse(&conversation_id).expect("conversation id should be a session id");
+    let events: Vec<_> = state
+        .harness()
+        .expect("harness should be available")
+        .event_store()
+        .read_envelopes(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .expect("event store should be readable")
+        .collect()
+        .await;
+    assert!(
+        events
+            .iter()
+            .all(|envelope| !matches!(envelope.payload, Event::SessionCreated(_))),
+        "draft creation must not write SessionCreated",
+    );
 
     let listed = list_conversations_with_runtime_state(&state).await;
     assert!(listed
@@ -89,7 +121,7 @@ async fn create_conversation_with_runtime_state_does_not_bind_default_model_conf
 
     let created = create_conversation_with_runtime_state(&state)
         .await
-        .expect("create conversation should create a runtime session");
+        .expect("create conversation should write draft metadata");
     let detail = get_conversation_with_runtime_state(
         GetConversationRequest {
             conversation_id: created.conversation.id,
@@ -114,10 +146,26 @@ async fn list_conversations_with_runtime_state_returns_empty_list_without_harnes
 }
 
 #[tokio::test]
-async fn list_conversations_with_runtime_state_opens_listed_empty_conversation() {
+async fn list_conversations_with_runtime_state_returns_empty_list_without_auto_runtime_session() {
     let state = runtime_state_with_harness().await;
     let payload = list_conversations_with_runtime_state(&state).await;
-    let conversation_id = payload.conversations[0].id.clone();
+
+    assert!(payload.conversations.is_empty());
+}
+
+#[tokio::test]
+async fn draft_conversation_can_list_get_and_delete() {
+    let state = runtime_state_with_harness().await;
+    let created = create_conversation_with_runtime_state(&state)
+        .await
+        .expect("draft conversation should be created");
+    let conversation_id = created.conversation.id.clone();
+
+    let listed = list_conversations_with_runtime_state(&state).await;
+    assert!(listed
+        .conversations
+        .iter()
+        .any(|conversation| conversation.id == conversation_id));
 
     let detail = get_conversation_with_runtime_state(
         GetConversationRequest {
@@ -126,18 +174,33 @@ async fn list_conversations_with_runtime_state_opens_listed_empty_conversation()
         &state,
     )
     .await
-    .expect("listed empty conversation should be readable");
+    .expect("draft conversation should be readable");
 
     assert_eq!(detail.conversation.id, conversation_id);
     assert!(detail.conversation.messages.is_empty());
     assert_eq!(detail.conversation.title, "New conversation");
-    assert!(payload.conversations[0].is_empty);
-    let serialized = serde_json::to_value(&payload).expect("payload should serialize");
+    assert!(created.conversation.is_empty);
+    let serialized = serde_json::to_value(&listed).expect("payload should serialize");
     assert_eq!(
         serialized["conversations"][0].get("lastMessagePreview"),
         None,
         "empty conversation preview should be omitted instead of serialized as null",
     );
+
+    let deleted = delete_conversation_with_runtime_state(
+        DeleteConversationRequest {
+            conversation_id: conversation_id.clone(),
+        },
+        &state,
+    )
+    .await
+    .expect("draft conversation should delete");
+    assert_eq!(deleted.status, "deleted");
+    let listed_after_delete = list_conversations_with_runtime_state(&state).await;
+    assert!(!listed_after_delete
+        .conversations
+        .iter()
+        .any(|conversation| conversation.id == conversation_id));
 }
 
 #[tokio::test]
@@ -271,8 +334,10 @@ async fn get_and_delete_conversation_with_runtime_state_survive_runtime_option_c
 #[tokio::test]
 async fn listed_empty_conversation_returns_empty_activity() {
     let state = runtime_state_with_harness().await;
-    let payload = list_conversations_with_runtime_state(&state).await;
-    let conversation_id = payload.conversations[0].id.clone();
+    let created = create_conversation_with_runtime_state(&state)
+        .await
+        .expect("draft conversation should be created");
+    let conversation_id = created.conversation.id;
 
     let activity = list_activity_with_runtime_state(
         ListActivityRequest {
@@ -290,8 +355,10 @@ async fn listed_empty_conversation_returns_empty_activity() {
 #[tokio::test]
 async fn listed_empty_conversation_returns_workspace_context() {
     let state = runtime_state_with_harness().await;
-    let payload = list_conversations_with_runtime_state(&state).await;
-    let conversation_id = payload.conversations[0].id.clone();
+    let created = create_conversation_with_runtime_state(&state)
+        .await
+        .expect("draft conversation should be created");
+    let conversation_id = created.conversation.id;
 
     let context = get_context_snapshot_with_runtime_state(
         GetContextSnapshotRequest {

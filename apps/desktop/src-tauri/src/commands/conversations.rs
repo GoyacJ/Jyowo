@@ -39,17 +39,35 @@ use harness_contracts::{
 pub async fn list_conversations_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> ListConversationsResponse {
-    let Some(harness) = state.harness() else {
-        return ListConversationsResponse {
-            conversations: Vec::new(),
-        };
+    let runtime_summaries = if let Some(harness) = state.harness() {
+        list_runtime_conversation_summaries(&harness, state).await
+    } else {
+        Vec::new()
     };
-
-    let summaries = list_runtime_conversation_summaries(&harness, state).await;
-    let conversations = summaries
+    let mut conversations: Vec<_> = runtime_summaries
         .into_iter()
         .map(conversation_summary_payload_from_read_model)
         .collect();
+    let mut seen = conversations
+        .iter()
+        .map(|conversation| conversation.id.clone())
+        .collect::<HashSet<_>>();
+    let deleted = state.deleted_conversation_ids.lock().await;
+    if let Ok(metadata) = state.conversation_metadata_store.load_record() {
+        conversations.extend(
+            metadata
+                .conversations
+                .into_values()
+                .filter(|record| record.state == ConversationMetadataState::Draft)
+                .filter(|record| {
+                    SessionId::parse(&record.id)
+                        .is_ok_and(|session_id| !deleted.contains(&session_id))
+                })
+                .filter(|record| seen.insert(record.id.clone()))
+                .map(conversation_summary_payload_from_metadata),
+        );
+    }
+    conversations.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
 
     ListConversationsResponse { conversations }
 }
@@ -58,30 +76,24 @@ pub async fn create_conversation_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<CreateConversationResponse, CommandErrorPayload> {
     let session_id = SessionId::new();
-    let Some((harness, options)) = state.active_conversation_runtime(session_id) else {
-        return Err(runtime_unavailable(
-            "Creating conversations requires the runtime conversation facade.",
-        ));
+    let now = chrono::Utc::now().to_rfc3339();
+    let record = ConversationMetadataRecord {
+        id: session_id.to_string(),
+        title: "New conversation".to_owned(),
+        created_at: now.clone(),
+        updated_at: now,
+        default_model_config_id: None,
+        state: ConversationMetadataState::Draft,
     };
-    harness
-        .open_or_create_conversation_session(options)
-        .await
-        .map_err(|error| {
-            runtime_operation_failed(format!("conversation create failed: {error}"))
-        })?;
-
-    let summary = harness
-        .list_conversation_summaries(TenantId::SINGLE, 50)
-        .await
-        .map_err(|error| {
-            runtime_operation_failed(format!("conversation list failed after create: {error}"))
-        })?
-        .into_iter()
-        .find(|summary| summary.id == session_id.to_string())
-        .ok_or_else(|| not_found(format!("conversation not found: {session_id}")))?;
+    let _guard = state.conversation_metadata_lock.lock().await;
+    let mut metadata = state.conversation_metadata_store.load_record()?;
+    metadata
+        .conversations
+        .insert(session_id.to_string(), record.clone());
+    state.conversation_metadata_store.save_record(&metadata)?;
 
     Ok(CreateConversationResponse {
-        conversation: conversation_summary_payload_from_read_model(summary),
+        conversation: conversation_summary_payload_from_metadata(record),
     })
 }
 
@@ -94,34 +106,24 @@ pub(crate) async fn list_runtime_conversation_summaries(
         .await
         .unwrap_or_default();
 
-    let default_conversation_id = state.default_conversation_id();
-    let default_conversation_deleted = state
-        .deleted_conversation_ids
-        .lock()
-        .await
-        .contains(&default_conversation_id);
-
-    if summaries.is_empty()
-        && !default_conversation_deleted
-        && harness
-            .open_or_create_conversation_session(
-                state.conversation_session_options(default_conversation_id),
-            )
-            .await
-            .is_ok()
-    {
-        summaries = harness
-            .list_conversation_summaries(TenantId::SINGLE, 50)
-            .await
-            .unwrap_or_default();
-    }
-
     let deleted = state.deleted_conversation_ids.lock().await;
     summaries.retain(|summary| {
         SessionId::parse(&summary.id).is_ok_and(|session_id| !deleted.contains(&session_id))
     });
 
     summaries
+}
+
+fn conversation_summary_payload_from_metadata(
+    record: ConversationMetadataRecord,
+) -> ConversationSummaryPayload {
+    ConversationSummaryPayload {
+        id: record.id,
+        is_empty: record.state == ConversationMetadataState::Draft,
+        last_message_preview: None,
+        title: record.title,
+        updated_at: record.updated_at,
+    }
 }
 
 pub(crate) fn conversation_summary_payload_from_read_model(
@@ -154,6 +156,19 @@ pub async fn get_conversation_with_runtime_state(
             "conversation not found: {}",
             request.conversation_id
         )));
+    }
+    if let Some(record) = conversation_metadata_record(&session_id, state)?
+        .filter(|record| record.state == ConversationMetadataState::Draft)
+    {
+        return Ok(GetConversationResponse {
+            conversation: ConversationPayload {
+                id: record.id,
+                messages: Vec::new(),
+                model_config_id: record.default_model_config_id,
+                title: record.title,
+                updated_at: record.updated_at,
+            },
+        });
     }
     let Some(harness) = state.harness() else {
         return Err(runtime_unavailable(
@@ -206,9 +221,18 @@ pub(crate) fn conversation_model_config_id(
     session_id: &SessionId,
     state: &DesktopRuntimeState,
 ) -> Result<Option<String>, CommandErrorPayload> {
+    Ok(conversation_metadata_record(session_id, state)?
+        .and_then(|record| record.default_model_config_id))
+}
+
+pub(crate) fn conversation_metadata_record(
+    session_id: &SessionId,
+    state: &DesktopRuntimeState,
+) -> Result<Option<ConversationMetadataRecord>, CommandErrorPayload> {
     Ok(state
-        .conversation_model_config_store
-        .load_records()?
+        .conversation_metadata_store
+        .load_record()?
+        .conversations
         .get(&session_id.to_string())
         .cloned())
 }
@@ -218,10 +242,50 @@ pub(crate) async fn persist_conversation_model_config_id(
     model_config_id: &str,
     state: &DesktopRuntimeState,
 ) -> Result<(), CommandErrorPayload> {
-    let _guard = state.conversation_model_config_lock.lock().await;
-    let mut records = state.conversation_model_config_store.load_records()?;
-    records.insert(session_id.to_string(), model_config_id.to_owned());
-    state.conversation_model_config_store.save_records(&records)
+    let _guard = state.conversation_metadata_lock.lock().await;
+    let mut metadata = state.conversation_metadata_store.load_record()?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let record = metadata
+        .conversations
+        .entry(session_id.to_string())
+        .or_insert_with(|| ConversationMetadataRecord {
+            id: session_id.to_string(),
+            title: "New conversation".to_owned(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            default_model_config_id: None,
+            state: ConversationMetadataState::Active,
+        });
+    record.default_model_config_id = Some(model_config_id.to_owned());
+    record.updated_at = now;
+    state.conversation_metadata_store.save_record(&metadata)
+}
+
+pub(crate) async fn mark_conversation_metadata_active(
+    session_id: SessionId,
+    default_model_config_id: Option<String>,
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let _guard = state.conversation_metadata_lock.lock().await;
+    let mut metadata = state.conversation_metadata_store.load_record()?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let record = metadata
+        .conversations
+        .entry(session_id.to_string())
+        .or_insert_with(|| ConversationMetadataRecord {
+            id: session_id.to_string(),
+            title: "New conversation".to_owned(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            default_model_config_id: None,
+            state: ConversationMetadataState::Active,
+        });
+    record.state = ConversationMetadataState::Active;
+    record.updated_at = now;
+    if let Some(model_config_id) = default_model_config_id {
+        record.default_model_config_id = Some(model_config_id);
+    }
+    state.conversation_metadata_store.save_record(&metadata)
 }
 
 pub async fn set_conversation_model_config_with_runtime_state(
@@ -277,19 +341,41 @@ pub async fn delete_conversation_with_runtime_state(
 ) -> Result<DeleteConversationResponse, CommandErrorPayload> {
     ensure_non_empty("conversationId", &request.conversation_id)?;
     let session_id = parse_session_id(&request.conversation_id)?;
-    let Some(harness) = state.harness() else {
-        return Err(runtime_unavailable(
-            "Deleting conversations requires the runtime conversation facade.",
-        ));
+    let removed_metadata = {
+        let _guard = state.conversation_metadata_lock.lock().await;
+        let mut metadata = state.conversation_metadata_store.load_record()?;
+        let removed = metadata.conversations.remove(&request.conversation_id);
+        if removed.is_some() {
+            state.conversation_metadata_store.save_record(&metadata)?;
+        }
+        removed
     };
+    if removed_metadata
+        .as_ref()
+        .is_some_and(|record| record.state == ConversationMetadataState::Draft)
+    {
+        state
+            .deleted_conversation_ids
+            .lock()
+            .await
+            .insert(session_id);
+        return Ok(DeleteConversationResponse {
+            conversation_id: request.conversation_id,
+            status: "deleted",
+        });
+    }
 
-    let deleted = harness
-        .delete_conversation_session(state.conversation_session_options(session_id))
-        .await
-        .map_err(|error| {
-            runtime_operation_failed(format!("conversation delete failed: {error}"))
-        })?;
-    if !deleted {
+    let deleted = if let Some(harness) = state.harness() {
+        harness
+            .delete_conversation_session(state.conversation_session_options(session_id))
+            .await
+            .map_err(|error| {
+                runtime_operation_failed(format!("conversation delete failed: {error}"))
+            })?
+    } else {
+        false
+    };
+    if !deleted && removed_metadata.is_none() {
         return Err(not_found(format!(
             "conversation not found: {}",
             request.conversation_id
@@ -400,6 +486,7 @@ pub async fn start_run_with_runtime_state(
             &request.prompt,
         )
         .await?;
+        mark_conversation_metadata_active(session_id, None, state).await?;
         let _ = crate::agent_supervisor::wake_agent_supervisor(state.workspace_root()).await;
         return Ok(StartRunResponse {
             background_agent_id: agent_policy.background_agent_id,
@@ -435,6 +522,7 @@ pub async fn start_run_with_runtime_state(
             }
         };
     drop(run_task);
+    mark_conversation_metadata_active(session_id, None, state).await?;
 
     Ok(StartRunResponse {
         background_agent_id: agent_policy.background_agent_id,
@@ -886,6 +974,9 @@ pub(crate) async fn ensure_existing_conversation_session(
     session_id: SessionId,
     state: &DesktopRuntimeState,
 ) -> Result<(), CommandErrorPayload> {
+    if conversation_metadata_record(&session_id, state)?.is_some() {
+        return Ok(());
+    }
     let Some(harness) = state.harness() else {
         return Err(runtime_unavailable(
             "Reading conversations requires the runtime conversation facade.",
@@ -900,6 +991,9 @@ pub(crate) async fn ensure_existing_conversation_session_with_harness(
     state: &DesktopRuntimeState,
     harness: &Harness,
 ) -> Result<(), CommandErrorPayload> {
+    if conversation_metadata_record(&session_id, state)?.is_some() {
+        return Ok(());
+    }
     if session_id == state.default_conversation_id()
         && !state
             .deleted_conversation_ids
@@ -1055,6 +1149,14 @@ pub async fn list_activity_with_runtime_state(
     ensure_optional("conversationId", request.conversation_id.as_deref())?;
     ensure_optional("runId", request.run_id.as_deref())?;
     require_conversation_id_for_activity(request.conversation_id.as_deref())?;
+    if let Some(conversation_id) = request.conversation_id.as_deref() {
+        let session_id = parse_session_id(conversation_id)?;
+        if conversation_metadata_record(&session_id, state)?
+            .is_some_and(|record| record.state == ConversationMetadataState::Draft)
+        {
+            return Ok(ListActivityResponse { events: Vec::new() });
+        }
+    }
 
     let mut events = read_activity_replay_events(&request, state).await?;
     events.retain(|event| event.event_type != "assistant.thinking.delta");

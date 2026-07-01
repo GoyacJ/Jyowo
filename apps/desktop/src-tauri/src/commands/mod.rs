@@ -152,8 +152,9 @@ pub use contracts::{
     BrowserMcpPresetSummaryPayload, CancelRunRequest, CancelRunResponse,
     ClearMcpDiagnosticsRequest, ClearMcpDiagnosticsResponse, ContextDecisionPayload,
     ContextFilePayload, ContextReferencePayload, ConversationEventBatchEmitter,
-    ConversationEventBatchPayload, ConversationMessagePayload, ConversationModelCapabilityRecord,
-    ConversationModelConfigStore, ConversationPayload, ConversationSummaryPayload,
+    ConversationEventBatchPayload, ConversationMessagePayload, ConversationMetadataFile,
+    ConversationMetadataRecord, ConversationMetadataState, ConversationMetadataStore,
+    ConversationModelCapabilityRecord, ConversationPayload, ConversationSummaryPayload,
     CreateAttachmentFromPathRequest, CreateAttachmentFromPathResponse, CreateConversationResponse,
     DeleteAgentProfileRequest, DeleteAgentProfileResponse, DeleteAutomationRequest,
     DeleteAutomationResponse, DeleteConversationRequest, DeleteConversationResponse,
@@ -289,7 +290,7 @@ pub use providers::{
     save_provider_capability_route_settings_with_store, save_provider_capability_route_with_store,
     save_provider_settings_with_runtime_state, save_provider_settings_with_store,
     set_execution_settings_with_store, validate_provider_settings_payload,
-    AgentCapabilitiesPayload, DesktopConversationModelConfigStore, DesktopExecutionSettingsStore,
+    AgentCapabilitiesPayload, DesktopConversationMetadataStore, DesktopExecutionSettingsStore,
     DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore, ExecutionSettingsRecord,
 };
 pub use runtime::{

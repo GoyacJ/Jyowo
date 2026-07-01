@@ -1115,9 +1115,43 @@ pub trait ProviderCapabilityRouteStore:
     ) -> Result<(), CommandErrorPayload>;
 }
 
-pub trait ConversationModelConfigStore: Send + Sync {
-    fn load_records(&self) -> Result<HashMap<String, String>, CommandErrorPayload>;
-    fn save_records(&self, records: &HashMap<String, String>) -> Result<(), CommandErrorPayload>;
+pub trait ConversationMetadataStore: Send + Sync {
+    fn load_record(&self) -> Result<ConversationMetadataFile, CommandErrorPayload>;
+    fn save_record(&self, record: &ConversationMetadataFile) -> Result<(), CommandErrorPayload>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConversationMetadataState {
+    Draft,
+    Active,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMetadataRecord {
+    pub id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub default_model_config_id: Option<String>,
+    pub state: ConversationMetadataState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMetadataFile {
+    pub version: u32,
+    pub conversations: HashMap<String, ConversationMetadataRecord>,
+}
+
+impl Default for ConversationMetadataFile {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            conversations: HashMap::new(),
+        }
+    }
 }
 
 pub trait McpServerStore: Send + Sync {

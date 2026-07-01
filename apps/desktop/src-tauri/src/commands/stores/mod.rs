@@ -1127,8 +1127,8 @@ pub struct DesktopRuntimeState {
     pub(crate) active_runtime: Arc<RwLock<DesktopActiveRuntime>>,
     pub(crate) automation_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) automation_store: Arc<dyn AutomationStore>,
-    pub(crate) conversation_model_config_lock: Arc<tokio::sync::Mutex<()>>,
-    pub(crate) conversation_model_config_store: Arc<dyn ConversationModelConfigStore>,
+    pub(crate) conversation_metadata_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) conversation_metadata_store: Arc<dyn ConversationMetadataStore>,
     pub(crate) conversation_event_subscriptions:
         Arc<tokio::sync::Mutex<HashMap<String, ConversationSubscriptionHandle>>>,
     pub(crate) default_conversation_id: SessionId,

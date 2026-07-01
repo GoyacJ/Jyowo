@@ -33,19 +33,19 @@ use jyowo_harness_sdk::AgentCapabilityResolutionContext;
 
 #[derive(Clone)]
 pub(crate) struct DesktopProviderCredentialResolver {
-    conversation_model_config_store: Arc<dyn ConversationModelConfigStore>,
+    conversation_metadata_store: Arc<dyn ConversationMetadataStore>,
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
     provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
 }
 
 impl DesktopProviderCredentialResolver {
     pub(crate) fn new(
-        conversation_model_config_store: Arc<dyn ConversationModelConfigStore>,
+        conversation_metadata_store: Arc<dyn ConversationMetadataStore>,
         provider_settings_store: Arc<dyn ProviderSettingsStore>,
         provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
     ) -> Self {
         Self {
-            conversation_model_config_store,
+            conversation_metadata_store,
             provider_settings_store,
             provider_capability_routes,
         }
@@ -114,11 +114,12 @@ impl ProviderCredentialResolverCap for DesktopProviderCredentialResolver {
                     )
                 })?;
             let bound_config_id = self
-                .conversation_model_config_store
-                .load_records()
+                .conversation_metadata_store
+                .load_record()
                 .map_err(|error| ToolError::PermissionDenied(error.message))?
+                .conversations
                 .get(&context.session_id.to_string())
-                .cloned();
+                .and_then(|record| record.default_model_config_id.clone());
             let selected = bound_config_id
                 .as_deref()
                 .and_then(|config_id| {
@@ -154,12 +155,12 @@ impl ProviderCredentialResolverCap for DesktopProviderCredentialResolver {
 }
 
 pub fn desktop_provider_credential_resolver_with_stores(
-    conversation_model_config_store: Arc<dyn ConversationModelConfigStore>,
+    conversation_metadata_store: Arc<dyn ConversationMetadataStore>,
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
     provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
 ) -> Arc<dyn ProviderCredentialResolverCap> {
     Arc::new(DesktopProviderCredentialResolver::new(
-        conversation_model_config_store,
+        conversation_metadata_store,
         provider_settings_store,
         provider_capability_routes,
     ))
@@ -789,92 +790,95 @@ pub(crate) fn ensure_provider_capability_route_settings_record(
 }
 
 #[derive(Clone)]
-pub struct DesktopConversationModelConfigStore {
+pub struct DesktopConversationMetadataStore {
     workspace_root: PathBuf,
 }
 
-impl DesktopConversationModelConfigStore {
+impl DesktopConversationMetadataStore {
     pub fn new(workspace_root: PathBuf) -> Self {
         Self { workspace_root }
     }
 
-    fn settings_path(&self) -> PathBuf {
+    fn metadata_path(&self) -> PathBuf {
         self.workspace_root
             .join(".jyowo")
             .join("runtime")
-            .join("conversation-model-settings.json")
+            .join("conversation-metadata.json")
     }
 }
 
-impl ConversationModelConfigStore for DesktopConversationModelConfigStore {
-    fn load_records(&self) -> Result<HashMap<String, String>, CommandErrorPayload> {
-        let settings_path = self.settings_path();
-        ensure_no_symlink_components(&settings_path, "conversation model settings file")?;
-        match std::fs::read(&settings_path) {
+impl ConversationMetadataStore for DesktopConversationMetadataStore {
+    fn load_record(&self) -> Result<ConversationMetadataFile, CommandErrorPayload> {
+        let metadata_path = self.metadata_path();
+        ensure_no_symlink_components(&metadata_path, "conversation metadata file")?;
+        match std::fs::read(&metadata_path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-                runtime_operation_failed(format!(
-                    "conversation model settings parse failed: {error}"
-                ))
+                runtime_operation_failed(format!("conversation metadata parse failed: {error}"))
             }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(ConversationMetadataFile::default())
+            }
             Err(error) => Err(runtime_operation_failed(format!(
-                "conversation model settings read failed: {error}"
+                "conversation metadata read failed: {error}"
             ))),
         }
     }
 
-    fn save_records(&self, records: &HashMap<String, String>) -> Result<(), CommandErrorPayload> {
-        let settings_path = self.settings_path();
-        let parent = settings_path.parent().ok_or_else(|| {
-            runtime_operation_failed("conversation model settings path has no parent".to_owned())
+    fn save_record(&self, record: &ConversationMetadataFile) -> Result<(), CommandErrorPayload> {
+        if record.version != 1 {
+            return Err(runtime_operation_failed(
+                "conversation metadata version must be 1".to_owned(),
+            ));
+        }
+        let metadata_path = self.metadata_path();
+        let parent = metadata_path.parent().ok_or_else(|| {
+            runtime_operation_failed("conversation metadata path has no parent".to_owned())
         })?;
-        ensure_no_symlink_components(parent, "conversation model settings directory")?;
+        ensure_no_symlink_components(parent, "conversation metadata directory")?;
         std::fs::create_dir_all(parent).map_err(|error| {
             runtime_operation_failed(format!(
-                "conversation model settings directory unavailable: {error}"
+                "conversation metadata directory unavailable: {error}"
             ))
         })?;
-        ensure_no_symlink_components(parent, "conversation model settings directory")?;
-        let bytes = serde_json::to_vec_pretty(records).map_err(|error| {
+        ensure_no_symlink_components(parent, "conversation metadata directory")?;
+        let bytes = serde_json::to_vec_pretty(record).map_err(|error| {
             runtime_operation_failed(format!(
-                "conversation model settings serialization failed: {error}"
+                "conversation metadata serialization failed: {error}"
             ))
         })?;
-        let temp_path = settings_path.with_file_name(format!(
+        let temp_path = metadata_path.with_file_name(format!(
             "{}.{}.tmp",
-            settings_path
+            metadata_path
                 .file_name()
                 .and_then(|value| value.to_str())
-                .unwrap_or("conversation-model-settings.json"),
+                .unwrap_or("conversation-metadata.json"),
             RunId::new()
         ));
-        ensure_no_symlink_components(&temp_path, "conversation model settings temp file")?;
+        ensure_no_symlink_components(&temp_path, "conversation metadata temp file")?;
         let mut temp_file = std::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
             .open(&temp_path)
             .map_err(|error| {
-                runtime_operation_failed(format!(
-                    "conversation model settings temp open failed: {error}"
-                ))
+                runtime_operation_failed(format!("conversation metadata temp open failed: {error}"))
             })?;
         if let Err(error) = temp_file.write_all(&bytes) {
             let _ = std::fs::remove_file(&temp_path);
             return Err(runtime_operation_failed(format!(
-                "conversation model settings write failed: {error}"
+                "conversation metadata write failed: {error}"
             )));
         }
         if let Err(error) = temp_file.sync_all() {
             let _ = std::fs::remove_file(&temp_path);
             return Err(runtime_operation_failed(format!(
-                "conversation model settings sync failed: {error}"
+                "conversation metadata sync failed: {error}"
             )));
         }
         drop(temp_file);
-        ensure_no_symlink_components(&settings_path, "conversation model settings file")?;
-        std::fs::rename(&temp_path, &settings_path).map_err(|error| {
+        ensure_no_symlink_components(&metadata_path, "conversation metadata file")?;
+        std::fs::rename(&temp_path, &metadata_path).map_err(|error| {
             let _ = std::fs::remove_file(&temp_path);
-            runtime_operation_failed(format!("conversation model settings save failed: {error}"))
+            runtime_operation_failed(format!("conversation metadata save failed: {error}"))
         })
     }
 }

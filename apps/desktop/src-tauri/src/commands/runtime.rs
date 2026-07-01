@@ -77,8 +77,8 @@ impl DesktopRuntimeState {
             })),
             automation_lock: Arc::new(tokio::sync::Mutex::new(())),
             automation_store: Arc::new(DesktopAutomationStore::new(workspace_root.clone())),
-            conversation_model_config_lock: Arc::new(tokio::sync::Mutex::new(())),
-            conversation_model_config_store: Arc::new(DesktopConversationModelConfigStore::new(
+            conversation_metadata_lock: Arc::new(tokio::sync::Mutex::new(())),
+            conversation_metadata_store: Arc::new(DesktopConversationMetadataStore::new(
                 workspace_root.clone(),
             )),
             conversation_event_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -214,8 +214,8 @@ impl DesktopRuntimeState {
             })),
             automation_lock: Arc::new(tokio::sync::Mutex::new(())),
             automation_store: Arc::new(DesktopAutomationStore::new(workspace_root.clone())),
-            conversation_model_config_lock: Arc::new(tokio::sync::Mutex::new(())),
-            conversation_model_config_store: Arc::new(DesktopConversationModelConfigStore::new(
+            conversation_metadata_lock: Arc::new(tokio::sync::Mutex::new(())),
+            conversation_metadata_store: Arc::new(DesktopConversationMetadataStore::new(
                 workspace_root.clone(),
             )),
             conversation_event_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -503,8 +503,8 @@ pub(crate) async fn build_desktop_harness(
     )
     .await?;
     let provider_settings_store = DesktopProviderSettingsStore::new(workspace_root.to_path_buf());
-    let conversation_model_config_store =
-        DesktopConversationModelConfigStore::new(workspace_root.to_path_buf());
+    let conversation_metadata_store =
+        DesktopConversationMetadataStore::new(workspace_root.to_path_buf());
     let (model_provider, model_id, protocol) =
         model_from_provider_settings(&provider_settings_store, model_config_id)?.unwrap_or_else(
             || {
@@ -526,7 +526,7 @@ pub(crate) async fn build_desktop_harness(
     .map_err(|error| runtime_init_failed(format!("blob store initialization failed: {error}")))?;
     let provider_credential_resolver: Arc<dyn ProviderCredentialResolverCap> =
         Arc::new(DesktopProviderCredentialResolver::new(
-            Arc::new(conversation_model_config_store),
+            Arc::new(conversation_metadata_store),
             Arc::new(provider_settings_store.clone()),
             Arc::clone(&provider_capability_routes),
         ));

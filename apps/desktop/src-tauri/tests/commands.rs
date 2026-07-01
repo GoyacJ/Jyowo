@@ -75,10 +75,10 @@ use jyowo_desktop_shell::commands::{
     update_memory_item_with_runtime_state, validate_provider_settings_payload,
     ArtifactSummaryPayload, AttachmentBlobRefPayload, AttachmentReferencePayload,
     BackgroundAgentIdRequest, BrowserMcpPresetId, CancelRunRequest, ContextReferencePayload,
-    ConversationEventBatchPayload, ConversationModelCapabilityRecord,
+    ConversationEventBatchPayload, ConversationMetadataFile, ConversationModelCapabilityRecord,
     CreateAttachmentFromPathRequest, DeleteAgentProfileRequest, DeleteConversationRequest,
     DeleteMcpServerRequest, DeleteMemoryItemRequest, DeleteProviderCapabilityRouteRequest,
-    DeleteSkillRequest, DesktopConversationModelConfigStore, DesktopExecutionSettingsStore,
+    DeleteSkillRequest, DesktopConversationMetadataStore, DesktopExecutionSettingsStore,
     DesktopMcpDiagnosticStore, DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore,
     DesktopRuntimeState, DesktopSkillStore, ExportSupportBundleRequest,
     GetArtifactMediaPreviewRequest, GetAttachmentMediaPreviewRequest, GetBackgroundAgentRequest,
@@ -109,7 +109,7 @@ use jyowo_harness_sdk::ext::{
     Event, EventStore, FallbackPolicy, InteractivityLevel, McpConnection, McpError, McpRegistry,
     McpServerId, McpServerScope, McpServerSource, McpServerSpec, McpToolDescriptor, McpToolResult,
     MemoryId, MemoryKind, MemoryMetadata, MemoryRecord, MemorySource, MemoryStore,
-    MemoryVisibility, Message, MessagePart, MessageRole, ModelError, ModelProtocol, OverflowAction,
+    MemoryVisibility, Message, MessagePart, MessageRole, ModelError, OverflowAction,
     PermissionCheck, PermissionContext, PermissionMode, PermissionRequest, PermissionSubject,
     ProviderCredentialResolveContext, ProviderRestriction, RedactPatternSet, RedactRules,
     RedactScope, Redactor, RequestId, ResultBudget, RuleSnapshot, RunId, SessionId, Severity,
@@ -128,7 +128,6 @@ use jyowo_harness_sdk::{
 };
 use parking_lot::RwLock as ParkingRwLock;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -443,7 +442,7 @@ async fn runtime_state_with_capability_route_harness(
         .expect("provider settings should save");
     let routes = Arc::new(ParkingRwLock::new(routes));
     let resolver = desktop_provider_credential_resolver_with_stores(
-        Arc::new(DesktopConversationModelConfigStore::new(workspace.clone())),
+        Arc::new(DesktopConversationMetadataStore::new(workspace.clone())),
         Arc::new(DesktopProviderSettingsStore::new(workspace.clone())),
         Arc::clone(&routes),
     );
