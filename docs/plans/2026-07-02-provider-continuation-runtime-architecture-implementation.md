@@ -1819,11 +1819,11 @@ Do not edit files.
 
 **Goal:** Prove the original DeepSeek desktop failure class is fixed through the real Engine loop and MiniMax remains a full Engine tool-replay path without private continuation replay.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the exact DeepSeek failure being reproduced, the MiniMax no-private-replay invariant being protected, the test model behavior, and why the test providers are test-only fixtures rather than production fakes.
 
-- [ ] **Build a test provider**
+- [x] **Build a test provider**
 
   In the test module only, define a `ModelProvider` that:
 
@@ -1834,7 +1834,7 @@ Do not edit files.
 
   The test provider must not be available outside tests.
 
-- [ ] **Build a MiniMax test provider**
+- [x] **Build a MiniMax test provider**
 
   In `crates/jyowo-harness-engine/tests/minimax_tool_replay_regression.rs` only, define a `ModelProvider` that:
 
@@ -1847,7 +1847,7 @@ Do not edit files.
   The test provider must not be available outside tests.
   MiniMax dialect-specific wire behavior is covered by the Task 8 `minimax_dialect` model test.
 
-- [ ] **Test the full loop**
+- [x] **Test the full loop**
 
   Required test:
 
@@ -1864,7 +1864,7 @@ Do not edit files.
   - public assistant events contain visible text and tool events only
   - public events do not contain the private payload string
 
-- [ ] **Add compaction regression**
+- [x] **Add compaction regression**
 
   Required test:
 
@@ -1875,7 +1875,7 @@ Do not edit files.
 
   It must prove final assembled prompt ids drive lookup.
 
-- [ ] **Add MiniMax full-loop regression**
+- [x] **Add MiniMax full-loop regression**
 
   Required test:
 
@@ -1893,7 +1893,7 @@ Do not edit files.
   - public events do not contain DeepSeek private replay sentinel values
   - the test does not use a provider-specific Engine branch
 
-- [ ] **Run regression tests**
+- [x] **Run regression tests**
 
   ```bash
   cargo test -p jyowo-harness-engine deepseek_tool_replay
@@ -1904,11 +1904,11 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm both regressions exercise the real Engine loop, DeepSeek uses private continuation replay, MiniMax completes without private continuation replay, and neither test asserts only a manually created request body.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-engine/tests/deepseek_tool_replay_regression.rs crates/jyowo-harness-engine/tests/minimax_tool_replay_regression.rs
