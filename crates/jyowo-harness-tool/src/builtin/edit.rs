@@ -1,12 +1,16 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DecisionScope, PermissionSubject, ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    ActionResource, DecisionScope, NetworkAccess, PermissionSubject, ToolActionPlan,
+    ToolDescriptor, ToolError, ToolGroup, ToolResult, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{
+    action_plan_from_permission_check, authorized_file_path, AuthorizedFileResourceKind,
+    AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError,
+};
 
 #[derive(Clone)]
 pub struct FileEditTool {
@@ -53,13 +57,11 @@ impl Tool for FileEditTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, ctx: &ToolContext) -> PermissionCheck {
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
         let scoped_path = match super::workspace_path::scope_path(input, ctx) {
             Ok(path) => path,
             Err(error) => {
-                return PermissionCheck::Denied {
-                    reason: error.to_string(),
-                };
+                return Err(ToolError::PermissionDenied(error.to_string()));
             }
         };
         let bytes_preview = new_text(input)
@@ -78,29 +80,58 @@ impl Tool for FileEditTool {
             },
             DecisionScope::PathPrefix(scoped_path),
         ) {
-            return check;
+            let path = super::workspace_path::scope_path(input, ctx)
+                .map_err(|error| ToolError::PermissionDenied(error.to_string()))?;
+            return action_plan_from_permission_check(
+                &self.descriptor,
+                input,
+                ctx,
+                check,
+                vec![ActionResource::FileWrite {
+                    path,
+                    content_hash: content_hash(new_text(input).unwrap_or_default()),
+                }],
+                WorkspaceAccess::ReadWrite {
+                    allowed_writable_subpaths: Vec::new(),
+                },
+                NetworkAccess::None,
+            );
         }
         let path = match super::workspace_path::resolve_writable(input, ctx) {
             Ok(path) => path,
-            Err(error) => {
-                return PermissionCheck::Denied {
-                    reason: error.to_string(),
-                };
-            }
+            Err(error) => return Err(error),
         };
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::FileWrite {
-                path: path.clone(),
-                bytes_preview,
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::FileWrite {
+                    path: path.clone(),
+                    bytes_preview,
+                },
+                scope: DecisionScope::PathPrefix(path.clone()),
             },
-            scope: DecisionScope::PathPrefix(path),
-        }
+            vec![ActionResource::FileWrite {
+                path,
+                content_hash: content_hash(new_text(input).unwrap_or_default()),
+            }],
+            WorkspaceAccess::ReadWrite {
+                allowed_writable_subpaths: Vec::new(),
+            },
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        let path = super::workspace_path::resolve_writable(&input, &ctx)?;
-        let old = old_text(&input).map_err(validation_error)?;
-        let new = new_text(&input).map_err(validation_error)?;
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let path = authorized_file_path(&authorized, AuthorizedFileResourceKind::Write)?;
+        let input = authorized.raw_input();
+        let old = old_text(input).map_err(validation_error)?;
+        let new = new_text(input).map_err(validation_error)?;
         let replace_all = input
             .get("replace_all")
             .and_then(Value::as_bool)
@@ -147,4 +178,8 @@ fn new_text(input: &Value) -> Result<&str, ValidationError> {
         .get("new")
         .and_then(Value::as_str)
         .ok_or_else(|| ValidationError::from("new is required"))
+}
+
+fn content_hash(content: &str) -> String {
+    blake3::hash(content.as_bytes()).to_hex().to_string()
 }

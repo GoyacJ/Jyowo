@@ -370,11 +370,28 @@ impl Tool for BackgroundAgentTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(
+        &self,
+        input: &Value,
+        ctx: &ToolContext,
+    ) -> Result<harness_contracts::ToolActionPlan, ToolError> {
+        harness_tool::action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            harness_contracts::WorkspaceAccess::None,
+            harness_contracts::NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: harness_tool::AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
         let goal = input
             .get("goal")
             .and_then(Value::as_str)
@@ -508,11 +525,28 @@ impl Tool for AgentTeamTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(
+        &self,
+        input: &Value,
+        ctx: &ToolContext,
+    ) -> Result<harness_contracts::ToolActionPlan, ToolError> {
+        harness_tool::action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            harness_contracts::WorkspaceAccess::None,
+            harness_contracts::NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: harness_tool::AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
         let goal = input
             .get("goal")
             .and_then(Value::as_str)

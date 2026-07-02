@@ -2,16 +2,16 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
-    CacheImpact, CapabilityRegistry, Decision, DeferPolicy, Event, HarnessError, PermissionError,
-    ProviderRestriction, RunId, SessionId, TenantId, ToolDescriptor, ToolError, ToolGroup,
-    ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel,
+    AuthorizationTicketId, CacheImpact, CapabilityRegistry, DeferPolicy, Event, HarnessError,
+    ProviderRestriction, RunId, SessionId, TenantId, ToolActionPlan, ToolDescriptor, ToolError,
+    ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel,
 };
 use harness_model::ConversationModelCapability;
 use harness_tool::{
-    InterruptToken, PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
-    Tool, ToolContext,
+    AuthorizedTicketSummary, AuthorizedToolInput, InterruptToken, Tool, ToolContext,
 };
 use harness_tool_search::{
     DefaultScorer, MaterializeOutcome, ReloadHandle, ToolLoadingBackend, ToolLoadingBackendName,
@@ -281,7 +281,6 @@ async fn try_execute(
         subagent_depth: 0,
         workspace_root: std::env::temp_dir(),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(caps),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::new(),
@@ -290,10 +289,25 @@ async fn try_execute(
         model_config_id: None,
     };
     tool.validate(&input, &ctx).await.unwrap();
-    let mut stream = tool.execute(input, ctx).await?;
+    let plan = tool.plan(&input, &ctx).await?;
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan))?;
+    let mut stream = tool.execute_authorized(authorized, ctx).await?;
     match stream.next().await.unwrap() {
         harness_tool::ToolEvent::Final(ToolResult::Structured(value)) => Ok(value),
         other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: SessionId::new(),
+        run_id: RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }
 
@@ -424,19 +438,6 @@ impl ToolSearchRuntimeCap for FakeRuntime {
 
     async fn emit_event(&self, event: Event) -> Result<(), ToolError> {
         self.events.lock().await.push(event);
-        Ok(())
-    }
-}
-
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
         Ok(())
     }
 }

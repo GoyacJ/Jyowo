@@ -5,10 +5,11 @@ use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
     BudgetMetric, CapabilityRegistry, Decision, DecisionScope, DeferPolicy, EndReason, Event,
-    Message, MessageContent, MessageId, MessagePart, MessageRole, ModelError, OverflowAction,
-    PermissionError, PermissionSubject, ProviderRestriction, RedactRules, Redactor, ResultBudget,
-    RunId, SessionId, StopReason, TenantId, ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties,
-    ToolResult, ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
+    Message, MessageContent, MessageId, MessagePart, MessageRole, ModelError, NetworkAccess,
+    OverflowAction, PermissionError, PermissionSubject, ProviderRestriction, RedactRules, Redactor,
+    ResultBudget, RunId, SessionId, StopReason, TenantId, ToolActionPlan, ToolDescriptor,
+    ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseId,
+    TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};
@@ -19,8 +20,9 @@ use harness_model::{
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_tool::{
-    SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool, ToolPoolFilter,
-    ToolPoolModelProfile, ToolRegistry, ToolStream, ValidationError,
+    action_plan_from_permission_check, AuthorizedToolInput, SchemaResolverContext, Tool,
+    ToolContext, ToolEvent, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry,
+    ToolStream, ValidationError,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -297,26 +299,31 @@ impl Tool for SecretDumpTool {
         Ok(())
     }
 
-    async fn check_permission(
-        &self,
-        input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        input: Value,
+        authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
-        let seed = input
+    ) -> Result<ToolStream, ToolError> {
+        let seed = authorized
+            .raw_input()
             .get("seed")
             .and_then(Value::as_str)
             .unwrap_or_default()

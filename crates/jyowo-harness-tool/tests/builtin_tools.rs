@@ -2,16 +2,16 @@
 
 use std::{path::Path, sync::Arc};
 
-use async_trait::async_trait;
+use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
-    CapabilityRegistry, Decision, DecisionScope, PermissionError, TenantId, ToolCapability,
-    ToolError, ToolGroup, ToolResult, ToolUseId,
+    CapabilityRegistry, DecisionScope, TenantId, ToolActionPlan, ToolCapability, ToolError,
+    ToolGroup, ToolResult, ToolUseId,
 };
-use harness_permission::{PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest};
 use harness_tool::{
     builtin::{FileEditTool, GlobTool, TaskStopTool, TodoTool, WebFetchTool},
-    BuiltinToolset, InterruptToken, Tool, ToolContext, ToolRegistry,
+    AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken, Tool,
+    ToolContext, ToolRegistry,
 };
 use serde_json::{json, Value};
 
@@ -80,16 +80,10 @@ async fn file_edit_replaces_text_and_asks_for_path_permission() {
         "old": "beta",
         "new": "gamma"
     });
-    let check = tool
-        .check_permission(&input, &tool_ctx(CapabilityRegistry::default()))
+    let plan = tool
+        .plan(&input, &tool_ctx(CapabilityRegistry::default()))
         .await;
-    assert!(matches!(
-        check,
-        PermissionCheck::AskUser {
-            scope: DecisionScope::PathPrefix(_),
-            ..
-        }
-    ));
+    assert!(matches!(plan.unwrap().scope, DecisionScope::PathPrefix(_)));
 
     let result = execute_final(
         &tool,
@@ -214,7 +208,9 @@ fn descriptors_match_architecture_groups_and_capabilities() {
 
 async fn execute_final(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolResult {
     tool.validate(&input, &ctx).await.unwrap();
-    let mut stream = tool.execute(input, ctx).await.unwrap();
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     match stream.next().await {
         Some(harness_tool::ToolEvent::Final(result)) => result,
         other => panic!("expected final result, got {other:?}"),
@@ -223,7 +219,12 @@ async fn execute_final(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolR
 
 async fn execute_error(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolError {
     tool.validate(&input, &ctx).await.unwrap();
-    match tool.execute(input, ctx).await {
+    let plan = match tool.plan(&input, &ctx).await {
+        Ok(plan) => plan,
+        Err(error) => return error,
+    };
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    match tool.execute_authorized(authorized, ctx).await {
         Ok(_) => panic!("expected tool error"),
         Err(error) => error,
     }
@@ -244,7 +245,6 @@ fn tool_ctx_at(workspace_root: impl AsRef<Path>, cap_registry: CapabilityRegistr
         subagent_depth: 0,
         workspace_root: workspace_root.as_ref().to_path_buf(),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
@@ -254,19 +254,15 @@ fn tool_ctx_at(workspace_root: impl AsRef<Path>, cap_registry: CapabilityRegistr
     }
 }
 
-#[derive(Debug)]
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(
-        &self,
-        _decision: harness_permission::PersistedDecision,
-    ) -> Result<(), PermissionError> {
-        Ok(())
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: harness_contracts::SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }

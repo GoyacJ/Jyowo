@@ -2,18 +2,18 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
+use chrono::Utc;
 use futures::{future::BoxFuture, StreamExt};
 use harness_contracts::{
     AgentId, CapabilityRegistry, ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource,
-    Decision, RenderedSkill, SkillFilter, SkillId, SkillParameterInfo, SkillRegistryCap,
-    SkillStatus, SkillSummary, SkillView, TenantId, ToolCapability, ToolError, ToolGroup,
+    RenderedSkill, SkillFilter, SkillId, SkillParameterInfo, SkillRegistryCap, SkillStatus,
+    SkillSummary, SkillView, TenantId, ToolActionPlan, ToolCapability, ToolError, ToolGroup,
     ToolOrigin, ToolResult, ToolUseId,
 };
-use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_tool::{
     builtin::{SkillsInvokeTool, SkillsListTool, SkillsViewTool},
-    BuiltinToolset, InterruptToken, Tool, ToolContext, ToolRegistry,
+    AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken, Tool,
+    ToolContext, ToolRegistry,
 };
 use serde_json::{json, Value};
 
@@ -275,7 +275,9 @@ impl ContextPatchSinkCap for RecordingPatchSink {
 
 async fn execute_final(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolResult {
     tool.validate(&input, &ctx).await.unwrap();
-    let mut stream = tool.execute(input, ctx).await.unwrap();
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     match stream.next().await {
         Some(harness_tool::ToolEvent::Final(result)) => result,
         other => panic!("expected final result, got {other:?}"),
@@ -284,7 +286,12 @@ async fn execute_final(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolR
 
 async fn execute_error(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolError {
     tool.validate(&input, &ctx).await.unwrap();
-    match tool.execute(input, ctx).await {
+    let plan = match tool.plan(&input, &ctx).await {
+        Ok(plan) => plan,
+        Err(error) => return error,
+    };
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    match tool.execute_authorized(authorized, ctx).await {
         Ok(_) => panic!("expected tool error"),
         Err(error) => error,
     }
@@ -301,7 +308,6 @@ fn tool_ctx(agent_id: AgentId, cap_registry: CapabilityRegistry) -> ToolContext 
         subagent_depth: 0,
         workspace_root: std::env::temp_dir(),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
@@ -311,19 +317,15 @@ fn tool_ctx(agent_id: AgentId, cap_registry: CapabilityRegistry) -> ToolContext 
     }
 }
 
-#[derive(Debug)]
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(
-        &self,
-        _decision: harness_permission::PersistedDecision,
-    ) -> Result<(), harness_contracts::PermissionError> {
-        Ok(())
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: harness_contracts::SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }

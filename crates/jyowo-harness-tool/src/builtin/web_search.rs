@@ -3,15 +3,18 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DecisionScope, PermissionSubject, ToolCapability, ToolDescriptor, ToolError, ToolGroup,
-    ToolResult,
+    ActionResource, DecisionScope, HostRule, NetworkAccess, PermissionSubject, ToolActionPlan,
+    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::convert::TryFrom;
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+    ToolStream, ValidationError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebSearchRequest {
@@ -95,22 +98,40 @@ impl Tool for WebSearchTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::NetworkAccess {
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::NetworkAccess {
+                    host: "web-search".to_owned(),
+                    port: None,
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
+            },
+            vec![ActionResource::Network {
                 host: "web-search".to_owned(),
                 port: None,
-            },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+            }],
+            WorkspaceAccess::None,
+            NetworkAccess::AllowList(vec![HostRule {
+                pattern: "web-search".to_owned(),
+                ports: None,
+            }]),
+        )
     }
 
-    async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         let backend = self.backends.first().ok_or_else(|| {
             ToolError::CapabilityMissing(ToolCapability::Custom("web_search_backend".to_owned()))
         })?;
         let results = backend
-            .search(request(&input).map_err(validation_error)?)
+            .search(request(authorized.raw_input()).map_err(validation_error)?)
             .await?;
         Ok(Box::pin(stream::iter([ToolEvent::Final(
             ToolResult::Structured(

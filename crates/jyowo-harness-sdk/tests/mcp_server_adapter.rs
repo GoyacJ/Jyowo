@@ -4,15 +4,19 @@ use std::sync::Arc;
 
 use harness_contracts::{
     BlobMeta, BlobRetention, BlobStore, BudgetMetric, Decision, DecisionScope, DeferPolicy,
-    InteractivityLevel, NoopRedactor, OverflowAction, PermissionSubject, ProviderRestriction,
-    ResultBudget, SemverString, SessionId, StopReason, TenantId, ToolDescriptor, ToolError,
-    ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel, UsageSnapshot,
+    InteractivityLevel, NetworkAccess, NoopRedactor, OverflowAction, PermissionSubject,
+    ProviderRestriction, ResultBudget, SemverString, SessionId, StopReason, TenantId,
+    ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
+    ToolUseId, TrustLevel, UsageSnapshot, WorkspaceAccess,
 };
 use harness_journal::{InMemoryBlobStore, InMemoryEventStore};
 use harness_mcp::{ExposedCapability, HarnessMcpBackend, McpServerRequestContext};
 use harness_model::{ContentDelta, ModelProtocol, ModelStreamEvent};
 use harness_permission::PermissionCheck;
-use harness_tool::{Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream, ValidationError};
+use harness_tool::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+    ToolRegistry, ToolStream, ValidationError,
+};
 use jyowo_harness_sdk::{prelude::*, testing::*};
 use serde_json::json;
 
@@ -515,23 +519,31 @@ impl Tool for ApprovalTool {
         Ok(())
     }
 
-    async fn check_permission(
+    async fn plan(
         &self,
         input: &serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> PermissionCheck {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: "approval_tool".to_owned(),
-                input: input.clone(),
+        ctx: &ToolContext,
+    ) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: "approval_tool".to_owned(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName("approval_tool".to_owned()),
             },
-            scope: DecisionScope::ToolName("approval_tool".to_owned()),
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: serde_json::Value,
+        _authorized: AuthorizedToolInput,
         _ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(futures::stream::iter([ToolEvent::Final(

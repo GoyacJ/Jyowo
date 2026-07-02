@@ -2,16 +2,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::Utc;
 use futures::{future::BoxFuture, stream, stream::BoxStream, StreamExt};
 use harness_contracts::{
-    BlobReaderCap, BlobRef, BudgetMetric, CapabilityRegistry, Decision, DeferPolicy,
-    OverflowAction, ProviderRestriction, ResultBudget, SessionId, TenantId, ToolCapability,
+    BlobReaderCap, BlobRef, BudgetMetric, CapabilityRegistry, DeferPolicy, OverflowAction,
+    ProviderRestriction, ResultBudget, SessionId, TenantId, ToolActionPlan, ToolCapability,
     ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId,
     TrustLevel,
 };
-use harness_permission::{PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest};
+use harness_permission::PermissionCheck;
 use harness_tool::{
-    default_result_budget, InterruptToken, SchemaResolverContext, Tool, ToolContext, ToolEvent,
+    action_plan_from_permission_check, default_result_budget, AuthorizedTicketSummary,
+    AuthorizedToolInput, InterruptToken, SchemaResolverContext, Tool, ToolContext, ToolEvent,
     ToolProgress, ValidationError,
 };
 use serde_json::{json, Value};
@@ -25,22 +27,6 @@ impl BlobReaderCap for TestBlobReaderCap {
         _blob: BlobRef,
     ) -> BoxFuture<'a, Result<BoxStream<'static, Bytes>, ToolError>> {
         Box::pin(async { Ok(Box::pin(stream::empty()) as BoxStream<'static, Bytes>) })
-    }
-}
-
-struct TestBroker;
-
-#[async_trait]
-impl PermissionBroker for TestBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(
-        &self,
-        _decision: harness_permission::PersistedDecision,
-    ) -> Result<(), harness_contracts::PermissionError> {
-        Ok(())
     }
 }
 
@@ -58,17 +44,25 @@ impl Tool for EchoTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            harness_contracts::WorkspaceAccess::None,
+            harness_contracts::NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        input: Value,
+        authorized: AuthorizedToolInput,
         _ctx: ToolContext,
     ) -> Result<harness_tool::ToolStream, ToolError> {
         Ok(Box::pin(stream::iter([ToolEvent::Final(
-            ToolResult::Structured(input),
+            ToolResult::Structured(authorized.raw_input().clone()),
         )])))
     }
 }
@@ -110,7 +104,6 @@ async fn tool_context_retrieves_capabilities_and_reports_missing_handles() {
         subagent_depth: 0,
         workspace_root: std::env::temp_dir(),
         sandbox: None,
-        permission_broker: Arc::new(TestBroker),
         cap_registry: Arc::new(registry),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
@@ -130,6 +123,60 @@ async fn tool_context_retrieves_capabilities_and_reports_missing_handles() {
             error,
             ToolError::CapabilityMissing(ToolCapability::SubagentRunner)
         ),
+    }
+}
+
+#[tokio::test]
+async fn authorized_tool_input_rejects_plan_hash_mismatch() {
+    let tool: Arc<dyn Tool> = Arc::new(EchoTool {
+        descriptor: descriptor(true),
+    });
+    let ctx = tool_ctx(CapabilityRegistry::default());
+    let input = json!({ "message": "hello" });
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let mut mismatched_plan = plan.clone();
+    mismatched_plan.plan_hash = harness_contracts::ActionPlanHash::from_bytes([7; 32]);
+
+    let error = AuthorizedToolInput::new(input, mismatched_plan, ticket_for(&plan)).unwrap_err();
+
+    assert_eq!(
+        error,
+        ToolError::PermissionDenied(
+            "authorization ticket action plan hash does not match action plan".to_owned()
+        )
+    );
+}
+
+fn tool_ctx(cap_registry: CapabilityRegistry) -> ToolContext {
+    ToolContext {
+        tool_use_id: ToolUseId::new(),
+        run_id: harness_contracts::RunId::new(),
+        session_id: SessionId::new(),
+        tenant_id: TenantId::SINGLE,
+        correlation_id: harness_contracts::CorrelationId::new(),
+        agent_id: harness_contracts::AgentId::from_u128(1),
+        subagent_depth: 0,
+        workspace_root: std::env::temp_dir(),
+        sandbox: None,
+        cap_registry: Arc::new(cap_registry),
+        redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
+        interrupt: InterruptToken::default(),
+        parent_run: None,
+        model: None,
+        model_config_id: None,
+    }
+}
+
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }
 

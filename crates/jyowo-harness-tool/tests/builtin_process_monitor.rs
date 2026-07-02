@@ -9,23 +9,24 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::Utc;
 use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
-    CapabilityRegistry, CorrelationId, Decision, Event, ProcessReadInvocation, ProcessReadRequest,
+    CapabilityRegistry, CorrelationId, Event, ProcessReadInvocation, ProcessReadRequest,
     ProcessReadResult, ProcessRuntimeStatus, ProcessStartInvocation, ProcessStartRequest,
     ProcessStartResult, ProcessStopInvocation, ProcessStopRequest, ProcessStopResult, RedactRules,
-    Redactor, RunScopedProcessRegistryCap, SandboxError, SessionId, TenantId, ToolCapability,
-    ToolError, ToolResult, ToolUseHeartbeatEvent, ToolUseId,
+    Redactor, RunScopedProcessRegistryCap, SandboxError, SessionId, TenantId, ToolActionPlan,
+    ToolCapability, ToolError, ToolResult, ToolUseHeartbeatEvent, ToolUseId,
     RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
-use harness_permission::{PermissionBroker, PermissionContext, PermissionError, PermissionRequest};
 use harness_sandbox::{
     ActivityHandle, ExecContext, ExecOutcome, ExecSpec, KillScope, ProcessHandle, SandboxBackend,
     SandboxCapabilities, SessionSnapshotFile,
 };
 use harness_tool::{
     builtin::{ProcessReadTool, ProcessStartTool, ProcessStopTool},
-    DefaultRunScopedProcessRegistry, InterruptToken, Tool, ToolContext, ValidationError,
+    AuthorizedTicketSummary, AuthorizedToolInput, DefaultRunScopedProcessRegistry, InterruptToken,
+    Tool, ToolContext, ValidationError,
 };
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -374,7 +375,13 @@ impl SandboxBackend for FakeSandbox {
     }
 
     fn capabilities(&self) -> SandboxCapabilities {
-        SandboxCapabilities::default()
+        SandboxCapabilities {
+            supports_streaming: true,
+            supports_network: true,
+            supports_filesystem_write: true,
+            max_concurrent_execs: 1,
+            ..SandboxCapabilities::default()
+        }
     }
 
     async fn execute(
@@ -453,7 +460,9 @@ async fn execute_events(
     ctx: ToolContext,
 ) -> Vec<harness_tool::ToolEvent> {
     tool.validate(&input, &ctx).await.unwrap();
-    let mut stream = tool.execute(input, ctx).await.unwrap();
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     let mut events = Vec::new();
     while let Some(event) = stream.next().await {
         events.push(event);
@@ -467,7 +476,12 @@ async fn validate_error(tool: &dyn Tool, input: Value, ctx: ToolContext) -> Vali
 
 async fn execute_error(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolError {
     tool.validate(&input, &ctx).await.unwrap();
-    match tool.execute(input, ctx).await {
+    let plan = match tool.plan(&input, &ctx).await {
+        Ok(plan) => plan,
+        Err(error) => return error,
+    };
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    match tool.execute_authorized(authorized, ctx).await {
         Ok(_) => panic!("expected tool error"),
         Err(error) => error,
     }
@@ -500,7 +514,6 @@ fn tool_ctx_at(
         subagent_depth: 0,
         workspace_root: workspace_root.as_ref().to_path_buf(),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
         redactor,
         interrupt: InterruptToken::default(),
@@ -510,20 +523,16 @@ fn tool_ctx_at(
     }
 }
 
-#[derive(Debug)]
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(
-        &self,
-        _decision: harness_permission::PersistedDecision,
-    ) -> Result<(), PermissionError> {
-        Ok(())
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: harness_contracts::SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }
 

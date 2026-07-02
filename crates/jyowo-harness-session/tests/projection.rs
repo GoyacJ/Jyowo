@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use harness_contracts::{
-    AssistantMessageCompletedEvent, CacheImpact, CompactOutcome, CompactTrigger,
-    CompactionAppliedEvent, DecidedBy, Decision, DecisionScope, DeferPolicy, DeferredToolHint,
-    EndReason, Event, EventId, MessageContent, MessageId, MessageMetadata, NoopRedactor,
-    PermissionActorSource, PermissionRequestedEvent, PermissionResolvedEvent, PermissionSubject,
-    RequestId, RunEndedEvent, RunId, SessionCreatedEvent, SessionEndedEvent, SessionId, Severity,
-    StopReason, TenantId, ToolDeferredPoolChangedEvent, ToolPoolChangeSource, ToolProperties,
-    ToolResult, ToolSchemaMaterializedEvent, ToolUseCompletedEvent, ToolUseId,
-    ToolUseRequestedEvent, UsageSnapshot,
+    ActionPlanHash, AssistantMessageCompletedEvent, CacheImpact, CompactOutcome, CompactTrigger,
+    CompactionAppliedEvent, DecidedBy, Decision, DecisionId, DecisionScope, DeferPolicy,
+    DeferredToolHint, EndReason, Event, EventId, MessageContent, MessageId, MessageMetadata,
+    NoopRedactor, PermissionActorSource, PermissionMode, PermissionRequestedEvent,
+    PermissionResolvedEvent, PermissionReview, PermissionSubject, RequestId, RunEndedEvent, RunId,
+    SandboxPolicySummary, SessionCreatedEvent, SessionEndedEvent, SessionId, Severity, StopReason,
+    TenantId, ToolDeferredPoolChangedEvent, ToolPoolChangeSource, ToolProperties, ToolResult,
+    ToolSchemaMaterializedEvent, ToolUseCompletedEvent, ToolUseId, ToolUseRequestedEvent,
+    UsageSnapshot,
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_session::SessionProjection;
@@ -77,6 +78,10 @@ async fn projection_replay_is_idempotent() {
             interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
             auto_resolved: false,
             actor_source: PermissionActorSource::ParentRun,
+            action_plan_hash: ActionPlanHash::default(),
+            review: PermissionReview::default(),
+            effective_mode: PermissionMode::Default,
+            sandbox_policy: SandboxPolicySummary::default(),
             causation_id: EventId::new(),
             at: harness_contracts::now(),
         }),
@@ -87,6 +92,9 @@ async fn projection_replay_is_idempotent() {
             scope: DecisionScope::ToolName("list_dir".to_owned()),
             fingerprint: None,
             rationale: Some("ok".to_owned()),
+            action_plan_hash: ActionPlanHash::default(),
+            decision_id: DecisionId::new(),
+            auto_resolved: false,
             at: harness_contracts::now(),
         }),
         Event::ToolUseCompleted(ToolUseCompletedEvent {

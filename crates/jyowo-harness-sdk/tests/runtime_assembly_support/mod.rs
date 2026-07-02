@@ -14,11 +14,12 @@ pub use harness_contracts::{
     DeferPolicy, DeferredToolHint, EndReason, Event, HookEventKind,
     ManifestValidationFailure as ContractManifestValidationFailure, McpServerId, McpServerSource,
     MemoryError, MemoryId, MemoryKind, MemorySessionCtx, MemorySource, MemoryVisibility, MessageId,
-    MessagePart, ModelError, PermissionMode, PluginId, ProviderRestriction, RedactRules, Redactor,
-    RequestId, SessionCreatedEvent, SessionSummaryView, SnapshotId, SteeringBody, SteeringKind,
-    SteeringSource, TeamId, TenantId, ToolDeferredPoolChangedEvent, ToolDescriptor, ToolGroup,
-    ToolOrigin, ToolPoolChangeSource, ToolProfile, ToolProperties, ToolResult, ToolSearchMode,
-    ToolUseId, TrustLevel, UsageSnapshot,
+    MessagePart, ModelError, NetworkAccess, PermissionMode, PluginId, ProviderRestriction,
+    RedactRules, Redactor, RequestId, SessionCreatedEvent, SessionSummaryView, SnapshotId,
+    SteeringBody, SteeringKind, SteeringSource, TeamId, TenantId, ToolActionPlan,
+    ToolDeferredPoolChangedEvent, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolPoolChangeSource, ToolProfile, ToolProperties, ToolResult, ToolSearchMode, ToolUseId,
+    TrustLevel, UsageSnapshot, WorkspaceAccess,
 };
 pub use harness_hook::HookRegistry;
 pub use harness_journal::{EventStore, ReplayCursor};
@@ -49,8 +50,9 @@ pub use harness_skill::{
     SkillSourceConfig,
 };
 pub use harness_tool::{
-    default_result_budget, BuiltinToolset, PermissionCheck, SchemaResolverContext, Tool,
-    ToolContext, ToolEvent, ToolRegistry, ToolStream, ValidationError,
+    action_plan_from_permission_check, default_result_budget, AuthorizedToolInput, BuiltinToolset,
+    PermissionCheck, SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream,
+    ValidationError,
 };
 pub use jyowo_harness_sdk::{prelude::*, testing::*, AgentCapabilityResolutionContext};
 pub use serde_json::json;
@@ -937,15 +939,23 @@ impl Tool for SdkPluginTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
+    ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(futures::stream::empty()))
     }
 }
@@ -974,15 +984,23 @@ impl Tool for DeferredDeltaEmitterTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
+    ) -> Result<ToolStream, ToolError> {
         let event = Event::ToolDeferredPoolChanged(ToolDeferredPoolChangedEvent {
             session_id: ctx.session_id,
             added: vec![DeferredToolHint {
@@ -1141,9 +1159,7 @@ impl ModelProvider for TwoModelProvider {
         _req: ModelRequest,
         _ctx: InferContext,
     ) -> Result<ModelStream, ModelError> {
-        Ok(Box::pin(futures::stream::iter(vec![
-            ModelStreamEvent::MessageStop,
-        ])))
+        Ok(Box::pin(futures::stream::empty()))
     }
 }
 

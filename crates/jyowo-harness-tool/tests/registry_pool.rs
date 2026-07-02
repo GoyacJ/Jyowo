@@ -8,14 +8,15 @@ use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
     DeferPolicy, McpOrigin, McpServerId, McpServerSource, ModelProvider, PluginId,
-    ProviderRestriction, ShadowReason, SkillId, SkillOrigin, SkillSourceKind, ToolDescriptor,
-    ToolError, ToolGroup, ToolOrigin, ToolProfile, ToolProperties, ToolResult, TrustLevel,
+    ProviderRestriction, ShadowReason, SkillId, SkillOrigin, SkillSourceKind, ToolActionPlan,
+    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProfile, ToolProperties, ToolResult,
+    TrustLevel,
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
-    default_result_budget, BuiltinToolset, RegistrationError, SchemaResolverContext, Tool,
-    ToolContext, ToolEvent, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry,
-    ToolSearchMode, ValidationError,
+    action_plan_from_permission_check, default_result_budget, AuthorizedToolInput, BuiltinToolset,
+    RegistrationError, SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool,
+    ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolSearchMode, ValidationError,
 };
 use serde_json::{json, Value};
 
@@ -45,17 +46,25 @@ impl Tool for TestTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            harness_contracts::WorkspaceAccess::None,
+            harness_contracts::NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        input: Value,
+        authorized: AuthorizedToolInput,
         _ctx: ToolContext,
     ) -> Result<harness_tool::ToolStream, ToolError> {
         Ok(Box::pin(stream::iter([ToolEvent::Final(
-            ToolResult::Structured(input),
+            ToolResult::Structured(authorized.raw_input().clone()),
         )])))
     }
 }

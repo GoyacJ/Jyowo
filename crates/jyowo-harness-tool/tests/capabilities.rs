@@ -3,16 +3,16 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use chrono::Utc;
 use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
-    BlobId, BlobReaderCap, BlobRef, CapabilityRegistry, Decision, OffloadedBlobAuthorizerCap,
-    PermissionError, RunCancellerCap, TenantId, TodoItem, TodoStoreCap, ToolCapability, ToolResult,
+    BlobId, BlobReaderCap, BlobRef, CapabilityRegistry, OffloadedBlobAuthorizerCap,
+    RunCancellerCap, TenantId, TodoItem, TodoStoreCap, ToolActionPlan, ToolCapability, ToolResult,
     ToolUseId,
 };
-use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_tool::{
     builtin::{ReadBlobTool, TaskStopTool, TodoTool},
-    InterruptToken, Tool, ToolContext, ToolEvent,
+    AuthorizedTicketSummary, AuthorizedToolInput, InterruptToken, Tool, ToolContext, ToolEvent,
 };
 use parking_lot::Mutex;
 use serde_json::json;
@@ -138,7 +138,9 @@ impl OffloadedBlobAuthorizerCap for AllowOffloadedBlobAuthorizer {
 
 async fn execute_final(tool: &dyn Tool, input: serde_json::Value, ctx: ToolContext) -> ToolResult {
     tool.validate(&input, &ctx).await.unwrap();
-    let mut stream = tool.execute(input, ctx).await.unwrap();
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     match stream.next().await {
         Some(ToolEvent::Final(result)) => result,
         other => panic!("expected final result, got {other:?}"),
@@ -156,7 +158,6 @@ fn tool_ctx(cap_registry: CapabilityRegistry) -> ToolContext {
         subagent_depth: 0,
         workspace_root: std::env::temp_dir(),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
@@ -166,18 +167,15 @@ fn tool_ctx(cap_registry: CapabilityRegistry) -> ToolContext {
     }
 }
 
-struct AllowBroker;
-
-#[async_trait::async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(
-        &self,
-        _decision: harness_permission::PersistedDecision,
-    ) -> Result<(), PermissionError> {
-        Ok(())
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: harness_contracts::SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }

@@ -6,10 +6,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::{executor::block_on, stream, StreamExt};
 use harness_contracts::{
-    BudgetMetric, Decision, DeferPolicy, Event, ModelError, OverflowAction, ProviderRestriction,
-    ResultBudget, SkillInjectionId, SkillInvocationReceipt, SkillRegistryCap, TenantId,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolUseId, TrustLevel,
+    BudgetMetric, Decision, DeferPolicy, Event, ModelError, NetworkAccess, OverflowAction,
+    ProviderRestriction, ResultBudget, SkillInjectionId, SkillInvocationReceipt, SkillRegistryCap,
+    TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_journal::EventStore;
 use harness_model::{
@@ -18,7 +18,10 @@ use harness_model::{
 };
 use harness_permission::PermissionCheck;
 use harness_skill::{ConfigResolveError, SkillConfigResolver, SkillLoader, SkillSourceConfig};
-use harness_tool::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use harness_tool::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+    ToolStream, ValidationError,
+};
 use jyowo_harness_sdk::skill_config::{SkillConfigSnapshot, SkillConfigSnapshotResolver};
 use jyowo_harness_sdk::{prelude::*, testing::*};
 use serde_json::json;
@@ -281,17 +284,25 @@ impl Tool for InvokeConfiguredSkillTool {
         Ok(())
     }
 
-    async fn check_permission(
+    async fn plan(
         &self,
-        _input: &serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> PermissionCheck {
-        PermissionCheck::Allowed
+        input: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: serde_json::Value,
+        _authorized: AuthorizedToolInput,
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         let registry = ctx.capability::<dyn SkillRegistryCap>(ToolCapability::SkillRegistry)?;

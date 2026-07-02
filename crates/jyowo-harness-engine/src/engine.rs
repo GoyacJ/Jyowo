@@ -1857,9 +1857,10 @@ mod subagent_tool_tests {
     use async_trait::async_trait;
     use harness_contracts::{
         AssistantMessageCompletedEvent, BudgetKind, DeferPolicy, EndReason, Event, McpOrigin,
-        McpServerId, McpServerSource, MessageContent, MessageId, ProviderRestriction, ResultBudget,
-        StopReason, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-        TrustLevel, UsageSnapshot,
+        McpServerId, McpServerSource, MessageContent, MessageId, NetworkAccess,
+        ProviderRestriction, ResultBudget, StopReason, ToolActionPlan, ToolDescriptor, ToolError,
+        ToolGroup, ToolOrigin, ToolProperties, ToolResult, TrustLevel, UsageSnapshot,
+        WorkspaceAccess,
     };
     use harness_mcp::{
         ListChangedEvent, McpConnection, McpConnectionState, McpError, McpRegistry, McpServerScope,
@@ -1867,7 +1868,10 @@ mod subagent_tool_tests {
     };
     use harness_permission::PermissionCheck;
     use harness_subagent::{SubagentStatus, ToolsetSelector};
-    use harness_tool::{Tool, ToolContext, ToolEvent, ToolPool, ToolStream, ValidationError};
+    use harness_tool::{
+        action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+        ToolPool, ToolStream, ValidationError,
+    };
 
     use super::{
         announcement_content, child_run_outcome, child_system_prompt, child_tool_filter,
@@ -2248,17 +2252,25 @@ agent rules
             Ok(())
         }
 
-        async fn check_permission(
+        async fn plan(
             &self,
-            _input: &serde_json::Value,
-            _ctx: &ToolContext,
-        ) -> PermissionCheck {
-            PermissionCheck::Allowed
+            input: &serde_json::Value,
+            ctx: &ToolContext,
+        ) -> Result<ToolActionPlan, ToolError> {
+            action_plan_from_permission_check(
+                self.descriptor(),
+                input,
+                ctx,
+                PermissionCheck::Allowed,
+                Vec::new(),
+                WorkspaceAccess::None,
+                NetworkAccess::None,
+            )
         }
 
-        async fn execute(
+        async fn execute_authorized(
             &self,
-            _input: serde_json::Value,
+            _authorized: AuthorizedToolInput,
             _ctx: ToolContext,
         ) -> Result<ToolStream, ToolError> {
             Ok(Box::pin(futures::stream::iter([ToolEvent::Final(

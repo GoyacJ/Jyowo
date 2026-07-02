@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
     BudgetMetric, DeferPolicy, HookError, HookEventKind, McpServerId, McpServerSource,
-    OverflowAction, PluginId, ProviderRestriction, ResultBudget, SemverString, SkillId,
-    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, TrustLevel,
+    NetworkAccess, OverflowAction, PluginId, ProviderRestriction, ResultBudget, SemverString,
+    SkillId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
+    ToolResult, TrustLevel, WorkspaceAccess,
 };
 use harness_hook::{HookContext, HookEvent, HookHandler, HookOutcome, HookRegistry};
 use harness_mcp::{McpRegistry, McpServerSpec, TransportChoice};
@@ -20,8 +21,8 @@ use harness_skill::{
     SkillPrerequisites, SkillRegistry, SkillSource,
 };
 use harness_tool::{
-    BuiltinToolset, PermissionCheck, Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream,
-    ValidationError,
+    action_plan_from_permission_check, AuthorizedToolInput, BuiltinToolset, PermissionCheck, Tool,
+    ToolContext, ToolEvent, ToolRegistry, ToolStream, ValidationError,
 };
 use serde_json::{json, Value};
 
@@ -396,11 +397,23 @@ impl Tool for FakeTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, _input: Value, _ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        _authorized: AuthorizedToolInput,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(stream::iter([ToolEvent::Final(
             ToolResult::Text("ok".to_owned()),
         )])))

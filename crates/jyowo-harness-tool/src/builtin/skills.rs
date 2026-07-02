@@ -3,12 +3,12 @@ use futures::stream;
 use harness_contracts::{
     ContextPatchLifecycle, ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource,
     DeferPolicy, SkillFilter, SkillInjectionId, SkillInvocationReceipt, SkillRegistryCap,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 
 #[derive(Clone)]
 pub struct SkillsListTool {
@@ -47,13 +47,18 @@ impl Tool for SkillsListTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        super::generic_action_plan(&self.descriptor, input, ctx, PermissionCheck::Allowed)
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         let registry = ctx.capability::<dyn SkillRegistryCap>(ToolCapability::SkillRegistry)?;
-        let summaries = registry.list_summaries(&ctx.agent_id, skill_filter(&input));
+        let summaries =
+            registry.list_summaries(&ctx.agent_id, skill_filter(authorized.raw_input()));
         Ok(final_structured(to_json(summaries)?))
     }
 }
@@ -95,13 +100,18 @@ impl Tool for SkillsViewTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        super::generic_action_plan(&self.descriptor, input, ctx, PermissionCheck::Allowed)
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         let registry = ctx.capability::<dyn SkillRegistryCap>(ToolCapability::SkillRegistry)?;
-        let name = skill_name(&input).map_err(validation_error)?;
+        let input = authorized.raw_input();
+        let name = skill_name(input).map_err(validation_error)?;
         let full = input.get("full").and_then(Value::as_bool).unwrap_or(false);
         let view = registry
             .view(&ctx.agent_id, name, full)
@@ -150,15 +160,20 @@ impl Tool for SkillsInvokeTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        super::generic_action_plan(&self.descriptor, input, ctx, PermissionCheck::Allowed)
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         let registry = ctx.capability::<dyn SkillRegistryCap>(ToolCapability::SkillRegistry)?;
         let patch_sink =
             ctx.capability::<dyn ContextPatchSinkCap>(ToolCapability::ContextPatchSink)?;
-        let name = skill_name(&input).map_err(validation_error)?.to_owned();
+        let input = authorized.raw_input();
+        let name = skill_name(input).map_err(validation_error)?.to_owned();
         let params = input.get("params").cloned().unwrap_or_else(|| json!({}));
         let rendered = registry.render(&ctx.agent_id, name.clone(), params).await?;
         let injection_id = SkillInjectionId(format!("skill:{}:{}", name, ctx.tool_use_id));

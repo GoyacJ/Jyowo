@@ -22,6 +22,7 @@ steering = []
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
 jyowo-harness-context = { path = "../jyowo-harness-context" }
+jyowo-harness-execution = { path = "../jyowo-harness-execution" }
 jyowo-harness-hook = { path = "../jyowo-harness-hook" }
 jyowo-harness-journal = { path = "../jyowo-harness-journal" }
 jyowo-harness-mcp = { path = "../jyowo-harness-mcp" }

@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DecisionScope, PermissionSubject, TodoItem, TodoStoreCap, ToolCapability, ToolDescriptor,
-    ToolError, ToolGroup, ToolResult,
+    DecisionScope, PermissionSubject, TodoItem, TodoStoreCap, ToolActionPlan, ToolCapability,
+    ToolDescriptor, ToolError, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 
 #[derive(Clone)]
 pub struct TodoTool {
@@ -59,19 +59,28 @@ impl Tool for TodoTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        super::generic_action_plan(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         let store = ctx.capability::<dyn TodoStoreCap>(ToolCapability::TodoStore)?;
-        let items = todo_items(&input).map_err(validation_error)?;
+        let items = todo_items(authorized.raw_input()).map_err(validation_error)?;
         let count = items.len();
         store
             .replace_todos(ctx.tenant_id, ctx.session_id, ctx.run_id, items)

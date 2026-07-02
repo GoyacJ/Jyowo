@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex as StdMutex,
@@ -8,12 +9,13 @@ use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
-    BudgetMetric, CapabilityRegistry, ClarifyAnswer, ClarifyChannelCap, ClarifyPrompt, DecidedBy,
-    Decision, DecisionScope, DeferPolicy, Event, HookEventKind, Message, MessagePart, MessageRole,
-    ModelError, NoopRedactor, OverflowAction, PermissionError, PermissionMode, PermissionSubject,
-    ProviderRestriction, RedactRules, Redactor, ResultBudget, RunId, SessionId, StopReason,
-    TenantId, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
-    ToolResult, ToolUseId, TrustLevel, UsageSnapshot,
+    ActionResource, BudgetMetric, CapabilityRegistry, ClarifyAnswer, ClarifyChannelCap,
+    ClarifyPrompt, DecidedBy, Decision, DecisionScope, DeferPolicy, Event, HookEventKind, Message,
+    MessagePart, MessageRole, ModelError, NetworkAccess, NoopRedactor, OverflowAction,
+    PermissionError, PermissionMode, PermissionSubject, ProviderRestriction, RedactRules, Redactor,
+    ResultBudget, RunId, SessionId, StopReason, TenantId, ToolActionPlan, ToolCapability,
+    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId,
+    TrustLevel, UsageSnapshot, WorkspaceAccess,
 };
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookHandler, HookOutcome, HookRegistry,
@@ -26,8 +28,10 @@ use harness_model::{
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_session::{Session, SessionOptions, SessionTurnRuntime};
 use harness_tool::{
-    BuiltinToolset, SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool, ToolPoolFilter,
-    ToolPoolModelProfile, ToolRegistry, ToolSearchMode, ToolStream, ValidationError,
+    action_plan_from_permission_check, authorized_file_path, AuthorizedFileResourceKind,
+    AuthorizedToolInput, BuiltinToolset, SchemaResolverContext, Tool, ToolContext, ToolEvent,
+    ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolSearchMode, ToolStream,
+    ValidationError,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -1083,26 +1087,35 @@ impl Tool for TestListDirTool {
         Ok(())
     }
 
-    async fn check_permission(
+    async fn plan(
         &self,
         input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: "ListDir".to_owned(),
-                input: input.clone(),
+        ctx: &ToolContext,
+    ) -> Result<ToolActionPlan, harness_contracts::ToolError> {
+        let path = PathBuf::from(input["path"].as_str().unwrap_or_default());
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: "ListDir".to_owned(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::PathPrefix(path.clone()),
             },
-            scope: DecisionScope::PathPrefix(input["path"].as_str().unwrap_or_default().into()),
-        }
+            vec![ActionResource::FileRead { path }],
+            WorkspaceAccess::ReadOnly,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        input: Value,
+        authorized: AuthorizedToolInput,
         _ctx: ToolContext,
     ) -> Result<ToolStream, harness_contracts::ToolError> {
-        let path = input["path"].as_str().unwrap_or_default();
+        let path = authorized_file_path(&authorized, AuthorizedFileResourceKind::Read)?;
         let mut entries = Vec::new();
         for entry in std::fs::read_dir(path)
             .map_err(|error| harness_contracts::ToolError::Message(error.to_string()))?
@@ -1119,69 +1132,54 @@ impl Tool for TestListDirTool {
 }
 
 fn tool_call_events(name: &str, input: Value) -> Vec<ModelStreamEvent> {
-    vec![
-        ModelStreamEvent::MessageStart {
-            message_id: "assistant-1".to_owned(),
-            usage: UsageSnapshot::default(),
-        },
-        ModelStreamEvent::ContentBlockDelta {
-            index: 0,
-            delta: ContentDelta::ToolUseComplete {
-                id: ToolUseId::new(),
-                name: name.to_owned(),
-                input,
-            },
-        },
-        ModelStreamEvent::MessageDelta {
-            stop_reason: Some(StopReason::ToolUse),
-            usage_delta: UsageSnapshot::default(),
-        },
-        ModelStreamEvent::MessageStop,
-    ]
+    let delta = ContentDelta::ToolUseComplete {
+        id: ToolUseId::new(),
+        name: name.to_owned(),
+        input,
+    };
+    assistant_events([(0, delta)], StopReason::ToolUse)
 }
 
 fn text_events(text: &str) -> Vec<ModelStreamEvent> {
-    vec![
-        ModelStreamEvent::MessageStart {
-            message_id: "assistant-1".to_owned(),
-            usage: UsageSnapshot::default(),
-        },
-        ModelStreamEvent::ContentBlockDelta {
-            index: 0,
-            delta: ContentDelta::Text(text.to_owned()),
-        },
-        ModelStreamEvent::MessageDelta {
-            stop_reason: Some(StopReason::EndTurn),
-            usage_delta: UsageSnapshot::default(),
-        },
-        ModelStreamEvent::MessageStop,
-    ]
+    assistant_events(
+        [(0, ContentDelta::Text(text.to_owned()))],
+        StopReason::EndTurn,
+    )
 }
 
 fn thinking_then_text_events(thinking: &str, text: &str) -> Vec<ModelStreamEvent> {
-    vec![
-        ModelStreamEvent::MessageStart {
-            message_id: "assistant-1".to_owned(),
-            usage: UsageSnapshot::default(),
-        },
-        ModelStreamEvent::ContentBlockDelta {
-            index: 0,
-            delta: ContentDelta::Thinking(harness_model::ThinkingDelta {
-                provider_native: None,
-                signature: None,
-                text: Some(thinking.to_owned()),
-            }),
-        },
-        ModelStreamEvent::ContentBlockDelta {
-            index: 1,
-            delta: ContentDelta::Text(text.to_owned()),
-        },
+    let thinking = ContentDelta::Thinking(harness_model::ThinkingDelta {
+        provider_native: None,
+        signature: None,
+        text: Some(thinking.to_owned()),
+    });
+    assistant_events(
+        [(0, thinking), (1, ContentDelta::Text(text.to_owned()))],
+        StopReason::EndTurn,
+    )
+}
+
+fn assistant_events<const N: usize>(
+    deltas: [(usize, ContentDelta); N],
+    stop_reason: StopReason,
+) -> Vec<ModelStreamEvent> {
+    let mut events = vec![ModelStreamEvent::MessageStart {
+        message_id: "assistant-1".to_owned(),
+        usage: UsageSnapshot::default(),
+    }];
+    events.extend(
+        deltas
+            .into_iter()
+            .map(|(index, delta)| ModelStreamEvent::ContentBlockDelta { index, delta }),
+    );
+    events.extend([
         ModelStreamEvent::MessageDelta {
-            stop_reason: Some(StopReason::EndTurn),
+            stop_reason: Some(stop_reason),
             usage_delta: UsageSnapshot::default(),
         },
         ModelStreamEvent::MessageStop,
-    ]
+    ]);
+    events
 }
 
 fn message_text(message: &Message) -> String {

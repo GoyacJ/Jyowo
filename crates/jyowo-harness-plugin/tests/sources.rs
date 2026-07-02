@@ -12,10 +12,10 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
-    CapabilityRegistry, CausationId, CorrelationId, Decision, InteractivityLevel,
+    AuthorizationTicketId, CapabilityRegistry, CausationId, CorrelationId, InteractivityLevel,
     ManifestValidationFailure as EventManifestValidationFailure, McpServerId, McpServerSource,
-    PermissionMode, PluginId, RedactRules, RejectionReason, RunId, SessionId, TenantId, ToolResult,
-    ToolUseId, TrustLevel,
+    PermissionMode, PluginId, RedactRules, RejectionReason, RunId, SessionId, TenantId,
+    ToolActionPlan, ToolError, ToolResult, ToolUseId, TrustLevel,
 };
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookMessageView, HookOutcome, HookRegistry,
@@ -30,8 +30,8 @@ use harness_plugin::{
 };
 use harness_skill::{SkillRegistry, SkillSource};
 use harness_tool::{
-    InterruptToken, PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest,
-    PersistedDecision, ToolContext, ToolEvent, ToolRegistry,
+    AuthorizedTicketSummary, AuthorizedToolInput, InterruptToken, Tool, ToolContext, ToolEvent,
+    ToolRegistry, ToolStream,
 };
 use ring::digest;
 
@@ -559,21 +559,22 @@ exit 2
     registry.activate(&manifest.plugin_id()).await.unwrap();
 
     let tool = tools.get("sidecar-tool").expect("tool proxy registered");
-    let permission = tool
-        .check_permission(&serde_json::json!({"input": "hello"}), &tool_ctx())
-        .await;
+    let input = serde_json::json!({"input": "hello"});
+    let ctx = tool_ctx();
+    let plan = tool.plan(&input, &ctx).await.unwrap();
     assert!(matches!(
-        permission,
-        PermissionCheck::AskUser {
-            subject: harness_contracts::PermissionSubject::ToolInvocation { ref tool, .. },
-            scope: harness_contracts::DecisionScope::ToolName(ref scope)
-        } if tool == "sidecar-tool" && scope == "sidecar-tool"
+        plan.subject,
+        harness_contracts::PermissionSubject::ToolInvocation { ref tool, .. }
+            if tool == "sidecar-tool"
+    ));
+    assert!(matches!(
+        plan.scope,
+        harness_contracts::DecisionScope::ToolName(ref scope) if scope == "sidecar-tool"
     ));
     tool.validate(&serde_json::json!("not an object"), &tool_ctx())
         .await
         .expect_err("sidecar proxy must enforce the manifest input schema");
-    let mut stream = tool
-        .execute(serde_json::json!({"input": "hello"}), tool_ctx())
+    let mut stream = execute_authorized_tool(tool.as_ref(), input, ctx)
         .await
         .unwrap();
     let Some(ToolEvent::Final(ToolResult::Text(text))) = stream.next().await else {
@@ -783,8 +784,7 @@ exit 2
     let injected = mcp.inject_tools_into(&tools, &server_id).await.unwrap();
     assert_eq!(injected.len(), 1);
     let mcp_tool = tools.get(&injected[0]).expect("MCP tool was injected");
-    let mut stream = mcp_tool
-        .execute(serde_json::json!({}), tool_ctx())
+    let mut stream = execute_authorized_tool(mcp_tool.as_ref(), serde_json::json!({}), tool_ctx())
         .await
         .unwrap();
     let Some(ToolEvent::Final(ToolResult::Text(text))) = stream.next().await else {
@@ -1149,13 +1149,38 @@ fn tool_ctx() -> ToolContext {
         subagent_depth: 0,
         workspace_root: std::env::temp_dir(),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(CapabilityRegistry::default()),
         redactor: Arc::new(TestRedactor),
         interrupt: InterruptToken::default(),
         parent_run: None,
         model: None,
         model_config_id: None,
+    }
+}
+
+async fn execute_authorized_tool(
+    tool: &dyn Tool,
+    input: serde_json::Value,
+    ctx: ToolContext,
+) -> Result<ToolStream, ToolError> {
+    tool.validate(&input, &ctx)
+        .await
+        .expect("test input validates");
+    let plan = tool.plan(&input, &ctx).await?;
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan))?;
+    tool.execute_authorized(authorized, ctx).await
+}
+
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: SessionId::new(),
+        run_id: RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }
 
@@ -1176,22 +1201,6 @@ fn hook_ctx() -> HookContext {
         }),
         upstream_outcome: None,
         replay_mode: ReplayMode::Live,
-    }
-}
-
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(
-        &self,
-        _decision: PersistedDecision,
-    ) -> Result<(), harness_contracts::PermissionError> {
-        Ok(())
     }
 }
 

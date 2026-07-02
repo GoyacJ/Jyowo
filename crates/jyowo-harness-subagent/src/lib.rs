@@ -30,9 +30,9 @@ use harness_contracts::{
     SubagentContextReport, SubagentId, SubagentParentContext, SubagentPermissionForwardedEvent,
     SubagentPermissionResolvedEvent, SubagentRunnerCap, SubagentSpawnHandle,
     SubagentSpawnPausedEvent, SubagentSpawnedEvent, SubagentStalledEvent, SubagentTerminatedEvent,
-    SubagentTerminationReason, TeamId, TenantId, ToolCapability, ToolDescriptor, ToolError,
-    ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TranscriptRef, TurnInput,
-    UsageSnapshot, UserMessageAppendedEvent,
+    SubagentTerminationReason, TeamId, TenantId, ToolActionPlan, ToolCapability, ToolDescriptor,
+    ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TranscriptRef,
+    TurnInput, UsageSnapshot, UserMessageAppendedEvent,
 };
 use harness_journal::{AppendMetadata, EventStore, ReplayCursor};
 use harness_model::{AuxExecutor, AuxModelProvider, AuxTask, ModelProtocol, ModelRequest};
@@ -41,7 +41,10 @@ use harness_permission::{
     PermissionRequest,
 };
 use harness_session::{Session, SessionOptions};
-use harness_tool::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use harness_tool::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+    ToolStream, ValidationError,
+};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
@@ -2126,11 +2129,24 @@ impl Tool for AgentTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            harness_contracts::WorkspaceAccess::None,
+            harness_contracts::NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
         let spec = normalize_agent_input(input)?;
         let runner = ctx.capability::<dyn SubagentRunnerCap>(ToolCapability::SubagentRunner)?;
         let parent = SubagentParentContext {
@@ -2429,33 +2445,12 @@ pub mod testing {
             subagent_depth: 0,
             workspace_root: PathBuf::from("."),
             sandbox: None,
-            permission_broker: Arc::new(AllowBroker),
             cap_registry,
             redactor: Arc::new(NoopRedactor),
             interrupt: harness_tool::InterruptToken::new(),
             parent_run: None,
             model: None,
             model_config_id: None,
-        }
-    }
-
-    struct AllowBroker;
-
-    #[async_trait]
-    impl PermissionBroker for AllowBroker {
-        async fn decide(
-            &self,
-            _request: PermissionRequest,
-            _ctx: PermissionContext,
-        ) -> harness_contracts::Decision {
-            harness_contracts::Decision::AllowOnce
-        }
-
-        async fn persist(
-            &self,
-            _decision: harness_permission::PersistedDecision,
-        ) -> Result<(), harness_contracts::PermissionError> {
-            Ok(())
         }
     }
 }

@@ -1,18 +1,17 @@
 #![cfg(feature = "seedance-tools")]
 
 use base64::{engine::general_purpose, Engine as _};
+use chrono::Utc;
 use futures::{future::BoxFuture, StreamExt};
 use harness_contracts::{
-    BlobMeta, BlobRef, BlobWriterCap, CapabilityRegistry, CapabilityRouteKind, Decision,
-    ModelModality, PermissionError, ProviderCredential, ProviderCredentialResolveContext,
-    ProviderCredentialResolverCap, ToolCapability, ToolError, ToolResult, ToolResultPart,
-};
-use harness_permission::{
-    PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
+    BlobMeta, BlobRef, BlobWriterCap, CapabilityRegistry, CapabilityRouteKind, ModelModality,
+    ProviderCredential, ProviderCredentialResolveContext, ProviderCredentialResolverCap,
+    ToolActionPlan, ToolCapability, ToolError, ToolResult, ToolResultPart,
 };
 use harness_tool::{
-    BuiltinToolset, InterruptToken, SeedanceImageToVideo, SeedanceTextToVideo,
-    SeedanceVideoGenerationQueryTool, Tool, ToolContext, ToolEvent, ToolRegistryBuilder,
+    AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken,
+    SeedanceImageToVideo, SeedanceTextToVideo, SeedanceVideoGenerationQueryTool, Tool, ToolContext,
+    ToolEvent, ToolRegistryBuilder,
 };
 use serde_json::json;
 use std::{
@@ -202,7 +201,7 @@ async fn credential_route_video_tool_passes_seedance_operation_id() {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let tool = SeedanceTextToVideo::default();
     let _ = tool
-        .check_permission(
+        .plan(
             &json!({"request": {}}),
             &ctx_with_resolver(Arc::new(CapturingResolver {
                 captured: Arc::clone(&captured),
@@ -244,7 +243,9 @@ async fn mount_seedance_post(
 
 async fn execute_final(tool: &dyn Tool, input: serde_json::Value, ctx: ToolContext) -> ToolResult {
     tool.validate(&input, &ctx).await.unwrap();
-    let stream = tool.execute(input, ctx).await.unwrap();
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     let events = stream.collect::<Vec<_>>().await;
     events
         .into_iter()
@@ -258,7 +259,12 @@ async fn execute_final(tool: &dyn Tool, input: serde_json::Value, ctx: ToolConte
 
 async fn execute_error(tool: &dyn Tool, input: serde_json::Value, ctx: ToolContext) -> ToolError {
     tool.validate(&input, &ctx).await.unwrap();
-    let stream = tool.execute(input, ctx).await.unwrap();
+    let plan = match tool.plan(&input, &ctx).await {
+        Ok(plan) => plan,
+        Err(error) => return error,
+    };
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     let events = stream.collect::<Vec<_>>().await;
     events
         .into_iter()
@@ -322,13 +328,25 @@ fn ctx_with_cap_registry(cap_registry: CapabilityRegistry) -> ToolContext {
         subagent_depth: 0,
         workspace_root: PathBuf::from("/tmp"),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::new(),
         parent_run: None,
         model: None,
         model_config_id: None,
+    }
+}
+
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: harness_contracts::TenantId::SINGLE,
+        session_id: harness_contracts::SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }
 
@@ -415,18 +433,5 @@ impl BlobWriterCap for CapturingBlobWriter {
                 content_type: meta.content_type,
             })
         })
-    }
-}
-
-struct AllowBroker;
-
-#[async_trait::async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
-        Ok(())
     }
 }

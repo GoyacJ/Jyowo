@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    CodeLanguage, CodeRunRequest, DecisionScope, PermissionSubject, ToolCapability, ToolDescriptor,
-    ToolError, ToolGroup, ToolResult,
+    CodeLanguage, CodeRunRequest, DecisionScope, PermissionSubject, ToolActionPlan, ToolCapability,
+    ToolDescriptor, ToolError, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 
 #[derive(Clone)]
 pub struct ExecuteCodeTool {
@@ -54,25 +54,40 @@ impl Tool for ExecuteCodeTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, ctx: &ToolContext) -> PermissionCheck {
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
         if ctx.subagent_depth > 0 {
-            return PermissionCheck::Denied {
-                reason: "execute_code is not available from subagents".to_owned(),
-            };
+            return super::generic_action_plan(
+                &self.descriptor,
+                input,
+                ctx,
+                PermissionCheck::Denied {
+                    reason: "execute_code is not available from subagents".to_owned(),
+                },
+            );
         }
         let script_hash = blake3::hash(source(input).unwrap_or_default().as_bytes());
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+        super::generic_action_plan(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ExecuteCodeScript {
+                    script_hash: *script_hash.as_bytes(),
+                },
             },
-            scope: DecisionScope::ExecuteCodeScript {
-                script_hash: *script_hash.as_bytes(),
-            },
-        }
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input();
         let runtime =
             ctx.capability::<dyn harness_contracts::CodeRuntimeCap>(ToolCapability::CodeRuntime)?;
         let dispatcher = ctx.capability::<dyn harness_contracts::EmbeddedToolDispatcherCap>(
@@ -85,8 +100,8 @@ impl Tool for ExecuteCodeTool {
                     session_id: ctx.session_id,
                     run_id: ctx.run_id,
                     tool_use_id: ctx.tool_use_id,
-                    language: language(&input).map_err(validation_error)?,
-                    source: source(&input).map_err(validation_error)?.to_owned(),
+                    language: language(input).map_err(validation_error)?,
+                    source: source(input).map_err(validation_error)?.to_owned(),
                 },
                 dispatcher,
             )

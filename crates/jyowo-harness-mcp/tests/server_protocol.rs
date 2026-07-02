@@ -3,7 +3,8 @@
 
 use async_trait::async_trait;
 use harness_contracts::{
-    CapabilityRegistry, Decision, PermissionError, SessionId, TenantId, ToolUseId,
+    CapabilityRegistry, NetworkAccess, SessionId, TenantId, ToolActionPlan, ToolUseId,
+    WorkspaceAccess,
 };
 use harness_mcp::{
     ExposedCapability, HarnessMcpBackend, HarnessMcpServer, IsolationMode, JsonRpcRequest,
@@ -14,8 +15,8 @@ use harness_mcp::{
     TenantMapping, TenantResolver, ToolContextFactory, MCP_SAMPLING_DENIED_CODE,
 };
 use harness_tool::{
-    BuiltinToolset, InterruptToken, PermissionBroker, PermissionContext, PermissionRequest,
-    PersistedDecision, Tool, ToolContext, ToolRegistry,
+    action_plan_from_permission_check, AuthorizedToolInput, BuiltinToolset, InterruptToken, Tool,
+    ToolContext, ToolRegistry,
 };
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -1112,17 +1113,25 @@ impl Tool for SchemaTool {
         Ok(())
     }
 
-    async fn check_permission(
+    async fn plan(
         &self,
-        _input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_tool::PermissionCheck {
-        harness_tool::PermissionCheck::Allowed
+        input: &Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolActionPlan, harness_contracts::ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_tool::PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         _ctx: ToolContext,
     ) -> Result<harness_tool::ToolStream, harness_contracts::ToolError> {
         Ok(Box::pin(futures::stream::iter([
@@ -1231,26 +1240,12 @@ fn tool_context() -> ToolContext {
         subagent_depth: 0,
         workspace_root: std::path::PathBuf::from("."),
         sandbox: None,
-        permission_broker: std::sync::Arc::new(AllowBroker),
         cap_registry: std::sync::Arc::new(CapabilityRegistry::default()),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::new(),
         parent_run: None,
         model: None,
         model_config_id: None,
-    }
-}
-
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
-        Ok(())
     }
 }
 

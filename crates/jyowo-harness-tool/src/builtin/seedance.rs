@@ -9,17 +9,21 @@ use bytes::Bytes;
 use chrono::Utc;
 use futures::stream;
 use harness_contracts::{
-    BlobMeta, BlobRetention, BlobWriterCap, BudgetMetric, CapabilityRouteKind, DecisionScope,
-    ModelModality, PermissionSubject, ProviderCredential, ProviderCredentialResolveContext,
-    ProviderCredentialResolverCap, ToolCapability, ToolDescriptor, ToolError, ToolGroup,
-    ToolResult, ToolResultPart, ToolServiceBinding,
+    ActionResource, BlobMeta, BlobRetention, BlobWriterCap, BudgetMetric, CapabilityRouteKind,
+    DecisionScope, HostRule, ModelModality, NetworkAccess, PermissionSubject, ProviderCredential,
+    ProviderCredentialResolveContext, ProviderCredentialResolverCap, ToolActionPlan,
+    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult, ToolResultPart,
+    ToolServiceBinding, WorkspaceAccess,
 };
 use harness_model::{SeedanceApiClient, SEEDANCE_DEFAULT_BASE_URL, SEEDANCE_PROVIDER_ID};
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 use url::Url;
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+    ToolStream, ValidationError,
+};
 
 const POLL_OPERATION_ID: &str = "seedance.video_generation.query";
 const SEEDANCE_VIDEO_MIME_TYPES: &[&str] = &["video/mp4"];
@@ -54,15 +58,20 @@ macro_rules! seedance_create_tool {
                 Ok(())
             }
 
-            async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                seedance_network_permission(ctx, &self.descriptor).await
+            async fn plan(
+                &self,
+                input: &Value,
+                ctx: &ToolContext,
+            ) -> Result<ToolActionPlan, ToolError> {
+                seedance_network_action_plan(input, ctx, &self.descriptor).await
             }
 
-            async fn execute(
+            async fn execute_authorized(
                 &self,
-                input: Value,
+                authorized: AuthorizedToolInput,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
+                let input = authorized.raw_input().clone();
                 Ok(execute_create_request(
                     input,
                     ctx,
@@ -116,11 +125,16 @@ impl Tool for SeedanceVideoGenerationQueryTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        seedance_network_permission(ctx, &self.descriptor).await
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        seedance_network_action_plan(input, ctx, &self.descriptor).await
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
         Ok(execute_query_request(input, ctx, &self.descriptor))
     }
 }
@@ -506,22 +520,58 @@ async fn write_media_blob(
         .await
 }
 
-async fn seedance_network_permission(
+async fn seedance_network_action_plan(
+    input: &Value,
     ctx: &ToolContext,
     descriptor: &ToolDescriptor,
-) -> PermissionCheck {
+) -> Result<ToolActionPlan, ToolError> {
     let (operation_id, route_kind) = service_credential_context(descriptor);
     let credential = match seedance_credential(ctx, operation_id, route_kind).await {
         Ok(credential) => credential,
-        Err(error) => return seedance_permission_denied(error),
+        Err(error) => {
+            return action_plan_from_permission_check(
+                descriptor,
+                input,
+                ctx,
+                seedance_permission_denied(error),
+                Vec::new(),
+                WorkspaceAccess::None,
+                NetworkAccess::None,
+            );
+        }
     };
 
     match seedance_base_url_host(credential.base_url.as_deref()) {
-        Ok((host, port)) => PermissionCheck::AskUser {
-            subject: PermissionSubject::NetworkAccess { host, port },
-            scope: DecisionScope::Category("network".to_owned()),
-        },
-        Err(reason) => PermissionCheck::Denied { reason },
+        Ok((host, port)) => action_plan_from_permission_check(
+            descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::NetworkAccess {
+                    host: host.clone(),
+                    port,
+                },
+                scope: DecisionScope::Category("network".to_owned()),
+            },
+            vec![ActionResource::Network {
+                host: host.clone(),
+                port,
+            }],
+            WorkspaceAccess::None,
+            NetworkAccess::AllowList(vec![HostRule {
+                pattern: host,
+                ports: port.map(|port| vec![port]),
+            }]),
+        ),
+        Err(reason) => action_plan_from_permission_check(
+            descriptor,
+            input,
+            ctx,
+            PermissionCheck::Denied { reason },
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        ),
     }
 }
 

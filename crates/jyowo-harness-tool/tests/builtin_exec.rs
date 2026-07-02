@@ -8,18 +8,15 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::Utc;
 use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
     BlobError, BlobMeta, BlobRef, BlobStore, CapabilityRegistry, ClarifyAnswer, ClarifyPrompt,
-    Decision, DecisionScope, Event, FallbackPolicy, InteractivityLevel, OutboundUserMessage,
-    PermissionError, PermissionMode, PermissionSubject, SandboxError, SandboxExecutionStartedEvent,
-    SandboxExitStatus, SandboxPolicySummary, Severity, TenantId, ToolCapability, ToolError,
-    ToolResult, ToolUseId, UserMessageDelivery, WorkspaceAccess,
+    Event, OutboundUserMessage, PermissionSubject, SandboxError, SandboxExecutionStartedEvent,
+    SandboxExitStatus, SandboxPolicySummary, Severity, TenantId, ToolActionPlan, ToolCapability,
+    ToolError, ToolResult, ToolUseId, UserMessageDelivery, WorkspaceAccess,
 };
 use harness_contracts::{RedactRules, Redactor};
-use harness_permission::{
-    PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest, RuleSnapshot,
-};
 use harness_sandbox::{
     ActivityHandle, ExecContext, ExecOutcome, ExecSpec, KillScope, ProcessHandle, SandboxBackend,
     SandboxBaseConfig, SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
@@ -29,8 +26,9 @@ use harness_tool::{
         BashTool, ClarifyTool, SendMessageTool, WebFetchBackend, WebFetchRequest, WebFetchResponse,
         WebFetchTool, WebSearchBackend, WebSearchRequest, WebSearchResult, WebSearchTool,
     },
-    BuiltinToolset, InterruptToken, OrchestratorContext, Tool, ToolCall, ToolContext,
-    ToolOrchestrator, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolSearchMode,
+    AuthorizedTicketSummary, AuthorizedToolCall, AuthorizedToolInput, BuiltinToolset,
+    InterruptToken, OrchestratorContext, Tool, ToolContext, ToolOrchestrator, ToolPool,
+    ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolSearchMode,
 };
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -39,16 +37,13 @@ use serde_json::{json, Value};
 async fn bash_requires_sandbox_and_maps_command_permission() {
     let tool = BashTool::default();
     let input = json!({ "command": "printf hi", "cwd": "/tmp" });
-    let check = tool
-        .check_permission(&input, &tool_ctx(CapabilityRegistry::default(), None))
+    let plan = tool
+        .plan(&input, &tool_ctx(CapabilityRegistry::default(), None))
         .await;
 
     assert!(matches!(
-        check,
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::CommandExec { ref command, .. },
-            scope: DecisionScope::ExactCommand { command: ref scoped_command, .. },
-        } if command == "printf hi" && scoped_command == "printf hi"
+        plan.unwrap().subject,
+        PermissionSubject::CommandExec { ref command, .. } if command == "printf hi"
     ));
 
     let error = execute_error(&tool, input, tool_ctx(CapabilityRegistry::default(), None)).await;
@@ -61,18 +56,19 @@ async fn bash_requires_sandbox_and_maps_command_permission() {
 #[tokio::test]
 async fn bash_dangerous_command_precheck_sets_severity() {
     let tool = BashTool::default();
-    let check = tool
-        .check_permission(
+    let plan = tool
+        .plan(
             &json!({ "command": "rm -rf /" }),
             &tool_ctx(CapabilityRegistry::default(), None),
         )
         .await;
 
     assert!(matches!(
-        check,
-        PermissionCheck::DangerousCommand {
-            ref pattern,
+        plan.unwrap().subject,
+        PermissionSubject::DangerousCommand {
+            pattern_id: ref pattern,
             severity: Severity::Critical,
+            ..
         } if pattern == "unix-rm-rf-root"
     ));
 }
@@ -97,12 +93,7 @@ async fn bash_executes_through_sandbox_and_returns_output() {
     )
     .await;
 
-    assert!(matches!(
-        events.first(),
-        Some(harness_tool::ToolEvent::Journal(
-            Event::SandboxExecutionStarted(_)
-        ))
-    ));
+    assert_sandbox_started_before_final(&events);
 
     assert!(events.iter().any(|event| {
         matches!(
@@ -140,7 +131,7 @@ async fn bash_executes_through_sandbox_and_returns_output() {
         sandbox.recorded_contexts()[0].workspace_root,
         std::path::PathBuf::from("/workspace-root")
     );
-    assert_eq!(sandbox.before_execute_count(), 0);
+    assert_eq!(sandbox.before_execute_count(), 1);
 }
 
 #[tokio::test]
@@ -220,12 +211,7 @@ async fn bash_streams_sandbox_journal_events_before_final_result() {
     )
     .await;
 
-    assert!(matches!(
-        events.first(),
-        Some(harness_tool::ToolEvent::Journal(
-            Event::SandboxExecutionStarted(_)
-        ))
-    ));
+    assert_sandbox_started_before_final(&events);
     let Some(harness_tool::ToolEvent::Final(ToolResult::Structured(value))) = events.last() else {
         panic!("expected structured bash result");
     };
@@ -258,16 +244,9 @@ async fn bash_large_stdout_is_offloaded_by_orchestrator_budget() {
     .unwrap();
     let blob_store = Arc::new(RecordingBlobStore::default());
 
-    let results = ToolOrchestrator::default()
-        .dispatch(
-            vec![ToolCall {
-                tool_use_id: ToolUseId::new(),
-                tool_name: "Bash".to_owned(),
-                input: json!({ "command": "printf large" }),
-            }],
-            orchestrator_ctx(pool, Some(sandbox), blob_store.clone()),
-        )
-        .await;
+    let ctx = orchestrator_ctx(pool, Some(sandbox), blob_store.clone());
+    let call = authorized_call(&ctx, "Bash", json!({ "command": "printf large" })).await;
+    let results = ToolOrchestrator::default().dispatch(vec![call], ctx).await;
 
     assert!(results[0].overflow.is_some());
     assert!(matches!(results[0].result, Ok(ToolResult::Mixed(_))));
@@ -306,16 +285,9 @@ async fn bash_budget_overflow_stops_before_later_stdout_chunks_are_consumed() {
     .unwrap();
     let blob_store = Arc::new(RecordingBlobStore::default());
 
-    let results = ToolOrchestrator::default()
-        .dispatch(
-            vec![ToolCall {
-                tool_use_id: ToolUseId::new(),
-                tool_name: "Bash".to_owned(),
-                input: json!({ "command": "printf large" }),
-            }],
-            orchestrator_ctx(pool, Some(sandbox.clone()), blob_store),
-        )
-        .await;
+    let ctx = orchestrator_ctx(pool, Some(sandbox.clone()), blob_store);
+    let call = authorized_call(&ctx, "Bash", json!({ "command": "printf large" })).await;
+    let results = ToolOrchestrator::default().dispatch(vec![call], ctx).await;
 
     assert!(results[0].overflow.is_some());
     assert_eq!(
@@ -345,16 +317,13 @@ async fn web_search_uses_network_permission_and_backend() {
         "region": "us",
         "recency": "week"
     });
-    let check = tool
-        .check_permission(&input, &tool_ctx(CapabilityRegistry::default(), None))
+    let plan = tool
+        .plan(&input, &tool_ctx(CapabilityRegistry::default(), None))
         .await;
 
     assert!(matches!(
-        check,
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::NetworkAccess { ref host, .. },
-            scope: DecisionScope::ToolName(ref tool),
-        } if host == "web-search" && tool == "WebSearch"
+        plan.unwrap().subject,
+        PermissionSubject::NetworkAccess { ref host, .. } if host == "web-search"
     ));
 
     let result = execute_final(&tool, input, tool_ctx(CapabilityRegistry::default(), None)).await;
@@ -438,20 +407,15 @@ async fn web_search_rejects_invalid_region_and_recency() {
 async fn web_fetch_fails_closed_by_default_and_uses_injected_backend() {
     let default_tool = WebFetchTool::default();
 
-    let dangerous_check = default_tool
-        .check_permission(
+    let dangerous_plan = default_tool
+        .plan(
             &json!({ "url": "http://169.254.169.254/latest/meta-data" }),
             &tool_ctx(CapabilityRegistry::default(), None),
         )
         .await;
     assert!(matches!(
-        dangerous_check,
-        PermissionCheck::DangerousPattern {
-            ref kind,
-            ref pattern,
-            severity: Severity::High,
-            ..
-        } if kind == "url" && pattern == "url-cloud-metadata"
+        dangerous_plan.unwrap().subject,
+        PermissionSubject::NetworkAccess { ref host, .. } if host == "169.254.169.254"
     ));
 
     let error = execute_error(
@@ -648,7 +612,9 @@ fn default_builtin_toolset_registers_m3_t04b_tools_without_forbidden_deps() {
 
 async fn execute_final(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolResult {
     tool.validate(&input, &ctx).await.unwrap();
-    let mut stream = tool.execute(input, ctx).await.unwrap();
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     while let Some(event) = stream.next().await {
         if let harness_tool::ToolEvent::Final(result) = event {
             return result;
@@ -663,7 +629,9 @@ async fn execute_events(
     ctx: ToolContext,
 ) -> Vec<harness_tool::ToolEvent> {
     tool.validate(&input, &ctx).await.unwrap();
-    let mut stream = tool.execute(input, ctx).await.unwrap();
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     let mut events = Vec::new();
     while let Some(event) = stream.next().await {
         events.push(event);
@@ -671,9 +639,31 @@ async fn execute_events(
     events
 }
 
+fn assert_sandbox_started_before_final(events: &[harness_tool::ToolEvent]) {
+    let started_index = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                harness_tool::ToolEvent::Journal(Event::SandboxExecutionStarted(_))
+            )
+        })
+        .expect("expected sandbox execution start journal event");
+    let final_index = events
+        .iter()
+        .position(|event| matches!(event, harness_tool::ToolEvent::Final(_)))
+        .expect("expected final tool event");
+    assert!(started_index < final_index);
+}
+
 async fn execute_error(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolError {
     tool.validate(&input, &ctx).await.unwrap();
-    match tool.execute(input, ctx).await {
+    let plan = match tool.plan(&input, &ctx).await {
+        Ok(plan) => plan,
+        Err(error) => return error,
+    };
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    match tool.execute_authorized(authorized, ctx).await {
         Ok(_) => panic!("expected tool error"),
         Err(error) => error,
     }
@@ -708,7 +698,6 @@ fn tool_ctx_with_root(
         subagent_depth: 0,
         workspace_root,
         sandbox,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
@@ -737,7 +726,6 @@ fn orchestrator_ctx(
             subagent_depth: 0,
             workspace_root: std::env::temp_dir(),
             sandbox,
-            permission_broker: Arc::new(AllowBroker),
             cap_registry: Arc::new(CapabilityRegistry::default()),
             redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
             interrupt: InterruptToken::default(),
@@ -745,36 +733,39 @@ fn orchestrator_ctx(
             model: None,
             model_config_id: None,
         },
-        permission_context: PermissionContext {
-            permission_mode: PermissionMode::Default,
-            previous_mode: None,
-            session_id,
-            tenant_id: TenantId::SINGLE,
-            run_id: None,
-            interactivity: InteractivityLevel::FullyInteractive,
-            timeout_policy: None,
-            fallback_policy: FallbackPolicy::DenyAll,
-            hook_overrides: vec![],
-        },
         blob_store: Some(blob_store),
         event_emitter: Arc::new(harness_tool::NoopToolEventEmitter),
     }
 }
 
-#[derive(Debug)]
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
+async fn authorized_call(
+    ctx: &OrchestratorContext,
+    name: &str,
+    input: Value,
+) -> AuthorizedToolCall {
+    let tool_use_id = ToolUseId::new();
+    let mut tool_ctx = ctx.tool_context.clone();
+    tool_ctx.tool_use_id = tool_use_id;
+    let tool = ctx.pool.get(name).unwrap();
+    let plan = tool.plan(&input, &tool_ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    AuthorizedToolCall {
+        tool_use_id,
+        tool_name: name.to_owned(),
+        input: authorized,
     }
+}
 
-    async fn persist(
-        &self,
-        _decision: harness_permission::PersistedDecision,
-    ) -> Result<(), PermissionError> {
-        Ok(())
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: harness_contracts::SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }
 
@@ -902,6 +893,9 @@ impl SandboxBackend for FakeSandbox {
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
             supports_streaming: true,
+            supports_network: true,
+            supports_filesystem_write: true,
+            max_concurrent_execs: 1,
             ..SandboxCapabilities::default()
         }
     }

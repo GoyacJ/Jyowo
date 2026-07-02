@@ -8,9 +8,10 @@ use std::sync::{
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    BudgetMetric, CapabilityRegistry, Decision, DeferPolicy, OverflowAction, PermissionError,
-    ProviderRestriction, ResultBudget, SemverString, SessionId, TenantId, ToolDescriptor,
-    ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel,
+    BudgetMetric, CapabilityRegistry, DeferPolicy, NetworkAccess, OverflowAction,
+    ProviderRestriction, ResultBudget, SemverString, SessionId, TenantId, ToolActionPlan,
+    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId,
+    TrustLevel, WorkspaceAccess,
 };
 use harness_mcp::{
     IsolationMode, JsonRpcRequest, McpServerAdapter, McpServerAuditEvent, McpServerAuditSink,
@@ -18,9 +19,8 @@ use harness_mcp::{
     TenantIsolationPolicy, TenantMapping, TenantResolver,
 };
 use harness_tool::{
-    BuiltinToolset, InterruptToken, PermissionBroker, PermissionCheck, PermissionContext,
-    PermissionRequest, PersistedDecision, Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream,
-    ValidationError,
+    action_plan_from_permission_check, AuthorizedToolInput, BuiltinToolset, InterruptToken,
+    PermissionCheck, Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream, ValidationError,
 };
 use serde_json::{json, Value};
 
@@ -210,11 +210,23 @@ impl Tool for TenantTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, _input: Value, _ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        _authorized: AuthorizedToolInput,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         self.executions.fetch_add(1, Ordering::SeqCst);
         Ok(Box::pin(stream::iter([ToolEvent::Final(
             ToolResult::Text("ok".to_owned()),
@@ -233,25 +245,11 @@ fn tool_context(tenant_id: TenantId) -> ToolContext {
         subagent_depth: 0,
         workspace_root: std::path::PathBuf::from("."),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(CapabilityRegistry::default()),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::new(),
         parent_run: None,
         model: None,
         model_config_id: None,
-    }
-}
-
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
-        Ok(())
     }
 }

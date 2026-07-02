@@ -17,9 +17,9 @@ use harness_contracts::{
     NoopRedactor, PermissionError, PermissionMode, ProviderRestriction, ResourceLimits,
     ResultBudget, RunId, RunModelSnapshot, RunStartedEvent, SandboxMode, SandboxPolicy,
     SandboxScope, SessionId, SnapshotId, StopReason, SubagentTerminationReason, TenantId,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolUseCompletedEvent, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
-    UserMessageAppendedEvent,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, ToolUseCompletedEvent, ToolUseId, TrustLevel, TurnInput,
+    UsageSnapshot, UserMessageAppendedEvent, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_journal::{EventStore, ReplayCursor};
@@ -38,7 +38,10 @@ use harness_subagent::{
     SubagentInputStrategy, SubagentMemoryScope, SubagentRunner, SubagentRunnerCapAdapter,
     SubagentSpec, SubagentStatus, ToolsetSelector,
 };
-use harness_tool::{Tool, ToolContext, ToolEvent, ToolPool, ToolStream, ValidationError};
+use harness_tool::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolPool,
+    ToolStream, ValidationError,
+};
 
 #[test]
 fn subagent_tool_feature_appends_agent_tool_when_enabled() {
@@ -1912,17 +1915,25 @@ impl Tool for TestTool {
         Ok(())
     }
 
-    async fn check_permission(
+    async fn plan(
         &self,
-        _input: &serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::Allowed
+        input: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: serde_json::Value,
+        _authorized: AuthorizedToolInput,
         _ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(futures::stream::iter([ToolEvent::Final(
@@ -1963,17 +1974,25 @@ impl Tool for SandboxProbeTool {
         Ok(())
     }
 
-    async fn check_permission(
+    async fn plan(
         &self,
-        _input: &serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::Allowed
+        input: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: serde_json::Value,
+        _authorized: AuthorizedToolInput,
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         if let Some(sandbox) = &ctx.sandbox {

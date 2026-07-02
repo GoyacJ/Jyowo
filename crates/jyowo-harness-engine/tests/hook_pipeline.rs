@@ -8,10 +8,11 @@ use harness_context::ContextEngine;
 use harness_contracts::{
     BudgetMetric, CapabilityRegistry, Decision, DecisionScope, DeferPolicy, EndReason, Event,
     HookEventKind, HookFailureMode, InteractivityLevel, Message, MessageId, MessagePart,
-    MessageRole, ModelError, NoopRedactor, OverflowAction, PermissionError, PermissionMode,
-    PermissionSubject, ProviderRestriction, RedactRules, Redactor, ResultBudget, RunId, SessionId,
-    StopReason, TenantId, ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
+    MessageRole, ModelError, NetworkAccess, NoopRedactor, OverflowAction, PermissionError,
+    PermissionMode, PermissionSubject, ProviderRestriction, RedactRules, Redactor, ResultBudget,
+    RunId, SessionId, StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup,
+    ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel, TurnInput,
+    UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{
@@ -28,8 +29,9 @@ use harness_observability::Observer;
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_sandbox::{ExecSpec, SandboxBaseConfig, StdioSpec};
 use harness_tool::{
-    builtin::BashTool, SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool,
-    ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolStream, ValidationError,
+    action_plan_from_permission_check, builtin::BashTool, AuthorizedToolInput,
+    SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool, ToolPoolFilter,
+    ToolPoolModelProfile, ToolRegistry, ToolStream, ValidationError,
 };
 use harness_tool_search::{
     ToolSearchPreHookOutcome, ToolSearchRuntimeCap, ToolSearchRuntimeSnapshot, ToolSearchTool,
@@ -828,27 +830,36 @@ impl Tool for EchoTool {
         Ok(())
     }
 
-    async fn check_permission(
-        &self,
-        input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: "Echo".to_owned(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: "Echo".to_owned(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ExactArgs(input.clone()),
             },
-            scope: DecisionScope::ExactArgs(input.clone()),
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        input: Value,
+        authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
+    ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(stream::iter([ToolEvent::Final(
-            ToolResult::Text(input["value"].as_str().unwrap_or_default().to_owned()),
+            ToolResult::Text(
+                authorized.raw_input()["value"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            ),
         )])))
     }
 }
@@ -879,28 +890,30 @@ impl Tool for FailingTool {
         Ok(())
     }
 
-    async fn check_permission(
-        &self,
-        input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: "Fail".to_owned(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: "Fail".to_owned(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ExactArgs(input.clone()),
             },
-            scope: DecisionScope::ExactArgs(input.clone()),
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
-        Err(harness_contracts::ToolError::Internal(
-            "failed with secret-token".to_owned(),
-        ))
+    ) -> Result<ToolStream, ToolError> {
+        Err(ToolError::Internal("failed with secret-token".to_owned()))
     }
 }
 

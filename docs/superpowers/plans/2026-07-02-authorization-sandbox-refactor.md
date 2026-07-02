@@ -989,15 +989,15 @@ Because this task changes the public `Tool` trait, it must leave zero implemento
 
 **Steps:**
 
-1. Write failing tests proving file read/write cannot execute without authorized input.
-2. Write tests proving planned path hash mismatch fails.
-3. Write failing tests proving command-backed tools cannot execute through old raw `execute` paths after the trait change.
-4. Run the `rg -l "impl Tool for|async fn check_permission\\(" crates apps/desktop/src-tauri -S` migration scan and add every returned file to the task-owned file list.
-5. Change `Tool` trait.
-6. Migrate every implementor found by the scan in the same task.
-7. Remove permission decision logic from tool orchestrator or move it to execution crate.
-8. Run a second `rg -n "check_permission\\(|async fn execute\\(&self, input: Value|PermissionBroker::decide|\\.decide\\(" crates/jyowo-harness-tool crates/jyowo-harness-tool-search crates/jyowo-harness-plugin crates/jyowo-harness-mcp crates/jyowo-harness-subagent crates/jyowo-harness-sdk apps/desktop/src-tauri -S` scan and fail the task if production tool execution still uses the old permission/execute path.
-9. Run gates.
+- [x] Write failing tests proving file read/write cannot execute without authorized input.
+- [x] Write tests proving planned path hash mismatch fails.
+- [x] Write failing tests proving command-backed tools cannot execute through old raw `execute` paths after the trait change.
+- [x] Run the `rg -l "impl Tool for|async fn check_permission\\(" crates apps/desktop/src-tauri -S` migration scan and add every returned file to the task-owned file list.
+- [x] Change `Tool` trait.
+- [x] Migrate every implementor found by the scan in the same task.
+- [x] Remove permission decision logic from tool orchestrator or move it to execution crate.
+- [x] Run a second `rg -n "check_permission\\(|async fn execute\\(&self, input: Value|PermissionBroker::decide|\\.decide\\(" crates/jyowo-harness-tool crates/jyowo-harness-tool-search crates/jyowo-harness-plugin crates/jyowo-harness-mcp crates/jyowo-harness-subagent crates/jyowo-harness-sdk apps/desktop/src-tauri -S` scan and fail the task if production tool execution still uses the old permission/execute path.
+- [x] Run gates.
 
 **Verification:**
 

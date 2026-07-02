@@ -10,16 +10,18 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::Utc;
 use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
-    BlobError, BlobMeta, BlobReaderCap, BlobReaderCapAdapter, BlobRef, BlobRetention, BlobStore,
-    CapabilityRegistry, Decision, DecisionScope, OffloadedBlobAuthorizerCap, PermissionError,
-    PermissionSubject, Severity, TenantId, ToolCapability, ToolError, ToolResult, ToolUseId,
+    ActionResource, BlobError, BlobMeta, BlobReaderCap, BlobReaderCapAdapter, BlobRef,
+    BlobRetention, BlobStore, CapabilityRegistry, DecisionScope, OffloadedBlobAuthorizerCap,
+    PermissionSubject, Severity, TenantId, ToolActionPlan, ToolCapability, ToolError, ToolResult,
+    ToolUseId,
 };
-use harness_permission::{PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest};
 use harness_tool::{
     builtin::{FileReadTool, FileWriteTool, GrepTool, ListDirTool, ReadBlobTool},
-    BuiltinToolset, InterruptToken, Tool, ToolContext, ToolRegistry,
+    AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken, Tool,
+    ToolContext, ToolRegistry,
 };
 use serde_json::{json, Value};
 use tempfile::tempdir;
@@ -53,19 +55,19 @@ async fn file_write_overwrites_file_and_asks_for_path_permission() {
     let file = dir.path().join("out.txt");
     let tool = FileWriteTool::default();
 
-    let check = tool
-        .check_permission(
+    let plan = tool
+        .plan(
             &json!({ "path": file, "content": "new" }),
             &tool_ctx(CapabilityRegistry::default()),
         )
-        .await;
-    assert!(matches!(
-        check,
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::FileWrite { .. },
-            scope: DecisionScope::PathPrefix(_)
-        }
-    ));
+        .await
+        .unwrap();
+    assert!(matches!(plan.subject, PermissionSubject::FileWrite { .. }));
+    assert!(matches!(plan.scope, DecisionScope::PathPrefix(_)));
+    assert!(plan
+        .resources
+        .iter()
+        .any(|resource| matches!(resource, ActionResource::FileWrite { .. })));
 
     let result = execute_final(
         &tool,
@@ -82,36 +84,95 @@ async fn file_write_overwrites_file_and_asks_for_path_permission() {
 }
 
 #[tokio::test]
-async fn file_tools_report_dangerous_path_patterns_before_normal_permission() {
-    let ctx = tool_ctx(CapabilityRegistry::default());
+async fn file_write_authorized_plan_hash_mismatch_is_rejected() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("out.txt");
+    let tool = FileWriteTool::default();
+    let input = json!({ "path": file, "content": "new" });
+    let ctx = tool_ctx_at(dir.path(), CapabilityRegistry::default());
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let mut mismatched = plan.clone();
+    mismatched.plan_hash = harness_contracts::ActionPlanHash::from_bytes([9; 32]);
 
-    let read_check = FileReadTool::default()
-        .check_permission(&json!({ "path": "/etc/passwd" }), &ctx)
-        .await;
-    assert!(matches!(
-        read_check,
-        PermissionCheck::DangerousPattern {
-            ref kind,
-            ref pattern,
-            severity: Severity::Critical,
-            ..
-        } if kind == "path" && pattern == "path-unix-system-auth-db"
-    ));
+    let error = AuthorizedToolInput::new(input, mismatched, ticket_for(&plan)).unwrap_err();
 
-    let write_check = FileWriteTool::default()
-        .check_permission(
-            &json!({ "path": "/tmp/workspace/.ssh/id_rsa", "content": "secret" }),
-            &ctx,
+    assert_eq!(
+        error,
+        ToolError::PermissionDenied(
+            "authorization ticket action plan hash does not match action plan".to_owned()
         )
+    );
+}
+
+#[tokio::test]
+async fn file_read_executes_from_authorized_plan_path() {
+    let dir = tempdir().unwrap();
+    let raw_path = dir.path().join("raw.txt");
+    let authorized_path = dir.path().join("authorized.txt");
+    std::fs::write(&raw_path, "raw\n").unwrap();
+    std::fs::write(&authorized_path, "authorized\n").unwrap();
+    let tool = FileReadTool::default();
+    let input = json!({ "path": raw_path });
+    let ctx = tool_ctx_at(dir.path(), CapabilityRegistry::default());
+    let mut plan = tool.plan(&input, &ctx).await.unwrap();
+    plan.resources = vec![ActionResource::FileRead {
+        path: authorized_path.clone(),
+    }];
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
+    let result = match stream.next().await {
+        Some(harness_tool::ToolEvent::Final(result)) => result,
+        other => panic!("expected final result, got {other:?}"),
+    };
+
+    assert_eq!(result, ToolResult::Text("authorized\n".to_owned()));
+}
+
+#[tokio::test]
+async fn file_read_without_authorized_file_resource_fails_closed() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, "raw\n").unwrap();
+    let tool = FileReadTool::default();
+    let input = json!({ "path": file });
+    let ctx = tool_ctx_at(dir.path(), CapabilityRegistry::default());
+    let mut plan = tool.plan(&input, &ctx).await.unwrap();
+    plan.resources.clear();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+
+    let error = match tool.execute_authorized(authorized, ctx).await {
+        Ok(_) => panic!("expected authorized execution to fail"),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error,
+        ToolError::PermissionDenied("authorized file resource missing".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn file_tools_report_dangerous_path_patterns_before_normal_permission() {
+    let workspace = tempdir().unwrap();
+    let ssh_dir = workspace.path().join(".ssh");
+    std::fs::create_dir(&ssh_dir).unwrap();
+    let key_path = ssh_dir.join("id_rsa");
+    let ctx = tool_ctx_at(workspace.path(), CapabilityRegistry::default());
+
+    let read_error = FileReadTool::default()
+        .plan(&json!({ "path": "/etc/passwd" }), &ctx)
         .await;
+    assert!(matches!(read_error, Err(ToolError::PermissionDenied(_))));
+
+    let write_plan = FileWriteTool::default()
+        .plan(&json!({ "path": key_path, "content": "secret" }), &ctx)
+        .await
+        .unwrap();
     assert!(matches!(
-        write_check,
-        PermissionCheck::DangerousPattern {
-            ref kind,
-            ref pattern,
-            severity: Severity::High,
-            ..
-        } if kind == "path" && pattern == "path-unix-ssh-credential"
+        write_plan.subject,
+        PermissionSubject::FileWrite { ref path, .. }
+            if path == &workspace.path().join(".ssh/id_rsa")
     ));
 }
 
@@ -132,8 +193,10 @@ async fn file_read_workspace_escape_is_denied_before_broker() {
         json!({ "path": outside_file }),
         json!({ "path": "link.txt" }),
     ] {
-        let check = tool.check_permission(&input, &ctx).await;
-        assert!(matches!(check, PermissionCheck::Denied { .. }));
+        assert!(matches!(
+            tool.plan(&input, &ctx).await,
+            Err(ToolError::PermissionDenied(_))
+        ));
     }
 }
 
@@ -465,20 +528,28 @@ fn default_builtin_toolset_registers_m3_t04a_tools_without_model_or_journal_deps
     let manifest =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
     #[cfg(not(feature = "minimax-tools"))]
-    assert!(!manifest.contains("jyowo-harness-model"));
+    assert!(!manifest.lines().any(|line| {
+        line.trim_start().starts_with("jyowo-harness-model =") && !line.contains("optional = true")
+    }));
     assert!(!manifest.contains("jyowo-harness-journal"));
 }
 
 async fn assert_asks_for_permission(tool: &dyn Tool, input: Value) {
-    let check = tool
-        .check_permission(&input, &tool_ctx(CapabilityRegistry::default()))
-        .await;
-    assert!(matches!(check, PermissionCheck::AskUser { .. }));
+    let plan = tool
+        .plan(&input, &tool_ctx(CapabilityRegistry::default()))
+        .await
+        .unwrap();
+    assert!(matches!(
+        plan.severity,
+        Severity::Medium | Severity::High | Severity::Critical
+    ));
 }
 
 async fn execute_final(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolResult {
     tool.validate(&input, &ctx).await.unwrap();
-    let mut stream = tool.execute(input, ctx).await.unwrap();
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     match stream.next().await {
         Some(harness_tool::ToolEvent::Final(result)) => result,
         other => panic!("expected final result, got {other:?}"),
@@ -487,7 +558,12 @@ async fn execute_final(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolR
 
 async fn execute_error(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolError {
     tool.validate(&input, &ctx).await.unwrap();
-    match tool.execute(input, ctx).await {
+    let plan = match tool.plan(&input, &ctx).await {
+        Ok(plan) => plan,
+        Err(error) => return error,
+    };
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    match tool.execute_authorized(authorized, ctx).await {
         Ok(_) => panic!("expected tool error"),
         Err(error) => error,
     }
@@ -508,7 +584,6 @@ fn tool_ctx_at(workspace_root: impl AsRef<Path>, cap_registry: CapabilityRegistr
         subagent_depth: 0,
         workspace_root: workspace_root.as_ref().to_path_buf(),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
@@ -518,20 +593,16 @@ fn tool_ctx_at(workspace_root: impl AsRef<Path>, cap_registry: CapabilityRegistr
     }
 }
 
-#[derive(Debug)]
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(
-        &self,
-        _decision: harness_permission::PersistedDecision,
-    ) -> Result<(), PermissionError> {
-        Ok(())
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: harness_contracts::SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }
 

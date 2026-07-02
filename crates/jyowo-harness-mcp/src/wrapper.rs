@@ -4,12 +4,13 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use harness_contracts::{
     BudgetMetric, DecisionScope, DeferPolicy, Event, McpOrigin, McpServerId, McpServerSource,
-    OverflowAction, PermissionSubject, ProviderRestriction, ResultBudget, SemverString,
-    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolResultPart,
-    ToolUseHeartbeatEvent, TrustLevel,
+    NetworkAccess, OverflowAction, PermissionSubject, ProviderRestriction, ResultBudget,
+    SemverString, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
+    ToolResult, ToolResultPart, ToolUseHeartbeatEvent, TrustLevel, WorkspaceAccess,
 };
 use harness_tool::{
-    PermissionCheck, Tool, ToolContext, ToolEvent, ToolProgress, ToolStream, ValidationError,
+    action_plan_from_permission_check, AuthorizedToolInput, PermissionCheck, Tool, ToolContext,
+    ToolEvent, ToolProgress, ToolStream, ValidationError,
 };
 use serde_json::Value;
 
@@ -200,18 +201,31 @@ impl Tool for McpToolWrapper {
         validate_input_schema(&self.descriptor.input_schema, input)
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::McpToolCall {
-                server: self.server_id.0.clone(),
-                tool: self.upstream_name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::McpToolCall {
+                    server: self.server_id.0.clone(),
+                    tool: self.upstream_name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
         let mut upstream = self
             .connection
             .call_tool_events(&self.upstream_name, input)

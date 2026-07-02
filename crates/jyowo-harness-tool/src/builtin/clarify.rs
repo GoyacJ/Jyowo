@@ -2,14 +2,14 @@ use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
     AssistantClarificationRequestedEvent, ClarifyChannelCap, ClarifyChoice, ClarifyPrompt,
-    DecisionScope, Event, PermissionSubject, RequestId, ToolCapability, ToolDescriptor, ToolError,
-    ToolGroup, ToolResult, UiSafeText,
+    DecisionScope, Event, PermissionSubject, RequestId, ToolActionPlan, ToolCapability,
+    ToolDescriptor, ToolError, ToolGroup, ToolResult, UiSafeText,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 use std::convert::TryFrom;
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 
 #[derive(Clone)]
 pub struct ClarifyTool {
@@ -65,19 +65,28 @@ impl Tool for ClarifyTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        super::generic_action_plan(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         let channel = ctx.capability::<dyn ClarifyChannelCap>(ToolCapability::ClarifyChannel)?;
-        let prompt = prompt(&input).map_err(validation_error)?;
+        let prompt = prompt(authorized.raw_input()).map_err(validation_error)?;
         let request_id = RequestId::new();
         let event = Event::AssistantClarificationRequested(AssistantClarificationRequestedEvent {
             run_id: ctx.run_id,

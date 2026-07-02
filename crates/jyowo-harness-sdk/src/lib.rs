@@ -98,8 +98,8 @@ pub mod agents_team {
     use harness_contracts::{
         AgentId, BudgetMetric, ContextVisibility, DeferPolicy, Event, MessageContent,
         OverflowAction, PermissionActorSource, ProviderRestriction, Recipient, ResultBudget,
-        ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, TrustLevel,
-        UsageSnapshot,
+        ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
+        ToolResult, TrustLevel, UsageSnapshot,
     };
     use harness_engine::{Engine, EngineRunner, RunContext, SessionHandle};
     use harness_team::{
@@ -107,8 +107,8 @@ pub mod agents_team {
         TeamMemberRunRequest, TeamMemberRunner, TeamSandboxPolicy, TeamToolsetSelector,
     };
     use harness_tool::{
-        PermissionCheck, Tool, ToolContext, ToolEvent, ToolPool, ToolPoolFilter, ToolStream,
-        ValidationError,
+        action_plan_from_permission_check, AuthorizedToolInput, PermissionCheck, Tool, ToolContext,
+        ToolEvent, ToolPool, ToolPoolFilter, ToolStream, ValidationError,
     };
 
     #[derive(Clone)]
@@ -426,19 +426,28 @@ pub mod agents_team {
             Ok(())
         }
 
-        async fn check_permission(
+        async fn plan(
             &self,
-            _input: &serde_json::Value,
-            _ctx: &ToolContext,
-        ) -> PermissionCheck {
-            PermissionCheck::Allowed
+            input: &serde_json::Value,
+            ctx: &ToolContext,
+        ) -> Result<ToolActionPlan, ToolError> {
+            action_plan_from_permission_check(
+                &self.descriptor,
+                input,
+                ctx,
+                PermissionCheck::Allowed,
+                Vec::new(),
+                harness_contracts::WorkspaceAccess::None,
+                harness_contracts::NetworkAccess::None,
+            )
         }
 
-        async fn execute(
+        async fn execute_authorized(
             &self,
-            input: serde_json::Value,
+            authorized: AuthorizedToolInput,
             _ctx: ToolContext,
         ) -> Result<ToolStream, ToolError> {
+            let input = authorized.raw_input().clone();
             let result = match self.kind {
                 TeamControlToolKind::Dispatch => {
                     let to = parse_recipient(&input)?;

@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
-    CapabilityRegistry, CorrelationId, NetworkAccess, ResourceLimits, SandboxMode, SandboxPolicy,
-    SandboxScope, SubagentRunnerCap, ToolCapability, ToolResult, UsageSnapshot,
+    AuthorizationTicketId, CapabilityRegistry, CorrelationId, NetworkAccess, ResourceLimits, RunId,
+    SandboxMode, SandboxPolicy, SandboxScope, SessionId, SubagentRunnerCap, TenantId,
+    ToolActionPlan, ToolCapability, ToolError, ToolResult, UsageSnapshot,
 };
 use harness_subagent::{
     AgentTool, AnnounceMode, DelegationBlocklist, DelegationPolicy, McpServerRef, MemorySelector,
@@ -12,7 +14,9 @@ use harness_subagent::{
     SubagentAnnouncement, SubagentContextMode, SubagentHandle, SubagentInputStrategy,
     SubagentMemoryScope, SubagentRunner, SubagentRunnerCapAdapter, SubagentSpec, SubagentStatus,
 };
-use harness_tool::{Tool, ToolEvent};
+use harness_tool::{
+    AuthorizedTicketSummary, AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream,
+};
 use serde_json::json;
 use tokio::sync::Mutex;
 
@@ -258,17 +262,17 @@ async fn agent_tool_uses_subagent_runner_capability() {
 
     let tool = AgentTool::default();
     let ctx = harness_subagent::testing::tool_context_with_caps(Arc::new(registry));
-    let stream = tool
-        .execute(
-            json!({
-                "role": "reviewer",
-                "task": "summarize",
-                "prompt_template": { "body": "summarize" }
-            }),
-            ctx,
-        )
-        .await
-        .unwrap();
+    let stream = execute_authorized_tool(
+        &tool,
+        json!({
+            "role": "reviewer",
+            "task": "summarize",
+            "prompt_template": { "body": "summarize" }
+        }),
+        ctx,
+    )
+    .await
+    .unwrap();
     let events: Vec<_> = stream.collect().await;
 
     assert!(matches!(
@@ -293,21 +297,47 @@ async fn agent_tool_forwards_subagent_depth_and_correlation_from_tool_context() 
     let correlation_id = CorrelationId::new();
     ctx.correlation_id = correlation_id;
 
-    let stream = tool
-        .execute(
-            json!({
-                "role": "reviewer",
-                "task": "summarize"
-            }),
-            ctx,
-        )
-        .await
-        .unwrap();
+    let stream = execute_authorized_tool(
+        &tool,
+        json!({
+            "role": "reviewer",
+            "task": "summarize"
+        }),
+        ctx,
+    )
+    .await
+    .unwrap();
     let _: Vec<_> = stream.collect().await;
 
     let captured = runner.parent.lock().await.clone().unwrap();
     assert_eq!(captured.depth, 2);
     assert_eq!(captured.correlation_id, correlation_id);
+}
+
+async fn execute_authorized_tool<T: Tool + ?Sized>(
+    tool: &T,
+    input: serde_json::Value,
+    ctx: ToolContext,
+) -> Result<ToolStream, ToolError> {
+    tool.validate(&input, &ctx)
+        .await
+        .expect("test input validates");
+    let plan = tool.plan(&input, &ctx).await?;
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan))?;
+    tool.execute_authorized(authorized, ctx).await
+}
+
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: SessionId::new(),
+        run_id: RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
+    }
 }
 
 #[derive(Clone)]

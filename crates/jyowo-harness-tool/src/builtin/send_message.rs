@@ -1,13 +1,17 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DecisionScope, OutboundUserMessage, PermissionSubject, ToolCapability, ToolDescriptor,
-    ToolError, ToolGroup, ToolResult, UserMessengerCap,
+    ActionResource, DecisionScope, NetworkAccess, OutboundUserMessage, PermissionSubject,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    UserMessengerCap, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+    ToolStream, ValidationError,
+};
 
 #[derive(Clone)]
 pub struct SendMessageTool {
@@ -50,24 +54,37 @@ impl Tool for SendMessageTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::NetworkAccess {
-                host: input
-                    .get("channel")
-                    .and_then(Value::as_str)
-                    .unwrap_or("user-message")
-                    .to_owned(),
-                port: None,
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        let host = input
+            .get("channel")
+            .and_then(Value::as_str)
+            .unwrap_or("user-message")
+            .to_owned();
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::NetworkAccess {
+                    host: host.clone(),
+                    port: None,
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+            vec![ActionResource::Network { host, port: None }],
+            WorkspaceAccess::None,
+            NetworkAccess::AllowList(Vec::new()),
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         let messenger = ctx.capability::<dyn UserMessengerCap>(ToolCapability::UserMessenger)?;
         let delivery = messenger
-            .send(message(&input).map_err(validation_error)?)
+            .send(message(authorized.raw_input()).map_err(validation_error)?)
             .await?;
         Ok(Box::pin(stream::iter([ToolEvent::Final(
             ToolResult::Structured(json!({

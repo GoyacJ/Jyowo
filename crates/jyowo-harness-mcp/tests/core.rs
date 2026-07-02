@@ -4,11 +4,12 @@ use std::{
 };
 
 use async_trait::async_trait;
+use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
-    canonical_mcp_tool_name, CapabilityRegistry, Decision, DeferPolicy, Event, McpServerId,
-    McpServerSource, PermissionError, PluginId, SessionId, TenantId, ToolError, ToolResult,
-    ToolUseHeartbeatEvent, ToolUseId, TrustLevel,
+    canonical_mcp_tool_name, AuthorizationTicketId, CapabilityRegistry, DeferPolicy, Event,
+    McpServerId, McpServerSource, PluginId, SessionId, TenantId, ToolActionPlan, ToolError,
+    ToolResult, ToolUseHeartbeatEvent, ToolUseId, TrustLevel,
 };
 use harness_mcp::{
     collapse_reserved_separator, trust_level_for_source, FilterConflict, FilterDecision,
@@ -18,8 +19,8 @@ use harness_mcp::{
     McpToolGlob, McpToolResult, ReconnectPolicy, SamplingPolicy, StdioEnv, TransportChoice,
 };
 use harness_tool::{
-    InterruptToken, PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
-    ToolContext, ToolEvent, ToolRegistry,
+    AuthorizedTicketSummary, AuthorizedToolInput, InterruptToken, Tool, ToolContext, ToolEvent,
+    ToolRegistry,
 };
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -209,8 +210,7 @@ async fn registry_injects_mcp_tool_wrapper_and_executes_test_connection() {
     let tool = tool_registry
         .get("mcp__slack__post_message")
         .expect("tool registered");
-    let mut stream = tool
-        .execute(json!({ "text": "hello" }), tool_context())
+    let mut stream = run_authorized(&tool, json!({ "text": "hello" }), tool_context())
         .await
         .expect("tool executes");
 
@@ -481,8 +481,7 @@ async fn mcp_tool_wrapper_maps_mcp_progress_to_progress_and_heartbeat_events() {
     let tool = tool_registry
         .get("mcp__slack__post_message")
         .expect("tool registered");
-    let mut stream = tool
-        .execute(json!({ "text": "hello" }), ctx)
+    let mut stream = run_authorized(&tool, json!({ "text": "hello" }), ctx)
         .await
         .expect("tool executes");
 
@@ -552,8 +551,7 @@ async fn mcp_tool_wrapper_maps_mcp_cancelled_to_interrupted_error() {
     let tool = tool_registry
         .get("mcp__slack__post_message")
         .expect("tool registered");
-    let mut stream = tool
-        .execute(json!({ "text": "hello" }), tool_context())
+    let mut stream = run_authorized(&tool, json!({ "text": "hello" }), tool_context())
         .await
         .expect("tool executes");
 
@@ -606,8 +604,7 @@ async fn mcp_tool_wrapper_sends_cancel_and_times_out_when_upstream_ignores_ack()
     let tool = tool_registry
         .get("mcp__slack__post_message")
         .expect("tool registered");
-    let mut stream = tool
-        .execute(json!({ "text": "hello" }), ctx)
+    let mut stream = run_authorized(&tool, json!({ "text": "hello" }), ctx)
         .await
         .expect("tool executes");
 
@@ -657,13 +654,38 @@ fn tool_context() -> ToolContext {
         subagent_depth: 0,
         workspace_root: std::path::PathBuf::from("."),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(CapabilityRegistry::default()),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::new(),
         parent_run: None,
         model: None,
         model_config_id: None,
+    }
+}
+
+async fn run_authorized(
+    tool: &Arc<dyn Tool>,
+    input: Value,
+    ctx: ToolContext,
+) -> Result<harness_tool::ToolStream, ToolError> {
+    tool.validate(&input, &ctx)
+        .await
+        .expect("test input validates");
+    let plan = tool.plan(&input, &ctx).await?;
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan))?;
+    tool.execute_authorized(authorized, ctx).await
+}
+
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }
 
@@ -794,18 +816,5 @@ impl harness_mcp::McpTransport for TestTransport {
         _spec: McpServerSpec,
     ) -> Result<Arc<dyn McpConnection>, harness_mcp::McpError> {
         Ok(Arc::clone(&self.connection))
-    }
-}
-
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
-        Ok(())
     }
 }

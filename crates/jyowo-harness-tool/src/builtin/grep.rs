@@ -10,13 +10,17 @@ use std::{
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DecisionScope, PermissionSubject, ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    ActionResource, DecisionScope, NetworkAccess, PermissionSubject, ToolActionPlan,
+    ToolDescriptor, ToolError, ToolGroup, ToolResult, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use regex::Regex;
 use serde_json::{json, Value};
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{
+    action_plan_from_permission_check, authorized_file_path, AuthorizedFileResourceKind,
+    AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError,
+};
 
 #[derive(Clone)]
 pub struct GrepTool {
@@ -60,7 +64,7 @@ impl Tool for GrepTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, ctx: &ToolContext) -> PermissionCheck {
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
         if let Ok(path) = super::workspace_path::scope_path(input, ctx) {
             if let Some(check) = super::workspace_path::dangerous_path_permission(
                 input,
@@ -71,29 +75,47 @@ impl Tool for GrepTool {
                 },
                 DecisionScope::PathPrefix(path),
             ) {
-                return check;
+                let path = super::workspace_path::scope_path(input, ctx)
+                    .map_err(|error| ToolError::PermissionDenied(error.to_string()))?;
+                return action_plan_from_permission_check(
+                    &self.descriptor,
+                    input,
+                    ctx,
+                    check,
+                    vec![ActionResource::FileRead { path }],
+                    WorkspaceAccess::ReadOnly,
+                    NetworkAccess::None,
+                );
             }
         }
         let path = match super::workspace_path::resolve_existing(input, ctx) {
             Ok(path) => path,
-            Err(error) => {
-                return PermissionCheck::Denied {
-                    reason: error.to_string(),
-                };
-            }
+            Err(error) => return Err(error),
         };
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::PathPrefix(path.clone()),
             },
-            scope: DecisionScope::PathPrefix(path),
-        }
+            vec![ActionResource::FileRead { path }],
+            WorkspaceAccess::ReadOnly,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        let root = super::workspace_path::resolve_existing(&input, &ctx)?;
-        let pattern = pattern(&input).map_err(validation_error)?;
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let root = authorized_file_path(&authorized, AuthorizedFileResourceKind::Read)?;
+        let pattern = pattern(authorized.raw_input()).map_err(validation_error)?;
         let mut matches = match run_ripgrep(&root, pattern, &ctx) {
             Ok(matches) => matches,
             Err(error)
@@ -312,7 +334,6 @@ mod tests {
     use harness_contracts::{
         AgentId, CapabilityRegistry, CorrelationId, RunId, SessionId, TenantId, ToolUseId,
     };
-    use harness_permission::PermissionBroker;
     use tempfile::tempdir;
 
     use super::*;
@@ -361,34 +382,12 @@ mod tests {
             subagent_depth: 0,
             workspace_root: workspace_root.to_path_buf(),
             sandbox: None,
-            permission_broker: std::sync::Arc::new(NoopBroker),
             cap_registry: std::sync::Arc::new(CapabilityRegistry::default()),
             redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
             interrupt: InterruptToken::default(),
             parent_run: None,
             model: None,
             model_config_id: None,
-        }
-    }
-
-    #[derive(Debug)]
-    struct NoopBroker;
-
-    #[async_trait::async_trait]
-    impl PermissionBroker for NoopBroker {
-        async fn decide(
-            &self,
-            _request: harness_permission::PermissionRequest,
-            _ctx: harness_permission::PermissionContext,
-        ) -> harness_contracts::Decision {
-            harness_contracts::Decision::AllowOnce
-        }
-
-        async fn persist(
-            &self,
-            _decision: harness_permission::PersistedDecision,
-        ) -> Result<(), harness_contracts::PermissionError> {
-            Ok(())
         }
     }
 }

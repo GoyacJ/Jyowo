@@ -1,6 +1,5 @@
 #![cfg(feature = "builtin-toolset")]
 
-use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
@@ -8,25 +7,24 @@ use std::sync::{
 use std::time::Duration;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use futures::{future::BoxFuture, stream};
 use harness_contracts::{
-    AssistantClarificationRequestedEvent, CapabilityRegistry, ClarifyAnswer, ClarifyChannelCap,
-    ClarifyPrompt, Decision, DecisionScope, DeferredToolHint, Event, ExecFingerprint,
-    ExecuteCodeStepInvokedEvent, FallbackPolicy, InteractivityLevel, NetworkAccess, PermissionMode,
-    PermissionSubject, ProviderRestriction, RedactRules, Redactor, RequestId, ResourceLimits,
-    SandboxExecutionStartedEvent, SandboxMode, SandboxPolicySummary, SandboxScope, Severity,
-    TenantId, ToolCapability, ToolDeferredPoolChangedEvent, ToolDescriptor, ToolError, ToolGroup,
-    ToolOrigin, ToolPoolChangeSource, ToolProperties, ToolResult, ToolUseHeartbeatEvent, ToolUseId,
-    TrustLevel, UiSafeText,
+    ActionPlanHash, ActionPlanId, AssistantClarificationRequestedEvent, CapabilityRegistry,
+    ClarifyAnswer, ClarifyChannelCap, ClarifyPrompt, Decision, DecisionScope, DeferredToolHint,
+    Event, ExecFingerprint, ExecuteCodeStepInvokedEvent, NetworkAccess, PermissionActorSource,
+    PermissionReview, PermissionSubject, ProviderRestriction, RedactRules, Redactor, RequestId,
+    ResourceLimits, SandboxExecutionStartedEvent, SandboxMode, SandboxPolicy, SandboxPolicySummary,
+    SandboxScope, Severity, TenantId, ToolActionPlan, ToolCapability, ToolDeferredPoolChangedEvent,
+    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolPoolChangeSource, ToolProperties,
+    ToolResult, ToolUseHeartbeatEvent, ToolUseId, TrustLevel, UiSafeText, WorkspaceAccess,
 };
-use harness_permission::{
-    PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest, RuleSnapshot,
-};
+use harness_permission::PermissionCheck;
 use harness_tool::{
-    default_result_budget, BuiltinToolset, InterruptToken, NoopToolEventEmitter,
-    OrchestratorContext, Tool, ToolCall, ToolContext, ToolEvent, ToolEventEmitter,
-    ToolOrchestrator, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolSearchMode,
-    ValidationError,
+    default_result_budget, AuthorizedTicketSummary, AuthorizedToolCall, AuthorizedToolInput,
+    BuiltinToolset, InterruptToken, NoopToolEventEmitter, OrchestratorContext, Tool, ToolContext,
+    ToolEvent, ToolEventEmitter, ToolOrchestrator, ToolPool, ToolPoolFilter, ToolPoolModelProfile,
+    ToolRegistry, ToolSearchMode, ValidationError,
 };
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -174,7 +172,6 @@ async fn unsafe_tool_is_a_barrier_between_safe_batches() {
 #[tokio::test]
 async fn validation_failure_skips_permission_and_execute() {
     let executed = Arc::new(AtomicBool::new(false));
-    let broker = RecordingBroker::new(vec![Decision::AllowOnce]);
     let registry = ToolRegistry::builder()
         .with_builtin_toolset(BuiltinToolset::Empty)
         .with_tool(Box::new(test_tool(
@@ -186,7 +183,7 @@ async fn validation_failure_skips_permission_and_execute() {
         .unwrap();
 
     let pool = pool(&registry).await;
-    let ctx = orchestrator_ctx_with_broker(pool, Arc::new(broker.clone()));
+    let ctx = orchestrator_ctx(pool, vec![]);
     let results = ToolOrchestrator::default()
         .dispatch(vec![call("bad")], ctx)
         .await;
@@ -195,14 +192,12 @@ async fn validation_failure_skips_permission_and_execute() {
         results[0].result,
         Err(ToolError::Validation(ref message)) if message == "invalid input"
     ));
-    assert_eq!(broker.calls().len(), 0);
     assert!(!executed.load(Ordering::SeqCst));
 }
 
 #[tokio::test]
-async fn allowed_tools_still_use_permission_broker_and_broker_denial_blocks_execution() {
+async fn authorized_tool_calls_execute_without_permission_broker() {
     let executed = Arc::new(AtomicBool::new(false));
-    let broker = RecordingBroker::new(vec![Decision::DenyOnce]);
     let registry = ToolRegistry::builder()
         .with_builtin_toolset(BuiltinToolset::Empty)
         .with_tool(Box::new(test_tool(
@@ -214,40 +209,7 @@ async fn allowed_tools_still_use_permission_broker_and_broker_denial_blocks_exec
         .unwrap();
 
     let pool = pool(&registry).await;
-    let ctx = orchestrator_ctx_with_broker(pool, Arc::new(broker.clone()));
-    let results = ToolOrchestrator::default()
-        .dispatch(vec![call("guarded")], ctx)
-        .await;
-
-    assert!(matches!(
-        results[0].result,
-        Err(ToolError::PermissionDenied(ref message)) if message.contains("DenyOnce")
-    ));
-    let calls = broker.calls();
-    assert_eq!(calls.len(), 1);
-    assert!(matches!(
-        &calls[0].subject,
-        PermissionSubject::ToolInvocation { tool, .. } if tool == "guarded"
-    ));
-    assert!(!executed.load(Ordering::SeqCst));
-}
-
-#[tokio::test]
-async fn allowed_tools_execute_only_after_broker_allows() {
-    let executed = Arc::new(AtomicBool::new(false));
-    let broker = RecordingBroker::new(vec![Decision::AllowOnce]);
-    let registry = ToolRegistry::builder()
-        .with_builtin_toolset(BuiltinToolset::Empty)
-        .with_tool(Box::new(test_tool(
-            "guarded",
-            true,
-            Behavior::MarkExecuted(Arc::clone(&executed)),
-        )))
-        .build()
-        .unwrap();
-
-    let pool = pool(&registry).await;
-    let ctx = orchestrator_ctx_with_broker(pool, Arc::new(broker.clone()));
+    let ctx = orchestrator_ctx(pool, vec![]);
     let results = ToolOrchestrator::default()
         .dispatch(vec![call("guarded")], ctx)
         .await;
@@ -256,103 +218,7 @@ async fn allowed_tools_execute_only_after_broker_allows() {
         results[0].result,
         Ok(ToolResult::Text(ref message)) if message == "executed"
     ));
-    let calls = broker.calls();
-    assert_eq!(calls.len(), 1);
-    assert!(matches!(
-        &calls[0].subject,
-        PermissionSubject::ToolInvocation { tool, .. } if tool == "guarded"
-    ));
     assert!(executed.load(Ordering::SeqCst));
-}
-
-#[tokio::test]
-async fn permission_check_denied_short_circuits_before_broker() {
-    let broker = RecordingBroker::new(vec![Decision::AllowOnce]);
-    let registry = ToolRegistry::builder()
-        .with_builtin_toolset(BuiltinToolset::Empty)
-        .with_tool(Box::new(test_tool(
-            "denied",
-            true,
-            Behavior::PermissionDenied,
-        )))
-        .build()
-        .unwrap();
-
-    let pool = pool(&registry).await;
-    let ctx = orchestrator_ctx_with_broker(pool, Arc::new(broker.clone()));
-    let results = ToolOrchestrator::default()
-        .dispatch(vec![call("denied")], ctx)
-        .await;
-
-    assert!(matches!(
-        results[0].result,
-        Err(ToolError::PermissionDenied(ref message)) if message == "tool refused"
-    ));
-    assert_eq!(broker.calls().len(), 0);
-}
-
-#[tokio::test]
-async fn dangerous_command_check_is_mapped_to_permission_request() {
-    let broker = RecordingBroker::new(vec![Decision::AllowOnce]);
-    let registry = ToolRegistry::builder()
-        .with_builtin_toolset(BuiltinToolset::Empty)
-        .with_tool(Box::new(test_tool("danger", true, Behavior::Dangerous)))
-        .build()
-        .unwrap();
-
-    let pool = pool(&registry).await;
-    let ctx = orchestrator_ctx_with_broker(pool, Arc::new(broker.clone()));
-    let results = ToolOrchestrator::default()
-        .dispatch(vec![call("danger")], ctx)
-        .await;
-
-    assert!(results[0].result.is_ok());
-    let calls = broker.calls();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].severity, Severity::Critical);
-    assert!(matches!(
-        &calls[0].subject,
-        PermissionSubject::DangerousCommand { pattern_id, .. } if pattern_id == "rm-rf"
-    ));
-}
-
-#[tokio::test]
-async fn dangerous_pattern_check_is_mapped_to_permission_request() {
-    let executed = Arc::new(AtomicBool::new(false));
-    let broker = RecordingBroker::new(vec![Decision::DenyOnce]);
-    let registry = ToolRegistry::builder()
-        .with_builtin_toolset(BuiltinToolset::Empty)
-        .with_tool(Box::new(test_tool(
-            "dangerous_path",
-            true,
-            Behavior::DangerousPattern(Arc::clone(&executed)),
-        )))
-        .build()
-        .unwrap();
-
-    let pool = pool(&registry).await;
-    let ctx = orchestrator_ctx_with_broker(pool, Arc::new(broker.clone()));
-    let results = ToolOrchestrator::default()
-        .dispatch(vec![call("dangerous_path")], ctx)
-        .await;
-
-    assert!(matches!(
-        results[0].result,
-        Err(ToolError::PermissionDenied(ref message)) if message.contains("DenyOnce")
-    ));
-    let calls = broker.calls();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].severity, Severity::High);
-    assert_eq!(
-        calls[0].scope_hint,
-        DecisionScope::PathPrefix("/tmp/workspace/.ssh/id_rsa".into())
-    );
-    assert!(matches!(
-        &calls[0].subject,
-        PermissionSubject::FileWrite { path, .. }
-            if path == &std::path::PathBuf::from("/tmp/workspace/.ssh/id_rsa")
-    ));
-    assert!(!executed.load(Ordering::SeqCst));
 }
 
 #[tokio::test]
@@ -418,18 +284,9 @@ async fn long_running_tool_emits_heartbeat_when_stalled() {
     let emitter = Arc::new(RecordingEmitter::default());
     let mut ctx = orchestrator_ctx(pool, vec![Decision::AllowOnce]);
     ctx.event_emitter = emitter.clone();
-    let tool_use_id = ToolUseId::new();
-
-    let results = ToolOrchestrator::default()
-        .dispatch(
-            vec![ToolCall {
-                tool_use_id,
-                tool_name: "stalled".to_owned(),
-                input: json!({}),
-            }],
-            ctx,
-        )
-        .await;
+    let call = call_with_input("stalled", json!({}));
+    let tool_use_id = call.tool_use_id;
+    let results = ToolOrchestrator::default().dispatch(vec![call], ctx).await;
 
     assert!(matches!(results[0].result, Ok(ToolResult::Text(ref text)) if text == "late"));
     assert!(results[0].progress_emitted >= 1);
@@ -585,11 +442,7 @@ async fn clarify_tool_emits_assistant_clarification_requested_event() {
 
     let results = ToolOrchestrator::default()
         .dispatch(
-            vec![ToolCall {
-                tool_use_id: ToolUseId::new(),
-                tool_name: "Clarify".to_owned(),
-                input: json!({ "prompt": "Pick one" }),
-            }],
+            vec![call_with_input("Clarify", json!({ "prompt": "Pick one" }))],
             ctx,
         )
         .await;
@@ -623,11 +476,10 @@ async fn clarify_tool_redacts_prompt_before_journaling_clarification_request() {
 
     let results = ToolOrchestrator::default()
         .dispatch(
-            vec![ToolCall {
-                tool_use_id: ToolUseId::new(),
-                tool_name: "Clarify".to_owned(),
-                input: json!({ "prompt": "Deploy token SECRET-123?" }),
-            }],
+            vec![call_with_input(
+                "Clarify",
+                json!({ "prompt": "Deploy token SECRET-123?" }),
+            )],
             ctx,
         )
         .await;
@@ -647,7 +499,9 @@ fn tool_crate_does_not_depend_on_model_or_hook_crates_for_orchestrator() {
     let manifest =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
     #[cfg(not(feature = "minimax-tools"))]
-    assert!(!manifest.contains("jyowo-harness-model"));
+    assert!(!manifest.lines().any(|line| {
+        line.trim_start().starts_with("jyowo-harness-model =") && !line.contains("optional = true")
+    }));
     assert!(!manifest.contains("jyowo-harness-hook"));
 }
 
@@ -674,9 +528,6 @@ enum Behavior {
     Log(Arc<Mutex<Vec<String>>>),
     ValidationError(Arc<AtomicBool>),
     MarkExecuted(Arc<AtomicBool>),
-    PermissionDenied,
-    Dangerous,
-    DangerousPattern(Arc<AtomicBool>),
     Progress,
     StreamError,
     Slow,
@@ -701,26 +552,13 @@ impl Tool for TestTool {
         }
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        match &self.behavior {
-            Behavior::PermissionDenied => PermissionCheck::Denied {
-                reason: "tool refused".to_owned(),
-            },
+    async fn plan(
+        &self,
+        input: &Value,
+        ctx: &ToolContext,
+    ) -> Result<harness_contracts::ToolActionPlan, ToolError> {
+        let check = match &self.behavior {
             Behavior::MarkExecuted(_) => PermissionCheck::Allowed,
-            Behavior::Dangerous => PermissionCheck::DangerousCommand {
-                pattern: "rm-rf".to_owned(),
-                severity: Severity::Critical,
-            },
-            Behavior::DangerousPattern(_) => PermissionCheck::DangerousPattern {
-                kind: "path".to_owned(),
-                pattern: "path-unix-ssh-credential".to_owned(),
-                severity: Severity::High,
-                subject: PermissionSubject::FileWrite {
-                    path: "/tmp/workspace/.ssh/id_rsa".into(),
-                    bytes_preview: b"secret".to_vec(),
-                },
-                scope: DecisionScope::PathPrefix("/tmp/workspace/.ssh/id_rsa".into()),
-            },
             _ => PermissionCheck::AskUser {
                 subject: PermissionSubject::ToolInvocation {
                     tool: self.descriptor.name.clone(),
@@ -728,12 +566,21 @@ impl Tool for TestTool {
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-        }
+        };
+        harness_tool::action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            check,
+            Vec::new(),
+            harness_contracts::WorkspaceAccess::None,
+            harness_contracts::NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: harness_tool::AuthorizedToolInput,
         ctx: ToolContext,
     ) -> Result<harness_tool::ToolStream, ToolError> {
         match &self.behavior {
@@ -754,20 +601,12 @@ impl Tool for TestTool {
                     ToolResult::Text(self.descriptor.name.clone()),
                 )])))
             }
-            Behavior::ValidationError(executed)
-            | Behavior::MarkExecuted(executed)
-            | Behavior::DangerousPattern(executed) => {
+            Behavior::ValidationError(executed) | Behavior::MarkExecuted(executed) => {
                 executed.store(true, Ordering::SeqCst);
                 Ok(Box::pin(stream::iter([ToolEvent::Final(
                     ToolResult::Text("executed".to_owned()),
                 )])))
             }
-            Behavior::PermissionDenied => Ok(Box::pin(stream::iter([ToolEvent::Final(
-                ToolResult::Text("unexpected".to_owned()),
-            )]))),
-            Behavior::Dangerous => Ok(Box::pin(stream::iter([ToolEvent::Final(
-                ToolResult::Text("allowed".to_owned()),
-            )]))),
             Behavior::Progress => Ok(Box::pin(stream::iter([
                 ToolEvent::Progress(harness_tool::ToolProgress::now("one")),
                 ToolEvent::Progress(harness_tool::ToolProgress::now("two")),
@@ -898,43 +737,6 @@ impl ClarifyChannelCap for StaticClarify {
     }
 }
 
-#[derive(Clone)]
-struct RecordingBroker {
-    decisions: Arc<Mutex<VecDeque<Decision>>>,
-    calls: Arc<Mutex<Vec<PermissionRequest>>>,
-}
-
-impl RecordingBroker {
-    fn new(decisions: Vec<Decision>) -> Self {
-        Self {
-            decisions: Arc::new(Mutex::new(decisions.into())),
-            calls: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    fn calls(&self) -> Vec<PermissionRequest> {
-        self.calls.lock().clone()
-    }
-}
-
-#[async_trait]
-impl PermissionBroker for RecordingBroker {
-    async fn decide(&self, request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        self.calls.lock().push(request);
-        self.decisions
-            .lock()
-            .pop_front()
-            .unwrap_or(Decision::DenyOnce)
-    }
-
-    async fn persist(
-        &self,
-        _decision: harness_permission::PersistedDecision,
-    ) -> Result<(), harness_contracts::PermissionError> {
-        Ok(())
-    }
-}
-
 async fn pool(registry: &ToolRegistry) -> ToolPool {
     ToolPool::assemble(
         &registry.snapshot(),
@@ -951,23 +753,15 @@ async fn pool(registry: &ToolRegistry) -> ToolPool {
     .unwrap()
 }
 
-fn orchestrator_ctx(pool: ToolPool, decisions: Vec<Decision>) -> OrchestratorContext {
-    orchestrator_ctx_with_broker(pool, Arc::new(RecordingBroker::new(decisions)))
-}
-
-fn orchestrator_ctx_with_broker(
-    pool: ToolPool,
-    broker: Arc<dyn PermissionBroker>,
-) -> OrchestratorContext {
-    orchestrator_ctx_with_interrupt(pool, vec![], InterruptToken::default()).with_broker(broker)
+fn orchestrator_ctx(pool: ToolPool, _decisions: Vec<Decision>) -> OrchestratorContext {
+    orchestrator_ctx_with_interrupt(pool, vec![], InterruptToken::default())
 }
 
 fn orchestrator_ctx_with_interrupt(
     pool: ToolPool,
-    decisions: Vec<Decision>,
+    _decisions: Vec<Decision>,
     interrupt: InterruptToken,
 ) -> OrchestratorContext {
-    let broker: Arc<dyn PermissionBroker> = Arc::new(RecordingBroker::new(decisions));
     let run_id = harness_contracts::RunId::new();
     let session_id = harness_contracts::SessionId::new();
     OrchestratorContext {
@@ -982,7 +776,6 @@ fn orchestrator_ctx_with_interrupt(
             subagent_depth: 0,
             workspace_root: std::env::temp_dir(),
             sandbox: None,
-            permission_broker: broker,
             cap_registry: Arc::new(CapabilityRegistry::default()),
             redactor: Arc::new(harness_contracts::NoopRedactor),
             interrupt,
@@ -990,30 +783,8 @@ fn orchestrator_ctx_with_interrupt(
             model: None,
             model_config_id: None,
         },
-        permission_context: PermissionContext {
-            permission_mode: PermissionMode::Default,
-            previous_mode: None,
-            session_id,
-            tenant_id: TenantId::SINGLE,
-            run_id: None,
-            interactivity: InteractivityLevel::FullyInteractive,
-            timeout_policy: None,
-            fallback_policy: FallbackPolicy::DenyAll,
-            hook_overrides: vec![],
-        },
         blob_store: None,
         event_emitter: Arc::new(NoopToolEventEmitter),
-    }
-}
-
-trait WithBroker {
-    fn with_broker(self, broker: Arc<dyn PermissionBroker>) -> Self;
-}
-
-impl WithBroker for OrchestratorContext {
-    fn with_broker(mut self, broker: Arc<dyn PermissionBroker>) -> Self {
-        self.tool_context.permission_broker = broker;
-        self
     }
 }
 
@@ -1061,11 +832,61 @@ fn test_tool(name: &str, is_concurrency_safe: bool, behavior: Behavior) -> TestT
     }
 }
 
-fn call(name: &str) -> ToolCall {
-    ToolCall {
-        tool_use_id: ToolUseId::new(),
+fn call(name: &str) -> AuthorizedToolCall {
+    call_with_input(name, json!({ "tool": name }))
+}
+
+fn call_with_input(name: &str, raw_input: Value) -> AuthorizedToolCall {
+    let tool_use_id = ToolUseId::new();
+    let plan = ToolActionPlan {
+        plan_id: ActionPlanId::new(),
+        tool_use_id,
         tool_name: name.to_owned(),
-        input: json!({ "tool": name }),
+        actor_source: PermissionActorSource::ParentRun,
+        subject: PermissionSubject::ToolInvocation {
+            tool: name.to_owned(),
+            input: raw_input.clone(),
+        },
+        scope: DecisionScope::ToolName(name.to_owned()),
+        severity: Severity::Medium,
+        resources: Vec::new(),
+        sandbox_policy: SandboxPolicy {
+            mode: SandboxMode::None,
+            scope: SandboxScope::WorkspaceOnly,
+            network: NetworkAccess::None,
+            resource_limits: ResourceLimits {
+                max_memory_bytes: None,
+                max_cpu_cores: None,
+                max_pids: None,
+                max_wall_clock_ms: None,
+                max_open_files: None,
+            },
+            denied_host_paths: Vec::new(),
+        },
+        workspace_access: WorkspaceAccess::None,
+        network_access: NetworkAccess::None,
+        review: PermissionReview::default(),
+        plan_hash: ActionPlanHash::from_bytes([1; 32]),
+        created_at: Utc::now(),
+    };
+    let authorized = AuthorizedToolInput::new(raw_input, plan.clone(), ticket_for(&plan)).unwrap();
+    AuthorizedToolCall {
+        tool_use_id,
+        tool_name: name.to_owned(),
+        input: authorized,
+    }
+}
+
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: harness_contracts::SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }
 

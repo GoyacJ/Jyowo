@@ -13,8 +13,9 @@ use harness_contracts::{
     ModelError, NetworkAccess, NoopRedactor, OverflowAction, PermissionError, PermissionSubject,
     ProviderRestriction, ResourceLimits, ResultBudget, RunId, SandboxExecutionCompletedEvent,
     SandboxExecutionStartedEvent, SandboxMode, SandboxPolicySummary, SandboxScope, SessionId,
-    StopReason, TenantId, ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties, ToolSearchMode,
-    ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
+    StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
+    WorkspaceAccess,
 };
 use harness_engine::{
     CancellationToken, Engine, EngineId, EngineRunner, InterruptCause, RunContext, SessionHandle,
@@ -33,8 +34,9 @@ use harness_sandbox::{
     SandboxBaseConfig, SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
 };
 use harness_tool::{
-    SchemaResolverContext, Tool, ToolContext, ToolPool, ToolPoolFilter, ToolPoolModelProfile,
-    ToolRegistry, ToolStream, ValidationError,
+    action_plan_from_permission_check, AuthorizedToolInput, SchemaResolverContext, Tool,
+    ToolContext, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolStream,
+    ValidationError,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -657,31 +659,35 @@ impl Tool for InterruptibleTool {
         Ok(())
     }
 
-    async fn check_permission(
-        &self,
-        input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: "InterruptibleTool".to_owned(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: "InterruptibleTool".to_owned(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::Any,
             },
-            scope: DecisionScope::Any,
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
+    ) -> Result<ToolStream, ToolError> {
         self.executed.fetch_add(1, Ordering::SeqCst);
         self.started.notify_waiters();
         loop {
             if ctx.interrupt.is_interrupted() {
                 self.interrupted.store(true, Ordering::SeqCst);
-                return Err(harness_contracts::ToolError::Interrupted);
+                return Err(ToolError::Interrupted);
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
