@@ -1,6 +1,7 @@
 use harness_model::{
-    build_provider, provider_inventory_entries, resolve_model_descriptor, ProviderBuildConfig,
-    ProviderRegistryError,
+    build_provider, provider_catalog_entries, provider_inventory_entries, resolve_model_descriptor,
+    ConversationModelCapability, ModelRuntimeSemantics, ProviderBuildConfig, ProviderRegistryError,
+    ReasoningProtocolSemantics,
 };
 
 #[test]
@@ -75,6 +76,90 @@ fn provider_catalog_auth_schemes_match_runtime_adapters() {
         catalog_auth_scheme(&entries, "local-llama"),
         harness_model::ProviderAuthScheme::None
     );
+}
+
+#[test]
+fn every_runtime_descriptor_has_explicit_semantics() {
+    assert!(
+        descriptor_blocks_missing_runtime_semantics().is_empty(),
+        "all ModelDescriptor construction sites must set runtime_semantics explicitly"
+    );
+
+    let entries = provider_catalog_entries();
+    for entry in entries {
+        for descriptor in entry.models {
+            assert_eq!(
+                descriptor.runtime_semantics,
+                expected_runtime_semantics(&entry.provider_id),
+                "{}:{} should use the provider's explicit runtime semantics",
+                entry.provider_id,
+                descriptor.model_id
+            );
+            assert_eq!(
+                descriptor.runtime_semantics.protocol, descriptor.protocol,
+                "{}:{} runtime semantics protocol must match descriptor protocol",
+                entry.provider_id, descriptor.model_id
+            );
+        }
+    }
+}
+
+#[test]
+fn public_capability_projection_does_not_expose_private_replay() {
+    let private_semantics = ModelRuntimeSemantics::openai_chat_deepseek();
+    assert!(matches!(
+        private_semantics.reasoning_protocol,
+        ReasoningProtocolSemantics::ProviderPrivateReplay { .. }
+    ));
+
+    let serialized = serde_json::to_string(&ConversationModelCapability::default()).unwrap();
+    for forbidden in private_runtime_semantics_fields() {
+        assert!(
+            !serialized.contains(forbidden),
+            "public capability unexpectedly exposed {forbidden}: {serialized}"
+        );
+    }
+}
+
+#[test]
+fn provider_registry_resolves_deepseek_with_private_replay_semantics() {
+    #[cfg(feature = "deepseek")]
+    {
+        let descriptor = resolve_model_descriptor("deepseek", "deepseek-v4-flash")
+            .expect("deepseek descriptor should resolve");
+
+        assert_eq!(
+            descriptor.runtime_semantics.reasoning_protocol,
+            ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind:
+                    harness_provider_state::ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: true,
+            }
+        );
+    }
+
+    #[cfg(not(feature = "deepseek"))]
+    assert_source_contains(
+        "deepseek.rs",
+        "ModelRuntimeSemantics::openai_chat_deepseek()",
+    );
+}
+
+#[test]
+fn provider_registry_resolves_minimax_without_private_replay_requirement() {
+    #[cfg(feature = "minimax")]
+    {
+        let descriptor = resolve_model_descriptor("minimax", "MiniMax-M3")
+            .expect("minimax descriptor should resolve");
+
+        assert_eq!(
+            descriptor.runtime_semantics.reasoning_protocol,
+            ReasoningProtocolSemantics::None
+        );
+    }
+
+    #[cfg(not(feature = "minimax"))]
+    assert_source_contains("minimax.rs", "ModelRuntimeSemantics::openai_chat_plain()");
 }
 
 #[cfg(feature = "minimax")]
@@ -153,4 +238,101 @@ fn catalog_auth_scheme(
         .unwrap_or_else(|| panic!("{provider_id} catalog should exist"))
         .runtime_capability
         .auth_scheme
+}
+
+fn expected_runtime_semantics(provider_id: &str) -> ModelRuntimeSemantics {
+    match provider_id {
+        "anthropic" => ModelRuntimeSemantics::anthropic_messages_default(),
+        "codex" | "openai" => ModelRuntimeSemantics::openai_responses_default(),
+        "deepseek" => ModelRuntimeSemantics::openai_chat_deepseek(),
+        "gemini" => ModelRuntimeSemantics::gemini_default(),
+        "bedrock" => ModelRuntimeSemantics::bedrock_converse_default(),
+        "doubao" | "km" | "local-llama" | "minimax" | "openrouter" | "qwen" | "zhipu" => {
+            ModelRuntimeSemantics::openai_chat_plain()
+        }
+        provider_id => {
+            panic!("missing explicit runtime semantics expectation for provider {provider_id}")
+        }
+    }
+}
+
+fn descriptor_blocks_missing_runtime_semantics() -> Vec<String> {
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut missing = Vec::new();
+    collect_missing_descriptor_blocks(&src_dir, &mut missing);
+    missing
+}
+
+fn collect_missing_descriptor_blocks(path: &std::path::Path, missing: &mut Vec<String>) {
+    if path.is_dir() {
+        for entry in std::fs::read_dir(path).expect("model source dir should be readable") {
+            collect_missing_descriptor_blocks(
+                &entry.expect("model source entry should be readable").path(),
+                missing,
+            );
+        }
+        return;
+    }
+    if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+        return;
+    }
+
+    let source = std::fs::read_to_string(path).expect("model source file should be readable");
+    let mut search_from = 0;
+    while let Some(relative_start) = source[search_from..].find("ModelDescriptor {") {
+        let start = search_from + relative_start;
+        let end = descriptor_block_end(&source, start)
+            .unwrap_or_else(|| panic!("descriptor block should close in {}", path.display()));
+        let block = &source[start..end];
+        if !block.contains("runtime_semantics:") {
+            missing.push(format!(
+                "{}:{}",
+                path.display(),
+                source[..start].lines().count() + 1
+            ));
+        }
+        search_from = end;
+    }
+}
+
+fn descriptor_block_end(source: &str, start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, byte) in source[start..].bytes().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(start + offset + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+#[cfg(any(not(feature = "deepseek"), not(feature = "minimax")))]
+fn assert_source_contains(relative_path: &str, needle: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join(relative_path);
+    let source = std::fs::read_to_string(path).expect("provider source should be readable");
+    assert!(
+        source.contains(needle),
+        "{relative_path} should contain {needle}"
+    );
+}
+
+fn private_runtime_semantics_fields() -> [&'static str; 8] {
+    [
+        "runtimeSemantics",
+        "runtime_semantics",
+        "ProviderContinuation",
+        "providerContinuation",
+        "provider_continuation",
+        "reasoningContent",
+        "reasoning_content",
+        "ProviderPrivateReplay",
+    ]
 }

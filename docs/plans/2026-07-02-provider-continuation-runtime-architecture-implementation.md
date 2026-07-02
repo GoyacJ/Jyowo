@@ -2122,17 +2122,17 @@ Do not edit files.
 
 **Goal:** Make runtime semantics explicit for all current providers while keeping provider-specific continuation support incremental.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the semantics assigned to every provider and the reason each provider does or does not require continuation replay now.
 
-- [ ] **Complete descriptor migration**
+- [x] **Complete descriptor migration**
 
   Ensure every `ModelDescriptor` construction sets `runtime_semantics`.
 
   No descriptor may use an implicit default by omission.
 
-- [ ] **Keep public capability as projection**
+- [x] **Keep public capability as projection**
 
   Prefer leaving existing public `ConversationModelCapability` construction explicit on provider descriptors.
 
@@ -2153,7 +2153,7 @@ Do not edit files.
   It must not expose, encode, annotate, or indirectly reveal private continuation requirements.
   It must not branch on `ProviderContinuationKind`, provider-private payload shape, or provider wire-field names.
 
-- [ ] **Tests**
+- [x] **Tests**
 
   Required tests:
 
@@ -2174,7 +2174,7 @@ Do not edit files.
   fn provider_inventory_runtime_semantics_are_not_serialized_to_public_catalog_payloads() { ... }
   ```
 
-- [ ] **Run registry tests**
+- [x] **Run registry tests**
 
   ```bash
   cargo test -p jyowo-harness-model registry
@@ -2184,11 +2184,11 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm every provider descriptor has explicit semantics and no provider-private semantics or internal runtime semantics are exposed to public frontend capability or provider catalog payloads.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-model crates/jyowo-harness-contracts

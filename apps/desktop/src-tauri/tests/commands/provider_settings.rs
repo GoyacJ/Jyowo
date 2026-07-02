@@ -1067,3 +1067,25 @@ async fn validate_provider_settings_payload_does_not_require_api_key() {
 
     assert_eq!(payload.status, "accepted");
 }
+
+#[test]
+fn provider_inventory_runtime_semantics_are_not_serialized_to_public_catalog_payloads() {
+    let payload = serde_json::to_string(&list_model_provider_catalog_payload()).unwrap();
+
+    for field in [
+        "runtimeSemantics",
+        "runtime_semantics",
+        "ProviderContinuation",
+        "providerContinuation",
+        "provider_continuation",
+        "reasoningContent",
+        "reasoning_content",
+        "continuationPayload",
+        "providerNative",
+    ] {
+        assert!(
+            !payload.contains(field),
+            "provider catalog payload unexpectedly exposed {field}: {payload}"
+        );
+    }
+}
