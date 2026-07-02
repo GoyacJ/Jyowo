@@ -128,6 +128,7 @@ Lower layers MUST NOT depend on higher layers.
 | `jyowo-harness-memory` | `crates/jyowo-harness-memory` | L1 | Owns Memory primitives, recall, consolidation, and visibility rules. |
 | `jyowo-harness-model` | `crates/jyowo-harness-model` | L1 | Owns provider abstractions, model errors, and usage reporting. |
 | `jyowo-harness-permission` | `crates/jyowo-harness-permission` | L1 | Owns PermissionBroker, rule providers, deduplication, fingerprints, and persistence. |
+| `jyowo-harness-provider-state` | `crates/jyowo-harness-provider-state` | L1 | `jyowo-harness-provider-state` owns private provider continuation persistence and lookup. It stores provider-private replay payloads outside Journal, Replay, logs, traces, frontend state, and public serde contracts. |
 | `jyowo-harness-sandbox` | `crates/jyowo-harness-sandbox` | L1 | Owns sandbox policies, execution isolation, resource limits, and backend errors. |
 | `jyowo-harness-context` | `crates/jyowo-harness-context` | L2 | Owns context assembly, compaction, token budget behavior, and context events. |
 | `jyowo-harness-hook` | `crates/jyowo-harness-hook` | L2 | Owns hook execution, hook outcomes, and hook event contracts. |
@@ -152,6 +153,17 @@ Rules:
 - New orchestration across domains belongs in L3.
 - Application-facing assembly belongs in `jyowo-harness-sdk`.
 - Tauri command code must not reach around the SDK into lower layers unless the command is only exposing shell metadata.
+
+Provider continuation rules:
+
+- provider-private continuation payloads are never public events.
+- Engine may load and store opaque continuation records, but must not inspect provider-private wire fields.
+- Provider codecs may interpret continuation payloads for their own dialect.
+- Continuation lookup keys must come from final assembled prompt messages after compaction.
+- Missing required continuation fails closed before provider request dispatch.
+- Types carrying provider continuation payloads must avoid raw Debug output.
+- Conversation deletion must prune provider continuation records for the deleted session.
+- Existing development-phase conversation runtime state is cleared once instead of migrated or backfilled.
 
 ## Agent Orchestration Engineering
 

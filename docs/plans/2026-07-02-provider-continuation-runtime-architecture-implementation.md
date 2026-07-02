@@ -610,11 +610,11 @@ Do not edit files.
 
 **Goal:** Start from a clean isolated worktree and record the baseline state before implementation.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the worktree path, branch name, expected baseline commands, and non-goal: no source edits in Task 0.
 
-- [ ] **Create and enter the isolated worktree**
+- [x] **Create and enter the isolated worktree**
 
   Run from the original repository:
 
@@ -632,11 +632,11 @@ Do not edit files.
   ## goya/provider-continuation-runtime
   ```
 
-- [ ] **Read mandatory files**
+- [x] **Read mandatory files**
 
   Use `sed`, `rg`, or the editor to read every mandatory file listed above.
 
-- [ ] **Run baseline docs gate**
+- [x] **Run baseline docs gate**
 
   ```bash
   pnpm check:docs
@@ -644,11 +644,11 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Use the audit prompt template. The auditor must confirm no implementation files were edited.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   No commit is required for Task 0 if there are no changes.
 
@@ -664,11 +664,11 @@ Do not edit files.
 
 **Goal:** Lock the target boundaries into repository docs before code changes.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the exact layer change, why `jyowo-harness-provider-state` is L1, why Engine stays L3, and why public `ConversationModelCapability` is only a projection.
 
-- [ ] **Update backend layer table**
+- [x] **Update backend layer table**
 
   Add `jyowo-harness-provider-state` to the L1 package table in `docs/backend/backend-engineering.md`.
 
@@ -692,7 +692,7 @@ Do not edit files.
   - Existing development-phase conversation runtime state is cleared once instead of migrated or backfilled.
   ```
 
-- [ ] **Update harness-model architecture doc**
+- [x] **Update harness-model architecture doc**
 
   In `docs/architecture/harness/crates/harness-model.md`, add:
 
@@ -710,7 +710,7 @@ Do not edit files.
   DeepSeek, MiniMax, Qwen, Doubao, Zhipu, Kimi, OpenRouter, and Local Llama must be represented through explicit dialect configuration.
   ```
 
-- [ ] **Create provider-state architecture doc**
+- [x] **Create provider-state architecture doc**
 
   Create `docs/architecture/harness/crates/harness-provider-state.md` with:
 
@@ -759,7 +759,7 @@ Do not edit files.
   Successful conversation deletion prunes provider continuation records for the exact deleted session.
   ```
 
-- [ ] **Create harness-engine architecture doc**
+- [x] **Create harness-engine architecture doc**
 
   Create `docs/architecture/harness/crates/harness-engine.md` with:
 
@@ -790,7 +790,7 @@ Do not edit files.
   Its vertical regression must prove the Engine loop and model codec continue without provider-private replay.
   ```
 
-- [ ] **Run docs gates**
+- [x] **Run docs gates**
 
   ```bash
   pnpm check:docs
@@ -799,7 +799,7 @@ Do not edit files.
 
   Expected: both exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm docs contain the layer rule, privacy rule, redacted debug rule, plaintext-local-storage boundary, development reset rule, conversation deletion prune rule, final-message lookup rule, MiniMax explicit dialect rule, and fail-closed rule.
 
@@ -822,11 +822,11 @@ Do not edit files.
 
 **Goal:** Add the L1 crate that owns private continuation persistence and query semantics.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the storage format, trait shape, safe error shape, redacted debug rule, no-public-event invariant, and why this crate has no dependency on Engine, Model, Journal, SDK, or desktop shell.
 
-- [ ] **Add workspace member**
+- [x] **Add workspace member**
 
   Add this member to root `Cargo.toml`:
 
@@ -834,7 +834,7 @@ Do not edit files.
   "crates/jyowo-harness-provider-state",
   ```
 
-- [ ] **Create crate manifest**
+- [x] **Create crate manifest**
 
   Required dependencies:
 
@@ -870,7 +870,7 @@ Do not edit files.
 
   Preserve workspace lint settings used by existing crates.
 
-- [ ] **Implement public crate API**
+- [x] **Implement public crate API**
 
   Implement:
 
@@ -904,7 +904,7 @@ Do not edit files.
   - `ProviderContinuationRecord` must implement redacted custom `Debug`; its debug output must never contain payload strings.
   - The crate must not claim cross-process consistency. Desktop wiring in Task 9 must create one store instance and share it through SDK and Engine.
 
-- [ ] **Write store tests first**
+- [x] **Write store tests first**
 
   Required tests in `tests/provider_continuation_store.rs`:
 
@@ -940,7 +940,7 @@ Do not edit files.
   fn provider_continuation_store_errors_do_not_display_payload_or_full_paths() { ... }
   ```
 
-- [ ] **Run crate tests**
+- [x] **Run crate tests**
 
   ```bash
   cargo test -p jyowo-harness-provider-state
@@ -948,7 +948,7 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Run docs gate**
+- [x] **Run docs gate**
 
   ```bash
   pnpm check:backend-docs
@@ -956,7 +956,7 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm the new crate has no dependency on Engine, Model, Journal, SDK, desktop shell, or frontend code, and that file-store tests cover in-process serialization, corrupt-record fail-closed behavior, prune atomic-replace behavior with parent-directory sync intent, redacted debug output, and safe error display.
 

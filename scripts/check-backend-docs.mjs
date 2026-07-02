@@ -29,8 +29,10 @@ const requiredDocs = [
 ]
 
 const requiredArchitectureDocs = [
+  'docs/architecture/harness/crates/harness-engine.md',
   'docs/architecture/harness/crates/harness-model.md',
   'docs/architecture/harness/crates/harness-plugin.md',
+  'docs/architecture/harness/crates/harness-provider-state.md',
 ]
 
 const requiredConcepts = [
@@ -95,6 +97,7 @@ const expectedLayers = new Map([
   ['jyowo-harness-memory', 'L1'],
   ['jyowo-harness-model', 'L1'],
   ['jyowo-harness-permission', 'L1'],
+  ['jyowo-harness-provider-state', 'L1'],
   ['jyowo-harness-sandbox', 'L1'],
   ['jyowo-harness-context', 'L2'],
   ['jyowo-harness-hook', 'L2'],
