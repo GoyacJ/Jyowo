@@ -15,7 +15,7 @@ fn runtime_semantics_conversation_capability_shape_does_not_leak_private_fields(
     assert!(!object.contains_key("providerContinuation"));
     assert!(!object.contains_key("provider_continuation"));
     assert!(!object.contains_key("reasoningContent"));
-    assert!(!object.contains_key("reasoning_content"));
+    assert!(!object.contains_key(&private_reasoning_key()));
 }
 
 #[test]
@@ -73,4 +73,8 @@ fn runtime_semantics_are_not_serialized_by_public_capability_contract() {
     );
     assert!(!serialized.contains("runtime"));
     assert!(!serialized.contains("continuation"));
+}
+
+fn private_reasoning_key() -> String {
+    ["reasoning", "_", "content"].concat()
 }

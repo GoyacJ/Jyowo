@@ -4,11 +4,14 @@ use std::time::Duration;
 use async_stream::stream;
 use futures::StreamExt;
 use harness_contracts::ModelError;
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
+use serde_json::Value;
 
 use crate::{ContentDelta, ContentType, ErrorClass, ErrorHints, ModelStream, ModelStreamEvent};
 
 use super::chat_codec::{stop_reason, usage, OpenAiUsage};
+use super::continuation;
+use super::dialect::OpenAiChatDialect;
 
 const POST_FINISH_USAGE_GRACE: Duration = Duration::from_millis(250);
 
@@ -55,11 +58,14 @@ impl IncrementalSseParser {
     }
 }
 
-pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
+pub(super) fn response_to_stream(
+    response: reqwest::Response,
+    dialect: OpenAiChatDialect,
+) -> ModelStream {
     let mut bytes = response.bytes_stream();
     Box::pin(stream! {
         let mut parser = IncrementalSseParser::default();
-        let mut state = OpenAiStreamState::default();
+        let mut state = OpenAiStreamState::new(dialect);
         let mut terminal_pending_deadline = None;
         loop {
             let chunk = if state.terminal_pending {
@@ -68,8 +74,8 @@ pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
                 match tokio::time::timeout_at(deadline, bytes.next()).await {
                     Ok(chunk) => chunk,
                     Err(_) => {
-                        if let Some(stop) = state.finish_message() {
-                            yield stop;
+                        for event in state.finish_message() {
+                            yield event;
                         }
                         return;
                     }
@@ -116,10 +122,8 @@ pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
         }
 
         if state.started && !state.stopped {
-            if let Some(stop) = state.finish_message() {
-                yield stop;
-            } else {
-                yield ModelStreamEvent::MessageStop;
+            for event in state.finish_message() {
+                yield event;
             }
         }
     })
@@ -149,34 +153,48 @@ fn parse_frame(frame: &str) -> Option<SseEvent> {
 
 #[derive(Default)]
 struct OpenAiStreamState {
+    dialect: OpenAiChatDialect,
     started: bool,
     stopped: bool,
     terminal_pending: bool,
     text_started: bool,
     text_stopped: bool,
     next_block_index: u32,
+    reasoning_replay_buffer: String,
+    continuation_emitted: bool,
     tool_calls: BTreeMap<u32, ToolCallState>,
 }
 
 impl OpenAiStreamState {
+    fn new(dialect: OpenAiChatDialect) -> Self {
+        Self {
+            dialect,
+            ..Self::default()
+        }
+    }
+
     fn map_event(&mut self, event: SseEvent) -> Vec<ModelStreamEvent> {
         if event.data == "[DONE]" {
-            let stop = self.finish_message();
-            self.stopped = true;
             self.terminal_pending = false;
-            return stop.into_iter().collect::<Vec<ModelStreamEvent>>();
+            if !self.started {
+                self.stopped = true;
+                return Vec::new();
+            }
+            return self.finish_message();
         }
 
-        let payload = match serde_json::from_str::<ChatCompletionChunk>(&event.data) {
+        let payload_value = match parse_sse_json::<Value>(&event.data) {
             Ok(payload) => payload,
-            Err(error) => {
-                return vec![stream_error(
-                    ModelError::UnexpectedResponse(format!(
-                        "invalid OpenAI-compatible SSE JSON: {error}"
-                    )),
-                    ErrorClass::Fatal,
-                )];
-            }
+            Err(error) => return vec![error],
+        };
+        if let Some(reasoning_delta) =
+            continuation::deepseek_stream_reasoning_delta(self.dialect, &payload_value)
+        {
+            self.reasoning_replay_buffer.push_str(&reasoning_delta);
+        }
+        let payload = match serde_json::from_value::<ChatCompletionChunk>(payload_value) {
+            Ok(payload) => payload,
+            Err(error) => return vec![invalid_sse_json(error)],
         };
 
         let mut events = Vec::new();
@@ -240,21 +258,30 @@ impl OpenAiStreamState {
                     usage_delta: usage(Some(usage_value)),
                 });
             }
-            if let Some(stop) = self.finish_message() {
-                events.push(stop);
-            }
+            events.extend(self.finish_message());
         }
 
         events
     }
 
-    fn finish_message(&mut self) -> Option<ModelStreamEvent> {
+    fn finish_message(&mut self) -> Vec<ModelStreamEvent> {
         if self.stopped || !self.started {
-            return None;
+            return Vec::new();
+        }
+        let mut events = Vec::new();
+        if !self.continuation_emitted {
+            if let Some(event) = continuation::deepseek_stream_continuation_event(
+                self.dialect,
+                &self.reasoning_replay_buffer,
+            ) {
+                events.push(event);
+            }
+            self.continuation_emitted = true;
         }
         self.stopped = true;
         self.terminal_pending = false;
-        Some(ModelStreamEvent::MessageStop)
+        events.push(ModelStreamEvent::MessageStop);
+        events
     }
 
     fn map_tool_call(&mut self, delta: StreamToolCallDelta) -> Vec<ModelStreamEvent> {
@@ -370,6 +397,17 @@ fn stream_error(error: ModelError, class: ErrorClass) -> ModelStreamEvent {
     }
 }
 
+fn parse_sse_json<T: DeserializeOwned>(data: &str) -> Result<T, ModelStreamEvent> {
+    serde_json::from_str(data).map_err(invalid_sse_json)
+}
+
+fn invalid_sse_json(error: serde_json::Error) -> ModelStreamEvent {
+    stream_error(
+        ModelError::UnexpectedResponse(format!("invalid OpenAI-compatible SSE JSON: {error}")),
+        ErrorClass::Fatal,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::future;
@@ -380,6 +418,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::{response_to_stream, IncrementalSseParser, OpenAiStreamState, SseEvent};
+    use crate::openai_compatible::OpenAiChatDialect;
     use crate::{ContentDelta, ModelStreamEvent};
 
     #[test]
@@ -475,7 +514,7 @@ mod tests {
     #[tokio::test]
     async fn done_terminates_response_stream_without_waiting_for_eof() {
         let response = pending_sse_response("data: [DONE]\n\n").await;
-        let mut stream = response_to_stream(response);
+        let mut stream = response_to_stream(response, OpenAiChatDialect::Plain);
 
         let next = tokio::time::timeout(Duration::from_millis(200), stream.next())
             .await
@@ -490,7 +529,7 @@ mod tests {
             "data: {\"id\":\"chatcmpl_1\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
         )
         .await;
-        let mut stream = response_to_stream(response);
+        let mut stream = response_to_stream(response, OpenAiChatDialect::Plain);
 
         let mut events = Vec::new();
         while let Some(event) = tokio::time::timeout(Duration::from_millis(500), stream.next())
@@ -509,7 +548,7 @@ mod tests {
             "data: {\"id\":\"chatcmpl_1\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl_1\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
         )
         .await;
-        let mut stream = response_to_stream(response);
+        let mut stream = response_to_stream(response, OpenAiChatDialect::Plain);
 
         let mut events = Vec::new();
         while let Some(event) = tokio::time::timeout(Duration::from_millis(500), stream.next())
@@ -544,7 +583,7 @@ mod tests {
             "data: {\"id\":\"chatcmpl_1\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
         )
         .await;
-        let mut stream = response_to_stream(response);
+        let mut stream = response_to_stream(response, OpenAiChatDialect::Plain);
 
         let mut events = Vec::new();
         while let Some(event) = tokio::time::timeout(Duration::from_millis(700), stream.next())

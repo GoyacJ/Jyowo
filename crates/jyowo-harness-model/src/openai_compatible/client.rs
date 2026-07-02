@@ -181,7 +181,7 @@ impl OpenAiCompatibleClient {
                     if req.stream {
                         let stream = match self.protocol {
                             ModelProtocol::ChatCompletions => {
-                                streaming::response_to_stream(response)
+                                streaming::response_to_stream(response, self.dialect)
                             }
                             ModelProtocol::Responses => {
                                 responses_codec::response_to_stream(response)
@@ -197,7 +197,7 @@ impl OpenAiCompatibleClient {
                         .map_err(|error| error.error)?;
                     return match self.protocol {
                         ModelProtocol::ChatCompletions => {
-                            chat_codec::chat_response_to_stream(response)
+                            chat_codec::chat_response_to_stream(response, self.dialect)
                         }
                         ModelProtocol::Responses => {
                             responses_codec::json_response_to_stream(response)
@@ -351,7 +351,7 @@ impl OpenAiCompatibleClient {
     ) -> Result<Value, ModelError> {
         match self.protocol {
             ModelProtocol::ChatCompletions => {
-                chat_codec::chat_request_body(req, self.max_tokens_field, ctx).await
+                chat_codec::chat_request_body(req, self.max_tokens_field, self.dialect, ctx).await
             }
             ModelProtocol::Responses => responses_codec::responses_request_body(req, ctx).await,
             _ => Err(ModelError::InvalidRequest(

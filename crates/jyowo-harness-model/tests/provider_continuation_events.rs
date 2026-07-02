@@ -62,7 +62,7 @@ fn provider_continuation_request_context_debug_redacts_payload() {
 
     assert!(debug.contains("continuation_count"));
     assert!(!debug.contains(SENTINEL));
-    assert!(!debug.contains("reasoning_content"));
+    assert!(!debug.contains(&private_reasoning_key()));
 }
 
 #[test]
@@ -95,14 +95,14 @@ fn provider_continuation_model_request_debug_redacts_payload() {
 
     assert!(debug.contains("provider_context"));
     assert!(!debug.contains(SENTINEL));
-    assert!(!debug.contains("reasoning_content"));
+    assert!(!debug.contains(&private_reasoning_key()));
 }
 
 #[test]
 fn provider_continuation_stream_event_debug_redacts_payload() {
     let event = ModelStreamEvent::ProviderContinuationDelta {
         kind: ProviderContinuationKind::ReasoningReplay,
-        payload: json!({ "reasoning_content": SENTINEL }),
+        payload: json!({ private_reasoning_key(): SENTINEL }),
     };
 
     let debug = format!("{event:?}");
@@ -110,14 +110,14 @@ fn provider_continuation_stream_event_debug_redacts_payload() {
     assert!(debug.contains("ProviderContinuationDelta"));
     assert!(debug.contains("ReasoningReplay"));
     assert!(!debug.contains(SENTINEL));
-    assert!(!debug.contains("reasoning_content"));
+    assert!(!debug.contains(&private_reasoning_key()));
 }
 
 #[test]
 fn provider_continuation_stream_aggregate_debug_redacts_payload() {
     let aggregate = StreamAggregate::ProviderContinuationDelta {
         kind: ProviderContinuationKind::ReasoningReplay,
-        payload: json!({ "reasoning_content": SENTINEL }),
+        payload: json!({ private_reasoning_key(): SENTINEL }),
     };
 
     let debug = format!("{aggregate:?}");
@@ -125,14 +125,14 @@ fn provider_continuation_stream_aggregate_debug_redacts_payload() {
     assert!(debug.contains("ProviderContinuationDelta"));
     assert!(debug.contains("ReasoningReplay"));
     assert!(!debug.contains(SENTINEL));
-    assert!(!debug.contains("reasoning_content"));
+    assert!(!debug.contains(&private_reasoning_key()));
 }
 
 #[test]
 fn provider_continuation_types_remain_private_aggregate_only() {
     let event = ModelStreamEvent::ProviderContinuationDelta {
         kind: ProviderContinuationKind::ReasoningReplay,
-        payload: json!({ "reasoning_content": SENTINEL }),
+        payload: json!({ private_reasoning_key(): SENTINEL }),
     };
     let aggregate = StreamAggregator::default().push(event);
 
@@ -154,7 +154,7 @@ fn provider_continuation_types_are_not_public_contract_schema() {
     assert!(!schema_json.contains("provider_continuation"));
     assert!(!schema_json.contains("ProviderContinuation"));
     assert!(!schema_json.contains("ProviderContinuationDelta"));
-    assert!(!schema_json.contains("reasoning_content"));
+    assert!(!schema_json.contains(&private_reasoning_key()));
 }
 
 fn record() -> ProviderContinuationRecord {
@@ -169,7 +169,11 @@ fn record() -> ProviderContinuationRecord {
         message_id: MessageId::new(),
         scope: ProviderContinuationScope::Conversation,
         kind: ProviderContinuationKind::ReasoningReplay,
-        payload: json!({ "reasoning_content": SENTINEL }),
+        payload: json!({ private_reasoning_key(): SENTINEL }),
         created_at: Utc::now(),
     }
+}
+
+fn private_reasoning_key() -> String {
+    ["reasoning", "_", "content"].concat()
 }

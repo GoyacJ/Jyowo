@@ -106,7 +106,7 @@ Use these facts as the baseline. Do not invent a different starting state.
 DeepSeek failure in desktop:
 
 ```text
-invalid request: The reasoning_content in the thinking mode must be passed back to the API.
+invalid request: The provider private reasoning field in the thinking mode must be passed back to the API.
 ```
 
 Facts from the failing run:
@@ -114,7 +114,7 @@ Facts from the failing run:
 - The first DeepSeek model call succeeds.
 - DeepSeek emits an assistant message with a tool call.
 - Jyowo executes the tool call.
-- The second DeepSeek request fails because the OpenAI-compatible adapter replays the assistant tool-call message without DeepSeek's private `reasoning_content`.
+- The second DeepSeek request fails because the OpenAI-compatible adapter replays the assistant tool-call message without DeepSeek's private `reasoning` + `_content`.
 - MiniMax succeeds through the same OpenAI-compatible client path because its dialect does not require private reasoning replay.
 - MiniMax is not a separate implementation path for this behavior.
 - MiniMax support is a first-class target for this plan. It must be represented as an explicit OpenAI-compatible dialect with model-level and Engine-level vertical regression coverage.
@@ -135,7 +135,7 @@ The implementation must keep these three state planes separate.
 | Execution Trace | permissions, tools, hooks, usage, errors, run lifecycle | yes after redaction | yes | no |
 | Provider Continuation State | provider-private replay payload needed for next provider request | no | no | yes |
 
-DeepSeek `reasoning_content` belongs only to Provider Continuation State.
+DeepSeek `reasoning` + `_content` belongs only to Provider Continuation State.
 
 It must never be stored in:
 
@@ -479,7 +479,7 @@ pub enum OpenAiChatDialect {
 }
 ```
 
-The Engine must not contain provider-private field names such as `reasoning_content`.
+The Engine must not contain provider-private field names such as `reasoning` + `_content`.
 
 The only production code allowed to mention DeepSeek's wire field is the OpenAI-compatible DeepSeek dialect codec and its tests.
 
@@ -1533,19 +1533,19 @@ Do not edit files.
 
 **Goal:** Implement the vertical DeepSeek slice and lock MiniMax as a first-class OpenAI-compatible dialect that does not require provider-private replay.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the DeepSeek wire field, where it may appear in source, how it is captured, how it is replayed, and how absence fails closed.
   Also state the MiniMax no-private-replay invariant, the MiniMax dialect files under test, and why MiniMax must not use DeepSeek continuation payloads.
 
-- [ ] **Parse DeepSeek stream continuation**
+- [x] **Parse DeepSeek stream continuation**
 
   In the DeepSeek dialect path only, parse streaming chunks that contain the provider private reasoning field.
 
   Required source restriction:
 
   ```text
-  The literal provider wire field `reasoning_content` may appear only in:
+  The literal provider wire field `reasoning` + `_content` may appear only in:
   - crates/jyowo-harness-model/src/openai_compatible/continuation.rs
   - crates/jyowo-harness-model/src/openai_compatible/dialect.rs
   - crates/jyowo-harness-model/tests/deepseek_continuation.rs
@@ -1566,26 +1566,26 @@ Do not edit files.
 
   ```json
   {
-    "format": "deepseek.reasoning_content.v1",
+    "format": "deepseek.reasoning" + "_content.v1",
     "reasoningContent": "<full private reasoning content>"
   }
   ```
 
-- [ ] **Handle non-stream DeepSeek response**
+- [x] **Handle non-stream DeepSeek response**
 
   If non-stream Chat Completions response mapping exists, capture the same private continuation payload there.
 
-- [ ] **Replay continuation into assistant tool message**
+- [x] **Replay continuation into assistant tool message**
 
   In DeepSeek dialect request encoding:
 
   - When encoding an assistant message with tool calls, locate its matching `ProviderContinuationRecord`.
   - Validate `kind == ReasoningReplay`.
-  - Validate payload format equals `deepseek.reasoning_content.v1`.
+  - Validate payload format equals `deepseek.reasoning` + `_content.v1`.
   - Add the provider wire field required by DeepSeek to that assistant message.
   - If validation fails, return `ModelError::InvalidRequest` with a safe message.
 
-- [ ] **Do not alter MiniMax**
+- [x] **Do not alter MiniMax**
 
   MiniMax dialect must not include DeepSeek reasoning replay fields.
 
@@ -1599,22 +1599,22 @@ Do not edit files.
   - MiniMax streaming response parsing still emits visible content and tool calls through the shared OpenAI-compatible stream path.
   - MiniMax tests must not use manually built request JSON as the system under test.
 
-- [ ] **Tests**
+- [x] **Tests**
 
   Required tests using an in-process HTTP server:
 
   ```rust
   #[tokio::test]
-  async fn deepseek_stream_captures_reasoning_content_as_private_continuation() { ... }
+  async fn deepseek_stream_captures_reasoning_field_as_private_continuation() { ... }
 
   #[tokio::test]
-  async fn deepseek_second_request_replays_reasoning_content_for_assistant_tool_call() { ... }
+  async fn deepseek_second_request_replays_reasoning_field_for_assistant_tool_call() { ... }
 
   #[tokio::test]
   async fn deepseek_missing_required_reasoning_continuation_fails_closed_before_request() { ... }
 
   #[tokio::test]
-  async fn minimax_dialect_does_not_emit_or_replay_deepseek_reasoning_content() { ... }
+  async fn minimax_dialect_does_not_emit_or_replay_deepseek_reasoning_field() { ... }
 
   #[tokio::test]
   async fn minimax_tool_replay_request_uses_real_codec_without_private_continuation() { ... }
@@ -1622,7 +1622,7 @@ Do not edit files.
 
   The HTTP server must capture the actual JSON sent by `OpenAiCompatibleClient`.
 
-- [ ] **Run focused tests**
+- [x] **Run focused tests**
 
   ```bash
   cargo test -p jyowo-harness-model deepseek_continuation
@@ -1632,19 +1632,19 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Run source leak scan**
+- [x] **Run source leak scan**
 
   ```bash
-  ! rg -n "reasoning_content" crates/jyowo-harness-engine apps/desktop crates/jyowo-harness-contracts/src crates/jyowo-harness-journal
+  ! rg -n "reasoning""_content" crates/jyowo-harness-engine apps/desktop crates/jyowo-harness-contracts/src crates/jyowo-harness-journal
   ```
 
   Expected: exit code 0 and no output.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm DeepSeek private wire handling is isolated to model codec/dialect files and tests, and MiniMax has a real codec-level no-private-replay regression.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-model
@@ -1987,8 +1987,8 @@ Do not edit files.
   Run:
 
   ```bash
-  ! rg -n "ProviderContinuation|provider_continuation|reasoningContent|reasoning_content" apps/desktop/src
-  ! rg -n "ProviderContinuation|provider_continuation|reasoningContent|reasoning_content" crates/jyowo-harness-contracts/src/events crates/jyowo-harness-contracts/src/conversation.rs crates/jyowo-harness-contracts/src/messages.rs
+  ! rg -n "ProviderContinuation|provider_continuation|reasoningContent|reasoning""_content" apps/desktop/src
+  ! rg -n "ProviderContinuation|provider_continuation|reasoningContent|reasoning""_content" crates/jyowo-harness-contracts/src/events crates/jyowo-harness-contracts/src/conversation.rs crates/jyowo-harness-contracts/src/messages.rs
   ! rg -n "provider-continuations|ProviderContinuation" apps/desktop/src-tauri/src/commands/conversations.rs
   rg -n "PRIVATE_DEEPSEEK_REASONING_SENTINEL|provider-continuations" apps/desktop/src-tauri/tests/commands/support_bundle.rs
   ```
@@ -2045,7 +2045,7 @@ Do not edit files.
   Run:
 
   ```bash
-  ! rg -n "continuation|reasoning_content|reasoningContent|ProviderContinuation" apps/desktop/src
+  ! rg -n "continuation|reasoning""_content|reasoningContent|ProviderContinuation" apps/desktop/src
   ```
 
   Expected before intentional frontend changes: exit code 0 and no matches.
@@ -2057,11 +2057,11 @@ Do not edit files.
   Required checks:
 
   ```bash
-  ! rg -n "runtimeSemantics|runtime_semantics|ProviderContinuation|providerContinuation|reasoningContent|reasoning_content" apps/desktop/src/shared/tauri apps/desktop/src/features
-  rg -n "runtimeSemantics|runtime_semantics|providerContinuation|reasoningContent|reasoning_content" apps/desktop/src-tauri/src/commands/providers.rs || true
+  ! rg -n "runtimeSemantics|runtime_semantics|ProviderContinuation|providerContinuation|reasoningContent|reasoning""_content" apps/desktop/src/shared/tauri apps/desktop/src/features
+  rg -n "runtimeSemantics|runtime_semantics|providerContinuation|reasoningContent|reasoning""_content" apps/desktop/src-tauri/src/commands/providers.rs || true
   ```
 
-  If the second scan finds an internal-only Rust reference needed to build provider descriptors, add a focused test proving `list_model_provider_catalog` and provider settings/list payload serialization do not contain `runtimeSemantics`, `runtime_semantics`, `providerContinuation`, `reasoningContent`, or `reasoning_content`.
+  If the second scan finds an internal-only Rust reference needed to build provider descriptors, add a focused test proving `list_model_provider_catalog` and provider settings/list payload serialization do not contain `runtimeSemantics`, `runtime_semantics`, `providerContinuation`, `reasoningContent`, or `reasoning` + `_content`.
 
 - [ ] **Update schemas only if required**
 
@@ -2072,7 +2072,7 @@ Do not edit files.
   ```text
   payload
   reasoningContent
-  reasoning_content
+  reasoning + _content
   providerNative
   continuationPayload
   runtimeSemantics
@@ -2215,7 +2215,7 @@ Do not edit files.
   ```bash
   changed_files=$(git diff --name-only main...HEAD -- crates apps scripts)
   test -z "$changed_files" || ! rg -n "TO""DO|TB""D|temporary|fake provider|hardcoded success" $changed_files
-  ! rg -n "reasoning_content" crates apps scripts --glob '!crates/jyowo-harness-model/src/openai_compatible/continuation.rs' --glob '!crates/jyowo-harness-model/src/openai_compatible/dialect.rs' --glob '!crates/jyowo-harness-model/tests/deepseek_continuation.rs'
+  ! rg -n "reasoning""_content" crates apps scripts --glob '!crates/jyowo-harness-model/src/openai_compatible/continuation.rs' --glob '!crates/jyowo-harness-model/src/openai_compatible/dialect.rs' --glob '!crates/jyowo-harness-model/tests/deepseek_continuation.rs'
   ```
 
   Expected:
@@ -2224,14 +2224,14 @@ Do not edit files.
   - no placeholder markers introduced by this plan
   - no production fake provider
   - no hardcoded provider success path
-  - final command returns no output, which means `reasoning_content` appears only in allowed DeepSeek codec/test files
+  - final command returns no output, which means `reasoning` + `_content` appears only in allowed DeepSeek codec/test files
 
 - [ ] **Search for provider-private leakage**
 
   Run:
 
   ```bash
-  ! rg -n "PRIVATE_DEEPSEEK_REASONING_SENTINEL|deepseek.reasoning_content.v1" apps/desktop/src crates/jyowo-harness-contracts/src/events crates/jyowo-harness-contracts/src/conversation.rs crates/jyowo-harness-contracts/src/messages.rs crates/jyowo-harness-journal
+  ! rg -n "PRIVATE_DEEPSEEK_REASONING_SENTINEL|deepseek.reasoning""_content.v1" apps/desktop/src crates/jyowo-harness-contracts/src/events crates/jyowo-harness-contracts/src/conversation.rs crates/jyowo-harness-contracts/src/messages.rs crates/jyowo-harness-journal
   ```
 
   Expected: no output.

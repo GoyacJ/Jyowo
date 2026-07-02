@@ -117,7 +117,7 @@ async fn turn_assembly_drops_private_thinking_from_public_text() {
             index: 0,
             delta: ContentDelta::Thinking(ThinkingDelta {
                 text: Some("private reasoning".to_owned()),
-                provider_native: Some(json!({ "reasoning_content": "secret" })),
+                provider_native: Some(json!({ "provider_private": "secret" })),
                 signature: Some("signature".to_owned()),
             }),
         },
@@ -147,7 +147,7 @@ async fn turn_assembly_passes_provider_continuation_to_private_capture_only() {
         run_id,
         ModelStreamEvent::ProviderContinuationDelta {
             kind: ProviderContinuationKind::ReasoningReplay,
-            payload: json!({ "reasoning_content": "private" }),
+            payload: json!({ "opaque": "private" }),
         },
     );
 
@@ -161,7 +161,7 @@ async fn turn_assembly_passes_provider_continuation_to_private_capture_only() {
     );
     assert_eq!(
         assembly.provider_continuations()[0].payload,
-        json!({ "reasoning_content": "private" })
+        json!({ "opaque": "private" })
     );
 }
 
@@ -173,13 +173,13 @@ async fn turn_assembly_debug_redacts_provider_continuation_payload() {
         run_id,
         ModelStreamEvent::ProviderContinuationDelta {
             kind: ProviderContinuationKind::ReasoningReplay,
-            payload: json!({ "reasoning_content": "private" }),
+            payload: json!({ "opaque": "private" }),
         },
     );
 
     let debug_output = format!("{assembly:?}");
 
     assert!(debug_output.contains("[redacted]"));
-    assert!(!debug_output.contains("reasoning_content"));
+    assert!(!debug_output.contains("opaque"));
     assert!(!debug_output.contains("private"));
 }

@@ -12,6 +12,12 @@ pub(crate) enum OpenAiChatDialect {
     LocalLlama,
 }
 
+impl Default for OpenAiChatDialect {
+    fn default() -> Self {
+        Self::Plain
+    }
+}
+
 #[cfg(test)]
 mod provider_dialect_tests {
     use super::OpenAiChatDialect;

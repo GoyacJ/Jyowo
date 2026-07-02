@@ -5,11 +5,14 @@ use serde_json::{json, Value};
 
 use crate::{ContentDelta, ContentType, InferContext, ModelRequest, ModelStream, ModelStreamEvent};
 
+use super::continuation;
+use super::dialect::OpenAiChatDialect;
 use super::request::{chat_message, merge_extra_object, openai_tool, DEFAULT_MAX_TOKENS};
 
 pub(super) async fn chat_request_body(
     req: &ModelRequest,
     max_tokens_field: &str,
+    dialect: OpenAiChatDialect,
     ctx: &InferContext,
 ) -> Result<Value, ModelError> {
     let mut messages = Vec::new();
@@ -20,7 +23,14 @@ pub(super) async fn chat_request_body(
         }));
     }
     for message in &req.messages {
-        messages.push(chat_message(message, ctx).await?);
+        let mut encoded = chat_message(message, ctx).await?;
+        continuation::apply_chat_message_continuation(
+            &mut encoded,
+            message,
+            dialect,
+            &req.provider_context.continuations,
+        )?;
+        messages.push(encoded);
     }
 
     let mut body = json!({
@@ -44,7 +54,12 @@ pub(super) async fn chat_request_body(
     Ok(body)
 }
 
-pub(super) fn chat_response_to_stream(response: Value) -> Result<ModelStream, ModelError> {
+pub(super) fn chat_response_to_stream(
+    response: Value,
+    dialect: OpenAiChatDialect,
+) -> Result<ModelStream, ModelError> {
+    let continuation_event =
+        continuation::deepseek_chat_response_continuation_event(dialect, &response);
     let response: ChatCompletionResponse = serde_json::from_value(response).map_err(|error| {
         ModelError::UnexpectedResponse(format!("invalid OpenAI-compatible response: {error}"))
     })?;
@@ -56,6 +71,9 @@ pub(super) fn chat_response_to_stream(response: Value) -> Result<ModelStream, Mo
         message_id: response.id,
         usage: usage.clone(),
     }];
+    if let Some(event) = continuation_event {
+        events.push(event);
+    }
     let mut index = 0;
 
     if let Some(content) = choice.message.content {

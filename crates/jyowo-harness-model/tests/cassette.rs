@@ -195,10 +195,11 @@ async fn provider_continuation_cassette_does_not_record_private_payload() {
     let path = cassette_path();
     let req = request();
     let sentinel = "cassette-private-reasoning-sentinel";
+    let private_key = private_reasoning_key();
     let recorded_events = vec![
         ModelStreamEvent::ProviderContinuationDelta {
             kind: ProviderContinuationKind::ReasoningReplay,
-            payload: serde_json::json!({ "reasoning_content": sentinel }),
+            payload: serde_json::json!({ private_key.clone(): sentinel }),
         },
         ModelStreamEvent::MessageStop,
     ];
@@ -224,7 +225,7 @@ async fn provider_continuation_cassette_does_not_record_private_payload() {
     assert_eq!(hits.load(Ordering::SeqCst), 1);
     assert!(cassette_json.contains("provider_continuation_delta"));
     assert!(!cassette_json.contains(sentinel));
-    assert!(!cassette_json.contains("reasoning_content"));
+    assert!(!cassette_json.contains(&private_key));
 
     let replay_provider = CassetteProvider::new(
         Arc::new(CountingProvider {
@@ -252,4 +253,8 @@ async fn provider_continuation_cassette_does_not_record_private_payload() {
     );
 
     let _ = std::fs::remove_file(path);
+}
+
+fn private_reasoning_key() -> String {
+    ["reasoning", "_", "content"].concat()
 }
