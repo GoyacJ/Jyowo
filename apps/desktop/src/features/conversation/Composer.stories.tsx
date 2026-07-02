@@ -92,24 +92,35 @@ type Story = StoryObj<typeof meta>
 
 export const Ready: Story = {}
 
-export const Submitting: Story = {
+export const Loading: Story = {
   args: {
     mode: { kind: 'submitting' },
   },
 }
 
-export const Running: Story = {
+export const Empty: Story = {
   args: {
-    cancelPending: false,
-    mode: { kind: 'running-disabled', canCancel: true },
+    modelConfigDisabled: true,
+    modelConfigId: '',
+    modelConfigs: [],
   },
 }
 
 export const ErrorState: Story = {
+  name: 'Error',
   args: {
     errorMessage: 'Runtime rejected the request before starting the run.',
     mode: { kind: 'retry' },
     onRetry: () => undefined,
+  },
+}
+
+export const Submitting: Story = Loading
+
+export const Running: Story = {
+  args: {
+    cancelPending: false,
+    mode: { kind: 'running-disabled', canCancel: true },
   },
 }
 

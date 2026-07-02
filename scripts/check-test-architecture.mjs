@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 
@@ -86,6 +86,21 @@ const temporaryAllowlist = [
 
 const allowlistedFiles = new Set(temporaryAllowlist.map((e) => e.file))
 
+export function isTrackedTestFile(p) {
+  return (
+    (p.startsWith('crates/') && p.includes('/tests/') && p.endsWith('.rs')) ||
+    (p.startsWith('apps/desktop/src-tauri/tests/') && p.endsWith('.rs')) ||
+    (p.startsWith('apps/desktop/src/') && (p.endsWith('.test.ts') || p.endsWith('.test.tsx') || p.endsWith('.stories.tsx') || p.endsWith('.stories.ts'))) ||
+    (p.startsWith('apps/desktop/e2e/') && p.endsWith('.spec.ts')) ||
+    (p.startsWith('scripts/') && (p.endsWith('.test.mjs') || p.endsWith('.test.ts')))
+  )
+}
+
+function isTestFixtureFile(p) {
+  return p.startsWith('apps/desktop/src/testing/') && (p.endsWith('.ts') || p.endsWith('.tsx'))
+}
+
+export function checkTestArchitecture() {
 // ── Collect all tracked test files ──
 
 let allTracked
@@ -98,21 +113,7 @@ try {
   process.exit(1)
 }
 
-function isTestFile(p) {
-  return (
-    (p.startsWith('crates/') && basename(dirname(p)) === 'tests' && p.endsWith('.rs')) ||
-    (p.startsWith('apps/desktop/src-tauri/tests/') && p.endsWith('.rs')) ||
-    (p.startsWith('apps/desktop/src/') && (p.endsWith('.test.ts') || p.endsWith('.test.tsx') || p.endsWith('.stories.tsx') || p.endsWith('.stories.ts'))) ||
-    (p.startsWith('apps/desktop/e2e/') && p.endsWith('.spec.ts')) ||
-    (p.startsWith('scripts/') && (p.endsWith('.test.mjs') || p.endsWith('.test.ts')))
-  )
-}
-
-function isTestFixtureFile(p) {
-  return p.startsWith('apps/desktop/src/testing/') && (p.endsWith('.ts') || p.endsWith('.tsx'))
-}
-
-const trackedTestFiles = allTracked.filter(isTestFile)
+const trackedTestFiles = allTracked.filter(isTrackedTestFile)
 const trackedFixtureFiles = allTracked.filter(isTestFixtureFile)
 
 let errors = []
@@ -231,3 +232,8 @@ if (errors.length > 0) {
 }
 
 console.log('Test architecture check passed.')
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  checkTestArchitecture()
+}

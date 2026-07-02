@@ -54,6 +54,7 @@ export const Loading: Story = {
 }
 
 export const ErrorState: Story = {
+  name: 'Error',
   args: {
     context: null,
     errorMessage: 'Workspace context is unavailable.',

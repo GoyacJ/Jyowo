@@ -6,11 +6,11 @@
 |---|---|
 | Frontend Vitest files | 64 |
 | Frontend Vitest test cases | 553 |
-| Storybook files | 12 |
+| Storybook files | 13 |
 | Playwright spec files | 4 |
 | Rust test files | 290 |
-| Rust `#[test]` / `#[tokio::test]` count | 2024 |
-| Script policy test files | 7 |
+| Rust `#[test]` / `#[tokio::test]` count | 2038 |
+| Script policy test files | 8 |
 
 ## Largest Test Files by Line Count
 
@@ -170,6 +170,7 @@ None.
 
 ### settings
 - apps/desktop/src/features/settings/MCPServerCard.stories.tsx
+- apps/desktop/src/features/settings/models/CapabilityRoutesPanel.stories.tsx
 - apps/desktop/src/features/settings/models/ModelSettingsPage.stories.tsx
 
 ## Duplicate contract.rs / api_contract.rs Pairs

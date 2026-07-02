@@ -25,26 +25,39 @@ export default meta
 
 type Story = StoryObj<typeof meta>
 
-export const Compact: Story = {}
+export const Loading: Story = {
+  args: {
+    activeRunId: 'run-starting',
+  },
+}
 
-export const Idle: Story = {
+export const Empty: Story = {
   args: {
     activeRunId: undefined,
   },
 }
 
-export const Running: Story = {
+export const Ready: Story = {
   args: {
-    activeRunId: 'run-002',
+    activeRunId: undefined,
   },
 }
 
-export const Failed: Story = {
+export const ErrorState: Story = {
+  name: 'Error',
   args: {
     activeRunId: 'run-003',
     errorMessage: 'Command failed during verification.',
   },
 }
+
+export const Compact: Story = {}
+
+export const Idle: Story = Empty
+
+export const Running: Story = Loading
+
+export const Failed: Story = ErrorState
 
 function StoryFrame({ children }: { children: ReactNode }) {
   return (

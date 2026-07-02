@@ -21,7 +21,7 @@
     "check:backend-docs": "node --test scripts/backend-docs-policy.test.mjs && node scripts/check-backend-docs.mjs",
     "check:agent-orchestration-no-fakes": "node --test scripts/check-agent-orchestration-no-fakes.test.mjs && node scripts/check-agent-orchestration-no-fakes.mjs",
     "check:testing-docs": "node scripts/check-testing-docs.mjs",
-    "check:test-architecture": "node scripts/check-test-architecture.mjs",
+    "check:test-architecture": "node --test scripts/test-architecture-policy.test.mjs && node scripts/check-test-architecture.mjs",
     "check:agent-supervisor-sidecar": "node --test scripts/build-agent-supervisor-sidecar.test.mjs && node --test scripts/check-agent-supervisor-sidecar.test.mjs && node scripts/check-agent-supervisor-sidecar.mjs",
     "build:agent-supervisor-sidecar": "node scripts/build-agent-supervisor-sidecar.mjs",
     "check:design2-docs": "node scripts/check-design2-docs.mjs",

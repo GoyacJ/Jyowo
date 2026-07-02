@@ -34,6 +34,16 @@ export const Ready: Story = {
   decorators: [withStoryFrame],
 }
 
+export const Empty: Story = {
+  args: {
+    content: '',
+    kind: 'markdown',
+    state: 'ready',
+    title: 'Empty artifact',
+  },
+  decorators: [withStoryFrame],
+}
+
 export const Loading: Story = {
   args: {
     state: 'loading',
@@ -42,7 +52,8 @@ export const Loading: Story = {
   decorators: [withStoryFrame],
 }
 
-export const PreviewError: Story = {
+export const ErrorState: Story = {
+  name: 'Error',
   args: {
     errorMessage: 'Preview unavailable.',
     state: 'error',
@@ -51,7 +62,7 @@ export const PreviewError: Story = {
   decorators: [withStoryFrame],
 }
 
-export const LargePreview: Story = {
+export const LargeOutput: Story = {
   args: {
     content: `${'Generated artifact line\n'.repeat(120)}`,
     kind: 'markdown',
@@ -61,6 +72,10 @@ export const LargePreview: Story = {
   },
   decorators: [withStoryFrame],
 }
+
+export const PreviewError: Story = ErrorState
+
+export const LargePreview: Story = LargeOutput
 
 export const History: Story = {
   args: {

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -72,17 +72,26 @@ function walkAllFiles(dir, maxDepth = 20) {
   return results.sort()
 }
 
-function countRustTestFunctions(filePath) {
-  const lines = readLines(filePath)
+export function countRustTestFunctionsFromContent(content) {
+  const lines = content.split(/\r?\n/)
   let count = 0
   for (const line of lines) {
-    if (/^\s*#\[(tokio::)?test\]/.test(line) || /^\s*#\[test\]/.test(line)) {
+    if (/^\s*#\[(?:tokio::)?test(?:\s*\([^)]*\))?\]/.test(line)) {
       count++
     }
   }
   return count
 }
 
+function countRustTestFunctions(filePath) {
+  try {
+    return countRustTestFunctionsFromContent(readFileSync(filePath, 'utf8'))
+  } catch {
+    return 0
+  }
+}
+
+export function printTestInventory() {
 // ── Scan ──
 
 const frontendTestFiles = [
@@ -341,4 +350,9 @@ if (contractDuplicates.length === 0) {
   for (const dir of contractDuplicates) {
     console.log(`- ${dir}`)
   }
+}
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  printTestInventory()
 }
