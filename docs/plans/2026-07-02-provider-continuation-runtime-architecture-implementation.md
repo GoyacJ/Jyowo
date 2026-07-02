@@ -1443,29 +1443,29 @@ Do not edit files.
 - Create: `crates/jyowo-harness-model/src/openai_compatible/request.rs`
 - Modify: `crates/jyowo-harness-model/src/openai_compatible/streaming.rs`
 - Modify: provider files that construct `OpenAiCompatibleClient`
-- Test: `cargo test -p jyowo-harness-model openai_compatible`
+- Test: `cargo test -p jyowo-harness-model --features openai-compatible,deepseek,minimax,qwen,doubao,zhipu,km,openrouter,local-llama openai_compatible`
 
 **Goal:** Split shared transport from provider dialect behavior without changing provider-visible behavior yet.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State which code moves, which public behavior must remain unchanged, and how dialect is selected for each current OpenAI-compatible provider.
 
-- [ ] **Move client transport**
+- [x] **Move client transport**
 
   Move HTTP send, retries, credential selection, cooldown, concurrency, and middleware integration into `client.rs`.
 
   `mod.rs` should re-export only intentional crate-private items.
 
-- [ ] **Move Chat Completions mapping**
+- [x] **Move Chat Completions mapping**
 
   Move `chat_request_body`, `chat_message`, `assistant_message`, `tool_message`, `content_parts`, and tool schema mapping into `chat_codec.rs` and `request.rs` as appropriate.
 
-- [ ] **Move Responses mapping**
+- [x] **Move Responses mapping**
 
   Move Responses-specific body and stream mapping into `responses_codec.rs`.
 
-- [ ] **Add dialect config**
+- [x] **Add dialect config**
 
   `OpenAiCompatibleClient` must carry:
 
@@ -1492,26 +1492,26 @@ Do not edit files.
   | `local_llama.rs` | `OpenAiChatDialect::LocalLlama` |
   | generic fallback | `OpenAiChatDialect::Plain` |
 
-- [ ] **Behavior-preserving tests**
+- [x] **Behavior-preserving tests**
 
   Existing OpenAI-compatible request-body and streaming tests must still pass.
 
   Add tests asserting each provider constructs the expected dialect.
 
-- [ ] **Run focused tests**
+- [x] **Run focused tests**
 
   ```bash
-  cargo test -p jyowo-harness-model openai_compatible
-  cargo test -p jyowo-harness-model provider_domestic
+  cargo test -p jyowo-harness-model --features openai-compatible,deepseek,minimax,qwen,doubao,zhipu,km,openrouter,local-llama openai_compatible
+  cargo test -p jyowo-harness-model --features deepseek,minimax,qwen,doubao,zhipu,km --test provider_domestic
   ```
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm the split does not create duplicate request builders or compatibility wrappers left behind.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-model

@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::{ContentDelta, ContentType, ErrorClass, ErrorHints, ModelStream, ModelStreamEvent};
 
-use super::{stop_reason, usage, OpenAiUsage};
+use super::chat_codec::{stop_reason, usage, OpenAiUsage};
 
 const POST_FINISH_USAGE_GRACE: Duration = Duration::from_millis(250);
 

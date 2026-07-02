@@ -2,12 +2,47 @@ use async_stream::stream;
 use futures::StreamExt;
 use harness_contracts::{ModelError, StopReason, UsageSnapshot};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::{
-    ContentDelta, ContentType, ErrorClass, ErrorHints, ModelStream, ModelStreamEvent,
-    ReasoningSummaryDelta, ThinkingDelta,
+    ContentDelta, ContentType, ErrorClass, ErrorHints, InferContext, ModelRequest, ModelStream,
+    ModelStreamEvent, ReasoningSummaryDelta, ThinkingDelta,
 };
+
+use super::request::{chat_message, merge_extra_object, responses_tool, DEFAULT_MAX_TOKENS};
+
+pub(super) async fn responses_request_body(
+    req: &ModelRequest,
+    ctx: &InferContext,
+) -> Result<Value, ModelError> {
+    let mut input = Vec::new();
+    if let Some(system) = &req.system {
+        input.push(json!({
+            "role": "system",
+            "content": system,
+        }));
+    }
+    for message in &req.messages {
+        input.push(chat_message(message, ctx).await?);
+    }
+
+    let mut body = json!({
+        "model": req.model_id,
+        "input": input,
+        "max_output_tokens": req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+        "stream": req.stream,
+    });
+
+    if let Some(temperature) = req.temperature {
+        body["temperature"] = json!(temperature);
+    }
+    if let Some(tools) = &req.tools {
+        body["tools"] = Value::Array(tools.iter().map(responses_tool).collect());
+    }
+    merge_extra_object(&mut body, &req.extra)?;
+
+    Ok(body)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SseEvent {
