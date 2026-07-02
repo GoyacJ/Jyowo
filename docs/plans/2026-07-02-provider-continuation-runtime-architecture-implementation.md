@@ -180,7 +180,6 @@ Allowed reset targets:
 .jyowo/runtime/conversation-read-model.sqlite-wal
 .jyowo/runtime/conversation-metadata.json
 .jyowo/runtime/provider-continuations.jsonl
-.jyowo/runtime/provider-continuations.lock
 ```
 
 Forbidden reset targets:
@@ -344,7 +343,7 @@ crates/jyowo-harness-provider-state
 Core record:
 
 ```rust
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProviderContinuationRecord {
     pub provider_id: String,
@@ -361,6 +360,10 @@ pub struct ProviderContinuationRecord {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 ```
+
+`ProviderContinuationRecord` must not derive raw `Debug`. Implement a custom `Debug` that includes stable metadata fields and replaces `payload` with `"<redacted>"`.
+
+Every type that directly carries `ProviderContinuationRecord` values or raw continuation `payload` values must either avoid `Debug` or implement a redacted custom `Debug`. This includes `ProviderRequestContext`, `ModelRequest`, `ModelStreamEvent`, `StreamAggregate`, `TurnAssembly`, and any provider continuation error/context type introduced by this plan.
 
 Required supporting types:
 
@@ -430,10 +433,16 @@ File store consistency requirements:
 - `FileProviderContinuationStore` must serialize `load_for_messages`, `append_batch`, and `prune_session` within one process.
 - `append_batch` must write a complete serialized JSONL buffer while holding the store lock.
 - `append_batch` must open the file with create+append semantics and call `sync_data` after writing.
-- `prune_session` must write the retained records to a temporary file in the same directory, call `sync_data`, then replace the original file with an atomic rename.
+- `prune_session` must write the retained records to a temporary file in the same directory, call `sync_data` on the file, replace the original file with an atomic rename, then sync the parent directory so the renamed directory entry is durable.
 - Temporary files left by a failed prune must not be read as provider continuation records.
 - Corrupt or partial JSONL records in the main store file fail closed.
 - This plan does not add cross-process locking. Current desktop runtime must open one store instance per workspace process and pass that shared store through SDK to Engine. If multi-process same-workspace execution is introduced later, add a filesystem lock design before enabling it.
+
+Lifecycle requirement:
+
+- When a conversation session is deleted through the SDK facade, provider continuation records for the exact `(tenant_id, session_id)` must be pruned through `ProviderContinuationStore::prune_session`.
+- Pruning must happen only after the SDK has determined the conversation delete succeeded for that session.
+- A prune failure must fail the delete operation with a safe error; it must not be ignored and must not include payload data.
 
 ### Provider dialects own wire quirks
 
@@ -678,6 +687,8 @@ Do not edit files.
   - Provider codecs may interpret continuation payloads for their own dialect.
   - Continuation lookup keys must come from final assembled prompt messages after compaction.
   - Missing required continuation fails closed before provider request dispatch.
+  - Types carrying provider continuation payloads must avoid raw Debug output.
+  - Conversation deletion must prune provider continuation records for the deleted session.
   - Existing development-phase conversation runtime state is cleared once instead of migrated or backfilled.
   ```
 
@@ -725,6 +736,7 @@ Do not edit files.
 
   Provider continuation payloads are private.
   They must not be written to public events, logs, traces, screenshots, snapshots, support bundles, frontend state, or exported transcripts.
+  Types carrying continuation payloads must use redacted debug output or avoid Debug.
 
   For this plan, provider continuation payloads are stored as local plaintext runtime data under `.jyowo/runtime`.
   The privacy boundary is public-surface exclusion, not encryption at rest.
@@ -741,6 +753,10 @@ Do not edit files.
   Existing conversation runtime state created before provider continuation support is cleared once.
   It is not migrated.
   User configuration, provider settings, execution settings, memory, agent runtime state, MCP settings, skills, and plugin stores are preserved.
+
+  ## Deletion Lifecycle
+
+  Successful conversation deletion prunes provider continuation records for the exact deleted session.
   ```
 
 - [ ] **Create harness-engine architecture doc**
@@ -785,7 +801,7 @@ Do not edit files.
 
 - [ ] **Read-only subagent audit**
 
-  Audit must confirm docs contain the layer rule, privacy rule, plaintext-local-storage boundary, development reset rule, final-message lookup rule, MiniMax explicit dialect rule, and fail-closed rule.
+  Audit must confirm docs contain the layer rule, privacy rule, redacted debug rule, plaintext-local-storage boundary, development reset rule, conversation deletion prune rule, final-message lookup rule, MiniMax explicit dialect rule, and fail-closed rule.
 
 - [ ] **Commit**
 
@@ -808,7 +824,7 @@ Do not edit files.
 
 - [ ] **Pre-task analysis gate**
 
-  State the storage format, trait shape, error type, no-public-event invariant, and why this crate has no dependency on Engine, Model, Journal, SDK, or desktop shell.
+  State the storage format, trait shape, safe error shape, redacted debug rule, no-public-event invariant, and why this crate has no dependency on Engine, Model, Journal, SDK, or desktop shell.
 
 - [ ] **Add workspace member**
 
@@ -877,13 +893,15 @@ Do not edit files.
   - Store operations are serialized within the process by a store-owned async mutex.
   - `append_batch` serializes the full batch to JSONL before opening the file, writes the full buffer while holding the lock, and calls `sync_data`.
   - `append_batch` must not write partial record fragments intentionally. If the OS fails mid-write, later reads fail closed on the partial JSONL line.
-  - `prune_session` rewrites through a same-directory temporary file, syncs it, and atomically renames it over the main store file.
+  - `prune_session` rewrites through a same-directory temporary file, syncs the file, atomically renames it over the main store file, and syncs the parent directory after rename.
   - `load_for_messages` reads only `.jyowo/runtime/provider-continuations.jsonl`. It must ignore temporary prune files.
   - `load_for_messages` returns only records matching every query dimension.
   - If multiple records match the same `(message_id, kind)`, return the newest by `created_at`.
   - Invalid JSONL lines fail closed with `ProviderContinuationStoreError::CorruptRecord`.
   - `append_batch` rejects records whose payload is `null`.
   - `prune_session` removes records for the exact `(tenant_id, session_id)` and preserves other sessions.
+  - `ProviderContinuationStoreError` must implement safe `Display` messages that do not include raw payloads, serialized records, provider-private field names, or full workspace paths. Path details may be reduced to the fixed store label `provider-continuations.jsonl`.
+  - `ProviderContinuationRecord` must implement redacted custom `Debug`; its debug output must never contain payload strings.
   - The crate must not claim cross-process consistency. Desktop wiring in Task 9 must create one store instance and share it through SDK and Engine.
 
 - [ ] **Write store tests first**
@@ -914,6 +932,12 @@ Do not edit files.
 
   #[tokio::test]
   async fn prune_session_uses_atomic_replace_and_ignores_temp_files() { ... }
+
+  #[test]
+  fn provider_continuation_record_debug_redacts_payload() { ... }
+
+  #[test]
+  fn provider_continuation_store_errors_do_not_display_payload_or_full_paths() { ... }
   ```
 
 - [ ] **Run crate tests**
@@ -934,7 +958,7 @@ Do not edit files.
 
 - [ ] **Read-only subagent audit**
 
-  Audit must confirm the new crate has no dependency on Engine, Model, Journal, SDK, desktop shell, or frontend code, and that file-store tests cover in-process serialization, corrupt-record fail-closed behavior, and prune atomic-replace behavior.
+  Audit must confirm the new crate has no dependency on Engine, Model, Journal, SDK, desktop shell, or frontend code, and that file-store tests cover in-process serialization, corrupt-record fail-closed behavior, prune atomic-replace behavior with parent-directory sync intent, redacted debug output, and safe error display.
 
 - [ ] **Commit**
 
@@ -1095,7 +1119,7 @@ Do not edit files.
 
 - [ ] **Pre-task analysis gate**
 
-  State how `ModelRequest` changes, how stream events change, and which code must not observe provider-private payloads.
+  State how `ModelRequest` changes, how stream events change, how redacted `Debug` is preserved, and which code must not observe provider-private payloads.
 
 - [ ] **Extend `ModelRequest`**
 
@@ -1108,7 +1132,7 @@ Do not edit files.
   Required shape:
 
   ```rust
-  #[derive(Debug, Clone, Default, PartialEq)]
+  #[derive(Clone, Default, PartialEq)]
   pub struct ProviderRequestContext {
       pub provider_id: String,
       pub model_config_id: Option<String>,
@@ -1117,7 +1141,11 @@ Do not edit files.
   }
   ```
 
+  `ProviderRequestContext` must not derive raw `Debug` because it carries `ProviderContinuationRecord`. Implement a custom `Debug` that includes provider id, model config id, dialect, and continuation count only.
+
   Every `ModelRequest` construction in tests and production must set this field. Use `ProviderRequestContext::default()` only for providers that do not require private replay.
+
+  Because `ModelRequest` now contains `ProviderRequestContext`, `ModelRequest` must also stop deriving raw `Debug` or must implement custom redacted `Debug`. Formatting a `ModelRequest` with `{:?}` must not reveal continuation payloads.
 
 - [ ] **Update every direct `ModelRequest` construction site**
 
@@ -1148,11 +1176,14 @@ Do not edit files.
 
   This event is private. It must not be converted to `ContentDelta`, `DeltaChunk`, `MessagePart`, or public `Event`.
 
+  `ModelStreamEvent` must not derive raw `Debug` after adding this variant. Implement custom redacted `Debug` for the continuation variant, or split private continuation captures into a non-debug wrapper. Formatting a `ProviderContinuationDelta` event with `{:?}` must not reveal payload strings.
+
 - [ ] **Update stream aggregator**
 
   Add a `StreamAggregate::ProviderContinuationDelta { kind, payload }` variant if `StreamAggregator` remains the stream normalization boundary.
 
   The aggregator may pass the opaque payload through. It must not inspect provider-private fields.
+  If `StreamAggregate` derives `Debug`, replace it with redacted custom `Debug`.
 
 - [ ] **Tests**
 
@@ -1160,6 +1191,9 @@ Do not edit files.
 
   - provider continuation stream event is preserved by model stream aggregation.
   - provider continuation stream event does not become text, thinking, or tool-use content.
+  - `format!("{:?}", ProviderRequestContext { ... })` does not include the sentinel payload.
+  - `format!("{:?}", ModelRequest { ... })` does not include the sentinel payload.
+  - `format!("{:?}", ModelStreamEvent::ProviderContinuationDelta { ... })` does not include the sentinel payload.
   - debug or serde contract tests do not export continuation payload as public schema.
 
 - [ ] **Run model continuation tests**
@@ -1173,7 +1207,7 @@ Do not edit files.
 
 - [ ] **Read-only subagent audit**
 
-  Audit must confirm continuation payloads are model-private and not public contract additions.
+  Audit must confirm continuation payloads are model-private, redacted from debug output, and not public contract additions.
 
 - [ ] **Commit**
 
@@ -1276,7 +1310,7 @@ Do not edit files.
 
 - [ ] **Pre-task analysis gate**
 
-  State exact lookup timing, why `assembled.messages` is used instead of `working_messages`, how fail-closed works, and how records are stored after public events.
+  State exact lookup timing, why `assembled.messages` is used instead of `working_messages`, how fail-closed works when the store is missing or a record is missing, how exact record matching works, and how records are stored after public events.
 
 - [ ] **Add Engine store injection**
 
@@ -1297,6 +1331,9 @@ Do not edit files.
 
   `into_builder` must preserve the store.
 
+  `Option` is allowed only so providers that do not require private replay can run without the store in tests and non-desktop SDK usage.
+  If the selected model semantics require private replay and either the final prompt already contains assistant tool-use messages or the outgoing request includes tools that can produce assistant tool-use replay later in the same run, a missing store must fail closed before the provider request is dispatched.
+
 - [ ] **Build provider request context from final prompt**
 
   Before `ModelRequest` creation, call a focused helper:
@@ -1312,10 +1349,14 @@ Do not edit files.
   ```
 
   It must extract assistant message ids from `final_messages`.
+  Matching must be exact by `provider_id`, `model_config_id`, `protocol`, `dialect`, `tenant_id`, `session_id`, `message_id`, and `ProviderContinuationKind`.
+  The implementation must not satisfy a required continuation by count alone.
 
 - [ ] **Fail closed when required**
 
-  If `model_snapshot.runtime_semantics.reasoning_protocol` requires private replay and the final prompt contains an assistant tool-use message without a matching continuation record, return `ModelError::InvalidRequest` before network dispatch.
+  If `model_snapshot.runtime_semantics.reasoning_protocol` requires private replay and no provider continuation store is configured, return `ModelError::InvalidRequest` before network dispatch.
+
+  If `model_snapshot.runtime_semantics.reasoning_protocol` requires private replay and the final prompt contains an assistant tool-use message without an exact matching continuation record, return `ModelError::InvalidRequest` before network dispatch.
 
   The error message must be safe:
 
@@ -1324,6 +1365,7 @@ Do not edit files.
   ```
 
   It must not include provider-private payload.
+  The missing-store path must use the same safe error message or another fixed safe message that contains no provider-private data.
 
 - [ ] **Store private records**
 
@@ -1359,6 +1401,12 @@ Do not edit files.
   async fn engine_fails_closed_when_required_assistant_tool_replay_continuation_is_missing() { ... }
 
   #[tokio::test]
+  async fn engine_fails_closed_before_provider_request_when_required_replay_store_is_missing() { ... }
+
+  #[tokio::test]
+  async fn engine_requires_exact_continuation_match_not_record_count() { ... }
+
+  #[tokio::test]
   async fn engine_stores_provider_continuation_outside_journal() { ... }
   ```
 
@@ -1373,7 +1421,7 @@ Do not edit files.
 
 - [ ] **Read-only subagent audit**
 
-  Audit must confirm continuation lookup uses final assembled messages and Engine does not inspect provider-private field names.
+  Audit must confirm continuation lookup uses final assembled messages, missing required store and missing exact record both fail before provider dispatch, and Engine does not inspect provider-private field names.
 
 - [ ] **Commit**
 
@@ -1501,8 +1549,9 @@ Do not edit files.
   - crates/jyowo-harness-model/src/openai_compatible/continuation.rs
   - crates/jyowo-harness-model/src/openai_compatible/dialect.rs
   - crates/jyowo-harness-model/tests/deepseek_continuation.rs
-  - narrowly scoped OpenAI-compatible streaming tests if needed
   ```
+
+  If a narrowly scoped streaming regression is needed, put it in `crates/jyowo-harness-model/tests/deepseek_continuation.rs` so the final source scan remains deterministic.
 
   Emit:
 
@@ -1608,18 +1657,21 @@ Do not edit files.
 
 - Modify: `crates/jyowo-harness-sdk/Cargo.toml`
 - Modify: `crates/jyowo-harness-sdk/src/builder.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness.rs`
+- Modify: `crates/jyowo-harness-sdk/src/harness/conversation.rs`
 - Modify: SDK harness assembly files that build `Engine`
 - Modify: `apps/desktop/src-tauri/Cargo.toml`
 - Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
-- Modify: `apps/desktop/src-tauri/tests/commands/runtime.rs` or the existing runtime command test file
+- Modify: `apps/desktop/src-tauri/tests/commands.rs`
+- Create: `apps/desktop/src-tauri/tests/commands/provider_continuation_runtime.rs`
 - Create or modify SDK tests under `crates/jyowo-harness-sdk/tests/`
 - Test: `cargo test -p jyowo-harness-sdk provider_continuation`
 
-**Goal:** Ensure desktop runtime performs the development-phase conversation reset, opens a real provider continuation store, and passes it through SDK to Engine.
+**Goal:** Ensure desktop runtime performs the development-phase conversation reset, opens a real provider continuation store, passes it through SDK to Engine, and prunes private continuation records when a conversation session is deleted.
 
 - [ ] **Pre-task analysis gate**
 
-  State the development reset trigger, exact paths cleared and preserved, the assembly path from desktop runtime to SDK builder to Engine builder, and why no frontend state is added.
+  State the development reset trigger, exact paths cleared and preserved, the assembly path from desktop runtime to SDK builder to Harness inner state to Engine builder, the conversation deletion prune path, and why no frontend state is added.
 
 - [ ] **Implement development-phase conversation reset**
 
@@ -1666,6 +1718,8 @@ Do not edit files.
   pub(crate) provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
   ```
 
+  The SDK must also preserve this store in the built `Harness` inner state so both Engine creation and conversation lifecycle methods can use the same store instance.
+
   Add builder methods:
 
   ```rust
@@ -1683,7 +1737,17 @@ Do not edit files.
 
   Every SDK path that builds `Engine` must pass the store when present.
 
-  If a model requires private replay and no store exists, Engine fail-closed behavior from Task 6 must protect runtime.
+  If a model requires private replay and no store exists, Engine fail-closed behavior from Task 6 must protect runtime before provider request dispatch.
+
+- [ ] **Prune store on conversation deletion**
+
+  In `crates/jyowo-harness-sdk/src/harness/conversation.rs`, update `Harness::delete_conversation_session`:
+
+  - after the SDK has determined the conversation delete succeeded for the exact `(tenant_id, session_id)`, call `provider_continuation_store.prune_session(tenant_id, session_id)` when a store is configured.
+  - prune before inserting into `deleted_conversation_sessions` and before returning success.
+  - if pruning fails, return a safe `HarnessError`/`ModelError` path that does not include payload data.
+  - do not prune when the conversation delete did not succeed.
+  - do not add a Tauri command special case for provider continuations; desktop deletion must go through the SDK lifecycle.
 
 - [ ] **Open real desktop file store**
 
@@ -1711,9 +1775,16 @@ Do not edit files.
 
   #[tokio::test]
   async fn runtime_with_deepseek_semantics_requires_provider_continuation_store() { ... }
+
+  #[tokio::test]
+  async fn sdk_delete_conversation_session_prunes_provider_continuations() { ... }
+
+  #[tokio::test]
+  async fn sdk_delete_conversation_session_returns_safe_error_when_prune_fails() { ... }
   ```
 
-  Desktop command code should be covered by existing runtime assembly tests or a new focused test that verifies the store path.
+  Desktop command code must be covered by `apps/desktop/src-tauri/tests/commands/provider_continuation_runtime.rs`, registered from `apps/desktop/src-tauri/tests/commands.rs`, or by an existing command test file if the implementation proves a better existing owner.
+  The test must verify the store path and that `delete_conversation_with_runtime_state` uses the SDK deletion path rather than manually deleting provider continuation files.
   Desktop reset code must be covered by the two reset tests above.
 
 - [ ] **Run focused tests**
@@ -1728,7 +1799,7 @@ Do not edit files.
 
 - [ ] **Read-only subagent audit**
 
-  Audit must confirm the desktop path performs the one-time development reset before opening the real file store, preserves non-conversation user state, shares one store through SDK and Engine, and exposes no continuation data through frontend or public IPC payloads.
+  Audit must confirm the desktop path performs the one-time development reset before opening the real file store, preserves non-conversation user state, shares one store through SDK and Engine, prunes provider continuations on successful conversation deletion, and exposes no continuation data through frontend or public IPC payloads.
 
 - [ ] **Commit**
 
@@ -1884,7 +1955,13 @@ Do not edit files.
 
   #[tokio::test]
   async fn provider_continuation_payload_not_in_error_message_when_missing_or_invalid() { ... }
+
+  #[tokio::test]
+  async fn provider_continuation_payload_not_in_debug_output_for_request_event_or_context() { ... }
   ```
+
+  The debug-output test must cover every production type that can carry private continuation payloads after Tasks 2 and 4.
+  It must fail if a raw `Debug` derive exposes `PRIVATE_DEEPSEEK_REASONING_SENTINEL`.
 
 - [ ] **Add support bundle export test**
 
@@ -1937,7 +2014,7 @@ Do not edit files.
 
 - [ ] **Read-only subagent audit**
 
-  Audit must confirm the sentinel is absent from all public surfaces and error messages.
+  Audit must confirm the sentinel is absent from all public surfaces, debug output, logs/traces reachable from the changed code, and error messages.
 
 - [ ] **Commit**
 
@@ -1961,6 +2038,7 @@ Do not edit files.
 - [ ] **Pre-task analysis gate**
 
   State whether frontend changes are needed. If none are needed, state the exact source scan proving it.
+  Explicitly state whether `ModelInventoryEntry.runtime_semantics` is internal-only and how provider catalog IPC payloads avoid exposing it.
 
 - [ ] **Scan frontend public surface**
 
@@ -1971,6 +2049,19 @@ Do not edit files.
   ```
 
   Expected before intentional frontend changes: exit code 0 and no matches.
+
+- [ ] **Verify provider inventory IPC projection**
+
+  `ModelRuntimeSemantics` may exist on internal model inventory structures, but desktop IPC payloads and frontend Zod schemas must not expose it.
+
+  Required checks:
+
+  ```bash
+  ! rg -n "runtimeSemantics|runtime_semantics|ProviderContinuation|providerContinuation|reasoningContent|reasoning_content" apps/desktop/src/shared/tauri apps/desktop/src/features
+  rg -n "runtimeSemantics|runtime_semantics|providerContinuation|reasoningContent|reasoning_content" apps/desktop/src-tauri/src/commands/providers.rs || true
+  ```
+
+  If the second scan finds an internal-only Rust reference needed to build provider descriptors, add a focused test proving `list_model_provider_catalog` and provider settings/list payload serialization do not contain `runtimeSemantics`, `runtime_semantics`, `providerContinuation`, `reasoningContent`, or `reasoning_content`.
 
 - [ ] **Update schemas only if required**
 
@@ -1984,6 +2075,8 @@ Do not edit files.
   reasoning_content
   providerNative
   continuationPayload
+  runtimeSemantics
+  runtime_semantics
   ```
 
 - [ ] **Run desktop gate**
@@ -1996,7 +2089,7 @@ Do not edit files.
 
 - [ ] **Read-only subagent audit**
 
-  Audit must confirm frontend does not store or render provider continuation data.
+  Audit must confirm frontend does not store or render provider continuation data and provider inventory IPC payloads do not expose internal runtime semantics.
 
 - [ ] **Commit**
 
@@ -2076,6 +2169,9 @@ Do not edit files.
 
   #[test]
   fn provider_registry_resolves_minimax_without_private_replay_requirement() { ... }
+
+  #[test]
+  fn provider_inventory_runtime_semantics_are_not_serialized_to_public_catalog_payloads() { ... }
   ```
 
 - [ ] **Run registry tests**
@@ -2090,7 +2186,7 @@ Do not edit files.
 
 - [ ] **Read-only subagent audit**
 
-  Audit must confirm every provider descriptor has explicit semantics and no provider-private semantics are exposed to public frontend capability payloads.
+  Audit must confirm every provider descriptor has explicit semantics and no provider-private semantics or internal runtime semantics are exposed to public frontend capability or provider catalog payloads.
 
 - [ ] **Commit**
 
@@ -2135,7 +2231,7 @@ Do not edit files.
   Run:
 
   ```bash
-  rg -n "PRIVATE_DEEPSEEK_REASONING_SENTINEL|deepseek.reasoning_content.v1" apps/desktop/src crates/jyowo-harness-contracts/src/events crates/jyowo-harness-contracts/src/conversation.rs crates/jyowo-harness-contracts/src/messages.rs crates/jyowo-harness-journal
+  ! rg -n "PRIVATE_DEEPSEEK_REASONING_SENTINEL|deepseek.reasoning_content.v1" apps/desktop/src crates/jyowo-harness-contracts/src/events crates/jyowo-harness-contracts/src/conversation.rs crates/jyowo-harness-contracts/src/messages.rs crates/jyowo-harness-journal
   ```
 
   Expected: no output.
@@ -2191,9 +2287,11 @@ Do not edit files.
   - DeepSeek continuation replay works through real codec and Engine paths.
   - MiniMax remains functional without private replay through real codec and Engine regression coverage.
   - Development-phase legacy conversation runtime state is cleared once, and user configuration/non-conversation state is preserved.
-  - Provider continuation store writes are serialized within process, append writes are synced, and prune uses atomic replace.
+  - Provider continuation store writes are serialized within process, append writes are synced, and prune uses atomic replace with parent-directory sync.
+  - Provider continuations are pruned on successful conversation session deletion.
   - Local disk storage is documented as plaintext runtime storage, with no false encrypted-at-rest claim.
-  - No provider continuation payload reaches public event, Journal, Replay, frontend state, logs, traces, screenshots, exports, or snapshots.
+  - No provider continuation payload reaches public event, Journal, Replay, frontend state, logs, traces, debug output, screenshots, exports, or snapshots.
+  - Internal runtime semantics are not exposed through provider catalog IPC or frontend schemas.
   - Docs match the implemented architecture.
   - Required gates ran with exit code 0.
 
@@ -2218,17 +2316,20 @@ The implementation is complete only when all of these are true:
 
 - `jyowo-harness-provider-state` exists as an L1 crate.
 - Provider continuation records are persisted outside Journal.
-- Provider continuation file-store operations are serialized within process, append writes are synced, and prune uses same-directory atomic replace.
+- Provider continuation file-store operations are serialized within process, append writes are synced, and prune uses same-directory atomic replace with parent-directory sync.
+- Provider continuation records are pruned after successful conversation session deletion.
 - Engine loads continuation records using final `AssembledPrompt.messages`.
 - Engine stores continuation records after model response and before next tool-result iteration.
 - Engine does not inspect provider-private payload fields.
+- Types carrying provider continuation payloads use redacted debug output or avoid `Debug`.
 - `ConversationModelCapability` remains public and does not expose provider-private replay semantics.
 - `ModelRuntimeSemantics` exists and is set explicitly for all runtime descriptors.
 - OpenAI-compatible provider transport is split from dialect behavior.
 - DeepSeek dialect captures and replays private reasoning continuation.
 - MiniMax dialect has model-level codec coverage and Engine-level tool-replay coverage proving no private continuation replay is required.
 - Missing required DeepSeek continuation fails closed before provider request dispatch.
-- Provider-private continuation payloads do not appear in public events, Journal, Replay, frontend state, logs, traces, screenshots, exports, snapshots, or error messages.
+- Provider-private continuation payloads do not appear in public events, Journal, Replay, frontend state, logs, traces, debug output, screenshots, exports, snapshots, or error messages.
+- Internal runtime semantics do not appear in provider catalog IPC payloads or frontend Zod schemas.
 - Desktop runtime opens a real provider continuation file store under `.jyowo/runtime`.
 - Desktop runtime clears legacy development-phase conversation runtime state once and preserves provider settings, execution settings, memory, agent runtime state, MCP settings, skills, plugin state, config, and data.
 - Provider continuation local persistence is documented as plaintext runtime storage, not encryption at rest.
