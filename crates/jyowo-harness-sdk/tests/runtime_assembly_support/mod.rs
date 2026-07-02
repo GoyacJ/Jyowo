@@ -57,7 +57,9 @@ pub use serde_json::json;
 pub use serde_json::Value;
 pub use tokio::sync::Notify;
 
+mod agents;
 mod observability;
+pub use agents::*;
 pub use observability::*;
 
 pub fn conversation_turn_request(
@@ -65,7 +67,7 @@ pub fn conversation_turn_request(
     input: ConversationTurnInput,
     permission_mode: Option<PermissionMode>,
     permission_actor_source: Option<harness_contracts::PermissionActorSource>,
-    agent_run_options: Option<harness_contracts::AgentRunOptions>,
+    agent_tool_policy: Option<harness_contracts::AgentToolPolicy>,
 ) -> ConversationTurnRequest {
     let mut run_options = ConversationRunOptions::from_session_options(&options);
     if let Some(permission_mode) = permission_mode {
@@ -73,11 +75,11 @@ pub fn conversation_turn_request(
     }
     #[cfg(feature = "agents-subagent")]
     {
-        run_options.agent_run_options = agent_run_options;
+        run_options.agent_tool_policy = agent_tool_policy;
     }
     #[cfg(not(feature = "agents-subagent"))]
     {
-        let _ = agent_run_options;
+        let _ = agent_tool_policy;
     }
     ConversationTurnRequest {
         options,

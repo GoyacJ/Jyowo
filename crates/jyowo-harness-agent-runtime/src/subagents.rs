@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use harness_contracts::{
-    AgentRunOptions, AgentUsePolicy, SubagentRunnerCap, TeamId, ToolCapability,
+    AgentToolPolicy, AgentUsePolicy, SubagentRunnerCap, TeamId, ToolCapability,
 };
 use harness_journal::EventStore;
 use harness_subagent::{
@@ -17,7 +17,7 @@ const DEFAULT_SUBAGENT_WATCHDOG_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct SubagentRunnerAssemblyInput {
-    pub agent_run_options: AgentRunOptions,
+    pub agent_tool_policy: AgentToolPolicy,
     pub engine_factory: Arc<dyn SubagentEngineFactory>,
     pub event_store: Arc<dyn EventStore>,
     pub workspace_root: PathBuf,
@@ -31,14 +31,14 @@ pub struct SubagentTeamAttribution {
 }
 
 #[must_use]
-pub fn should_install_subagent_runner(options: &AgentRunOptions) -> bool {
+pub fn should_install_subagent_runner(options: &AgentToolPolicy) -> bool {
     options.subagents == AgentUsePolicy::Allowed
         && options.max_depth > 0
         && options.max_concurrent_subagents > 0
 }
 
 #[must_use]
-pub fn delegation_policy_from_run_options(options: &AgentRunOptions) -> DelegationPolicy {
+pub fn delegation_policy_from_run_options(options: &AgentToolPolicy) -> DelegationPolicy {
     DelegationPolicy {
         max_depth: options.max_depth,
         depth_cap: options.max_depth.saturating_add(1).min(MAX_ALLOWED_DEPTH),
@@ -50,7 +50,7 @@ pub fn delegation_policy_from_run_options(options: &AgentRunOptions) -> Delegati
 
 #[must_use]
 pub fn assemble_subagent_runner(input: SubagentRunnerAssemblyInput) -> Arc<dyn SubagentRunner> {
-    let policy = delegation_policy_from_run_options(&input.agent_run_options);
+    let policy = delegation_policy_from_run_options(&input.agent_tool_policy);
     Arc::new(
         DefaultSubagentRunner::new_with_engine_factory(
             input.engine_factory,

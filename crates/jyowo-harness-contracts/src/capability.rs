@@ -15,9 +15,10 @@ use futures::stream::BoxStream;
 
 use crate::{
     AgentId, BlobMeta, BlobRef, BlobStore, CapabilityRouteKind, CorrelationId,
-    DiagnosticsRawOutput, DiagnosticsRunRequest, Event, HookEventKind, OverflowMetadata, RunId,
-    SessionId, SkillId, SkillSourceKind, SubagentId, TenantId, ToolCapability, ToolError,
-    ToolUseId, TranscriptRef, TurnInput, UsageSnapshot,
+    DiagnosticsRawOutput, DiagnosticsRunRequest, Event, HookEventKind, InteractivityLevel,
+    OverflowMetadata, PermissionMode, RunId, SessionId, SkillId, SkillSourceKind, SubagentId,
+    TeamId, TenantId, ToolCapability, ToolError, ToolProfile, ToolSearchMode, ToolUseId,
+    TranscriptRef, TurnInput, UsageSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -124,11 +125,11 @@ pub enum AgentProfileContextMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRunOptions {
+pub struct AgentToolPolicy {
     pub subagents: AgentUsePolicy,
     pub agent_team: AgentUsePolicy,
+    pub background_agents: AgentUsePolicy,
     pub team_config: Option<AgentTeamRunConfig>,
-    pub background: BackgroundRunPolicy,
     pub workspace_isolation: AgentWorkspaceIsolationMode,
     pub max_depth: u8,
     pub max_concurrent_subagents: u32,
@@ -170,13 +171,6 @@ pub enum AgentUsePolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum BackgroundRunPolicy {
-    Foreground,
-    Background,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
 pub enum AgentWorkspaceIsolationMode {
     ReadOnly,
     PatchOnly,
@@ -187,7 +181,6 @@ pub enum AgentWorkspaceIsolationMode {
 pub enum AgentOrchestrationValidationError {
     InvalidProfileId { id: String },
     EmptyTeamMemberList,
-    MissingTeamConfig,
     UnexpectedTeamConfig,
     InvalidConcurrency { field: &'static str, value: u32 },
 }
@@ -197,9 +190,6 @@ impl std::fmt::Display for AgentOrchestrationValidationError {
         match self {
             Self::InvalidProfileId { id } => write!(f, "invalid agent profile id: {id}"),
             Self::EmptyTeamMemberList => write!(f, "agent team member list must not be empty"),
-            Self::MissingTeamConfig => {
-                write!(f, "agent team allowed but teamConfig is missing")
-            }
             Self::UnexpectedTeamConfig => {
                 write!(f, "agent team off but teamConfig is present")
             }
@@ -235,8 +225,8 @@ pub fn validate_agent_profile(
     Ok(())
 }
 
-pub fn validate_agent_run_options(
-    options: &AgentRunOptions,
+pub fn validate_agent_tool_policy(
+    options: &AgentToolPolicy,
 ) -> Result<(), AgentOrchestrationValidationError> {
     match (options.agent_team, options.team_config.as_ref()) {
         (AgentUsePolicy::Off, Some(_)) => {
@@ -313,6 +303,53 @@ pub struct SubagentCapAnnouncement {
     pub usage: UsageSnapshot,
     pub transcript_ref: Option<TranscriptRef>,
 }
+
+pub trait BackgroundAgentStarterCap: Send + Sync + 'static {
+    fn start_background_agent(
+        &self,
+        request: BackgroundAgentToolStartRequest,
+    ) -> BoxFuture<'static, Result<BackgroundAgentToolStartResponse, ToolError>>;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundAgentToolStartRequest {
+    pub tenant_id: TenantId,
+    pub conversation_id: SessionId,
+    pub parent_run_id: RunId,
+    pub tool_use_id: ToolUseId,
+    pub goal: String,
+    pub title: String,
+    pub model_config_id: Option<String>,
+    pub permission_mode: PermissionMode,
+    pub agent_tool_policy: AgentToolPolicy,
+    pub session: BackgroundAgentToolSessionSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundAgentToolSessionSnapshot {
+    pub tenant_id: TenantId,
+    pub session_id: SessionId,
+    pub tool_search: ToolSearchMode,
+    pub tool_profile: ToolProfile,
+    pub permission_mode: PermissionMode,
+    pub interactivity: InteractivityLevel,
+    pub team_id: Option<TeamId>,
+    pub max_iterations: u32,
+    pub context_compression_trigger_ratio: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundAgentToolStartResponse {
+    pub background_agent_id: String,
+    pub conversation_id: SessionId,
+    pub parent_run_id: RunId,
+    pub title: String,
+    pub status: String,
+}
+
 pub trait TodoStoreCap: Send + Sync + 'static {
     fn replace_todos(
         &self,

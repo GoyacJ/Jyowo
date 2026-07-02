@@ -200,7 +200,7 @@ import {
   pageConversationWorktree,
   parseAgentCapabilities,
   parseAgentProfile,
-  parseAgentRunOptions,
+  parseAgentToolPolicy,
   pauseBackgroundAgent,
   probeProviderConfig,
   refreshOfficialQuota,
@@ -466,7 +466,10 @@ describe('CommandClient', () => {
         return { automation, status: 'saved' }
       }
       if (command === 'set_automation_enabled') {
-        return { automation: { ...automation, enabled: true }, status: 'saved' }
+        return {
+          automation: { ...automation, enabled: true },
+          status: 'saved',
+        }
       }
       if (command === 'run_automation_now') {
         return { record: runRecord }
@@ -481,7 +484,9 @@ describe('CommandClient', () => {
     })
     const client = createInvokeCommandClient(invoke)
 
-    await expect(listAutomations(client)).resolves.toEqual({ automations: [automation] })
+    await expect(listAutomations(client)).resolves.toEqual({
+      automations: [automation],
+    })
     await expect(saveAutomation({ automation }, client)).resolves.toEqual({
       automation,
       status: 'saved',
@@ -490,8 +495,12 @@ describe('CommandClient', () => {
       automation: { ...automation, enabled: true },
       status: 'saved',
     })
-    await expect(runAutomationNow('checks', client)).resolves.toEqual({ record: runRecord })
-    await expect(listAutomationRuns('checks', client)).resolves.toEqual({ runs: [runRecord] })
+    await expect(runAutomationNow('checks', client)).resolves.toEqual({
+      record: runRecord,
+    })
+    await expect(listAutomationRuns('checks', client)).resolves.toEqual({
+      runs: [runRecord],
+    })
     await expect(deleteAutomation('checks', client)).resolves.toEqual({
       id: 'checks',
       status: 'deleted',
@@ -504,7 +513,9 @@ describe('CommandClient', () => {
       id: 'checks',
     })
     expect(invoke).toHaveBeenCalledWith('run_automation_now', { id: 'checks' })
-    expect(invoke).toHaveBeenCalledWith('list_automation_runs', { automationId: 'checks' })
+    expect(invoke).toHaveBeenCalledWith('list_automation_runs', {
+      automationId: 'checks',
+    })
     expect(invoke).toHaveBeenCalledWith('delete_automation', { id: 'checks' })
     expect(JSON.stringify(runRecord)).not.toContain('rawToolOutput')
   })
@@ -619,7 +630,9 @@ describe('CommandClient', () => {
     const defaultClient = createTestCommandClient()
 
     await expect(
-      defaultClient.subscribeConversationEvents({ conversationId: 'conversation-001' }),
+      defaultClient.subscribeConversationEvents({
+        conversationId: 'conversation-001',
+      }),
     ).resolves.toMatchObject({
       conversationId: 'conversation-001',
       replayEvents: [],
@@ -649,7 +662,9 @@ describe('CommandClient', () => {
     })
 
     await expect(
-      streamingClient.subscribeConversationEvents({ conversationId: 'conversation-001' }),
+      streamingClient.subscribeConversationEvents({
+        conversationId: 'conversation-001',
+      }),
     ).resolves.toMatchObject({
       subscriptionId: 'subscription-stream',
       replayEvents: [{ id: 'evt-delta' }],
@@ -708,7 +723,9 @@ describe('CommandClient', () => {
       },
     })
     expect(invoke).toHaveBeenCalledWith('list_conversations')
-    expect(invoke).toHaveBeenCalledWith('get_conversation', { conversationId: 'conversation-001' })
+    expect(invoke).toHaveBeenCalledWith('get_conversation', {
+      conversationId: 'conversation-001',
+    })
   })
 
   it('accepts empty conversation summaries when optional preview is omitted', async () => {
@@ -1006,14 +1023,22 @@ describe('CommandClient', () => {
                   { kind: 'reasoning', body: '确认需要生成图片并展示结果。' },
                   {
                     kind: 'command',
-                    detail: { type: 'command', command: 'pnpm check:desktop', exitCode: 0 },
+                    detail: {
+                      type: 'command',
+                      command: 'pnpm check:desktop',
+                      exitCode: 0,
+                    },
                   },
                   {
                     kind: 'artifact',
                     detail: {
                       type: 'artifact',
                       artifactId: 'artifact-image-001',
-                      media: { kind: 'image', mimeType: 'image/png', sizeBytes: 128 },
+                      media: {
+                        kind: 'image',
+                        mimeType: 'image/png',
+                        sizeBytes: 128,
+                      },
                     },
                   },
                 ],
@@ -1671,7 +1696,11 @@ describe('CommandClient', () => {
         return { runId: 'run-001', status: 'cancelled' }
       }
 
-      return { decision: 'approve', requestId: '01HZ0000000000000000000001', status: 'resolved' }
+      return {
+        decision: 'approve',
+        requestId: '01HZ0000000000000000000001',
+        status: 'resolved',
+      }
     })
     const client = createInvokeCommandClient(invoke)
 
@@ -1892,7 +1921,9 @@ describe('CommandClient', () => {
       })
     })
 
-    await client.subscribeConversationEvents({ conversationId: 'conversation-001' })
+    await client.subscribeConversationEvents({
+      conversationId: 'conversation-001',
+    })
     await client.startRun({
       attachments: [],
       clientMessageId: '00000000-0000-4000-8000-000000000001',
@@ -2022,7 +2053,9 @@ describe('CommandClient', () => {
       tools: [{ id: 'builtin.grep', label: 'Search files' }],
     })
 
-    expect(invoke).toHaveBeenCalledWith('create_attachment_from_path', { path: '/tmp/notes.txt' })
+    expect(invoke).toHaveBeenCalledWith('create_attachment_from_path', {
+      path: '/tmp/notes.txt',
+    })
     expect(invoke).toHaveBeenCalledWith('list_reference_candidates', {
       conversationId: 'conversation-001',
     })
@@ -2044,7 +2077,11 @@ describe('CommandClient', () => {
     ).rejects.toThrow(TauriCommandPayloadError)
     await expect(
       resolvePermission(
-        { conversationId: 'conversation-001', decision: 'approve', requestId: ' ' },
+        {
+          conversationId: 'conversation-001',
+          decision: 'approve',
+          requestId: ' ',
+        },
         client,
       ),
     ).rejects.toThrow(TauriCommandPayloadError)
@@ -2069,7 +2106,10 @@ describe('CommandClient', () => {
             {
               id: 'evt-001',
               conversationSequence: 1,
-              payload: { sessionId: 'session-001', model: openAiRunModelSnapshot },
+              payload: {
+                sessionId: 'session-001',
+                model: openAiRunModelSnapshot,
+              },
               runId: 'run-001',
               sequence: 1,
               source: 'engine',
@@ -2083,7 +2123,12 @@ describe('CommandClient', () => {
 
       return {
         activeArtifact: 'App shell',
-        decisions: [{ detail: 'Before runtime integration', title: 'Review IPC boundary' }],
+        decisions: [
+          {
+            detail: 'Before runtime integration',
+            title: 'Review IPC boundary',
+          },
+        ],
         files: [{ label: 'apps/desktop/src/shared/tauri/commands.ts' }],
         nextActions: ['Add Rust command handlers'],
         path: 'workspace://local',
@@ -2448,7 +2493,9 @@ describe('CommandClient', () => {
       status: 'completed',
     })
     expect(invoke).toHaveBeenCalledWith('list_eval_cases')
-    expect(invoke).toHaveBeenCalledWith('run_eval_case', { caseId: 'regression-smoke' })
+    expect(invoke).toHaveBeenCalledWith('run_eval_case', {
+      caseId: 'regression-smoke',
+    })
   })
 
   it('rejects unredacted support bundle exports at the IPC boundary', async () => {
@@ -2506,9 +2553,9 @@ describe('CommandClient', () => {
 
   it('throws schema errors for invalid conversation IPC payloads', async () => {
     const client = createInvokeCommandClient(
-      vi
-        .fn()
-        .mockResolvedValue({ conversations: [{ id: '', title: '', updatedAt: 'not-a-date' }] }),
+      vi.fn().mockResolvedValue({
+        conversations: [{ id: '', title: '', updatedAt: 'not-a-date' }],
+      }),
     )
 
     await expect(listConversations(client)).rejects.toThrow(TauriCommandPayloadError)
@@ -2702,7 +2749,11 @@ describe('CommandClient', () => {
               runtimeCapability: {
                 authScheme: 'bearer',
                 baseUrlRegions: [
-                  { id: 'default', label: 'Default', baseUrl: 'https://api.openai.com' },
+                  {
+                    id: 'default',
+                    label: 'Default',
+                    baseUrl: 'https://api.openai.com',
+                  },
                 ],
                 supportsLiveValidation: false,
                 supportsStreamingValidation: true,
@@ -3236,7 +3287,9 @@ describe('CommandClient', () => {
     await expect(refreshOfficialQuota({ configId: 'openrouter-work' }, client)).resolves.toEqual({
       snapshot,
     })
-    expect(invoke).toHaveBeenCalledWith('refresh_official_quota', { configId: 'openrouter-work' })
+    expect(invoke).toHaveBeenCalledWith('refresh_official_quota', {
+      configId: 'openrouter-work',
+    })
 
     await expect(
       listOfficialQuotaSnapshots(
@@ -3256,7 +3309,10 @@ describe('CommandClient', () => {
     await expect(
       refreshOfficialQuota({ configId: 'gemini-work' }, unsupportedClient),
     ).resolves.toMatchObject({
-      snapshot: { status: 'unsupported', safeMessage: 'No official quota API.' },
+      snapshot: {
+        status: 'unsupported',
+        safeMessage: 'No official quota API.',
+      },
     })
 
     const missingFreshnessClient = createInvokeCommandClient(
@@ -3539,7 +3595,9 @@ describe('CommandClient', () => {
 
     expect(JSON.stringify(invoke.mock.results)).not.toContain('Authorization')
     expect(invoke).toHaveBeenCalledWith('list_mcp_servers')
-    expect(invoke).toHaveBeenCalledWith('get_mcp_server_config', { id: 'github' })
+    expect(invoke).toHaveBeenCalledWith('get_mcp_server_config', {
+      id: 'github',
+    })
     expect(invoke).toHaveBeenCalledWith('save_mcp_server', {
       displayName: 'Workspace GitHub',
       enabled: true,
@@ -3842,7 +3900,9 @@ describe('CommandClient', () => {
       },
     })
     cleanup()
-    await expect(clearMcpDiagnostics('github', client)).resolves.toEqual({ status: 'cleared' })
+    await expect(clearMcpDiagnostics('github', client)).resolves.toEqual({
+      status: 'cleared',
+    })
     await expect(
       unsubscribeMcpDiagnostics('mcp-diagnostic-subscription-001', client),
     ).resolves.toHaveProperty('status', 'unsubscribed')
@@ -4150,7 +4210,9 @@ describe('CommandClient', () => {
       id: 'skill-001',
       path: 'references/style.md',
     })
-    expect(invoke).toHaveBeenCalledWith('import_skill', { sourcePath: '/tmp/release-notes' })
+    expect(invoke).toHaveBeenCalledWith('import_skill', {
+      sourcePath: '/tmp/release-notes',
+    })
     expect(invoke).toHaveBeenCalledWith('set_skill_enabled', {
       enabled: false,
       id: 'skill-001',
@@ -4337,7 +4399,9 @@ describe('CommandClient', () => {
 
     expect(JSON.stringify(invoke.mock.calls)).not.toContain('api-token-value')
     expect(invoke).toHaveBeenCalledWith('list_plugins')
-    expect(invoke).toHaveBeenCalledWith('get_plugin_detail', { pluginId: summary.id })
+    expect(invoke).toHaveBeenCalledWith('get_plugin_detail', {
+      pluginId: summary.id,
+    })
     expect(invoke).toHaveBeenCalledWith('validate_plugin_from_path', {
       sourcePath: '/tmp/formatter-plugin',
     })
@@ -4352,9 +4416,15 @@ describe('CommandClient', () => {
       pluginId: summary.id,
       values: { lineWidth: 120 },
     })
-    expect(invoke).toHaveBeenCalledWith('uninstall_plugin', { pluginId: summary.id })
-    expect(invoke).toHaveBeenCalledWith('reload_plugin', { pluginId: summary.id })
-    expect(invoke).toHaveBeenCalledWith('set_project_plugins_enabled', { enabled: true })
+    expect(invoke).toHaveBeenCalledWith('uninstall_plugin', {
+      pluginId: summary.id,
+    })
+    expect(invoke).toHaveBeenCalledWith('reload_plugin', {
+      pluginId: summary.id,
+    })
+    expect(invoke).toHaveBeenCalledWith('set_project_plugins_enabled', {
+      enabled: true,
+    })
   })
 
   it('rejects invalid plugin command args and unsafe plugin payloads', async () => {
@@ -4508,13 +4578,22 @@ describe('CommandClient', () => {
     )
     await expect(
       listSkillCatalogEntries(
-        { cursor: 'cursor-1', limit: 12, query: 'front', sourceId: 'anthropic' },
+        {
+          cursor: 'cursor-1',
+          limit: 12,
+          query: 'front',
+          sourceId: 'anthropic',
+        },
         client,
       ),
     ).resolves.toHaveProperty('entries.0.entryId', 'anthropic:frontend-design')
     await expect(
       getSkillCatalogEntry(
-        { entryId: 'anthropic:frontend-design', sourceId: 'anthropic', version: 'main' },
+        {
+          entryId: 'anthropic:frontend-design',
+          sourceId: 'anthropic',
+          version: 'main',
+        },
         client,
       ),
     ).resolves.toHaveProperty('validation.status', 'ready')
@@ -4640,7 +4719,11 @@ describe('CommandClient', () => {
     ).rejects.toThrow(TauriCommandPayloadError)
     await expect(
       getSkillCatalogFile(
-        { entryId: 'anthropic:frontend-design', path: '../SKILL.md', sourceId: 'anthropic' },
+        {
+          entryId: 'anthropic:frontend-design',
+          path: '../SKILL.md',
+          sourceId: 'anthropic',
+        },
         client,
       ),
     ).rejects.toThrow(TauriCommandPayloadError)
@@ -4652,7 +4735,11 @@ describe('CommandClient', () => {
     ).rejects.toThrow(TauriCommandPayloadError)
     await expect(
       installSkillFromCatalog(
-        { entryId: 'anthropic:frontend-design', operationId: '', sourceId: 'anthropic' },
+        {
+          entryId: 'anthropic:frontend-design',
+          operationId: '',
+          sourceId: 'anthropic',
+        },
         client,
       ),
     ).rejects.toThrow(TauriCommandPayloadError)
@@ -4694,10 +4781,21 @@ describe('agent orchestration contracts', () => {
         subagentsEnabled: true,
         unavailableReasons: [
           { capability: 'subagents', type: 'notCompiled' },
-          { capability: 'subagents', type: 'runtimeStoreUnavailable', message: 'open failed' },
+          {
+            capability: 'subagents',
+            type: 'runtimeStoreUnavailable',
+            message: 'open failed',
+          },
           { capability: 'agentTeams', type: 'permissionRuntimeUnavailable' },
-          { capability: 'agentTeams', type: 'invalidAgentProfiles', message: 'bad profile' },
-          { message: 'supervisor missing', type: 'backgroundSupervisorUnavailable' },
+          {
+            capability: 'agentTeams',
+            type: 'invalidAgentProfiles',
+            message: 'bad profile',
+          },
+          {
+            message: 'supervisor missing',
+            type: 'backgroundSupervisorUnavailable',
+          },
           {
             capability: 'backgroundAgents',
             message: 'worktree unavailable',
@@ -4731,11 +4829,11 @@ describe('agent orchestration contracts', () => {
     ).toThrow()
   })
 
-  it('accepts valid run options with team config', () => {
+  it('accepts valid tool policy with team config', () => {
     expect(
-      parseAgentRunOptions({
+      parseAgentToolPolicy({
         agentTeam: 'allowed',
-        background: 'background',
+        backgroundAgents: 'allowed',
         maxConcurrentSubagents: 2,
         maxDepth: 2,
         maxTeamMembers: 4,
@@ -4750,16 +4848,16 @@ describe('agent orchestration contracts', () => {
         workspaceIsolation: 'git_worktree',
       }),
     ).toMatchObject({
-      background: 'background',
+      backgroundAgents: 'allowed',
       workspaceIsolation: 'git_worktree',
     })
   })
 
   it('rejects unknown isolation mode', () => {
     expect(() =>
-      parseAgentRunOptions({
+      parseAgentToolPolicy({
         agentTeam: 'off',
-        background: 'foreground',
+        backgroundAgents: 'off',
         maxConcurrentSubagents: 1,
         maxDepth: 1,
         maxTeamMembers: 2,
@@ -4771,9 +4869,9 @@ describe('agent orchestration contracts', () => {
 
   it('rejects unknown team topology', () => {
     expect(() =>
-      parseAgentRunOptions({
+      parseAgentToolPolicy({
         agentTeam: 'allowed',
-        background: 'foreground',
+        backgroundAgents: 'off',
         maxConcurrentSubagents: 1,
         maxDepth: 1,
         maxTeamMembers: 2,
@@ -4810,9 +4908,9 @@ describe('agent orchestration contracts', () => {
 
   it('rejects empty team member list', () => {
     expect(() =>
-      parseAgentRunOptions({
+      parseAgentToolPolicy({
         agentTeam: 'allowed',
-        background: 'foreground',
+        backgroundAgents: 'off',
         maxConcurrentSubagents: 1,
         maxDepth: 1,
         maxTeamMembers: 2,
@@ -4831,9 +4929,9 @@ describe('agent orchestration contracts', () => {
 
   it('rejects negative concurrency values', () => {
     expect(() =>
-      parseAgentRunOptions({
+      parseAgentToolPolicy({
         agentTeam: 'off',
-        background: 'foreground',
+        backgroundAgents: 'off',
         maxConcurrentSubagents: 0,
         maxDepth: 1,
         maxTeamMembers: 2,
@@ -4844,9 +4942,9 @@ describe('agent orchestration contracts', () => {
   })
 
   it('accepts team allowed without eager team config', () => {
-    const parsed = parseAgentRunOptions({
+    const parsed = parseAgentToolPolicy({
       agentTeam: 'allowed',
-      background: 'foreground',
+      backgroundAgents: 'off',
       maxConcurrentSubagents: 1,
       maxDepth: 1,
       maxTeamMembers: 2,
@@ -4858,11 +4956,11 @@ describe('agent orchestration contracts', () => {
     expect(parsed).not.toHaveProperty('teamConfig')
   })
 
-  it('rejects invalid background policy string', () => {
+  it('rejects invalid background agent tool policy string', () => {
     expect(() =>
-      parseAgentRunOptions({
+      parseAgentToolPolicy({
         agentTeam: 'off',
-        background: 'detached',
+        backgroundAgents: 'detached',
         maxConcurrentSubagents: 1,
         maxDepth: 1,
         maxTeamMembers: 2,
@@ -5067,9 +5165,8 @@ describe('agent orchestration contracts', () => {
     expect(invoke).not.toHaveBeenCalled()
   })
 
-  it('accepts start run requests without per-run agent options', async () => {
+  it('accepts start run requests without agentOptions', async () => {
     const invoke = vi.fn().mockResolvedValue({
-      backgroundAgentId: 'bg-agent-001',
       runId: 'run-001',
       status: 'started',
     })
@@ -5085,7 +5182,6 @@ describe('agent orchestration contracts', () => {
         client,
       ),
     ).resolves.toMatchObject({
-      backgroundAgentId: 'bg-agent-001',
       runId: 'run-001',
     })
     expect(invoke).toHaveBeenCalledWith('start_run', {
@@ -5199,7 +5295,7 @@ describe('agent orchestration contracts', () => {
         {
           agentOptions: {
             agentTeam: 'off',
-            background: 'background',
+            backgroundAgents: 'allowed',
             maxConcurrentSubagents: 2,
             maxDepth: 2,
             maxTeamMembers: 2,

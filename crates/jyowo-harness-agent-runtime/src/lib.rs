@@ -29,7 +29,7 @@ pub use migrations::CURRENT_SCHEMA_VERSION;
 pub use policy::{
     default_agent_capability_environment, AgentCapabilitiesInput, AgentCapabilityEnvironment,
     AgentCapabilityResolver, AgentRuntimePolicyError, AgentRuntimePolicyResolver,
-    ExecutionSettingsAgentInput, ResolvedAgentCapabilityPolicy, ResolvedAgentRuntimePolicy,
+    ExecutionSettingsAgentInput, ResolvedAgentCapabilityPolicy, ResolvedAgentToolPolicy,
     DEFAULT_MAX_CONCURRENT_SUBAGENTS, DEFAULT_MAX_DEPTH, DEFAULT_MAX_TEAM_MEMBERS,
     MAX_ALLOWED_CONCURRENT_SUBAGENTS, MAX_ALLOWED_DEPTH, MAX_ALLOWED_TEAM_MEMBERS,
 };

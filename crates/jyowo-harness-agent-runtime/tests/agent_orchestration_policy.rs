@@ -9,8 +9,8 @@ use harness_agent_runtime::{
 };
 use harness_contracts::{
     AgentCapabilityKind, AgentCapabilityUnavailableReason, AgentOrchestrationValidationError,
-    AgentRunOptions, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy, AgentTeamTopology,
-    AgentUsePolicy, AgentWorkspaceIsolationMode, BackgroundRunPolicy,
+    AgentTeamRunConfig, AgentTeamSharedMemoryPolicy, AgentTeamTopology, AgentToolPolicy,
+    AgentUsePolicy, AgentWorkspaceIsolationMode,
 };
 use tempfile::{tempdir, NamedTempFile};
 
@@ -236,12 +236,12 @@ fn all_available_capabilities() -> AgentCapabilitiesInput {
     }
 }
 
-fn sample_subagent_options() -> AgentRunOptions {
-    AgentRunOptions {
+fn sample_subagent_options() -> AgentToolPolicy {
+    AgentToolPolicy {
         subagents: AgentUsePolicy::Allowed,
         agent_team: AgentUsePolicy::Off,
         team_config: None,
-        background: BackgroundRunPolicy::Foreground,
+        background_agents: AgentUsePolicy::Off,
         workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
         max_depth: 2,
         max_concurrent_subagents: 2,
@@ -249,8 +249,8 @@ fn sample_subagent_options() -> AgentRunOptions {
     }
 }
 
-fn sample_team_options() -> AgentRunOptions {
-    AgentRunOptions {
+fn sample_team_options() -> AgentToolPolicy {
+    AgentToolPolicy {
         subagents: AgentUsePolicy::Allowed,
         agent_team: AgentUsePolicy::Allowed,
         team_config: Some(AgentTeamRunConfig {
@@ -260,7 +260,7 @@ fn sample_team_options() -> AgentRunOptions {
             max_turns_per_goal: 4,
             shared_memory_policy: AgentTeamSharedMemoryPolicy::SummariesOnly,
         }),
-        background: BackgroundRunPolicy::Foreground,
+        background_agents: AgentUsePolicy::Off,
         workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
         max_depth: 2,
         max_concurrent_subagents: 2,
@@ -269,7 +269,7 @@ fn sample_team_options() -> AgentRunOptions {
 }
 
 #[test]
-fn merge_defaults_agent_capabilities_from_settings_when_agent_options_omitted() {
+fn merge_defaults_agent_capabilities_from_settings_when_agent_tool_policy_omitted() {
     let workspace = tempdir().expect("tempdir");
     let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
     let policy = AgentRuntimePolicyResolver::merge(
@@ -285,8 +285,7 @@ fn merge_defaults_agent_capabilities_from_settings_when_agent_options_omitted() 
     assert_eq!(policy.options.subagents, AgentUsePolicy::Allowed);
     assert_eq!(policy.options.agent_team, AgentUsePolicy::Allowed);
     assert!(policy.options.team_config.is_none());
-    assert_eq!(policy.options.background, BackgroundRunPolicy::Background);
-    assert!(policy.background_agent_id.is_some());
+    assert_eq!(policy.options.background_agents, AgentUsePolicy::Allowed);
 }
 
 #[test]
@@ -462,13 +461,13 @@ fn merge_rejects_empty_member_profile_list() {
 }
 
 #[test]
-fn merge_enqueues_background_agent_id_when_background_requested() {
+fn merge_allows_background_agent_tool_when_requested() {
     let workspace = tempdir().expect("tempdir");
     let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
     write_test_supervisor_token_and_lock(workspace.path());
 
     let mut options = sample_subagent_options();
-    options.background = BackgroundRunPolicy::Background;
+    options.background_agents = AgentUsePolicy::Allowed;
 
     let policy = AgentRuntimePolicyResolver::merge(
         &enabled_settings(),
@@ -480,7 +479,7 @@ fn merge_enqueues_background_agent_id_when_background_requested() {
     )
     .expect("background merge should succeed");
 
-    assert!(policy.background_agent_id.is_some());
+    assert_eq!(policy.options.background_agents, AgentUsePolicy::Allowed);
 }
 
 fn write_test_supervisor_token_and_lock(workspace: &std::path::Path) {

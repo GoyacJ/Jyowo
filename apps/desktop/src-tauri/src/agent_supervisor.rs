@@ -6,9 +6,10 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    AgentRunOptions, BackgroundAgentId, BackgroundAgentState, ConversationTurnInput,
-    InteractivityLevel, ModelProtocol, PermissionActorSource, PermissionMode, RedactPatternSet,
-    RedactRules, RedactScope, TeamId, ToolProfile, ToolSearchMode,
+    AgentToolPolicy, BackgroundAgentId, BackgroundAgentState, BackgroundAgentToolSessionSnapshot,
+    ConversationTurnInput, InteractivityLevel, ModelProtocol, PermissionActorSource,
+    PermissionMode, RedactPatternSet, RedactRules, RedactScope, TeamId, ToolProfile,
+    ToolSearchMode,
 };
 use jyowo_harness_sdk::builtin::{DefaultRedactor, JsonlEventStore};
 use jyowo_harness_sdk::ext::{EventStore, Redactor, SessionId, TenantId};
@@ -108,6 +109,7 @@ struct ActiveBackgroundRun {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BackgroundSupervisorPayload {
+    source: String,
     #[serde(default)]
     supervisor_execution: Option<BackgroundSupervisorExecution>,
 }
@@ -118,12 +120,10 @@ struct BackgroundSupervisorExecution {
     status: String,
     #[serde(default)]
     session: Option<BackgroundSupervisorSession>,
-    #[serde(default)]
-    session_options: Option<SessionOptions>,
     input: ConversationTurnInput,
     model_config_id: String,
     permission_mode: PermissionMode,
-    agent_run_options: AgentRunOptions,
+    agent_tool_policy: AgentToolPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,19 +153,19 @@ pub(crate) struct BackgroundSupervisorSession {
 }
 
 impl BackgroundSupervisorSession {
-    pub(crate) fn from_session_options(options: &SessionOptions) -> Self {
+    pub(crate) fn from_tool_session_snapshot(snapshot: BackgroundAgentToolSessionSnapshot) -> Self {
         Self {
-            tenant_id: options.tenant_id,
-            session_id: options.session_id,
-            tool_search: options.tool_search.clone(),
-            tool_profile: options.tool_profile.clone(),
-            model_id: options.model_id.clone(),
-            protocol: options.protocol,
-            permission_mode: options.permission_mode,
-            interactivity: options.interactivity,
-            team_id: options.team_id,
-            max_iterations: options.max_iterations,
-            context_compression_trigger_ratio: options.context_compression_trigger_ratio,
+            tenant_id: snapshot.tenant_id,
+            session_id: snapshot.session_id,
+            tool_search: snapshot.tool_search,
+            tool_profile: snapshot.tool_profile,
+            model_id: None,
+            protocol: None,
+            permission_mode: snapshot.permission_mode,
+            interactivity: snapshot.interactivity,
+            team_id: snapshot.team_id,
+            max_iterations: snapshot.max_iterations,
+            context_compression_trigger_ratio: snapshot.context_compression_trigger_ratio,
         }
     }
 
@@ -201,10 +201,6 @@ impl BackgroundSupervisorExecution {
     ) -> Result<SessionOptions, AgentSupervisorError> {
         if let Some(session) = self.session.clone() {
             return Ok(session.into_session_options(workspace_root));
-        }
-        if let Some(mut options) = self.session_options.clone() {
-            options.workspace_root = workspace_root.to_path_buf();
-            return Ok(options);
         }
         Err(AgentSupervisorError::Runtime(
             "background supervisor session missing".to_owned(),
@@ -819,6 +815,16 @@ async fn execute_background_record(
     let Some(execution) = payload.supervisor_execution else {
         return Ok(());
     };
+    if payload.source != "background_agent_tool" {
+        fail_background_record(
+            &backend,
+            &record,
+            &record.payload_json,
+            "background supervisor payload source unsupported",
+        )
+        .await?;
+        return Ok(());
+    }
     if execution.status != "queued" {
         return Ok(());
     }
@@ -854,7 +860,7 @@ async fn execute_background_record(
         return Ok(());
     }
 
-    if run_claimed_background_record(
+    if let Err(error) = run_claimed_background_record(
         &backend,
         &record,
         execution,
@@ -862,13 +868,12 @@ async fn execute_background_record(
         &running_payload,
     )
     .await
-    .is_err()
     {
         fail_background_record(
             &backend,
             &record,
             &running_payload,
-            "background supervisor execution failed",
+            &format!("background supervisor execution failed: {error}"),
         )
         .await?;
     }
@@ -918,7 +923,7 @@ async fn run_claimed_background_record(
         .with_model_id(model_id)
         .with_protocol(protocol)
         .with_permission_mode(execution.permission_mode);
-    run_options.agent_run_options = Some(execution.agent_run_options);
+    run_options.agent_tool_policy = Some(execution.agent_tool_policy);
     let after_event_id =
         crate::commands::conversation_tail_event_id(&harness, session_options.clone())
             .await
@@ -1118,19 +1123,7 @@ fn set_background_supervisor_payload_status(
     else {
         return Ok(payload_json.to_owned());
     };
-    let legacy_session_options = execution.remove("sessionOptions");
-    if !execution.contains_key("session") {
-        if let Some(session_options) = legacy_session_options {
-            if let Ok(options) = serde_json::from_value::<SessionOptions>(session_options) {
-                execution.insert(
-                    "session".to_owned(),
-                    serde_json::to_value(BackgroundSupervisorSession::from_session_options(
-                        &options,
-                    ))?,
-                );
-            }
-        }
-    }
+    execution.remove("sessionOptions");
     execution.insert(
         "status".to_owned(),
         serde_json::Value::String(status.to_owned()),

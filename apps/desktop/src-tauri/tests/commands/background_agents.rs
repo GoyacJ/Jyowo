@@ -222,9 +222,47 @@ fn background_agent_commands_do_not_add_public_start_command() {
 }
 
 #[tokio::test]
-async fn background_agent_manager_start_run_persists_record_before_execution() {
-    let state = runtime_state_with_harness().await;
+async fn background_agent_tool_persists_record_without_copying_parent_context() {
+    let workspace = unique_workspace("background-agent-tool-redaction");
+    std::fs::create_dir_all(&workspace).unwrap();
+    jyowo_harness_sdk::list_agent_profiles(&workspace).expect("agent profiles initialize");
+    let background_tool_use_id = ToolUseId::new();
+    let state = runtime_state_with_scripted_model_for_workspace(
+        workspace,
+        vec![ScriptedResponse::Stream(vec![
+            ModelStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: ContentDelta::ToolUseComplete {
+                    id: background_tool_use_id,
+                    name: "background_agent".to_owned(),
+                    input: json!({
+                        "goal": "Continue\nsk-12345678901234567890",
+                        "title": "Background investigation"
+                    }),
+                },
+            },
+            ModelStreamEvent::MessageStop,
+        ])],
+    )
+    .await;
     let supervisor = enable_background_agents(&state).await;
+    let settings_store = DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf());
+    let settings_context = AgentCapabilityResolutionContext {
+        stream_permission_runtime_available: true,
+    };
+    set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Coding,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: true,
+            agent_teams_enabled: false,
+            background_agents_enabled: true,
+        },
+        &settings_store,
+        Some(&settings_context),
+    )
+    .expect("execution settings update");
     std::fs::write(state.workspace_root().join("notes.md"), "safe notes").unwrap();
     std::fs::write(state.workspace_root().join("attachment.txt"), "attachment").unwrap();
     let mut attachment = create_attachment_from_path_with_runtime_state(
@@ -271,20 +309,50 @@ async fn background_agent_manager_start_run_persists_record_before_execution() {
             }]),
             conversation_id: conversation_id.to_string(),
             model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
-            permission_mode: None,
+            permission_mode: Some(PermissionMode::BypassPermissions),
             prompt: "Run in background\nsk-12345678901234567890".to_owned(),
         },
         &state,
     )
     .await
-    .expect("background start should succeed");
-    let background_agent_id = started
-        .background_agent_id
-        .as_deref()
-        .expect("background start returns id");
+    .expect("background_agent tool run should succeed");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let harness = state.harness().expect("harness should be available");
+    loop {
+        let events: Vec<_> = harness
+            .event_store()
+            .read_envelopes(TenantId::SINGLE, conversation_id, ReplayCursor::FromStart)
+            .await
+            .expect("session envelopes should be readable")
+            .collect()
+            .await;
+        if events.iter().any(|envelope| {
+            matches!(
+                &envelope.payload,
+                Event::ToolUseCompleted(completed)
+                    if completed.tool_use_id == background_tool_use_id
+            )
+        }) {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let event_types: Vec<_> = events
+                .iter()
+                .map(|envelope| format!("{:?}", envelope.payload))
+                .collect();
+            panic!("expected background_agent completion event, got: {event_types:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 
     let store = jyowo_harness_sdk::AgentRuntimeStore::open(state.workspace_root())
         .expect("agent runtime store opens");
+    let listed = store
+        .list_background_agents(false)
+        .expect("background agents list");
+    assert_eq!(listed.len(), 1);
+    let background_agent_id = listed[0].background_agent_id.as_str();
     let record = store
         .get_background_agent(background_agent_id)
         .expect("background agent lookup succeeds")
@@ -298,7 +366,7 @@ async fn background_agent_manager_start_run_persists_record_before_execution() {
         record.state,
         harness_contracts::BackgroundAgentState::Running
     );
-    assert_eq!(record.title, "Run in background");
+    assert_eq!(record.title, "Background investigation");
     assert_eq!(attempts.len(), 1);
     assert_eq!(
         attempts[0].state,
@@ -318,32 +386,26 @@ async fn background_agent_manager_start_run_persists_record_before_execution() {
         payload["supervisorExecution"]["session"]["sessionId"],
         conversation_id.to_string()
     );
+    assert_eq!(
+        payload["supervisorExecution"]["session"]["toolProfile"],
+        "coding"
+    );
     assert_eq!(payload["conversationId"], conversation_id.to_string());
-    assert_eq!(payload["source"], "start_run");
+    assert_eq!(payload["source"], "background_agent_tool");
+    assert_eq!(payload["parentRunId"], started.run_id);
+    assert_eq!(payload["toolUseId"], background_tool_use_id.to_string());
     assert_eq!(payload["supervisorExecution"]["status"], "queued");
     assert_eq!(
         payload["supervisorExecution"]["input"]["prompt"],
-        "Run in background\n[REDACTED]"
+        "Continue\n[REDACTED]"
     );
     assert_eq!(
-        payload["supervisorExecution"]["input"]["context_references"][0]["label"],
-        "[REDACTED]"
+        payload["supervisorExecution"]["input"]["attachments"],
+        json!([])
     );
     assert_eq!(
-        payload["supervisorExecution"]["input"]["attachments"][0]["id"],
-        attachment.id
-    );
-    assert_eq!(
-        payload["supervisorExecution"]["input"]["attachments"][0]["name"],
-        "[REDACTED].txt"
-    );
-    assert_eq!(
-        payload["supervisorExecution"]["input"]["attachments"][0]["mime_type"],
-        "[REDACTED]"
-    );
-    assert_eq!(
-        payload["supervisorExecution"]["input"]["attachments"][0]["blob_ref"]["content_type"],
-        "application/[REDACTED]"
+        payload["supervisorExecution"]["input"]["context_references"],
+        json!([])
     );
 
     supervisor.shutdown().await;

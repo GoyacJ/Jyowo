@@ -302,7 +302,6 @@ pub(crate) async fn start_automation_conversation_run(
     drop(run_task);
 
     Ok(StartRunResponse {
-        background_agent_id: None,
         run_id: run_id.to_string(),
         status: "started",
     })

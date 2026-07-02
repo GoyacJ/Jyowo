@@ -1,16 +1,16 @@
 use harness_contracts::{
-    validate_agent_profile, validate_agent_run_options, AgentCapabilitiesPayload,
+    validate_agent_profile, validate_agent_tool_policy, AgentCapabilitiesPayload,
     AgentCapabilityKind, AgentCapabilityUnavailableReason, AgentOrchestrationValidationError,
     AgentProfile, AgentProfileContextMode, AgentProfileMemoryScope, AgentProfileModelOverride,
-    AgentProfileSandboxInheritance, AgentProfileScope, AgentRunOptions, AgentTeamRunConfig,
-    AgentTeamSharedMemoryPolicy, AgentTeamTopology, AgentUsePolicy, AgentWorkspaceIsolationMode,
-    BackgroundAgentArchivedEvent, BackgroundAgentCancelledEvent, BackgroundAgentCompletedEvent,
-    BackgroundAgentDeletedEvent, BackgroundAgentFailedEvent, BackgroundAgentId,
-    BackgroundAgentInputRequestedEvent, BackgroundAgentInputSubmittedEvent,
+    AgentProfileSandboxInheritance, AgentProfileScope, AgentTeamRunConfig,
+    AgentTeamSharedMemoryPolicy, AgentTeamTopology, AgentToolPolicy, AgentUsePolicy,
+    AgentWorkspaceIsolationMode, BackgroundAgentArchivedEvent, BackgroundAgentCancelledEvent,
+    BackgroundAgentCompletedEvent, BackgroundAgentDeletedEvent, BackgroundAgentFailedEvent,
+    BackgroundAgentId, BackgroundAgentInputRequestedEvent, BackgroundAgentInputSubmittedEvent,
     BackgroundAgentInterruptedEvent, BackgroundAgentPermissionRequestedEvent,
     BackgroundAgentPermissionResolvedEvent, BackgroundAgentStartedEvent, BackgroundAgentState,
-    BackgroundAgentStateChangedEvent, BackgroundRunPolicy, Decision, Event, NoopRedactor,
-    RequestId, RunId, SessionId, TenantId, UiSafeText,
+    BackgroundAgentStateChangedEvent, Decision, Event, NoopRedactor, RequestId, RunId, SessionId,
+    TenantId, UiSafeText,
 };
 use serde_json::json;
 
@@ -107,28 +107,28 @@ fn user_profile_with_overrides_roundtrips() {
 }
 
 #[test]
-fn run_options_subagents_allowed_team_off_foreground_roundtrips() {
-    let options = AgentRunOptions {
+fn tool_policy_subagents_allowed_team_off_background_agents_off_roundtrips() {
+    let options = AgentToolPolicy {
         subagents: AgentUsePolicy::Allowed,
         agent_team: AgentUsePolicy::Off,
         team_config: None,
-        background: BackgroundRunPolicy::Foreground,
+        background_agents: AgentUsePolicy::Off,
         workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
         max_depth: 2,
         max_concurrent_subagents: 2,
         max_team_members: 4,
     };
 
-    validate_agent_run_options(&options).expect("options validate");
+    validate_agent_tool_policy(&options).expect("options validate");
     let value = serde_json::to_value(&options).unwrap();
     assert_eq!(value["subagents"], "allowed");
     assert_eq!(value["agentTeam"], "off");
-    assert_eq!(value["background"], "foreground");
+    assert_eq!(value["backgroundAgents"], "off");
 }
 
 #[test]
 fn run_options_team_allowed_with_team_config_roundtrips() {
-    let options = AgentRunOptions {
+    let options = AgentToolPolicy {
         subagents: AgentUsePolicy::Allowed,
         agent_team: AgentUsePolicy::Allowed,
         team_config: Some(AgentTeamRunConfig {
@@ -138,38 +138,38 @@ fn run_options_team_allowed_with_team_config_roundtrips() {
             max_turns_per_goal: 6,
             shared_memory_policy: AgentTeamSharedMemoryPolicy::SummariesOnly,
         }),
-        background: BackgroundRunPolicy::Foreground,
+        background_agents: AgentUsePolicy::Off,
         workspace_isolation: AgentWorkspaceIsolationMode::PatchOnly,
         max_depth: 2,
         max_concurrent_subagents: 2,
         max_team_members: 4,
     };
 
-    validate_agent_run_options(&options).expect("options validate");
-    let parsed: AgentRunOptions =
+    validate_agent_tool_policy(&options).expect("options validate");
+    let parsed: AgentToolPolicy =
         serde_json::from_str(&serde_json::to_string(&options).unwrap()).unwrap();
     assert_eq!(parsed, options);
 }
 
 #[test]
 fn run_options_team_allowed_without_team_config_validates_for_model_visible_tool() {
-    let options = AgentRunOptions {
+    let options = AgentToolPolicy {
         subagents: AgentUsePolicy::Allowed,
         agent_team: AgentUsePolicy::Allowed,
         team_config: None,
-        background: BackgroundRunPolicy::Foreground,
+        background_agents: AgentUsePolicy::Off,
         workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
         max_depth: 1,
         max_concurrent_subagents: 1,
         max_team_members: 2,
     };
 
-    validate_agent_run_options(&options).expect("team tool availability validates");
+    validate_agent_tool_policy(&options).expect("team tool availability validates");
 }
 
 #[test]
 fn run_options_team_off_with_team_config_fails_validation() {
-    let options = AgentRunOptions {
+    let options = AgentToolPolicy {
         subagents: AgentUsePolicy::Off,
         agent_team: AgentUsePolicy::Off,
         team_config: Some(AgentTeamRunConfig {
@@ -179,7 +179,7 @@ fn run_options_team_off_with_team_config_fails_validation() {
             max_turns_per_goal: 3,
             shared_memory_policy: AgentTeamSharedMemoryPolicy::None,
         }),
-        background: BackgroundRunPolicy::Foreground,
+        background_agents: AgentUsePolicy::Off,
         workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
         max_depth: 1,
         max_concurrent_subagents: 1,
@@ -187,27 +187,27 @@ fn run_options_team_off_with_team_config_fails_validation() {
     };
 
     assert_eq!(
-        validate_agent_run_options(&options).unwrap_err(),
+        validate_agent_tool_policy(&options).unwrap_err(),
         AgentOrchestrationValidationError::UnexpectedTeamConfig
     );
 }
 
 #[test]
-fn run_options_background_git_worktree_roundtrips() {
-    let options = AgentRunOptions {
+fn tool_policy_background_agents_git_worktree_roundtrips() {
+    let options = AgentToolPolicy {
         subagents: AgentUsePolicy::Allowed,
         agent_team: AgentUsePolicy::Off,
         team_config: None,
-        background: BackgroundRunPolicy::Background,
+        background_agents: AgentUsePolicy::Allowed,
         workspace_isolation: AgentWorkspaceIsolationMode::GitWorktree,
         max_depth: 2,
         max_concurrent_subagents: 2,
         max_team_members: 4,
     };
 
-    validate_agent_run_options(&options).expect("options validate");
+    validate_agent_tool_policy(&options).expect("options validate");
     let value = serde_json::to_value(&options).unwrap();
-    assert_eq!(value["background"], "background");
+    assert_eq!(value["backgroundAgents"], "allowed");
     assert_eq!(value["workspaceIsolation"], "git_worktree");
 }
 
@@ -256,7 +256,7 @@ fn schema_export_includes_agent_orchestration_types() {
     let schemas = harness_contracts::export_all_schemas();
     for key in [
         "agent_profile",
-        "agent_run_options",
+        "agent_tool_policy",
         "agent_team_run_config",
         "agent_capabilities_payload",
         "agent_workspace_isolation_mode",

@@ -76,7 +76,7 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         "agent_profile_context_mode",
         AgentProfileContextMode
     );
-    insert_schema!(schemas, "agent_run_options", AgentRunOptions);
+    insert_schema!(schemas, "agent_tool_policy", AgentToolPolicy);
     insert_schema!(schemas, "agent_team_run_config", AgentTeamRunConfig);
     insert_schema!(schemas, "agent_team_topology", AgentTeamTopology);
     insert_schema!(
@@ -85,7 +85,21 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         AgentTeamSharedMemoryPolicy
     );
     insert_schema!(schemas, "agent_use_policy", AgentUsePolicy);
-    insert_schema!(schemas, "background_run_policy", BackgroundRunPolicy);
+    insert_schema!(
+        schemas,
+        "background_agent_tool_start_request",
+        BackgroundAgentToolStartRequest
+    );
+    insert_schema!(
+        schemas,
+        "background_agent_tool_session_snapshot",
+        BackgroundAgentToolSessionSnapshot
+    );
+    insert_schema!(
+        schemas,
+        "background_agent_tool_start_response",
+        BackgroundAgentToolStartResponse
+    );
     insert_schema!(
         schemas,
         "agent_workspace_isolation_mode",

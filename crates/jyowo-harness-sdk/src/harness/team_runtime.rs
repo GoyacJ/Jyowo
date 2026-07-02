@@ -2,7 +2,7 @@ use super::*;
 
 #[cfg(feature = "agents-team")]
 pub struct RunScopedTeamStartupRequest {
-    pub agent_run_options: harness_contracts::AgentRunOptions,
+    pub agent_tool_policy: harness_contracts::AgentToolPolicy,
     pub profiles: Vec<harness_contracts::AgentProfile>,
     pub run_id: RunId,
     pub conversation_session_id: SessionId,
@@ -30,7 +30,7 @@ impl harness_agent_runtime::RunScopedTeamHost for SdkRunScopedTeamHost {
             .create_team_from_spec(
                 request.spec,
                 Some(request.conversation_session_id),
-                Some(&request.agent_run_options),
+                Some(&request.agent_tool_policy),
                 Some(request.workspace_root),
                 self.workspace_bootstrap.clone(),
                 Some(request.member_profile_ids),
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn runtime_assembly_uses_agent_runtime_prepared_team_payload() {
-        let options = harness_contracts::AgentRunOptions {
+        let options = harness_contracts::AgentToolPolicy {
             subagents: harness_contracts::AgentUsePolicy::Allowed,
             agent_team: harness_contracts::AgentUsePolicy::Allowed,
             team_config: Some(harness_contracts::AgentTeamRunConfig {
@@ -110,14 +110,14 @@ mod tests {
                 max_turns_per_goal: 2,
                 shared_memory_policy: harness_contracts::AgentTeamSharedMemoryPolicy::SummariesOnly,
             }),
-            background: harness_contracts::BackgroundRunPolicy::Foreground,
+            background_agents: harness_contracts::AgentUsePolicy::Off,
             workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
             max_depth: 2,
             max_concurrent_subagents: 2,
             max_team_members: 2,
         };
         let request = RunScopedTeamStartupRequest {
-            agent_run_options: options,
+            agent_tool_policy: options,
             profiles: vec![profile("lead", "lead"), profile("worker", "worker")],
             run_id: RunId::new(),
             conversation_session_id: SessionId::new(),
@@ -127,7 +127,7 @@ mod tests {
         };
 
         let prepared = harness_agent_runtime::prepare_run_scoped_team(
-            &request.agent_run_options,
+            &request.agent_tool_policy,
             &request.profiles,
             &request.run_id.to_string(),
             &request.conversation_session_id.to_string(),
@@ -163,7 +163,7 @@ impl Harness {
         &self,
         spec: harness_team::TeamSpec,
         journal_session_id: Option<SessionId>,
-        agent_run_options: Option<&harness_contracts::AgentRunOptions>,
+        agent_tool_policy: Option<&harness_contracts::AgentToolPolicy>,
         workspace_root: Option<PathBuf>,
         workspace_bootstrap: Option<WorkspaceBootstrap>,
         member_profile_ids: Option<HashMap<AgentId, String>>,
@@ -217,7 +217,7 @@ impl Harness {
                 &spec,
                 tenant_id,
                 journal_session_id,
-                agent_run_options,
+                agent_tool_policy,
                 &workspace_root,
                 workspace_bootstrap.as_ref(),
                 member_profile_ids.as_ref(),
@@ -246,7 +246,7 @@ impl Harness {
             .start(
                 &host,
                 harness_agent_runtime::RunScopedTeamCoordinatorRequest {
-                    agent_run_options: request.agent_run_options,
+                    agent_tool_policy: request.agent_tool_policy,
                     profiles: request.profiles,
                     run_id: request.run_id,
                     conversation_session_id: request.conversation_session_id,
@@ -351,7 +351,7 @@ impl Harness {
         spec: &harness_team::TeamSpec,
         tenant_id: TenantId,
         journal_session_id: harness_contracts::SessionId,
-        agent_run_options: Option<&harness_contracts::AgentRunOptions>,
+        agent_tool_policy: Option<&harness_contracts::AgentToolPolicy>,
         workspace_root: &Path,
         workspace_bootstrap: Option<&WorkspaceBootstrap>,
         member_profile_ids: Option<&HashMap<AgentId, String>>,
@@ -367,7 +367,7 @@ impl Harness {
                             spec.team_id,
                             tenant_id,
                             journal_session_id,
-                            agent_run_options,
+                            agent_tool_policy,
                             workspace_root,
                             workspace_bootstrap,
                             member_profile_ids
@@ -391,7 +391,7 @@ impl Harness {
                             spec.team_id,
                             tenant_id,
                             journal_session_id,
-                            agent_run_options,
+                            agent_tool_policy,
                             workspace_root,
                             workspace_bootstrap,
                             member_profile_ids
@@ -415,7 +415,7 @@ impl Harness {
                             spec.team_id,
                             tenant_id,
                             journal_session_id,
-                            agent_run_options,
+                            agent_tool_policy,
                             workspace_root,
                             workspace_bootstrap,
                             member_profile_ids
@@ -441,12 +441,12 @@ impl Harness {
         team_id: harness_contracts::TeamId,
         tenant_id: TenantId,
         session_id: harness_contracts::SessionId,
-        agent_run_options: Option<&harness_contracts::AgentRunOptions>,
+        agent_tool_policy: Option<&harness_contracts::AgentToolPolicy>,
         workspace_root: &Path,
         workspace_bootstrap: Option<&WorkspaceBootstrap>,
         team_member_profile_id: Option<&str>,
     ) -> Result<Arc<dyn harness_team::TeamMemberRunner>, HarnessError> {
-        let nested_subagent_options = agent_run_options.and_then(|options| {
+        let nested_subagent_options = agent_tool_policy.and_then(|options| {
             if harness_agent_runtime::should_install_subagent_runner(options)
                 && options.agent_team == harness_contracts::AgentUsePolicy::Allowed
             {
@@ -473,7 +473,7 @@ impl Harness {
         let mut run_options = ConversationRunOptions::from_session_options(&options);
         #[cfg(feature = "agents-subagent")]
         {
-            run_options.agent_run_options = nested_subagent_options.cloned();
+            run_options.agent_tool_policy = nested_subagent_options.cloned();
         }
         #[cfg(feature = "agents-subagent")]
         let subagent_team_attribution = nested_subagent_options.and_then(|_| {

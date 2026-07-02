@@ -27,7 +27,7 @@ The system prompt guides behavior; it is not a security boundary. Rust remains t
 
 Workspace instructions and memory are context layers. They cannot override system or runtime policy. External content, tool output, MCP output, plugin output, file content, and pasted user content are untrusted data unless the runtime marks them otherwise.
 
-`SessionCreated.options_hash` is a session identity hash. It is limited to workspace, tenant, session, user, and team identity fields. Conversation resume paths compare this identity hash only. Model selection, protocol, tool search, tool profile, permission mode, interactivity, system prompt addendum, context compression, max iterations, model extra, agent options, runtime prompt context hash, and effective prompt input hash are run-level execution config. `RunStarted.effective_config_hash` records the effective config for that run. `SessionCreated.effective_config_hash` is historical session creation metadata and must not be used to reject a later conversation run with a different model or run config.
+`SessionCreated.options_hash` is a session identity hash. It is limited to workspace, tenant, session, user, and team identity fields. Conversation resume paths compare this identity hash only. Model selection, protocol, tool search, tool profile, permission mode, interactivity, system prompt addendum, context compression, max iterations, model extra, agent tool policy, runtime prompt context hash, and effective prompt input hash are run-level execution config. `RunStarted.effective_config_hash` records the effective config for that run. `SessionCreated.effective_config_hash` is historical session creation metadata and must not be used to reject a later conversation run with a different model or run config.
 
 Secrets MUST NOT be placed in system prompts, memory prompts, events, logs, traces, screenshots, frontend state, fixtures, or snapshots.
 
@@ -64,7 +64,7 @@ Ownership rules:
 - Conversation identity and run execution config are separate runtime policies.
   Conversation identity covers workspace, tenant, user/team, and session scope.
   Model choice, protocol, permission mode, tool profile/search, context
-  compression, agent options, and prompt addenda belong to the run effective
+  compression, agent tool policy, and prompt addenda belong to the run effective
   config.
 - The run model and provider capability routes are separate runtime policies.
   The run model controls chat input modalities and tool-calling eligibility.
@@ -107,13 +107,13 @@ Capability resolution:
   support, provider/model support, workspace state, and isolation requirements.
 - unavailable capability reasons are backend payloads. React must not invent
   availability state.
-- per-run agent options are accepted only after Rust validates them against the
-  resolved capability set.
+- agent tools are installed only after Rust validates settings and runtime
+  capabilities into the resolved agent tool policy.
 
 Background agent persistence:
 
-- background agents are started through `start_run` with
-  `agentOptions.background = background`.
+- background agents are started only when the model calls the
+  `background_agent` tool.
 - the durable registry is the source of truth for background agent list, detail,
   input request, pause, resume, cancel, archive, and delete operations.
 - registry state changes must be journaled or auditable before the UI observes

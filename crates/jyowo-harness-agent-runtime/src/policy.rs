@@ -5,9 +5,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    validate_agent_run_options, AgentCapabilityKind, AgentCapabilityUnavailableReason,
-    AgentOrchestrationValidationError, AgentRunOptions, AgentUsePolicy,
-    AgentWorkspaceIsolationMode, BackgroundRunPolicy,
+    validate_agent_tool_policy, AgentCapabilityKind, AgentCapabilityUnavailableReason,
+    AgentOrchestrationValidationError, AgentToolPolicy, AgentUsePolicy,
+    AgentWorkspaceIsolationMode,
 };
 use serde::Deserialize;
 
@@ -52,9 +52,8 @@ pub struct AgentCapabilitiesInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedAgentRuntimePolicy {
-    pub options: AgentRunOptions,
-    pub background_agent_id: Option<String>,
+pub struct ResolvedAgentToolPolicy {
+    pub options: AgentToolPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,24 +235,24 @@ pub struct AgentRuntimePolicyResolver;
 impl AgentRuntimePolicyResolver {
     pub fn merge(
         settings: &ExecutionSettingsAgentInput,
-        agent_options: Option<&AgentRunOptions>,
+        agent_tool_policy: Option<&AgentToolPolicy>,
         capabilities: &AgentCapabilitiesInput,
         known_profile_ids: &[String],
         conversation_id: &str,
         workspace_root: &Path,
-    ) -> Result<ResolvedAgentRuntimePolicy, AgentRuntimePolicyError> {
+    ) -> Result<ResolvedAgentToolPolicy, AgentRuntimePolicyError> {
         if conversation_id.trim().is_empty() {
             return Err(AgentRuntimePolicyError::Validation(
                 AgentOrchestrationValidationError::InvalidProfileId { id: String::new() },
             ));
         }
 
-        let options = match agent_options {
+        let options = match agent_tool_policy {
             Some(options) => options.clone(),
-            None => default_agent_run_options_from_settings(settings),
+            None => default_agent_tool_policy_from_settings(settings),
         };
 
-        validate_agent_run_options(&options).map_err(AgentRuntimePolicyError::Validation)?;
+        validate_agent_tool_policy(&options).map_err(AgentRuntimePolicyError::Validation)?;
         validate_numeric_limits(&options)?;
         validate_team_config_profiles(&options, known_profile_ids)?;
         validate_write_capable_isolation(&options, workspace_root)?;
@@ -270,35 +269,14 @@ impl AgentRuntimePolicyResolver {
             capabilities.agent_teams_available,
             "agentTeam",
         )?;
+        ensure_use_policy(
+            options.background_agents,
+            settings.background_agents_enabled,
+            capabilities.background_agents_available,
+            "backgroundAgents",
+        )?;
 
-        if options.background == BackgroundRunPolicy::Background {
-            if conversation_id.trim().is_empty() {
-                return Err(AgentRuntimePolicyError::Validation(
-                    AgentOrchestrationValidationError::InvalidProfileId { id: String::new() },
-                ));
-            }
-            if !settings.background_agents_enabled {
-                return Err(AgentRuntimePolicyError::CapabilityDisabled {
-                    field: "background",
-                });
-            }
-            if !capabilities.background_agents_available {
-                return Err(AgentRuntimePolicyError::CapabilityUnavailable {
-                    field: "background",
-                });
-            }
-        }
-
-        let background_agent_id = if options.background == BackgroundRunPolicy::Background {
-            Some(harness_contracts::BackgroundAgentId::new().to_string())
-        } else {
-            None
-        };
-
-        Ok(ResolvedAgentRuntimePolicy {
-            options,
-            background_agent_id,
-        })
+        Ok(ResolvedAgentToolPolicy { options })
     }
 }
 
@@ -341,10 +319,10 @@ pub fn default_agent_capability_environment() -> AgentCapabilityEnvironment {
     }
 }
 
-fn default_agent_run_options_from_settings(
+fn default_agent_tool_policy_from_settings(
     settings: &ExecutionSettingsAgentInput,
-) -> AgentRunOptions {
-    AgentRunOptions {
+) -> AgentToolPolicy {
+    AgentToolPolicy {
         subagents: if settings.subagents_enabled {
             AgentUsePolicy::Allowed
         } else {
@@ -355,12 +333,12 @@ fn default_agent_run_options_from_settings(
         } else {
             AgentUsePolicy::Off
         },
-        team_config: None,
-        background: if settings.background_agents_enabled {
-            BackgroundRunPolicy::Background
+        background_agents: if settings.background_agents_enabled {
+            AgentUsePolicy::Allowed
         } else {
-            BackgroundRunPolicy::Foreground
+            AgentUsePolicy::Off
         },
+        team_config: None,
         workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
         max_depth: DEFAULT_MAX_DEPTH,
         max_concurrent_subagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
@@ -385,7 +363,7 @@ fn ensure_use_policy(
     Ok(())
 }
 
-fn validate_numeric_limits(options: &AgentRunOptions) -> Result<(), AgentRuntimePolicyError> {
+fn validate_numeric_limits(options: &AgentToolPolicy) -> Result<(), AgentRuntimePolicyError> {
     if options.max_depth > MAX_ALLOWED_DEPTH {
         return Err(AgentRuntimePolicyError::Validation(
             AgentOrchestrationValidationError::InvalidConcurrency {
@@ -414,7 +392,7 @@ fn validate_numeric_limits(options: &AgentRunOptions) -> Result<(), AgentRuntime
 }
 
 fn validate_team_config_profiles(
-    options: &AgentRunOptions,
+    options: &AgentToolPolicy,
     known_profile_ids: &[String],
 ) -> Result<(), AgentRuntimePolicyError> {
     let Some(team_config) = options.team_config.as_ref() else {
@@ -599,10 +577,8 @@ fn team_runtime_policy_available() -> bool {
     cfg!(feature = "agents-team")
 }
 
-fn agent_modes_request_isolation(options: &AgentRunOptions) -> bool {
-    options.subagents == AgentUsePolicy::Allowed
-        || options.agent_team == AgentUsePolicy::Allowed
-        || options.background == BackgroundRunPolicy::Background
+fn agent_modes_request_isolation(options: &AgentToolPolicy) -> bool {
+    options.subagents == AgentUsePolicy::Allowed || options.agent_team == AgentUsePolicy::Allowed
 }
 
 fn is_write_capable_isolation(mode: AgentWorkspaceIsolationMode) -> bool {
@@ -613,7 +589,7 @@ fn is_write_capable_isolation(mode: AgentWorkspaceIsolationMode) -> bool {
 }
 
 fn validate_write_capable_isolation(
-    options: &AgentRunOptions,
+    options: &AgentToolPolicy,
     workspace_root: &Path,
 ) -> Result<(), AgentRuntimePolicyError> {
     if !agent_modes_request_isolation(options)

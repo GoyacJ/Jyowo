@@ -343,15 +343,15 @@ export const zhCN = {
         label: 'Agent 能力',
         subagents: {
           label: '子代理',
-          description: '允许运行把有边界的工作委派给子代理。',
+          description: '允许 AI 在需要时使用子代理工具。',
         },
         agentTeams: {
           label: '代理团队',
-          description: '允许运行使用负责人和成员代理组成的临时团队。',
+          description: '允许 AI 在需要时使用代理团队工具。',
         },
         backgroundAgents: {
           label: '后台代理',
-          description: '允许符合条件的运行在后台继续执行。',
+          description: '允许 AI 在需要时启动后台代理工具。',
         },
         unavailable: {
           notCompiled: '当前桌面版本未编译此能力。',

@@ -33,7 +33,7 @@ pub use agent_runtime::{
     delete_agent_profile, list_agent_profiles, resolve_agent_capabilities,
     resolve_agent_capabilities_with_context, resolve_agent_runtime_policy, save_agent_profile,
     AgentCapabilitiesInput, AgentCapabilityResolutionContext, AgentRuntimeFacadeError,
-    AgentRuntimePolicyError, ExecutionSettingsAgentInput, ResolvedAgentRuntimePolicy,
+    AgentRuntimePolicyError, ExecutionSettingsAgentInput, ResolvedAgentToolPolicy,
 };
 pub use builder::{HarnessBuilder, Set, Unset};
 pub use error::HarnessError;

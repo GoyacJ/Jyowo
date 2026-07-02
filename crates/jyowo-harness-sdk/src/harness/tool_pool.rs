@@ -125,7 +125,7 @@ pub(super) struct SubagentSessionAssembly {
 #[cfg(feature = "agents-subagent")]
 pub(super) fn install_subagent_runner_for_run(
     cap_registry: &mut CapabilityRegistry,
-    agent_run_options: &harness_contracts::AgentRunOptions,
+    agent_tool_policy: &harness_contracts::AgentToolPolicy,
     event_store: Arc<dyn EventStore>,
     workspace_root: &Path,
     team_attribution: Option<harness_agent_runtime::SubagentTeamAttribution>,
@@ -133,7 +133,7 @@ pub(super) fn install_subagent_runner_for_run(
     let engine_factory = Arc::new(harness_engine::EngineBoundSubagentFactory::default());
     let runner = harness_agent_runtime::assemble_subagent_runner(
         harness_agent_runtime::SubagentRunnerAssemblyInput {
-            agent_run_options: agent_run_options.clone(),
+            agent_tool_policy: agent_tool_policy.clone(),
             engine_factory: Arc::clone(&engine_factory)
                 as Arc<dyn harness_subagent::SubagentEngineFactory>,
             event_store,
@@ -152,9 +152,9 @@ pub(super) fn install_subagent_runner_for_run(
 #[cfg(feature = "agents-subagent")]
 pub(super) fn subagent_tool_should_be_enabled(
     harness_has_runner: bool,
-    agent_run_options: Option<&harness_contracts::AgentRunOptions>,
+    agent_tool_policy: Option<&harness_contracts::AgentToolPolicy>,
 ) -> bool {
-    match agent_run_options {
+    match agent_tool_policy {
         Some(options) => harness_agent_runtime::should_install_subagent_runner(options),
         None => harness_has_runner,
     }
@@ -162,6 +162,9 @@ pub(super) fn subagent_tool_should_be_enabled(
 
 #[cfg(feature = "agents-team")]
 const AGENT_TEAM_RUNNER_CAPABILITY: &str = "jyowo.agent_team.runner";
+
+#[cfg(feature = "agents-subagent")]
+pub(crate) const BACKGROUND_AGENT_STARTER_CAPABILITY: &str = "jyowo.background_agent.starter";
 
 #[cfg(feature = "agents-team")]
 #[async_trait]
@@ -186,7 +189,7 @@ struct AgentTeamToolStartRequest {
 #[cfg(feature = "agents-team")]
 struct SdkAgentTeamRunner {
     harness: Harness,
-    agent_run_options: harness_contracts::AgentRunOptions,
+    agent_tool_policy: harness_contracts::AgentToolPolicy,
     workspace_bootstrap: Option<WorkspaceBootstrap>,
 }
 
@@ -204,9 +207,9 @@ impl AgentTeamRunnerCap for SdkAgentTeamRunner {
         }
         let profiles = crate::list_agent_profiles(&request.workspace_root)
             .map_err(|error| ToolError::Internal(error.to_string()))?;
-        let mut agent_run_options = self.agent_run_options.clone();
-        agent_run_options.agent_team = harness_contracts::AgentUsePolicy::Allowed;
-        agent_run_options.team_config = Some(harness_contracts::AgentTeamRunConfig {
+        let mut agent_tool_policy = self.agent_tool_policy.clone();
+        agent_tool_policy.agent_team = harness_contracts::AgentUsePolicy::Allowed;
+        agent_tool_policy.team_config = Some(harness_contracts::AgentTeamRunConfig {
             topology: request.topology,
             lead_profile_id: "reviewer".to_owned(),
             member_profile_ids: vec!["worker".to_owned()],
@@ -216,7 +219,7 @@ impl AgentTeamRunnerCap for SdkAgentTeamRunner {
         let team = self
             .harness
             .start_run_scoped_team(super::team_runtime::RunScopedTeamStartupRequest {
-                agent_run_options,
+                agent_tool_policy,
                 profiles,
                 run_id: request.run_id,
                 conversation_session_id: request.conversation_session_id,
@@ -235,18 +238,186 @@ pub(super) fn install_agent_team_tool_for_run(
     harness: Harness,
     cap_registry: &mut CapabilityRegistry,
     tools: &mut ToolPool,
-    agent_run_options: &harness_contracts::AgentRunOptions,
+    agent_tool_policy: &harness_contracts::AgentToolPolicy,
     workspace_bootstrap: Option<WorkspaceBootstrap>,
 ) {
     cap_registry.install::<dyn AgentTeamRunnerCap>(
         ToolCapability::Custom(AGENT_TEAM_RUNNER_CAPABILITY.to_owned()),
         Arc::new(SdkAgentTeamRunner {
             harness,
-            agent_run_options: agent_run_options.clone(),
+            agent_tool_policy: agent_tool_policy.clone(),
             workspace_bootstrap,
         }),
     );
     tools.append_runtime_tool(Arc::new(AgentTeamTool::default()));
+}
+
+#[cfg(feature = "agents-subagent")]
+pub(super) fn install_background_agent_tool_for_run(
+    cap_registry: &CapabilityRegistry,
+    tools: &mut ToolPool,
+    agent_tool_policy: &harness_contracts::AgentToolPolicy,
+    model_config_id: Option<String>,
+    permission_mode: harness_contracts::PermissionMode,
+    session_snapshot: harness_contracts::BackgroundAgentToolSessionSnapshot,
+) {
+    if agent_tool_policy.background_agents != harness_contracts::AgentUsePolicy::Allowed {
+        return;
+    }
+    let capability = ToolCapability::Custom(BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned());
+    if !cap_registry.contains(&capability) {
+        return;
+    }
+    tools.append_runtime_tool(Arc::new(BackgroundAgentTool::new(
+        agent_tool_policy.clone(),
+        model_config_id,
+        permission_mode,
+        session_snapshot,
+    )));
+}
+
+#[cfg(feature = "agents-subagent")]
+struct BackgroundAgentTool {
+    descriptor: ToolDescriptor,
+    agent_tool_policy: harness_contracts::AgentToolPolicy,
+    model_config_id: Option<String>,
+    permission_mode: harness_contracts::PermissionMode,
+    session_snapshot: harness_contracts::BackgroundAgentToolSessionSnapshot,
+}
+
+#[cfg(feature = "agents-subagent")]
+impl BackgroundAgentTool {
+    fn new(
+        agent_tool_policy: harness_contracts::AgentToolPolicy,
+        model_config_id: Option<String>,
+        permission_mode: harness_contracts::PermissionMode,
+        session_snapshot: harness_contracts::BackgroundAgentToolSessionSnapshot,
+    ) -> Self {
+        Self {
+            descriptor: ToolDescriptor {
+                name: "background_agent".to_owned(),
+                display_name: "Background Agent".to_owned(),
+                description: "Start a durable background agent for a follow-up goal.".to_owned(),
+                category: "builtin".to_owned(),
+                group: ToolGroup::Coordinator,
+                version: "0.1.0".to_owned(),
+                input_schema: json!({
+                    "type": "object",
+                    "required": ["goal"],
+                    "properties": {
+                        "goal": { "type": "string", "minLength": 1 },
+                        "title": { "type": "string", "minLength": 1 }
+                    },
+                    "additionalProperties": false
+                }),
+                output_schema: None,
+                dynamic_schema: false,
+                properties: ToolProperties {
+                    is_concurrency_safe: false,
+                    is_read_only: false,
+                    is_destructive: false,
+                    long_running: None,
+                    defer_policy: harness_contracts::DeferPolicy::AlwaysLoad,
+                },
+                trust_level: harness_contracts::TrustLevel::AdminTrusted,
+                required_capabilities: vec![ToolCapability::Custom(
+                    BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
+                )],
+                budget: harness_contracts::ResultBudget {
+                    metric: harness_contracts::BudgetMetric::Chars,
+                    limit: 4_000,
+                    on_overflow: harness_contracts::OverflowAction::Offload,
+                    preview_head_chars: 1_000,
+                    preview_tail_chars: 1_000,
+                },
+                provider_restriction: harness_contracts::ProviderRestriction::All,
+                origin: ToolOrigin::Builtin,
+                search_hint: Some("start durable background agent".to_owned()),
+                service_binding: None,
+            },
+            agent_tool_policy,
+            model_config_id,
+            permission_mode,
+            session_snapshot,
+        }
+    }
+}
+
+#[cfg(feature = "agents-subagent")]
+#[async_trait]
+impl Tool for BackgroundAgentTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn validate(&self, input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
+        let goal = input
+            .get("goal")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if goal.is_empty() {
+            return Err(ValidationError::Message("goal is required".to_owned()));
+        }
+        if let Some(title) = input.get("title") {
+            let title = title.as_str().unwrap_or_default().trim();
+            if title.is_empty() {
+                return Err(ValidationError::Message(
+                    "title must be non-empty when provided".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
+        PermissionCheck::Allowed
+    }
+
+    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+        let goal = input
+            .get("goal")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::Validation("goal is required".to_owned()))?
+            .trim()
+            .to_owned();
+        let title = input
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| goal.lines().next().unwrap_or("Background agent"))
+            .to_owned();
+        let starter = ctx.capability::<dyn harness_contracts::BackgroundAgentStarterCap>(
+            ToolCapability::Custom(BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned()),
+        )?;
+        let response = starter
+            .start_background_agent(harness_contracts::BackgroundAgentToolStartRequest {
+                tenant_id: ctx.tenant_id,
+                conversation_id: ctx.session_id,
+                parent_run_id: ctx.run_id,
+                tool_use_id: ctx.tool_use_id,
+                goal: goal.clone(),
+                title: title.clone(),
+                model_config_id: self
+                    .model_config_id
+                    .clone()
+                    .or_else(|| ctx.model_config_id.clone()),
+                permission_mode: self.permission_mode,
+                agent_tool_policy: self.agent_tool_policy.clone(),
+                session: self.session_snapshot.clone(),
+            })
+            .await?;
+        Ok(Box::pin(futures::stream::iter([ToolEvent::Final(
+            ToolResult::Structured(json!({
+                "backgroundAgentId": response.background_agent_id,
+                "status": response.status,
+                "conversationId": response.conversation_id.to_string(),
+                "parentRunId": response.parent_run_id.to_string(),
+                "title": response.title,
+            })),
+        )])))
+    }
 }
 
 #[cfg(feature = "agents-team")]

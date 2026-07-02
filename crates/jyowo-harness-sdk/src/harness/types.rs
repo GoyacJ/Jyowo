@@ -160,7 +160,7 @@ pub struct ConversationRunOptions {
     pub max_iterations: u32,
     pub system_prompt_addendum: Option<String>,
     #[cfg(feature = "agents-subagent")]
-    pub agent_run_options: Option<harness_contracts::AgentRunOptions>,
+    pub agent_tool_policy: Option<harness_contracts::AgentToolPolicy>,
 }
 
 impl Default for ConversationRunOptions {
@@ -178,7 +178,7 @@ impl Default for ConversationRunOptions {
             max_iterations: 0,
             system_prompt_addendum: None,
             #[cfg(feature = "agents-subagent")]
-            agent_run_options: None,
+            agent_tool_policy: None,
         }
     }
 }
@@ -199,7 +199,7 @@ impl ConversationRunOptions {
             max_iterations: options.max_iterations,
             system_prompt_addendum: options.system_prompt_addendum.clone(),
             #[cfg(feature = "agents-subagent")]
-            agent_run_options: None,
+            agent_tool_policy: None,
         }
     }
 

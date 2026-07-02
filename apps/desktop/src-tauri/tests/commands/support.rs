@@ -101,6 +101,73 @@ impl Tool for NeedsPermissionTool {
     }
 }
 
+struct TestBackgroundAgentStarter {
+    workspace_root: PathBuf,
+    event_store: Arc<dyn EventStore>,
+}
+
+impl harness_contracts::BackgroundAgentStarterCap for TestBackgroundAgentStarter {
+    fn start_background_agent(
+        &self,
+        request: harness_contracts::BackgroundAgentToolStartRequest,
+    ) -> futures::future::BoxFuture<
+        'static,
+        Result<harness_contracts::BackgroundAgentToolStartResponse, ToolError>,
+    > {
+        let workspace_root = self.workspace_root.clone();
+        let event_store = Arc::clone(&self.event_store);
+        Box::pin(async move {
+            let store = Arc::new(
+                jyowo_harness_sdk::AgentRuntimeStore::open(&workspace_root)
+                    .map_err(|error| ToolError::Internal(error.to_string()))?,
+            );
+            let redactor = Arc::new(DefaultRedactor::default());
+            let manager = jyowo_harness_sdk::BackgroundAgentManager::new(
+                store,
+                event_store,
+                request.tenant_id,
+                request.conversation_id,
+                redactor.clone(),
+            );
+            let mut safe_input =
+                harness_contracts::ConversationTurnInput::ask(request.goal.clone());
+            safe_input.prompt = redactor.redact(&request.goal, &RedactRules::default());
+            let mut agent_tool_policy = request.agent_tool_policy.clone();
+            agent_tool_policy.background_agents = AgentUsePolicy::Off;
+            let record = manager
+                .start(jyowo_harness_sdk::BackgroundAgentStartRequest {
+                    background_agent_id: None,
+                    conversation_id: request.conversation_id,
+                    title: request.title.clone(),
+                    payload_json: json!({
+                        "conversationId": request.conversation_id.to_string(),
+                        "parentRunId": request.parent_run_id.to_string(),
+                        "toolUseId": request.tool_use_id.to_string(),
+                        "source": "background_agent_tool",
+                        "supervisorExecution": {
+                            "status": "queued",
+                            "session": request.session,
+                            "input": safe_input,
+                            "modelConfigId": request.model_config_id,
+                            "permissionMode": request.permission_mode,
+                            "agentToolPolicy": agent_tool_policy,
+                        },
+                    })
+                    .to_string(),
+                })
+                .await
+                .map_err(|error| ToolError::Internal(error.to_string()))?;
+            Ok(harness_contracts::BackgroundAgentToolStartResponse {
+                background_agent_id: record.background_agent_id,
+                conversation_id: request.conversation_id,
+                parent_run_id: request.parent_run_id,
+                title: record.title,
+                status: "started".to_owned(),
+            })
+        })
+    }
+}
+
 pub(crate) fn permission_request_with_subject(subject: PermissionSubject) -> PermissionRequest {
     let tenant_id = TenantId::SHARED;
     let session_id = SessionId::new();
@@ -443,6 +510,13 @@ pub(crate) async fn runtime_state_with_scripted_model_for_workspace(
 ) -> DesktopRuntimeState {
     std::fs::create_dir_all(&workspace).unwrap();
     write_test_provider_settings(&workspace);
+    let event_store =
+        Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))) as Arc<dyn EventStore>;
+    let background_agent_starter: Arc<dyn harness_contracts::BackgroundAgentStarterCap> =
+        Arc::new(TestBackgroundAgentStarter {
+            workspace_root: workspace.clone(),
+            event_store: Arc::clone(&event_store),
+        });
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
         default_timeout: Some(Duration::from_secs(5)),
         heartbeat_interval: None,
@@ -452,8 +526,12 @@ pub(crate) async fn runtime_state_with_scripted_model_for_workspace(
         Harness::builder()
             .with_options(test_harness_options(&workspace))
             .with_model_arc(Arc::new(ScriptedProvider::new(responses)))
-            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_store_arc(event_store)
             .with_sandbox(NoopSandbox::new())
+            .with_capability(
+                ToolCapability::Custom("jyowo.background_agent.starter".to_owned()),
+                background_agent_starter,
+            )
             .with_stream_permission_broker_arc(
                 stream_permission_runtime.broker(),
                 stream_permission_runtime.resolver_handle(),

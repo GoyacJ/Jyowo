@@ -343,15 +343,15 @@ export const enUS = {
         label: 'Agent capabilities',
         subagents: {
           label: 'Subagents',
-          description: 'Allow runs to delegate scoped work to subagents.',
+          description: 'Allow AI to use the subagent tool when needed.',
         },
         agentTeams: {
           label: 'Agent teams',
-          description: 'Allow run-scoped teams with lead and member agents.',
+          description: 'Allow AI to use the agent team tool when needed.',
         },
         backgroundAgents: {
           label: 'Background agents',
-          description: 'Allow eligible runs to continue in the background.',
+          description: 'Allow AI to start a background agent tool when needed.',
         },
         unavailable: {
           notCompiled: 'Capability is not compiled into this desktop build.',

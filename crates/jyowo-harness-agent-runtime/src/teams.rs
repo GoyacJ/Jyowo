@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_contracts::{
-    AgentId, AgentProfile, AgentRunOptions, AgentTeamSharedMemoryPolicy, AgentTeamTopology,
+    AgentId, AgentProfile, AgentTeamSharedMemoryPolicy, AgentTeamTopology, AgentToolPolicy,
     AgentUsePolicy, RunId, SessionId, TeamId,
 };
 use harness_team::{
@@ -56,7 +56,7 @@ pub struct PreparedRunScopedTeam {
 
 #[derive(Debug, Clone)]
 pub struct RunScopedTeamCoordinatorRequest {
-    pub agent_run_options: AgentRunOptions,
+    pub agent_tool_policy: AgentToolPolicy,
     pub profiles: Vec<AgentProfile>,
     pub run_id: RunId,
     pub conversation_session_id: SessionId,
@@ -69,7 +69,7 @@ pub struct RunScopedTeamCreateRequest {
     pub spec: TeamSpec,
     pub conversation_session_id: SessionId,
     pub run_id: RunId,
-    pub agent_run_options: AgentRunOptions,
+    pub agent_tool_policy: AgentToolPolicy,
     pub member_profile_ids: HashMap<AgentId, String>,
     pub workspace_root: PathBuf,
 }
@@ -121,7 +121,7 @@ impl<'store> RunScopedTeamCoordinator<'store> {
         H: RunScopedTeamHost + Sync,
     {
         let prepared = prepare_run_scoped_team(
-            &request.agent_run_options,
+            &request.agent_tool_policy,
             &request.profiles,
             &request.run_id.to_string(),
             &request.conversation_session_id.to_string(),
@@ -135,7 +135,7 @@ impl<'store> RunScopedTeamCoordinator<'store> {
                 spec,
                 conversation_session_id: request.conversation_session_id,
                 run_id: request.run_id,
-                agent_run_options: request.agent_run_options,
+                agent_tool_policy: request.agent_tool_policy,
                 member_profile_ids,
                 workspace_root: request.workspace_root,
             })
@@ -156,12 +156,12 @@ impl<'store> RunScopedTeamCoordinator<'store> {
 }
 
 #[must_use]
-pub fn should_start_run_scoped_team(options: &AgentRunOptions) -> bool {
+pub fn should_start_run_scoped_team(options: &AgentToolPolicy) -> bool {
     options.agent_team == AgentUsePolicy::Allowed && options.team_config.is_some()
 }
 
 pub fn prepare_run_scoped_team(
-    options: &AgentRunOptions,
+    options: &AgentToolPolicy,
     profiles: &[AgentProfile],
     run_id: &str,
     conversation_id: &str,
