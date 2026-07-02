@@ -6,10 +6,11 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
-use harness_contracts::{Event, ResourceLimits, SandboxError, SandboxExitStatus};
+use harness_contracts::{Event, NetworkAccess, ResourceLimits, SandboxError, SandboxExitStatus};
 use harness_sandbox::{
-    EventSink, ExecContext, ExecSpec, OutputOverflowPolicy, SandboxBackend, SandboxBaseConfig,
-    SnapshotSpec, SshAuth, SshSandbox, StdioSpec, WorkspaceSyncConfig, WorkspaceSyncStrategy,
+    execute_with_lifecycle, preflight_exec, EventSink, ExecContext, ExecSpec, OutputOverflowPolicy,
+    SandboxBackend, SandboxBaseConfig, SnapshotSpec, SshAuth, SshSandbox, StdioSpec,
+    WorkspaceSyncConfig, WorkspaceSyncStrategy,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -142,14 +143,16 @@ exit 0
 }
 
 fn shell_spec() -> ExecSpec {
-    ExecSpec {
+    let mut spec = ExecSpec {
         command: "/bin/sh".to_owned(),
         args: vec!["-c".to_owned(), "printf ignored".to_owned()],
         stdin: StdioSpec::Null,
         stdout: StdioSpec::Piped,
         stderr: StdioSpec::Piped,
         ..ExecSpec::default()
-    }
+    };
+    spec.policy.network = NetworkAccess::Unrestricted;
+    spec
 }
 
 async fn collect_stdout(mut stdout: futures::stream::BoxStream<'static, bytes::Bytes>) -> String {
@@ -233,6 +236,30 @@ async fn ssh_workspace_sync_fails_closed_without_explicit_config() {
     assert!(error
         .to_string()
         .contains("workspace sync config is required"));
+}
+
+#[tokio::test]
+async fn ssh_sandbox_rejects_no_network_preflight_before_probe() {
+    let root = temp_root("network-policy");
+    let log = root.join("ssh.log");
+    let sandbox = sandbox(fake_ssh(&root, &log));
+    let mut spec = shell_spec();
+    spec.policy.network = NetworkAccess::None;
+
+    let error = preflight_exec(&sandbox, &spec, &ExecContext::for_test(Arc::new(NullSink)))
+        .expect_err("ssh cannot enforce no-network policy");
+
+    assert!(matches!(
+        error,
+        SandboxError::CapabilityMismatch {
+            ref capability,
+            ..
+        } if capability == "network"
+    ));
+    assert!(
+        !log.exists(),
+        "preflight failure must not probe or execute ssh"
+    );
 }
 
 #[tokio::test]
@@ -407,12 +434,16 @@ async fn ssh_workspace_sync_executes_rsync_push_before_remote_command() {
         WorkspaceSyncStrategy::RsyncPush,
     );
 
-    let mut handle = sandbox
-        .execute(shell_spec(), ExecContext::for_test(Arc::new(NullSink)))
-        .await
-        .expect("ssh command should spawn after rsync push");
+    let mut handle = execute_with_lifecycle(
+        Arc::new(sandbox),
+        shell_spec(),
+        ExecContext::for_test(Arc::new(NullSink)),
+    )
+    .await
+    .expect("ssh command should spawn after rsync push");
     let _ = collect_stdout(handle.stdout.take().expect("stdout should be piped")).await;
     let outcome = handle.activity.wait().await.expect("wait should succeed");
+    assert_eq!(outcome.exit_status, SandboxExitStatus::Code(0));
 
     assert_eq!(outcome.exit_status, SandboxExitStatus::Code(0));
     let lines = std::fs::read_to_string(log)
@@ -445,16 +476,12 @@ async fn ssh_workspace_sync_executes_push_and_pull_for_bidi() {
     );
     let ctx = ExecContext::for_test(Arc::new(NullSink));
 
-    let mut handle = sandbox
-        .execute(shell_spec(), ctx.clone())
+    let mut handle = execute_with_lifecycle(Arc::new(sandbox), shell_spec(), ctx)
         .await
         .expect("ssh command should spawn after rsync push");
     let _ = collect_stdout(handle.stdout.take().expect("stdout should be piped")).await;
     let outcome = handle.activity.wait().await.expect("wait should succeed");
-    sandbox
-        .after_execute(&outcome, &ctx)
-        .await
-        .expect("bidi sync should pull after execute");
+    assert_eq!(outcome.exit_status, SandboxExitStatus::Code(0));
 
     let lines = std::fs::read_to_string(log)
         .expect("sync log should be written")
@@ -490,9 +517,12 @@ async fn ssh_workspace_sync_push_failure_fails_before_remote_execute() {
         WorkspaceSyncStrategy::RsyncPush,
     );
 
-    let error = match sandbox
-        .execute(shell_spec(), ExecContext::for_test(Arc::new(NullSink)))
-        .await
+    let error = match execute_with_lifecycle(
+        Arc::new(sandbox),
+        shell_spec(),
+        ExecContext::for_test(Arc::new(NullSink)),
+    )
+    .await
     {
         Ok(_) => panic!("rsync push failure should stop remote execution"),
         Err(error) => error,
@@ -503,7 +533,6 @@ async fn ssh_workspace_sync_push_failure_fails_before_remote_execute() {
         SandboxError::WorkspaceSyncFailed { ref direction, .. } if direction == "push"
     ));
     let log_text = std::fs::read_to_string(log).expect("sync log should be written");
-    assert!(log_text.contains("__jyowo_probe__"));
     assert!(log_text.contains("rsync:push "));
     assert!(!log_text.contains("/bin/sh -c printf ignored"));
 }
@@ -520,23 +549,24 @@ async fn ssh_workspace_sync_pull_failure_reports_after_execute_error() {
         root.join("workspace"),
         WorkspaceSyncStrategy::RsyncBidi,
     );
-    let ctx = ExecContext::for_test(Arc::new(NullSink));
+    let (sink, mut rx) = recording_sink();
+    let ctx = ExecContext::for_test(sink);
 
-    let mut handle = sandbox
-        .execute(shell_spec(), ctx.clone())
+    let mut handle = execute_with_lifecycle(Arc::new(sandbox), shell_spec(), ctx)
         .await
         .expect("ssh command should still complete before pull failure");
     let _ = collect_stdout(handle.stdout.take().expect("stdout should be piped")).await;
     let outcome = handle.activity.wait().await.expect("wait should succeed");
-    let error = sandbox
-        .after_execute(&outcome, &ctx)
-        .await
-        .expect_err("rsync pull failure should be reported by after_execute");
 
-    assert!(matches!(
-        error,
-        SandboxError::WorkspaceSyncFailed { ref direction, .. } if direction == "pull"
-    ));
+    assert_eq!(outcome.exit_status, SandboxExitStatus::Code(0));
+    let events = drain_events(&mut rx);
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            Event::SandboxPostExecutionFailed(failed)
+                if failed.backend_id == "ssh" && failed.error.to_string().contains("pull")
+        )
+    }));
     let log_text = std::fs::read_to_string(log).expect("sync log should be written");
     assert!(log_text.contains("rsync:push "));
     assert!(log_text.contains("/bin/sh -c printf ignored"));

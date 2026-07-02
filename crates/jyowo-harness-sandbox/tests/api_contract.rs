@@ -7,10 +7,11 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use harness_contracts::{
-    Event, KillScope, RedactRules, Redactor, SandboxBackendFailurePhase, SandboxError,
+    Event, KillScope, NetworkAccess, RedactRules, Redactor, SandboxBackendFailurePhase,
+    SandboxError,
 };
 use harness_sandbox::{
-    execute_with_lifecycle, restore_with_lifecycle, shutdown_with_lifecycle,
+    execute_with_lifecycle, preflight_exec, restore_with_lifecycle, shutdown_with_lifecycle,
     snapshot_with_lifecycle, ActivityHandle, EventSink, ExecContext, ExecOutcome, ExecSpec,
     ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
 };
@@ -79,6 +80,7 @@ impl ActivityHandle for TestActivity {
 
 struct TestBackend {
     id: String,
+    before_execute_count: Arc<AtomicUsize>,
     after_execute_count: Arc<AtomicUsize>,
     execute_error: Option<SandboxError>,
     wait_error: Option<SandboxError>,
@@ -96,9 +98,20 @@ impl SandboxBackend for TestBackend {
 
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
+            supports_network: true,
+            max_concurrent_execs: 1,
             snapshot_kinds: BTreeSet::default(),
             ..SandboxCapabilities::default()
         }
+    }
+
+    async fn before_execute(
+        &self,
+        _spec: &ExecSpec,
+        _ctx: &ExecContext,
+    ) -> Result<(), SandboxError> {
+        self.before_execute_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     async fn execute(
@@ -163,6 +176,7 @@ async fn sandbox_backend_is_object_safe_and_has_noop_hooks() {
     let after_execute_count = Arc::new(AtomicUsize::new(0));
     let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
         id: "test".to_owned(),
+        before_execute_count: Arc::new(AtomicUsize::new(0)),
         after_execute_count: after_execute_count.clone(),
         execute_error: None,
         wait_error: None,
@@ -186,9 +200,11 @@ async fn sandbox_backend_is_object_safe_and_has_noop_hooks() {
 
 #[tokio::test]
 async fn execute_with_lifecycle_runs_after_execute_once_when_wait_completes() {
+    let before_execute_count = Arc::new(AtomicUsize::new(0));
     let after_execute_count = Arc::new(AtomicUsize::new(0));
     let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
         id: "test".to_owned(),
+        before_execute_count: before_execute_count.clone(),
         after_execute_count: after_execute_count.clone(),
         execute_error: None,
         wait_error: None,
@@ -210,13 +226,79 @@ async fn execute_with_lifecycle_runs_after_execute_once_when_wait_completes() {
         .expect("second wait should return cached outcome");
 
     assert_eq!(first, second);
+    assert_eq!(before_execute_count.load(Ordering::SeqCst), 1);
     assert_eq!(after_execute_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn execute_with_lifecycle_emits_preflight_passed_before_execute() {
+    let before_execute_count = Arc::new(AtomicUsize::new(0));
+    let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
+        id: "test".to_owned(),
+        before_execute_count: before_execute_count.clone(),
+        after_execute_count: Arc::new(AtomicUsize::new(0)),
+        execute_error: None,
+        wait_error: None,
+        after_execute_error: None,
+        snapshot_error: None,
+        restore_error: None,
+        shutdown_error: None,
+    });
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = ExecContext::for_test(sink.clone());
+
+    let _handle = execute_with_lifecycle(backend, ExecSpec::default(), ctx)
+        .await
+        .expect("execute should succeed");
+
+    assert_eq!(before_execute_count.load(Ordering::SeqCst), 1);
+    let events = sink.events();
+    assert!(
+        matches!(events.first(), Some(Event::SandboxPreflightPassed(passed)) if passed.backend_id == "test")
+    );
+}
+
+#[tokio::test]
+async fn preflight_exec_emits_failed_event_and_returns_report_without_execute() {
+    let backend = TestBackend {
+        id: "test".to_owned(),
+        before_execute_count: Arc::new(AtomicUsize::new(0)),
+        after_execute_count: Arc::new(AtomicUsize::new(0)),
+        execute_error: None,
+        wait_error: None,
+        after_execute_error: None,
+        snapshot_error: None,
+        restore_error: None,
+        shutdown_error: None,
+    };
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = ExecContext::for_test(sink.clone());
+    let mut spec = ExecSpec::default();
+    spec.policy.network = NetworkAccess::AllowList(Vec::new());
+
+    let error = preflight_exec(&backend, &spec, &ctx)
+        .expect_err("preflight must fail unsupported capability");
+
+    assert_eq!(backend.before_execute_count.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        error,
+        SandboxError::CapabilityMismatch {
+            ref capability,
+            ..
+        } if capability == "network"
+    ));
+    assert!(matches!(
+        sink.events().first(),
+        Some(Event::SandboxPreflightFailed(failed))
+            if failed.backend_id == "test" && failed.reason.contains("network")
+    ));
 }
 
 #[tokio::test]
 async fn execute_with_lifecycle_emits_backend_failure_when_execute_fails() {
     let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
         id: "test".to_owned(),
+        before_execute_count: Arc::new(AtomicUsize::new(0)),
         after_execute_count: Arc::new(AtomicUsize::new(0)),
         execute_error: Some(SandboxError::Message("spawn secret failed".to_owned())),
         wait_error: None,
@@ -250,6 +332,7 @@ async fn execute_with_lifecycle_emits_backend_failure_when_execute_fails() {
 async fn execute_with_lifecycle_emits_backend_failure_when_wait_fails() {
     let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
         id: "test".to_owned(),
+        before_execute_count: Arc::new(AtomicUsize::new(0)),
         after_execute_count: Arc::new(AtomicUsize::new(0)),
         execute_error: None,
         wait_error: Some(SandboxError::ResourceLimitExceeded {
@@ -292,6 +375,7 @@ async fn execute_with_lifecycle_emits_post_execution_failure_without_rewriting_o
     let after_execute_count = Arc::new(AtomicUsize::new(0));
     let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
         id: "test".to_owned(),
+        before_execute_count: Arc::new(AtomicUsize::new(0)),
         after_execute_count: after_execute_count.clone(),
         execute_error: None,
         wait_error: None,
@@ -324,6 +408,7 @@ async fn execute_with_lifecycle_redacts_post_execution_failure_event() {
     let after_execute_count = Arc::new(AtomicUsize::new(0));
     let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
         id: "test".to_owned(),
+        before_execute_count: Arc::new(AtomicUsize::new(0)),
         after_execute_count,
         execute_error: None,
         wait_error: None,
@@ -359,6 +444,7 @@ async fn execute_with_lifecycle_redacts_post_execution_failure_event() {
 async fn snapshot_with_lifecycle_emits_backend_failure_when_snapshot_fails() {
     let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
         id: "test".to_owned(),
+        before_execute_count: Arc::new(AtomicUsize::new(0)),
         after_execute_count: Arc::new(AtomicUsize::new(0)),
         execute_error: None,
         wait_error: None,
@@ -391,6 +477,7 @@ async fn snapshot_with_lifecycle_emits_backend_failure_when_snapshot_fails() {
 async fn restore_with_lifecycle_emits_backend_failure_when_restore_fails() {
     let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
         id: "test".to_owned(),
+        before_execute_count: Arc::new(AtomicUsize::new(0)),
         after_execute_count: Arc::new(AtomicUsize::new(0)),
         execute_error: None,
         wait_error: None,
@@ -423,6 +510,7 @@ async fn restore_with_lifecycle_emits_backend_failure_when_restore_fails() {
 async fn shutdown_with_lifecycle_emits_backend_failure_when_shutdown_fails() {
     let backend: Arc<dyn SandboxBackend> = Arc::new(TestBackend {
         id: "test".to_owned(),
+        before_execute_count: Arc::new(AtomicUsize::new(0)),
         after_execute_count: Arc::new(AtomicUsize::new(0)),
         execute_error: None,
         wait_error: None,

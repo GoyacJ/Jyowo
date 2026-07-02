@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use harness_contracts::{Event, SandboxError};
-use harness_sandbox::{EventSink, ExecContext, ExecSpec, NoopSandbox, SandboxBackend};
+use harness_sandbox::{
+    preflight_exec, EventSink, ExecContext, ExecSpec, NoopSandbox, SandboxBackend,
+};
 
 #[derive(Default)]
 struct NullSink;
@@ -41,4 +43,23 @@ async fn noop_sandbox_rejects_exec_and_records_spec() {
     ));
     assert_eq!(sandbox.recorded_execs(), vec![spec]);
     backend.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn noop_sandbox_preflight_is_deny_only() {
+    let sandbox = NoopSandbox::new();
+    let error = preflight_exec(
+        &sandbox,
+        &ExecSpec::default(),
+        &ExecContext::for_test(Arc::new(NullSink)),
+    )
+    .expect_err("noop sandbox must not pass execution preflight");
+
+    assert!(matches!(
+        error,
+        SandboxError::CapabilityMismatch {
+            ref capability,
+            ..
+        } if capability == "execute"
+    ));
 }

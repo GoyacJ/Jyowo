@@ -9,7 +9,7 @@
 | Storybook files | 13 |
 | Playwright spec files | 4 |
 | Rust test files | 295 |
-| Rust `#[test]` / `#[tokio::test]` count | 2063 |
+| Rust `#[test]` / `#[tokio::test]` count | 2072 |
 | Script policy test files | 8 |
 
 ## Largest Test Files by Line Count
@@ -82,13 +82,14 @@
 - crates/jyowo-harness-subagent/tests/permission_bridge.rs (1009 lines)
 - crates/jyowo-harness-team/tests/routing.rs (974 lines)
 - apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx (957 lines)
+- crates/jyowo-harness-sandbox/tests/local.rs (933 lines)
 - crates/jyowo-harness-tool/tests/registry_pool.rs (931 lines)
 - crates/jyowo-harness-sdk/tests/facade.rs (928 lines)
 - crates/jyowo-harness-engine/tests/interrupt.rs (913 lines)
 - apps/desktop/src/features/conversation/timeline/conversation-timeline.stories.tsx (894 lines)
+- crates/jyowo-harness-sandbox/tests/docker.rs (891 lines)
 - apps/desktop/src-tauri/tests/commands/activity_redaction.rs (887 lines)
 - apps/desktop/src-tauri/tests/commands/permissions.rs (878 lines)
-- crates/jyowo-harness-sandbox/tests/local.rs (869 lines)
 - crates/jyowo-harness-tool/tests/minimax_tools.rs (858 lines)
 - crates/jyowo-harness-mcp/tests/core.rs (812 lines)
 - apps/desktop/src-tauri/tests/commands/mcp.rs (806 lines)

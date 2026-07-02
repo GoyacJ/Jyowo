@@ -889,13 +889,13 @@ Capability rules:
 
 **Steps:**
 
-1. Write lifecycle tests proving `before_execute` is called exactly once by `execute_with_lifecycle`.
-2. Write capability matrix tests for local and Docker network policy.
-3. Move `before_execute` invocation into `execute_with_lifecycle`.
-4. Remove duplicate local call.
-5. Add preflight report and events.
-6. Update Docker policy validation.
-7. Run gates.
+- [x] Write lifecycle tests proving `before_execute` is called exactly once by `execute_with_lifecycle`.
+- [x] Write capability matrix tests for local and Docker network policy.
+- [x] Move `before_execute` invocation into `execute_with_lifecycle`.
+- [x] Remove duplicate local call.
+- [x] Add preflight report and events.
+- [x] Update Docker policy validation.
+- [x] Run gates.
 
 **Verification:**
 
