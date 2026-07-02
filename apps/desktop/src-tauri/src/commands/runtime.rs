@@ -339,9 +339,15 @@ impl DesktopRuntimeState {
                 "Permission decisions require a Harness PermissionBroker.",
             ));
         };
-        if !Arc::ptr_eq(&permission_broker, &stream_permission_runtime.broker()) {
+        let _ = permission_broker;
+        let Some(permission_resolver) = harness.permission_resolver_handle() else {
             return Err(runtime_unavailable(
-                "Harness PermissionBroker must come from the stream permission runtime.",
+                "Permission decisions require a Harness permission resolver.",
+            ));
+        };
+        if !permission_resolver.same_origin_as(&stream_permission_runtime.resolver_handle()) {
+            return Err(runtime_unavailable(
+                "Harness permission resolver must come from the stream permission runtime.",
             ));
         }
         let permission_resolver: Arc<dyn PermissionResolver> = stream_permission_runtime.clone();

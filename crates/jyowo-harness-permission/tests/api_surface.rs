@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::BoxStream;
@@ -84,11 +82,6 @@ async fn permission_broker_decide_requires_context() {
         interactivity: InteractivityLevel::NoInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::DenyAll,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: Utc::now(),
-        }),
         hook_overrides: Vec::<OverrideDecision>::new(),
     };
 

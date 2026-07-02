@@ -78,6 +78,10 @@ mod tests {
                 role: format!("reviewer {secret}"),
                 parent_run_id: Some(run_id),
             },
+            action_plan_hash: Default::default(),
+            review: Default::default(),
+            effective_mode: Default::default(),
+            sandbox_policy: Default::default(),
             causation_id: EventId::new(),
             at: now(),
         });

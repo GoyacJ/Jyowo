@@ -120,11 +120,6 @@ async fn permission_bridge_attributes_subagent_source_on_forward_and_resolve() {
                 interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
                 timeout_policy: None,
                 fallback_policy: harness_contracts::FallbackPolicy::DenyAll,
-                rule_snapshot: Arc::new(RuleSnapshot {
-                    rules: Vec::new(),
-                    generation: 0,
-                    built_at: harness_contracts::now(),
-                }),
                 hook_overrides: Vec::new(),
             },
         )

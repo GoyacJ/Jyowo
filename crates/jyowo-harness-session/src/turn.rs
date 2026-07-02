@@ -27,8 +27,8 @@ use harness_model::{
     ModelStreamEvent,
 };
 use harness_permission::{
-    canonical_permission_fingerprint, hard_policy_denies_from_context, PermissionBroker,
-    PermissionContext, PermissionRequest, PersistedDecision, RuleSnapshot,
+    canonical_permission_fingerprint, PermissionBroker, PermissionContext, PermissionRequest,
+    PersistedDecision,
 };
 use harness_sandbox::SandboxBackend;
 use harness_tool::{
@@ -650,7 +650,6 @@ impl PermissionBroker for RecordingPermissionBroker {
         ctx: &PermissionContext,
     ) -> bool {
         self.inner.hard_policy_denies(request, ctx).await
-            || hard_policy_denies_from_context(request, ctx)
     }
 
     async fn persist(
@@ -740,11 +739,6 @@ fn permission_context(
         interactivity: InteractivityLevel::NoInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::DenyAll,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: harness_contracts::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }
@@ -1213,11 +1207,6 @@ mod tests {
             interactivity: InteractivityLevel::FullyInteractive,
             timeout_policy: None,
             fallback_policy: FallbackPolicy::DenyAll,
-            rule_snapshot: Arc::new(RuleSnapshot {
-                rules: Vec::new(),
-                generation: 0,
-                built_at: harness_contracts::now(),
-            }),
             hook_overrides: Vec::new(),
         }
     }

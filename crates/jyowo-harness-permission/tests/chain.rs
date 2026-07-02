@@ -4,12 +4,11 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_contracts::{
     DecidedBy, Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionMode,
-    PermissionSubject, RequestId, RuleSource, SessionId, Severity, TenantId, ToolUseId,
+    PermissionSubject, RequestId, SessionId, Severity, TenantId, ToolUseId,
 };
 use harness_permission::{
     policy_scope_matches_request, ChainedBroker, DecisionHistoryQuery, FallbackTerminator,
-    PermissionBroker, PermissionContext, PermissionRequest, PermissionRule, PersistedDecision,
-    PriorDecision, RuleAction, RuleSnapshot,
+    PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision, PriorDecision,
 };
 
 #[tokio::test]
@@ -87,7 +86,9 @@ async fn fallback_terminator_bypass_allows_after_escalation() {
 #[tokio::test]
 async fn fallback_terminator_policy_deny_wins_before_bypass_permission_mode() {
     let broker = ChainedBroker::builder()
-        .push(Arc::new(StaticBroker(Decision::Escalate)))
+        .push(Arc::new(PolicyDenyBroker {
+            scope: DecisionScope::ToolName("shell".to_owned()),
+        }))
         .terminator(Arc::new(FallbackTerminator::new(
             FallbackPolicy::AskUser,
             Arc::new(EmptyHistory),
@@ -96,17 +97,6 @@ async fn fallback_terminator_policy_deny_wins_before_bypass_permission_mode() {
         .unwrap();
     let mut ctx = permission_context();
     ctx.permission_mode = PermissionMode::BypassPermissions;
-    ctx.rule_snapshot = Arc::new(RuleSnapshot {
-        rules: vec![PermissionRule {
-            id: "policy-deny-shell".to_owned(),
-            priority: 0,
-            scope: DecisionScope::ToolName("shell".to_owned()),
-            action: RuleAction::Deny,
-            source: RuleSource::Policy,
-        }],
-        generation: 1,
-        built_at: Utc::now(),
-    });
 
     assert_eq!(
         broker.decide(permission_request(), ctx).await,
@@ -117,7 +107,9 @@ async fn fallback_terminator_policy_deny_wins_before_bypass_permission_mode() {
 #[tokio::test]
 async fn fallback_terminator_any_policy_deny_wins_before_bypass_permission_mode() {
     let broker = ChainedBroker::builder()
-        .push(Arc::new(StaticBroker(Decision::Escalate)))
+        .push(Arc::new(PolicyDenyBroker {
+            scope: DecisionScope::Any,
+        }))
         .terminator(Arc::new(FallbackTerminator::new(
             FallbackPolicy::AskUser,
             Arc::new(EmptyHistory),
@@ -126,17 +118,6 @@ async fn fallback_terminator_any_policy_deny_wins_before_bypass_permission_mode(
         .unwrap();
     let mut ctx = permission_context();
     ctx.permission_mode = PermissionMode::BypassPermissions;
-    ctx.rule_snapshot = Arc::new(RuleSnapshot {
-        rules: vec![PermissionRule {
-            id: "policy-deny-any".to_owned(),
-            priority: 0,
-            scope: DecisionScope::Any,
-            action: RuleAction::Deny,
-            source: RuleSource::Policy,
-        }],
-        generation: 1,
-        built_at: Utc::now(),
-    });
 
     assert_eq!(
         broker.decide(permission_request(), ctx).await,
@@ -147,7 +128,9 @@ async fn fallback_terminator_any_policy_deny_wins_before_bypass_permission_mode(
 #[tokio::test]
 async fn fallback_terminator_path_prefix_policy_deny_wins_before_bypass_permission_mode() {
     let broker = ChainedBroker::builder()
-        .push(Arc::new(StaticBroker(Decision::Escalate)))
+        .push(Arc::new(PolicyDenyBroker {
+            scope: DecisionScope::PathPrefix(PathBuf::from("/tmp/workspace")),
+        }))
         .terminator(Arc::new(FallbackTerminator::new(
             FallbackPolicy::AskUser,
             Arc::new(EmptyHistory),
@@ -156,17 +139,6 @@ async fn fallback_terminator_path_prefix_policy_deny_wins_before_bypass_permissi
         .unwrap();
     let mut ctx = permission_context();
     ctx.permission_mode = PermissionMode::BypassPermissions;
-    ctx.rule_snapshot = Arc::new(RuleSnapshot {
-        rules: vec![PermissionRule {
-            id: "policy-deny-workspace-path".to_owned(),
-            priority: 0,
-            scope: DecisionScope::PathPrefix(PathBuf::from("/tmp/workspace")),
-            action: RuleAction::Deny,
-            source: RuleSource::Policy,
-        }],
-        generation: 1,
-        built_at: Utc::now(),
-    });
     let mut request = permission_request();
     request.scope_hint = DecisionScope::PathPrefix(PathBuf::from("/tmp/workspace/src/main.rs"));
 
@@ -200,6 +172,9 @@ fn policy_scope_matching_covers_wide_policy_scopes_without_cross_variant_guessin
 #[tokio::test]
 async fn chained_broker_policy_deny_wins_before_prior_allow() {
     let broker = ChainedBroker::builder()
+        .push(Arc::new(PolicyDenyBroker {
+            scope: DecisionScope::ToolName("shell".to_owned()),
+        }))
         .push(Arc::new(StaticBroker(Decision::AllowOnce)))
         .terminator(Arc::new(FallbackTerminator::new(
             FallbackPolicy::AskUser,
@@ -207,21 +182,11 @@ async fn chained_broker_policy_deny_wins_before_prior_allow() {
         )))
         .build()
         .unwrap();
-    let mut ctx = permission_context();
-    ctx.rule_snapshot = Arc::new(RuleSnapshot {
-        rules: vec![PermissionRule {
-            id: "policy-deny-shell".to_owned(),
-            priority: 0,
-            scope: DecisionScope::ToolName("shell".to_owned()),
-            action: RuleAction::Deny,
-            source: RuleSource::Policy,
-        }],
-        generation: 1,
-        built_at: Utc::now(),
-    });
 
     assert_eq!(
-        broker.decide(permission_request(), ctx).await,
+        broker
+            .decide(permission_request(), permission_context())
+            .await,
         Decision::DenyOnce
     );
 }
@@ -232,6 +197,32 @@ struct StaticBroker(Decision);
 impl PermissionBroker for StaticBroker {
     async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
         self.0.clone()
+    }
+
+    async fn persist(
+        &self,
+        _decision: PersistedDecision,
+    ) -> Result<(), harness_contracts::PermissionError> {
+        Ok(())
+    }
+}
+
+struct PolicyDenyBroker {
+    scope: DecisionScope,
+}
+
+#[async_trait]
+impl PermissionBroker for PolicyDenyBroker {
+    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+        Decision::Escalate
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        request: &PermissionRequest,
+        _ctx: &PermissionContext,
+    ) -> bool {
+        policy_scope_matches_request(&self.scope, &request.scope_hint)
     }
 
     async fn persist(
@@ -296,11 +287,6 @@ fn permission_context() -> PermissionContext {
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::AskUser,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: Utc::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }

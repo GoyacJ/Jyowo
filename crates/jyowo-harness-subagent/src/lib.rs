@@ -37,8 +37,8 @@ use harness_contracts::{
 use harness_journal::{AppendMetadata, EventStore, ReplayCursor};
 use harness_model::{AuxExecutor, AuxModelProvider, AuxTask, ModelProtocol, ModelRequest};
 use harness_permission::{
-    canonical_permission_fingerprint, hard_policy_denies_from_context, PermissionBroker,
-    PermissionCheck, PermissionContext, PermissionRequest,
+    canonical_permission_fingerprint, PermissionBroker, PermissionCheck, PermissionContext,
+    PermissionRequest,
 };
 use harness_session::{Session, SessionOptions};
 use harness_tool::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
@@ -718,7 +718,6 @@ impl PermissionBroker for SubagentPermissionBridge {
         ctx: &PermissionContext,
     ) -> bool {
         self.parent_broker.hard_policy_denies(request, ctx).await
-            || hard_policy_denies_from_context(request, ctx)
     }
 
     async fn persist(

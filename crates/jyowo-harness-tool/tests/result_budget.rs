@@ -608,11 +608,6 @@ fn orchestrator_ctx(
             interactivity: InteractivityLevel::FullyInteractive,
             timeout_policy: None,
             fallback_policy: FallbackPolicy::DenyAll,
-            rule_snapshot: Arc::new(RuleSnapshot {
-                rules: vec![],
-                generation: 0,
-                built_at: chrono::Utc::now(),
-            }),
             hook_overrides: vec![],
         },
         blob_store,

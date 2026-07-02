@@ -94,8 +94,8 @@ use harness_model::{
 use harness_observability::DefaultRedactor;
 use harness_observability::{AttributeValue, Observer, SpanAttributes, SpanStatus, Tracer};
 use harness_permission::{
-    DecisionPersistence, PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
-    RuleProvider,
+    DecisionPersistence, DecisionStore, PermissionBroker, PermissionContext, PermissionRequest,
+    PersistedDecision, RuleProvider,
 };
 #[cfg(feature = "stream-permission")]
 use harness_permission::{PendingPermissionRequest, ResolverHandle};
@@ -189,7 +189,7 @@ use self::events::{
 use self::limits::SessionLimitState;
 use self::memory::record_memory_summary_event;
 use self::metrics::{SdkMcpEventSink, SdkMcpMetricsSink};
-use self::permissions::{default_permission_broker, policy_gated_permission_broker};
+use self::permissions::{default_permission_broker, permission_authority_broker};
 use self::redaction::redact_business_event_for_display;
 use self::run_state::{ActiveConversationRun, ActiveConversationRunGuard, EngineSessionTurnRunner};
 use self::session_runtime::{sdk_session_not_found, snapshot_for_supported_model};
@@ -271,14 +271,19 @@ impl Harness {
         };
         let permission_broker = match extras.permission_broker.take() {
             Some(broker) => {
-                policy_gated_permission_broker(&builder.options, broker, &extras.rule_providers)
-                    .await?
+                permission_authority_broker(
+                    &builder.options,
+                    Some(broker),
+                    &extras.rule_providers,
+                    extras.decision_store.take(),
+                )
+                .await?
             }
             None => {
                 default_permission_broker(
                     &builder.options,
                     &extras.rule_providers,
-                    extras.decision_persistence.take(),
+                    extras.decision_store.take(),
                 )
                 .await?
             }

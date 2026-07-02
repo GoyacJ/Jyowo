@@ -81,11 +81,6 @@ async fn bridge_forwards_and_resolves_child_permission_requests() {
                     heartbeat_interval_ms: None,
                 }),
                 fallback_policy: FallbackPolicy::DenyAll,
-                rule_snapshot: Arc::new(RuleSnapshot {
-                    rules: Vec::new(),
-                    generation: 0,
-                    built_at: harness_contracts::now(),
-                }),
                 hook_overrides: Vec::new(),
             },
         )
@@ -975,11 +970,6 @@ fn permission_context(session_id: SessionId) -> PermissionContext {
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::DenyAll,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: harness_contracts::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }

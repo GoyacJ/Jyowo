@@ -579,11 +579,6 @@ fn permission_context() -> harness_permission::PermissionContext {
         interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: harness_contracts::FallbackPolicy::DenyAll,
-        rule_snapshot: Arc::new(harness_permission::RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: chrono::Utc::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }

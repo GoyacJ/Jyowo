@@ -38,8 +38,8 @@ use harness_model::{
 };
 use harness_observability::{DefaultRedactor, Span, SpanAttributes};
 use harness_permission::{
-    canonical_permission_fingerprint, hard_policy_denies_from_context, PermissionBroker,
-    PermissionContext, PermissionRequest, PersistedDecision, RuleSnapshot,
+    canonical_permission_fingerprint, PermissionBroker, PermissionContext, PermissionRequest,
+    PersistedDecision,
 };
 use harness_tool::{
     InterruptToken, OrchestratorContext, ToolCall, ToolEventEmitter, ToolOrchestrator,
@@ -2492,40 +2492,6 @@ impl PermissionBroker for RecordingPermissionBroker {
             return Decision::DenyOnce;
         }
 
-        if let Some(previous) = self.reusable_previous_decision(fingerprint).await {
-            if self.hard_policy_denies(&request, &ctx).await {
-                self.records.lock().await.push(PermissionDecisionRecord {
-                    request,
-                    decision: Decision::DenyOnce,
-                    decided_by: DecidedBy::Broker {
-                        broker_id: "engine-turn-runtime".to_owned(),
-                    },
-                    hook_conflict: None,
-                    fingerprint,
-                    suppressed: None,
-                    auto_resolved: false,
-                });
-                return Decision::DenyOnce;
-            }
-
-            let decision = previous.decision.clone();
-            self.records.lock().await.push(PermissionDecisionRecord {
-                request,
-                decision: decision.clone(),
-                decided_by: DecidedBy::Broker {
-                    broker_id: "dedup-gate".to_owned(),
-                },
-                hook_conflict: None,
-                fingerprint,
-                suppressed: Some(SuppressedPermissionRecord {
-                    original_request_id: previous.request.request_id,
-                    reason: suppression_reason_for_decision(&decision),
-                }),
-                auto_resolved: false,
-            });
-            return decision;
-        }
-
         if matches!(
             ctx.permission_mode,
             PermissionMode::BypassPermissions | PermissionMode::DontAsk
@@ -2718,7 +2684,6 @@ impl PermissionBroker for RecordingPermissionBroker {
         ctx: &PermissionContext,
     ) -> bool {
         self.inner.hard_policy_denies(request, ctx).await
-            || hard_policy_denies_from_context(request, ctx)
     }
 
     async fn persist(
@@ -2742,28 +2707,6 @@ fn normalize_bypass_override_decision(decision: Decision) -> Decision {
 }
 
 impl RecordingPermissionBroker {
-    async fn reusable_previous_decision(
-        &self,
-        fingerprint: ExecFingerprint,
-    ) -> Option<PermissionDecisionRecord> {
-        self.records
-            .lock()
-            .await
-            .iter()
-            .find(|record| {
-                record.fingerprint == fingerprint
-                    && matches!(
-                        record.decision,
-                        Decision::AllowOnce
-                            | Decision::AllowSession
-                            | Decision::AllowPermanent
-                            | Decision::DenyOnce
-                            | Decision::DenyPermanent
-                    )
-            })
-            .cloned()
-    }
-
     async fn record_requested_event(
         &self,
         request: &PermissionRequest,
@@ -2799,17 +2742,6 @@ impl RecordingPermissionBroker {
     }
 }
 
-fn suppression_reason_for_decision(decision: &Decision) -> SuppressionReason {
-    match decision {
-        Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent => {
-            SuppressionReason::RecentlyAllowed
-        }
-        Decision::DenyOnce | Decision::DenyPermanent | Decision::Escalate | _ => {
-            SuppressionReason::RecentlyDenied
-        }
-    }
-}
-
 struct ChannelToolEventEmitter {
     sender: mpsc::UnboundedSender<Event>,
 }
@@ -2837,11 +2769,6 @@ fn permission_context(session: &SessionHandle, ctx: &RunContext) -> PermissionCo
         interactivity: ctx.interactivity,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::DenyAll,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: harness_contracts::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }
@@ -3524,6 +3451,8 @@ fn engine_error(error: impl std::fmt::Display) -> EngineError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use harness_contracts::{
         DecisionScope, NoopRedactor, PermissionSubject, RequestId, Severity, ToolUseId,
     };
@@ -3553,6 +3482,27 @@ mod tests {
         }
     }
 
+    struct CountingBroker {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl PermissionBroker for CountingBroker {
+        async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => Decision::AllowOnce,
+                _ => Decision::DenyPermanent,
+            }
+        }
+
+        async fn persist(
+            &self,
+            _decision: PersistedDecision,
+        ) -> Result<(), harness_contracts::PermissionError> {
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn recording_permission_broker_forwards_hard_policy_probe() {
         let broker = RecordingPermissionBroker::new(
@@ -3568,6 +3518,31 @@ mod tests {
         let ctx = permission_context_for(&request);
 
         assert!(broker.hard_policy_denies(&request, &ctx).await);
+    }
+
+    #[tokio::test]
+    async fn recording_permission_broker_does_not_reuse_previous_allow_before_inner_authority() {
+        let inner = Arc::new(CountingBroker {
+            calls: AtomicUsize::new(0),
+        });
+        let broker = RecordingPermissionBroker::new(
+            inner.clone(),
+            Vec::new(),
+            Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))),
+            RunId::new(),
+            InteractivityLevel::FullyInteractive,
+            PermissionActorSource::ParentRun,
+            Arc::new(NoopRedactor),
+        );
+        let request = permission_request();
+        let ctx = permission_context_for(&request);
+
+        assert_eq!(
+            broker.decide(request.clone(), ctx.clone()).await,
+            Decision::AllowOnce
+        );
+        assert_eq!(broker.decide(request, ctx).await, Decision::DenyPermanent);
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 2);
     }
 
     fn permission_request() -> PermissionRequest {
@@ -3597,11 +3572,6 @@ mod tests {
             interactivity: InteractivityLevel::FullyInteractive,
             timeout_policy: None,
             fallback_policy: FallbackPolicy::DenyAll,
-            rule_snapshot: Arc::new(RuleSnapshot {
-                rules: Vec::new(),
-                generation: 0,
-                built_at: harness_contracts::now(),
-            }),
             hook_overrides: Vec::new(),
         }
     }

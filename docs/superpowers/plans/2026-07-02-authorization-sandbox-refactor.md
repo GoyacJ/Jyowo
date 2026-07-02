@@ -717,20 +717,20 @@ This task must complete before the execution crate is created. `jyowo-harness-ex
 
 **Steps:**
 
-1. Write failing tests proving:
-   - empty call-site snapshot cannot disable policy deny
-   - bypass cannot override policy deny
-   - stream broker alone is not accepted as production authority
-   - Noop persistence does not satisfy integrity requirement
-   - persisted scoped decisions are read through `DecisionHistory`, not by downcasting to `FileDecisionPersistence`
-   - tampered persisted decisions fail closed and are not reused
-   - duplicate high-risk allow is not silently reused as global allow
-2. Remove `rule_snapshot` from `PermissionContext`.
-3. Update every downstream `PermissionContext` constructor listed above in the same task.
-4. Update permission crate tests and helpers.
-5. Implement `PermissionAuthority`, `DecisionHistory`, `DecisionLookup`, and `DecisionStore`.
-6. Keep primitive brokers only as internal pipeline pieces or test adapters.
-7. Run gates.
+- [x] Write failing tests proving:
+  - [x] empty call-site snapshot cannot disable policy deny
+  - [x] bypass cannot override policy deny
+  - [x] stream broker alone is not accepted as production authority
+  - [x] Noop persistence does not satisfy integrity requirement
+  - [x] persisted scoped decisions are read through `DecisionHistory`, not by downcasting to `FileDecisionPersistence`
+  - [x] tampered persisted decisions fail closed and are not reused
+  - [x] duplicate high-risk allow is not silently reused as global allow
+- [x] Remove `rule_snapshot` from `PermissionContext`.
+- [x] Update every downstream `PermissionContext` constructor listed above in the same task.
+- [x] Update permission crate tests and helpers.
+- [x] Implement `PermissionAuthority`, `DecisionHistory`, `DecisionLookup`, and `DecisionStore`.
+- [x] Keep primitive brokers only as internal pipeline pieces or test adapters.
+- [x] Run gates.
 
 **Verification:**
 

@@ -14,7 +14,7 @@ use harness_contracts::{
 use harness_permission::{
     AdminRuleProvider, DecisionPersistence, FileRuleProvider, InMemoryRuleProvider,
     InlineRuleProvider, PermissionBroker, PermissionContext, PermissionRequest, PermissionRule,
-    PersistedDecision, RuleAction, RuleEngineBroker, RuleProvider, RuleSnapshot,
+    PersistedDecision, RuleAction, RuleEngineBroker, RuleProvider,
 };
 use parking_lot::Mutex;
 
@@ -130,7 +130,7 @@ async fn no_match_uses_fallback_policy() {
                 permission_context(InteractivityLevel::NoInteractive)
             )
             .await,
-        Decision::DenyOnce
+        Decision::Escalate
     );
 
     assert_eq!(
@@ -140,7 +140,7 @@ async fn no_match_uses_fallback_policy() {
                 permission_context(InteractivityLevel::DeferredInteractive)
             )
             .await,
-        Decision::DenyOnce
+        Decision::Escalate
     );
 }
 
@@ -457,8 +457,10 @@ fn rule(id: &str, source: RuleSource, priority: i32, action: RuleAction) -> Perm
 fn persisted_decision(source: RuleSource) -> PersistedDecision {
     PersistedDecision {
         decision_id: DecisionId::new(),
+        decision: Decision::AllowPermanent,
         scope: DecisionScope::ToolName("shell".to_owned()),
         source,
+        session_id: None,
         fingerprint: None,
     }
 }
@@ -494,11 +496,6 @@ fn permission_context(interactivity: InteractivityLevel) -> PermissionContext {
         interactivity,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::AskUser,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: Utc::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }

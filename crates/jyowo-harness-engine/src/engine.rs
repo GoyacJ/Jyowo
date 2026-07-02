@@ -43,7 +43,7 @@ use harness_observability::DefaultRedactor;
 use harness_observability::{Observer, Tracer};
 use harness_permission::PermissionBroker;
 #[cfg(feature = "programmatic-tool-calling")]
-use harness_permission::{PermissionContext, RuleSnapshot};
+use harness_permission::PermissionContext;
 #[cfg(feature = "programmatic-tool-calling")]
 use harness_sandbox::CodeSandbox;
 use harness_sandbox::SandboxBackend;
@@ -923,11 +923,6 @@ fn embedded_permission_context(
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::DenyAll,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: harness_contracts::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }

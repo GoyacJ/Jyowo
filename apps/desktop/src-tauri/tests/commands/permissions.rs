@@ -675,6 +675,10 @@ async fn list_activity_with_runtime_state_includes_permission_auto_resolved() {
                     interactivity: InteractivityLevel::FullyInteractive,
                     auto_resolved: true,
                     actor_source: PermissionActorSource::ParentRun,
+                    action_plan_hash: Default::default(),
+                    review: Default::default(),
+                    effective_mode: Default::default(),
+                    sandbox_policy: Default::default(),
                     presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                     request_id,
                     run_id,
@@ -814,7 +818,7 @@ async fn list_activity_with_runtime_state_rejects_conflicting_conversation_and_r
 }
 
 #[tokio::test]
-async fn runtime_state_rejects_harness_and_stream_permission_runtime_from_different_brokers() {
+async fn runtime_state_rejects_harness_and_stream_permission_runtime_from_different_resolvers() {
     let workspace = unique_workspace("mismatched-broker");
     std::fs::create_dir_all(&workspace).unwrap();
     let harness_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
@@ -846,7 +850,7 @@ async fn runtime_state_rejects_harness_and_stream_permission_runtime_from_differ
         harness,
         state_runtime,
     ) {
-        Ok(_) => panic!("state should reject mismatched permission broker origins"),
+        Ok(_) => panic!("state should reject mismatched permission resolver origins"),
         Err(error) => error,
     };
 

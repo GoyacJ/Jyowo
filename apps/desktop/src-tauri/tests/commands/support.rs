@@ -199,11 +199,6 @@ pub(crate) fn permission_context_with_run_id(run_id: Option<RunId>) -> Permissio
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::AskUser,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }
@@ -356,6 +351,10 @@ pub(crate) fn test_permission_requested_event(
         interactivity: InteractivityLevel::FullyInteractive,
         auto_resolved: false,
         actor_source: PermissionActorSource::ParentRun,
+        action_plan_hash: Default::default(),
+        review: Default::default(),
+        effective_mode: Default::default(),
+        sandbox_policy: Default::default(),
         presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
         request_id,
         run_id,

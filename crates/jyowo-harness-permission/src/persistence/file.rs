@@ -6,15 +6,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    DecisionId, DecisionScope, ExecFingerprint, PermissionError,
+    Decision, DecisionId, DecisionScope, ExecFingerprint, PermissionError,
     PermissionPersistenceTamperedEvent, PersistenceTamperReason, RuleSource, TenantId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    canonical_bytes, DecisionPersistence, IntegrityAlgorithm, IntegrityError, IntegritySignature,
-    IntegritySigner, PersistedDecision,
+    canonical_bytes, policy_scope_matches_request, DecisionHistory, DecisionLookup,
+    DecisionPersistence, IntegrityAlgorithm, IntegrityError, IntegritySignature, IntegritySigner,
+    PersistedDecision,
 };
 
 pub struct FileDecisionPersistence {
@@ -40,8 +41,10 @@ impl PermissionTamperEventSink for NoopPermissionTamperEventSink {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SignedDecisionRecord {
     decision_id: DecisionId,
+    decision: Decision,
     scope: DecisionScope,
     source: RuleSource,
+    session_id: Option<harness_contracts::SessionId>,
     fingerprint: Option<ExecFingerprint>,
     recorded_at: DateTime<Utc>,
     signature: StoredSignature,
@@ -91,8 +94,10 @@ impl FileDecisionPersistence {
             .into_iter()
             .map(|record| PersistedDecision {
                 decision_id: record.decision_id,
+                decision: record.decision,
                 scope: record.scope,
                 source: record.source,
+                session_id: record.session_id,
                 fingerprint: record.fingerprint,
             })
             .collect())
@@ -103,8 +108,17 @@ impl FileDecisionPersistence {
             return Ok(Vec::new());
         }
 
-        let bytes = fs::read(&self.path)
-            .map_err(|err| PermissionError::Message(format!("read permission file: {err}")))?;
+        let bytes = match fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                self.report_tamper(None, PersistenceTamperReason::SignatureMismatch)
+                    .await;
+                self.rename_tampered_file()?;
+                return Err(PermissionError::Message(format!(
+                    "read permission file: {err}"
+                )));
+            }
+        };
         let records: Vec<SignedDecisionRecord> = match serde_json::from_slice(&bytes) {
             Ok(records) => records,
             Err(err) => {
@@ -138,8 +152,10 @@ impl FileDecisionPersistence {
         let recorded_at = Utc::now();
         let unsigned = unsigned_record_value(
             decision.decision_id,
+            &decision.decision,
             &decision.scope,
             decision.source,
+            decision.session_id,
             decision.fingerprint,
             recorded_at,
         );
@@ -149,8 +165,10 @@ impl FileDecisionPersistence {
 
         Ok(SignedDecisionRecord {
             decision_id: decision.decision_id,
+            decision: decision.decision,
             scope: decision.scope,
             source: decision.source,
+            session_id: decision.session_id,
             fingerprint: decision.fingerprint,
             recorded_at,
             signature: StoredSignature::from_signature(signature),
@@ -161,8 +179,10 @@ impl FileDecisionPersistence {
         let signature = record.signature.to_signature()?;
         let unsigned = unsigned_record_value(
             record.decision_id,
+            &record.decision,
             &record.scope,
             record.source,
+            record.session_id,
             record.fingerprint,
             record.recorded_at,
         );
@@ -225,6 +245,43 @@ impl DecisionPersistence for FileDecisionPersistence {
     }
 }
 
+#[async_trait]
+impl DecisionHistory for FileDecisionPersistence {
+    async fn find_scoped_decision(
+        &self,
+        lookup: DecisionLookup,
+    ) -> Result<Option<PersistedDecision>, PermissionError> {
+        if lookup.tenant_id != self.tenant_id {
+            return Ok(None);
+        }
+
+        let decisions = self.load_decisions().await?;
+        Ok(decisions.into_iter().find(|decision| {
+            decision.source == lookup.decision_source
+                && session_scope_matches(decision, &lookup)
+                && policy_scope_matches_request(&decision.scope, &lookup.requested_scope)
+                && fingerprint_matches(decision.fingerprint, lookup.fingerprint)
+        }))
+    }
+}
+
+fn fingerprint_matches(
+    decision_fingerprint: Option<ExecFingerprint>,
+    lookup_fingerprint: ExecFingerprint,
+) -> bool {
+    match decision_fingerprint {
+        Some(fingerprint) => fingerprint == lookup_fingerprint,
+        None => false,
+    }
+}
+
+fn session_scope_matches(decision: &PersistedDecision, lookup: &DecisionLookup) -> bool {
+    match decision.decision {
+        Decision::AllowSession => decision.session_id == Some(lookup.session_id),
+        _ => true,
+    }
+}
+
 impl StoredSignature {
     fn from_signature(signature: IntegritySignature) -> Self {
         Self {
@@ -249,15 +306,19 @@ impl StoredSignature {
 
 fn unsigned_record_value(
     decision_id: DecisionId,
+    decision: &Decision,
     scope: &DecisionScope,
     source: RuleSource,
+    session_id: Option<harness_contracts::SessionId>,
     fingerprint: Option<ExecFingerprint>,
     recorded_at: DateTime<Utc>,
 ) -> Value {
     json!({
         "decision_id": decision_id,
+        "decision": decision,
         "scope": scope,
         "source": source,
+        "session_id": session_id,
         "fingerprint": fingerprint,
         "recorded_at": recorded_at,
     })

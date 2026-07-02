@@ -1,7 +1,5 @@
 #![cfg(feature = "rule-engine")]
 
-use std::sync::Arc;
-
 use chrono::Utc;
 use harness_contracts::{
     Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionMode, PermissionSubject,
@@ -9,7 +7,7 @@ use harness_contracts::{
 };
 use harness_permission::{
     DangerousPatternLibrary, PermissionBroker, PermissionContext, PermissionRequest,
-    PermissionRule, RuleAction, RuleEngineBroker, RuleSnapshot,
+    PermissionRule, RuleAction, RuleEngineBroker,
 };
 
 #[tokio::test]
@@ -79,7 +77,7 @@ async fn policy_deny_still_wins_before_dangerous_escalation() {
 }
 
 #[tokio::test]
-async fn bypass_permission_mode_allows_dangerous_command_without_prompt() {
+async fn rule_engine_escalates_dangerous_command_in_bypass_permission_mode() {
     let broker = RuleEngineBroker::builder()
         .with_dangerous_library(DangerousPatternLibrary::default_unix())
         .with_rules(vec![allow_shell_rule()])
@@ -97,7 +95,7 @@ async fn bypass_permission_mode_allows_dangerous_command_without_prompt() {
                 ),
             )
             .await,
-        Decision::AllowOnce
+        Decision::Escalate
     );
 }
 
@@ -207,11 +205,6 @@ fn permission_context_with_mode(
         interactivity,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::AskUser,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: Utc::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }

@@ -16,7 +16,7 @@ use harness_model::{AuxModelProvider, InferMiddleware, ModelProvider};
 use harness_observability::{Observer, Tracer};
 #[cfg(feature = "stream-permission")]
 use harness_permission::ResolverHandle;
-use harness_permission::{DecisionPersistence, PermissionBroker, RuleProvider};
+use harness_permission::{DecisionStore, PermissionBroker, RuleProvider};
 use harness_plugin::PluginRegistry;
 use harness_sandbox::SandboxBackend;
 use harness_skill::SkillLoader;
@@ -55,7 +55,7 @@ pub(crate) struct BuilderExtras {
     pub(crate) aux_model: Option<Arc<dyn AuxModelProvider>>,
     pub(crate) model_middlewares: Vec<Arc<dyn InferMiddleware>>,
     pub(crate) rule_providers: Vec<Arc<dyn RuleProvider>>,
-    pub(crate) decision_persistence: Option<Arc<dyn DecisionPersistence>>,
+    pub(crate) decision_store: Option<Arc<dyn DecisionStore>>,
     pub(crate) cap_registry: Option<CapabilityRegistry>,
     pub(crate) provider_capability_routes:
         Option<Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>>>,
@@ -409,8 +409,8 @@ impl<M, S, SB> HarnessBuilder<M, S, SB> {
     }
 
     #[must_use]
-    pub fn with_decision_persistence(mut self, persistence: Arc<dyn DecisionPersistence>) -> Self {
-        self.extras.decision_persistence = Some(persistence);
+    pub fn with_decision_persistence(mut self, persistence: Arc<dyn DecisionStore>) -> Self {
+        self.extras.decision_store = Some(persistence);
         self
     }
 

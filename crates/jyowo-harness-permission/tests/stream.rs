@@ -1,17 +1,15 @@
 #![cfg(feature = "stream")]
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
 use harness_contracts::{
     Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionError, PermissionMode,
-    PermissionSubject, RequestId, RuleSource, SessionId, Severity, TenantId, TimeoutPolicy,
-    ToolUseId,
+    PermissionSubject, RequestId, SessionId, Severity, TenantId, TimeoutPolicy, ToolUseId,
 };
 use harness_permission::{
-    CancelReason, PermissionBroker, PermissionContext, PermissionRequest, PermissionRule,
-    RuleAction, RuleSnapshot, StreamBasedBroker, StreamBrokerConfig,
+    CancelReason, PermissionBroker, PermissionContext, PermissionRequest, StreamBasedBroker,
+    StreamBrokerConfig,
 };
 
 #[test]
@@ -206,35 +204,6 @@ async fn bypass_permission_mode_allows_without_pending_request() {
 }
 
 #[tokio::test]
-async fn policy_deny_wins_before_bypass_permission_mode() {
-    let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
-        default_timeout: Some(Duration::from_secs(5)),
-        heartbeat_interval: None,
-        max_pending: 16,
-    });
-    let mut ctx = permission_context(None);
-    ctx.permission_mode = PermissionMode::BypassPermissions;
-    ctx.rule_snapshot = Arc::new(RuleSnapshot {
-        rules: vec![PermissionRule {
-            id: "policy-deny-shell".to_owned(),
-            priority: 1,
-            scope: DecisionScope::ToolName("shell".to_owned()),
-            action: RuleAction::Deny,
-            source: RuleSource::Policy,
-        }],
-        generation: 1,
-        built_at: Utc::now(),
-    });
-
-    assert_eq!(
-        broker.decide(permission_request(), ctx).await,
-        Decision::DenyOnce
-    );
-    assert!(resolver.pending_requests().is_empty());
-    assert!(receiver.try_recv().is_err());
-}
-
-#[tokio::test]
 async fn stream_broker_cancel_cleans_pending_and_unblocks_decide() {
     let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
         default_timeout: Some(Duration::from_secs(5)),
@@ -295,11 +264,6 @@ fn permission_context(timeout_policy: Option<TimeoutPolicy>) -> PermissionContex
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy,
         fallback_policy: FallbackPolicy::AskUser,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: Utc::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }

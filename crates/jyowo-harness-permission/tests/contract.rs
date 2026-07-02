@@ -6,14 +6,17 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use async_trait::async_trait;
 use chrono::Utc;
 use futures::FutureExt;
 use harness_contracts::{
-    Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionMode, PermissionSubject,
-    RequestId, SessionId, Severity, TenantId, TimeoutPolicy, ToolUseId,
+    Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionError, PermissionMode,
+    PermissionSubject, RequestId, RuleSource, SessionId, Severity, TenantId, TimeoutPolicy,
+    ToolUseId,
 };
 use harness_permission::{
-    DirectBroker, PermissionBroker, PermissionContext, PermissionRequest, RuleSnapshot,
+    DecisionHistory, DecisionLookup, DecisionPersistence, DirectBroker, NoopDecisionPersistence,
+    PermissionAuthority, PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
     StreamBasedBroker, StreamBrokerConfig, TestBroker,
 };
 
@@ -36,6 +39,301 @@ async fn contract_test_broker() {
     test_fail_closed_default().await;
     test_permission_context_required().await;
     test_no_state_across_calls().await;
+}
+
+#[tokio::test]
+async fn authority_policy_deny_does_not_depend_on_call_site_snapshot() {
+    let authority = PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(PolicyDenyBroker))
+        .with_decision_store(Arc::new(IntegrityStore))
+        .build()
+        .unwrap();
+    let mut request = permission_request("authority-deny");
+    let ctx = permission_context(None);
+    request.session_id = ctx.session_id;
+    request.tenant_id = ctx.tenant_id;
+
+    assert_eq!(authority.decide(request, ctx).await, Decision::DenyOnce);
+}
+
+#[tokio::test]
+async fn authority_bypass_cannot_override_policy_deny() {
+    let authority = PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(PolicyDenyBroker))
+        .with_decision_store(Arc::new(IntegrityStore))
+        .build()
+        .unwrap();
+    let mut request = permission_request("authority-bypass-deny");
+    let mut ctx = permission_context(None);
+    ctx.permission_mode = PermissionMode::BypassPermissions;
+    request.session_id = ctx.session_id;
+    request.tenant_id = ctx.tenant_id;
+
+    assert_eq!(authority.decide(request, ctx).await, Decision::DenyOnce);
+}
+
+#[tokio::test]
+async fn authority_reuses_own_user_scoped_persisted_decisions_through_history() {
+    let store = Arc::new(RecordingIntegrityStore::default());
+    let first_authority = PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(EscalatePolicyBroker))
+        .with_interactive_broker(Arc::new(TestBroker::new(vec![Decision::AllowSession])))
+        .with_decision_store(store.clone())
+        .build()
+        .unwrap();
+    let mut ctx = permission_context(None);
+    ctx.interactivity = InteractivityLevel::FullyInteractive;
+    let mut first_request = permission_request("authority-user-persisted");
+    first_request.session_id = ctx.session_id;
+    first_request.tenant_id = ctx.tenant_id;
+
+    assert_eq!(
+        first_authority.decide(first_request, ctx.clone()).await,
+        Decision::AllowSession
+    );
+
+    let second_authority = PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(EscalatePolicyBroker))
+        .with_decision_store(store)
+        .build()
+        .unwrap();
+    ctx.interactivity = InteractivityLevel::NoInteractive;
+    let mut second_request = permission_request("authority-user-persisted");
+    second_request.session_id = ctx.session_id;
+    second_request.tenant_id = ctx.tenant_id;
+
+    let outcome = second_authority
+        .decide_with_audit(second_request, ctx)
+        .await;
+    assert_eq!(outcome.decision, Decision::AllowOnce);
+    assert!(matches!(
+        outcome.decided_by,
+        harness_permission::PermissionAuthorityDecisionSource::PersistedDecision { .. }
+    ));
+}
+
+#[tokio::test]
+async fn authority_does_not_persist_durable_deny_as_reusable_allow() {
+    let store = Arc::new(RecordingIntegrityStore::default());
+    let first_authority = PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(EscalatePolicyBroker))
+        .with_interactive_broker(Arc::new(TestBroker::new(vec![Decision::DenyPermanent])))
+        .with_decision_store(store.clone())
+        .build()
+        .unwrap();
+    let mut ctx = permission_context(None);
+    ctx.interactivity = InteractivityLevel::FullyInteractive;
+    let mut first_request = permission_request("authority-deny-not-persisted-as-allow");
+    first_request.session_id = ctx.session_id;
+    first_request.tenant_id = ctx.tenant_id;
+
+    assert_eq!(
+        first_authority.decide(first_request, ctx.clone()).await,
+        Decision::DenyPermanent
+    );
+
+    let second_authority = PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(EscalatePolicyBroker))
+        .with_decision_store(store)
+        .build()
+        .unwrap();
+    ctx.interactivity = InteractivityLevel::NoInteractive;
+    let mut second_request = permission_request("authority-deny-not-persisted-as-allow");
+    second_request.session_id = ctx.session_id;
+    second_request.tenant_id = ctx.tenant_id;
+
+    let outcome = second_authority
+        .decide_with_audit(second_request, ctx)
+        .await;
+    assert_eq!(outcome.decision, Decision::DenyPermanent);
+    assert!(matches!(
+        outcome.decided_by,
+        harness_permission::PermissionAuthorityDecisionSource::PersistedDecision { .. }
+    ));
+}
+
+#[test]
+fn authority_rejects_stream_broker_as_policy_anchor() {
+    let (stream, _receiver, _resolver) = StreamBasedBroker::new(StreamBrokerConfig::default());
+    let error = match PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(stream))
+        .with_decision_store(Arc::new(IntegrityStore))
+        .build()
+    {
+        Ok(_) => panic!("stream broker should not anchor production authority"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("hard policy"));
+}
+
+#[test]
+fn noop_persistence_does_not_satisfy_authority_integrity() {
+    let noop = NoopDecisionPersistence;
+    assert!(!noop.supports_integrity());
+    let error = match PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(PolicyDenyBroker))
+        .with_decision_store(Arc::new(noop))
+        .build()
+    {
+        Ok(_) => panic!("noop persistence should not satisfy authority integrity"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("integrity"));
+}
+
+#[tokio::test]
+async fn authority_transient_store_does_not_reuse_or_persist_durable_decisions() {
+    let store = Arc::new(TransientRecordingStore::default());
+    let first_authority = PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(EscalatePolicyBroker))
+        .with_interactive_broker(Arc::new(TestBroker::new(vec![Decision::AllowPermanent])))
+        .with_transient_decision_store(store.clone())
+        .build()
+        .unwrap();
+    let mut ctx = permission_context(None);
+    ctx.interactivity = InteractivityLevel::FullyInteractive;
+    let mut first_request = permission_request("authority-transient");
+    first_request.session_id = ctx.session_id;
+    first_request.tenant_id = ctx.tenant_id;
+
+    assert_eq!(
+        first_authority.decide(first_request, ctx.clone()).await,
+        Decision::AllowPermanent
+    );
+    assert_eq!(store.persist_count.load(Ordering::SeqCst), 0);
+    assert_eq!(store.lookup_count.load(Ordering::SeqCst), 0);
+
+    let second_authority = PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(EscalatePolicyBroker))
+        .with_transient_decision_store(store.clone())
+        .build()
+        .unwrap();
+    ctx.interactivity = InteractivityLevel::NoInteractive;
+    let mut second_request = permission_request("authority-transient");
+    second_request.session_id = ctx.session_id;
+    second_request.tenant_id = ctx.tenant_id;
+
+    let outcome = second_authority
+        .decide_with_audit(second_request, ctx)
+        .await;
+    assert_eq!(outcome.decision, Decision::DenyOnce);
+    assert!(matches!(
+        outcome.decided_by,
+        harness_permission::PermissionAuthorityDecisionSource::NoInteractive
+    ));
+    assert_eq!(store.persist_count.load(Ordering::SeqCst), 0);
+    assert_eq!(store.lookup_count.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn authority_does_not_dedup_allow_when_durable_persistence_fails() {
+    let authority = PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(EscalatePolicyBroker))
+        .with_interactive_broker(Arc::new(TestBroker::new(vec![Decision::AllowPermanent])))
+        .with_decision_store(Arc::new(FailingIntegrityStore))
+        .build()
+        .unwrap();
+    let mut ctx = permission_context(None);
+    ctx.interactivity = InteractivityLevel::FullyInteractive;
+    let mut first_request = permission_request("authority-persist-fail-no-dedup");
+    first_request.session_id = ctx.session_id;
+    first_request.tenant_id = ctx.tenant_id;
+
+    let first_outcome = authority
+        .decide_with_audit(first_request, ctx.clone())
+        .await;
+    assert_eq!(first_outcome.decision, Decision::DenyOnce);
+    assert_eq!(
+        first_outcome.decided_by,
+        harness_permission::PermissionAuthorityDecisionSource::PersistenceFailed
+    );
+
+    ctx.interactivity = InteractivityLevel::NoInteractive;
+    let mut second_request = permission_request("authority-persist-fail-no-dedup");
+    second_request.session_id = ctx.session_id;
+    second_request.tenant_id = ctx.tenant_id;
+    let second_outcome = authority.decide_with_audit(second_request, ctx).await;
+    assert_eq!(second_outcome.decision, Decision::DenyOnce);
+    assert_eq!(
+        second_outcome.decided_by,
+        harness_permission::PermissionAuthorityDecisionSource::NoInteractive
+    );
+}
+
+#[cfg(feature = "rule-engine")]
+#[tokio::test]
+async fn authority_reuses_history_before_ask_user_nointeractive_fallback() {
+    let store = Arc::new(RecordingIntegrityStore::default());
+    let first_authority = PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(EscalatePolicyBroker))
+        .with_interactive_broker(Arc::new(TestBroker::new(vec![Decision::AllowPermanent])))
+        .with_decision_store(store.clone())
+        .build()
+        .unwrap();
+    let mut ctx = permission_context(None);
+    ctx.interactivity = InteractivityLevel::FullyInteractive;
+    let mut first_request = permission_request("authority-ask-user-history");
+    first_request.session_id = ctx.session_id;
+    first_request.tenant_id = ctx.tenant_id;
+
+    assert_eq!(
+        first_authority.decide(first_request, ctx.clone()).await,
+        Decision::AllowPermanent
+    );
+
+    let second_authority = PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(
+            harness_permission::RuleEngineBroker::builder()
+                .build()
+                .await
+                .unwrap(),
+        ))
+        .with_decision_store(store)
+        .build()
+        .unwrap();
+    ctx.interactivity = InteractivityLevel::NoInteractive;
+    let mut second_request = permission_request("authority-ask-user-history");
+    second_request.session_id = ctx.session_id;
+    second_request.tenant_id = ctx.tenant_id;
+
+    let outcome = second_authority
+        .decide_with_audit(second_request, ctx)
+        .await;
+    assert_eq!(outcome.decision, Decision::AllowOnce);
+    assert!(matches!(
+        outcome.decided_by,
+        harness_permission::PermissionAuthorityDecisionSource::PersistedDecision { .. }
+    ));
+}
+
+#[cfg(feature = "rule-engine")]
+#[tokio::test]
+async fn authority_bypass_applies_after_ask_user_rule_fallback() {
+    let authority = PermissionAuthority::builder()
+        .with_policy_broker(Arc::new(
+            harness_permission::RuleEngineBroker::builder()
+                .build()
+                .await
+                .unwrap(),
+        ))
+        .with_decision_store(Arc::new(IntegrityStore))
+        .build()
+        .unwrap();
+    let mut request = permission_request("authority-bypass-ask-user-fallback");
+    let mut ctx = permission_context(None);
+    ctx.interactivity = InteractivityLevel::NoInteractive;
+    ctx.permission_mode = PermissionMode::BypassPermissions;
+    request.session_id = ctx.session_id;
+    request.tenant_id = ctx.tenant_id;
+
+    let outcome = authority.decide_with_audit(request, ctx).await;
+    assert_eq!(outcome.decision, Decision::AllowOnce);
+    assert_eq!(
+        outcome.decided_by,
+        harness_permission::PermissionAuthorityDecisionSource::PermissionMode
+    );
 }
 
 async fn direct_fail_closed_default() {
@@ -222,6 +520,165 @@ async fn resolve_stream_request(
     resolved.0
 }
 
+struct PolicyDenyBroker;
+
+#[async_trait]
+impl PermissionBroker for PolicyDenyBroker {
+    fn can_anchor_authority(&self) -> bool {
+        true
+    }
+
+    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+        Decision::Escalate
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        _request: &PermissionRequest,
+        _ctx: &PermissionContext,
+    ) -> bool {
+        true
+    }
+
+    async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
+        Ok(())
+    }
+}
+
+struct EscalatePolicyBroker;
+
+#[async_trait]
+impl PermissionBroker for EscalatePolicyBroker {
+    fn can_anchor_authority(&self) -> bool {
+        true
+    }
+
+    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+        Decision::Escalate
+    }
+
+    async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct IntegrityStore;
+
+#[async_trait]
+impl DecisionPersistence for IntegrityStore {
+    fn supports_integrity(&self) -> bool {
+        true
+    }
+
+    async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct FailingIntegrityStore;
+
+#[async_trait]
+impl DecisionPersistence for FailingIntegrityStore {
+    fn supports_integrity(&self) -> bool {
+        true
+    }
+
+    async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
+        Err(PermissionError::Message(
+            "test persistence failure".to_owned(),
+        ))
+    }
+}
+
+#[async_trait]
+impl DecisionHistory for FailingIntegrityStore {
+    async fn find_scoped_decision(
+        &self,
+        _lookup: DecisionLookup,
+    ) -> Result<Option<PersistedDecision>, PermissionError> {
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl DecisionHistory for IntegrityStore {
+    async fn find_scoped_decision(
+        &self,
+        _lookup: DecisionLookup,
+    ) -> Result<Option<PersistedDecision>, PermissionError> {
+        Ok(None)
+    }
+}
+
+#[derive(Debug, Default)]
+struct RecordingIntegrityStore {
+    decisions: parking_lot::Mutex<Vec<PersistedDecision>>,
+}
+
+#[async_trait]
+impl DecisionPersistence for RecordingIntegrityStore {
+    fn supports_integrity(&self) -> bool {
+        true
+    }
+
+    async fn persist(&self, decision: PersistedDecision) -> Result<(), PermissionError> {
+        self.decisions.lock().push(decision);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+struct TransientRecordingStore {
+    persist_count: AtomicUsize,
+    lookup_count: AtomicUsize,
+}
+
+#[async_trait]
+impl DecisionPersistence for TransientRecordingStore {
+    async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
+        self.persist_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DecisionHistory for TransientRecordingStore {
+    async fn find_scoped_decision(
+        &self,
+        _lookup: DecisionLookup,
+    ) -> Result<Option<PersistedDecision>, PermissionError> {
+        self.lookup_count.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl DecisionHistory for RecordingIntegrityStore {
+    async fn find_scoped_decision(
+        &self,
+        lookup: DecisionLookup,
+    ) -> Result<Option<PersistedDecision>, PermissionError> {
+        Ok(self
+            .decisions
+            .lock()
+            .iter()
+            .find(|decision| {
+                decision.source == RuleSource::User
+                    && decision.source == lookup.decision_source
+                    && harness_permission::policy_scope_matches_request(
+                        &decision.scope,
+                        &lookup.requested_scope,
+                    )
+                    && decision
+                        .fingerprint
+                        .is_some_and(|fingerprint| fingerprint == lookup.fingerprint)
+            })
+            .cloned())
+    }
+}
+
 fn permission_request(command: &str) -> PermissionRequest {
     let tenant_id = TenantId::SHARED;
     let session_id = SessionId::new();
@@ -253,11 +710,6 @@ fn permission_context(timeout_policy: Option<TimeoutPolicy>) -> PermissionContex
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy,
         fallback_policy: FallbackPolicy::AskUser,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: Utc::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }

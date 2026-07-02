@@ -15,7 +15,6 @@ use harness_contracts::{
 };
 use harness_tool::{
     canonical_permission_fingerprint, PermissionBroker, PermissionContext, PermissionRequest,
-    RuleSnapshot,
 };
 use serde_json::{json, Value};
 
@@ -865,11 +864,6 @@ impl SamplingJsonRpcHandler {
                         heartbeat_interval_ms: None,
                     }),
                     fallback_policy: FallbackPolicy::DenyAll,
-                    rule_snapshot: Arc::new(RuleSnapshot {
-                        rules: Vec::new(),
-                        generation: 0,
-                        built_at: now(),
-                    }),
                     hook_overrides: Vec::new(),
                 },
             )

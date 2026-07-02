@@ -6,11 +6,11 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_contracts::{
     Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionError, PermissionMode,
-    PermissionSubject, RequestId, RuleSource, SessionId, Severity, TenantId, ToolUseId,
+    PermissionSubject, RequestId, SessionId, Severity, TenantId, ToolUseId,
 };
 use harness_permission::{
     DedupGate, DedupGateConfig, PermissionBroker, PermissionContext, PermissionRequest,
-    PermissionRule, PersistedDecision, RuleAction, RuleSnapshot,
+    PersistedDecision,
 };
 use serde_json::json;
 
@@ -85,28 +85,6 @@ async fn dedup_gate_checks_hard_policy_before_first_decide() {
         gate.lookup(&request).is_none(),
         "hard policy denies should not be cached as reusable decisions"
     );
-}
-
-#[tokio::test]
-async fn dedup_gate_checks_context_policy_deny_before_inner_decide() {
-    let inner = Arc::new(CountingBroker::new(Decision::AllowOnce));
-    let gate = DedupGate::new(inner.clone());
-    let request = tool_request();
-    let mut ctx = permission_context();
-    ctx.rule_snapshot = Arc::new(RuleSnapshot {
-        rules: vec![PermissionRule {
-            id: "policy-deny-read-blob".to_owned(),
-            priority: 0,
-            scope: request.scope_hint.clone(),
-            action: RuleAction::Deny,
-            source: RuleSource::Policy,
-        }],
-        generation: 1,
-        built_at: Utc::now(),
-    });
-
-    assert_eq!(gate.decide(request, ctx).await, Decision::DenyOnce);
-    assert_eq!(inner.calls(), 0);
 }
 
 #[tokio::test]
@@ -295,11 +273,6 @@ fn permission_context() -> PermissionContext {
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::AskUser,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: Utc::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }
