@@ -253,6 +253,23 @@ pub struct SandboxPolicySummary {
     pub resource_limits: ResourceLimits,
 }
 
+impl Default for SandboxPolicySummary {
+    fn default() -> Self {
+        Self {
+            mode: SandboxMode::None,
+            scope: SandboxScope::WorkspaceOnly,
+            network: NetworkAccess::None,
+            resource_limits: ResourceLimits {
+                max_memory_bytes: None,
+                max_cpu_cores: None,
+                max_pids: None,
+                max_wall_clock_ms: None,
+                max_open_files: None,
+            },
+        }
+    }
+}
+
 #[non_exhaustive]
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

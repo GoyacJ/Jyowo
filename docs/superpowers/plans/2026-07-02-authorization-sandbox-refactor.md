@@ -605,13 +605,13 @@ Do not add `ToolStarted`, `ToolCompleted`, or `ToolFailed`. This plan uses exist
 
 **Steps:**
 
-1. Write contract tests for serde shape and JsonSchema export.
-2. Write Rust tests for `PermissionActorSource::Automation` and `PermissionActorSource::McpServer` serialization plus conversation projection payloads.
-3. Write frontend Zod tests for valid and invalid permission review payloads and actor source payloads.
-4. Implement Rust contract types.
-5. Update schema export and all exhaustive actor source matches in engine, MCP, and journal projection.
-6. Update frontend Zod schema to parse new fields.
-7. Run gates.
+- [x] Write contract tests for serde shape and JsonSchema export.
+- [x] Write Rust tests for `PermissionActorSource::Automation` and `PermissionActorSource::McpServer` serialization plus conversation projection payloads.
+- [x] Write frontend Zod tests for valid and invalid permission review payloads and actor source payloads.
+- [x] Implement Rust contract types.
+- [x] Update schema export and all exhaustive actor source matches in engine, MCP, and journal projection.
+- [x] Update frontend Zod schema to parse new fields.
+- [x] Run gates.
 
 **Verification:**
 

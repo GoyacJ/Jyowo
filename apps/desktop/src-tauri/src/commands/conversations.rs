@@ -31,8 +31,9 @@ use super::validation::*;
 use super::*;
 use harness_contracts::{
     BackgroundAgentId, ConversationAttachmentReference, ConversationContextReference,
-    PermissionActorSource, SubagentId, SubagentStatus, SubagentTerminationReason, TeamId,
-    TeamTerminationReason, TopologyKind,
+    ManifestOriginRef, McpServerScope, PermissionActorSource, PermissionConfirmation,
+    PermissionMode, PermissionReview, SandboxMode, SandboxPolicySummary, SandboxScope, SubagentId,
+    SubagentStatus, SubagentTerminationReason, TeamId, TeamTerminationReason, TopologyKind,
 };
 
 pub async fn list_conversations_with_runtime_state(
@@ -1574,6 +1575,59 @@ fn permission_actor_source_payload(
             conversation_id: conversation_id.to_string(),
             attempt_id: attempt_id.map(|id| id.to_string()),
         },
+        PermissionActorSource::Automation {
+            automation_id,
+            conversation_id,
+            run_id,
+        } => PermissionActorSourceRunEventPayload::Automation {
+            automation_id: public_text_display(automation_id.clone(), redactor),
+            conversation_id: conversation_id.to_string(),
+            run_id: run_id.map(|id| id.to_string()),
+        },
+        PermissionActorSource::McpServer {
+            server_id,
+            origin,
+            scope,
+        } => PermissionActorSourceRunEventPayload::McpServer {
+            server_id: server_id.0.clone(),
+            origin: manifest_origin_run_event_payload(origin, redactor),
+            scope: mcp_server_scope_run_event_payload(scope),
+        },
+    }
+}
+
+fn manifest_origin_run_event_payload(
+    origin: &ManifestOriginRef,
+    redactor: &dyn Redactor,
+) -> ManifestOriginRunEventPayload {
+    match origin {
+        ManifestOriginRef::File { path } => ManifestOriginRunEventPayload::File {
+            path: public_text_display(path.clone(), redactor),
+        },
+        ManifestOriginRef::CargoExtension { binary } => {
+            ManifestOriginRunEventPayload::CargoExtension {
+                binary: public_text_display(binary.clone(), redactor),
+            }
+        }
+        ManifestOriginRef::RemoteRegistry { endpoint } => {
+            ManifestOriginRunEventPayload::RemoteRegistry {
+                endpoint: public_text_display(endpoint.clone(), redactor),
+            }
+        }
+        _ => ManifestOriginRunEventPayload::Unknown,
+    }
+}
+
+fn mcp_server_scope_run_event_payload(scope: &McpServerScope) -> McpServerScopeRunEventPayload {
+    match scope {
+        McpServerScope::Global => McpServerScopeRunEventPayload::Global,
+        McpServerScope::Session(session_id) => McpServerScopeRunEventPayload::Session {
+            conversation_id: session_id.to_string(),
+        },
+        McpServerScope::Agent(agent_id) => McpServerScopeRunEventPayload::Agent {
+            agent_id: agent_id.to_string(),
+        },
+        _ => McpServerScopeRunEventPayload::Unknown,
     }
 }
 
@@ -1907,12 +1961,16 @@ pub(crate) fn permission_requested_run_event(
         conversation_sequence: sequence,
         payload: serde_json::to_value(PermissionRequestedRunEventPayload {
             actor_source: permission_actor_source_payload(&event.actor_source, redactor),
+            action_plan_hash: event.action_plan_hash.to_string(),
             auto_resolved: event.auto_resolved,
             decision_scope: decision_scope_display(&event.scope_hint, redactor),
+            effective_mode: permission_mode_payload(event.effective_mode),
             exposure: subject.exposure,
             operation: subject.operation,
             reason: reason.to_owned(),
+            review: permission_review_run_event_payload(&event.review, redactor),
             request_id: event.request_id.to_string(),
+            sandbox_policy: sandbox_policy_run_event_payload(&event.sandbox_policy, redactor),
             severity: severity_display(event.severity),
             target: subject.target,
             tool_use_id: event.tool_use_id.to_string(),
@@ -1925,6 +1983,100 @@ pub(crate) fn permission_requested_run_event(
         timestamp: event.at.to_rfc3339(),
         event_type: "permission.requested",
         visibility: "public",
+    }
+}
+
+fn permission_review_run_event_payload(
+    review: &PermissionReview,
+    redactor: &dyn Redactor,
+) -> Value {
+    json!({
+        "summary": public_text_display(review.summary.clone(), redactor),
+        "details": review
+            .details
+            .iter()
+            .map(|detail| {
+                json!({
+                    "label": public_text_display(detail.label.clone(), redactor),
+                    "value": public_text_display(detail.value.clone(), redactor),
+                    "redacted": detail.redacted,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "confirmation": permission_confirmation_run_event_payload(&review.confirmation, redactor),
+        "redacted": review.redacted,
+    })
+}
+
+fn permission_confirmation_run_event_payload(
+    confirmation: &PermissionConfirmation,
+    redactor: &dyn Redactor,
+) -> Value {
+    match confirmation {
+        PermissionConfirmation::None => json!({ "type": "none" }),
+        PermissionConfirmation::ExplicitButton { label } => json!({
+            "type": "explicitButton",
+            "label": public_text_display(label.clone(), redactor),
+        }),
+        PermissionConfirmation::TypeToConfirm { expected } => json!({
+            "type": "typeToConfirm",
+            "expected": public_text_display(expected.clone(), redactor),
+        }),
+        _ => json!({ "type": "none" }),
+    }
+}
+
+fn sandbox_policy_run_event_payload(
+    policy: &SandboxPolicySummary,
+    redactor: &dyn Redactor,
+) -> Value {
+    json!({
+        "mode": sandbox_mode_run_event_payload(&policy.mode),
+        "scope": sandbox_scope_run_event_payload(&policy.scope, redactor),
+        "network": serde_json::to_value(&policy.network).unwrap_or(Value::Null),
+        "resourceLimits": {
+            "maxMemoryBytes": policy.resource_limits.max_memory_bytes,
+            "maxCpuCores": policy.resource_limits.max_cpu_cores,
+            "maxPids": policy.resource_limits.max_pids,
+            "maxWallClockMs": policy.resource_limits.max_wall_clock_ms,
+            "maxOpenFiles": policy.resource_limits.max_open_files,
+        },
+    })
+}
+
+fn sandbox_mode_run_event_payload(mode: &SandboxMode) -> Value {
+    match mode {
+        SandboxMode::None => json!("none"),
+        SandboxMode::OsLevel(tag) => json!({ "osLevel": tag }),
+        SandboxMode::Container => json!("container"),
+        SandboxMode::Remote => json!("remote"),
+        _ => json!("unknown"),
+    }
+}
+
+fn sandbox_scope_run_event_payload(scope: &SandboxScope, redactor: &dyn Redactor) -> Value {
+    match scope {
+        SandboxScope::WorkspaceOnly => json!("workspace_only"),
+        SandboxScope::WorkspacePlus(paths) => json!({
+            "workspacePlus": paths
+                .iter()
+                .map(|path| safe_path_label(path.as_path(), redactor))
+                .collect::<Vec<_>>(),
+        }),
+        SandboxScope::Unrestricted => json!("unrestricted"),
+        _ => json!("unknown"),
+    }
+}
+
+fn permission_mode_payload(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Default => "default",
+        PermissionMode::Plan => "plan",
+        PermissionMode::AcceptEdits => "accept_edits",
+        PermissionMode::BypassPermissions => "bypass_permissions",
+        PermissionMode::DontAsk => "dont_ask",
+        PermissionMode::Auto => "auto",
+        _ => "default",
     }
 }
 
@@ -3029,7 +3181,10 @@ impl RunEventMapper {
                     id: event_id,
                     conversation_sequence: 0,
                     payload: json!({
+                        "actionPlanHash": event.action_plan_hash.to_string(),
+                        "autoResolved": event.auto_resolved,
                         "decision": permission_decision_payload(event.decision),
+                        "decisionId": event.decision_id.to_string(),
                         "requestId": event.request_id.to_string(),
                     }),
                     run_id: run_id.to_string(),

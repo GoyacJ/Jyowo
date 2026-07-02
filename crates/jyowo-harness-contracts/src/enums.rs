@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
+use serde::de::Error as DeError;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::ids::*;
@@ -38,6 +40,12 @@ pub enum PermissionMode {
     BypassPermissions,
     DontAsk,
     Auto,
+}
+
+impl Default for PermissionMode {
+    fn default() -> Self {
+        Self::Default
+    }
 }
 
 #[non_exhaustive]
@@ -285,6 +293,15 @@ pub enum McpServerSource {
     Plugin(PluginId),
     Dynamic { registered_by: String },
     Managed { registry_url: String },
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerScope {
+    Global,
+    Session(SessionId),
+    Agent(AgentId),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -622,6 +639,129 @@ pub struct SandboxPolicy {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct ExecFingerprint(pub [u8; 32]);
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct ActionPlanHash([u8; 32]);
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct SandboxPolicyHash([u8; 32]);
+
+impl Default for ActionPlanHash {
+    fn default() -> Self {
+        Self([0; 32])
+    }
+}
+
+impl Default for SandboxPolicyHash {
+    fn default() -> Self {
+        Self([0; 32])
+    }
+}
+
+fn decode_hex_digest(value: &str) -> Result<[u8; 32], String> {
+    if value.len() != 64 {
+        return Err("digest must be 64 lowercase hex characters".to_owned());
+    }
+
+    let mut bytes = [0_u8; 32];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        let high = hex_nibble(chunk[0])?;
+        let low = hex_nibble(chunk[1])?;
+        bytes[index] = (high << 4) | low;
+    }
+    Ok(bytes)
+}
+
+fn hex_nibble(byte: u8) -> Result<u8, String> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        _ => Err("digest must use lowercase hex".to_owned()),
+    }
+}
+
+fn encode_hex_digest(bytes: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(64);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+macro_rules! impl_hash_digest {
+    ($ty:ident) => {
+        impl $ty {
+            pub fn from_bytes(bytes: [u8; 32]) -> Self {
+                Self(bytes)
+            }
+
+            pub fn from_hex(value: &str) -> Result<Self, String> {
+                decode_hex_digest(value).map(Self)
+            }
+
+            #[must_use]
+            pub fn as_bytes(&self) -> &[u8; 32] {
+                &self.0
+            }
+
+            #[must_use]
+            pub fn to_hex(&self) -> String {
+                encode_hex_digest(&self.0)
+            }
+        }
+
+        impl fmt::Display for $ty {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.to_hex())
+            }
+        }
+
+        impl FromStr for $ty {
+            type Err = String;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Self::from_hex(value)
+            }
+        }
+
+        impl Serialize for $ty {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.serialize_str(&self.to_hex())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let value = String::deserialize(deserializer)?;
+                Self::from_hex(&value).map_err(D::Error::custom)
+            }
+        }
+
+        impl JsonSchema for $ty {
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                stringify!($ty).into()
+            }
+
+            fn json_schema(_: &mut SchemaGenerator) -> Schema {
+                json_schema!({
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                })
+            }
+        }
+    };
+}
+
+impl_hash_digest!(ActionPlanHash);
+impl_hash_digest!(SandboxPolicyHash);
 
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]

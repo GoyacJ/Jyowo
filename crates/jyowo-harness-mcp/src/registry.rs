@@ -1130,6 +1130,7 @@ fn session_id_for_scope(scope: &McpServerScope) -> Option<harness_contracts::Ses
     match scope {
         McpServerScope::Session(session_id) => Some(*session_id),
         McpServerScope::Global | McpServerScope::Agent(_) => None,
+        _ => None,
     }
 }
 

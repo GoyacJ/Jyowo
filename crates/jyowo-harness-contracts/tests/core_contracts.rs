@@ -162,6 +162,10 @@ fn permission_requested_serializes_auto_resolved_and_defaults_legacy_events() {
         interactivity: InteractivityLevel::FullyInteractive,
         auto_resolved: true,
         actor_source: PermissionActorSource::ParentRun,
+        action_plan_hash: ActionPlanHash::default(),
+        review: PermissionReview::default(),
+        effective_mode: PermissionMode::Default,
+        sandbox_policy: SandboxPolicySummary::default(),
         causation_id: EventId::new(),
         at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
     };

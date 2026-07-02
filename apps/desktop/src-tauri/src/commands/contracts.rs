@@ -1565,12 +1565,16 @@ pub enum RunEventBodyPayload {
 #[serde(rename_all = "camelCase")]
 pub struct PermissionRequestedRunEventPayload {
     pub actor_source: PermissionActorSourceRunEventPayload,
+    pub action_plan_hash: String,
     pub auto_resolved: bool,
     pub decision_scope: String,
+    pub effective_mode: &'static str,
     pub exposure: String,
     pub operation: String,
     pub reason: String,
+    pub review: serde_json::Value,
     pub request_id: String,
+    pub sandbox_policy: serde_json::Value,
     pub severity: &'static str,
     pub target: String,
     pub tool_use_id: String,
@@ -1603,6 +1607,35 @@ pub enum PermissionActorSourceRunEventPayload {
         #[serde(skip_serializing_if = "Option::is_none")]
         attempt_id: Option<String>,
     },
+    Automation {
+        automation_id: String,
+        conversation_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
+    },
+    McpServer {
+        server_id: String,
+        origin: ManifestOriginRunEventPayload,
+        scope: McpServerScopeRunEventPayload,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum ManifestOriginRunEventPayload {
+    File { path: String },
+    CargoExtension { binary: String },
+    RemoteRegistry { endpoint: String },
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum McpServerScopeRunEventPayload {
+    Global,
+    Session { conversation_id: String },
+    Agent { agent_id: String },
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -5,11 +5,11 @@
 | Layer | Count |
 |---|---|
 | Frontend Vitest files | 64 |
-| Frontend Vitest test cases | 553 |
+| Frontend Vitest test cases | 555 |
 | Storybook files | 13 |
 | Playwright spec files | 4 |
-| Rust test files | 292 |
-| Rust `#[test]` / `#[tokio::test]` count | 2041 |
+| Rust test files | 293 |
+| Rust `#[test]` / `#[tokio::test]` count | 2047 |
 | Script policy test files | 8 |
 
 ## Largest Test Files by Line Count
@@ -18,12 +18,12 @@
 |---|---|---|
 | apps/desktop/src/shared/tauri/commands.test.ts | 5315 | frontend |
 | crates/jyowo-harness-plugin/tests/registry.rs | 3077 | rust |
+| crates/jyowo-harness-journal/tests/conversation_read_model.rs | 2862 | rust |
 | crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs | 2831 | rust |
-| crates/jyowo-harness-journal/tests/conversation_read_model.rs | 2663 | rust |
 | crates/jyowo-harness-engine/tests/subagent_tool_feature.rs | 2325 | rust |
 | crates/jyowo-harness-engine/tests/main_loop.rs | 1861 | rust |
 | crates/jyowo-harness-engine/tests/hook_pipeline.rs | 1644 | rust |
-| apps/desktop/src/shared/events/run-event-schema.test.ts | 1475 | frontend |
+| apps/desktop/src/shared/events/run-event-schema.test.ts | 1594 | frontend |
 | crates/jyowo-harness-team/tests/team_e2e.rs | 1388 | rust |
 | crates/jyowo-harness-mcp/tests/server_protocol.rs | 1382 | rust |
 | crates/jyowo-harness-plugin/tests/sources.rs | 1263 | rust |
@@ -39,7 +39,7 @@
 | apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs | 1068 | rust |
 | crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs | 1062 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs | 1055 | rust |
-| crates/jyowo-harness-contracts/tests/core_contracts.rs | 1049 | rust |
+| crates/jyowo-harness-contracts/tests/core_contracts.rs | 1053 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_tools.rs | 1038 | rust |
 | apps/desktop/src-tauri/tests/commands/provider_settings.rs | 1024 | rust |
 | crates/jyowo-harness-subagent/tests/permission_bridge.rs | 1019 | rust |
@@ -51,12 +51,12 @@
 
 - apps/desktop/src/shared/tauri/commands.test.ts (5315 lines)
 - crates/jyowo-harness-plugin/tests/registry.rs (3077 lines)
+- crates/jyowo-harness-journal/tests/conversation_read_model.rs (2862 lines)
 - crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs (2831 lines)
-- crates/jyowo-harness-journal/tests/conversation_read_model.rs (2663 lines)
 - crates/jyowo-harness-engine/tests/subagent_tool_feature.rs (2325 lines)
 - crates/jyowo-harness-engine/tests/main_loop.rs (1861 lines)
 - crates/jyowo-harness-engine/tests/hook_pipeline.rs (1644 lines)
-- apps/desktop/src/shared/events/run-event-schema.test.ts (1475 lines)
+- apps/desktop/src/shared/events/run-event-schema.test.ts (1594 lines)
 - crates/jyowo-harness-team/tests/team_e2e.rs (1388 lines)
 - crates/jyowo-harness-mcp/tests/server_protocol.rs (1382 lines)
 - crates/jyowo-harness-plugin/tests/sources.rs (1263 lines)
@@ -75,7 +75,7 @@
 - apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs (1068 lines)
 - crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs (1062 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs (1055 lines)
-- crates/jyowo-harness-contracts/tests/core_contracts.rs (1049 lines)
+- crates/jyowo-harness-contracts/tests/core_contracts.rs (1053 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_tools.rs (1038 lines)
 - apps/desktop/src-tauri/tests/commands/provider_settings.rs (1024 lines)
 - crates/jyowo-harness-subagent/tests/permission_bridge.rs (1019 lines)

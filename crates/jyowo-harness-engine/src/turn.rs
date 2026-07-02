@@ -8,17 +8,18 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use harness_context::{ContextSessionView, TokenBudget};
 use harness_contracts::{
-    ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, AssistantDeltaProducedEvent,
-    AssistantMessageCompletedEvent, BlobRef, BudgetKind, CausationId, ContextPatchLifecycle,
-    ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource, ConversationAttachmentReference,
-    DecidedBy, Decision, DecisionId, DeltaChunk, DenyReason, EndReason, Event, EventId,
-    ExecFingerprint, FallbackPolicy, HookContextPatchEvent, HookEventKind, HookFailedEvent,
-    HookOutcomeInconsistentEvent, HookOutcomeSummary, HookPermissionConflictEvent,
-    HookReturnedUnsupportedEvent, HookRewroteInputEvent, HookTriggeredEvent, InteractivityLevel,
-    Message, MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, ModelError,
-    ModelRef, PermissionActorSource, PermissionMode, PermissionRequestSuppressedEvent,
-    PermissionRequestedEvent, PermissionResolvedEvent, PricingSnapshotId, RedactRules, Redactor,
-    RequestId, RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionId, StopReason,
+    ActionPlanHash, ArtifactCreatedEvent, ArtifactSource, ArtifactStatus,
+    AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobRef, BudgetKind, CausationId,
+    ContextPatchLifecycle, ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource,
+    ConversationAttachmentReference, DecidedBy, Decision, DecisionId, DeltaChunk, DenyReason,
+    EndReason, Event, EventId, ExecFingerprint, FallbackPolicy, HookContextPatchEvent,
+    HookEventKind, HookFailedEvent, HookOutcomeInconsistentEvent, HookOutcomeSummary,
+    HookPermissionConflictEvent, HookReturnedUnsupportedEvent, HookRewroteInputEvent,
+    HookTriggeredEvent, InteractivityLevel, Message, MessageContent, MessageId, MessageMetadata,
+    MessagePart, MessageRole, ModelError, ModelRef, PermissionActorSource, PermissionMode,
+    PermissionRequestSuppressedEvent, PermissionRequestedEvent, PermissionResolvedEvent,
+    PermissionReview, PricingSnapshotId, RedactRules, Redactor, RequestId, RunEndedEvent, RunId,
+    RunModelSnapshot, RunStartedEvent, SandboxPolicySummary, SessionId, StopReason,
     SuppressionReason, TeamId, TenantId, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult,
     ToolResultPart, ToolUseApprovedEvent, ToolUseCompletedEvent, ToolUseDeniedEvent,
     ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, TrustLevel, TurnInput,
@@ -2282,6 +2283,24 @@ fn redact_permission_actor_source(
             conversation_id,
             attempt_id,
         },
+        PermissionActorSource::Automation {
+            automation_id,
+            conversation_id,
+            run_id,
+        } => PermissionActorSource::Automation {
+            automation_id: redactor.redact(&automation_id, &RedactRules::default()),
+            conversation_id,
+            run_id,
+        },
+        PermissionActorSource::McpServer {
+            server_id,
+            origin,
+            scope,
+        } => PermissionActorSource::McpServer {
+            server_id,
+            origin,
+            scope,
+        },
     }
 }
 
@@ -2401,6 +2420,7 @@ struct PermissionDecisionRecord {
     hook_conflict: Option<HookPermissionConflict>,
     fingerprint: ExecFingerprint,
     suppressed: Option<SuppressedPermissionRecord>,
+    auto_resolved: bool,
 }
 
 #[derive(Clone)]
@@ -2467,6 +2487,7 @@ impl PermissionBroker for RecordingPermissionBroker {
                 hook_conflict: None,
                 fingerprint,
                 suppressed: None,
+                auto_resolved: false,
             });
             return Decision::DenyOnce;
         }
@@ -2482,6 +2503,7 @@ impl PermissionBroker for RecordingPermissionBroker {
                     hook_conflict: None,
                     fingerprint,
                     suppressed: None,
+                    auto_resolved: false,
                 });
                 return Decision::DenyOnce;
             }
@@ -2499,6 +2521,7 @@ impl PermissionBroker for RecordingPermissionBroker {
                     original_request_id: previous.request.request_id,
                     reason: suppression_reason_for_decision(&decision),
                 }),
+                auto_resolved: false,
             });
             return decision;
         }
@@ -2521,6 +2544,7 @@ impl PermissionBroker for RecordingPermissionBroker {
                         hook_conflict: None,
                         fingerprint,
                         suppressed: None,
+                        auto_resolved: false,
                     });
                     return Decision::DenyOnce;
                 }
@@ -2533,6 +2557,7 @@ impl PermissionBroker for RecordingPermissionBroker {
                     hook_conflict: None,
                     fingerprint,
                     suppressed: None,
+                    auto_resolved: false,
                 });
                 return Decision::DenyOnce;
             }
@@ -2551,6 +2576,7 @@ impl PermissionBroker for RecordingPermissionBroker {
                         hook_conflict: None,
                         fingerprint,
                         suppressed: None,
+                        auto_resolved: false,
                     });
                     return Decision::DenyOnce;
                 }
@@ -2563,6 +2589,7 @@ impl PermissionBroker for RecordingPermissionBroker {
                     hook_conflict: None,
                     fingerprint,
                     suppressed: None,
+                    auto_resolved: false,
                 });
                 return inner_decision;
             }
@@ -2603,6 +2630,7 @@ impl PermissionBroker for RecordingPermissionBroker {
                     hook_conflict: None,
                     fingerprint,
                     suppressed: None,
+                    auto_resolved: false,
                 });
                 return Decision::DenyOnce;
             }
@@ -2613,6 +2641,7 @@ impl PermissionBroker for RecordingPermissionBroker {
                 hook_conflict,
                 fingerprint,
                 suppressed: None,
+                auto_resolved: decision_allows(&decision),
             });
             return decision;
         }
@@ -2630,6 +2659,7 @@ impl PermissionBroker for RecordingPermissionBroker {
                 hook_conflict: None,
                 fingerprint,
                 suppressed: None,
+                auto_resolved: false,
             });
             return Decision::DenyOnce;
         }
@@ -2644,6 +2674,7 @@ impl PermissionBroker for RecordingPermissionBroker {
                 hook_conflict: None,
                 fingerprint,
                 suppressed: None,
+                auto_resolved: false,
             });
             return Decision::DenyOnce;
         }
@@ -2676,6 +2707,7 @@ impl PermissionBroker for RecordingPermissionBroker {
             hook_conflict,
             fingerprint,
             suppressed: None,
+            auto_resolved: false,
         });
         decision
     }
@@ -2747,6 +2779,7 @@ impl RecordingPermissionBroker {
             ctx.tenant_id,
             ctx.session_id,
             auto_resolved,
+            ctx.permission_mode,
             redact_permission_actor_source(self.actor_source.clone(), self.redactor.as_ref()),
         );
         if self
@@ -2821,6 +2854,7 @@ fn permission_requested_event(
     tenant_id: TenantId,
     session_id: SessionId,
     auto_resolved: bool,
+    effective_mode: PermissionMode,
     actor_source: PermissionActorSource,
 ) -> Event {
     Event::PermissionRequested(PermissionRequestedEvent {
@@ -2838,9 +2872,63 @@ fn permission_requested_event(
         interactivity,
         auto_resolved,
         actor_source,
+        action_plan_hash: legacy_action_plan_hash(request),
+        review: permission_review_from_request(request),
+        effective_mode,
+        sandbox_policy: legacy_sandbox_policy_summary(),
         causation_id: EventId::new(),
         at: harness_contracts::now(),
     })
+}
+
+fn legacy_action_plan_hash(request: &PermissionRequest) -> ActionPlanHash {
+    ActionPlanHash::from_bytes(canonical_permission_fingerprint(request).0)
+}
+
+fn permission_review_from_request(request: &PermissionRequest) -> PermissionReview {
+    PermissionReview {
+        summary: format!(
+            "{} requests {}",
+            request.tool_name,
+            permission_subject_kind(&request.subject)
+        ),
+        details: vec![harness_contracts::PermissionReviewDetail {
+            label: "subject".to_owned(),
+            value: permission_subject_kind(&request.subject).to_owned(),
+            redacted: true,
+        }],
+        confirmation: harness_contracts::PermissionConfirmation::None,
+        redacted: true,
+    }
+}
+
+fn permission_subject_kind(subject: &harness_contracts::PermissionSubject) -> &'static str {
+    match subject {
+        harness_contracts::PermissionSubject::ToolInvocation { .. } => "tool invocation access",
+        harness_contracts::PermissionSubject::CommandExec { .. } => "command execution access",
+        harness_contracts::PermissionSubject::FileWrite { .. } => "file write access",
+        harness_contracts::PermissionSubject::FileDelete { .. } => "file delete access",
+        harness_contracts::PermissionSubject::NetworkAccess { .. } => "network access",
+        harness_contracts::PermissionSubject::DangerousCommand { .. } => "dangerous command access",
+        harness_contracts::PermissionSubject::McpToolCall { .. } => "MCP tool access",
+        harness_contracts::PermissionSubject::Custom { .. } => "custom permission access",
+        _ => "runtime access",
+    }
+}
+
+fn legacy_sandbox_policy_summary() -> SandboxPolicySummary {
+    SandboxPolicySummary {
+        mode: harness_contracts::SandboxMode::None,
+        scope: harness_contracts::SandboxScope::WorkspaceOnly,
+        network: harness_contracts::NetworkAccess::None,
+        resource_limits: harness_contracts::ResourceLimits {
+            max_memory_bytes: None,
+            max_cpu_cores: None,
+            max_pids: None,
+            max_wall_clock_ms: None,
+            max_open_files: None,
+        },
+    }
 }
 
 fn permission_events(
@@ -2872,6 +2960,7 @@ fn permission_events(
             continue;
         }
         let resolved_event_id = EventId::new();
+        let decision_id = DecisionId::new();
         events.push(Event::PermissionResolved(PermissionResolvedEvent {
             request_id: record.request.request_id,
             decision: record.decision.clone(),
@@ -2879,6 +2968,9 @@ fn permission_events(
             scope: record.request.scope_hint.clone(),
             fingerprint: Some(record.fingerprint),
             rationale: None,
+            action_plan_hash: legacy_action_plan_hash(&record.request),
+            decision_id,
+            auto_resolved: record.auto_resolved,
             at: harness_contracts::now(),
         }));
         if let Some(conflict) = record.hook_conflict {
@@ -2894,7 +2986,7 @@ fn permission_events(
         if decision_allows(&record.decision) {
             events.push(Event::ToolUseApproved(ToolUseApprovedEvent {
                 tool_use_id: record.request.tool_use_id,
-                decision_id: DecisionId::new(),
+                decision_id,
                 scope: record.request.scope_hint,
                 at: harness_contracts::now(),
             }));

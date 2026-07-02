@@ -21,11 +21,12 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
-    AgentId, AgentRef, BudgetKind, CacheImpact, CapabilityRegistry, CorrelationId, DecidedBy,
-    Decision, Event, ForkReason, JournalOffset, KillScope, Message, MessageContent, MessageId,
-    MessageMetadata, MessagePart, MessageRole, NoopRedactor, PermissionActorSource, PermissionMode,
-    PermissionRequestedEvent, PermissionResolvedEvent, RunId, SandboxPolicy, SessionForkedEvent,
-    SessionId, SessionSnapshotKind, SnapshotId, SubagentAnnouncedEvent, SubagentCapAnnouncement,
+    ActionPlanHash, AgentId, AgentRef, BudgetKind, CacheImpact, CapabilityRegistry, CorrelationId,
+    DecidedBy, Decision, DecisionId, Event, ForkReason, JournalOffset, KillScope, Message,
+    MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, NoopRedactor,
+    PermissionActorSource, PermissionMode, PermissionRequestedEvent, PermissionResolvedEvent,
+    PermissionReview, RunId, SandboxPolicy, SandboxPolicySummary, SessionForkedEvent, SessionId,
+    SessionSnapshotKind, SnapshotId, SubagentAnnouncedEvent, SubagentCapAnnouncement,
     SubagentContextReport, SubagentId, SubagentParentContext, SubagentPermissionForwardedEvent,
     SubagentPermissionResolvedEvent, SubagentRunnerCap, SubagentSpawnHandle,
     SubagentSpawnPausedEvent, SubagentSpawnedEvent, SubagentStalledEvent, SubagentTerminatedEvent,
@@ -36,8 +37,8 @@ use harness_contracts::{
 use harness_journal::{AppendMetadata, EventStore, ReplayCursor};
 use harness_model::{AuxExecutor, AuxModelProvider, AuxTask, ModelProtocol, ModelRequest};
 use harness_permission::{
-    hard_policy_denies_from_context, PermissionBroker, PermissionCheck, PermissionContext,
-    PermissionRequest,
+    canonical_permission_fingerprint, hard_policy_denies_from_context, PermissionBroker,
+    PermissionCheck, PermissionContext, PermissionRequest,
 };
 use harness_session::{Session, SessionOptions};
 use harness_tool::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
@@ -592,6 +593,10 @@ impl PermissionBroker for SubagentPermissionBridge {
                     presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                     interactivity: ctx.interactivity,
                     auto_resolved,
+                    action_plan_hash: legacy_action_plan_hash(&request),
+                    review: permission_review_from_request(&request),
+                    effective_mode: ctx.permission_mode,
+                    sandbox_policy: legacy_sandbox_policy_summary(),
                     actor_source: PermissionActorSource::Subagent {
                         subagent_id: self.subagent_id,
                         parent_session_id: self.parent_session_id,
@@ -647,6 +652,7 @@ impl PermissionBroker for SubagentPermissionBridge {
             parent_session_id: self.parent_session_id,
             original_decided_by: Box::new(parent_decided_by),
         };
+        let decision_id = DecisionId::new();
         if self
             .event_store
             .append_with_metadata(
@@ -659,10 +665,13 @@ impl PermissionBroker for SubagentPermissionBridge {
                 },
                 &[Event::PermissionResolved(PermissionResolvedEvent {
                     request_id: request.request_id,
+                    action_plan_hash: legacy_action_plan_hash(&request),
+                    decision_id,
                     decision: decision.clone(),
                     decided_by: forwarded_decided_by.clone(),
                     scope: request.scope_hint.clone(),
                     fingerprint: None,
+                    auto_resolved,
                     rationale: None,
                     at: Utc::now(),
                 })],
@@ -717,6 +726,56 @@ impl PermissionBroker for SubagentPermissionBridge {
         decision: harness_permission::PersistedDecision,
     ) -> Result<(), harness_contracts::PermissionError> {
         self.parent_broker.persist(decision).await
+    }
+}
+
+fn legacy_action_plan_hash(request: &PermissionRequest) -> ActionPlanHash {
+    ActionPlanHash::from_bytes(canonical_permission_fingerprint(request).0)
+}
+
+fn permission_review_from_request(request: &PermissionRequest) -> PermissionReview {
+    PermissionReview {
+        summary: format!(
+            "{} requests {}",
+            request.tool_name,
+            permission_subject_kind(&request.subject)
+        ),
+        details: vec![harness_contracts::PermissionReviewDetail {
+            label: "subject".to_owned(),
+            value: permission_subject_kind(&request.subject).to_owned(),
+            redacted: true,
+        }],
+        confirmation: harness_contracts::PermissionConfirmation::None,
+        redacted: true,
+    }
+}
+
+fn permission_subject_kind(subject: &harness_contracts::PermissionSubject) -> &'static str {
+    match subject {
+        harness_contracts::PermissionSubject::ToolInvocation { .. } => "tool invocation access",
+        harness_contracts::PermissionSubject::CommandExec { .. } => "command execution access",
+        harness_contracts::PermissionSubject::FileWrite { .. } => "file write access",
+        harness_contracts::PermissionSubject::FileDelete { .. } => "file delete access",
+        harness_contracts::PermissionSubject::NetworkAccess { .. } => "network access",
+        harness_contracts::PermissionSubject::DangerousCommand { .. } => "dangerous command access",
+        harness_contracts::PermissionSubject::McpToolCall { .. } => "MCP tool access",
+        harness_contracts::PermissionSubject::Custom { .. } => "custom permission access",
+        _ => "runtime access",
+    }
+}
+
+fn legacy_sandbox_policy_summary() -> SandboxPolicySummary {
+    SandboxPolicySummary {
+        mode: harness_contracts::SandboxMode::None,
+        scope: harness_contracts::SandboxScope::WorkspaceOnly,
+        network: harness_contracts::NetworkAccess::None,
+        resource_limits: harness_contracts::ResourceLimits {
+            max_memory_bytes: None,
+            max_cpu_cores: None,
+            max_pids: None,
+            max_wall_clock_ms: None,
+            max_open_files: None,
+        },
     }
 }
 

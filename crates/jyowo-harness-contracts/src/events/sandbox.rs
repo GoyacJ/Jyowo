@@ -5,6 +5,38 @@ use std::time::Duration;
 
 use crate::*;
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxPreflightStatus {
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SandboxPreflightPassedEvent {
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub tool_use_id: Option<ToolUseId>,
+    pub backend_id: String,
+    pub status: SandboxPreflightStatus,
+    pub policy: SandboxPolicySummary,
+    pub policy_hash: SandboxPolicyHash,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SandboxPreflightFailedEvent {
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub tool_use_id: Option<ToolUseId>,
+    pub backend_id: String,
+    pub status: SandboxPreflightStatus,
+    pub policy: SandboxPolicySummary,
+    pub policy_hash: SandboxPolicyHash,
+    pub reason: String,
+    pub at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SandboxExecutionStartedEvent {
     pub session_id: SessionId,

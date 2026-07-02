@@ -7,12 +7,13 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use harness_context::{ContextEngine, ContextSessionView};
 use harness_contracts::{
-    AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobStore, CapabilityRegistry,
-    CausationId, ConversationAttachmentReference, CorrelationId, DecidedBy, Decision, DecisionId,
-    DeltaChunk, DenyReason, EndReason, Event, EventId, FallbackPolicy, InteractivityLevel, Message,
-    MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, PermissionActorSource,
-    PermissionMode, PermissionRequestedEvent, PermissionResolvedEvent, RedactRules, Redactor,
-    RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionError, SessionId, StopReason,
+    ActionPlanHash, AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobStore,
+    CapabilityRegistry, CausationId, ConversationAttachmentReference, CorrelationId, DecidedBy,
+    Decision, DecisionId, DeltaChunk, DenyReason, EndReason, Event, EventId, FallbackPolicy,
+    InteractivityLevel, Message, MessageContent, MessageId, MessageMetadata, MessagePart,
+    MessageRole, PermissionActorSource, PermissionMode, PermissionRequestedEvent,
+    PermissionResolvedEvent, PermissionReview, RedactRules, Redactor, RunEndedEvent, RunId,
+    RunModelSnapshot, RunStartedEvent, SandboxPolicySummary, SessionError, SessionId, StopReason,
     TeamId, TenantId, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult,
     ToolUseApprovedEvent, ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
     ToolUseRequestedEvent, ToolUseSummary, TrustLevel, TurnInput, UsageSnapshot,
@@ -26,8 +27,8 @@ use harness_model::{
     ModelStreamEvent,
 };
 use harness_permission::{
-    hard_policy_denies_from_context, PermissionBroker, PermissionContext, PermissionRequest,
-    PersistedDecision, RuleSnapshot,
+    canonical_permission_fingerprint, hard_policy_denies_from_context, PermissionBroker,
+    PermissionContext, PermissionRequest, PersistedDecision, RuleSnapshot,
 };
 use harness_sandbox::SandboxBackend;
 use harness_tool::{
@@ -590,6 +591,7 @@ struct PermissionDecisionRecord {
     request: PermissionRequest,
     decision: Decision,
     auto_resolved: bool,
+    effective_mode: PermissionMode,
 }
 
 struct RecordingPermissionBroker {
@@ -619,6 +621,7 @@ impl PermissionBroker for RecordingPermissionBroker {
                 request,
                 decision: decision.clone(),
                 auto_resolved: false,
+                effective_mode: ctx.permission_mode,
             });
             return decision;
         }
@@ -636,6 +639,7 @@ impl PermissionBroker for RecordingPermissionBroker {
             request,
             decision: decision.clone(),
             auto_resolved,
+            effective_mode: permission_mode,
         });
         decision
     }
@@ -790,25 +794,33 @@ fn permission_events(
             presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
             interactivity: InteractivityLevel::NoInteractive,
             auto_resolved: record.auto_resolved,
+            action_plan_hash: legacy_action_plan_hash(&record.request),
+            review: permission_review_from_request(&record.request),
+            effective_mode: record.effective_mode,
+            sandbox_policy: legacy_sandbox_policy_summary(),
             actor_source: actor_source.clone(),
             causation_id: EventId::new(),
             at: harness_contracts::now(),
         }));
+        let decision_id = DecisionId::new();
         events.push(Event::PermissionResolved(PermissionResolvedEvent {
             request_id: record.request.request_id,
+            action_plan_hash: legacy_action_plan_hash(&record.request),
+            decision_id,
             decision: record.decision.clone(),
             decided_by: DecidedBy::Broker {
                 broker_id: "session-turn-runtime".to_owned(),
             },
             scope: record.request.scope_hint.clone(),
             fingerprint: None,
+            auto_resolved: record.auto_resolved,
             rationale: None,
             at: harness_contracts::now(),
         }));
         if decision_allows(&record.decision) {
             events.push(Event::ToolUseApproved(ToolUseApprovedEvent {
                 tool_use_id: record.request.tool_use_id,
-                decision_id: DecisionId::new(),
+                decision_id,
                 scope: record.request.scope_hint,
                 at: harness_contracts::now(),
             }));
@@ -821,6 +833,56 @@ fn permission_events(
         }
     }
     events
+}
+
+fn legacy_action_plan_hash(request: &PermissionRequest) -> ActionPlanHash {
+    ActionPlanHash::from_bytes(canonical_permission_fingerprint(request).0)
+}
+
+fn permission_review_from_request(request: &PermissionRequest) -> PermissionReview {
+    PermissionReview {
+        summary: format!(
+            "{} requests {}",
+            request.tool_name,
+            permission_subject_kind(&request.subject)
+        ),
+        details: vec![harness_contracts::PermissionReviewDetail {
+            label: "subject".to_owned(),
+            value: permission_subject_kind(&request.subject).to_owned(),
+            redacted: true,
+        }],
+        confirmation: harness_contracts::PermissionConfirmation::None,
+        redacted: true,
+    }
+}
+
+fn permission_subject_kind(subject: &harness_contracts::PermissionSubject) -> &'static str {
+    match subject {
+        harness_contracts::PermissionSubject::ToolInvocation { .. } => "tool invocation access",
+        harness_contracts::PermissionSubject::CommandExec { .. } => "command execution access",
+        harness_contracts::PermissionSubject::FileWrite { .. } => "file write access",
+        harness_contracts::PermissionSubject::FileDelete { .. } => "file delete access",
+        harness_contracts::PermissionSubject::NetworkAccess { .. } => "network access",
+        harness_contracts::PermissionSubject::DangerousCommand { .. } => "dangerous command access",
+        harness_contracts::PermissionSubject::McpToolCall { .. } => "MCP tool access",
+        harness_contracts::PermissionSubject::Custom { .. } => "custom permission access",
+        _ => "runtime access",
+    }
+}
+
+fn legacy_sandbox_policy_summary() -> SandboxPolicySummary {
+    SandboxPolicySummary {
+        mode: harness_contracts::SandboxMode::None,
+        scope: harness_contracts::SandboxScope::WorkspaceOnly,
+        network: harness_contracts::NetworkAccess::None,
+        resource_limits: harness_contracts::ResourceLimits {
+            max_memory_bytes: None,
+            max_cpu_cores: None,
+            max_pids: None,
+            max_wall_clock_ms: None,
+            max_open_files: None,
+        },
+    }
 }
 
 fn tool_result_events(result: &RuntimeToolResultEnvelope) -> Vec<Event> {

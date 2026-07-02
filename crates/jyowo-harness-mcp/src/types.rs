@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+pub use harness_contracts::McpServerScope;
 use harness_contracts::{McpServerId, McpServerSource, SessionId, TrustLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -474,14 +475,6 @@ pub struct McpPrompt {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpPromptMessages {
     pub messages: Vec<Value>,
-}
-
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum McpServerScope {
-    Global,
-    Session(SessionId),
-    Agent(harness_contracts::AgentId),
 }
 
 pub fn trust_level_for_source(source: &McpServerSource) -> TrustLevel {

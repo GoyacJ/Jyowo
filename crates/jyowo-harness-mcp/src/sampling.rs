@@ -6,13 +6,17 @@ use std::{
 
 use async_trait::async_trait;
 use harness_contracts::{
-    now, DecidedBy, Decision, DecisionScope, Event, EventId, FallbackPolicy, InteractivityLevel,
-    McpSamplingRequestedEvent, McpServerId, NoopRedactor, PermissionActorSource, PermissionMode,
-    PermissionRequestedEvent, PermissionResolvedEvent, PermissionSubject, RequestId, RunId,
-    SamplingBudgetDimension, SamplingDenyReason, SamplingOutcome, SessionId, Severity, TenantId,
+    now, ActionPlanHash, DecidedBy, Decision, DecisionId, DecisionScope, Event, EventId,
+    FallbackPolicy, InteractivityLevel, McpSamplingRequestedEvent, McpServerId, NoopRedactor,
+    PermissionActorSource, PermissionMode, PermissionRequestedEvent, PermissionResolvedEvent,
+    PermissionReview, PermissionSubject, RequestId, RunId, SamplingBudgetDimension,
+    SamplingDenyReason, SamplingOutcome, SandboxPolicySummary, SessionId, Severity, TenantId,
     TimeoutPolicy, ToolUseId, TrustLevel, UiSafeText,
 };
-use harness_tool::{PermissionBroker, PermissionContext, PermissionRequest, RuleSnapshot};
+use harness_tool::{
+    canonical_permission_fingerprint, PermissionBroker, PermissionContext, PermissionRequest,
+    RuleSnapshot,
+};
 use serde_json::{json, Value};
 
 use crate::{
@@ -844,7 +848,7 @@ impl SamplingJsonRpcHandler {
             scope_hint: DecisionScope::ToolName("mcp_sampling".to_owned()),
             created_at: now(),
         };
-        self.emit_permission_requested(&permission_request);
+        self.emit_permission_requested(&permission_request, request.permission_mode);
         let decision = broker
             .decide(
                 permission_request.clone(),
@@ -870,7 +874,14 @@ impl SamplingJsonRpcHandler {
                 },
             )
             .await;
-        self.emit_permission_resolved(&permission_request, decision.clone());
+        let auto_resolved = matches!(
+            request.permission_mode,
+            PermissionMode::BypassPermissions | PermissionMode::DontAsk
+        ) && matches!(
+            decision,
+            Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent
+        );
+        self.emit_permission_resolved(&permission_request, decision.clone(), auto_resolved);
         if matches!(
             decision,
             Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent
@@ -881,7 +892,11 @@ impl SamplingJsonRpcHandler {
         }
     }
 
-    fn emit_permission_requested(&self, request: &PermissionRequest) {
+    fn emit_permission_requested(
+        &self,
+        request: &PermissionRequest,
+        effective_mode: PermissionMode,
+    ) {
         let Some(run_id) = self.run_id else {
             return;
         };
@@ -901,12 +916,21 @@ impl SamplingJsonRpcHandler {
                 interactivity: InteractivityLevel::FullyInteractive,
                 auto_resolved: false,
                 actor_source: redacted_permission_actor_source(&self.permission_actor_source),
+                action_plan_hash: legacy_action_plan_hash(request),
+                review: permission_review_from_request(request),
+                effective_mode,
+                sandbox_policy: legacy_sandbox_policy_summary(),
                 causation_id: EventId::new(),
                 at: now(),
             }));
     }
 
-    fn emit_permission_resolved(&self, request: &PermissionRequest, decision: Decision) {
+    fn emit_permission_resolved(
+        &self,
+        request: &PermissionRequest,
+        decision: Decision,
+        auto_resolved: bool,
+    ) {
         self.event_sink
             .emit(Event::PermissionResolved(PermissionResolvedEvent {
                 request_id: request.request_id,
@@ -917,6 +941,9 @@ impl SamplingJsonRpcHandler {
                 scope: request.scope_hint.clone(),
                 fingerprint: None,
                 rationale: None,
+                action_plan_hash: legacy_action_plan_hash(request),
+                decision_id: DecisionId::new(),
+                auto_resolved,
                 at: now(),
             }));
     }
@@ -1025,6 +1052,74 @@ fn redacted_permission_actor_source(actor_source: &PermissionActorSource) -> Per
             background_agent_id: *background_agent_id,
             conversation_id: *conversation_id,
             attempt_id: *attempt_id,
+        },
+        PermissionActorSource::Automation {
+            automation_id,
+            conversation_id,
+            run_id,
+        } => PermissionActorSource::Automation {
+            automation_id: safe_actor_text(automation_id.clone()),
+            conversation_id: *conversation_id,
+            run_id: *run_id,
+        },
+        PermissionActorSource::McpServer {
+            server_id,
+            origin,
+            scope,
+        } => PermissionActorSource::McpServer {
+            server_id: server_id.clone(),
+            origin: origin.clone(),
+            scope: scope.clone(),
+        },
+    }
+}
+
+fn legacy_action_plan_hash(request: &PermissionRequest) -> ActionPlanHash {
+    ActionPlanHash::from_bytes(canonical_permission_fingerprint(request).0)
+}
+
+fn permission_review_from_request(request: &PermissionRequest) -> PermissionReview {
+    PermissionReview {
+        summary: format!(
+            "{} requests {}",
+            request.tool_name,
+            permission_subject_kind(&request.subject)
+        ),
+        details: vec![harness_contracts::PermissionReviewDetail {
+            label: "subject".to_owned(),
+            value: permission_subject_kind(&request.subject).to_owned(),
+            redacted: true,
+        }],
+        confirmation: harness_contracts::PermissionConfirmation::None,
+        redacted: true,
+    }
+}
+
+fn permission_subject_kind(subject: &PermissionSubject) -> &'static str {
+    match subject {
+        PermissionSubject::ToolInvocation { .. } => "tool invocation access",
+        PermissionSubject::CommandExec { .. } => "command execution access",
+        PermissionSubject::FileWrite { .. } => "file write access",
+        PermissionSubject::FileDelete { .. } => "file delete access",
+        PermissionSubject::NetworkAccess { .. } => "network access",
+        PermissionSubject::DangerousCommand { .. } => "dangerous command access",
+        PermissionSubject::McpToolCall { .. } => "MCP tool access",
+        PermissionSubject::Custom { .. } => "custom permission access",
+        _ => "runtime access",
+    }
+}
+
+fn legacy_sandbox_policy_summary() -> SandboxPolicySummary {
+    SandboxPolicySummary {
+        mode: harness_contracts::SandboxMode::None,
+        scope: harness_contracts::SandboxScope::WorkspaceOnly,
+        network: harness_contracts::NetworkAccess::None,
+        resource_limits: harness_contracts::ResourceLimits {
+            max_memory_bytes: None,
+            max_cpu_cores: None,
+            max_pids: None,
+            max_wall_clock_ms: None,
+            max_open_files: None,
         },
     }
 }

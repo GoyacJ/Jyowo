@@ -32,6 +32,10 @@ fn permission_requested(
         interactivity: InteractivityLevel::FullyInteractive,
         auto_resolved: false,
         actor_source: PermissionActorSource::ParentRun,
+        action_plan_hash: ActionPlanHash::default(),
+        review: PermissionReview::default(),
+        effective_mode: PermissionMode::Default,
+        sandbox_policy: SandboxPolicySummary::default(),
         causation_id: EventId::new(),
         at: harness_contracts::now(),
     })
@@ -45,6 +49,9 @@ fn permission_resolved(request_id: RequestId) -> Event {
         scope: DecisionScope::Any,
         fingerprint: None,
         rationale: None,
+        action_plan_hash: ActionPlanHash::default(),
+        decision_id: DecisionId::new(),
+        auto_resolved: false,
         at: harness_contracts::now(),
     })
 }
