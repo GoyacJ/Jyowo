@@ -819,13 +819,13 @@ No tool execution integration yet. This task creates compileable execution primi
 
 **Steps:**
 
-1. Write ticket ledger tests first.
-2. Write a minimal authorization flow test using the real `PermissionAuthority`, a real hard-deny policy rule, and real contract types.
-3. Write an event sink ordering test proving execution emits preflight and permission events through the sink without importing `jyowo-harness-journal`.
-4. Add crate and exports.
-5. Add workspace member.
-6. Update backend layer table and critical backend tests list.
-7. Run gates.
+- [x] Write ticket ledger tests first.
+- [x] Write a minimal authorization flow test using the real `PermissionAuthority`, a real hard-deny policy rule, and real contract types.
+- [x] Write an event sink ordering test proving execution emits preflight and permission events through the sink without importing `jyowo-harness-journal`.
+- [x] Add crate and exports.
+- [x] Add workspace member.
+- [x] Update backend layer table and critical backend tests list.
+- [x] Run gates.
 
 **Verification:**
 

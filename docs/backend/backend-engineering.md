@@ -137,6 +137,7 @@ Lower layers MUST NOT depend on higher layers.
 | `jyowo-harness-tool` | `crates/jyowo-harness-tool` | L2 | Owns Tool traits, registry, orchestration, built-ins, result budget, and permission checks. |
 | `jyowo-harness-tool-search` | `crates/jyowo-harness-tool-search` | L2 | Owns on-demand tool search and schema materialization. |
 | `jyowo-harness-engine` | `crates/jyowo-harness-engine` | L3 | Owns run orchestration, model/tool loop, budgets, and runtime event emission. |
+| `jyowo-harness-execution` | `crates/jyowo-harness-execution` | L3 | Owns authorization service preflight, one-time execution tickets, sandbox preflight event ordering, and execution audit primitives. |
 | `jyowo-harness-observability` | `crates/jyowo-harness-observability` | L3 | Owns tracing, usage accounting, Replay helpers, and Redactor implementations. |
 | `jyowo-harness-plugin` | `crates/jyowo-harness-plugin` | L3 | Owns plugin loading, manifest validation, and plugin rejection. |
 | `jyowo-harness-subagent` | `crates/jyowo-harness-subagent` | L3 | Owns subagent lifecycle, permission forwarding, and stalled-worker behavior. |
