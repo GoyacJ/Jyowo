@@ -31,13 +31,18 @@ use harness_hook::{
 use harness_journal::EventStore;
 use harness_model::{
     apply_before_request_middlewares, apply_request_end_middlewares, wrap_stream_with_middlewares,
-    BillingMode, InferContext, ModelModality, ModelRequest, PricingSnapshotResolveContext,
-    PricingSource, Ratio,
+    BillingMode, InferContext, ModelModality, ModelRequest, ModelRuntimeSnapshot,
+    PricingSnapshotResolveContext, PricingSource, ProviderRequestContext, Ratio,
+    ReasoningProtocolSemantics,
 };
 use harness_observability::{DefaultRedactor, Span, SpanAttributes};
 use harness_permission::{
     canonical_permission_fingerprint, hard_policy_denies_from_context, PermissionBroker,
     PermissionContext, PermissionRequest, PersistedDecision, RuleSnapshot,
+};
+use harness_provider_state::{
+    ProviderContinuationKind, ProviderContinuationQuery, ProviderContinuationRecord,
+    ProviderContinuationScope,
 };
 use harness_tool::{
     InterruptToken, OrchestratorContext, ToolCall, ToolEventEmitter, ToolOrchestrator,
@@ -50,6 +55,9 @@ use crate::{
     end_reason_for_interrupt, result_inject, turn_assembly::TurnAssembly, Engine, EngineError,
     EventStream, RunContext, SessionHandle,
 };
+
+const MISSING_PROVIDER_CONTINUATION_ERROR: &str =
+    "provider continuation required for assistant tool replay but missing";
 
 pub(crate) async fn run_turn(
     engine: &Engine,
@@ -248,11 +256,22 @@ pub(crate) async fn run_turn(
                 .conversation_capability
                 .input_modalities,
         )?;
+        let assembled_tools = model_request_tools(engine, assembled.tools_snapshot);
+        let provider_context = provider_request_context_for_prompt(
+            engine,
+            &session,
+            &ctx,
+            &assembled.messages,
+            assembled_tools
+                .as_ref()
+                .is_some_and(|tools| !tools.is_empty()),
+        )
+        .await?;
 
         let mut request = ModelRequest {
             model_id: engine.model_id.clone(),
             messages: assembled.messages,
-            tools: model_request_tools(engine, assembled.tools_snapshot),
+            tools: assembled_tools,
             system: assembled.system,
             temperature: None,
             max_tokens: None,
@@ -264,7 +283,7 @@ pub(crate) async fn run_turn(
                 ctx.run_id,
                 iterations,
             ),
-            provider_context: harness_model::ProviderRequestContext::default(),
+            provider_context,
         };
         let mut infer_ctx = InferContext::for_test();
         infer_ctx.tenant_id = session.tenant_id;
@@ -359,10 +378,21 @@ pub(crate) async fn run_turn(
                     )
                     .await?;
                 }
+                let compacted_tools = model_request_tools(engine, compacted.prompt.tools_snapshot);
+                let provider_context = provider_request_context_for_prompt(
+                    engine,
+                    &session,
+                    &ctx,
+                    &compacted.prompt.messages,
+                    compacted_tools
+                        .as_ref()
+                        .is_some_and(|tools| !tools.is_empty()),
+                )
+                .await?;
                 request = ModelRequest {
                     model_id: engine.model_id.clone(),
                     messages: compacted.prompt.messages,
-                    tools: model_request_tools(engine, compacted.prompt.tools_snapshot),
+                    tools: compacted_tools,
                     system: compacted.prompt.system,
                     temperature: None,
                     max_tokens: None,
@@ -374,7 +404,7 @@ pub(crate) async fn run_turn(
                         ctx.run_id,
                         iterations,
                     ),
-                    provider_context: harness_model::ProviderRequestContext::default(),
+                    provider_context,
                 };
                 if let Err(error) =
                     apply_before_request_middlewares(&mut request, &mut infer_ctx).await
@@ -591,6 +621,14 @@ pub(crate) async fn run_turn(
                 )],
             )
             .await?;
+            store_provider_continuations(
+                engine,
+                &session,
+                &ctx,
+                &request.provider_context,
+                &assembly,
+            )
+            .await?;
             if let Some(kind) = budget_exhausted(
                 ctx.budget_limits.as_ref(),
                 &usage,
@@ -687,6 +725,8 @@ pub(crate) async fn run_turn(
             )],
         )
         .await?;
+        store_provider_continuations(engine, &session, &ctx, &request.provider_context, &assembly)
+            .await?;
         working_messages.push(assistant_tool_message);
 
         if let Some(kind) = budget_exhausted(
@@ -1954,6 +1994,159 @@ fn model_request_tools(
         return None;
     }
     Some(tools_snapshot)
+}
+
+fn provider_continuation_query_for_prompt(
+    model_snapshot: &ModelRuntimeSnapshot,
+    model_config_id: Option<String>,
+    tenant_id: TenantId,
+    session_id: SessionId,
+    final_messages: &[Message],
+) -> Option<ProviderContinuationQuery> {
+    let continuation_kind = required_private_replay_kind(model_snapshot)?;
+    let message_ids = assistant_tool_replay_message_ids(final_messages);
+    if message_ids.is_empty() {
+        return None;
+    }
+
+    Some(ProviderContinuationQuery {
+        provider_id: model_snapshot.provider_id.clone(),
+        model_config_id,
+        protocol: model_snapshot.protocol,
+        dialect: provider_continuation_dialect(model_snapshot),
+        tenant_id,
+        session_id,
+        message_ids,
+        kinds: vec![continuation_kind],
+    })
+}
+
+async fn provider_request_context_for_prompt(
+    engine: &Engine,
+    session: &SessionHandle,
+    ctx: &RunContext,
+    final_messages: &[Message],
+    tools_can_produce_assistant_tool_replay: bool,
+) -> Result<ProviderRequestContext, EngineError> {
+    let model_config_id = ctx.model_config_id.clone();
+    let dialect = provider_continuation_dialect(&engine.model_snapshot);
+    let mut provider_context = ProviderRequestContext {
+        provider_id: engine.model_snapshot.provider_id.clone(),
+        model_config_id: model_config_id.clone(),
+        dialect: Some(dialect),
+        continuations: Vec::new(),
+    };
+
+    let Some(continuation_kind) = required_private_replay_kind(&engine.model_snapshot) else {
+        return Ok(provider_context);
+    };
+
+    let replay_message_ids = assistant_tool_replay_message_ids(final_messages);
+    let requires_store = !replay_message_ids.is_empty() || tools_can_produce_assistant_tool_replay;
+    let Some(store) = engine.provider_continuation_store.as_ref() else {
+        if requires_store {
+            return Err(engine_error(ModelError::InvalidRequest(
+                MISSING_PROVIDER_CONTINUATION_ERROR.to_owned(),
+            )));
+        }
+        return Ok(provider_context);
+    };
+
+    let Some(query) = provider_continuation_query_for_prompt(
+        &engine.model_snapshot,
+        model_config_id,
+        session.tenant_id,
+        session.session_id,
+        final_messages,
+    ) else {
+        return Ok(provider_context);
+    };
+
+    let records = store.load_for_messages(query).await.map_err(engine_error)?;
+    let exact_matches: HashSet<(MessageId, ProviderContinuationKind)> = records
+        .iter()
+        .map(|record| (record.message_id, record.kind.clone()))
+        .collect();
+    for message_id in replay_message_ids {
+        if !exact_matches.contains(&(message_id, continuation_kind.clone())) {
+            return Err(engine_error(ModelError::InvalidRequest(
+                MISSING_PROVIDER_CONTINUATION_ERROR.to_owned(),
+            )));
+        }
+    }
+    provider_context.continuations = records;
+    Ok(provider_context)
+}
+
+fn required_private_replay_kind(
+    model_snapshot: &ModelRuntimeSnapshot,
+) -> Option<ProviderContinuationKind> {
+    match &model_snapshot.runtime_semantics.reasoning_protocol {
+        ReasoningProtocolSemantics::ProviderPrivateReplay {
+            continuation_kind,
+            required_for_assistant_tool_replay: true,
+        } => Some(continuation_kind.clone()),
+        _ => None,
+    }
+}
+
+fn provider_continuation_dialect(model_snapshot: &ModelRuntimeSnapshot) -> String {
+    model_snapshot.provider_id.clone()
+}
+
+fn assistant_tool_replay_message_ids(messages: &[Message]) -> Vec<MessageId> {
+    messages
+        .iter()
+        .filter(|message| {
+            message.role == MessageRole::Assistant
+                && message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, MessagePart::ToolUse { .. }))
+        })
+        .map(|message| message.id)
+        .collect()
+}
+
+async fn store_provider_continuations(
+    engine: &Engine,
+    session: &SessionHandle,
+    ctx: &RunContext,
+    request_context: &ProviderRequestContext,
+    assembly: &TurnAssembly,
+) -> Result<(), EngineError> {
+    if assembly.provider_continuations().is_empty() {
+        return Ok(());
+    }
+    let Some(store) = engine.provider_continuation_store.as_ref() else {
+        return Err(engine_error(ModelError::InvalidRequest(
+            MISSING_PROVIDER_CONTINUATION_ERROR.to_owned(),
+        )));
+    };
+
+    let dialect = request_context
+        .dialect
+        .clone()
+        .unwrap_or_else(|| provider_continuation_dialect(&engine.model_snapshot));
+    let records = assembly
+        .provider_continuations()
+        .iter()
+        .map(|capture| ProviderContinuationRecord {
+            provider_id: engine.model_snapshot.provider_id.clone(),
+            model_config_id: ctx.model_config_id.clone(),
+            protocol: engine.model_snapshot.protocol,
+            dialect: dialect.clone(),
+            tenant_id: session.tenant_id,
+            session_id: session.session_id,
+            producing_run_id: ctx.run_id,
+            message_id: assembly.assistant_message_id(),
+            scope: ProviderContinuationScope::Conversation,
+            kind: capture.kind.clone(),
+            payload: capture.payload.clone(),
+            created_at: harness_contracts::now(),
+        })
+        .collect();
+    store.append_batch(records).await.map_err(engine_error)
 }
 
 fn validate_model_input_modalities(

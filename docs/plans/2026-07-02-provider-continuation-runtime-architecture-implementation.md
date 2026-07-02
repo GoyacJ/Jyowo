@@ -1308,11 +1308,11 @@ Do not edit files.
 
 **Goal:** Wire Engine to load continuations from final assembled messages and store private continuations after model response.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State exact lookup timing, why `assembled.messages` is used instead of `working_messages`, how fail-closed works when the store is missing or a record is missing, how exact record matching works, and how records are stored after public events.
 
-- [ ] **Add Engine store injection**
+- [x] **Add Engine store injection**
 
   Add to `Engine` and `EngineBuilder`:
 
@@ -1334,7 +1334,7 @@ Do not edit files.
   `Option` is allowed only so providers that do not require private replay can run without the store in tests and non-desktop SDK usage.
   If the selected model semantics require private replay and either the final prompt already contains assistant tool-use messages or the outgoing request includes tools that can produce assistant tool-use replay later in the same run, a missing store must fail closed before the provider request is dispatched.
 
-- [ ] **Build provider request context from final prompt**
+- [x] **Build provider request context from final prompt**
 
   Before `ModelRequest` creation, call a focused helper:
 
@@ -1352,7 +1352,7 @@ Do not edit files.
   Matching must be exact by `provider_id`, `model_config_id`, `protocol`, `dialect`, `tenant_id`, `session_id`, `message_id`, and `ProviderContinuationKind`.
   The implementation must not satisfy a required continuation by count alone.
 
-- [ ] **Fail closed when required**
+- [x] **Fail closed when required**
 
   If `model_snapshot.runtime_semantics.reasoning_protocol` requires private replay and no provider continuation store is configured, return `ModelError::InvalidRequest` before network dispatch.
 
@@ -1367,7 +1367,7 @@ Do not edit files.
   It must not include provider-private payload.
   The missing-store path must use the same safe error message or another fixed safe message that contains no provider-private data.
 
-- [ ] **Store private records**
+- [x] **Store private records**
 
   After model stream completion and before the next tool-result iteration, append captured continuation records.
 
@@ -1386,7 +1386,7 @@ Do not edit files.
   - `payload` from model stream event
   - `created_at` = `harness_contracts::now()`
 
-- [ ] **Tests**
+- [x] **Tests**
 
   Required tests:
 
@@ -1410,7 +1410,7 @@ Do not edit files.
   async fn engine_stores_provider_continuation_outside_journal() { ... }
   ```
 
-- [ ] **Run focused tests**
+- [x] **Run focused tests**
 
   ```bash
   cargo test -p jyowo-harness-engine provider_continuation
@@ -1419,11 +1419,11 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm continuation lookup uses final assembled messages, missing required store and missing exact record both fail before provider dispatch, and Engine does not inspect provider-private field names.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-engine

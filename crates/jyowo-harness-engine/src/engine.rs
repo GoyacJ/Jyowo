@@ -44,6 +44,7 @@ use harness_observability::{Observer, Tracer};
 use harness_permission::PermissionBroker;
 #[cfg(feature = "programmatic-tool-calling")]
 use harness_permission::{PermissionContext, RuleSnapshot};
+use harness_provider_state::ProviderContinuationStore;
 #[cfg(feature = "programmatic-tool-calling")]
 use harness_sandbox::CodeSandbox;
 use harness_sandbox::SandboxBackend;
@@ -87,6 +88,7 @@ pub struct Engine {
     pub(crate) model: Arc<dyn ModelProvider>,
     pub(crate) model_snapshot: ModelRuntimeSnapshot,
     pub(crate) model_middlewares: Vec<Arc<dyn InferMiddleware>>,
+    pub(crate) provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
     pub(crate) pricing_snapshot_resolver: Option<Arc<dyn PricingSnapshotResolver>>,
     pub(crate) tools: ToolPool,
     pub(crate) permission_broker: Arc<dyn PermissionBroker>,
@@ -117,6 +119,7 @@ pub struct EngineBuilder {
     model: Option<Arc<dyn ModelProvider>>,
     model_snapshot: Option<ModelRuntimeSnapshot>,
     model_middlewares: Vec<Arc<dyn InferMiddleware>>,
+    provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
     pricing_snapshot_resolver: Option<Arc<dyn PricingSnapshotResolver>>,
     tools: Option<ToolPool>,
     permission_broker: Option<Arc<dyn PermissionBroker>>,
@@ -164,6 +167,7 @@ impl Engine {
             model: Some(self.model),
             model_snapshot: Some(self.model_snapshot),
             model_middlewares: self.model_middlewares,
+            provider_continuation_store: self.provider_continuation_store,
             pricing_snapshot_resolver: self.pricing_snapshot_resolver,
             tools: Some(self.tools),
             permission_broker: Some(self.permission_broker),
@@ -202,6 +206,7 @@ impl Default for EngineBuilder {
             model: None,
             model_snapshot: None,
             model_middlewares: Vec::new(),
+            provider_continuation_store: None,
             pricing_snapshot_resolver: None,
             tools: None,
             permission_broker: None,
@@ -279,6 +284,15 @@ impl EngineBuilder {
         I: IntoIterator<Item = Arc<dyn InferMiddleware>>,
     {
         self.model_middlewares.extend(middlewares);
+        self
+    }
+
+    #[must_use]
+    pub fn with_provider_continuation_store(
+        mut self,
+        store: Arc<dyn ProviderContinuationStore>,
+    ) -> Self {
+        self.provider_continuation_store = Some(store);
         self
     }
 
@@ -531,6 +545,7 @@ impl EngineBuilder {
             model,
             model_snapshot,
             model_middlewares: self.model_middlewares,
+            provider_continuation_store: self.provider_continuation_store,
             pricing_snapshot_resolver: self.pricing_snapshot_resolver,
             tools,
             permission_broker,
