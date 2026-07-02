@@ -1,5 +1,9 @@
 #![allow(unused_imports)]
 
+use harness_provider_state::{
+    ProviderContinuationKind, ProviderContinuationRecord, ProviderContinuationScope,
+};
+
 use super::automation_support::*;
 use super::preview_support::*;
 use super::provider_route_support::*;
@@ -112,6 +116,64 @@ async fn export_support_bundle_with_runtime_state_writes_redacted_files_under_wo
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn support_bundle_does_not_export_provider_continuation_store_payload() {
+    let _lock = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let workspace = unique_workspace("support-bundle-provider-continuation");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
+    let session_id = SessionId::new();
+    open_conversation_session(&state, session_id).await;
+    let sentinel = "PRIVATE_DEEPSEEK_REASONING_SENTINEL";
+    let store_path = workspace.join(".jyowo/runtime/provider-continuations.jsonl");
+    std::fs::create_dir_all(store_path.parent().unwrap()).unwrap();
+    let record = ProviderContinuationRecord {
+        provider_id: "deepseek".to_owned(),
+        model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
+        protocol: ModelProtocol::ChatCompletions,
+        dialect: "deepseek".to_owned(),
+        tenant_id: TenantId::SINGLE,
+        session_id,
+        producing_run_id: RunId::new(),
+        message_id: MessageId::new(),
+        scope: ProviderContinuationScope::Conversation,
+        kind: ProviderContinuationKind::ReasoningReplay,
+        payload: json!({
+            "format": "deepseek.reasoning_content.v1",
+            "reasoningContent": sentinel,
+        }),
+        created_at: now(),
+    };
+    std::fs::write(
+        &store_path,
+        format!("{}\n", serde_json::to_string(&record).unwrap()),
+    )
+    .unwrap();
+
+    let payload = export_support_bundle_with_runtime_state(
+        ExportSupportBundleRequest {
+            conversation_id: Some(session_id.to_string()),
+            run_id: None,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let bundle = std::fs::read_to_string(workspace.join(&payload.bundle_path)).unwrap();
+    let jsonl = std::fs::read_to_string(workspace.join(&payload.jsonl_path)).unwrap();
+    let markdown = std::fs::read_to_string(workspace.join(&payload.markdown_path)).unwrap();
+    let exported = format!("{bundle}\n{jsonl}\n{markdown}");
+
+    assert!(store_path.exists());
+    assert!(std::fs::read_to_string(&store_path)
+        .unwrap()
+        .contains(sentinel));
+    assert!(!exported.contains(sentinel));
+    assert!(!exported.contains("provider-continuations.jsonl"));
+}
+
 #[tokio::test]
 async fn export_support_bundle_with_runtime_state_rejects_symlink_export_directory() {
     let _lock = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();

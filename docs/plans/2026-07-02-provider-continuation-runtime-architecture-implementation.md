@@ -1929,11 +1929,11 @@ Do not edit files.
 
 **Goal:** Prove provider-private continuation data cannot leak into public surfaces.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State every public surface being checked and the exact private sentinel string used by tests.
 
-- [ ] **Add sentinel leak tests**
+- [x] **Add sentinel leak tests**
 
   Use a sentinel:
 
@@ -1963,7 +1963,7 @@ Do not edit files.
   The debug-output test must cover every production type that can carry private continuation payloads after Tasks 2 and 4.
   It must fail if a raw `Debug` derive exposes `PRIVATE_DEEPSEEK_REASONING_SENTINEL`.
 
-- [ ] **Add support bundle export test**
+- [x] **Add support bundle export test**
 
   In `apps/desktop/src-tauri/tests/commands/support_bundle.rs`, add:
 
@@ -1982,7 +1982,7 @@ Do not edit files.
 
   If the test fails because export code walks `.jyowo/runtime` files directly, change production code so support bundle reads only redacted Journal and Replay projections. Do not add a special-case string filter for provider continuations.
 
-- [ ] **Source scans**
+- [x] **Source scans**
 
   Run:
 
@@ -2002,7 +2002,7 @@ Do not edit files.
   - support bundle production code does not read `provider-continuations.jsonl`
   - support bundle tests prove the sentinel is absent from exported files
 
-- [ ] **Run leak tests**
+- [x] **Run leak tests**
 
   ```bash
   cargo test -p jyowo-harness-engine provider_continuation_leak
@@ -2012,11 +2012,11 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm the sentinel is absent from all public surfaces, debug output, logs/traces reachable from the changed code, and error messages.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-engine crates/jyowo-harness-contracts apps/desktop/src-tauri crates/jyowo-harness-journal
