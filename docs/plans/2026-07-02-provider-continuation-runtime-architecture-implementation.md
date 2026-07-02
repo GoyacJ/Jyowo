@@ -1117,11 +1117,11 @@ Do not edit files.
 
 **Goal:** Allow provider codecs to receive private continuations and emit private continuation captures without public event leakage.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State how `ModelRequest` changes, how stream events change, how redacted `Debug` is preserved, and which code must not observe provider-private payloads.
 
-- [ ] **Extend `ModelRequest`**
+- [x] **Extend `ModelRequest`**
 
   Add:
 
@@ -1147,7 +1147,7 @@ Do not edit files.
 
   Because `ModelRequest` now contains `ProviderRequestContext`, `ModelRequest` must also stop deriving raw `Debug` or must implement custom redacted `Debug`. Formatting a `ModelRequest` with `{:?}` must not reveal continuation payloads.
 
-- [ ] **Update every direct `ModelRequest` construction site**
+- [x] **Update every direct `ModelRequest` construction site**
 
   Run:
 
@@ -1161,7 +1161,7 @@ Do not edit files.
 
   The Engine request in `crates/jyowo-harness-engine/src/turn.rs` must use a real context populated from Task 6 once Engine wiring exists. Until Task 6, it may use `ProviderRequestContext::default()` only to keep this boundary change behavior-preserving.
 
-- [ ] **Extend stream events**
+- [x] **Extend stream events**
 
   Add:
 
@@ -1178,14 +1178,14 @@ Do not edit files.
 
   `ModelStreamEvent` must not derive raw `Debug` after adding this variant. Implement custom redacted `Debug` for the continuation variant, or split private continuation captures into a non-debug wrapper. Formatting a `ProviderContinuationDelta` event with `{:?}` must not reveal payload strings.
 
-- [ ] **Update stream aggregator**
+- [x] **Update stream aggregator**
 
   Add a `StreamAggregate::ProviderContinuationDelta { kind, payload }` variant if `StreamAggregator` remains the stream normalization boundary.
 
   The aggregator may pass the opaque payload through. It must not inspect provider-private fields.
   If `StreamAggregate` derives `Debug`, replace it with redacted custom `Debug`.
 
-- [ ] **Tests**
+- [x] **Tests**
 
   Add tests asserting:
 
@@ -1196,7 +1196,7 @@ Do not edit files.
   - `format!("{:?}", ModelStreamEvent::ProviderContinuationDelta { ... })` does not include the sentinel payload.
   - debug or serde contract tests do not export continuation payload as public schema.
 
-- [ ] **Run model continuation tests**
+- [x] **Run model continuation tests**
 
   ```bash
   cargo test -p jyowo-harness-model provider_continuation
@@ -1205,11 +1205,11 @@ Do not edit files.
 
   Expected: both exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm continuation payloads are model-private, redacted from debug output, and not public contract additions.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-model crates/jyowo-harness-permission crates/jyowo-harness-context crates/jyowo-harness-sdk crates/jyowo-harness-subagent crates/jyowo-harness-team crates/jyowo-harness-session crates/jyowo-harness-engine

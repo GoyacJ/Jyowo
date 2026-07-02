@@ -59,6 +59,7 @@ fn request(model_id: &str, protocol: ModelProtocol) -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol,
         extra: Value::Null,
+        provider_context: harness_model::ProviderRequestContext::default(),
     }
 }
 

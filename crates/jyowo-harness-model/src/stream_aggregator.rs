@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
+use std::fmt;
 
 use harness_contracts::{ModelError, StopReason, ToolUseId, UsageSnapshot};
+use harness_provider_state::ProviderContinuationKind;
 use serde_json::Value;
 
 use crate::{
@@ -8,7 +10,7 @@ use crate::{
     ModelStreamEvent, ReasoningSummaryDelta, ThinkingDelta,
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum StreamAggregate {
     MessageStart {
         usage: UsageSnapshot,
@@ -40,11 +42,85 @@ pub enum StreamAggregate {
         usage_delta: UsageSnapshot,
     },
     MessageDone,
+    ProviderContinuationDelta {
+        kind: ProviderContinuationKind,
+        payload: Value,
+    },
     StreamError {
         error: ModelError,
         class: ErrorClass,
         hints: ErrorHints,
     },
+}
+
+impl fmt::Debug for StreamAggregate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MessageStart { usage } => formatter
+                .debug_struct("MessageStart")
+                .field("usage", usage)
+                .finish(),
+            Self::TextChunk { text } => formatter
+                .debug_struct("TextChunk")
+                .field("text", text)
+                .finish(),
+            Self::ThinkingChunk { thinking } => formatter
+                .debug_struct("ThinkingChunk")
+                .field("thinking", thinking)
+                .finish(),
+            Self::ReasoningSummaryChunk { summary } => formatter
+                .debug_struct("ReasoningSummaryChunk")
+                .field("summary", summary)
+                .finish(),
+            Self::ToolUseStart {
+                tool_use_id,
+                tool_name,
+            } => formatter
+                .debug_struct("ToolUseStart")
+                .field("tool_use_id", tool_use_id)
+                .field("tool_name", tool_name)
+                .finish(),
+            Self::ToolUseInputDelta { tool_use_id, delta } => formatter
+                .debug_struct("ToolUseInputDelta")
+                .field("tool_use_id", tool_use_id)
+                .field("delta", delta)
+                .finish(),
+            Self::ToolCallReady {
+                tool_use_id,
+                tool_name,
+                input,
+            } => formatter
+                .debug_struct("ToolCallReady")
+                .field("tool_use_id", tool_use_id)
+                .field("tool_name", tool_name)
+                .field("input", input)
+                .finish(),
+            Self::MessageDelta {
+                stop_reason,
+                usage_delta,
+            } => formatter
+                .debug_struct("MessageDelta")
+                .field("stop_reason", stop_reason)
+                .field("usage_delta", usage_delta)
+                .finish(),
+            Self::MessageDone => formatter.debug_struct("MessageDone").finish(),
+            Self::ProviderContinuationDelta { kind, .. } => formatter
+                .debug_struct("ProviderContinuationDelta")
+                .field("kind", kind)
+                .field("payload", &"<redacted>")
+                .finish(),
+            Self::StreamError {
+                error,
+                class,
+                hints,
+            } => formatter
+                .debug_struct("StreamError")
+                .field("error", error)
+                .field("class", class)
+                .field("hints", hints)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -79,6 +155,9 @@ impl StreamAggregator {
                 usage_delta,
             }],
             ModelStreamEvent::MessageStop => self.finish_message(),
+            ModelStreamEvent::ProviderContinuationDelta { kind, payload } => {
+                vec![StreamAggregate::ProviderContinuationDelta { kind, payload }]
+            }
             ModelStreamEvent::StreamError {
                 error,
                 class,

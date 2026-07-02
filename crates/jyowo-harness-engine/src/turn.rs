@@ -265,6 +265,7 @@ pub(crate) async fn run_turn(
                 ctx.run_id,
                 iterations,
             ),
+            provider_context: harness_model::ProviderRequestContext::default(),
         };
         let mut infer_ctx = InferContext::for_test();
         infer_ctx.tenant_id = session.tenant_id;
@@ -374,6 +375,7 @@ pub(crate) async fn run_turn(
                         ctx.run_id,
                         iterations,
                     ),
+                    provider_context: harness_model::ProviderRequestContext::default(),
                 };
                 if let Err(error) =
                     apply_before_request_middlewares(&mut request, &mut infer_ctx).await
@@ -639,6 +641,7 @@ pub(crate) async fn run_turn(
                         return Err(engine_error(message));
                     }
                     StreamAggregate::MessageDone => {}
+                    StreamAggregate::ProviderContinuationDelta { .. } => {}
                 }
             }
             if append_interrupt_if_cancelled(engine, &session, &mut emitted, &ctx, usage.clone())

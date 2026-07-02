@@ -263,6 +263,7 @@ fn request(text: &str) -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::Responses,
         extra: serde_json::Value::Null,
+        provider_context: harness_model::ProviderRequestContext::default(),
     }
 }
 

@@ -301,6 +301,7 @@ pub(crate) fn aux_request(
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::Responses,
         extra: serde_json::Value::default(),
+        provider_context: harness_model::ProviderRequestContext::default(),
     }
 }
 

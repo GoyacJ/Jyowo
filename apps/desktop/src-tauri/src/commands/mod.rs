@@ -26,6 +26,7 @@ use harness_contracts::{
     ProviderProbeSnapshot, ProviderServiceAdapterAvailability, RejectionReason, SandboxError,
     SandboxMode, ToolGroup, TrustLevel, UiSafeText, WorkspaceAccess,
 };
+use harness_model::ModelRuntimeSemantics;
 use harness_plugin::{
     CargoExtensionManifestLoader, CargoExtensionRuntimeLoader, DiscoverySource, FileManifestLoader,
     InlineManifestLoader, ManifestOrigin, PluginConfig, PluginName, PluginRegistry,

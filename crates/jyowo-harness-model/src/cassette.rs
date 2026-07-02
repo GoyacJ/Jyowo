@@ -5,6 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{ModelError, StopReason, ToolUseId, UsageSnapshot};
+use harness_provider_state::ProviderContinuationKind;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -149,6 +150,9 @@ enum RecordedModelStreamEvent {
         usage_delta: UsageSnapshot,
     },
     MessageStop,
+    ProviderContinuationDelta {
+        kind: ProviderContinuationKind,
+    },
     StreamError {
         error: ModelError,
         class: RecordedErrorClass,
@@ -230,6 +234,9 @@ impl From<ModelStreamEvent> for RecordedModelStreamEvent {
                 usage_delta,
             },
             ModelStreamEvent::MessageStop => Self::MessageStop,
+            ModelStreamEvent::ProviderContinuationDelta { kind, .. } => {
+                Self::ProviderContinuationDelta { kind }
+            }
             ModelStreamEvent::StreamError {
                 error,
                 class,
@@ -274,6 +281,12 @@ impl From<RecordedModelStreamEvent> for ModelStreamEvent {
                 usage_delta,
             },
             RecordedModelStreamEvent::MessageStop => Self::MessageStop,
+            RecordedModelStreamEvent::ProviderContinuationDelta { kind } => {
+                Self::ProviderContinuationDelta {
+                    kind,
+                    payload: Value::Null,
+                }
+            }
             RecordedModelStreamEvent::StreamError {
                 error,
                 class,

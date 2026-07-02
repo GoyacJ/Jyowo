@@ -1154,6 +1154,7 @@ mod credential_pool_tests {
             cache_breakpoints: Vec::new(),
             protocol: ModelProtocol::ChatCompletions,
             extra: Value::Null,
+            provider_context: crate::ProviderRequestContext::default(),
         }
     }
 

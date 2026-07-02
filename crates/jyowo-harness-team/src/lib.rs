@@ -1244,6 +1244,7 @@ fn aux_classify_request(
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::Messages,
         extra: serde_json::Value::Null,
+        provider_context: harness_model::ProviderRequestContext::default(),
     }
 }
 

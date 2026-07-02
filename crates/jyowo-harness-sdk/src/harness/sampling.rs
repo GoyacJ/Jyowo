@@ -63,6 +63,7 @@ impl SamplingProvider for HarnessSamplingProvider {
                 "request_id": request.request_id,
                 "prompt_cache_namespace": request.prompt_cache_namespace,
             }),
+            provider_context: harness_model::ProviderRequestContext::default(),
         };
         let mut context = InferContext::for_test();
         context.tenant_id = self.tenant_id;
@@ -99,6 +100,7 @@ impl SamplingProvider for HarnessSamplingProvider {
                     return Err(harness_mcp::McpError::Protocol(error.to_string()));
                 }
                 ModelStreamEvent::MessageStop
+                | ModelStreamEvent::ProviderContinuationDelta { .. }
                 | ModelStreamEvent::ContentBlockStart { .. }
                 | ModelStreamEvent::ContentBlockStop { .. } => {}
             }

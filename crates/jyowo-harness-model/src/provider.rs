@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,7 +10,7 @@ use harness_contracts::{
     ModelRef, PricingId, PricingSnapshotId, RequestId, RunId, SessionId, StopReason, TenantId,
     ToolDescriptor, ToolUseId, UsageSnapshot,
 };
-use harness_provider_state::ProviderContinuationKind;
+use harness_provider_state::{ProviderContinuationKind, ProviderContinuationRecord};
 use http::HeaderMap;
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -469,7 +470,7 @@ pub enum BillingMode {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Ratio(pub f32);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ModelRequest {
     pub model_id: String,
     pub messages: Vec<Message>,
@@ -481,9 +482,52 @@ pub struct ModelRequest {
     pub cache_breakpoints: Vec<CacheBreakpoint>,
     pub protocol: ModelProtocol,
     pub extra: Value,
+    pub provider_context: ProviderRequestContext,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl fmt::Debug for ModelRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ModelRequest")
+            .field("model_id", &self.model_id)
+            .field("message_count", &self.messages.len())
+            .field(
+                "tool_count",
+                &self.tools.as_ref().map_or(0, std::vec::Vec::len),
+            )
+            .field("system_present", &self.system.is_some())
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .field("stream", &self.stream)
+            .field("cache_breakpoint_count", &self.cache_breakpoints.len())
+            .field("protocol", &self.protocol)
+            .field("extra_present", &(!self.extra.is_null()))
+            .field("provider_context", &self.provider_context)
+            .finish()
+    }
+}
+
+#[derive(Clone, Default, PartialEq)]
+pub struct ProviderRequestContext {
+    pub provider_id: String,
+    pub model_config_id: Option<String>,
+    pub dialect: Option<String>,
+    pub continuations: Vec<ProviderContinuationRecord>,
+}
+
+impl fmt::Debug for ProviderRequestContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderRequestContext")
+            .field("provider_id", &self.provider_id)
+            .field("model_config_id", &self.model_config_id)
+            .field("dialect", &self.dialect)
+            .field("continuation_count", &self.continuations.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub enum ModelStreamEvent {
     MessageStart {
         message_id: String,
@@ -505,11 +549,68 @@ pub enum ModelStreamEvent {
         usage_delta: UsageSnapshot,
     },
     MessageStop,
+    ProviderContinuationDelta {
+        kind: ProviderContinuationKind,
+        payload: Value,
+    },
     StreamError {
         error: ModelError,
         class: ErrorClass,
         hints: ErrorHints,
     },
+}
+
+impl fmt::Debug for ModelStreamEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MessageStart { message_id, usage } => formatter
+                .debug_struct("MessageStart")
+                .field("message_id", message_id)
+                .field("usage", usage)
+                .finish(),
+            Self::ContentBlockStart {
+                index,
+                content_type,
+            } => formatter
+                .debug_struct("ContentBlockStart")
+                .field("index", index)
+                .field("content_type", content_type)
+                .finish(),
+            Self::ContentBlockDelta { index, delta } => formatter
+                .debug_struct("ContentBlockDelta")
+                .field("index", index)
+                .field("delta", delta)
+                .finish(),
+            Self::ContentBlockStop { index } => formatter
+                .debug_struct("ContentBlockStop")
+                .field("index", index)
+                .finish(),
+            Self::MessageDelta {
+                stop_reason,
+                usage_delta,
+            } => formatter
+                .debug_struct("MessageDelta")
+                .field("stop_reason", stop_reason)
+                .field("usage_delta", usage_delta)
+                .finish(),
+            Self::MessageStop => formatter.debug_struct("MessageStop").finish(),
+            Self::ProviderContinuationDelta { kind, .. } => formatter
+                .debug_struct("ProviderContinuationDelta")
+                .field("kind", kind)
+                .field("payload", &"<redacted>")
+                .finish(),
+            Self::StreamError {
+                error,
+                class,
+                hints,
+            } => formatter
+                .debug_struct("StreamError")
+                .field("error", error)
+                .field("class", class)
+                .field("hints", hints)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

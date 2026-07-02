@@ -171,6 +171,7 @@ fn model_request_accepts_contract_tool_descriptor() {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::Messages,
         extra: serde_json::Value::Null,
+        provider_context: harness_model::ProviderRequestContext::default(),
     };
 
     assert_eq!(req.tools.unwrap()[0].name, "read_file");

@@ -12,6 +12,7 @@ use chrono::Utc;
 use futures::{stream, StreamExt};
 use harness_contracts::{Message, MessageId, MessagePart, MessageRole, UsageSnapshot};
 use harness_model::*;
+use harness_provider_state::ProviderContinuationKind;
 
 fn request() -> ModelRequest {
     ModelRequest {
@@ -30,6 +31,7 @@ fn request() -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::ChatCompletions,
         extra: serde_json::Value::Null,
+        provider_context: harness_model::ProviderRequestContext::default(),
     }
 }
 
@@ -181,4 +183,73 @@ async fn cassette_rejects_record_and_passthrough_modes_when_ci_is_set() {
     }
 
     assert_eq!(hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn provider_continuation_cassette_does_not_record_private_payload() {
+    let _guard = env_lock().lock().unwrap();
+    if std::env::var_os("CI").is_some() {
+        return;
+    }
+
+    let path = cassette_path();
+    let req = request();
+    let sentinel = "cassette-private-reasoning-sentinel";
+    let recorded_events = vec![
+        ModelStreamEvent::ProviderContinuationDelta {
+            kind: ProviderContinuationKind::ReasoningReplay,
+            payload: serde_json::json!({ "reasoning_content": sentinel }),
+        },
+        ModelStreamEvent::MessageStop,
+    ];
+    let hits = Arc::new(AtomicUsize::new(0));
+    let provider = CassetteProvider::new(
+        Arc::new(CountingProvider {
+            hits: hits.clone(),
+            events: recorded_events.clone(),
+        }),
+        path.clone(),
+        CassetteMode::Record,
+    );
+
+    let record_events = provider
+        .infer(req.clone(), InferContext::for_test())
+        .await
+        .expect("record should call inner provider")
+        .collect::<Vec<_>>()
+        .await;
+
+    let cassette_json = std::fs::read_to_string(&path).expect("cassette should be written");
+    assert_eq!(record_events, recorded_events);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert!(cassette_json.contains("provider_continuation_delta"));
+    assert!(!cassette_json.contains(sentinel));
+    assert!(!cassette_json.contains("reasoning_content"));
+
+    let replay_provider = CassetteProvider::new(
+        Arc::new(CountingProvider {
+            hits,
+            events: Vec::new(),
+        }),
+        path.clone(),
+        CassetteMode::Replay,
+    );
+    let replay_events = replay_provider
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("replay should read cassette")
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(
+        replay_events,
+        vec![
+            ModelStreamEvent::ProviderContinuationDelta {
+                kind: ProviderContinuationKind::ReasoningReplay,
+                payload: serde_json::Value::Null,
+            },
+            ModelStreamEvent::MessageStop,
+        ]
+    );
+
+    let _ = std::fs::remove_file(path);
 }
