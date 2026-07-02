@@ -8,21 +8,20 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use harness_context::{ContextSessionView, TokenBudget};
 use harness_contracts::{
-    ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, AssistantDeltaProducedEvent,
-    AssistantMessageCompletedEvent, BlobRef, BudgetKind, CausationId, ContextPatchLifecycle,
-    ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource, ConversationAttachmentReference,
-    DecidedBy, Decision, DecisionId, DeltaChunk, DenyReason, EndReason, Event, EventId,
-    ExecFingerprint, FallbackPolicy, HookContextPatchEvent, HookEventKind, HookFailedEvent,
-    HookOutcomeInconsistentEvent, HookOutcomeSummary, HookPermissionConflictEvent,
-    HookReturnedUnsupportedEvent, HookRewroteInputEvent, HookTriggeredEvent, InteractivityLevel,
-    Message, MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, ModelError,
-    ModelRef, PermissionActorSource, PermissionMode, PermissionRequestSuppressedEvent,
-    PermissionRequestedEvent, PermissionResolvedEvent, PricingSnapshotId, RedactRules, Redactor,
-    RequestId, RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionId, StopReason,
-    SuppressionReason, TeamId, TenantId, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult,
-    ToolResultPart, ToolUseApprovedEvent, ToolUseCompletedEvent, ToolUseDeniedEvent,
-    ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, TrustLevel, TurnInput,
-    UsageAccumulatedEvent, UsageSnapshot,
+    ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, AssistantMessageCompletedEvent, BlobRef,
+    BudgetKind, CausationId, ContextPatchLifecycle, ContextPatchRequest, ContextPatchSinkCap,
+    ContextPatchSource, ConversationAttachmentReference, DecidedBy, Decision, DecisionId,
+    DenyReason, EndReason, Event, EventId, ExecFingerprint, FallbackPolicy, HookContextPatchEvent,
+    HookEventKind, HookFailedEvent, HookOutcomeInconsistentEvent, HookOutcomeSummary,
+    HookPermissionConflictEvent, HookReturnedUnsupportedEvent, HookRewroteInputEvent,
+    HookTriggeredEvent, InteractivityLevel, Message, MessageContent, MessageId, MessageMetadata,
+    MessagePart, MessageRole, ModelError, ModelRef, PermissionActorSource, PermissionMode,
+    PermissionRequestSuppressedEvent, PermissionRequestedEvent, PermissionResolvedEvent,
+    PricingSnapshotId, RedactRules, Redactor, RequestId, RunEndedEvent, RunId, RunModelSnapshot,
+    RunStartedEvent, SessionId, SuppressionReason, TeamId, TenantId, ToolDescriptor, ToolError,
+    ToolErrorPayload, ToolResult, ToolResultPart, ToolUseApprovedEvent, ToolUseCompletedEvent,
+    ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, TrustLevel,
+    TurnInput, UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_hook::{
     DispatchResult, HookContext, HookEvent, HookFailureCause, HookMessageView, HookOutcome,
@@ -33,7 +32,7 @@ use harness_journal::EventStore;
 use harness_model::{
     apply_before_request_middlewares, apply_request_end_middlewares, wrap_stream_with_middlewares,
     BillingMode, InferContext, ModelModality, ModelRequest, PricingSnapshotResolveContext,
-    PricingSource, Ratio, StreamAggregate, StreamAggregator,
+    PricingSource, Ratio,
 };
 use harness_observability::{DefaultRedactor, Span, SpanAttributes};
 use harness_permission::{
@@ -48,8 +47,8 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::{
-    end_reason_for_interrupt, result_inject, Engine, EngineError, EventStream, RunContext,
-    SessionHandle,
+    end_reason_for_interrupt, result_inject, turn_assembly::TurnAssembly, Engine, EngineError,
+    EventStream, RunContext, SessionHandle,
 };
 
 pub(crate) async fn run_turn(
@@ -461,12 +460,7 @@ pub(crate) async fn run_turn(
         };
         stream = wrap_stream_with_middlewares(stream, &infer_ctx);
 
-        let assistant_message_id = MessageId::new();
-        let mut assistant_text = String::new();
-        let mut tool_calls = Vec::new();
-        let mut stream_aggregator = StreamAggregator::default();
-        let mut stop_reason = StopReason::EndTurn;
-        let mut model_call_usage = UsageSnapshot::default();
+        let mut assembly = TurnAssembly::new(MessageId::new());
 
         loop {
             let event = tokio::select! {
@@ -487,162 +481,31 @@ pub(crate) async fn run_turn(
             let Some(event) = event else {
                 break;
             };
-            for aggregate in stream_aggregator.push(event) {
-                match aggregate {
-                    StreamAggregate::MessageStart { usage: start_usage } => {
-                        add_usage(&mut usage, &start_usage);
-                        add_usage(&mut model_call_usage, &start_usage);
-                    }
-                    StreamAggregate::TextChunk { text } => {
-                        assistant_text.push_str(&text);
-                        append(
-                            engine,
-                            session.tenant_id,
-                            session.session_id,
-                            &mut emitted,
-                            vec![Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
-                                run_id: ctx.run_id,
-                                message_id: assistant_message_id,
-                                delta: DeltaChunk::Text(text),
-                                at: harness_contracts::now(),
-                            })],
-                        )
-                        .await?;
-                    }
-                    StreamAggregate::ThinkingChunk { thinking } => {
-                        let has_private_thinking_signal = thinking
-                            .text
-                            .as_deref()
-                            .is_some_and(|text| !text.is_empty())
-                            || thinking.provider_native.is_some()
-                            || thinking.signature.is_some();
-                        if !has_private_thinking_signal {
-                            continue;
-                        }
-                        append(
-                            engine,
-                            session.tenant_id,
-                            session.session_id,
-                            &mut emitted,
-                            vec![Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
-                                run_id: ctx.run_id,
-                                message_id: assistant_message_id,
-                                delta: DeltaChunk::Thought(harness_contracts::ThoughtChunk {
-                                    text: None,
-                                    provider_id: "harness_model".to_owned(),
-                                    provider_native: None,
-                                    signature: None,
-                                }),
-                                at: harness_contracts::now(),
-                            })],
-                        )
-                        .await?;
-                    }
-                    StreamAggregate::ToolCallReady {
-                        tool_use_id,
-                        tool_name,
-                        input,
-                    } => {
-                        tool_calls.push(ToolCall {
-                            tool_use_id,
-                            tool_name,
-                            input,
-                        });
-                        append(
-                            engine,
-                            session.tenant_id,
-                            session.session_id,
-                            &mut emitted,
-                            vec![Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
-                                run_id: ctx.run_id,
-                                message_id: assistant_message_id,
-                                delta: DeltaChunk::ToolUseEnd { tool_use_id },
-                                at: harness_contracts::now(),
-                            })],
-                        )
-                        .await?;
-                    }
-                    StreamAggregate::ReasoningSummaryChunk { summary } => {
-                        if summary.text.is_empty() {
-                            continue;
-                        }
-                        append(
-                            engine,
-                            session.tenant_id,
-                            session.session_id,
-                            &mut emitted,
-                            vec![Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
-                                run_id: ctx.run_id,
-                                message_id: assistant_message_id,
-                                delta: DeltaChunk::ReasoningSummary(
-                                    harness_contracts::ReasoningSummaryChunk {
-                                        text: summary.text,
-                                        provider_id: "harness_model".to_owned(),
-                                        provider_native: None,
-                                    },
-                                ),
-                                at: harness_contracts::now(),
-                            })],
-                        )
-                        .await?;
-                    }
-                    StreamAggregate::ToolUseStart {
-                        tool_use_id,
-                        tool_name,
-                    } => {
-                        append(
-                            engine,
-                            session.tenant_id,
-                            session.session_id,
-                            &mut emitted,
-                            vec![Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
-                                run_id: ctx.run_id,
-                                message_id: assistant_message_id,
-                                delta: DeltaChunk::ToolUseStart {
-                                    tool_use_id,
-                                    tool_name,
-                                },
-                                at: harness_contracts::now(),
-                            })],
-                        )
-                        .await?;
-                    }
-                    StreamAggregate::ToolUseInputDelta { tool_use_id, delta } => {
-                        append(
-                            engine,
-                            session.tenant_id,
-                            session.session_id,
-                            &mut emitted,
-                            vec![Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
-                                run_id: ctx.run_id,
-                                message_id: assistant_message_id,
-                                delta: DeltaChunk::ToolUseInputDelta { tool_use_id, delta },
-                                at: harness_contracts::now(),
-                            })],
-                        )
-                        .await?;
-                    }
-                    StreamAggregate::MessageDelta {
-                        stop_reason: next_stop_reason,
-                        usage_delta,
-                    } => {
-                        add_usage(&mut usage, &usage_delta);
-                        add_usage(&mut model_call_usage, &usage_delta);
-                        if let Some(next_stop_reason) = next_stop_reason {
-                            stop_reason = next_stop_reason;
-                        }
-                    }
-                    StreamAggregate::StreamError { error, class, .. } => {
-                        record_model_infer(engine, model_call_started.elapsed(), &model_call_usage);
-                        record_model_stream_error(engine, &format!("{class:?}"));
-                        let message = format!("model stream error ({class:?}): {error}");
-                        finalize_run_error(engine, &session, &mut emitted, ctx.run_id, &message)
-                            .await?;
-                        return Err(engine_error(message));
-                    }
-                    StreamAggregate::MessageDone => {}
-                    StreamAggregate::ProviderContinuationDelta { .. } => {}
-                }
+            let step = assembly.push_event(ctx.run_id, event);
+            add_usage(&mut usage, &step.usage_delta);
+            if !step.events.is_empty() {
+                append(
+                    engine,
+                    session.tenant_id,
+                    session.session_id,
+                    &mut emitted,
+                    step.events,
+                )
+                .await?;
+            }
+            if let Some(stream_error) = step.stream_error {
+                record_model_infer(
+                    engine,
+                    model_call_started.elapsed(),
+                    assembly.model_call_usage(),
+                );
+                record_model_stream_error(engine, &format!("{:?}", stream_error.class));
+                let message = format!(
+                    "model stream error ({:?}): {}",
+                    stream_error.class, stream_error.error
+                );
+                finalize_run_error(engine, &session, &mut emitted, ctx.run_id, &message).await?;
+                return Err(engine_error(message));
             }
             if append_interrupt_if_cancelled(engine, &session, &mut emitted, &ctx, usage.clone())
                 .await?
@@ -650,14 +513,18 @@ pub(crate) async fn run_turn(
                 return Ok(Box::pin(stream::iter(emitted)));
             }
         }
-        record_model_infer(engine, model_call_started.elapsed(), &model_call_usage);
+        record_model_infer(
+            engine,
+            model_call_started.elapsed(),
+            assembly.model_call_usage(),
+        );
 
         if let Err(error) = apply_request_end_middlewares(&usage, &infer_ctx).await {
             finalize_run_error(engine, &session, &mut emitted, ctx.run_id, &error).await?;
             return Err(engine_error(error));
         }
         let pricing_snapshot_id = pricing_snapshot_for_model(engine, &session, &ctx).await;
-        let mut priced_model_call_usage = model_call_usage.clone();
+        let mut priced_model_call_usage = assembly.model_call_usage().clone();
         if let Some(cost_micros) = cost_micros_for_usage(
             engine,
             &priced_model_call_usage,
@@ -704,7 +571,7 @@ pub(crate) async fn run_turn(
 
         working_messages.push(next_input.message.clone());
 
-        if tool_calls.is_empty() {
+        if assembly.tool_calls().is_empty() {
             append(
                 engine,
                 session.tenant_id,
@@ -713,12 +580,12 @@ pub(crate) async fn run_turn(
                 vec![Event::AssistantMessageCompleted(
                     AssistantMessageCompletedEvent {
                         run_id: ctx.run_id,
-                        message_id: assistant_message_id,
-                        content: MessageContent::Text(assistant_text),
+                        message_id: assembly.assistant_message_id(),
+                        content: MessageContent::Text(assembly.assistant_text().to_owned()),
                         tool_uses: Vec::new(),
                         usage: usage.clone(),
                         pricing_snapshot_id: pricing_snapshot_id.clone(),
-                        stop_reason,
+                        stop_reason: assembly.stop_reason(),
                         at: harness_contracts::now(),
                     },
                 )],
@@ -753,9 +620,14 @@ pub(crate) async fn run_turn(
             return Ok(Box::pin(stream::iter(emitted)));
         }
 
-        let pre_tool_application =
-            apply_pre_tool_use_hooks(engine, &session, &ctx, &tool_calls, &working_messages)
-                .await?;
+        let pre_tool_application = apply_pre_tool_use_hooks(
+            engine,
+            &session,
+            &ctx,
+            assembly.tool_calls(),
+            &working_messages,
+        )
+        .await?;
         if !pre_tool_application.events.is_empty() {
             append(
                 engine,
@@ -778,13 +650,13 @@ pub(crate) async fn run_turn(
             .await?;
             return Ok(Box::pin(stream::iter(emitted)));
         }
-        tool_calls = pre_tool_application.calls;
+        assembly.replace_tool_calls(pre_tool_application.calls);
         let permission_overrides = pre_tool_application.permission_overrides;
 
         let assistant_tool_message = result_inject::assistant_tool_message(
-            assistant_message_id,
-            assistant_text.clone(),
-            &tool_calls,
+            assembly.assistant_message_id(),
+            assembly.assistant_text().to_owned(),
+            assembly.tool_calls(),
         );
         append(
             engine,
@@ -794,9 +666,13 @@ pub(crate) async fn run_turn(
             vec![Event::AssistantMessageCompleted(
                 AssistantMessageCompletedEvent {
                     run_id: ctx.run_id,
-                    message_id: assistant_message_id,
-                    content: result_inject::assistant_tool_content(assistant_text, &tool_calls),
-                    tool_uses: tool_calls
+                    message_id: assembly.assistant_message_id(),
+                    content: result_inject::assistant_tool_content(
+                        assembly.assistant_text().to_owned(),
+                        assembly.tool_calls(),
+                    ),
+                    tool_uses: assembly
+                        .tool_calls()
                         .iter()
                         .map(|call| harness_contracts::ToolUseSummary {
                             tool_use_id: call.tool_use_id,
@@ -805,7 +681,7 @@ pub(crate) async fn run_turn(
                         .collect(),
                     usage: usage.clone(),
                     pricing_snapshot_id: pricing_snapshot_id.clone(),
-                    stop_reason,
+                    stop_reason: assembly.stop_reason(),
                     at: harness_contracts::now(),
                 },
             )],
@@ -850,7 +726,7 @@ pub(crate) async fn run_turn(
             return Ok(Box::pin(stream::iter(emitted)));
         }
 
-        for call in &tool_calls {
+        for call in assembly.tool_calls() {
             let Some(descriptor) = engine.tools.descriptor(&call.tool_name) else {
                 let message = format!("tool descriptor missing: {}", call.tool_name);
                 finalize_run_error(engine, &session, &mut emitted, ctx.run_id, &message).await?;
@@ -890,7 +766,7 @@ pub(crate) async fn run_turn(
         let mut flushed_permission_records = 0;
         let mut dispatch = Box::pin(
             orchestrator.dispatch(
-                tool_calls.clone(),
+                assembly.tool_calls().to_vec(),
                 OrchestratorContext {
                     pool: engine.tools.clone(),
                     tool_context: harness_tool::ToolContext {
@@ -1110,8 +986,8 @@ pub(crate) async fn run_turn(
             post_tool_events,
         )
         .await?;
-        dispatched_tool_calls =
-            dispatched_tool_calls.saturating_add(tool_calls.len().try_into().unwrap_or(u64::MAX));
+        dispatched_tool_calls = dispatched_tool_calls
+            .saturating_add(assembly.tool_calls().len().try_into().unwrap_or(u64::MAX));
         usage.tool_calls = dispatched_tool_calls;
         if let Some(kind) = budget_exhausted(
             ctx.budget_limits.as_ref(),

@@ -1229,11 +1229,11 @@ Do not edit files.
 
 **Goal:** Extract stream-to-turn assembly from `run_turn` without changing visible behavior.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State which lines of `run_turn` are being moved, what behavior must remain identical, and which behavior is intentionally not added until Task 6.
 
-- [ ] **Write tests first**
+- [x] **Write tests first**
 
   Required tests:
 
@@ -1251,7 +1251,7 @@ Do not edit files.
   async fn turn_assembly_passes_provider_continuation_to_private_capture_only() { ... }
   ```
 
-- [ ] **Create module**
+- [x] **Create module**
 
   Move assistant stream handling into `turn_assembly.rs`.
 
@@ -1261,7 +1261,7 @@ Do not edit files.
   The only public event emitted for provider-private thinking remains a redacted Thought marker with no raw text, provider_native, signature, or continuation payload.
   ```
 
-- [ ] **Refactor `run_turn`**
+- [x] **Refactor `run_turn`**
 
   Replace inline assistant text/tool accumulation with `TurnAssembly`.
 
@@ -1274,7 +1274,7 @@ Do not edit files.
   - public event types
   - usage accounting
 
-- [ ] **Run focused tests**
+- [x] **Run focused tests**
 
   ```bash
   cargo test -p jyowo-harness-engine turn_assembly
@@ -1284,11 +1284,11 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must compare old visible behavior to new `TurnAssembly` behavior and confirm no provider-specific field is interpreted in Engine.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-engine

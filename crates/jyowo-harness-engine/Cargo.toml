@@ -37,6 +37,7 @@ jyowo-harness-memory = { path = "../jyowo-harness-memory" }
 jyowo-harness-model = { path = "../jyowo-harness-model" }
 jyowo-harness-observability = { path = "../jyowo-harness-observability" }
 jyowo-harness-permission = { path = "../jyowo-harness-permission" }
+jyowo-harness-provider-state = { path = "../jyowo-harness-provider-state" }
 jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox" }
 jyowo-harness-session = { path = "../jyowo-harness-session" }
 jyowo-harness-skill = { path = "../jyowo-harness-skill" }
