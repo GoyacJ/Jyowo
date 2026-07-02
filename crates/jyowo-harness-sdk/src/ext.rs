@@ -50,13 +50,13 @@ pub use harness_model::{
     ConversationModelCapability, CredentialError, CredentialKey, CredentialMetadata,
     CredentialPool, CredentialPoolAuditSink, CredentialSource, CredentialValue, Currency,
     HealthStatus, InferContext, ModelDescriptor, ModelInventoryEntry, ModelLifecycle,
-    ModelModality, ModelPricing, ModelProtocol, ModelProvider, ModelRequest, ModelRuntimeStatus,
-    ModelStream, ModelStreamEvent, PickedCredential, PoolStrategy, PricingSnapshotResolveContext,
-    PricingSnapshotResolver, PricingSource, ProviderAuthScheme, ProviderBaseUrlRegion,
-    ProviderBuildConfig, ProviderCatalogEntry, ProviderInventoryEntry, ProviderProbeInput,
-    ProviderProbeOutcome, ProviderProbeRunner, ProviderRegistryError, ProviderRuntimeCapability,
-    ProviderServiceCapability, ProviderServiceCategory, ProviderServiceCostRisk,
-    ProviderServiceExecution, ThinkingDelta,
+    ModelModality, ModelPricing, ModelProtocol, ModelProvider, ModelRequest, ModelRuntimeSemantics,
+    ModelRuntimeStatus, ModelStream, ModelStreamEvent, PickedCredential, PoolStrategy,
+    PricingSnapshotResolveContext, PricingSnapshotResolver, PricingSource, ProviderAuthScheme,
+    ProviderBaseUrlRegion, ProviderBuildConfig, ProviderCatalogEntry, ProviderInventoryEntry,
+    ProviderProbeInput, ProviderProbeOutcome, ProviderProbeRunner, ProviderRegistryError,
+    ProviderRuntimeCapability, ProviderServiceCapability, ProviderServiceCategory,
+    ProviderServiceCostRisk, ProviderServiceExecution, ThinkingDelta,
 };
 pub use harness_observability::{Observer, ObserverBuilder, Tracer, UsageAccumulator, UsageScope};
 pub use harness_permission::{
