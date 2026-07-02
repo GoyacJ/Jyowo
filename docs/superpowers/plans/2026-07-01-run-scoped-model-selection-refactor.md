@@ -88,7 +88,7 @@ max_iterations
 context_compression_trigger_ratio
 runtime_prompt_context_hash
 effective_prompt_inputs_hash
-agent_options
+agent_tool_policy
 ```
 
 旧数据策略：不迁移旧 runtime events，不加兼容分支。旧 `.jyowo/runtime/events` 下的历史 session 不保证继续可读或可运行。

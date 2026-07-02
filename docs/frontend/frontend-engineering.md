@@ -1148,23 +1148,20 @@ Settings switches:
 - Settings > General renders Subagents, Agent teams, and Background agents
   switches from backend command responses.
 - unavailable switches display backend-provided reason payloads.
-- saving settings stores requested workspace defaults only.
-- a saved switch does not authorize a later run by itself. `start_run` still
-  validates `agentOptions` against Rust capability resolution.
+- saving settings stores requested tool capability gates only.
+- a saved switch does not authorize execution by itself. Rust policy still
+  decides which model-visible tools may be installed or executed.
 - failed saves refetch backend truth or restore the last backend-confirmed
   snapshot.
 
-Per-run controls:
+Agent tools:
 
-- Composer agent controls submit `StartRunRequest.agentOptions`.
-- `agentOptions.subagents`, `agentOptions.teamConfig`, and
-  `agentOptions.background` must pass frontend Zod validation before IPC.
-- per-run controls must be disabled when backend capability responses say the
-  runtime cannot support the option.
-- the UI must not expose child/team/background execution controls from local
-  constants.
-- background user-facing start path is `start_run` with
-  `agentOptions.background`.
+- Composer must not submit run-level agent mode fields.
+- `agent`, `agent_team`, and `background_agent` are model-visible tools
+  installed only when backend capability responses and Rust policy allow them.
+- the UI must not expose child/team/background execution mode controls from
+  local constants.
+- background user-facing start path is the `background_agent` model tool.
 
 Background agents panel:
 
@@ -1192,7 +1189,7 @@ Zod requirements:
 - schemas must reject unknown actor-source tags and invalid background/team
   payloads.
 - tests must include valid and invalid payloads for settings capability,
-  `StartRunRequest.agentOptions`, `AgentActivitySegment` projection input, and
+  agent tool policy parsing, `AgentActivitySegment` projection input, and
   background agent command responses.
 
 ## RunEvent Schema

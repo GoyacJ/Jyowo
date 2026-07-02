@@ -1333,8 +1333,6 @@ pub struct AttachmentBlobRefPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartRunResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub background_agent_id: Option<String>,
     pub run_id: String,
     pub status: &'static str,
 }

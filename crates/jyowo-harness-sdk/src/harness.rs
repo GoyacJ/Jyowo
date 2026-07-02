@@ -42,14 +42,17 @@ use harness_contracts::{
     PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginRejectedEvent,
     ProviderCapabilityRouteSettings, RedactPatternSet, RedactRules, RedactScope, Redactor,
     RejectionReason, RunId, RunModelSnapshot, RunScopedProcessRegistryCap, SessionError, SessionId,
-    TenantId, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProfile,
-    ToolProperties, ToolResult, ToolSearchMode, TrustLevel, TurnInput,
+    TenantId, ToolCapability, ToolProfile, ToolSearchMode, TrustLevel, TurnInput,
     RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
 #[cfg(feature = "sqlite-store")]
 use harness_contracts::{
     ConversationCursor, ConversationSnapshot, ConversationSummary, ConversationTimelinePage,
     ConversationTurnCursor, ConversationWorktreePage,
+};
+#[cfg(any(feature = "agents-team", feature = "agents-subagent"))]
+use harness_contracts::{
+    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
 };
 use harness_engine::{
     CancellationToken, Engine, EngineRunner, InterruptCause, RunContext, SessionHandle,
@@ -115,10 +118,11 @@ use harness_skill::{
     SkillSourceConfig, SkillThreatEventScope, SkillValidator,
 };
 use harness_tool::{
-    DefaultRunScopedProcessRegistry, PermissionCheck, SchemaResolverContext, Tool, ToolContext,
-    ToolEvent, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolRegistrySnapshot,
-    ToolStream, ValidationError,
+    DefaultRunScopedProcessRegistry, SchemaResolverContext, ToolPool, ToolPoolFilter,
+    ToolPoolModelProfile, ToolRegistry, ToolRegistrySnapshot,
 };
+#[cfg(any(feature = "agents-team", feature = "agents-subagent"))]
+use harness_tool::{PermissionCheck, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 #[cfg(feature = "sqlite-store")]

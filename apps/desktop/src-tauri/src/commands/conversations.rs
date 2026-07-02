@@ -29,7 +29,6 @@ use super::stores::*;
 #[allow(unused_imports)]
 use super::validation::*;
 use super::*;
-use crate::agent_supervisor::BackgroundSupervisorSession;
 use harness_contracts::{
     BackgroundAgentId, ConversationAttachmentReference, ConversationContextReference,
     PermissionActorSource, SubagentId, SubagentStatus, SubagentTerminationReason, TeamId,
@@ -456,27 +455,6 @@ pub async fn start_run_with_runtime_state(
         .open_or_create_conversation_session(options.clone())
         .await
         .map_err(|error| runtime_operation_failed(format!("conversation open failed: {error}")))?;
-    if let Some(background_agent_id) = agent_policy.background_agent_id.clone() {
-        let record = start_background_agent_record_before_execution(
-            state,
-            &harness,
-            options.clone(),
-            session_id,
-            &background_agent_id,
-            &input,
-            permission_mode,
-            &agent_policy.options,
-            &request.model_config_id,
-            &request.prompt,
-        )
-        .await?;
-        let _ = crate::agent_supervisor::wake_agent_supervisor(state.workspace_root()).await;
-        return Ok(StartRunResponse {
-            background_agent_id: agent_policy.background_agent_id,
-            run_id: record.run_id.unwrap_or(background_agent_id),
-            status: "started",
-        });
-    }
     let after_event_id = conversation_tail_event_id(&harness, options.clone()).await?;
     let run_harness = Arc::clone(&harness);
     let run_session_options = options.clone();
@@ -486,7 +464,7 @@ pub async fn start_run_with_runtime_state(
         .with_model_id(model_id)
         .with_protocol(protocol)
         .with_permission_mode(permission_mode);
-    run_options.agent_run_options = Some(run_agent_options);
+    run_options.agent_tool_policy = Some(run_agent_options);
     let mut run_task = tokio::spawn(async move {
         run_harness
             .submit_conversation_turn(ConversationTurnRequest {
@@ -511,69 +489,12 @@ pub async fn start_run_with_runtime_state(
     mark_conversation_metadata_active(session_id, Some(request.model_config_id), state).await?;
 
     Ok(StartRunResponse {
-        background_agent_id: agent_policy.background_agent_id,
         run_id: run_id.to_string(),
         status: "started",
     })
 }
 
-async fn start_background_agent_record_before_execution(
-    state: &DesktopRuntimeState,
-    harness: &Harness,
-    options: SessionOptions,
-    session_id: SessionId,
-    background_agent_id: &str,
-    input: &ConversationTurnInput,
-    permission_mode: PermissionMode,
-    agent_run_options: &AgentRunOptions,
-    model_config_id: &str,
-    prompt: &str,
-) -> Result<jyowo_harness_sdk::BackgroundAgentRecord, CommandErrorPayload> {
-    let store = Arc::new(
-        AgentRuntimeStore::open(state.workspace_root()).map_err(|error| {
-            runtime_operation_failed(format!("background store open failed: {error}"))
-        })?,
-    );
-    let manager = BackgroundAgentManager::new(
-        store,
-        harness.event_store(),
-        TenantId::SINGLE,
-        session_id,
-        Arc::new(DefaultRedactor::default()),
-    );
-    let safe_supervisor_input =
-        safe_background_supervisor_input(input, &DefaultRedactor::default());
-    let supervisor_session = BackgroundSupervisorSession::from_session_options(&options);
-    manager
-        .start(BackgroundAgentStartRequest {
-            background_agent_id: Some(background_agent_id.to_owned()),
-            conversation_id: session_id,
-            title: prompt
-                .lines()
-                .next()
-                .unwrap_or("Background agent")
-                .to_owned(),
-            payload_json: json!({
-                "conversationId": session_id.to_string(),
-                "source": "start_run",
-                "supervisorExecution": {
-                    "status": "queued",
-                    "session": supervisor_session,
-                    "input": safe_supervisor_input,
-                    "modelConfigId": model_config_id,
-                    "permissionMode": permission_mode,
-                    "agentRunOptions": agent_run_options,
-                },
-            })
-            .to_string(),
-        })
-        .await
-        .map_err(|error| {
-            runtime_operation_failed(format!("background agent start failed: {error}"))
-        })
-}
-
-fn safe_background_supervisor_input(
+pub(crate) fn safe_background_supervisor_input(
     input: &ConversationTurnInput,
     redactor: &dyn harness_contracts::Redactor,
 ) -> ConversationTurnInput {
@@ -665,7 +586,7 @@ fn safe_redacted_string(value: &str, redactor: &dyn harness_contracts::Redactor)
 pub fn resolve_start_run_agent_policy(
     request: &StartRunRequest,
     state: &DesktopRuntimeState,
-) -> Result<ResolvedAgentRuntimePolicy, CommandErrorPayload> {
+) -> Result<ResolvedAgentToolPolicy, CommandErrorPayload> {
     let settings = state.execution_settings_store.load_record()?;
     let capability_context = agent_capability_resolution_context_for_state(state);
     let capabilities_payload = agent_capabilities_payload(

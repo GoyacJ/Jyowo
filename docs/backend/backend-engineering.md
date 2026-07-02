@@ -160,7 +160,7 @@ agents. Ownership stays in Rust.
 
 Layer placement:
 
-- public agent option, capability, permission, team, and background event shapes
+- public agent tool policy, capability, permission, team, and background event shapes
   belong in `jyowo-harness-contracts`.
 - agent profile storage, capability policy inputs, durable background registry,
   task/mailbox tables, and workspace isolation leases belong in
@@ -194,7 +194,7 @@ Worktree isolation rules:
 
 Durable background agent rules:
 
-- public background start uses `start_run` with `agentOptions.background`.
+- public background start is model-visible tool use through `background_agent`.
 - separate background commands may list, read, pause, resume, cancel, send input,
   archive, and delete durable records.
 - registry mutation must happen through `jyowo-harness-agent-runtime` and SDK
@@ -592,7 +592,6 @@ set_skill_enabled(
 ) -> Result<SetSkillEnabledResponse, CommandErrorPayload>
 switch_project(path: String) -> Result<SwitchProjectResponse, CommandErrorPayload>
 start_run(
-  agent_options: Option<AgentRunOptions>,
   client_message_id: Option<String>,
   attachments: Option<Vec<AttachmentReferencePayload>>,
   context_references: Option<Vec<ContextReferencePayload>>,

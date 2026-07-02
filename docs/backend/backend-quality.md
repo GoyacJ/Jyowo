@@ -87,7 +87,7 @@ Required test groups:
 | Conversation worktree | complete turn paging, event cursor reporting, stable node ids, nested tool permissions, safe process steps, artifact media metadata, and tool failure summaries |
 | Tauri command | command payload identity, shell metadata, SDK availability, replay-before-live conversation subscription, artifact media preview ownership checks, window-scoped event batches, unsubscribe cleanup, provider capability route validation, route option runtime support reporting, routed credential fail-closed behavior, provider probe single-flight behavior, model usage summary period behavior, official quota refresh/cache behavior |
 | SDK | builder requirements, runtime assembly, test adapters, capability route filtering during ToolPool assembly |
-| Agent orchestration | capability resolution, per-run agent options, subagent tool exposure, run-scoped team task/mailbox persistence, background registry lifecycle, supervisor wake/recovery, worktree lease conflicts, and actor-source permission attribution |
+| Agent orchestration | capability resolution, agent tool policy, subagent tool exposure, run-scoped team task/mailbox persistence, background registry lifecycle, supervisor wake/recovery, worktree lease conflicts, and actor-source permission attribution |
 | Budget | quota serialization and token budget defaults |
 | Search | SQLite FTS5 indexing, query behavior, deleted item removal, visibility filtering |
 | Secret | explicit reveal handling, missing secret behavior, no raw Secret serialization |
@@ -96,18 +96,17 @@ Required test groups:
 
 Required agent orchestration E2E scenarios:
 
-- subagent path: settings enable subagents, run-level subagent option is
-  accepted, the backend exposes the `agent` tool only when policy allows it, a
-  child action requests permission with `subagent` actor source, and a denied
-  child action does not execute.
-- team path: settings enable agent teams, a run-scoped team config creates team
-  members, task and mailbox state persist, cancellation reaches active members,
-  and conversation projection includes team activity.
-- background path: settings enable background agents, `start_run` creates a
-  durable background record, list/detail commands read registry state, pause,
-  resume, cancel, input, archive, and delete mutate durable records, and restart
-  recovery classifies interrupted records.
-- negative path: disabled settings reject per-run enable, unavailable runtime
+- subagent path: settings allow subagent capability, the backend exposes the
+  `agent` tool only when policy allows it, a child action requests permission
+  with `subagent` actor source, and a denied child action does not execute.
+- team path: settings allow agent team capability, model-visible `agent_team`
+  tool use creates team members, task and mailbox state persist, cancellation
+  reaches active members, and conversation projection includes team activity.
+- background path: settings allow background agent capability, model-visible
+  `background_agent` tool use creates a durable background record, list/detail
+  commands read registry state, pause, resume, cancel, input, archive, and delete
+  mutate durable records, and restart recovery classifies interrupted records.
+- negative path: disabled settings hide or reject agent tools, unavailable runtime
   disables switches, invalid payloads fail Zod/Rust validation, write-capable
   work without isolation fails closed, duplicate write leases fail closed,
   supervisor crash does not lose durable state, and unsafe permission denial

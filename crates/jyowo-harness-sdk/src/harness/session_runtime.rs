@@ -560,14 +560,41 @@ impl Harness {
             &model_snapshot,
         );
         #[cfg(feature = "agents-team")]
-        if let Some(agent_run_options) = run_options.agent_run_options.as_ref() {
-            if agent_run_options.agent_team == harness_contracts::AgentUsePolicy::Allowed {
+        if let Some(agent_tool_policy) = run_options.agent_tool_policy.as_ref() {
+            if agent_tool_policy.agent_team == harness_contracts::AgentUsePolicy::Allowed
+                && self.tenant_allows_tool("agent_team")
+            {
                 super::tool_pool::install_agent_team_tool_for_run(
                     self.clone(),
                     &mut cap_registry,
                     &mut tools,
-                    agent_run_options,
+                    agent_tool_policy,
                     options.workspace_bootstrap.clone(),
+                );
+            }
+        }
+        #[cfg(feature = "agents-subagent")]
+        if let Some(agent_tool_policy) = run_options.agent_tool_policy.as_ref() {
+            if self.tenant_allows_tool("background_agent") {
+                let session_snapshot = harness_contracts::BackgroundAgentToolSessionSnapshot {
+                    tenant_id: options.tenant_id,
+                    session_id: options.session_id,
+                    tool_search: run_options.tool_search.clone(),
+                    tool_profile: run_options.tool_profile.clone(),
+                    permission_mode: run_options.permission_mode,
+                    interactivity: run_options.interactivity,
+                    team_id: options.team_id,
+                    max_iterations: run_options.max_iterations,
+                    context_compression_trigger_ratio: run_options
+                        .context_compression_trigger_ratio,
+                };
+                super::tool_pool::install_background_agent_tool_for_run(
+                    &cap_registry,
+                    &mut tools,
+                    agent_tool_policy,
+                    run_options.model_config_id.clone(),
+                    run_options.permission_mode,
+                    session_snapshot,
                 );
             }
         }
@@ -580,11 +607,11 @@ impl Harness {
         #[cfg(feature = "agents-subagent")]
         let mut subagent_assembly = None;
         #[cfg(feature = "agents-subagent")]
-        if let Some(agent_run_options) = run_options.agent_run_options.as_ref() {
-            if harness_agent_runtime::should_install_subagent_runner(agent_run_options) {
+        if let Some(agent_tool_policy) = run_options.agent_tool_policy.as_ref() {
+            if harness_agent_runtime::should_install_subagent_runner(agent_tool_policy) {
                 subagent_assembly = Some(super::tool_pool::install_subagent_runner_for_run(
                     &mut cap_registry,
-                    agent_run_options,
+                    agent_tool_policy,
                     self.conversation_deletion_guarded_event_store(),
                     &options.workspace_root,
                     subagent_team_attribution.clone(),
@@ -594,7 +621,7 @@ impl Harness {
         #[cfg(feature = "agents-subagent")]
         let subagent_tool_enabled = super::tool_pool::subagent_tool_should_be_enabled(
             harness_has_subagent_runner,
-            run_options.agent_run_options.as_ref(),
+            run_options.agent_tool_policy.as_ref(),
         );
         #[cfg(not(feature = "agents-subagent"))]
         let subagent_tool_enabled = false;
@@ -748,6 +775,15 @@ pub(super) fn snapshot_for_supported_model(
             )))
         })?;
     Ok(ModelRuntimeSnapshot::from_descriptor(descriptor))
+}
+
+impl Harness {
+    fn tenant_allows_tool(&self, tool_name: &str) -> bool {
+        match &self.inner.options.tenant_policy.allowed_tools {
+            Some(allowed_tools) => allowed_tools.contains(tool_name),
+            None => true,
+        }
+    }
 }
 
 pub(super) fn session_options_for_run(

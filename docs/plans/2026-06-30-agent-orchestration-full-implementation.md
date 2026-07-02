@@ -80,9 +80,9 @@ Jyowo decisions:
 
 - Do not label subagents or agent teams as experimental after this plan is complete.
 - Do not mark a capability available until the backend runtime, IPC, UI, projection, tests, and recovery semantics exist.
-- Agent teams are run-scoped in this plan. There is no standalone persistent team management product surface beyond run invocation, timeline display, and audit/replay.
+- Agent teams are model-visible tool calls. There is no standalone persistent team management product surface beyond tool invocation, timeline display, and audit/replay.
 - Background agents are durable and detachable from the active conversation UI. If all Jyowo processes exit, running background agents must be recovered or marked interrupted on restart. Continuous execution after full app quit requires the supervisor task in this plan; until that task passes, `backgroundAgentsAvailable` remains false.
-- Background agents have one user-facing start path: `start_run` with `agentOptions.background = background`. Dedicated background commands operate on an existing background agent record; they do not start a second kind of run.
+- Background agents have one user-facing start path: the model-visible `background_agent` tool. Dedicated background commands operate on an existing background agent record; they do not start a second kind of run.
 
 ## Current Code Facts
 
@@ -146,13 +146,13 @@ Rules:
 - Defaults come from settings.
 - The user can turn a capability off for a single run.
 - The user cannot turn a disabled global setting on for a single run.
-- Agent teams are allowed only at run start for this plan.
-- `agentTeam = allowed` requires `teamConfig` in the same `StartRunRequest`.
-- `agentTeam = off` requires `teamConfig = null`.
+- Agent teams are allowed only through the `agent_team` model-visible tool.
+- `agentTeam = allowed` exposes the team tool when policy permits it.
+- `agentTeam = off` hides and rejects the team tool.
 - `teamConfig` must name a topology, one lead profile, one or more member profiles, max turns per goal, and shared memory policy.
 - Nested teams are not allowed.
 - Subagents inside team members are allowed only when both `subagents` and `agentTeams` are allowed and depth/concurrency policy permits it.
-- Background start is canonical through `start_run(agentOptions.background = background)`.
+- Background start is canonical through the `background_agent` model-visible tool.
 - No public `start_background_agent` Tauri command may start a separate run path.
 
 ### Capability availability
@@ -215,7 +215,7 @@ Lifecycle operations:
 
 | Operation | Valid source states | Result state | Notes |
 |---|---|---|---|
-| `start_run(background)` | none | `queued` then `running` | Canonical user-facing start path. Creates durable background record before execution. |
+| `background_agent` tool | none | `queued` then `running` | Canonical user-facing start path. Creates durable background record before execution. |
 | `pause` | `queued`, `running`, `waiting_for_input` | `paused` | Does not discard pending input or permission metadata. |
 | `resume` | `paused`, `interrupted`, `recoverable` | `queued` then `running` or `waiting_for_input` | Creates a new attempt id when resuming after `interrupted`. |
 | `cancel` | `queued`, `running`, `waiting_for_permission`, `waiting_for_input`, `paused`, `recoverable` | `cancelling` then `cancelled` | Cancels active handles when present and records a terminal journal event. |
@@ -254,7 +254,7 @@ There is no public `recover_background_agent` command. Recovery is a startup man
 ```text
 Settings record
   -> backend capability resolver
-  -> per-run AgentRunOptions
+  -> per-run AgentToolPolicy
   -> jyowo-harness-agent-runtime resolved AgentRuntimePolicy
   -> SDK facade harness session assembly
   -> optional subagent tool
@@ -378,11 +378,11 @@ pub enum AgentProfileContextMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRunOptions {
+pub struct AgentToolPolicy {
     pub subagents: AgentUsePolicy,
     pub agent_team: AgentUsePolicy,
+    pub background_agents: AgentUsePolicy,
     pub team_config: Option<AgentTeamRunConfig>,
-    pub background: BackgroundRunPolicy,
     pub workspace_isolation: AgentWorkspaceIsolationMode,
     pub max_depth: u8,
     pub max_concurrent_subagents: u32,
@@ -420,13 +420,6 @@ pub enum AgentTeamSharedMemoryPolicy {
 pub enum AgentUsePolicy {
     Off,
     Allowed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum BackgroundRunPolicy {
-    Foreground,
-    Background,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -737,7 +730,7 @@ all commands exit 0
 
 **Steps:**
 
-- [x] Add contract types for `AgentProfile`, `AgentProfileScope`, `AgentProfileModelOverride`, `AgentProfileSandboxInheritance`, `AgentProfileMemoryScope`, `AgentProfileContextMode`, `AgentRunOptions`, `AgentTeamRunConfig`, `AgentTeamTopology`, `AgentTeamSharedMemoryPolicy`, `AgentUsePolicy`, `BackgroundRunPolicy`, `AgentWorkspaceIsolationMode`, and expanded `AgentCapabilityUnavailableReason`.
+- [x] Add contract types for `AgentProfile`, `AgentProfileScope`, `AgentProfileModelOverride`, `AgentProfileSandboxInheritance`, `AgentProfileMemoryScope`, `AgentProfileContextMode`, `AgentToolPolicy`, `AgentTeamRunConfig`, `AgentTeamTopology`, `AgentTeamSharedMemoryPolicy`, `AgentUsePolicy`, `AgentWorkspaceIsolationMode`, and expanded `AgentCapabilityUnavailableReason`.
 - [x] Export schemas for every new contract type from `schema_export.rs`.
 - [x] Add Rust tests that serialize and deserialize representative payloads:
   - capability unavailable because not compiled
@@ -968,28 +961,27 @@ all commands exit 0
 
 **Required behavior:**
 
-- `StartRunRequest` accepts optional `agentOptions`.
-- If omitted, backend derives options from execution settings.
-- Per-run options cannot enable a capability disabled in settings.
-- Per-run options cannot use unavailable runtime capabilities.
-- Agent teams can only be requested at run start.
-- `agentOptions.agentTeam = allowed` requires a valid `teamConfig`.
-- `agentOptions.agentTeam = off` rejects non-null `teamConfig`.
-- Background mode cannot be used with missing `conversationId`.
-- Background mode starts through `start_run` only and returns the background agent id in the start response when a record is created.
+- `StartRunRequest` does not accept `agentOptions`.
+- Backend derives tool exposure from execution settings and runtime capability.
+- Tool policy cannot enable a capability disabled in settings.
+- Tool policy cannot use unavailable runtime capabilities.
+- Agent teams can only be requested through the `agent_team` tool.
+- `agentTeam = allowed` exposes the team tool without eager team startup.
+- `agentTeam = off` hides and rejects the team tool.
+- Background creation starts through the `background_agent` tool only and returns the background agent id as tool output.
 - No Composer or frontend code calls a separate `start_background_agent` command.
 - Invalid `maxDepth`, `maxConcurrentSubagents`, or `maxTeamMembers` fails closed.
 - Composer renders compact controls only when backend says the capability is available.
-- Composer submits validated `agentOptions` through `shared/tauri` only.
+- Composer submits no run-level agent mode fields.
 
 **Steps:**
 
-- [x] Add `agent_options: Option<AgentRunOptions>` to Rust `StartRunRequest` in `commands/contracts.rs`.
+- [x] Keep Rust `StartRunRequest` free of `agent_tool_policy`; resolve `AgentToolPolicy` from settings and runtime capability.
 - [x] Add backend merge function in `jyowo-harness-agent-runtime` and call it from `commands/conversations.rs` before run execution:
 
 ```text
-ExecutionSettingsRecord + optional AgentRunOptions + AgentCapabilitiesPayload
-  -> ResolvedAgentRuntimePolicy
+ExecutionSettingsRecord + optional AgentToolPolicy + AgentCapabilitiesPayload
+  -> ResolvedAgentToolPolicy
 ```
 
 - [x] Add negative command tests for disabled settings, unavailable runtime, and invalid numeric limits.
@@ -1006,7 +998,7 @@ ExecutionSettingsRecord + optional AgentRunOptions + AgentCapabilitiesPayload
 
 ```bash
 cargo test -p jyowo-harness-agent-runtime agent_orchestration_policy --test agent_orchestration_policy
-cargo test -p jyowo-desktop-shell start_run_agent_options
+cargo test -p jyowo-desktop-shell agent_run_policy
 pnpm -C apps/desktop test -- commands.test.ts Composer.test.tsx
 pnpm check:desktop
 pnpm check:rust
@@ -1238,7 +1230,7 @@ all commands exit 0
 
 - Agent teams are formal, non-experimental, run-scoped capability.
 - A run can request a team lead and members through backend-approved profiles.
-- `AgentRunOptions.teamConfig` is the only team configuration contract for run invocation.
+- `AgentToolPolicy.teamConfig` is the only team configuration contract for run invocation.
 - Runtime rejects `agentTeam = allowed` without `teamConfig`.
 - Runtime rejects `teamConfig` when `agentTeam = off`.
 - Runtime validates `leadProfileId`, every `memberProfileId`, `maxTurnsPerGoal`, `sharedMemoryPolicy`, and topology before any member starts.
@@ -1460,7 +1452,7 @@ all commands exit 0
 
 **Required behavior:**
 
-- Background agent creation from the Composer uses `start_run` with `agentOptions.background = background`.
+- Background agent creation uses the `background_agent` model-visible tool.
 - This task must not add a public `start_background_agent` Tauri command.
 - Tauri commands:
   - `list_background_agents`
@@ -1482,7 +1474,7 @@ all commands exit 0
 - [x] Add command request/response contracts in `commands/contracts.rs`, command implementations in `commands/background_agents.rs`, and Zod schemas in `shared/tauri`.
 - [x] Re-export command handlers from `commands/mod.rs` and register them in `generate_handler!`.
 - [x] Add command tests in `apps/desktop/src-tauri/tests/commands/background_agents.rs` for each command and each invalid state.
-- [x] Add command tests proving `start_run` is the only public background start path.
+- [x] Add command tests proving `background_agent` model-visible tool use is the only public background start path.
 - [x] Add delete tests for archived and non-archived records.
 - [x] Add TanStack Query hooks for list/detail/mutations.
 - [x] Add UI tests for state matrix.
@@ -1836,18 +1828,17 @@ all commands exit 0
   - conversation projection has subagent activity segment
 - Real run-scoped team:
   - settings enable teams
-  - run request allows team
-  - team dispatch creates members
+  - model-visible `agent_team` tool use creates members
   - task list/mailbox persists
   - projection has team activity segment
 - Real background agent:
-  - settings enable background agents
-  - run starts in background
+  - settings allow background agent capability
+  - model-visible `background_agent` tool use creates a durable record
   - list/detail commands return durable state
   - cancellation transitions state
   - restart recovery test marks or resumes correctly
 - Negative:
-  - disabled setting rejects per-run enable
+  - disabled setting hides or rejects agent tools
   - unavailable runtime disables settings switch
   - write-capable agent without isolation fails closed
   - permission denied cancels unsafe child action
@@ -1944,9 +1935,9 @@ The feature is complete only when every item is true.
 
 - [x] `Subagents`, `AgentTeams`, and `BackgroundAgents` are not described as experimental in product UI or docs.
 - [x] Settings > General has three backend-backed switches.
-- [x] `StartRunRequest` has validated `agentOptions`.
-- [x] `AgentRunOptions` includes validated `teamConfig` for run-scoped teams.
-- [x] Background user-facing start path is `start_run(agentOptions.background = background)` only.
+- [x] `StartRunRequest` rejects `agentOptions`.
+- [x] `AgentToolPolicy` includes validated `teamConfig` for run-scoped teams.
+- [x] Background user-facing start path is the `background_agent` model-visible tool only.
 - [x] Desktop enables `agents-subagent` and `agents-team`.
 - [x] Subagent `agent` tool appears only when backend policy allows it.
 - [x] Run-scoped agent teams can be invoked from a run and persist task/mailbox state.
@@ -2013,7 +2004,7 @@ Task 3:
 - Subagent audit: PASS (manual — Bugbot quota unavailable) — Evidence: `policy.rs` resolver, SDK `resolve_agent_capabilities` + `Harness::resolve_agent_capabilities`, desktop `agents-subagent`/`agents-team` features, `providers.rs` delegates to resolver (hardcoded `agent_capabilities_available` removed), save fail-closed, load structure-only, anti-fake hardcoded-unavailable scans
 
 Task 4:
-- Tests: agent_orchestration_policy (15 pass); start_run_agent_options (6 pass); commands.test.ts agent orchestration + startRun agentOptions; Composer.test.tsx agent controls; use-agent-profiles.test.tsx (4 pass)
+- Tests: agent_orchestration_policy; agent_run_policy; commands.test.ts agent orchestration; Composer.test.tsx omits agentOptions; use-agent-profiles.test.tsx
 - Gate: pnpm check:desktop pass; task-scoped cargo tests pass
 - Subagent audit: PASS (manual — Bugbot quota unavailable) — Evidence: policy.rs merge + enqueue, conversations resolve_start_run_agent_policy, StartRunRequest/Response contracts, Zod startRun schemas, Composer agent controls, use-agent-profiles hook
 
@@ -2063,7 +2054,7 @@ Task 13:
 - Subagent audit: PASS — Spec agent id: 019f1aab-de00-7f11-bb73-c2ea1885a58d — Code/security agent id: 019f1aac-0dbd-78b0-8cb8-01fe33d3a224 — Evidence: Settings > General renders backend-backed Subagents, Agent teams, and Background agents switches with shared `Switch`; disabled state follows backend availability; unavailable reasons render from backend payload variants; save uses `setExecutionSettings`; failed save refetches backend truth, falls back to the pre-save snapshot if refetch fails, and displays a fixed safe save error without raw IPC message leakage.
 
 Task 14:
-- Tests: `cargo test -p jyowo-harness-contracts permission_actor_source_team_member_serializes_with_stable_tag -- --nocapture`; `cargo test -p jyowo-harness-sdk --features agents-team,testing engine_team_member_runner_marks_permission_requests_with_team_member_source -- --nocapture`; `cargo test -p jyowo-harness-mcp --test sampling -- --nocapture`; `cargo test -p jyowo-harness-subagent delegation_policy_rejects_child_mcp_tools_without_matching_origin -- --nocapture`; `cargo test -p jyowo-harness-engine --features subagent-tool child_tool_filter_rejects_forged_mcp_builtin_name -- --nocapture`; `cargo test -p jyowo-harness-subagent --test permission_bridge -- --nocapture`; `cargo test -p jyowo-harness-observability --features replay,redactor export_session_withholds_child_agent_internals_from_json_lines_and_har -- --nocapture`; `cargo test -p jyowo-desktop-shell permission_requested_run_event_redacts_team_member_actor_role -- --nocapture`; `cargo test -p jyowo-desktop-shell background_agent_manager_start_run_persists_record_before_execution -- --nocapture`; `cargo test -p jyowo-desktop-shell background_supervisor -- --nocapture`; `cargo test -p jyowo-desktop-shell support_bundle_agent_redaction_exports_child_agent_summaries_without_internals -- --nocapture`; `cargo test -p jyowo-harness-journal --features sqlite --test conversation_read_model -- --nocapture`; `cargo test -p jyowo-desktop-shell page_conversation_timeline_keeps_background_started_before_real_run_started -- --nocapture`; `cargo test -p jyowo-harness-engine recording_permission_broker_forwards_hard_policy_probe -- --nocapture`; `pnpm -C apps/desktop test -- commands.test.ts`; `pnpm -C apps/desktop test -- run-event-schema.test.ts run-event-view-model.test.ts`.
+- Tests: `cargo test -p jyowo-harness-contracts permission_actor_source_team_member_serializes_with_stable_tag -- --nocapture`; `cargo test -p jyowo-harness-sdk --features agents-team,testing engine_team_member_runner_marks_permission_requests_with_team_member_source -- --nocapture`; `cargo test -p jyowo-harness-mcp --test sampling -- --nocapture`; `cargo test -p jyowo-harness-subagent delegation_policy_rejects_child_mcp_tools_without_matching_origin -- --nocapture`; `cargo test -p jyowo-harness-engine --features subagent-tool child_tool_filter_rejects_forged_mcp_builtin_name -- --nocapture`; `cargo test -p jyowo-harness-subagent --test permission_bridge -- --nocapture`; `cargo test -p jyowo-harness-observability --features replay,redactor export_session_withholds_child_agent_internals_from_json_lines_and_har -- --nocapture`; `cargo test -p jyowo-desktop-shell permission_requested_run_event_redacts_team_member_actor_role -- --nocapture`; `cargo test -p jyowo-desktop-shell background_agent_tool_creates_durable_record -- --nocapture`; `cargo test -p jyowo-desktop-shell background_supervisor -- --nocapture`; `cargo test -p jyowo-desktop-shell support_bundle_agent_redaction_exports_child_agent_summaries_without_internals -- --nocapture`; `cargo test -p jyowo-harness-journal --features sqlite --test conversation_read_model -- --nocapture`; `cargo test -p jyowo-desktop-shell agent_orchestration_e2e_real_background_agent_commands_and_recovery -- --nocapture`; `cargo test -p jyowo-harness-engine recording_permission_broker_forwards_hard_policy_probe -- --nocapture`; `pnpm -C apps/desktop test -- commands.test.ts`; `pnpm -C apps/desktop test -- run-event-schema.test.ts run-event-view-model.test.ts`.
 - Gate: `cargo fmt --all --check`; `pnpm check:agent-orchestration-no-fakes`; `pnpm check:docs`; `pnpm check:desktop`; `pnpm check:rust`.
 - Subagent audit: PASS — Spec/code audit agent id: 019f1b02-e9ab-7f52-a9dd-98fd42cf6b76; security audit agent id: 019f1b03-1750-78d3-ab62-f611fa61e04f; follow-up review agent id: 019f1b97-3eea-7752-8a9d-164e5bee802b. Findings addressed: background supervisor persisted input now redacts prompt, client message id, context references, attachment labels, top-level mime types, and blob content types; permission requested payloads carry actor source through foreground, subagent/team, and background paths; TeamMember actor roles are redacted before permission events and again before run-event/support-bundle projection; MCP sampling ignores spoofed session/run/server params, carries authoritative run context to the broker, and fails closed without an authoritative run id; background supervisor queued payload now persists a safe session subset instead of full `SessionOptions` and startup recovery normalizes legacy payloads; replay export removes child/team transcript internals and background input content; support bundle exports safe child/team/background summaries; permission bridge writes child resolution audit before parent resolution audit; MCP child tool origin negative tests pass; read model includes `actorSource`, redacts `assigneeProfileId`, and projects `background.started`; frontend schema and view model cover background run events exhaustively.
 

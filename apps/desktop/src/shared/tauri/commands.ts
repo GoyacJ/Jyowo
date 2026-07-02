@@ -1298,7 +1298,6 @@ const agentProfileMemoryScopeSchema = z.enum(['none', 'read_only', 'read_write']
 const agentProfileContextModeSchema = z.enum(['minimal', 'focused', 'full_workspace'])
 const agentWorkspaceIsolationModeSchema = z.enum(['read_only', 'patch_only', 'git_worktree'])
 const agentUsePolicySchema = z.enum(['off', 'allowed'])
-const backgroundRunPolicySchema = z.enum(['foreground', 'background'])
 const agentTeamTopologySchema = z.enum(['coordinator_worker', 'peer_to_peer', 'role_routed'])
 const agentTeamSharedMemoryPolicySchema = z.enum(['none', 'summaries_only', 'redacted_mailbox'])
 const agentProfileIdSchema = z
@@ -1338,10 +1337,10 @@ const agentTeamRunConfigSchema = z
     topology: agentTeamTopologySchema,
   })
   .strict()
-const agentRunOptionsSchema = z
+const agentToolPolicySchema = z
   .object({
     agentTeam: agentUsePolicySchema,
-    background: backgroundRunPolicySchema,
+    backgroundAgents: agentUsePolicySchema,
     maxConcurrentSubagents: z.number().int().min(1),
     maxDepth: z.number().int().min(0).max(8),
     maxTeamMembers: z.number().int().min(1),
@@ -1374,7 +1373,6 @@ const startRunRequestSchema = z
 
 const startRunResponseSchema = z
   .object({
-    backgroundAgentId: z.string().min(1).optional(),
     runId: z.string().min(1),
     status: z.literal('started'),
   })
@@ -3087,7 +3085,7 @@ export type AgentCapabilityUnavailableReason = z.infer<
   typeof agentCapabilityUnavailableReasonSchema
 >
 export type AgentProfile = z.infer<typeof agentProfileSchema>
-export type AgentRunOptions = z.infer<typeof agentRunOptionsSchema>
+export type AgentToolPolicy = z.infer<typeof agentToolPolicySchema>
 export type ListAgentProfilesResponse = z.infer<typeof listAgentProfilesResponseSchema>
 export type SaveAgentProfileResponse = z.infer<typeof saveAgentProfileResponseSchema>
 export type DeleteAgentProfileRequest = z.infer<typeof deleteAgentProfileRequestSchema>
@@ -3097,8 +3095,8 @@ export function parseAgentCapabilities(value: unknown): AgentCapabilities {
   return agentCapabilitiesSchema.parse(value)
 }
 
-export function parseAgentRunOptions(value: unknown): AgentRunOptions {
-  return agentRunOptionsSchema.parse(value)
+export function parseAgentToolPolicy(value: unknown): AgentToolPolicy {
+  return agentToolPolicySchema.parse(value)
 }
 
 export function parseAgentProfile(value: unknown): AgentProfile {
@@ -3649,7 +3647,9 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     },
     async listAutomationRuns(automationId) {
       const command = 'list_automation_runs'
-      const args = parseArgs(command, listAutomationRunsRequestSchema, { automationId })
+      const args = parseArgs(command, listAutomationRunsRequestSchema, {
+        automationId,
+      })
       return parsePayload(command, listAutomationRunsResponseSchema, await invoke(command, args))
     },
     async createConversation() {
@@ -3677,7 +3677,9 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     },
     async listMcpDiagnostics(serverId) {
       const command = 'list_mcp_diagnostics'
-      const args = parseArgs(command, listMcpDiagnosticsRequestSchema, { serverId })
+      const args = parseArgs(command, listMcpDiagnosticsRequestSchema, {
+        serverId,
+      })
       return parsePayload(command, listMcpDiagnosticsResponseSchema, await invoke(command, args))
     },
     async listMcpServers() {
@@ -3691,7 +3693,9 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     },
     async getPluginDetail(pluginId) {
       const command = 'get_plugin_detail'
-      const args = parseArgs(command, getPluginDetailRequestSchema, { pluginId })
+      const args = parseArgs(command, getPluginDetailRequestSchema, {
+        pluginId,
+      })
       return parsePayload(command, getPluginDetailResponseSchema, await invoke(command, args))
     },
     async listMemoryItems() {
@@ -3851,7 +3855,10 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     },
     async setAutomationEnabled(id, enabled) {
       const command = 'set_automation_enabled'
-      const args = parseArgs(command, setAutomationEnabledRequestSchema, { enabled, id })
+      const args = parseArgs(command, setAutomationEnabledRequestSchema, {
+        enabled,
+        id,
+      })
       return parsePayload(command, setAutomationEnabledResponseSchema, await invoke(command, args))
     },
     async saveBrowserMcpPreset(request) {
@@ -3866,17 +3873,25 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     },
     async setMcpServerEnabled(id, enabled) {
       const command = 'set_mcp_server_enabled'
-      const args = parseArgs(command, setMcpServerEnabledRequestSchema, { enabled, id })
+      const args = parseArgs(command, setMcpServerEnabledRequestSchema, {
+        enabled,
+        id,
+      })
       return parsePayload(command, setMcpServerEnabledResponseSchema, await invoke(command, args))
     },
     async setPluginEnabled(pluginId, enabled) {
       const command = 'set_plugin_enabled'
-      const args = parseArgs(command, setPluginEnabledRequestSchema, { enabled, pluginId })
+      const args = parseArgs(command, setPluginEnabledRequestSchema, {
+        enabled,
+        pluginId,
+      })
       return parsePayload(command, pluginOperationResultSchema, await invoke(command, args))
     },
     async setProjectPluginsEnabled(enabled) {
       const command = 'set_project_plugins_enabled'
-      const args = parseArgs(command, setProjectPluginsEnabledRequestSchema, { enabled })
+      const args = parseArgs(command, setProjectPluginsEnabledRequestSchema, {
+        enabled,
+      })
       return parsePayload(
         command,
         setProjectPluginsEnabledResponseSchema,
@@ -3890,7 +3905,9 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     },
     async clearMcpDiagnostics(serverId) {
       const command = 'clear_mcp_diagnostics'
-      const args = parseArgs(command, clearMcpDiagnosticsRequestSchema, { serverId })
+      const args = parseArgs(command, clearMcpDiagnosticsRequestSchema, {
+        serverId,
+      })
       return parsePayload(command, clearMcpDiagnosticsResponseSchema, await invoke(command, args))
     },
     async setSkillEnabled(id, enabled) {
@@ -3995,7 +4012,10 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     },
     async updatePluginConfig(pluginId, values) {
       const command = 'update_plugin_config'
-      const args = parseArgs(command, updatePluginConfigRequestSchema, { pluginId, values })
+      const args = parseArgs(command, updatePluginConfigRequestSchema, {
+        pluginId,
+        values,
+      })
       return parsePayload(command, pluginOperationResultSchema, await invoke(command, args))
     },
     async validatePluginFromPath(sourcePath) {

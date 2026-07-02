@@ -346,23 +346,6 @@ impl Harness {
                     "run did not emit RunStarted".to_owned(),
                 ))
             })?;
-        #[cfg(feature = "agents-team")]
-        if let Some(agent_run_options) = &run_options.agent_run_options {
-            if harness_agent_runtime::should_start_run_scoped_team(agent_run_options) {
-                let profiles = crate::list_agent_profiles(&options.workspace_root)
-                    .map_err(|error| HarnessError::Other(error.to_string()))?;
-                self.start_run_scoped_team(super::team_runtime::RunScopedTeamStartupRequest {
-                    agent_run_options: agent_run_options.clone(),
-                    profiles,
-                    run_id,
-                    conversation_session_id: options.session_id,
-                    goal: request.input.prompt.clone(),
-                    workspace_root: options.workspace_root.clone(),
-                    workspace_bootstrap: options.workspace_bootstrap.clone(),
-                })
-                .await?;
-            }
-        }
         let projection = session.projection().await;
         Ok(ConversationTurnReceipt {
             tenant_id: options.tenant_id,

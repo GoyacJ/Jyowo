@@ -5,11 +5,11 @@ use harness_agent_runtime::{
     AgentProfileRegistry, AgentProfileRegistryError, AgentRuntimePolicyResolver, AgentRuntimeStore,
     ResolvedAgentCapabilityPolicy,
 };
-use harness_contracts::{AgentProfile, AgentRunOptions};
+use harness_contracts::{AgentProfile, AgentToolPolicy};
 
 pub use harness_agent_runtime::{
     AgentCapabilitiesInput, AgentRuntimePolicyError, ExecutionSettingsAgentInput,
-    ResolvedAgentRuntimePolicy,
+    ResolvedAgentToolPolicy,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -91,14 +91,14 @@ pub fn resolve_agent_capabilities_with_context(
 pub fn resolve_agent_runtime_policy(
     workspace_root: impl AsRef<Path>,
     settings: &ExecutionSettingsAgentInput,
-    agent_options: Option<&AgentRunOptions>,
+    agent_tool_policy: Option<&AgentToolPolicy>,
     capabilities: &AgentCapabilitiesInput,
     known_profile_ids: &[String],
     conversation_id: &str,
-) -> Result<ResolvedAgentRuntimePolicy, AgentRuntimePolicyError> {
+) -> Result<ResolvedAgentToolPolicy, AgentRuntimePolicyError> {
     AgentRuntimePolicyResolver::merge(
         settings,
-        agent_options,
+        agent_tool_policy,
         capabilities,
         known_profile_ids,
         conversation_id,

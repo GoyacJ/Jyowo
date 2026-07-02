@@ -31,7 +31,122 @@ use super::stores::*;
 #[allow(unused_imports)]
 use super::validation::*;
 use super::*;
+use crate::agent_supervisor::BackgroundSupervisorSession;
 use harness_model::{default_account_usage_registry, ProviderAccountUsageRegistry};
+
+#[derive(Clone)]
+struct DesktopBackgroundAgentStarter {
+    workspace_root: PathBuf,
+    event_store: Arc<dyn EventStore>,
+}
+
+impl BackgroundAgentStarterCap for DesktopBackgroundAgentStarter {
+    fn start_background_agent(
+        &self,
+        request: BackgroundAgentToolStartRequest,
+    ) -> futures::future::BoxFuture<'static, Result<BackgroundAgentToolStartResponse, ToolError>>
+    {
+        let workspace_root = self.workspace_root.clone();
+        let event_store = Arc::clone(&self.event_store);
+        Box::pin(async move {
+            let settings_store = DesktopExecutionSettingsStore::new(workspace_root.clone());
+            let settings = settings_store
+                .load_record()
+                .map_err(|error| ToolError::Internal(error.message))?;
+            let capabilities_payload = agent_capabilities_payload(
+                &settings,
+                &workspace_root,
+                Some(&AgentCapabilityResolutionContext {
+                    stream_permission_runtime_available: true,
+                }),
+            );
+            let capabilities = AgentCapabilitiesInput {
+                subagents_available: capabilities_payload.subagents_available,
+                agent_teams_available: capabilities_payload.agent_teams_available,
+                background_agents_available: capabilities_payload.background_agents_available,
+            };
+            let settings_input = ExecutionSettingsAgentInput {
+                subagents_enabled: settings.subagents_enabled,
+                agent_teams_enabled: settings.agent_teams_enabled,
+                background_agents_enabled: settings.background_agents_enabled,
+            };
+            let profiles = jyowo_harness_sdk::list_agent_profiles(&workspace_root)
+                .map_err(|error| ToolError::Internal(error.to_string()))?;
+            let profile_ids: Vec<String> = profiles.into_iter().map(|profile| profile.id).collect();
+            let _resolved_policy = resolve_agent_runtime_policy(
+                &workspace_root,
+                &settings_input,
+                Some(&request.agent_tool_policy),
+                &capabilities,
+                &profile_ids,
+                &request.conversation_id.to_string(),
+            )
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+
+            let store = Arc::new(
+                AgentRuntimeStore::open(&workspace_root)
+                    .map_err(|error| ToolError::Internal(error.to_string()))?,
+            );
+            let redactor = Arc::new(DefaultRedactor::default());
+            let manager = BackgroundAgentManager::new(
+                store,
+                event_store,
+                request.tenant_id,
+                request.conversation_id,
+                redactor.clone(),
+            );
+            let safe_input = safe_background_supervisor_input(
+                &ConversationTurnInput::ask(request.goal.clone()),
+                redactor.as_ref(),
+            );
+            let model_config_id = request.model_config_id.clone().ok_or_else(|| {
+                ToolError::Validation("background_agent requires a model config id".to_owned())
+            })?;
+            if request.session.tenant_id != request.tenant_id
+                || request.session.session_id != request.conversation_id
+            {
+                return Err(ToolError::Validation(
+                    "background_agent session snapshot does not match tool context".to_owned(),
+                ));
+            }
+            let supervisor_session =
+                BackgroundSupervisorSession::from_tool_session_snapshot(request.session.clone());
+            let mut agent_tool_policy = request.agent_tool_policy.clone();
+            agent_tool_policy.background_agents = AgentUsePolicy::Off;
+            let record = manager
+                .start(BackgroundAgentStartRequest {
+                    background_agent_id: None,
+                    conversation_id: request.conversation_id,
+                    title: request.title.clone(),
+                    payload_json: json!({
+                        "conversationId": request.conversation_id.to_string(),
+                        "parentRunId": request.parent_run_id.to_string(),
+                        "toolUseId": request.tool_use_id.to_string(),
+                        "source": "background_agent_tool",
+                        "supervisorExecution": {
+                            "status": "queued",
+                            "session": supervisor_session,
+                            "input": safe_input,
+                            "modelConfigId": model_config_id,
+                            "permissionMode": request.permission_mode,
+                            "agentToolPolicy": agent_tool_policy,
+                        },
+                    })
+                    .to_string(),
+                })
+                .await
+                .map_err(|error| ToolError::Internal(error.to_string()))?;
+            let _ = crate::agent_supervisor::wake_agent_supervisor(&workspace_root).await;
+            Ok(BackgroundAgentToolStartResponse {
+                background_agent_id: record.background_agent_id,
+                conversation_id: request.conversation_id,
+                parent_run_id: request.parent_run_id,
+                title: record.title,
+                status: "started".to_owned(),
+            })
+        })
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct ProviderConfigRevealTokenRecord {
@@ -553,12 +668,16 @@ pub(crate) async fn build_desktop_harness(
     model_config_id: Option<&str>,
     provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
 ) -> Result<(Harness, String, ModelProtocol), CommandErrorPayload> {
-    let event_store = JsonlEventStore::open(
-        workspace_root.join(".jyowo").join("runtime").join("events"),
-        Arc::new(DefaultRedactor::default()),
-    )
-    .await
-    .map_err(|error| runtime_init_failed(format!("event store initialization failed: {error}")))?;
+    let event_store: Arc<dyn EventStore> = Arc::new(
+        JsonlEventStore::open(
+            workspace_root.join(".jyowo").join("runtime").join("events"),
+            Arc::new(DefaultRedactor::default()),
+        )
+        .await
+        .map_err(|error| {
+            runtime_init_failed(format!("event store initialization failed: {error}"))
+        })?,
+    );
     let mcp_server_store = DesktopMcpServerStore::new(workspace_root.to_path_buf());
     let mcp_diagnostic_store: Arc<dyn McpDiagnosticStore> =
         Arc::new(DesktopMcpDiagnosticStore::new(workspace_root.to_path_buf()));
@@ -605,6 +724,11 @@ pub(crate) async fn build_desktop_harness(
     let sandbox = Arc::new(LocalSandbox::new(workspace_root)) as Arc<dyn SandboxBackend>;
     let diagnostics_runner: Arc<dyn DiagnosticsRunnerCap> =
         Arc::new(DesktopDiagnosticsRunner::new(Arc::clone(&sandbox)));
+    let background_agent_starter: Arc<dyn BackgroundAgentStarterCap> =
+        Arc::new(DesktopBackgroundAgentStarter {
+            workspace_root: workspace_root.to_path_buf(),
+            event_store: Arc::clone(&event_store),
+        });
     let harness = Harness::builder()
         .with_workspace_root(workspace_root)
         .with_model_arc(model_provider)
@@ -615,7 +739,7 @@ pub(crate) async fn build_desktop_harness(
                 .with_model_id(model_id.clone())
                 .with_protocol(protocol),
         )
-        .with_store(event_store)
+        .with_store_arc(event_store)
         .with_sandbox_arc(sandbox)
         .with_blob_store(blob_store)
         .with_capability(
@@ -625,6 +749,10 @@ pub(crate) async fn build_desktop_harness(
         .with_capability(
             ToolCapability::Custom("diagnostics_runner".to_owned()),
             diagnostics_runner,
+        )
+        .with_capability(
+            ToolCapability::Custom("jyowo.background_agent.starter".to_owned()),
+            background_agent_starter,
         )
         .with_mcp_config(mcp_config)
         .with_plugin_registry(plugin_registry)
@@ -933,6 +1061,78 @@ pub(crate) fn current_process_workspace_root() -> Result<PathBuf, CommandErrorPa
     let current_dir = std::env::current_dir()
         .map_err(|error| runtime_init_failed(format!("workspace root unavailable: {error}")))?;
     canonical_workspace_root(current_dir, "current workspace root".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harness_contracts::{
+        AgentToolPolicy, AgentWorkspaceIsolationMode, BackgroundAgentToolSessionSnapshot,
+        ToolSearchMode,
+    };
+    use jyowo_harness_sdk::testing::{InMemoryEventStore, NoopRedactor};
+
+    #[tokio::test]
+    async fn background_agent_starter_rejects_when_settings_disable_capability() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let starter = DesktopBackgroundAgentStarter {
+            workspace_root: workspace_root.clone(),
+            event_store: Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))),
+        };
+        let conversation_id = SessionId::new();
+
+        let error = starter
+            .start_background_agent(BackgroundAgentToolStartRequest {
+                tenant_id: TenantId::SINGLE,
+                conversation_id,
+                parent_run_id: RunId::new(),
+                tool_use_id: ToolUseId::new(),
+                goal: "start hidden background work".to_owned(),
+                title: "hidden background work".to_owned(),
+                model_config_id: Some("test-model-config".to_owned()),
+                permission_mode: PermissionMode::Default,
+                agent_tool_policy: AgentToolPolicy {
+                    subagents: AgentUsePolicy::Off,
+                    agent_team: AgentUsePolicy::Off,
+                    background_agents: AgentUsePolicy::Allowed,
+                    team_config: None,
+                    workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
+                    max_depth: 1,
+                    max_concurrent_subagents: 1,
+                    max_team_members: 1,
+                },
+                session: BackgroundAgentToolSessionSnapshot {
+                    tenant_id: TenantId::SINGLE,
+                    session_id: conversation_id,
+                    tool_search: ToolSearchMode::Disabled,
+                    tool_profile: ToolProfile::Minimal,
+                    permission_mode: PermissionMode::Default,
+                    interactivity: InteractivityLevel::NoInteractive,
+                    team_id: None,
+                    max_iterations: 0,
+                    context_compression_trigger_ratio: 0.8,
+                },
+            })
+            .await
+            .expect_err("settings off must reject direct starter capability use");
+
+        assert!(
+            matches!(error, ToolError::Validation(ref message) if message.contains("backgroundAgents")),
+            "unexpected error: {error:?}"
+        );
+        let store = AgentRuntimeStore::open(&workspace_root).expect("runtime store opens");
+        assert!(
+            store
+                .list_background_agents(true)
+                .expect("background records list")
+                .is_empty(),
+            "policy rejection must happen before creating a background record"
+        );
+    }
 }
 
 pub(crate) fn canonical_workspace_root(

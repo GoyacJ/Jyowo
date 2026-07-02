@@ -531,11 +531,11 @@ fn session_installs_agent_tool_when_run_options_allow_subagents() {
                 ConversationTurnInput::ask("delegate work"),
                 None,
                 None,
-                Some(harness_contracts::AgentRunOptions {
+                Some(harness_contracts::AgentToolPolicy {
                     subagents: harness_contracts::AgentUsePolicy::Allowed,
                     agent_team: harness_contracts::AgentUsePolicy::Off,
                     team_config: None,
-                    background: harness_contracts::BackgroundRunPolicy::Foreground,
+                    background_agents: harness_contracts::AgentUsePolicy::Off,
                     workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
                     max_depth: 2,
                     max_concurrent_subagents: 2,
@@ -590,11 +590,11 @@ fn session_hides_agent_tool_when_run_options_disable_subagents() {
                 ConversationTurnInput::ask("no delegation"),
                 None,
                 None,
-                Some(harness_contracts::AgentRunOptions {
+                Some(harness_contracts::AgentToolPolicy {
                     subagents: harness_contracts::AgentUsePolicy::Off,
                     agent_team: harness_contracts::AgentUsePolicy::Off,
                     team_config: None,
-                    background: harness_contracts::BackgroundRunPolicy::Foreground,
+                    background_agents: harness_contracts::AgentUsePolicy::Off,
                     workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
                     max_depth: 2,
                     max_concurrent_subagents: 2,
@@ -653,11 +653,11 @@ fn session_hides_preinstalled_agent_tool_when_run_options_disable_subagents() {
                 ConversationTurnInput::ask("no delegation"),
                 None,
                 None,
-                Some(harness_contracts::AgentRunOptions {
+                Some(harness_contracts::AgentToolPolicy {
                     subagents: harness_contracts::AgentUsePolicy::Off,
                     agent_team: harness_contracts::AgentUsePolicy::Off,
                     team_config: None,
-                    background: harness_contracts::BackgroundRunPolicy::Foreground,
+                    background_agents: harness_contracts::AgentUsePolicy::Off,
                     workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
                     max_depth: 2,
                     max_concurrent_subagents: 2,
@@ -689,24 +689,41 @@ fn runtime_assembly_starts_run_scoped_agent_team_through_agent_runtime_store() {
         let workspace = unique_workspace("sdk-runtime-assembly-agent-team");
         std::fs::create_dir_all(&workspace).unwrap();
         jyowo_harness_sdk::list_agent_profiles(&workspace).expect("agent profiles should list");
-        let model = Arc::new(TestModelProvider::default().with_events(vec![
-            ModelStreamEvent::ContentBlockDelta {
-                index: 0,
-                delta: ContentDelta::Text("parent accepted".to_owned()),
-            },
-            ModelStreamEvent::MessageStop,
-        ]));
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![
+                agent_team_tool_use_events("Run a team review", 2),
+                vec![
+                    ModelStreamEvent::ContentBlockDelta {
+                        index: 0,
+                        delta: ContentDelta::Text("member accepted".to_owned()),
+                    },
+                    ModelStreamEvent::MessageStop,
+                ],
+                vec![
+                    ModelStreamEvent::ContentBlockDelta {
+                        index: 0,
+                        delta: ContentDelta::Text("parent accepted".to_owned()),
+                    },
+                    ModelStreamEvent::MessageStop,
+                ],
+            ],
+        ));
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let event_store: Arc<dyn EventStore> = store.clone();
         let harness = Harness::builder()
-            .with_model_arc(model)
+            .with_model_arc(model.clone())
             .with_store_arc(event_store)
             .with_sandbox(NoopSandbox::new())
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
             .build()
             .await
             .expect("harness should build");
         let session_id = SessionId::new();
-        let options = SessionOptions::new(&workspace).with_session_id(session_id);
+        let options = SessionOptions::new(&workspace)
+            .with_session_id(session_id)
+            .with_permission_mode(PermissionMode::BypassPermissions)
+            .with_interactivity(harness_contracts::InteractivityLevel::FullyInteractive);
         harness
             .open_or_create_conversation_session(options.clone())
             .await
@@ -718,7 +735,7 @@ fn runtime_assembly_starts_run_scoped_agent_team_through_agent_runtime_store() {
                 ConversationTurnInput::ask("Run a team review"),
                 Some(PermissionMode::BypassPermissions),
                 None,
-                Some(harness_contracts::AgentRunOptions {
+                Some(harness_contracts::AgentToolPolicy {
                     subagents: harness_contracts::AgentUsePolicy::Allowed,
                     agent_team: harness_contracts::AgentUsePolicy::Allowed,
                     team_config: Some(harness_contracts::AgentTeamRunConfig {
@@ -729,7 +746,7 @@ fn runtime_assembly_starts_run_scoped_agent_team_through_agent_runtime_store() {
                         shared_memory_policy:
                             harness_contracts::AgentTeamSharedMemoryPolicy::SummariesOnly,
                     }),
-                    background: harness_contracts::BackgroundRunPolicy::Foreground,
+                    background_agents: harness_contracts::AgentUsePolicy::Off,
                     workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
                     max_depth: 2,
                     max_concurrent_subagents: 2,
@@ -761,7 +778,31 @@ fn runtime_assembly_starts_run_scoped_agent_team_through_agent_runtime_store() {
             })
             .expect("tasks query succeeds");
 
-        assert_eq!(tasks.len(), 1);
+        if tasks.len() != 1 {
+            let events = store
+                .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+                .await
+                .expect("events read")
+                .collect::<Vec<_>>()
+                .await;
+            let request_tools = model
+                .requests()
+                .await
+                .into_iter()
+                .map(|request| {
+                    request
+                        .tools
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|tool| tool.name)
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            panic!(
+                "expected one team task, got {}; request tools: {request_tools:?}; events: {events:#?}",
+                tasks.len()
+            );
+        }
         assert_eq!(tasks[0].1, "active");
         assert_eq!(tasks[0].2.as_deref(), Some("reviewer"));
 
@@ -798,11 +839,15 @@ async fn runtime_assembly_cancels_active_run_scoped_team_after_parent_run_finish
         .with_model_arc(model.clone())
         .with_store_arc(event_store)
         .with_sandbox(NoopSandbox::new())
+        .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
         .build()
         .await
         .expect("harness should build");
     let session_id = SessionId::new();
-    let options = SessionOptions::new(&workspace).with_session_id(session_id);
+    let options = SessionOptions::new(&workspace)
+        .with_session_id(session_id)
+        .with_permission_mode(PermissionMode::BypassPermissions)
+        .with_interactivity(harness_contracts::InteractivityLevel::FullyInteractive);
     harness
         .open_or_create_conversation_session(options.clone())
         .await
@@ -814,7 +859,7 @@ async fn runtime_assembly_cancels_active_run_scoped_team_after_parent_run_finish
             ConversationTurnInput::ask("Run a cancellable team review"),
             Some(PermissionMode::BypassPermissions),
             None,
-            Some(harness_contracts::AgentRunOptions {
+            Some(harness_contracts::AgentToolPolicy {
                 subagents: harness_contracts::AgentUsePolicy::Allowed,
                 agent_team: harness_contracts::AgentUsePolicy::Allowed,
                 team_config: Some(harness_contracts::AgentTeamRunConfig {
@@ -825,7 +870,7 @@ async fn runtime_assembly_cancels_active_run_scoped_team_after_parent_run_finish
                     shared_memory_policy:
                         harness_contracts::AgentTeamSharedMemoryPolicy::SummariesOnly,
                 }),
-                background: harness_contracts::BackgroundRunPolicy::Foreground,
+                background_agents: harness_contracts::AgentUsePolicy::Off,
                 workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
                 max_depth: 2,
                 max_concurrent_subagents: 2,
@@ -909,13 +954,7 @@ async fn runtime_assembly_team_member_sessions_use_run_workspace_root() {
     let model = Arc::new(CapabilityScriptedProvider::new(
         ConversationModelCapability::default(),
         vec![
-            vec![
-                ModelStreamEvent::ContentBlockDelta {
-                    index: 0,
-                    delta: ContentDelta::Text("parent accepted".to_owned()),
-                },
-                ModelStreamEvent::MessageStop,
-            ],
+            agent_team_tool_use_events("Run a workspace-root team review", 2),
             vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
@@ -931,11 +970,15 @@ async fn runtime_assembly_team_member_sessions_use_run_workspace_root() {
         .with_model_arc(model.clone())
         .with_store_arc(event_store)
         .with_sandbox(NoopSandbox::new())
+        .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
         .build()
         .await
         .expect("harness should build");
     let session_id = SessionId::new();
-    let mut options = SessionOptions::new(&workspace).with_session_id(session_id);
+    let mut options = SessionOptions::new(&workspace)
+        .with_session_id(session_id)
+        .with_permission_mode(PermissionMode::BypassPermissions)
+        .with_interactivity(harness_contracts::InteractivityLevel::FullyInteractive);
     options.workspace_bootstrap = Some(bootstrap);
     harness
         .open_or_create_conversation_session(options.clone())
@@ -948,7 +991,7 @@ async fn runtime_assembly_team_member_sessions_use_run_workspace_root() {
             ConversationTurnInput::ask("Run a workspace-root team review"),
             Some(PermissionMode::BypassPermissions),
             None,
-            Some(harness_contracts::AgentRunOptions {
+            Some(harness_contracts::AgentToolPolicy {
                 subagents: harness_contracts::AgentUsePolicy::Allowed,
                 agent_team: harness_contracts::AgentUsePolicy::Allowed,
                 team_config: Some(harness_contracts::AgentTeamRunConfig {
@@ -959,7 +1002,7 @@ async fn runtime_assembly_team_member_sessions_use_run_workspace_root() {
                     shared_memory_policy:
                         harness_contracts::AgentTeamSharedMemoryPolicy::SummariesOnly,
                 }),
-                background: harness_contracts::BackgroundRunPolicy::Foreground,
+                background_agents: harness_contracts::AgentUsePolicy::Off,
                 workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
                 max_depth: 2,
                 max_concurrent_subagents: 2,
@@ -980,7 +1023,15 @@ async fn runtime_assembly_team_member_sessions_use_run_workspace_root() {
     .await
     .expect("member request should be recorded");
     let requests = model.requests().await;
-    let member_system = requests[1].system.clone().unwrap_or_default();
+    let member_system = requests
+        .iter()
+        .find_map(|request| {
+            let system = request.system.clone().unwrap_or_default();
+            system
+                .contains("TEAM_MEMBER_WORKSPACE_ROOT_MARKER")
+                .then_some(system)
+        })
+        .expect("member request should include workspace bootstrap marker");
     assert!(member_system.contains("TEAM_MEMBER_WORKSPACE_ROOT_MARKER"));
 
     let parent_events = store
@@ -1020,54 +1071,6 @@ async fn runtime_assembly_team_member_sessions_use_run_workspace_root() {
                 .with_session_id(member_session_id),
         );
         assert_eq!(created.options_hash, expected_hash);
-    }
-}
-
-#[cfg(feature = "agents-team")]
-#[derive(Default)]
-struct BlockingTeamMemberProvider {
-    calls: AtomicUsize,
-    member_started: Arc<Notify>,
-    release: Arc<Notify>,
-}
-
-#[cfg(feature = "agents-team")]
-#[async_trait]
-impl ModelProvider for BlockingTeamMemberProvider {
-    fn provider_id(&self) -> &str {
-        "test"
-    }
-
-    fn supported_models(&self) -> Vec<ModelDescriptor> {
-        TestModelProvider::default().supported_models()
-    }
-
-    async fn infer(
-        &self,
-        _req: ModelRequest,
-        _ctx: InferContext,
-    ) -> Result<ModelStream, ModelError> {
-        let call = self.calls.fetch_add(1, Ordering::SeqCst);
-        if call == 0 {
-            return Ok(Box::pin(stream::iter(vec![
-                ModelStreamEvent::ContentBlockDelta {
-                    index: 0,
-                    delta: ContentDelta::Text("parent accepted".to_owned()),
-                },
-                ModelStreamEvent::MessageStop,
-            ])));
-        }
-
-        self.member_started.notify_waiters();
-        let release = Arc::clone(&self.release);
-        Ok(Box::pin(stream::once(async move {
-            release.notified().await;
-            ModelStreamEvent::MessageStop
-        })))
-    }
-
-    async fn health(&self) -> HealthStatus {
-        HealthStatus::Healthy
     }
 }
 

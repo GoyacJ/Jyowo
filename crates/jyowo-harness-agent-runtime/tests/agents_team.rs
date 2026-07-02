@@ -7,9 +7,8 @@ use harness_agent_runtime::{
 };
 use harness_contracts::{
     AgentProfile, AgentProfileContextMode, AgentProfileMemoryScope, AgentProfileSandboxInheritance,
-    AgentProfileScope, AgentRunOptions, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy,
-    AgentTeamTopology, AgentUsePolicy, AgentWorkspaceIsolationMode, BackgroundRunPolicy, SessionId,
-    TeamId,
+    AgentProfileScope, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy, AgentTeamTopology,
+    AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode, SessionId, TeamId,
 };
 use harness_team::{SharedMemorySpec, SharedWritePolicy, Topology};
 use std::sync::{Arc, Mutex};
@@ -41,8 +40,8 @@ fn profiles() -> Vec<AgentProfile> {
     ]
 }
 
-fn options(topology: AgentTeamTopology) -> AgentRunOptions {
-    AgentRunOptions {
+fn options(topology: AgentTeamTopology) -> AgentToolPolicy {
+    AgentToolPolicy {
         subagents: AgentUsePolicy::Allowed,
         agent_team: AgentUsePolicy::Allowed,
         team_config: Some(AgentTeamRunConfig {
@@ -52,7 +51,7 @@ fn options(topology: AgentTeamTopology) -> AgentRunOptions {
             max_turns_per_goal: 3,
             shared_memory_policy: AgentTeamSharedMemoryPolicy::SummariesOnly,
         }),
-        background: BackgroundRunPolicy::Foreground,
+        background_agents: AgentUsePolicy::Off,
         workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
         max_depth: 2,
         max_concurrent_subagents: 2,
@@ -246,7 +245,7 @@ async fn agents_team_coordinator_owns_prepare_persist_build_start_register_dispa
         .start(
             &host,
             RunScopedTeamCoordinatorRequest {
-                agent_run_options: options(AgentTeamTopology::CoordinatorWorker),
+                agent_tool_policy: options(AgentTeamTopology::CoordinatorWorker),
                 profiles: profiles(),
                 run_id,
                 conversation_session_id: session_id,

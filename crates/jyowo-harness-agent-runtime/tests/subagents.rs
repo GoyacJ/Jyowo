@@ -9,9 +9,9 @@ use harness_agent_runtime::{
     SubagentRunnerAssemblyInput,
 };
 use harness_contracts::{
-    AgentRunOptions, AgentUsePolicy, AgentWorkspaceIsolationMode, BackgroundRunPolicy,
-    CorrelationId, DecidedBy, Decision, DecisionScope, Event, NoopRedactor, PermissionMode,
-    PermissionSubject, RequestId, RunId, SessionId, Severity, SubagentId, TenantId, ToolUseId,
+    AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode, CorrelationId, DecidedBy,
+    Decision, DecisionScope, Event, NoopRedactor, PermissionMode, PermissionSubject, RequestId,
+    RunId, SessionId, Severity, SubagentId, TenantId, ToolUseId,
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_permission::{
@@ -20,12 +20,12 @@ use harness_permission::{
 };
 use harness_subagent::SubagentPermissionBridge;
 
-fn sample_subagent_run_options() -> AgentRunOptions {
-    AgentRunOptions {
+fn sample_subagent_tool_policy() -> AgentToolPolicy {
+    AgentToolPolicy {
         subagents: AgentUsePolicy::Allowed,
         agent_team: AgentUsePolicy::Off,
         team_config: None,
-        background: BackgroundRunPolicy::Foreground,
+        background_agents: AgentUsePolicy::Off,
         workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
         max_depth: 2,
         max_concurrent_subagents: 2,
@@ -35,27 +35,27 @@ fn sample_subagent_run_options() -> AgentRunOptions {
 
 #[test]
 fn should_install_subagent_runner_when_allowed() {
-    let options = sample_subagent_run_options();
+    let options = sample_subagent_tool_policy();
     assert!(should_install_subagent_runner(&options));
 }
 
 #[test]
 fn should_not_install_subagent_runner_when_off() {
-    let mut options = sample_subagent_run_options();
+    let mut options = sample_subagent_tool_policy();
     options.subagents = AgentUsePolicy::Off;
     assert!(!should_install_subagent_runner(&options));
 }
 
 #[test]
 fn should_not_install_subagent_runner_when_depth_disallows_delegation() {
-    let mut options = sample_subagent_run_options();
+    let mut options = sample_subagent_tool_policy();
     options.max_depth = 0;
     assert!(!should_install_subagent_runner(&options));
 }
 
 #[test]
 fn delegation_policy_reflects_run_options() {
-    let options = sample_subagent_run_options();
+    let options = sample_subagent_tool_policy();
     let policy = delegation_policy_from_run_options(&options);
     assert_eq!(policy.max_depth, 2);
     assert_eq!(policy.max_concurrent_children, 2);
@@ -181,9 +181,9 @@ impl harness_subagent::SubagentEngineFactory for NoopEngineFactory {
 fn assemble_subagent_runner_builds_default_runner_with_policy() {
     let workspace = tempfile::tempdir().unwrap();
     let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
-    let options = sample_subagent_run_options();
+    let options = sample_subagent_tool_policy();
     let runner = assemble_subagent_runner(SubagentRunnerAssemblyInput {
-        agent_run_options: options.clone(),
+        agent_tool_policy: options.clone(),
         engine_factory: Arc::new(NoopEngineFactory),
         event_store: store,
         workspace_root: workspace.path().to_path_buf(),

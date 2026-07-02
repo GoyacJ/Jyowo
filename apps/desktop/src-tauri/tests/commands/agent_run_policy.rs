@@ -174,7 +174,7 @@ async fn start_run_agent_policy_uses_disabled_settings_without_per_run_enable() 
 
     assert_eq!(policy.options.subagents, AgentUsePolicy::Off);
     assert_eq!(policy.options.agent_team, AgentUsePolicy::Off);
-    assert_eq!(policy.options.background, BackgroundRunPolicy::Foreground);
+    assert_eq!(policy.options.background_agents, AgentUsePolicy::Off);
     assert!(policy.options.team_config.is_none());
 }
 
@@ -292,7 +292,7 @@ async fn agent_team_runtime_tool_persists_team_task_and_mailbox() {
 }
 
 #[tokio::test]
-async fn start_run_returns_background_agent_id_when_enabled_in_settings() {
+async fn start_run_stays_foreground_when_background_agents_enabled() {
     let state = runtime_state_with_harness().await;
     let supervisor = write_test_supervisor_lock(state.workspace_root());
     set_execution_settings_with_store(
@@ -326,10 +326,136 @@ async fn start_run_returns_background_agent_id_when_enabled_in_settings() {
         &state,
     )
     .await
-    .expect("background start should succeed");
+    .expect("foreground start should succeed");
 
-    assert!(started.background_agent_id.is_some());
     assert!(!started.run_id.is_empty());
+
+    let listed = list_background_agents_with_runtime_state(
+        ListBackgroundAgentsRequest {
+            conversation_id: Some(session_id.to_string()),
+            include_archived: false,
+        },
+        &state,
+    )
+    .await
+    .expect("background list succeeds");
+    assert!(listed.agents.is_empty());
+
+    supervisor.shutdown().await;
+}
+
+#[tokio::test]
+async fn background_agent_tool_creates_durable_record() {
+    let workspace = unique_workspace("background-agent-tool");
+    std::fs::create_dir_all(&workspace).unwrap();
+    jyowo_harness_sdk::list_agent_profiles(&workspace).expect("agent profiles should list");
+    let background_tool_use_id = ToolUseId::new();
+    let state = runtime_state_with_scripted_model_for_workspace(
+        workspace.clone(),
+        vec![ScriptedResponse::Stream(vec![
+            ModelStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: ContentDelta::ToolUseComplete {
+                    id: background_tool_use_id,
+                    name: "background_agent".to_owned(),
+                    input: json!({
+                        "goal": "Continue this investigation later",
+                        "title": "Background investigation"
+                    }),
+                },
+            },
+            ModelStreamEvent::MessageStop,
+        ])],
+    )
+    .await;
+    let supervisor = write_test_supervisor_lock(state.workspace_root());
+    set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: true,
+            agent_teams_enabled: true,
+            background_agents_enabled: true,
+        },
+        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        Some(&AgentCapabilityResolutionContext {
+            stream_permission_runtime_available: true,
+        }),
+    )
+    .expect("background settings should save");
+    let session_id = SessionId::new();
+
+    let started = start_run_with_runtime_state(
+        StartRunRequest {
+            attachments: None,
+            client_message_id: None,
+            context_references: None,
+            conversation_id: session_id.to_string(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            permission_mode: Some(PermissionMode::BypassPermissions),
+            prompt: "Decide whether to continue in background".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("background_agent tool run should succeed");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let harness = state.harness().expect("harness should be available");
+    loop {
+        let events: Vec<_> = harness
+            .event_store()
+            .read_envelopes(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+            .await
+            .expect("session envelopes should be readable")
+            .collect()
+            .await;
+        if events.iter().any(|envelope| {
+            matches!(
+                &envelope.payload,
+                Event::ToolUseCompleted(completed)
+                    if completed.tool_use_id == background_tool_use_id
+            )
+        }) {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let event_types: Vec<_> = events
+                .iter()
+                .map(|envelope| format!("{:?}", envelope.payload))
+                .collect();
+            panic!("expected background_agent completion event, got: {event_types:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    let listed = list_background_agents_with_runtime_state(
+        ListBackgroundAgentsRequest {
+            conversation_id: Some(session_id.to_string()),
+            include_archived: false,
+        },
+        &state,
+    )
+    .await
+    .expect("background list succeeds");
+    assert_eq!(listed.agents.len(), 1);
+    assert_eq!(listed.agents[0].title, "Background investigation");
+
+    let store = jyowo_harness_sdk::AgentRuntimeStore::open(state.workspace_root())
+        .expect("agent runtime store opens");
+    let record = store
+        .get_background_agent(&listed.agents[0].background_agent_id)
+        .expect("background lookup succeeds")
+        .expect("background record exists");
+    let payload = serde_json::from_str::<Value>(&record.payload_json).expect("payload is json");
+    assert_eq!(payload["source"], "background_agent_tool");
+    assert_eq!(payload["parentRunId"], started.run_id);
+    assert_eq!(payload["toolUseId"], background_tool_use_id.to_string());
+    assert_eq!(
+        payload["supervisorExecution"]["input"]["prompt"],
+        "Continue this investigation later"
+    );
 
     supervisor.shutdown().await;
 }

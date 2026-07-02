@@ -196,8 +196,9 @@ Agent orchestration test requirements:
 
 - Settings tests cover Subagents, Agent teams, and Background agents switches
   using backend-backed availability and reason payloads.
-- Composer tests cover per-run `agentOptions`, including disabled capability
-  states and validated `teamConfig`.
+- Composer tests prove submitted payloads omit run-level agent mode fields.
+- Tauri schema tests cover agent tool policy parsing and reject `agentOptions`
+  on `StartRunRequest`.
 - Background panel tests cover list, inspect, pause, resume, cancel, send input,
   archive, delete archived records, loading, empty, error, and ready states.
 - Conversation tests cover `AgentActivitySegment` for subagent, team, and
@@ -322,7 +323,7 @@ PR checklist:
 [ ] Did RunEvent schema change?
 [ ] Was a Tauri command added?
 [ ] Was a permission type added?
-[ ] Did StartRunRequest.agentOptions change?
+[ ] Did StartRunRequest or agent tool policy shape change?
 [ ] Did agent orchestration capability or settings behavior change?
 [ ] Did background agent lifecycle behavior change?
 [ ] Was secret handling changed?
@@ -391,7 +392,7 @@ Conversation and execution:
 [ ] worktree contract and Zod schema changes are documented
 [ ] AgentActivitySegment renders only Rust-projected activity
 [ ] background agent panel state comes from command responses
-[ ] per-run agent controls submit validated agentOptions
+[ ] Composer submit payload omits run-level agent mode fields
 [ ] every event type has a renderer
 [ ] raw RunEvent data is not used as the conversation canvas product model
 [ ] get_conversation.messages does not drive ConversationCanvas
