@@ -8,8 +8,8 @@
 | Frontend Vitest test cases | 553 |
 | Storybook files | 13 |
 | Playwright spec files | 4 |
-| Rust test files | 292 |
-| Rust `#[test]` / `#[tokio::test]` count | 2041 |
+| Rust test files | 293 |
+| Rust `#[test]` / `#[tokio::test]` count | 2051 |
 | Script policy test files | 8 |
 
 ## Largest Test Files by Line Count

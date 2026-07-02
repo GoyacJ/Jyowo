@@ -803,7 +803,7 @@ Do not edit files.
 
   Audit must confirm docs contain the layer rule, privacy rule, redacted debug rule, plaintext-local-storage boundary, development reset rule, conversation deletion prune rule, final-message lookup rule, MiniMax explicit dialect rule, and fail-closed rule.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add docs/backend/backend-engineering.md docs/architecture/harness/crates/harness-model.md docs/architecture/harness/crates/harness-provider-state.md docs/architecture/harness/crates/harness-engine.md
@@ -960,7 +960,7 @@ Do not edit files.
 
   Audit must confirm the new crate has no dependency on Engine, Model, Journal, SDK, desktop shell, or frontend code, and that file-store tests cover in-process serialization, corrupt-record fail-closed behavior, prune atomic-replace behavior with parent-directory sync intent, redacted debug output, and safe error display.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add Cargo.toml crates/jyowo-harness-provider-state

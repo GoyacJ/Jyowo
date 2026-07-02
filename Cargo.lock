@@ -3222,6 +3222,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "jyowo-harness-provider-state"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "jyowo-harness-contracts",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "jyowo-harness-sandbox"
 version = "0.1.0"
 dependencies = [
