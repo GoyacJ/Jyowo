@@ -9,7 +9,7 @@
 | Storybook files | 13 |
 | Playwright spec files | 4 |
 | Rust test files | 304 |
-| Rust `#[test]` / `#[tokio::test]` count | 2099 |
+| Rust `#[test]` / `#[tokio::test]` count | 2100 |
 | Script policy test files | 8 |
 
 ## Largest Test Files by Line Count
@@ -37,11 +37,11 @@
 | crates/jyowo-harness-sdk/tests/agents_team.rs | 1110 | rust |
 | crates/jyowo-harness-tool/tests/orchestrator.rs | 1087 | rust |
 | apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs | 1071 | rust |
+| apps/desktop/src-tauri/tests/commands/provider_settings.rs | 1070 | rust |
 | crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs | 1062 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs | 1055 | rust |
 | crates/jyowo-harness-contracts/tests/core_contracts.rs | 1049 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_tools.rs | 1038 | rust |
-| apps/desktop/src-tauri/tests/commands/provider_settings.rs | 1024 | rust |
 | crates/jyowo-harness-subagent/tests/permission_bridge.rs | 1019 | rust |
 | apps/desktop/src-tauri/tests/commands/conversations.rs | 1016 | rust |
 | crates/jyowo-harness-team/tests/routing.rs | 977 | rust |
@@ -73,11 +73,11 @@
 - crates/jyowo-harness-sdk/tests/agents_team.rs (1110 lines)
 - crates/jyowo-harness-tool/tests/orchestrator.rs (1087 lines)
 - apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs (1071 lines)
+- apps/desktop/src-tauri/tests/commands/provider_settings.rs (1070 lines)
 - crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs (1062 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs (1055 lines)
 - crates/jyowo-harness-contracts/tests/core_contracts.rs (1049 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_tools.rs (1038 lines)
-- apps/desktop/src-tauri/tests/commands/provider_settings.rs (1024 lines)
 - crates/jyowo-harness-subagent/tests/permission_bridge.rs (1019 lines)
 - apps/desktop/src-tauri/tests/commands/conversations.rs (1016 lines)
 - crates/jyowo-harness-team/tests/routing.rs (977 lines)

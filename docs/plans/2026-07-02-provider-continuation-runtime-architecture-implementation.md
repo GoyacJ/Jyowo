@@ -2035,12 +2035,12 @@ Do not edit files.
 
 **Goal:** Verify no frontend or IPC payload needs provider continuation data. If public contract changes are unavoidable, update Zod schemas and UI states without exposing private payloads.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State whether frontend changes are needed. If none are needed, state the exact source scan proving it.
   Explicitly state whether `ModelInventoryEntry.runtime_semantics` is internal-only and how provider catalog IPC payloads avoid exposing it.
 
-- [ ] **Scan frontend public surface**
+- [x] **Scan frontend public surface**
 
   Run:
 
@@ -2050,7 +2050,7 @@ Do not edit files.
 
   Expected before intentional frontend changes: exit code 0 and no matches.
 
-- [ ] **Verify provider inventory IPC projection**
+- [x] **Verify provider inventory IPC projection**
 
   `ModelRuntimeSemantics` may exist on internal model inventory structures, but desktop IPC payloads and frontend Zod schemas must not expose it.
 
@@ -2063,7 +2063,7 @@ Do not edit files.
 
   If the second scan finds an internal-only Rust reference needed to build provider descriptors, add a focused test proving `list_model_provider_catalog` and provider settings/list payload serialization do not contain `runtimeSemantics`, `runtime_semantics`, `providerContinuation`, `reasoningContent`, or `reasoning` + `_content`.
 
-- [ ] **Update schemas only if required**
+- [x] **Update schemas only if required**
 
   If Rust public payloads changed for safe metadata such as capability availability, update Zod schemas in `apps/desktop/src/shared/tauri/commands.ts`.
 
@@ -2079,7 +2079,7 @@ Do not edit files.
   runtime_semantics
   ```
 
-- [ ] **Run desktop gate**
+- [x] **Run desktop gate**
 
   ```bash
   pnpm check:desktop
@@ -2087,11 +2087,11 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm frontend does not store or render provider continuation data and provider inventory IPC payloads do not expose internal runtime semantics.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   If no frontend files changed:
 

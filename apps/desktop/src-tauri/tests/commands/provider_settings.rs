@@ -102,6 +102,52 @@ fn list_model_provider_catalog_payload_exposes_models_and_default_base_urls() {
 }
 
 #[tokio::test]
+async fn provider_inventory_ipc_payloads_do_not_expose_runtime_semantics_or_continuations() {
+    let catalog = serde_json::to_string(&list_model_provider_catalog_payload()).unwrap();
+    let store = RecordingProviderSettingsStore::default();
+    let saved = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("provider-test-token".to_owned()),
+            base_url: None,
+            config_id: None,
+            display_name: Some("OpenAI Mini".to_owned()),
+            model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
+            provider_id: "openai".to_owned(),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+    let listed = list_provider_settings_with_store(&store).await.unwrap();
+    let payloads = [
+        catalog,
+        serde_json::to_string(&saved).unwrap(),
+        serde_json::to_string(&listed).unwrap(),
+    ];
+
+    for payload in payloads {
+        for field in [
+            "runtimeSemantics",
+            "runtime_semantics",
+            "ProviderContinuation",
+            "providerContinuation",
+            "provider_continuation",
+            "reasoningContent",
+            "reasoning_content",
+            "continuationPayload",
+            "providerNative",
+        ] {
+            assert!(
+                !payload.contains(field),
+                "provider IPC payload unexpectedly exposed {field}: {payload}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn save_provider_settings_payload_stores_viewable_api_key_but_omits_key_from_list_payload() {
     let raw_key = "provider-test-token";
     let store = RecordingProviderSettingsStore::default();
