@@ -680,6 +680,9 @@ impl Harness {
         if let Some(blob_store) = &self.inner.blob_store {
             builder = builder.with_blob_store(Arc::clone(blob_store));
         }
+        if let Some(store) = &self.inner.provider_continuation_store {
+            builder = builder.with_provider_continuation_store(Arc::clone(store));
+        }
         if let Some(tracer) = &self.inner.tracer {
             builder = builder.with_tracer(Arc::clone(tracer));
         }

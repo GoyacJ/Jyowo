@@ -18,6 +18,7 @@ use harness_observability::{Observer, Tracer};
 use harness_permission::ResolverHandle;
 use harness_permission::{DecisionPersistence, PermissionBroker, RuleProvider};
 use harness_plugin::PluginRegistry;
+use harness_provider_state::ProviderContinuationStore;
 use harness_sandbox::SandboxBackend;
 use harness_skill::SkillLoader;
 use harness_tool::ToolRegistry;
@@ -59,6 +60,7 @@ pub(crate) struct BuilderExtras {
     pub(crate) cap_registry: Option<CapabilityRegistry>,
     pub(crate) provider_capability_routes:
         Option<Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>>>,
+    pub(crate) provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
     #[cfg(feature = "tool-search")]
     pub(crate) tool_search_scorer: Option<Arc<dyn harness_tool_search::ToolSearchScorer>>,
 }
@@ -406,6 +408,23 @@ impl<M, S, SB> HarnessBuilder<M, S, SB> {
     #[must_use]
     pub fn with_provider_capability_routes(self, routes: ProviderCapabilityRouteSettings) -> Self {
         self.with_shared_provider_capability_routes(Arc::new(parking_lot::RwLock::new(routes)))
+    }
+
+    #[must_use]
+    pub fn with_provider_continuation_store<PCS>(self, store: PCS) -> Self
+    where
+        PCS: ProviderContinuationStore,
+    {
+        self.with_provider_continuation_store_arc(Arc::new(store))
+    }
+
+    #[must_use]
+    pub fn with_provider_continuation_store_arc(
+        mut self,
+        store: Arc<dyn ProviderContinuationStore>,
+    ) -> Self {
+        self.extras.provider_continuation_store = Some(store);
+        self
     }
 
     #[must_use]

@@ -265,6 +265,14 @@ impl Harness {
         if !deleted {
             return Ok(false);
         }
+        if let Some(store) = &self.inner.provider_continuation_store {
+            store
+                .prune_session(options.tenant_id, options.session_id)
+                .await
+                .map_err(|_| {
+                    HarnessError::Internal("provider continuation pruning failed".to_owned())
+                })?;
+        }
         self.inner
             .deleted_conversation_sessions
             .lock()

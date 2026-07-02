@@ -1669,11 +1669,11 @@ Do not edit files.
 
 **Goal:** Ensure desktop runtime performs the development-phase conversation reset, opens a real provider continuation store, passes it through SDK to Engine, and prunes private continuation records when a conversation session is deleted.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the development reset trigger, exact paths cleared and preserved, the assembly path from desktop runtime to SDK builder to Harness inner state to Engine builder, the conversation deletion prune path, and why no frontend state is added.
 
-- [ ] **Implement development-phase conversation reset**
+- [x] **Implement development-phase conversation reset**
 
   In `apps/desktop/src-tauri/src/commands/runtime.rs`, add a focused helper called before Harness runtime assembly:
 
@@ -1710,7 +1710,7 @@ Do not edit files.
   After reset, allowed sentinels must be gone and forbidden sentinels must remain.
   Running the helper a second time must preserve newly written conversation runtime sentinel files because the version marker is already current.
 
-- [ ] **Add SDK builder storage**
+- [x] **Add SDK builder storage**
 
   Add to `BuilderExtras`:
 
@@ -1733,13 +1733,13 @@ Do not edit files.
   ) -> Self
   ```
 
-- [ ] **Pass store into Engine**
+- [x] **Pass store into Engine**
 
   Every SDK path that builds `Engine` must pass the store when present.
 
   If a model requires private replay and no store exists, Engine fail-closed behavior from Task 6 must protect runtime before provider request dispatch.
 
-- [ ] **Prune store on conversation deletion**
+- [x] **Prune store on conversation deletion**
 
   In `crates/jyowo-harness-sdk/src/harness/conversation.rs`, update `Harness::delete_conversation_session`:
 
@@ -1749,7 +1749,7 @@ Do not edit files.
   - do not prune when the conversation delete did not succeed.
   - do not add a Tauri command special case for provider continuations; desktop deletion must go through the SDK lifecycle.
 
-- [ ] **Open real desktop file store**
+- [x] **Open real desktop file store**
 
   After the development reset, in `apps/desktop/src-tauri/src/commands/runtime.rs`, open:
 
@@ -1765,7 +1765,7 @@ Do not edit files.
   <workspace_root>/.jyowo/runtime/provider-continuations.jsonl
   ```
 
-- [ ] **Tests**
+- [x] **Tests**
 
   Add SDK assembly tests:
 
@@ -1787,7 +1787,7 @@ Do not edit files.
   The test must verify the store path and that `delete_conversation_with_runtime_state` uses the SDK deletion path rather than manually deleting provider continuation files.
   Desktop reset code must be covered by the two reset tests above.
 
-- [ ] **Run focused tests**
+- [x] **Run focused tests**
 
   ```bash
   cargo test -p jyowo-harness-sdk provider_continuation
@@ -1797,11 +1797,11 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm the desktop path performs the one-time development reset before opening the real file store, preserves non-conversation user state, shares one store through SDK and Engine, prunes provider continuations on successful conversation deletion, and exposes no continuation data through frontend or public IPC payloads.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-sdk apps/desktop/src-tauri

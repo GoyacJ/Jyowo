@@ -103,6 +103,7 @@ use harness_plugin::{
     ManifestLoaderError, ManifestOrigin, ManifestRecord, PluginCapabilityRegistries, PluginError,
     PluginEventSink,
 };
+use harness_provider_state::ProviderContinuationStore;
 use harness_sandbox::SandboxBackend;
 #[cfg(feature = "agents-team")]
 use harness_session::WorkspaceBootstrap;
@@ -241,6 +242,7 @@ struct HarnessInner {
     active_run_teams: Arc<parking_lot::Mutex<HashMap<RunId, Arc<crate::team::Team>>>>,
     deleted_conversation_sessions: Arc<parking_lot::Mutex<HashSet<(TenantId, SessionId)>>>,
     provider_capability_routes: Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>>,
+    provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
 }
 
 impl Harness {
@@ -420,6 +422,7 @@ impl Harness {
                             routes: Vec::new(),
                         }))
                     }),
+                provider_continuation_store: extras.provider_continuation_store.take(),
             }),
         })
     }

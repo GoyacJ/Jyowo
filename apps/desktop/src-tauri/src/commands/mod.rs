@@ -300,7 +300,8 @@ pub use providers::{
 };
 pub use runtime::{
     agent_supervisor_sidecar_startup_result_for_project_command, managed_runtime_state,
-    runtime_state, runtime_state_async, runtime_state_for_workspace, spawn_automation_scheduler,
+    reset_legacy_conversation_runtime_for_provider_continuations, runtime_state,
+    runtime_state_async, runtime_state_for_workspace, spawn_automation_scheduler,
     spawn_automation_scheduler_on_tauri_runtime, ManagedDesktopRuntime,
 };
 pub(crate) use runtime::{

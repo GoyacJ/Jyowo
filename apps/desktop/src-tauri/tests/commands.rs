@@ -58,6 +58,7 @@ use jyowo_desktop_shell::commands::{
     page_conversation_worktree_with_runtime_state, pause_background_agent_with_runtime_state,
     request_provider_config_api_key_reveal_with_runtime_state,
     request_provider_config_api_key_reveal_with_store,
+    reset_legacy_conversation_runtime_for_provider_continuations,
     resolve_permission_for_window_with_runtime_state, resolve_permission_payload,
     resolve_permission_with_runtime_state, resolve_start_run_agent_policy,
     restart_mcp_server_with_runtime_state, resume_background_agent_with_runtime_state,
@@ -124,7 +125,7 @@ use jyowo_harness_sdk::testing::{
 };
 use jyowo_harness_sdk::{
     AgentCapabilityResolutionContext, ConversationEventsPageRequest, Harness, HarnessOptions,
-    McpConfig, StreamPermissionRuntime,
+    McpConfig, SessionOptions, StreamPermissionRuntime,
 };
 use parking_lot::RwLock as ParkingRwLock;
 use serde_json::{json, Value};
@@ -189,6 +190,8 @@ mod official_quota;
 mod permissions;
 #[path = "commands/preview_support.rs"]
 mod preview_support;
+#[path = "commands/provider_continuation_runtime.rs"]
+mod provider_continuation_runtime;
 #[path = "commands/provider_credential_routes.rs"]
 mod provider_credential_routes;
 #[path = "commands/provider_probe.rs"]
