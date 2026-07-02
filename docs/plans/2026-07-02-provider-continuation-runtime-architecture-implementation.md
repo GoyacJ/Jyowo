@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task requires a pre-task implementation analysis and a read-only subagent audit before the task can be marked complete.
 
-**Goal:** Refactor Jyowo model runtime so multi-provider model capabilities, provider wire dialects, and private provider continuation state are explicit, testable, and isolated from public conversation state.
+**Goal:** Refactor Jyowo model runtime so multi-provider model capabilities, provider wire dialects, and private provider continuation state are explicit, testable, and isolated from public conversation state. The implementation must fix DeepSeek private reasoning replay and add a MiniMax vertical no-private-replay regression without creating a provider-specific Engine path.
 
 **Architecture:** Keep Agent Harness Engine as the orchestration loop. Move provider-specific request and response semantics into model runtime semantics, provider codecs, dialects, and a private provider continuation store. Public transcript, execution trace, and provider continuation state must be separate data planes with separate persistence and exposure rules.
 
@@ -117,6 +117,7 @@ Facts from the failing run:
 - The second DeepSeek request fails because the OpenAI-compatible adapter replays the assistant tool-call message without DeepSeek's private `reasoning_content`.
 - MiniMax succeeds through the same OpenAI-compatible client path because its dialect does not require private reasoning replay.
 - MiniMax is not a separate implementation path for this behavior.
+- MiniMax support is a first-class target for this plan. It must be represented as an explicit OpenAI-compatible dialect with model-level and Engine-level vertical regression coverage.
 
 Root cause:
 
@@ -152,6 +153,70 @@ screenshots
 export files
 snapshots
 ```
+
+## Development-Phase Legacy State Policy
+
+This project is still in development. Do not build a compatibility backfill for existing conversation sessions created before provider continuation state exists.
+
+The implementation must clear incompatible legacy conversation runtime state once, then start from the new runtime state model.
+
+Rules:
+
+- Add a desktop runtime marker file: `.jyowo/runtime/provider-continuation-runtime.version`.
+- Marker value for this plan: `1`.
+- If the marker is absent or has a different value, clear legacy conversation/session runtime state before opening the Harness runtime.
+- After clearing, recreate required runtime directories and write the marker atomically.
+- This is not a migration. It is a development reset.
+- Do not transfer provider continuation state from old public messages, summaries, Journal events, Replay, screenshots, or exports.
+- Do not delete user configuration or non-conversation data.
+
+Allowed reset targets:
+
+```text
+.jyowo/runtime/events
+.jyowo/runtime/sessions
+.jyowo/runtime/conversation-read-model.sqlite
+.jyowo/runtime/conversation-read-model.sqlite-shm
+.jyowo/runtime/conversation-read-model.sqlite-wal
+.jyowo/runtime/conversation-metadata.json
+.jyowo/runtime/provider-continuations.jsonl
+.jyowo/runtime/provider-continuations.lock
+```
+
+Forbidden reset targets:
+
+```text
+.jyowo/runtime/provider-settings.json
+.jyowo/runtime/provider-capability-routes.json
+.jyowo/runtime/execution-settings.json
+.jyowo/runtime/provider-diagnostics.json
+.jyowo/runtime/provider-quota-cache.json
+config
+data
+.jyowo/config
+.jyowo/data
+memory stores
+agent runtime stores
+plugin stores
+MCP server settings
+skills
+```
+
+If an implementation discovers the actual event/session file layout differs from the list above, it must update this plan before implementation and cite the exact owning source file.
+
+## Local Persistence Privacy Boundary
+
+Provider continuation records are private runtime data, not public product data.
+
+For this plan, local disk storage is plaintext under `.jyowo/runtime`. Privacy means:
+
+- the payload must not enter public transcript, event, Journal, Replay, log, trace, frontend, support bundle, screenshot, export, or snapshot surfaces.
+- the payload may exist in the local provider continuation store file.
+- the store file must be excluded from support bundles and user-visible export paths.
+
+Do not claim encryption at rest in this implementation.
+
+Do not add ad hoc encryption. If local encrypted-at-rest storage becomes a product requirement, create a separate design task that defines key ownership, migration, backup, corruption behavior, and support-bundle policy.
 
 ## Target Architecture
 
@@ -359,6 +424,16 @@ Store path for desktop:
 ```
 
 The lower crate must not hardcode desktop command state. The SDK or desktop runtime assembly passes the opened store to the Engine.
+
+File store consistency requirements:
+
+- `FileProviderContinuationStore` must serialize `load_for_messages`, `append_batch`, and `prune_session` within one process.
+- `append_batch` must write a complete serialized JSONL buffer while holding the store lock.
+- `append_batch` must open the file with create+append semantics and call `sync_data` after writing.
+- `prune_session` must write the retained records to a temporary file in the same directory, call `sync_data`, then replace the original file with an atomic rename.
+- Temporary files left by a failed prune must not be read as provider continuation records.
+- Corrupt or partial JSONL records in the main store file fail closed.
+- This plan does not add cross-process locking. Current desktop runtime must open one store instance per workspace process and pass that shared store through SDK to Engine. If multi-process same-workspace execution is introduced later, add a filesystem lock design before enabling it.
 
 ### Provider dialects own wire quirks
 
@@ -603,6 +678,7 @@ Do not edit files.
   - Provider codecs may interpret continuation payloads for their own dialect.
   - Continuation lookup keys must come from final assembled prompt messages after compaction.
   - Missing required continuation fails closed before provider request dispatch.
+  - Existing development-phase conversation runtime state is cleared once instead of migrated or backfilled.
   ```
 
 - [ ] **Update harness-model architecture doc**
@@ -650,10 +726,21 @@ Do not edit files.
   Provider continuation payloads are private.
   They must not be written to public events, logs, traces, screenshots, snapshots, support bundles, frontend state, or exported transcripts.
 
+  For this plan, provider continuation payloads are stored as local plaintext runtime data under `.jyowo/runtime`.
+  The privacy boundary is public-surface exclusion, not encryption at rest.
+  Encrypted-at-rest storage requires a separate design.
+
   ## Lookup
 
   Continuation lookup is keyed by provider id, model config id, protocol, dialect, tenant id, session id, final prompt message ids, and continuation kind.
   Final prompt message ids means the ids after ContextEngine assembly and compaction.
+
+  ## Development Reset
+
+  This project is in development.
+  Existing conversation runtime state created before provider continuation support is cleared once.
+  It is not migrated.
+  User configuration, provider settings, execution settings, memory, agent runtime state, MCP settings, skills, and plugin stores are preserved.
   ```
 
 - [ ] **Create harness-engine architecture doc**
@@ -682,6 +769,9 @@ Do not edit files.
   Continuation lookup uses final AssembledPrompt messages.
   If compaction removes an assistant message, its continuation is not loaded.
   If a provider requires a continuation for assistant tool replay and the record is absent, Engine fails closed before dispatching the provider request.
+
+  MiniMax is an explicit OpenAI-compatible dialect.
+  Its vertical regression must prove the Engine loop and model codec continue without provider-private replay.
   ```
 
 - [ ] **Run docs gates**
@@ -695,7 +785,7 @@ Do not edit files.
 
 - [ ] **Read-only subagent audit**
 
-  Audit must confirm docs contain the layer rule, privacy rule, final-message lookup rule, and fail-closed rule.
+  Audit must confirm docs contain the layer rule, privacy rule, plaintext-local-storage boundary, development reset rule, final-message lookup rule, MiniMax explicit dialect rule, and fail-closed rule.
 
 - [ ] **Commit**
 
@@ -784,11 +874,17 @@ Do not edit files.
 
   - `FileProviderContinuationStore::open(workspace_root)` creates `.jyowo/runtime`.
   - Records are appended to `.jyowo/runtime/provider-continuations.jsonl`.
+  - Store operations are serialized within the process by a store-owned async mutex.
+  - `append_batch` serializes the full batch to JSONL before opening the file, writes the full buffer while holding the lock, and calls `sync_data`.
+  - `append_batch` must not write partial record fragments intentionally. If the OS fails mid-write, later reads fail closed on the partial JSONL line.
+  - `prune_session` rewrites through a same-directory temporary file, syncs it, and atomically renames it over the main store file.
+  - `load_for_messages` reads only `.jyowo/runtime/provider-continuations.jsonl`. It must ignore temporary prune files.
   - `load_for_messages` returns only records matching every query dimension.
   - If multiple records match the same `(message_id, kind)`, return the newest by `created_at`.
   - Invalid JSONL lines fail closed with `ProviderContinuationStoreError::CorruptRecord`.
   - `append_batch` rejects records whose payload is `null`.
   - `prune_session` removes records for the exact `(tenant_id, session_id)` and preserves other sessions.
+  - The crate must not claim cross-process consistency. Desktop wiring in Task 9 must create one store instance and share it through SDK and Engine.
 
 - [ ] **Write store tests first**
 
@@ -812,6 +908,12 @@ Do not edit files.
 
   #[tokio::test]
   async fn prune_session_only_removes_matching_session() { ... }
+
+  #[tokio::test]
+  async fn concurrent_appends_are_serialized_without_dropping_records() { ... }
+
+  #[tokio::test]
+  async fn prune_session_uses_atomic_replace_and_ignores_temp_files() { ... }
   ```
 
 - [ ] **Run crate tests**
@@ -832,7 +934,7 @@ Do not edit files.
 
 - [ ] **Read-only subagent audit**
 
-  Audit must confirm the new crate has no dependency on Engine, Model, Journal, SDK, desktop shell, or frontend code.
+  Audit must confirm the new crate has no dependency on Engine, Model, Journal, SDK, desktop shell, or frontend code, and that file-store tests cover in-process serialization, corrupt-record fail-closed behavior, and prune atomic-replace behavior.
 
 - [ ] **Commit**
 
@@ -881,9 +983,9 @@ Do not edit files.
   pub runtime_semantics: ModelRuntimeSemantics,
   ```
 
-  to `ModelDescriptor`, `ModelRuntimeSnapshot`, and `ModelInventoryEntry` if inventory needs runtime semantics for validation.
+  to `ModelDescriptor`, `ModelRuntimeSnapshot`, and `ModelInventoryEntry`.
 
-  `ModelRuntimeSnapshot::from_descriptor` must preserve the field.
+  `ModelRuntimeSnapshot::from_descriptor` and every `ModelInventoryEntry` construction must preserve the field.
 
 - [ ] **Default semantics**
 
@@ -1368,7 +1470,7 @@ Do not edit files.
   git commit -m "refactor: split openai compatible codecs"
   ```
 
-## Task 8: DeepSeek Reasoning Continuation Codec
+## Task 8: DeepSeek Reasoning Continuation Codec And MiniMax Dialect Regression
 
 **Files:**
 
@@ -1378,13 +1480,15 @@ Do not edit files.
 - Modify: `crates/jyowo-harness-model/src/openai_compatible/streaming.rs`
 - Modify: `crates/jyowo-harness-model/src/deepseek.rs`
 - Create: `crates/jyowo-harness-model/tests/deepseek_continuation.rs`
-- Test: `cargo test -p jyowo-harness-model deepseek_continuation`
+- Create: `crates/jyowo-harness-model/tests/minimax_dialect.rs`
+- Test: model DeepSeek and MiniMax dialect tests
 
-**Goal:** Implement the vertical DeepSeek slice: parse provider-private reasoning continuation, store it as private continuation payload, and replay it into the next DeepSeek Chat Completions request when required.
+**Goal:** Implement the vertical DeepSeek slice and lock MiniMax as a first-class OpenAI-compatible dialect that does not require provider-private replay.
 
 - [ ] **Pre-task analysis gate**
 
   State the DeepSeek wire field, where it may appear in source, how it is captured, how it is replayed, and how absence fails closed.
+  Also state the MiniMax no-private-replay invariant, the MiniMax dialect files under test, and why MiniMax must not use DeepSeek continuation payloads.
 
 - [ ] **Parse DeepSeek stream continuation**
 
@@ -1436,6 +1540,16 @@ Do not edit files.
 
   MiniMax dialect must not include DeepSeek reasoning replay fields.
 
+  Add a MiniMax dialect test using an in-process HTTP server. It must call the real `OpenAiCompatibleClient` MiniMax dialect path and capture the actual JSON request body.
+
+  Required assertions:
+
+  - MiniMax request encoding keeps normal OpenAI-compatible assistant tool-call replay shape.
+  - MiniMax request encoding does not include the DeepSeek private reasoning field. The MiniMax test file must not contain the raw provider wire-field literal; construct the checked key from split string fragments.
+  - MiniMax request encoding does not require `ProviderContinuationRecord`.
+  - MiniMax streaming response parsing still emits visible content and tool calls through the shared OpenAI-compatible stream path.
+  - MiniMax tests must not use manually built request JSON as the system under test.
+
 - [ ] **Tests**
 
   Required tests using an in-process HTTP server:
@@ -1452,6 +1566,9 @@ Do not edit files.
 
   #[tokio::test]
   async fn minimax_dialect_does_not_emit_or_replay_deepseek_reasoning_content() { ... }
+
+  #[tokio::test]
+  async fn minimax_tool_replay_request_uses_real_codec_without_private_continuation() { ... }
   ```
 
   The HTTP server must capture the actual JSON sent by `OpenAiCompatibleClient`.
@@ -1460,6 +1577,7 @@ Do not edit files.
 
   ```bash
   cargo test -p jyowo-harness-model deepseek_continuation
+  cargo test -p jyowo-harness-model minimax_dialect
   cargo test -p jyowo-harness-model provider_domestic
   ```
 
@@ -1475,16 +1593,16 @@ Do not edit files.
 
 - [ ] **Read-only subagent audit**
 
-  Audit must confirm DeepSeek private wire handling is isolated to model codec/dialect files and tests.
+  Audit must confirm DeepSeek private wire handling is isolated to model codec/dialect files and tests, and MiniMax has a real codec-level no-private-replay regression.
 
 - [ ] **Commit**
 
   ```bash
   git add crates/jyowo-harness-model
-  git commit -m "feat: replay deepseek private reasoning continuation"
+  git commit -m "feat: replay deepseek continuation and guard minimax dialect"
   ```
 
-## Task 9: SDK And Desktop Store Wiring
+## Task 9: SDK, Desktop Store, And Development Reset Wiring
 
 **Files:**
 
@@ -1493,14 +1611,52 @@ Do not edit files.
 - Modify: SDK harness assembly files that build `Engine`
 - Modify: `apps/desktop/src-tauri/Cargo.toml`
 - Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
+- Modify: `apps/desktop/src-tauri/tests/commands/runtime.rs` or the existing runtime command test file
 - Create or modify SDK tests under `crates/jyowo-harness-sdk/tests/`
 - Test: `cargo test -p jyowo-harness-sdk provider_continuation`
 
-**Goal:** Ensure desktop runtime opens a real provider continuation store and passes it through SDK to Engine.
+**Goal:** Ensure desktop runtime performs the development-phase conversation reset, opens a real provider continuation store, and passes it through SDK to Engine.
 
 - [ ] **Pre-task analysis gate**
 
-  State the assembly path from desktop runtime to SDK builder to Engine builder, and why no frontend state is added.
+  State the development reset trigger, exact paths cleared and preserved, the assembly path from desktop runtime to SDK builder to Engine builder, and why no frontend state is added.
+
+- [ ] **Implement development-phase conversation reset**
+
+  In `apps/desktop/src-tauri/src/commands/runtime.rs`, add a focused helper called before Harness runtime assembly:
+
+  ```rust
+  const PROVIDER_CONTINUATION_RUNTIME_VERSION: &str = "1";
+
+  fn reset_legacy_conversation_runtime_for_provider_continuations(
+      workspace_root: &Path,
+  ) -> Result<(), CommandErrorPayload> { ... }
+  ```
+
+  Required behavior:
+
+  - Read `.jyowo/runtime/provider-continuation-runtime.version`.
+  - If it contains `1`, do nothing.
+  - If it is absent or different, clear only the allowed reset targets from `Development-Phase Legacy State Policy`.
+  - Recreate `.jyowo/runtime`, `.jyowo/runtime/events`, and `.jyowo/runtime/sessions`.
+  - Write the marker through a same-directory temporary file and atomic rename.
+  - Use existing path validation helpers such as `ensure_no_symlink_components` where applicable.
+  - Do not delete provider settings, execution settings, provider routes, diagnostics, quota cache, memory, agent runtime state, plugin state, MCP settings, skills, config, or data.
+  - Do not add a frontend prompt or confirmation. This is a development-phase reset policy defined by this plan.
+
+  Required tests:
+
+  ```rust
+  #[tokio::test]
+  async fn provider_continuation_dev_reset_clears_legacy_conversation_runtime_once() { ... }
+
+  #[tokio::test]
+  async fn provider_continuation_dev_reset_preserves_user_configuration_and_non_conversation_state() { ... }
+  ```
+
+  Tests must create sentinel files in both allowed reset targets and forbidden reset targets.
+  After reset, allowed sentinels must be gone and forbidden sentinels must remain.
+  Running the helper a second time must preserve newly written conversation runtime sentinel files because the version marker is already current.
 
 - [ ] **Add SDK builder storage**
 
@@ -1531,7 +1687,7 @@ Do not edit files.
 
 - [ ] **Open real desktop file store**
 
-  In `apps/desktop/src-tauri/src/commands/runtime.rs`, open:
+  After the development reset, in `apps/desktop/src-tauri/src/commands/runtime.rs`, open:
 
   ```rust
   FileProviderContinuationStore::open(workspace_root)
@@ -1558,19 +1714,21 @@ Do not edit files.
   ```
 
   Desktop command code should be covered by existing runtime assembly tests or a new focused test that verifies the store path.
+  Desktop reset code must be covered by the two reset tests above.
 
 - [ ] **Run focused tests**
 
   ```bash
   cargo test -p jyowo-harness-sdk provider_continuation
   cargo test -p jyowo-desktop-shell provider_continuation
+  cargo test -p jyowo-desktop-shell provider_continuation_dev_reset
   ```
 
   Expected: all exit code 0.
 
 - [ ] **Read-only subagent audit**
 
-  Audit must confirm the desktop path uses a real file store and no frontend or public IPC payload includes continuation data.
+  Audit must confirm the desktop path performs the one-time development reset before opening the real file store, preserves non-conversation user state, shares one store through SDK and Engine, and exposes no continuation data through frontend or public IPC payloads.
 
 - [ ] **Commit**
 
@@ -1579,19 +1737,20 @@ Do not edit files.
   git commit -m "feat: wire provider continuation store into runtime"
   ```
 
-## Task 10: End-To-End DeepSeek Tool Replay Regression
+## Task 10: End-To-End DeepSeek And MiniMax Tool Replay Regressions
 
 **Files:**
 
 - Create: `crates/jyowo-harness-engine/tests/deepseek_tool_replay_regression.rs`
+- Create: `crates/jyowo-harness-engine/tests/minimax_tool_replay_regression.rs`
 - Modify: test support only if required
 - Test: focused engine and model tests
 
-**Goal:** Prove the original desktop failure class is fixed through the real Engine loop.
+**Goal:** Prove the original DeepSeek desktop failure class is fixed through the real Engine loop and MiniMax remains a full Engine tool-replay path without private continuation replay.
 
 - [ ] **Pre-task analysis gate**
 
-  State the exact failure being reproduced, the test model behavior, and why the test is not a production fake.
+  State the exact DeepSeek failure being reproduced, the MiniMax no-private-replay invariant being protected, the test model behavior, and why the test providers are test-only fixtures rather than production fakes.
 
 - [ ] **Build a test provider**
 
@@ -1603,6 +1762,19 @@ Do not edit files.
   - returns visible text after tool result
 
   The test provider must not be available outside tests.
+
+- [ ] **Build a MiniMax test provider**
+
+  In `crates/jyowo-harness-engine/tests/minimax_tool_replay_regression.rs` only, define a `ModelProvider` that:
+
+  - advertises provider id `minimax` and `openai_chat_plain()` runtime semantics
+  - first response emits visible content and a tool call
+  - first response emits no `ProviderContinuationDelta`
+  - second request captures `ModelRequest.provider_context.continuations`
+  - returns visible text after tool result
+
+  The test provider must not be available outside tests.
+  MiniMax dialect-specific wire behavior is covered by the Task 8 `minimax_dialect` model test.
 
 - [ ] **Test the full loop**
 
@@ -1632,24 +1804,44 @@ Do not edit files.
 
   It must prove final assembled prompt ids drive lookup.
 
+- [ ] **Add MiniMax full-loop regression**
+
+  Required test:
+
+  ```rust
+  #[tokio::test]
+  async fn minimax_tool_replay_completes_without_private_continuation() { ... }
+  ```
+
+  Assertions:
+
+  - tool call is dispatched through the real Engine tool path
+  - no provider continuation record is stored
+  - second model request receives an empty `provider_context.continuations`
+  - public assistant events contain visible text and tool events only
+  - public events do not contain DeepSeek private replay sentinel values
+  - the test does not use a provider-specific Engine branch
+
 - [ ] **Run regression tests**
 
   ```bash
   cargo test -p jyowo-harness-engine deepseek_tool_replay
+  cargo test -p jyowo-harness-engine minimax_tool_replay
   cargo test -p jyowo-harness-model deepseek_continuation
+  cargo test -p jyowo-harness-model minimax_dialect
   ```
 
   Expected: all exit code 0.
 
 - [ ] **Read-only subagent audit**
 
-  Audit must confirm the regression exercises the real Engine loop and does not assert only a manually created request body.
+  Audit must confirm both regressions exercise the real Engine loop, DeepSeek uses private continuation replay, MiniMax completes without private continuation replay, and neither test asserts only a manually created request body.
 
 - [ ] **Commit**
 
   ```bash
-  git add crates/jyowo-harness-engine/tests/deepseek_tool_replay_regression.rs
-  git commit -m "test: cover deepseek tool replay continuation"
+  git add crates/jyowo-harness-engine/tests/deepseek_tool_replay_regression.rs crates/jyowo-harness-engine/tests/minimax_tool_replay_regression.rs
+  git commit -m "test: cover deepseek and minimax tool replay"
   ```
 
 ## Task 11: Leak, Redaction, And Public Surface Gates
@@ -1849,15 +2041,24 @@ Do not edit files.
 
 - [ ] **Keep public capability as projection**
 
-  Add or update a helper:
+  Prefer leaving existing public `ConversationModelCapability` construction explicit on provider descriptors.
+
+  Do not add a projection helper unless a real compile-time call site needs one to avoid duplicated existing projection logic.
+
+  If a helper is necessary, make it crate-private and use this shape:
 
   ```rust
   impl ModelRuntimeSemantics {
-      pub fn public_capability_overlay(&self, base: ConversationModelCapability) -> ConversationModelCapability { ... }
+      pub(crate) fn project_public_capability(
+          &self,
+          base: ConversationModelCapability,
+      ) -> ConversationModelCapability { ... }
   }
   ```
 
-  This helper may reduce or annotate public capabilities only when current product behavior already does so. It must not expose private continuation requirements.
+  This helper may only preserve or reduce already-public capabilities that current product behavior already exposes.
+  It must not expose, encode, annotate, or indirectly reveal private continuation requirements.
+  It must not branch on `ProviderContinuationKind`, provider-private payload shape, or provider wire-field names.
 
 - [ ] **Tests**
 
@@ -1988,7 +2189,10 @@ Do not edit files.
 
   - Engine contains no provider-specific private field names.
   - DeepSeek continuation replay works through real codec and Engine paths.
-  - MiniMax remains functional without private replay.
+  - MiniMax remains functional without private replay through real codec and Engine regression coverage.
+  - Development-phase legacy conversation runtime state is cleared once, and user configuration/non-conversation state is preserved.
+  - Provider continuation store writes are serialized within process, append writes are synced, and prune uses atomic replace.
+  - Local disk storage is documented as plaintext runtime storage, with no false encrypted-at-rest claim.
   - No provider continuation payload reaches public event, Journal, Replay, frontend state, logs, traces, screenshots, exports, or snapshots.
   - Docs match the implemented architecture.
   - Required gates ran with exit code 0.
@@ -2014,6 +2218,7 @@ The implementation is complete only when all of these are true:
 
 - `jyowo-harness-provider-state` exists as an L1 crate.
 - Provider continuation records are persisted outside Journal.
+- Provider continuation file-store operations are serialized within process, append writes are synced, and prune uses same-directory atomic replace.
 - Engine loads continuation records using final `AssembledPrompt.messages`.
 - Engine stores continuation records after model response and before next tool-result iteration.
 - Engine does not inspect provider-private payload fields.
@@ -2021,10 +2226,12 @@ The implementation is complete only when all of these are true:
 - `ModelRuntimeSemantics` exists and is set explicitly for all runtime descriptors.
 - OpenAI-compatible provider transport is split from dialect behavior.
 - DeepSeek dialect captures and replays private reasoning continuation.
-- MiniMax dialect remains unaffected by DeepSeek replay requirements.
+- MiniMax dialect has model-level codec coverage and Engine-level tool-replay coverage proving no private continuation replay is required.
 - Missing required DeepSeek continuation fails closed before provider request dispatch.
 - Provider-private continuation payloads do not appear in public events, Journal, Replay, frontend state, logs, traces, screenshots, exports, snapshots, or error messages.
 - Desktop runtime opens a real provider continuation file store under `.jyowo/runtime`.
+- Desktop runtime clears legacy development-phase conversation runtime state once and preserves provider settings, execution settings, memory, agent runtime state, MCP settings, skills, plugin state, config, and data.
+- Provider continuation local persistence is documented as plaintext runtime storage, not encryption at rest.
 - No production fake provider, hardcoded success path, or mock runtime data is introduced.
 - Every task has a read-only subagent audit result.
 - `pnpm check` exits 0 on the final branch.
