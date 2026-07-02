@@ -2091,7 +2091,11 @@ fn required_private_replay_kind(
 }
 
 fn provider_continuation_dialect(model_snapshot: &ModelRuntimeSnapshot) -> String {
-    model_snapshot.provider_id.clone()
+    model_snapshot
+        .runtime_semantics
+        .provider_continuation_dialect
+        .clone()
+        .unwrap_or_else(|| model_snapshot.provider_id.clone())
 }
 
 fn assistant_tool_replay_message_ids(messages: &[Message]) -> Vec<MessageId> {

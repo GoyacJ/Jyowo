@@ -9,7 +9,7 @@
 | Storybook files | 13 |
 | Playwright spec files | 4 |
 | Rust test files | 304 |
-| Rust `#[test]` / `#[tokio::test]` count | 2105 |
+| Rust `#[test]` / `#[tokio::test]` count | 2108 |
 | Script policy test files | 8 |
 
 ## Largest Test Files by Line Count

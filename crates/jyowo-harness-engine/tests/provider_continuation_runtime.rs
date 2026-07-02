@@ -32,6 +32,7 @@ const SAFE_MISSING_CONTINUATION_ERROR: &str =
     "provider continuation required for assistant tool replay but missing";
 const PRIVATE_SENTINEL: &str = "PRIVATE_PROVIDER_CONTINUATION_SENTINEL";
 const MODEL_CONFIG_ID: &str = "deepseek-config";
+const DEEPSEEK_CONTINUATION_DIALECT: &str = "openai_chat.deepseek";
 
 mod provider_continuation {
     use super::*;
@@ -68,7 +69,7 @@ mod provider_continuation {
         );
         assert_eq!(
             requests[0].provider_context.dialect.as_deref(),
-            Some("deepseek")
+            Some(DEEPSEEK_CONTINUATION_DIALECT)
         );
         assert_eq!(requests[0].provider_context.continuations.len(), 1);
         assert_eq!(
@@ -201,6 +202,51 @@ mod provider_continuation {
     }
 
     #[tokio::test]
+    async fn engine_continuation_dialect_comes_from_runtime_semantics_not_provider_id() {
+        let harness = ProviderContinuationHarness::new_with_model_snapshot(
+            ContextEngine::builder().build().unwrap(),
+            RecordingModel::events(text_events("done")),
+            true,
+            runtime_model_snapshot_for_provider("deepseek-compatible"),
+        )
+        .await;
+        let assistant_id = MessageId::new();
+        harness
+            .append_records(vec![continuation_record_for_provider(
+                "deepseek-compatible",
+                harness.tenant_id,
+                harness.session_id,
+                assistant_id,
+                json!({"private": PRIVATE_SENTINEL}),
+            )])
+            .await;
+
+        let events = harness
+            .run_with_seed_and_model_snapshot(
+                vec![assistant_tool_message(assistant_id)],
+                model_snapshot_for_provider("deepseek-compatible"),
+            )
+            .await;
+
+        assert!(completed(&events));
+        let requests = harness.model.requests().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].provider_context.provider_id,
+            "deepseek-compatible"
+        );
+        assert_eq!(
+            requests[0].provider_context.dialect.as_deref(),
+            Some(DEEPSEEK_CONTINUATION_DIALECT)
+        );
+        assert_eq!(requests[0].provider_context.continuations.len(), 1);
+        assert_eq!(
+            requests[0].provider_context.continuations[0].dialect,
+            DEEPSEEK_CONTINUATION_DIALECT
+        );
+    }
+
+    #[tokio::test]
     async fn engine_stores_provider_continuation_outside_journal() {
         let harness = ProviderContinuationHarness::new(
             ContextEngine::builder().build().unwrap(),
@@ -247,6 +293,15 @@ struct ProviderContinuationHarness {
 
 impl ProviderContinuationHarness {
     async fn new(context: ContextEngine, model: RecordingModel, configure_store: bool) -> Self {
+        Self::new_with_model_snapshot(context, model, configure_store, model_snapshot()).await
+    }
+
+    async fn new_with_model_snapshot(
+        context: ContextEngine,
+        model: RecordingModel,
+        configure_store: bool,
+        model_snapshot: harness_model::ModelRuntimeSnapshot,
+    ) -> Self {
         let workspace = tempfile::tempdir().unwrap();
         let tenant_id = TenantId::SINGLE;
         let session_id = SessionId::new();
@@ -261,7 +316,7 @@ impl ProviderContinuationHarness {
                 HookRegistry::builder().build().unwrap().snapshot(),
             ))
             .with_model(model.clone())
-            .with_model_snapshot(model_snapshot())
+            .with_model_snapshot(model_snapshot)
             .with_tools(ToolPool::default())
             .with_permission_broker(Arc::new(AllowBroker))
             .with_workspace_root(workspace.path())
@@ -285,6 +340,15 @@ impl ProviderContinuationHarness {
     }
 
     async fn run_with_seed(&self, seed: Vec<Message>) -> Vec<Event> {
+        self.run_with_seed_and_model_snapshot(seed, run_model_snapshot())
+            .await
+    }
+
+    async fn run_with_seed_and_model_snapshot(
+        &self,
+        seed: Vec<Message>,
+        model_snapshot: RunModelSnapshot,
+    ) -> Vec<Event> {
         let run_id = RunId::new();
         self.run_ids.lock().await.push(run_id);
         self.engine
@@ -294,7 +358,13 @@ impl ProviderContinuationHarness {
                     session_id: self.session_id,
                 },
                 turn_input("continue"),
-                run_context(self.tenant_id, self.session_id, run_id, seed),
+                run_context(
+                    self.tenant_id,
+                    self.session_id,
+                    run_id,
+                    seed,
+                    model_snapshot,
+                ),
             )
             .await
             .unwrap()
@@ -313,7 +383,13 @@ impl ProviderContinuationHarness {
                     session_id: self.session_id,
                 },
                 turn_input("continue"),
-                run_context(self.tenant_id, self.session_id, run_id, seed),
+                run_context(
+                    self.tenant_id,
+                    self.session_id,
+                    run_id,
+                    seed,
+                    run_model_snapshot(),
+                ),
             )
             .await
         {
@@ -332,7 +408,7 @@ impl ProviderContinuationHarness {
                 provider_id: "deepseek".to_owned(),
                 model_config_id: Some(MODEL_CONFIG_ID.to_owned()),
                 protocol: ModelProtocol::ChatCompletions,
-                dialect: "deepseek".to_owned(),
+                dialect: DEEPSEEK_CONTINUATION_DIALECT.to_owned(),
                 tenant_id: self.tenant_id,
                 session_id: self.session_id,
                 message_ids,
@@ -441,8 +517,12 @@ impl PermissionBroker for AllowBroker {
 }
 
 fn model_snapshot() -> harness_model::ModelRuntimeSnapshot {
+    runtime_model_snapshot_for_provider("deepseek")
+}
+
+fn runtime_model_snapshot_for_provider(provider_id: &str) -> harness_model::ModelRuntimeSnapshot {
     harness_model::ModelRuntimeSnapshot {
-        provider_id: "deepseek".to_owned(),
+        provider_id: provider_id.to_owned(),
         model_id: "deepseek-chat".to_owned(),
         display_name: "DeepSeek Chat".to_owned(),
         protocol: ModelProtocol::ChatCompletions,
@@ -460,19 +540,28 @@ fn run_context(
     session_id: SessionId,
     run_id: RunId,
     seed: Vec<Message>,
+    model_snapshot: RunModelSnapshot,
 ) -> RunContext {
     RunContext::new(tenant_id, session_id, run_id)
         .with_context_seed(seed)
-        .with_model_snapshot(RunModelSnapshot {
-            model_config_id: Some(MODEL_CONFIG_ID.to_owned()),
-            provider_id: "deepseek".to_owned(),
-            model_id: "deepseek-chat".to_owned(),
-            display_name: "DeepSeek Chat".to_owned(),
-            protocol: ModelProtocol::ChatCompletions,
-            context_window: 8_000,
-            max_output_tokens: 1_000,
-            conversation_capability: ConversationModelCapability::default(),
-        })
+        .with_model_snapshot(model_snapshot)
+}
+
+fn run_model_snapshot() -> RunModelSnapshot {
+    model_snapshot_for_provider("deepseek")
+}
+
+fn model_snapshot_for_provider(provider_id: &str) -> RunModelSnapshot {
+    RunModelSnapshot {
+        model_config_id: Some(MODEL_CONFIG_ID.to_owned()),
+        provider_id: provider_id.to_owned(),
+        model_id: "deepseek-chat".to_owned(),
+        display_name: "DeepSeek Chat".to_owned(),
+        protocol: ModelProtocol::ChatCompletions,
+        context_window: 8_000,
+        max_output_tokens: 1_000,
+        conversation_capability: ConversationModelCapability::default(),
+    }
 }
 
 fn continuation_record(
@@ -481,11 +570,21 @@ fn continuation_record(
     message_id: MessageId,
     payload: serde_json::Value,
 ) -> ProviderContinuationRecord {
+    continuation_record_for_provider("deepseek", tenant_id, session_id, message_id, payload)
+}
+
+fn continuation_record_for_provider(
+    provider_id: &str,
+    tenant_id: TenantId,
+    session_id: SessionId,
+    message_id: MessageId,
+    payload: serde_json::Value,
+) -> ProviderContinuationRecord {
     ProviderContinuationRecord {
-        provider_id: "deepseek".to_owned(),
+        provider_id: provider_id.to_owned(),
         model_config_id: Some(MODEL_CONFIG_ID.to_owned()),
         protocol: ModelProtocol::ChatCompletions,
-        dialect: "deepseek".to_owned(),
+        dialect: DEEPSEEK_CONTINUATION_DIALECT.to_owned(),
         tenant_id,
         session_id,
         producing_run_id: RunId::new(),

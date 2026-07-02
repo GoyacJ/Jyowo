@@ -82,7 +82,7 @@ mod minimax_tool_replay {
         assert_eq!(requests[0].provider_context.provider_id, "minimax");
         assert_eq!(
             requests[0].provider_context.dialect.as_deref(),
-            Some("minimax")
+            Some("openai_chat.minimax")
         );
         assert!(requests[0].provider_context.continuations.is_empty());
         assert!(requests[1].provider_context.continuations.is_empty());
@@ -235,7 +235,7 @@ impl ModelProvider for ScriptedMiniMaxProvider {
             context_window: 1_000_000,
             max_output_tokens: 8_192,
             conversation_capability: ConversationModelCapability::default(),
-            runtime_semantics: ModelRuntimeSemantics::openai_chat_plain(),
+            runtime_semantics: ModelRuntimeSemantics::openai_chat_minimax(),
             lifecycle: ModelLifecycle::Stable,
             pricing: None,
         }]
@@ -353,7 +353,7 @@ fn model_snapshot() -> harness_model::ModelRuntimeSnapshot {
         context_window: 1_000_000,
         max_output_tokens: 8_192,
         conversation_capability: ConversationModelCapability::default(),
-        runtime_semantics: ModelRuntimeSemantics::openai_chat_plain(),
+        runtime_semantics: ModelRuntimeSemantics::openai_chat_minimax(),
         lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }

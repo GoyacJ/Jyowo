@@ -224,6 +224,7 @@ pub struct ModelRuntimeSemantics {
     pub cache_protocol: CacheProtocolSemantics,
     pub media_protocol: MediaProtocolSemantics,
     pub output_protocol: OutputProtocolSemantics,
+    pub provider_continuation_dialect: Option<String>,
 }
 
 impl ModelRuntimeSemantics {
@@ -237,6 +238,7 @@ impl ModelRuntimeSemantics {
             cache_protocol: CacheProtocolSemantics::None,
             media_protocol: MediaProtocolSemantics::TextOnly,
             output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: None,
         }
     }
 
@@ -250,6 +252,15 @@ impl ModelRuntimeSemantics {
             cache_protocol: CacheProtocolSemantics::None,
             media_protocol: MediaProtocolSemantics::OpenAiContentParts,
             output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: Some("openai_chat.plain".to_owned()),
+        }
+    }
+
+    #[must_use]
+    pub fn openai_chat_minimax() -> Self {
+        Self {
+            provider_continuation_dialect: Some("openai_chat.minimax".to_owned()),
+            ..Self::openai_chat_plain()
         }
     }
 
@@ -260,6 +271,7 @@ impl ModelRuntimeSemantics {
                 continuation_kind: ProviderContinuationKind::ReasoningReplay,
                 required_for_assistant_tool_replay: true,
             },
+            provider_continuation_dialect: Some("openai_chat.deepseek".to_owned()),
             ..Self::openai_chat_plain()
         }
     }
@@ -274,6 +286,7 @@ impl ModelRuntimeSemantics {
             cache_protocol: CacheProtocolSemantics::OpenAiAuto,
             media_protocol: MediaProtocolSemantics::OpenAiContentParts,
             output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: None,
         }
     }
 
@@ -287,6 +300,7 @@ impl ModelRuntimeSemantics {
             cache_protocol: CacheProtocolSemantics::AnthropicEphemeral,
             media_protocol: MediaProtocolSemantics::TextOnly,
             output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: None,
         }
     }
 
@@ -300,6 +314,7 @@ impl ModelRuntimeSemantics {
             cache_protocol: CacheProtocolSemantics::GeminiContextCache,
             media_protocol: MediaProtocolSemantics::ProviderNative,
             output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: None,
         }
     }
 
@@ -313,6 +328,7 @@ impl ModelRuntimeSemantics {
             cache_protocol: CacheProtocolSemantics::None,
             media_protocol: MediaProtocolSemantics::ProviderNative,
             output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: None,
         }
     }
 }

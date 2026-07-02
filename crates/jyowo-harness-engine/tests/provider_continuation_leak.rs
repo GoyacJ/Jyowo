@@ -35,6 +35,7 @@ const SAFE_MISSING_CONTINUATION_ERROR: &str =
     "provider continuation required for assistant tool replay but missing";
 const PRIVATE_SENTINEL: &str = "PRIVATE_DEEPSEEK_REASONING_SENTINEL";
 const MODEL_CONFIG_ID: &str = "deepseek-leak-config";
+const DEEPSEEK_CONTINUATION_DIALECT: &str = "openai_chat.deepseek";
 
 mod provider_continuation_leak {
     use super::*;
@@ -141,7 +142,7 @@ mod provider_continuation_leak {
         let provider_context = harness_model::ProviderRequestContext {
             provider_id: "deepseek".to_owned(),
             model_config_id: Some(MODEL_CONFIG_ID.to_owned()),
-            dialect: Some("deepseek".to_owned()),
+            dialect: Some(DEEPSEEK_CONTINUATION_DIALECT.to_owned()),
             continuations: vec![record.clone()],
         };
         let request = ModelRequest {
@@ -286,7 +287,7 @@ impl ProviderContinuationLeakHarness {
                 provider_id: "deepseek".to_owned(),
                 model_config_id: Some(MODEL_CONFIG_ID.to_owned()),
                 protocol: ModelProtocol::ChatCompletions,
-                dialect: "deepseek".to_owned(),
+                dialect: DEEPSEEK_CONTINUATION_DIALECT.to_owned(),
                 tenant_id: self.tenant_id,
                 session_id: self.session_id,
                 message_ids,
@@ -426,7 +427,7 @@ fn provider_continuation_record(
         provider_id: "deepseek".to_owned(),
         model_config_id: Some(MODEL_CONFIG_ID.to_owned()),
         protocol: ModelProtocol::ChatCompletions,
-        dialect: "deepseek".to_owned(),
+        dialect: DEEPSEEK_CONTINUATION_DIALECT.to_owned(),
         tenant_id,
         session_id,
         producing_run_id: run_id,

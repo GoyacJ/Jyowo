@@ -39,6 +39,7 @@ use tokio::sync::Mutex;
 
 const MODEL_CONFIG_ID: &str = "deepseek-regression-config";
 const PRIVATE_SENTINEL: &str = "PRIVATE_DEEPSEEK_TOOL_REPLAY_SENTINEL";
+const DEEPSEEK_CONTINUATION_DIALECT: &str = "openai_chat.deepseek";
 
 mod deepseek_tool_replay {
     use super::*;
@@ -268,7 +269,7 @@ impl DeepSeekReplayHarness {
             provider_id: "deepseek".to_owned(),
             model_config_id: Some(MODEL_CONFIG_ID.to_owned()),
             protocol: ModelProtocol::ChatCompletions,
-            dialect: "deepseek".to_owned(),
+            dialect: DEEPSEEK_CONTINUATION_DIALECT.to_owned(),
             tenant_id: self.tenant_id,
             session_id: self.session_id,
             producing_run_id: RunId::new(),
@@ -286,7 +287,7 @@ impl DeepSeekReplayHarness {
                 provider_id: "deepseek".to_owned(),
                 model_config_id: Some(MODEL_CONFIG_ID.to_owned()),
                 protocol: ModelProtocol::ChatCompletions,
-                dialect: "deepseek".to_owned(),
+                dialect: DEEPSEEK_CONTINUATION_DIALECT.to_owned(),
                 tenant_id: self.tenant_id,
                 session_id: self.session_id,
                 message_ids,

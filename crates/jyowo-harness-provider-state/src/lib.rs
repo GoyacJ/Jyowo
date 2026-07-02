@@ -90,7 +90,7 @@ pub struct ProviderContinuationQuery {
     pub kinds: Vec<ProviderContinuationKind>,
 }
 
-#[derive(Debug, Error)]
+#[derive(Error)]
 pub enum ProviderContinuationStoreError {
     #[error("provider continuation store provider-continuations.jsonl I/O failed")]
     Io {
@@ -103,6 +103,32 @@ pub enum ProviderContinuationStoreError {
     NullPayload,
     #[error("provider continuation record serialization failed")]
     Serialization,
+}
+
+impl fmt::Debug for ProviderContinuationStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io { source } => formatter
+                .debug_struct("ProviderContinuationStoreError::Io")
+                .field("store", &STORE_LABEL)
+                .field("source_kind", &source.kind())
+                .finish(),
+            Self::CorruptRecord { line, .. } => formatter
+                .debug_struct("ProviderContinuationStoreError::CorruptRecord")
+                .field("store", &STORE_LABEL)
+                .field("line", line)
+                .field("details", &"<redacted>")
+                .finish(),
+            Self::NullPayload => formatter
+                .debug_struct("ProviderContinuationStoreError::NullPayload")
+                .field("store", &STORE_LABEL)
+                .finish(),
+            Self::Serialization => formatter
+                .debug_struct("ProviderContinuationStoreError::Serialization")
+                .field("store", &STORE_LABEL)
+                .finish(),
+        }
+    }
 }
 
 #[async_trait]

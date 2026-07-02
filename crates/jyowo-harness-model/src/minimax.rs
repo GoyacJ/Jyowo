@@ -167,7 +167,7 @@ fn descriptor(
             input_modalities,
             output_modalities: vec![ModelModality::Text],
         },
-        runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_plain(),
+        runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_minimax(),
         lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }

@@ -4,13 +4,13 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
-use futures::stream;
+use futures::{stream, StreamExt};
 use harness_contracts::{
     ConversationModelCapability, ConversationTurnInput, DeferPolicy, ModelError, ModelProtocol,
     NoopRedactor, ProviderRestriction, SessionId, TenantId, ToolDescriptor, ToolError, ToolGroup,
     ToolOrigin, ToolProperties, TrustLevel, UsageSnapshot,
 };
-use harness_journal::InMemoryEventStore;
+use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
     ContentDelta, InferContext, ModelDescriptor, ModelLifecycle, ModelProvider, ModelRequest,
     ModelRuntimeSemantics, ModelStream, ModelStreamEvent,
@@ -193,6 +193,66 @@ async fn sdk_delete_conversation_session_returns_safe_error_when_prune_fails() {
     assert!(!message.contains("secret-continuation-payload"));
 }
 
+#[tokio::test]
+async fn sdk_delete_conversation_session_keeps_session_when_prune_fails() {
+    let workspace = unique_workspace("sdk-provider-continuation-prune-fail-safe");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let session_id = SessionId::new();
+    let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let store = Arc::new(RecordingProviderContinuationStore {
+        fail_prune: true,
+        ..Default::default()
+    });
+    let harness = Harness::builder()
+        .with_model_arc(DeepSeekSemanticsProvider::new(text_events("kept")))
+        .with_store_arc(event_store.clone())
+        .with_sandbox(NoopSandbox::new())
+        .with_provider_continuation_store_arc(store)
+        .build()
+        .await
+        .expect("harness should build");
+
+    let options = SessionOptions::new(&workspace).with_session_id(session_id);
+    harness
+        .open_or_create_conversation_session(options.clone())
+        .await
+        .expect("session should open");
+    harness
+        .submit_conversation_turn(conversation_turn_request(
+            options.clone(),
+            ConversationTurnInput::ask("create durable conversation events"),
+        ))
+        .await
+        .expect("turn should create journal events");
+    let before = event_store
+        .read_envelopes(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .expect("journal should read before failed delete")
+        .collect::<Vec<_>>()
+        .await;
+    assert!(!before.is_empty());
+
+    let error = harness
+        .delete_conversation_session(options)
+        .await
+        .expect_err("prune failure should fail the delete");
+    assert!(error
+        .to_string()
+        .contains("provider continuation pruning failed"));
+
+    let after = event_store
+        .read_envelopes(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .expect("journal should read after failed delete")
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "failed provider continuation pruning must not delete conversation events"
+    );
+}
+
 fn conversation_turn_request(
     options: SessionOptions,
     input: ConversationTurnInput,
@@ -211,6 +271,20 @@ fn unique_workspace(name: &str) -> std::path::PathBuf {
         std::process::id(),
         SessionId::new()
     ))
+}
+
+fn text_events(text: &str) -> Vec<ModelStreamEvent> {
+    vec![
+        ModelStreamEvent::MessageStart {
+            message_id: "provider-assistant".to_owned(),
+            usage: UsageSnapshot::default(),
+        },
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Text(text.to_owned()),
+        },
+        ModelStreamEvent::MessageStop,
+    ]
 }
 
 #[derive(Default)]

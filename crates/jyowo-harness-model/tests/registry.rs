@@ -159,7 +159,7 @@ fn provider_registry_resolves_minimax_without_private_replay_requirement() {
     }
 
     #[cfg(not(feature = "minimax"))]
-    assert_source_contains("minimax.rs", "ModelRuntimeSemantics::openai_chat_plain()");
+    assert_source_contains("minimax.rs", "ModelRuntimeSemantics::openai_chat_minimax()");
 }
 
 #[cfg(feature = "minimax")]
@@ -247,7 +247,8 @@ fn expected_runtime_semantics(provider_id: &str) -> ModelRuntimeSemantics {
         "deepseek" => ModelRuntimeSemantics::openai_chat_deepseek(),
         "gemini" => ModelRuntimeSemantics::gemini_default(),
         "bedrock" => ModelRuntimeSemantics::bedrock_converse_default(),
-        "doubao" | "km" | "local-llama" | "minimax" | "openrouter" | "qwen" | "zhipu" => {
+        "minimax" => ModelRuntimeSemantics::openai_chat_minimax(),
+        "doubao" | "km" | "local-llama" | "openrouter" | "qwen" | "zhipu" => {
             ModelRuntimeSemantics::openai_chat_plain()
         }
         provider_id => {

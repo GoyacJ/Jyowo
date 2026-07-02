@@ -456,3 +456,16 @@ fn provider_continuation_store_errors_do_not_display_payload_or_full_paths() {
     assert!(!message.contains(PRIVATE_SENTINEL));
     assert!(!message.contains("full/path"));
 }
+
+#[test]
+fn provider_continuation_store_error_debug_redacts_details() {
+    let error = harness_provider_state::ProviderContinuationStoreError::CorruptRecord {
+        line: 1,
+        details: "full/path/PRIVATE_DEEPSEEK_REASONING_SENTINEL".to_owned(),
+    };
+    let debug = format!("{error:?}");
+
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains(PRIVATE_SENTINEL));
+    assert!(!debug.contains("full/path"));
+}
