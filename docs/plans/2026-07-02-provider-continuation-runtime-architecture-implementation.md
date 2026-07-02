@@ -979,11 +979,11 @@ Do not edit files.
 
 **Goal:** Add internal runtime semantics without expanding public conversation capability.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State which public structs remain unchanged for frontend use, which internal structs are added, and how DeepSeek differs from MiniMax.
 
-- [ ] **Add dependency on provider-state**
+- [x] **Add dependency on provider-state**
 
   `jyowo-harness-model` may depend on `jyowo-harness-provider-state` for continuation value types.
 
@@ -995,11 +995,11 @@ Do not edit files.
   harness-provider-state must never depend on harness-model
   ```
 
-- [ ] **Add semantics types**
+- [x] **Add semantics types**
 
   Add the `ModelRuntimeSemantics` and enum types described in Target Design Contracts to `provider.rs` or a focused `runtime_semantics.rs` module exported from `lib.rs`.
 
-- [ ] **Extend descriptors and snapshots**
+- [x] **Extend descriptors and snapshots**
 
   Add:
 
@@ -1011,7 +1011,7 @@ Do not edit files.
 
   `ModelRuntimeSnapshot::from_descriptor` and every `ModelInventoryEntry` construction must preserve the field.
 
-- [ ] **Default semantics**
+- [x] **Default semantics**
 
   Add constructors:
 
@@ -1036,7 +1036,7 @@ Do not edit files.
   }
   ```
 
-- [ ] **Update provider descriptors**
+- [x] **Update provider descriptors**
 
   Each provider must set runtime semantics explicitly.
 
@@ -1052,7 +1052,7 @@ Do not edit files.
   | DeepSeek Chat Completions | `openai_chat_deepseek()` |
   | Qwen, Doubao, Zhipu, Kimi, OpenRouter, Local Llama | `openai_chat_plain()` until their dialects are migrated |
 
-- [ ] **Tests**
+- [x] **Tests**
 
   Add tests asserting:
 
@@ -1061,7 +1061,7 @@ Do not edit files.
   - DeepSeek has `ProviderPrivateReplay`.
   - MiniMax does not require private replay.
 
-- [ ] **Run model tests**
+- [x] **Run model tests**
 
   ```bash
   cargo test -p jyowo-harness-model runtime_semantics
@@ -1069,11 +1069,11 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm public capability is not polluted with provider-private fields.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-model

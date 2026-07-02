@@ -668,6 +668,9 @@ mod capability_route_conversation {
                     tool_calling: false,
                     ..ConversationModelCapability::default()
                 },
+                runtime_semantics: jyowo_harness_sdk::ext::ModelRuntimeSemantics::messages_default(
+                    ModelProtocol::Messages,
+                ),
                 lifecycle: jyowo_harness_sdk::ext::ModelLifecycle::Stable,
                 pricing: None,
             }]

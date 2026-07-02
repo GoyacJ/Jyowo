@@ -89,6 +89,7 @@ fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {
             input_modalities: vec![ModelModality::Text],
             output_modalities: vec![ModelModality::Text],
         },
+        runtime_semantics: crate::ModelRuntimeSemantics::openai_responses_default(),
         lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }

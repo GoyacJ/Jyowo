@@ -9,6 +9,7 @@ use harness_contracts::{
     ModelRef, PricingId, PricingSnapshotId, RequestId, RunId, SessionId, StopReason, TenantId,
     ToolDescriptor, ToolUseId, UsageSnapshot,
 };
+use harness_provider_state::ProviderContinuationKind;
 use http::HeaderMap;
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -153,6 +154,7 @@ pub struct ModelDescriptor {
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub conversation_capability: ConversationModelCapability,
+    pub runtime_semantics: ModelRuntimeSemantics,
     pub lifecycle: ModelLifecycle,
     pub pricing: Option<ModelPricing>,
 }
@@ -166,6 +168,7 @@ pub struct ModelRuntimeSnapshot {
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub conversation_capability: ConversationModelCapability,
+    pub runtime_semantics: ModelRuntimeSemantics,
     pub lifecycle: ModelLifecycle,
     pub pricing: Option<ModelPricing>,
 }
@@ -181,6 +184,7 @@ impl ModelRuntimeSnapshot {
             context_window: descriptor.context_window,
             max_output_tokens: descriptor.max_output_tokens,
             conversation_capability: descriptor.conversation_capability,
+            runtime_semantics: descriptor.runtime_semantics,
             lifecycle: descriptor.lifecycle,
             pricing: descriptor.pricing,
         }
@@ -210,6 +214,159 @@ pub enum ModelRuntimeStatus {
     Unsupported { reason: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelRuntimeSemantics {
+    pub protocol: ModelProtocol,
+    pub tool_protocol: ToolProtocolSemantics,
+    pub reasoning_protocol: ReasoningProtocolSemantics,
+    pub streaming_protocol: StreamingProtocolSemantics,
+    pub cache_protocol: CacheProtocolSemantics,
+    pub media_protocol: MediaProtocolSemantics,
+    pub output_protocol: OutputProtocolSemantics,
+}
+
+impl ModelRuntimeSemantics {
+    #[must_use]
+    pub fn messages_default(protocol: ModelProtocol) -> Self {
+        Self {
+            protocol,
+            tool_protocol: ToolProtocolSemantics::None,
+            reasoning_protocol: ReasoningProtocolSemantics::None,
+            streaming_protocol: StreamingProtocolSemantics::Sse,
+            cache_protocol: CacheProtocolSemantics::None,
+            media_protocol: MediaProtocolSemantics::TextOnly,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+        }
+    }
+
+    #[must_use]
+    pub fn openai_chat_plain() -> Self {
+        Self {
+            protocol: ModelProtocol::ChatCompletions,
+            tool_protocol: ToolProtocolSemantics::OpenAiChatTools,
+            reasoning_protocol: ReasoningProtocolSemantics::None,
+            streaming_protocol: StreamingProtocolSemantics::Sse,
+            cache_protocol: CacheProtocolSemantics::None,
+            media_protocol: MediaProtocolSemantics::OpenAiContentParts,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+        }
+    }
+
+    #[must_use]
+    pub fn openai_chat_deepseek() -> Self {
+        Self {
+            reasoning_protocol: ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind: ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: true,
+            },
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
+    pub fn openai_responses_default() -> Self {
+        Self {
+            protocol: ModelProtocol::Responses,
+            tool_protocol: ToolProtocolSemantics::OpenAiResponsesTools,
+            reasoning_protocol: ReasoningProtocolSemantics::PublicSummary,
+            streaming_protocol: StreamingProtocolSemantics::Sse,
+            cache_protocol: CacheProtocolSemantics::OpenAiAuto,
+            media_protocol: MediaProtocolSemantics::OpenAiContentParts,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+        }
+    }
+
+    #[must_use]
+    pub fn anthropic_messages_default() -> Self {
+        Self {
+            protocol: ModelProtocol::Messages,
+            tool_protocol: ToolProtocolSemantics::AnthropicTools,
+            reasoning_protocol: ReasoningProtocolSemantics::PublicThinking,
+            streaming_protocol: StreamingProtocolSemantics::Sse,
+            cache_protocol: CacheProtocolSemantics::AnthropicEphemeral,
+            media_protocol: MediaProtocolSemantics::TextOnly,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+        }
+    }
+
+    #[must_use]
+    pub fn gemini_default() -> Self {
+        Self {
+            protocol: ModelProtocol::GenerateContent,
+            tool_protocol: ToolProtocolSemantics::GeminiTools,
+            reasoning_protocol: ReasoningProtocolSemantics::PublicSummary,
+            streaming_protocol: StreamingProtocolSemantics::Sse,
+            cache_protocol: CacheProtocolSemantics::GeminiContextCache,
+            media_protocol: MediaProtocolSemantics::ProviderNative,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+        }
+    }
+
+    #[must_use]
+    pub fn bedrock_converse_default() -> Self {
+        Self {
+            protocol: ModelProtocol::Messages,
+            tool_protocol: ToolProtocolSemantics::BedrockConverseTools,
+            reasoning_protocol: ReasoningProtocolSemantics::None,
+            streaming_protocol: StreamingProtocolSemantics::ProviderNative,
+            cache_protocol: CacheProtocolSemantics::None,
+            media_protocol: MediaProtocolSemantics::ProviderNative,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolProtocolSemantics {
+    None,
+    OpenAiChatTools,
+    OpenAiResponsesTools,
+    AnthropicTools,
+    GeminiTools,
+    BedrockConverseTools,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReasoningProtocolSemantics {
+    None,
+    PublicThinking,
+    PublicSummary,
+    ProviderPrivateReplay {
+        continuation_kind: ProviderContinuationKind,
+        required_for_assistant_tool_replay: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamingProtocolSemantics {
+    None,
+    Sse,
+    JsonLines,
+    ProviderNative,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CacheProtocolSemantics {
+    None,
+    OpenAiAuto,
+    AnthropicEphemeral,
+    GeminiContextCache,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaProtocolSemantics {
+    TextOnly,
+    OpenAiContentParts,
+    ProviderNative,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputProtocolSemantics {
+    Text,
+    TextAndToolUse,
+    StructuredJson,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelInventoryEntry {
     pub provider_id: String,
@@ -219,6 +376,7 @@ pub struct ModelInventoryEntry {
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub conversation_capability: ConversationModelCapability,
+    pub runtime_semantics: ModelRuntimeSemantics,
     pub lifecycle: ModelLifecycle,
     pub pricing: Option<ModelPricing>,
     pub runtime_status: ModelRuntimeStatus,
@@ -235,6 +393,7 @@ impl ModelInventoryEntry {
             context_window: descriptor.context_window,
             max_output_tokens: descriptor.max_output_tokens,
             conversation_capability: descriptor.conversation_capability,
+            runtime_semantics: descriptor.runtime_semantics,
             lifecycle: descriptor.lifecycle,
             pricing: descriptor.pricing,
             runtime_status: ModelRuntimeStatus::Runnable,
@@ -258,6 +417,7 @@ impl ModelInventoryEntry {
             context_window: 0,
             max_output_tokens: 0,
             conversation_capability,
+            runtime_semantics: ModelRuntimeSemantics::messages_default(protocol),
             lifecycle: ModelLifecycle::Stable,
             pricing: None,
             runtime_status: ModelRuntimeStatus::Unsupported {

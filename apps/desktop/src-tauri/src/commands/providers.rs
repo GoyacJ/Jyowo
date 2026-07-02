@@ -1945,6 +1945,7 @@ pub(crate) fn model_descriptor_from_record(
         conversation_capability: conversation_capability_from_record(
             &record.conversation_capability,
         ),
+        runtime_semantics: ModelRuntimeSemantics::messages_default(record.protocol),
         lifecycle: model_lifecycle_from_record(&record.lifecycle)?,
         pricing: None,
     })
@@ -2013,6 +2014,7 @@ pub(crate) fn descriptor_from_inventory_model(
             context_window: model.context_window,
             max_output_tokens: model.max_output_tokens,
             conversation_capability: model.conversation_capability,
+            runtime_semantics: model.runtime_semantics,
             lifecycle: model.lifecycle,
             pricing: model.pricing,
         }),

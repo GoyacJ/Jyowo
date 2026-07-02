@@ -834,6 +834,7 @@ pub fn runnable_inventory_models(models: &[ModelInventoryEntry]) -> Vec<ModelDes
                 context_window: model.context_window,
                 max_output_tokens: model.max_output_tokens,
                 conversation_capability: model.conversation_capability.clone(),
+                runtime_semantics: model.runtime_semantics.clone(),
                 lifecycle: model.lifecycle.clone(),
                 pricing: model.pricing.clone(),
             }),

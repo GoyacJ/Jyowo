@@ -933,6 +933,9 @@ impl ModelProvider for SessionRoutedProvider {
             context_window: 128_000,
             max_output_tokens: 8192,
             conversation_capability: Default::default(),
+            runtime_semantics: jyowo_harness_sdk::ext::ModelRuntimeSemantics::messages_default(
+                ModelProtocol::Messages,
+            ),
             lifecycle: ModelLifecycle::Stable,
             pricing: None,
         }]

@@ -3127,6 +3127,7 @@ dependencies = [
  "futures",
  "http 1.4.2",
  "jyowo-harness-contracts",
+ "jyowo-harness-provider-state",
  "parking_lot",
  "reqwest 0.13.4",
  "rust_decimal",

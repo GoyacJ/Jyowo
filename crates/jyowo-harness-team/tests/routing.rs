@@ -930,6 +930,9 @@ impl ModelProvider for DummyModelProvider {
             context_window: 1_000,
             max_output_tokens: 100,
             conversation_capability: ConversationModelCapability::default(),
+            runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
+                harness_model::ModelProtocol::Messages,
+            ),
             pricing: None,
         }]
     }

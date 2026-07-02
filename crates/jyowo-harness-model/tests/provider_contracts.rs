@@ -25,6 +25,7 @@ impl ModelProvider for TestProvider {
             context_window: 128_000,
             max_output_tokens: 8192,
             conversation_capability: ConversationModelCapability::default(),
+            runtime_semantics: ModelRuntimeSemantics::messages_default(ModelProtocol::Messages),
             pricing: None,
         }]
     }

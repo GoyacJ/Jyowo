@@ -54,6 +54,7 @@ testing = []
 
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-provider-state = { path = "../jyowo-harness-provider-state" }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }

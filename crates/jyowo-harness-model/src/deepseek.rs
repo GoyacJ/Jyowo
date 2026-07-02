@@ -93,6 +93,7 @@ fn descriptor(
             input_modalities: vec![ModelModality::Text],
             output_modalities: vec![ModelModality::Text],
         },
+        runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_deepseek(),
         lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }

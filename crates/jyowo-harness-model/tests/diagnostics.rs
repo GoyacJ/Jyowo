@@ -10,8 +10,8 @@ use harness_contracts::{
 };
 use harness_model::{
     ErrorClass, ErrorHints, HealthStatus, InferContext, ModelDescriptor, ModelLifecycle,
-    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent, ProviderProbeInput,
-    ProviderProbeRunner,
+    ModelProvider, ModelRequest, ModelRuntimeSemantics, ModelStream, ModelStreamEvent,
+    ProviderProbeInput, ProviderProbeRunner,
 };
 
 struct ProbeTestProvider {
@@ -34,6 +34,7 @@ impl ModelProvider for ProbeTestProvider {
             context_window: 8_192,
             max_output_tokens: 1_024,
             conversation_capability: ConversationModelCapability::default(),
+            runtime_semantics: ModelRuntimeSemantics::openai_responses_default(),
             lifecycle: ModelLifecycle::Stable,
             pricing: None,
         }]
