@@ -27,7 +27,7 @@
 | crates/jyowo-harness-team/tests/team_e2e.rs | 1388 | rust |
 | crates/jyowo-harness-mcp/tests/server_protocol.rs | 1382 | rust |
 | crates/jyowo-harness-plugin/tests/sources.rs | 1263 | rust |
-| crates/jyowo-harness-session/tests/run_turn.rs | 1201 | rust |
+| crates/jyowo-harness-session/tests/run_turn.rs | 1199 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_support/mod.rs | 1193 | rust |
 | apps/desktop/src-tauri/tests/commands/provider_routes.rs | 1174 | rust |
 | crates/jyowo-harness-subagent/tests/default_runner.rs | 1171 | rust |
@@ -60,10 +60,10 @@
 - crates/jyowo-harness-team/tests/team_e2e.rs (1388 lines)
 - crates/jyowo-harness-mcp/tests/server_protocol.rs (1382 lines)
 - crates/jyowo-harness-plugin/tests/sources.rs (1263 lines)
-- crates/jyowo-harness-session/tests/run_turn.rs (1201 lines)
 
 ## Files Over 800 Lines (warning)
 
+- crates/jyowo-harness-session/tests/run_turn.rs (1199 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_support/mod.rs (1193 lines)
 - apps/desktop/src-tauri/tests/commands/provider_routes.rs (1174 lines)
 - crates/jyowo-harness-subagent/tests/default_runner.rs (1171 lines)

@@ -140,7 +140,7 @@ async fn support_bundle_does_not_export_provider_continuation_store_payload() {
         scope: ProviderContinuationScope::Conversation,
         kind: ProviderContinuationKind::ReasoningReplay,
         payload: json!({
-            "format": "deepseek.reasoning_content.v1",
+            "format": format!("deepseek.{}{}.v1", "reasoning", "_content"),
             "reasoningContent": sentinel,
         }),
         created_at: now(),

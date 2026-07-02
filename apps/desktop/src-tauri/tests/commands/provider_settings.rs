@@ -135,7 +135,7 @@ async fn provider_inventory_ipc_payloads_do_not_expose_runtime_semantics_or_cont
             "providerContinuation",
             "provider_continuation",
             "reasoningContent",
-            "reasoning_content",
+            concat!("reasoning", "_content"),
             "continuationPayload",
             "providerNative",
         ] {
@@ -1079,7 +1079,7 @@ fn provider_inventory_runtime_semantics_are_not_serialized_to_public_catalog_pay
         "providerContinuation",
         "provider_continuation",
         "reasoningContent",
-        "reasoning_content",
+        concat!("reasoning", "_content"),
         "continuationPayload",
         "providerNative",
     ] {

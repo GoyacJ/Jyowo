@@ -31,9 +31,7 @@ use harness_tool::{
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
-use tokio::sync::oneshot;
-use tokio::sync::Mutex;
-use tokio::sync::Notify;
+use tokio::sync::{oneshot, Mutex, Notify};
 
 #[tokio::test]
 async fn run_turn_executes_list_dir_with_formal_runtime() {

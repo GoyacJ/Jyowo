@@ -2204,11 +2204,11 @@ Do not edit files.
 
 **Goal:** Verify the full architecture and remove implementation residue before handoff.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State final cleanup scope, files expected to change, and the complete gate list.
 
-- [ ] **Search for forbidden residue**
+- [x] **Search for forbidden residue**
 
   Run:
 
@@ -2226,7 +2226,7 @@ Do not edit files.
   - no hardcoded provider success path
   - final command returns no output, which means `reasoning` + `_content` appears only in allowed DeepSeek codec/test files
 
-- [ ] **Search for provider-private leakage**
+- [x] **Search for provider-private leakage**
 
   Run:
 
@@ -2236,7 +2236,7 @@ Do not edit files.
 
   Expected: no output.
 
-- [ ] **Run format**
+- [x] **Run format**
 
   ```bash
   cargo fmt --all --check
@@ -2244,7 +2244,7 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Run docs gates**
+- [x] **Run docs gates**
 
   ```bash
   pnpm check:docs
@@ -2255,7 +2255,7 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Run Rust gates**
+- [x] **Run Rust gates**
 
   ```bash
   pnpm check:rust
@@ -2263,7 +2263,7 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Run frontend gate**
+- [x] **Run frontend gate**
 
   ```bash
   pnpm check:desktop
@@ -2271,7 +2271,7 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Run full gate**
+- [x] **Run full gate**
 
   ```bash
   pnpm check
@@ -2279,7 +2279,7 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must inspect the full branch diff and confirm:
 
@@ -2295,7 +2295,7 @@ Do not edit files.
   - Docs match the implemented architecture.
   - Required gates ran with exit code 0.
 
-- [ ] **Final commit**
+- [x] **Final commit**
 
   If cleanup changed files:
 

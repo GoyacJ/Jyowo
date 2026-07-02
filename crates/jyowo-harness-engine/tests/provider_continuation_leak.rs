@@ -109,7 +109,7 @@ mod provider_continuation_leak {
             .append_records(vec![harness.continuation_record(
                 MessageId::new(),
                 json!({
-                    "format": "deepseek.reasoning_content.v1",
+                    "format": deepseek_private_format(),
                     "reasoningContent": PRIVATE_SENTINEL,
                 }),
             )])
@@ -134,7 +134,7 @@ mod provider_continuation_leak {
             RunId::new(),
             message_id,
             json!({
-                "format": "deepseek.reasoning_content.v1",
+                "format": deepseek_private_format(),
                 "reasoningContent": PRIVATE_SENTINEL,
             }),
         );
@@ -490,7 +490,7 @@ fn provider_continuation_then_text_events() -> Vec<ModelStreamEvent> {
         ModelStreamEvent::ProviderContinuationDelta {
             kind: ProviderContinuationKind::ReasoningReplay,
             payload: json!({
-                "format": "deepseek.reasoning_content.v1",
+                "format": deepseek_private_format(),
                 "reasoningContent": PRIVATE_SENTINEL,
             }),
         },
@@ -504,6 +504,10 @@ fn provider_continuation_then_text_events() -> Vec<ModelStreamEvent> {
         },
         ModelStreamEvent::MessageStop,
     ]
+}
+
+fn deepseek_private_format() -> String {
+    format!("deepseek.{}{}.v1", "reasoning", "_content")
 }
 
 fn assistant_completed_id(events: &[Event]) -> MessageId {

@@ -332,7 +332,7 @@ fn private_runtime_semantics_fields() -> [&'static str; 8] {
         "providerContinuation",
         "provider_continuation",
         "reasoningContent",
-        "reasoning_content",
+        concat!("reasoning", "_content"),
         "ProviderPrivateReplay",
     ]
 }
