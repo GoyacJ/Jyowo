@@ -201,6 +201,7 @@ pub(crate) async fn run_turn(
         cache_breakpoints: assembled.cache_breakpoints,
         protocol: runtime.protocol,
         extra: runtime.model_extra.clone(),
+        provider_context: harness_model::ProviderRequestContext::default(),
     };
     let mut infer_ctx = InferContext::for_test();
     infer_ctx.tenant_id = session.tenant_id();
@@ -271,6 +272,7 @@ pub(crate) async fn run_turn(
                 .await;
             }
             ModelStreamEvent::MessageStop => break,
+            ModelStreamEvent::ProviderContinuationDelta { .. } => {}
             ModelStreamEvent::ContentBlockStart { .. }
             | ModelStreamEvent::ContentBlockStop { .. } => {}
         }

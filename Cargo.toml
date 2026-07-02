@@ -14,6 +14,7 @@ members = [
   "crates/jyowo-harness-observability",
   "crates/jyowo-harness-permission",
   "crates/jyowo-harness-plugin",
+  "crates/jyowo-harness-provider-state",
   "crates/jyowo-harness-sandbox",
   "crates/jyowo-harness-sdk",
   "crates/jyowo-harness-session",

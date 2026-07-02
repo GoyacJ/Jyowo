@@ -263,6 +263,7 @@ fn request(text: &str) -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::Responses,
         extra: serde_json::Value::Null,
+        provider_context: harness_model::ProviderRequestContext::default(),
     }
 }
 
@@ -276,6 +277,9 @@ fn descriptor() -> ModelDescriptor {
         context_window: 1_000,
         max_output_tokens: 100,
         conversation_capability: ConversationModelCapability::default(),
+        runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
+            harness_model::ModelProtocol::Messages,
+        ),
         pricing: None,
     }
 }

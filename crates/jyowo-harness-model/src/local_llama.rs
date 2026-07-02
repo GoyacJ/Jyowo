@@ -4,7 +4,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use harness_contracts::ModelError;
 
-use crate::openai_compatible::{OpenAiCompatibleClient, OpenAiCompatibleProviderExt};
+use crate::openai_compatible::{
+    OpenAiChatDialect, OpenAiCompatibleClient, OpenAiCompatibleProviderExt,
+};
 use crate::{
     ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
     ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
@@ -29,6 +31,7 @@ impl LocalLlamaProvider {
         Self {
             client: OpenAiCompatibleClient::without_api_key(endpoint)
                 .with_provider_id(PROVIDER_ID)
+                .with_chat_dialect(OpenAiChatDialect::LocalLlama)
                 .with_chat_completions_path("/v1/chat/completions"),
         }
     }
@@ -111,6 +114,7 @@ fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {
             input_modalities: vec![ModelModality::Text],
             output_modalities: vec![ModelModality::Text],
         },
+        runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_plain(),
         lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }

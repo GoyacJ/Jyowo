@@ -25,6 +25,7 @@ impl ModelProvider for TestProvider {
             context_window: 128_000,
             max_output_tokens: 8192,
             conversation_capability: ConversationModelCapability::default(),
+            runtime_semantics: ModelRuntimeSemantics::messages_default(ModelProtocol::Messages),
             pricing: None,
         }]
     }
@@ -170,6 +171,7 @@ fn model_request_accepts_contract_tool_descriptor() {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::Messages,
         extra: serde_json::Value::Null,
+        provider_context: harness_model::ProviderRequestContext::default(),
     };
 
     assert_eq!(req.tools.unwrap()[0].name, "read_file");

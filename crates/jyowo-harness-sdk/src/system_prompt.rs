@@ -762,6 +762,9 @@ mod tests {
                 tool_calling: true,
                 ..ConversationModelCapability::default()
             },
+            runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
+                ModelProtocol::Messages,
+            ),
             lifecycle: ModelLifecycle::Stable,
             pricing: None,
         };

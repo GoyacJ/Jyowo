@@ -179,6 +179,9 @@ impl ModelProvider for ContextTooLongThenOkModel {
             context_window: 100,
             max_output_tokens: 10,
             conversation_capability: ConversationModelCapability::default(),
+            runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
+                harness_model::ModelProtocol::Messages,
+            ),
             pricing: None,
         }]
     }
@@ -231,6 +234,9 @@ impl ModelProvider for OkRecordingModel {
             context_window: 100,
             max_output_tokens: 10,
             conversation_capability: ConversationModelCapability::default(),
+            runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
+                harness_model::ModelProtocol::Messages,
+            ),
             pricing: None,
         }]
     }

@@ -299,6 +299,7 @@ fn descriptor(
             input_modalities: vec![ModelModality::Text],
             output_modalities: vec![ModelModality::Text],
         },
+        runtime_semantics: crate::ModelRuntimeSemantics::anthropic_messages_default(),
         lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }

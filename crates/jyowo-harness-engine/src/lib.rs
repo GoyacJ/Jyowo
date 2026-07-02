@@ -15,6 +15,7 @@ pub mod result_inject;
 pub mod runner;
 pub mod state;
 pub mod turn;
+pub mod turn_assembly;
 
 pub use end_reason::*;
 pub use engine::*;

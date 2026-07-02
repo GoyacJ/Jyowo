@@ -1074,6 +1074,9 @@ impl ModelProvider for CapabilityScriptedProvider {
             context_window: self.context_window,
             max_output_tokens: self.max_output_tokens,
             conversation_capability: self.capabilities.clone(),
+            runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
+                self.protocol,
+            ),
             lifecycle: ModelLifecycle::Stable,
             pricing: None,
         }]
@@ -1119,6 +1122,9 @@ impl ModelProvider for TwoModelProvider {
                 context_window: 128_000,
                 max_output_tokens: 8_192,
                 conversation_capability: ConversationModelCapability::default(),
+                runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
+                    ModelProtocol::Messages,
+                ),
                 lifecycle: ModelLifecycle::Stable,
                 pricing: None,
             },
@@ -1130,6 +1136,9 @@ impl ModelProvider for TwoModelProvider {
                 context_window: 128_000,
                 max_output_tokens: 8_192,
                 conversation_capability: ConversationModelCapability::default(),
+                runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
+                    ModelProtocol::Responses,
+                ),
                 lifecycle: ModelLifecycle::Stable,
                 pricing: None,
             },

@@ -58,6 +58,7 @@ impl ProviderProbeRunner {
             cache_breakpoints: Vec::new(),
             protocol,
             extra: serde_json::Value::Null,
+            provider_context: crate::ProviderRequestContext::default(),
         };
 
         let mut ctx = InferContext::for_test();

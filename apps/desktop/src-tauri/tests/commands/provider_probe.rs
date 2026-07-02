@@ -38,6 +38,9 @@ impl ModelProvider for ProbeCountingProvider {
             context_window: 128_000,
             max_output_tokens: 16_384,
             conversation_capability: ConversationModelCapability::default(),
+            runtime_semantics: jyowo_harness_sdk::ext::ModelRuntimeSemantics::messages_default(
+                ModelProtocol::Responses,
+            ),
             lifecycle: ModelLifecycle::Stable,
             pricing: None,
         }]

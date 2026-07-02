@@ -28,6 +28,7 @@ image = { workspace = true }
 jyowo-harness-contracts = { path = "../../../crates/jyowo-harness-contracts" }
 jyowo-harness-observability = { path = "../../../crates/jyowo-harness-observability" }
 jyowo-harness-plugin = { path = "../../../crates/jyowo-harness-plugin" }
+jyowo-harness-provider-state = { path = "../../../crates/jyowo-harness-provider-state" }
 jyowo-harness-sandbox = { path = "../../../crates/jyowo-harness-sandbox", features = ["local-sandbox"] }
 jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "jsonl-store", "sqlite-store", "blob-file", "local-sandbox", "mcp-http", "mcp-stdio", "memory-external-slot", "provider-anthropic", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-km", "provider-local-llama", "provider-minimax", "minimax-tools", "seedance-tools", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "observability-redactor", "agents-subagent", "agents-team"] }
 jyowo-harness-model = { path = "../../../crates/jyowo-harness-model", features = ["openrouter", "deepseek"] }

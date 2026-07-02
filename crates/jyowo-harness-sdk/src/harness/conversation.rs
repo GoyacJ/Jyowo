@@ -234,6 +234,35 @@ impl Harness {
         options: SessionOptions,
     ) -> Result<bool, HarnessError> {
         let options = self.effective_sdk_session_options(options)?;
+        let journal_session_exists = self
+            .conversation_session_has_journal_events(options.tenant_id, options.session_id)
+            .await?;
+        #[cfg(feature = "sqlite-store")]
+        let (read_model, read_model_has_session) = {
+            let read_model = self.conversation_read_model().await?;
+            let exists = read_model
+                .summary(options.tenant_id, options.session_id)
+                .await
+                .map_err(HarnessError::Journal)?
+                .is_some();
+            (read_model, exists)
+        };
+        #[cfg(not(feature = "sqlite-store"))]
+        let read_model_has_session = false;
+
+        if !journal_session_exists && !read_model_has_session {
+            return Ok(false);
+        }
+
+        if let Some(store) = &self.inner.provider_continuation_store {
+            store
+                .prune_session(options.tenant_id, options.session_id)
+                .await
+                .map_err(|_| {
+                    HarnessError::Internal("provider continuation pruning failed".to_owned())
+                })?;
+        }
+
         #[cfg_attr(not(feature = "sqlite-store"), allow(unused_mut))]
         let mut deleted = self
             .inner
@@ -243,18 +272,7 @@ impl Harness {
             .map_err(HarnessError::Journal)?;
         #[cfg(feature = "sqlite-store")]
         {
-            let read_model = self.conversation_read_model().await?;
-            if deleted {
-                read_model
-                    .reset_session(options.tenant_id, options.session_id)
-                    .await
-                    .map_err(HarnessError::Journal)?;
-            } else if read_model
-                .summary(options.tenant_id, options.session_id)
-                .await
-                .map_err(HarnessError::Journal)?
-                .is_some()
-            {
+            if deleted || read_model_has_session {
                 read_model
                     .reset_session(options.tenant_id, options.session_id)
                     .await
@@ -271,6 +289,20 @@ impl Harness {
             .insert((options.tenant_id, options.session_id));
         self.cancel_conversation_session_runs(options.tenant_id, options.session_id);
         Ok(true)
+    }
+
+    async fn conversation_session_has_journal_events(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+    ) -> Result<bool, HarnessError> {
+        let page = self
+            .inner
+            .event_store
+            .page_session_envelopes(tenant_id, session_id, None, 1)
+            .await
+            .map_err(HarnessError::Journal)?;
+        Ok(!page.envelopes.is_empty())
     }
 
     pub async fn submit_conversation_turn(

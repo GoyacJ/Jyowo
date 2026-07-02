@@ -33,6 +33,9 @@ use super::validation::*;
 use super::*;
 use crate::agent_supervisor::BackgroundSupervisorSession;
 use harness_model::{default_account_usage_registry, ProviderAccountUsageRegistry};
+use harness_provider_state::FileProviderContinuationStore;
+
+const PROVIDER_CONTINUATION_RUNTIME_VERSION: &str = "1";
 
 #[derive(Clone)]
 struct DesktopBackgroundAgentStarter {
@@ -668,6 +671,14 @@ pub(crate) async fn build_desktop_harness(
     model_config_id: Option<&str>,
     provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
 ) -> Result<(Harness, String, ModelProtocol), CommandErrorPayload> {
+    reset_legacy_conversation_runtime_for_provider_continuations(workspace_root)?;
+    let provider_continuation_store = Arc::new(
+        FileProviderContinuationStore::open(workspace_root).map_err(|error| {
+            runtime_init_failed(format!(
+                "provider continuation store initialization failed: {error}"
+            ))
+        })?,
+    );
     let event_store: Arc<dyn EventStore> = Arc::new(
         JsonlEventStore::open(
             workspace_root.join(".jyowo").join("runtime").join("events"),
@@ -742,6 +753,7 @@ pub(crate) async fn build_desktop_harness(
         .with_store_arc(event_store)
         .with_sandbox_arc(sandbox)
         .with_blob_store(blob_store)
+        .with_provider_continuation_store_arc(provider_continuation_store)
         .with_capability(
             ToolCapability::ProviderCredentialResolver,
             provider_credential_resolver,
@@ -767,6 +779,104 @@ pub(crate) async fn build_desktop_harness(
         .map_err(|error| runtime_init_failed(format!("harness initialization failed: {error}")))?;
 
     Ok((harness, model_id, protocol))
+}
+
+pub fn reset_legacy_conversation_runtime_for_provider_continuations(
+    workspace_root: &Path,
+) -> Result<(), CommandErrorPayload> {
+    let runtime_dir = workspace_root.join(".jyowo").join("runtime");
+    let marker_path = runtime_dir.join("provider-continuation-runtime.version");
+
+    super::stores::ensure_no_symlink_components(&runtime_dir, "provider continuation runtime")?;
+    super::stores::ensure_no_symlink_components(
+        &marker_path,
+        "provider continuation runtime marker",
+    )?;
+
+    if std::fs::read_to_string(&marker_path)
+        .map(|value| value.trim() == PROVIDER_CONTINUATION_RUNTIME_VERSION)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    for target in provider_continuation_dev_reset_targets(&runtime_dir) {
+        remove_provider_continuation_dev_reset_target(&target)?;
+    }
+
+    std::fs::create_dir_all(runtime_dir.join("events")).map_err(|error| {
+        runtime_init_failed(format!(
+            "provider continuation runtime events directory initialization failed: {error}"
+        ))
+    })?;
+    std::fs::create_dir_all(runtime_dir.join("sessions")).map_err(|error| {
+        runtime_init_failed(format!(
+            "provider continuation runtime sessions directory initialization failed: {error}"
+        ))
+    })?;
+
+    let temp_path = runtime_dir.join("provider-continuation-runtime.version.tmp");
+    super::stores::ensure_no_symlink_components(
+        &temp_path,
+        "provider continuation runtime marker temp file",
+    )?;
+    std::fs::write(
+        &temp_path,
+        format!("{PROVIDER_CONTINUATION_RUNTIME_VERSION}\n"),
+    )
+    .map_err(|error| {
+        runtime_init_failed(format!(
+            "provider continuation runtime marker write failed: {error}"
+        ))
+    })?;
+    std::fs::rename(&temp_path, &marker_path).map_err(|error| {
+        runtime_init_failed(format!(
+            "provider continuation runtime marker install failed: {error}"
+        ))
+    })?;
+
+    Ok(())
+}
+
+fn provider_continuation_dev_reset_targets(runtime_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        runtime_dir.join("events"),
+        runtime_dir.join("sessions"),
+        runtime_dir.join("conversation-read-model.sqlite"),
+        runtime_dir.join("conversation-read-model.sqlite-shm"),
+        runtime_dir.join("conversation-read-model.sqlite-wal"),
+        runtime_dir.join("conversation-metadata.json"),
+        runtime_dir.join("provider-continuations.jsonl"),
+    ]
+}
+
+fn remove_provider_continuation_dev_reset_target(target: &Path) -> Result<(), CommandErrorPayload> {
+    super::stores::ensure_no_symlink_components(target, "provider continuation reset target")?;
+    let metadata = match std::fs::symlink_metadata(target) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(runtime_init_failed(format!(
+                "provider continuation reset target metadata failed: {error}"
+            )));
+        }
+    };
+
+    if metadata.is_dir() {
+        std::fs::remove_dir_all(target).map_err(|error| {
+            runtime_init_failed(format!(
+                "provider continuation reset directory removal failed: {error}"
+            ))
+        })?;
+    } else {
+        std::fs::remove_file(target).map_err(|error| {
+            runtime_init_failed(format!(
+                "provider continuation reset file removal failed: {error}"
+            ))
+        })?;
+    }
+
+    Ok(())
 }
 
 pub(crate) struct DesktopDiagnosticsRunner {

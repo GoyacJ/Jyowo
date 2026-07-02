@@ -12,10 +12,16 @@ The crate exposes:
 - provider catalog and inventory snapshots
 - model request validation helpers
 - provider protocol adapters
+- provider protocol codecs and runtime semantics
 
 It does not own tool service clients, product IPC payloads, permission decisions,
 Journal, Replay, Audit, Redactor, sandbox, filesystem, network policy, or
 provider secret storage.
+
+`jyowo-harness-model` owns provider protocol codecs and runtime semantics.
+It may consume opaque provider continuation records when building provider requests.
+It must not persist continuation state.
+It must not expose private continuation payloads as MessagePart, public events, logs, traces, or frontend payloads.
 
 Public serde contracts belong in `jyowo-harness-contracts`. Stable public shapes
 use `serde` and `JsonSchema`.
@@ -44,6 +50,9 @@ OpenAI uses the Responses protocol. The internal OpenAI-compatible adapter
 remains available for providers whose runtime API is Chat Completions compatible,
 such as OpenRouter, Local Llama, DeepSeek, MiniMax, Qwen, Doubao, Zhipu, and
 Kimi.
+
+OpenAI-compatible providers share transport and broad protocol shape, but do not share identical dialect semantics.
+DeepSeek, MiniMax, Qwen, Doubao, Zhipu, Kimi, OpenRouter, and Local Llama must be represented through explicit dialect configuration.
 
 ## Provider Catalog
 

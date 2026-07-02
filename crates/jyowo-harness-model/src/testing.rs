@@ -200,6 +200,7 @@ fn test_descriptor() -> ModelDescriptor {
         context_window: 128_000,
         max_output_tokens: 8192,
         conversation_capability: ConversationModelCapability::default(),
+        runtime_semantics: crate::ModelRuntimeSemantics::messages_default(ModelProtocol::Messages),
         lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }

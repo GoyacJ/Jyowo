@@ -34,6 +34,7 @@ fn request(messages: Vec<Message>, stream: bool) -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::Messages,
         extra: Value::Null,
+        provider_context: harness_model::ProviderRequestContext::default(),
     }
 }
 

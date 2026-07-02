@@ -240,6 +240,9 @@ impl ModelProvider for TextModelProvider {
             context_window: 8_000,
             max_output_tokens: 1_000,
             conversation_capability: ConversationModelCapability::default(),
+            runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
+                harness_model::ModelProtocol::Messages,
+            ),
             pricing: None,
         }]
     }

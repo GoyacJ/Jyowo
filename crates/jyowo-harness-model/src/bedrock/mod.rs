@@ -5,6 +5,7 @@ use async_stream::stream;
 use async_trait::async_trait;
 use aws_sdk_bedrockruntime::types as br;
 use aws_smithy_types::{Document, Number};
+#[cfg(any(test, feature = "testing"))]
 use futures::stream as futures_stream;
 use harness_contracts::{
     MessagePart, MessageRole, ModelError, StopReason, ToolDescriptor, ToolResult, UsageSnapshot,
@@ -446,6 +447,7 @@ fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {
             input_modalities: vec![ModelModality::Text],
             output_modalities: vec![ModelModality::Text],
         },
+        runtime_semantics: crate::ModelRuntimeSemantics::bedrock_converse_default(),
         lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }

@@ -2901,6 +2901,7 @@ dependencies = [
  "jyowo-harness-model",
  "jyowo-harness-observability",
  "jyowo-harness-plugin",
+ "jyowo-harness-provider-state",
  "jyowo-harness-sandbox",
  "jyowo-harness-sdk",
  "jyowo-harness-skill",
@@ -3014,6 +3015,7 @@ dependencies = [
  "jyowo-harness-model",
  "jyowo-harness-observability",
  "jyowo-harness-permission",
+ "jyowo-harness-provider-state",
  "jyowo-harness-sandbox",
  "jyowo-harness-session",
  "jyowo-harness-skill",
@@ -3127,6 +3129,7 @@ dependencies = [
  "futures",
  "http 1.4.2",
  "jyowo-harness-contracts",
+ "jyowo-harness-provider-state",
  "parking_lot",
  "reqwest 0.13.4",
  "rust_decimal",
@@ -3222,6 +3225,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "jyowo-harness-provider-state"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "jyowo-harness-contracts",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "jyowo-harness-sandbox"
 version = "0.1.0"
 dependencies = [
@@ -3264,6 +3281,7 @@ dependencies = [
  "jyowo-harness-observability",
  "jyowo-harness-permission",
  "jyowo-harness-plugin",
+ "jyowo-harness-provider-state",
  "jyowo-harness-sandbox",
  "jyowo-harness-session",
  "jyowo-harness-skill",

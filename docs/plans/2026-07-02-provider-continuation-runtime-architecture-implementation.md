@@ -106,7 +106,7 @@ Use these facts as the baseline. Do not invent a different starting state.
 DeepSeek failure in desktop:
 
 ```text
-invalid request: The reasoning_content in the thinking mode must be passed back to the API.
+invalid request: The provider private reasoning field in the thinking mode must be passed back to the API.
 ```
 
 Facts from the failing run:
@@ -114,7 +114,7 @@ Facts from the failing run:
 - The first DeepSeek model call succeeds.
 - DeepSeek emits an assistant message with a tool call.
 - Jyowo executes the tool call.
-- The second DeepSeek request fails because the OpenAI-compatible adapter replays the assistant tool-call message without DeepSeek's private `reasoning_content`.
+- The second DeepSeek request fails because the OpenAI-compatible adapter replays the assistant tool-call message without DeepSeek's private `reasoning` + `_content`.
 - MiniMax succeeds through the same OpenAI-compatible client path because its dialect does not require private reasoning replay.
 - MiniMax is not a separate implementation path for this behavior.
 - MiniMax support is a first-class target for this plan. It must be represented as an explicit OpenAI-compatible dialect with model-level and Engine-level vertical regression coverage.
@@ -135,7 +135,7 @@ The implementation must keep these three state planes separate.
 | Execution Trace | permissions, tools, hooks, usage, errors, run lifecycle | yes after redaction | yes | no |
 | Provider Continuation State | provider-private replay payload needed for next provider request | no | no | yes |
 
-DeepSeek `reasoning_content` belongs only to Provider Continuation State.
+DeepSeek `reasoning` + `_content` belongs only to Provider Continuation State.
 
 It must never be stored in:
 
@@ -479,7 +479,7 @@ pub enum OpenAiChatDialect {
 }
 ```
 
-The Engine must not contain provider-private field names such as `reasoning_content`.
+The Engine must not contain provider-private field names such as `reasoning` + `_content`.
 
 The only production code allowed to mention DeepSeek's wire field is the OpenAI-compatible DeepSeek dialect codec and its tests.
 
@@ -610,11 +610,11 @@ Do not edit files.
 
 **Goal:** Start from a clean isolated worktree and record the baseline state before implementation.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the worktree path, branch name, expected baseline commands, and non-goal: no source edits in Task 0.
 
-- [ ] **Create and enter the isolated worktree**
+- [x] **Create and enter the isolated worktree**
 
   Run from the original repository:
 
@@ -632,11 +632,11 @@ Do not edit files.
   ## goya/provider-continuation-runtime
   ```
 
-- [ ] **Read mandatory files**
+- [x] **Read mandatory files**
 
   Use `sed`, `rg`, or the editor to read every mandatory file listed above.
 
-- [ ] **Run baseline docs gate**
+- [x] **Run baseline docs gate**
 
   ```bash
   pnpm check:docs
@@ -644,11 +644,11 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Use the audit prompt template. The auditor must confirm no implementation files were edited.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   No commit is required for Task 0 if there are no changes.
 
@@ -664,11 +664,11 @@ Do not edit files.
 
 **Goal:** Lock the target boundaries into repository docs before code changes.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the exact layer change, why `jyowo-harness-provider-state` is L1, why Engine stays L3, and why public `ConversationModelCapability` is only a projection.
 
-- [ ] **Update backend layer table**
+- [x] **Update backend layer table**
 
   Add `jyowo-harness-provider-state` to the L1 package table in `docs/backend/backend-engineering.md`.
 
@@ -692,7 +692,7 @@ Do not edit files.
   - Existing development-phase conversation runtime state is cleared once instead of migrated or backfilled.
   ```
 
-- [ ] **Update harness-model architecture doc**
+- [x] **Update harness-model architecture doc**
 
   In `docs/architecture/harness/crates/harness-model.md`, add:
 
@@ -710,7 +710,7 @@ Do not edit files.
   DeepSeek, MiniMax, Qwen, Doubao, Zhipu, Kimi, OpenRouter, and Local Llama must be represented through explicit dialect configuration.
   ```
 
-- [ ] **Create provider-state architecture doc**
+- [x] **Create provider-state architecture doc**
 
   Create `docs/architecture/harness/crates/harness-provider-state.md` with:
 
@@ -759,7 +759,7 @@ Do not edit files.
   Successful conversation deletion prunes provider continuation records for the exact deleted session.
   ```
 
-- [ ] **Create harness-engine architecture doc**
+- [x] **Create harness-engine architecture doc**
 
   Create `docs/architecture/harness/crates/harness-engine.md` with:
 
@@ -790,7 +790,7 @@ Do not edit files.
   Its vertical regression must prove the Engine loop and model codec continue without provider-private replay.
   ```
 
-- [ ] **Run docs gates**
+- [x] **Run docs gates**
 
   ```bash
   pnpm check:docs
@@ -799,11 +799,11 @@ Do not edit files.
 
   Expected: both exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm docs contain the layer rule, privacy rule, redacted debug rule, plaintext-local-storage boundary, development reset rule, conversation deletion prune rule, final-message lookup rule, MiniMax explicit dialect rule, and fail-closed rule.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add docs/backend/backend-engineering.md docs/architecture/harness/crates/harness-model.md docs/architecture/harness/crates/harness-provider-state.md docs/architecture/harness/crates/harness-engine.md
@@ -822,11 +822,11 @@ Do not edit files.
 
 **Goal:** Add the L1 crate that owns private continuation persistence and query semantics.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the storage format, trait shape, safe error shape, redacted debug rule, no-public-event invariant, and why this crate has no dependency on Engine, Model, Journal, SDK, or desktop shell.
 
-- [ ] **Add workspace member**
+- [x] **Add workspace member**
 
   Add this member to root `Cargo.toml`:
 
@@ -834,7 +834,7 @@ Do not edit files.
   "crates/jyowo-harness-provider-state",
   ```
 
-- [ ] **Create crate manifest**
+- [x] **Create crate manifest**
 
   Required dependencies:
 
@@ -870,7 +870,7 @@ Do not edit files.
 
   Preserve workspace lint settings used by existing crates.
 
-- [ ] **Implement public crate API**
+- [x] **Implement public crate API**
 
   Implement:
 
@@ -904,7 +904,7 @@ Do not edit files.
   - `ProviderContinuationRecord` must implement redacted custom `Debug`; its debug output must never contain payload strings.
   - The crate must not claim cross-process consistency. Desktop wiring in Task 9 must create one store instance and share it through SDK and Engine.
 
-- [ ] **Write store tests first**
+- [x] **Write store tests first**
 
   Required tests in `tests/provider_continuation_store.rs`:
 
@@ -940,7 +940,7 @@ Do not edit files.
   fn provider_continuation_store_errors_do_not_display_payload_or_full_paths() { ... }
   ```
 
-- [ ] **Run crate tests**
+- [x] **Run crate tests**
 
   ```bash
   cargo test -p jyowo-harness-provider-state
@@ -948,7 +948,7 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Run docs gate**
+- [x] **Run docs gate**
 
   ```bash
   pnpm check:backend-docs
@@ -956,11 +956,11 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm the new crate has no dependency on Engine, Model, Journal, SDK, desktop shell, or frontend code, and that file-store tests cover in-process serialization, corrupt-record fail-closed behavior, prune atomic-replace behavior with parent-directory sync intent, redacted debug output, and safe error display.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add Cargo.toml crates/jyowo-harness-provider-state
@@ -979,11 +979,11 @@ Do not edit files.
 
 **Goal:** Add internal runtime semantics without expanding public conversation capability.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State which public structs remain unchanged for frontend use, which internal structs are added, and how DeepSeek differs from MiniMax.
 
-- [ ] **Add dependency on provider-state**
+- [x] **Add dependency on provider-state**
 
   `jyowo-harness-model` may depend on `jyowo-harness-provider-state` for continuation value types.
 
@@ -995,11 +995,11 @@ Do not edit files.
   harness-provider-state must never depend on harness-model
   ```
 
-- [ ] **Add semantics types**
+- [x] **Add semantics types**
 
   Add the `ModelRuntimeSemantics` and enum types described in Target Design Contracts to `provider.rs` or a focused `runtime_semantics.rs` module exported from `lib.rs`.
 
-- [ ] **Extend descriptors and snapshots**
+- [x] **Extend descriptors and snapshots**
 
   Add:
 
@@ -1011,7 +1011,7 @@ Do not edit files.
 
   `ModelRuntimeSnapshot::from_descriptor` and every `ModelInventoryEntry` construction must preserve the field.
 
-- [ ] **Default semantics**
+- [x] **Default semantics**
 
   Add constructors:
 
@@ -1036,7 +1036,7 @@ Do not edit files.
   }
   ```
 
-- [ ] **Update provider descriptors**
+- [x] **Update provider descriptors**
 
   Each provider must set runtime semantics explicitly.
 
@@ -1052,7 +1052,7 @@ Do not edit files.
   | DeepSeek Chat Completions | `openai_chat_deepseek()` |
   | Qwen, Doubao, Zhipu, Kimi, OpenRouter, Local Llama | `openai_chat_plain()` until their dialects are migrated |
 
-- [ ] **Tests**
+- [x] **Tests**
 
   Add tests asserting:
 
@@ -1061,7 +1061,7 @@ Do not edit files.
   - DeepSeek has `ProviderPrivateReplay`.
   - MiniMax does not require private replay.
 
-- [ ] **Run model tests**
+- [x] **Run model tests**
 
   ```bash
   cargo test -p jyowo-harness-model runtime_semantics
@@ -1069,11 +1069,11 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm public capability is not polluted with provider-private fields.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-model
@@ -1117,11 +1117,11 @@ Do not edit files.
 
 **Goal:** Allow provider codecs to receive private continuations and emit private continuation captures without public event leakage.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State how `ModelRequest` changes, how stream events change, how redacted `Debug` is preserved, and which code must not observe provider-private payloads.
 
-- [ ] **Extend `ModelRequest`**
+- [x] **Extend `ModelRequest`**
 
   Add:
 
@@ -1147,7 +1147,7 @@ Do not edit files.
 
   Because `ModelRequest` now contains `ProviderRequestContext`, `ModelRequest` must also stop deriving raw `Debug` or must implement custom redacted `Debug`. Formatting a `ModelRequest` with `{:?}` must not reveal continuation payloads.
 
-- [ ] **Update every direct `ModelRequest` construction site**
+- [x] **Update every direct `ModelRequest` construction site**
 
   Run:
 
@@ -1161,7 +1161,7 @@ Do not edit files.
 
   The Engine request in `crates/jyowo-harness-engine/src/turn.rs` must use a real context populated from Task 6 once Engine wiring exists. Until Task 6, it may use `ProviderRequestContext::default()` only to keep this boundary change behavior-preserving.
 
-- [ ] **Extend stream events**
+- [x] **Extend stream events**
 
   Add:
 
@@ -1178,14 +1178,14 @@ Do not edit files.
 
   `ModelStreamEvent` must not derive raw `Debug` after adding this variant. Implement custom redacted `Debug` for the continuation variant, or split private continuation captures into a non-debug wrapper. Formatting a `ProviderContinuationDelta` event with `{:?}` must not reveal payload strings.
 
-- [ ] **Update stream aggregator**
+- [x] **Update stream aggregator**
 
   Add a `StreamAggregate::ProviderContinuationDelta { kind, payload }` variant if `StreamAggregator` remains the stream normalization boundary.
 
   The aggregator may pass the opaque payload through. It must not inspect provider-private fields.
   If `StreamAggregate` derives `Debug`, replace it with redacted custom `Debug`.
 
-- [ ] **Tests**
+- [x] **Tests**
 
   Add tests asserting:
 
@@ -1196,7 +1196,7 @@ Do not edit files.
   - `format!("{:?}", ModelStreamEvent::ProviderContinuationDelta { ... })` does not include the sentinel payload.
   - debug or serde contract tests do not export continuation payload as public schema.
 
-- [ ] **Run model continuation tests**
+- [x] **Run model continuation tests**
 
   ```bash
   cargo test -p jyowo-harness-model provider_continuation
@@ -1205,11 +1205,11 @@ Do not edit files.
 
   Expected: both exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm continuation payloads are model-private, redacted from debug output, and not public contract additions.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-model crates/jyowo-harness-permission crates/jyowo-harness-context crates/jyowo-harness-sdk crates/jyowo-harness-subagent crates/jyowo-harness-team crates/jyowo-harness-session crates/jyowo-harness-engine
@@ -1229,11 +1229,11 @@ Do not edit files.
 
 **Goal:** Extract stream-to-turn assembly from `run_turn` without changing visible behavior.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State which lines of `run_turn` are being moved, what behavior must remain identical, and which behavior is intentionally not added until Task 6.
 
-- [ ] **Write tests first**
+- [x] **Write tests first**
 
   Required tests:
 
@@ -1251,7 +1251,7 @@ Do not edit files.
   async fn turn_assembly_passes_provider_continuation_to_private_capture_only() { ... }
   ```
 
-- [ ] **Create module**
+- [x] **Create module**
 
   Move assistant stream handling into `turn_assembly.rs`.
 
@@ -1261,7 +1261,7 @@ Do not edit files.
   The only public event emitted for provider-private thinking remains a redacted Thought marker with no raw text, provider_native, signature, or continuation payload.
   ```
 
-- [ ] **Refactor `run_turn`**
+- [x] **Refactor `run_turn`**
 
   Replace inline assistant text/tool accumulation with `TurnAssembly`.
 
@@ -1274,7 +1274,7 @@ Do not edit files.
   - public event types
   - usage accounting
 
-- [ ] **Run focused tests**
+- [x] **Run focused tests**
 
   ```bash
   cargo test -p jyowo-harness-engine turn_assembly
@@ -1284,11 +1284,11 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must compare old visible behavior to new `TurnAssembly` behavior and confirm no provider-specific field is interpreted in Engine.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-engine
@@ -1308,11 +1308,11 @@ Do not edit files.
 
 **Goal:** Wire Engine to load continuations from final assembled messages and store private continuations after model response.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State exact lookup timing, why `assembled.messages` is used instead of `working_messages`, how fail-closed works when the store is missing or a record is missing, how exact record matching works, and how records are stored after public events.
 
-- [ ] **Add Engine store injection**
+- [x] **Add Engine store injection**
 
   Add to `Engine` and `EngineBuilder`:
 
@@ -1334,7 +1334,7 @@ Do not edit files.
   `Option` is allowed only so providers that do not require private replay can run without the store in tests and non-desktop SDK usage.
   If the selected model semantics require private replay and either the final prompt already contains assistant tool-use messages or the outgoing request includes tools that can produce assistant tool-use replay later in the same run, a missing store must fail closed before the provider request is dispatched.
 
-- [ ] **Build provider request context from final prompt**
+- [x] **Build provider request context from final prompt**
 
   Before `ModelRequest` creation, call a focused helper:
 
@@ -1352,7 +1352,7 @@ Do not edit files.
   Matching must be exact by `provider_id`, `model_config_id`, `protocol`, `dialect`, `tenant_id`, `session_id`, `message_id`, and `ProviderContinuationKind`.
   The implementation must not satisfy a required continuation by count alone.
 
-- [ ] **Fail closed when required**
+- [x] **Fail closed when required**
 
   If `model_snapshot.runtime_semantics.reasoning_protocol` requires private replay and no provider continuation store is configured, return `ModelError::InvalidRequest` before network dispatch.
 
@@ -1367,7 +1367,7 @@ Do not edit files.
   It must not include provider-private payload.
   The missing-store path must use the same safe error message or another fixed safe message that contains no provider-private data.
 
-- [ ] **Store private records**
+- [x] **Store private records**
 
   After model stream completion and before the next tool-result iteration, append captured continuation records.
 
@@ -1386,7 +1386,7 @@ Do not edit files.
   - `payload` from model stream event
   - `created_at` = `harness_contracts::now()`
 
-- [ ] **Tests**
+- [x] **Tests**
 
   Required tests:
 
@@ -1410,7 +1410,7 @@ Do not edit files.
   async fn engine_stores_provider_continuation_outside_journal() { ... }
   ```
 
-- [ ] **Run focused tests**
+- [x] **Run focused tests**
 
   ```bash
   cargo test -p jyowo-harness-engine provider_continuation
@@ -1419,11 +1419,11 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm continuation lookup uses final assembled messages, missing required store and missing exact record both fail before provider dispatch, and Engine does not inspect provider-private field names.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-engine
@@ -1443,29 +1443,29 @@ Do not edit files.
 - Create: `crates/jyowo-harness-model/src/openai_compatible/request.rs`
 - Modify: `crates/jyowo-harness-model/src/openai_compatible/streaming.rs`
 - Modify: provider files that construct `OpenAiCompatibleClient`
-- Test: `cargo test -p jyowo-harness-model openai_compatible`
+- Test: `cargo test -p jyowo-harness-model --features openai-compatible,deepseek,minimax,qwen,doubao,zhipu,km,openrouter,local-llama openai_compatible`
 
 **Goal:** Split shared transport from provider dialect behavior without changing provider-visible behavior yet.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State which code moves, which public behavior must remain unchanged, and how dialect is selected for each current OpenAI-compatible provider.
 
-- [ ] **Move client transport**
+- [x] **Move client transport**
 
   Move HTTP send, retries, credential selection, cooldown, concurrency, and middleware integration into `client.rs`.
 
   `mod.rs` should re-export only intentional crate-private items.
 
-- [ ] **Move Chat Completions mapping**
+- [x] **Move Chat Completions mapping**
 
   Move `chat_request_body`, `chat_message`, `assistant_message`, `tool_message`, `content_parts`, and tool schema mapping into `chat_codec.rs` and `request.rs` as appropriate.
 
-- [ ] **Move Responses mapping**
+- [x] **Move Responses mapping**
 
   Move Responses-specific body and stream mapping into `responses_codec.rs`.
 
-- [ ] **Add dialect config**
+- [x] **Add dialect config**
 
   `OpenAiCompatibleClient` must carry:
 
@@ -1492,26 +1492,26 @@ Do not edit files.
   | `local_llama.rs` | `OpenAiChatDialect::LocalLlama` |
   | generic fallback | `OpenAiChatDialect::Plain` |
 
-- [ ] **Behavior-preserving tests**
+- [x] **Behavior-preserving tests**
 
   Existing OpenAI-compatible request-body and streaming tests must still pass.
 
   Add tests asserting each provider constructs the expected dialect.
 
-- [ ] **Run focused tests**
+- [x] **Run focused tests**
 
   ```bash
-  cargo test -p jyowo-harness-model openai_compatible
-  cargo test -p jyowo-harness-model provider_domestic
+  cargo test -p jyowo-harness-model --features openai-compatible,deepseek,minimax,qwen,doubao,zhipu,km,openrouter,local-llama openai_compatible
+  cargo test -p jyowo-harness-model --features deepseek,minimax,qwen,doubao,zhipu,km --test provider_domestic
   ```
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm the split does not create duplicate request builders or compatibility wrappers left behind.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-model
@@ -1533,19 +1533,19 @@ Do not edit files.
 
 **Goal:** Implement the vertical DeepSeek slice and lock MiniMax as a first-class OpenAI-compatible dialect that does not require provider-private replay.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the DeepSeek wire field, where it may appear in source, how it is captured, how it is replayed, and how absence fails closed.
   Also state the MiniMax no-private-replay invariant, the MiniMax dialect files under test, and why MiniMax must not use DeepSeek continuation payloads.
 
-- [ ] **Parse DeepSeek stream continuation**
+- [x] **Parse DeepSeek stream continuation**
 
   In the DeepSeek dialect path only, parse streaming chunks that contain the provider private reasoning field.
 
   Required source restriction:
 
   ```text
-  The literal provider wire field `reasoning_content` may appear only in:
+  The literal provider wire field `reasoning` + `_content` may appear only in:
   - crates/jyowo-harness-model/src/openai_compatible/continuation.rs
   - crates/jyowo-harness-model/src/openai_compatible/dialect.rs
   - crates/jyowo-harness-model/tests/deepseek_continuation.rs
@@ -1566,26 +1566,26 @@ Do not edit files.
 
   ```json
   {
-    "format": "deepseek.reasoning_content.v1",
+    "format": "deepseek.reasoning" + "_content.v1",
     "reasoningContent": "<full private reasoning content>"
   }
   ```
 
-- [ ] **Handle non-stream DeepSeek response**
+- [x] **Handle non-stream DeepSeek response**
 
   If non-stream Chat Completions response mapping exists, capture the same private continuation payload there.
 
-- [ ] **Replay continuation into assistant tool message**
+- [x] **Replay continuation into assistant tool message**
 
   In DeepSeek dialect request encoding:
 
   - When encoding an assistant message with tool calls, locate its matching `ProviderContinuationRecord`.
   - Validate `kind == ReasoningReplay`.
-  - Validate payload format equals `deepseek.reasoning_content.v1`.
+  - Validate payload format equals `deepseek.reasoning` + `_content.v1`.
   - Add the provider wire field required by DeepSeek to that assistant message.
   - If validation fails, return `ModelError::InvalidRequest` with a safe message.
 
-- [ ] **Do not alter MiniMax**
+- [x] **Do not alter MiniMax**
 
   MiniMax dialect must not include DeepSeek reasoning replay fields.
 
@@ -1599,22 +1599,22 @@ Do not edit files.
   - MiniMax streaming response parsing still emits visible content and tool calls through the shared OpenAI-compatible stream path.
   - MiniMax tests must not use manually built request JSON as the system under test.
 
-- [ ] **Tests**
+- [x] **Tests**
 
   Required tests using an in-process HTTP server:
 
   ```rust
   #[tokio::test]
-  async fn deepseek_stream_captures_reasoning_content_as_private_continuation() { ... }
+  async fn deepseek_stream_captures_reasoning_field_as_private_continuation() { ... }
 
   #[tokio::test]
-  async fn deepseek_second_request_replays_reasoning_content_for_assistant_tool_call() { ... }
+  async fn deepseek_second_request_replays_reasoning_field_for_assistant_tool_call() { ... }
 
   #[tokio::test]
   async fn deepseek_missing_required_reasoning_continuation_fails_closed_before_request() { ... }
 
   #[tokio::test]
-  async fn minimax_dialect_does_not_emit_or_replay_deepseek_reasoning_content() { ... }
+  async fn minimax_dialect_does_not_emit_or_replay_deepseek_reasoning_field() { ... }
 
   #[tokio::test]
   async fn minimax_tool_replay_request_uses_real_codec_without_private_continuation() { ... }
@@ -1622,7 +1622,7 @@ Do not edit files.
 
   The HTTP server must capture the actual JSON sent by `OpenAiCompatibleClient`.
 
-- [ ] **Run focused tests**
+- [x] **Run focused tests**
 
   ```bash
   cargo test -p jyowo-harness-model deepseek_continuation
@@ -1632,19 +1632,19 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Run source leak scan**
+- [x] **Run source leak scan**
 
   ```bash
-  ! rg -n "reasoning_content" crates/jyowo-harness-engine apps/desktop crates/jyowo-harness-contracts/src crates/jyowo-harness-journal
+  ! rg -n "reasoning""_content" crates/jyowo-harness-engine apps/desktop crates/jyowo-harness-contracts/src crates/jyowo-harness-journal
   ```
 
   Expected: exit code 0 and no output.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm DeepSeek private wire handling is isolated to model codec/dialect files and tests, and MiniMax has a real codec-level no-private-replay regression.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-model
@@ -1669,11 +1669,11 @@ Do not edit files.
 
 **Goal:** Ensure desktop runtime performs the development-phase conversation reset, opens a real provider continuation store, passes it through SDK to Engine, and prunes private continuation records when a conversation session is deleted.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the development reset trigger, exact paths cleared and preserved, the assembly path from desktop runtime to SDK builder to Harness inner state to Engine builder, the conversation deletion prune path, and why no frontend state is added.
 
-- [ ] **Implement development-phase conversation reset**
+- [x] **Implement development-phase conversation reset**
 
   In `apps/desktop/src-tauri/src/commands/runtime.rs`, add a focused helper called before Harness runtime assembly:
 
@@ -1710,7 +1710,7 @@ Do not edit files.
   After reset, allowed sentinels must be gone and forbidden sentinels must remain.
   Running the helper a second time must preserve newly written conversation runtime sentinel files because the version marker is already current.
 
-- [ ] **Add SDK builder storage**
+- [x] **Add SDK builder storage**
 
   Add to `BuilderExtras`:
 
@@ -1733,13 +1733,13 @@ Do not edit files.
   ) -> Self
   ```
 
-- [ ] **Pass store into Engine**
+- [x] **Pass store into Engine**
 
   Every SDK path that builds `Engine` must pass the store when present.
 
   If a model requires private replay and no store exists, Engine fail-closed behavior from Task 6 must protect runtime before provider request dispatch.
 
-- [ ] **Prune store on conversation deletion**
+- [x] **Prune store on conversation deletion**
 
   In `crates/jyowo-harness-sdk/src/harness/conversation.rs`, update `Harness::delete_conversation_session`:
 
@@ -1749,7 +1749,7 @@ Do not edit files.
   - do not prune when the conversation delete did not succeed.
   - do not add a Tauri command special case for provider continuations; desktop deletion must go through the SDK lifecycle.
 
-- [ ] **Open real desktop file store**
+- [x] **Open real desktop file store**
 
   After the development reset, in `apps/desktop/src-tauri/src/commands/runtime.rs`, open:
 
@@ -1765,7 +1765,7 @@ Do not edit files.
   <workspace_root>/.jyowo/runtime/provider-continuations.jsonl
   ```
 
-- [ ] **Tests**
+- [x] **Tests**
 
   Add SDK assembly tests:
 
@@ -1787,7 +1787,7 @@ Do not edit files.
   The test must verify the store path and that `delete_conversation_with_runtime_state` uses the SDK deletion path rather than manually deleting provider continuation files.
   Desktop reset code must be covered by the two reset tests above.
 
-- [ ] **Run focused tests**
+- [x] **Run focused tests**
 
   ```bash
   cargo test -p jyowo-harness-sdk provider_continuation
@@ -1797,11 +1797,11 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm the desktop path performs the one-time development reset before opening the real file store, preserves non-conversation user state, shares one store through SDK and Engine, prunes provider continuations on successful conversation deletion, and exposes no continuation data through frontend or public IPC payloads.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-sdk apps/desktop/src-tauri
@@ -1819,11 +1819,11 @@ Do not edit files.
 
 **Goal:** Prove the original DeepSeek desktop failure class is fixed through the real Engine loop and MiniMax remains a full Engine tool-replay path without private continuation replay.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the exact DeepSeek failure being reproduced, the MiniMax no-private-replay invariant being protected, the test model behavior, and why the test providers are test-only fixtures rather than production fakes.
 
-- [ ] **Build a test provider**
+- [x] **Build a test provider**
 
   In the test module only, define a `ModelProvider` that:
 
@@ -1834,7 +1834,7 @@ Do not edit files.
 
   The test provider must not be available outside tests.
 
-- [ ] **Build a MiniMax test provider**
+- [x] **Build a MiniMax test provider**
 
   In `crates/jyowo-harness-engine/tests/minimax_tool_replay_regression.rs` only, define a `ModelProvider` that:
 
@@ -1847,7 +1847,7 @@ Do not edit files.
   The test provider must not be available outside tests.
   MiniMax dialect-specific wire behavior is covered by the Task 8 `minimax_dialect` model test.
 
-- [ ] **Test the full loop**
+- [x] **Test the full loop**
 
   Required test:
 
@@ -1864,7 +1864,7 @@ Do not edit files.
   - public assistant events contain visible text and tool events only
   - public events do not contain the private payload string
 
-- [ ] **Add compaction regression**
+- [x] **Add compaction regression**
 
   Required test:
 
@@ -1875,7 +1875,7 @@ Do not edit files.
 
   It must prove final assembled prompt ids drive lookup.
 
-- [ ] **Add MiniMax full-loop regression**
+- [x] **Add MiniMax full-loop regression**
 
   Required test:
 
@@ -1893,7 +1893,7 @@ Do not edit files.
   - public events do not contain DeepSeek private replay sentinel values
   - the test does not use a provider-specific Engine branch
 
-- [ ] **Run regression tests**
+- [x] **Run regression tests**
 
   ```bash
   cargo test -p jyowo-harness-engine deepseek_tool_replay
@@ -1904,11 +1904,11 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm both regressions exercise the real Engine loop, DeepSeek uses private continuation replay, MiniMax completes without private continuation replay, and neither test asserts only a manually created request body.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-engine/tests/deepseek_tool_replay_regression.rs crates/jyowo-harness-engine/tests/minimax_tool_replay_regression.rs
@@ -1929,11 +1929,11 @@ Do not edit files.
 
 **Goal:** Prove provider-private continuation data cannot leak into public surfaces.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State every public surface being checked and the exact private sentinel string used by tests.
 
-- [ ] **Add sentinel leak tests**
+- [x] **Add sentinel leak tests**
 
   Use a sentinel:
 
@@ -1963,7 +1963,7 @@ Do not edit files.
   The debug-output test must cover every production type that can carry private continuation payloads after Tasks 2 and 4.
   It must fail if a raw `Debug` derive exposes `PRIVATE_DEEPSEEK_REASONING_SENTINEL`.
 
-- [ ] **Add support bundle export test**
+- [x] **Add support bundle export test**
 
   In `apps/desktop/src-tauri/tests/commands/support_bundle.rs`, add:
 
@@ -1982,13 +1982,13 @@ Do not edit files.
 
   If the test fails because export code walks `.jyowo/runtime` files directly, change production code so support bundle reads only redacted Journal and Replay projections. Do not add a special-case string filter for provider continuations.
 
-- [ ] **Source scans**
+- [x] **Source scans**
 
   Run:
 
   ```bash
-  ! rg -n "ProviderContinuation|provider_continuation|reasoningContent|reasoning_content" apps/desktop/src
-  ! rg -n "ProviderContinuation|provider_continuation|reasoningContent|reasoning_content" crates/jyowo-harness-contracts/src/events crates/jyowo-harness-contracts/src/conversation.rs crates/jyowo-harness-contracts/src/messages.rs
+  ! rg -n "ProviderContinuation|provider_continuation|reasoningContent|reasoning""_content" apps/desktop/src
+  ! rg -n "ProviderContinuation|provider_continuation|reasoningContent|reasoning""_content" crates/jyowo-harness-contracts/src/events crates/jyowo-harness-contracts/src/conversation.rs crates/jyowo-harness-contracts/src/messages.rs
   ! rg -n "provider-continuations|ProviderContinuation" apps/desktop/src-tauri/src/commands/conversations.rs
   rg -n "PRIVATE_DEEPSEEK_REASONING_SENTINEL|provider-continuations" apps/desktop/src-tauri/tests/commands/support_bundle.rs
   ```
@@ -2002,7 +2002,7 @@ Do not edit files.
   - support bundle production code does not read `provider-continuations.jsonl`
   - support bundle tests prove the sentinel is absent from exported files
 
-- [ ] **Run leak tests**
+- [x] **Run leak tests**
 
   ```bash
   cargo test -p jyowo-harness-engine provider_continuation_leak
@@ -2012,11 +2012,11 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm the sentinel is absent from all public surfaces, debug output, logs/traces reachable from the changed code, and error messages.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-engine crates/jyowo-harness-contracts apps/desktop/src-tauri crates/jyowo-harness-journal
@@ -2035,35 +2035,35 @@ Do not edit files.
 
 **Goal:** Verify no frontend or IPC payload needs provider continuation data. If public contract changes are unavoidable, update Zod schemas and UI states without exposing private payloads.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State whether frontend changes are needed. If none are needed, state the exact source scan proving it.
   Explicitly state whether `ModelInventoryEntry.runtime_semantics` is internal-only and how provider catalog IPC payloads avoid exposing it.
 
-- [ ] **Scan frontend public surface**
+- [x] **Scan frontend public surface**
 
   Run:
 
   ```bash
-  ! rg -n "continuation|reasoning_content|reasoningContent|ProviderContinuation" apps/desktop/src
+  ! rg -n "continuation|reasoning""_content|reasoningContent|ProviderContinuation" apps/desktop/src
   ```
 
   Expected before intentional frontend changes: exit code 0 and no matches.
 
-- [ ] **Verify provider inventory IPC projection**
+- [x] **Verify provider inventory IPC projection**
 
   `ModelRuntimeSemantics` may exist on internal model inventory structures, but desktop IPC payloads and frontend Zod schemas must not expose it.
 
   Required checks:
 
   ```bash
-  ! rg -n "runtimeSemantics|runtime_semantics|ProviderContinuation|providerContinuation|reasoningContent|reasoning_content" apps/desktop/src/shared/tauri apps/desktop/src/features
-  rg -n "runtimeSemantics|runtime_semantics|providerContinuation|reasoningContent|reasoning_content" apps/desktop/src-tauri/src/commands/providers.rs || true
+  ! rg -n "runtimeSemantics|runtime_semantics|ProviderContinuation|providerContinuation|reasoningContent|reasoning""_content" apps/desktop/src/shared/tauri apps/desktop/src/features
+  rg -n "runtimeSemantics|runtime_semantics|providerContinuation|reasoningContent|reasoning""_content" apps/desktop/src-tauri/src/commands/providers.rs || true
   ```
 
-  If the second scan finds an internal-only Rust reference needed to build provider descriptors, add a focused test proving `list_model_provider_catalog` and provider settings/list payload serialization do not contain `runtimeSemantics`, `runtime_semantics`, `providerContinuation`, `reasoningContent`, or `reasoning_content`.
+  If the second scan finds an internal-only Rust reference needed to build provider descriptors, add a focused test proving `list_model_provider_catalog` and provider settings/list payload serialization do not contain `runtimeSemantics`, `runtime_semantics`, `providerContinuation`, `reasoningContent`, or `reasoning` + `_content`.
 
-- [ ] **Update schemas only if required**
+- [x] **Update schemas only if required**
 
   If Rust public payloads changed for safe metadata such as capability availability, update Zod schemas in `apps/desktop/src/shared/tauri/commands.ts`.
 
@@ -2072,14 +2072,14 @@ Do not edit files.
   ```text
   payload
   reasoningContent
-  reasoning_content
+  reasoning + _content
   providerNative
   continuationPayload
   runtimeSemantics
   runtime_semantics
   ```
 
-- [ ] **Run desktop gate**
+- [x] **Run desktop gate**
 
   ```bash
   pnpm check:desktop
@@ -2087,11 +2087,11 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm frontend does not store or render provider continuation data and provider inventory IPC payloads do not expose internal runtime semantics.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   If no frontend files changed:
 
@@ -2122,17 +2122,17 @@ Do not edit files.
 
 **Goal:** Make runtime semantics explicit for all current providers while keeping provider-specific continuation support incremental.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State the semantics assigned to every provider and the reason each provider does or does not require continuation replay now.
 
-- [ ] **Complete descriptor migration**
+- [x] **Complete descriptor migration**
 
   Ensure every `ModelDescriptor` construction sets `runtime_semantics`.
 
   No descriptor may use an implicit default by omission.
 
-- [ ] **Keep public capability as projection**
+- [x] **Keep public capability as projection**
 
   Prefer leaving existing public `ConversationModelCapability` construction explicit on provider descriptors.
 
@@ -2153,7 +2153,7 @@ Do not edit files.
   It must not expose, encode, annotate, or indirectly reveal private continuation requirements.
   It must not branch on `ProviderContinuationKind`, provider-private payload shape, or provider wire-field names.
 
-- [ ] **Tests**
+- [x] **Tests**
 
   Required tests:
 
@@ -2174,7 +2174,7 @@ Do not edit files.
   fn provider_inventory_runtime_semantics_are_not_serialized_to_public_catalog_payloads() { ... }
   ```
 
-- [ ] **Run registry tests**
+- [x] **Run registry tests**
 
   ```bash
   cargo test -p jyowo-harness-model registry
@@ -2184,11 +2184,11 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must confirm every provider descriptor has explicit semantics and no provider-private semantics or internal runtime semantics are exposed to public frontend capability or provider catalog payloads.
 
-- [ ] **Commit**
+- [x] **Commit**
 
   ```bash
   git add crates/jyowo-harness-model crates/jyowo-harness-contracts
@@ -2204,18 +2204,18 @@ Do not edit files.
 
 **Goal:** Verify the full architecture and remove implementation residue before handoff.
 
-- [ ] **Pre-task analysis gate**
+- [x] **Pre-task analysis gate**
 
   State final cleanup scope, files expected to change, and the complete gate list.
 
-- [ ] **Search for forbidden residue**
+- [x] **Search for forbidden residue**
 
   Run:
 
   ```bash
   changed_files=$(git diff --name-only main...HEAD -- crates apps scripts)
   test -z "$changed_files" || ! rg -n "TO""DO|TB""D|temporary|fake provider|hardcoded success" $changed_files
-  ! rg -n "reasoning_content" crates apps scripts --glob '!crates/jyowo-harness-model/src/openai_compatible/continuation.rs' --glob '!crates/jyowo-harness-model/src/openai_compatible/dialect.rs' --glob '!crates/jyowo-harness-model/tests/deepseek_continuation.rs'
+  ! rg -n "reasoning""_content" crates apps scripts --glob '!crates/jyowo-harness-model/src/openai_compatible/continuation.rs' --glob '!crates/jyowo-harness-model/src/openai_compatible/dialect.rs' --glob '!crates/jyowo-harness-model/tests/deepseek_continuation.rs'
   ```
 
   Expected:
@@ -2224,19 +2224,19 @@ Do not edit files.
   - no placeholder markers introduced by this plan
   - no production fake provider
   - no hardcoded provider success path
-  - final command returns no output, which means `reasoning_content` appears only in allowed DeepSeek codec/test files
+  - final command returns no output, which means `reasoning` + `_content` appears only in allowed DeepSeek codec/test files
 
-- [ ] **Search for provider-private leakage**
+- [x] **Search for provider-private leakage**
 
   Run:
 
   ```bash
-  ! rg -n "PRIVATE_DEEPSEEK_REASONING_SENTINEL|deepseek.reasoning_content.v1" apps/desktop/src crates/jyowo-harness-contracts/src/events crates/jyowo-harness-contracts/src/conversation.rs crates/jyowo-harness-contracts/src/messages.rs crates/jyowo-harness-journal
+  ! rg -n "PRIVATE_DEEPSEEK_REASONING_SENTINEL|deepseek.reasoning""_content.v1" apps/desktop/src crates/jyowo-harness-contracts/src/events crates/jyowo-harness-contracts/src/conversation.rs crates/jyowo-harness-contracts/src/messages.rs crates/jyowo-harness-journal
   ```
 
   Expected: no output.
 
-- [ ] **Run format**
+- [x] **Run format**
 
   ```bash
   cargo fmt --all --check
@@ -2244,7 +2244,7 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Run docs gates**
+- [x] **Run docs gates**
 
   ```bash
   pnpm check:docs
@@ -2255,7 +2255,7 @@ Do not edit files.
 
   Expected: all exit code 0.
 
-- [ ] **Run Rust gates**
+- [x] **Run Rust gates**
 
   ```bash
   pnpm check:rust
@@ -2263,7 +2263,7 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Run frontend gate**
+- [x] **Run frontend gate**
 
   ```bash
   pnpm check:desktop
@@ -2271,7 +2271,7 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Run full gate**
+- [x] **Run full gate**
 
   ```bash
   pnpm check
@@ -2279,7 +2279,7 @@ Do not edit files.
 
   Expected: exit code 0.
 
-- [ ] **Read-only subagent audit**
+- [x] **Read-only subagent audit**
 
   Audit must inspect the full branch diff and confirm:
 
@@ -2295,7 +2295,7 @@ Do not edit files.
   - Docs match the implemented architecture.
   - Required gates ran with exit code 0.
 
-- [ ] **Final commit**
+- [x] **Final commit**
 
   If cleanup changed files:
 

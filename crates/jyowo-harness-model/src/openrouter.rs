@@ -3,7 +3,9 @@ use harness_contracts::ModelError;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::openai_compatible::{OpenAiCompatibleClient, OpenAiCompatibleProviderExt};
+use crate::openai_compatible::{
+    OpenAiChatDialect, OpenAiCompatibleClient, OpenAiCompatibleProviderExt,
+};
 use crate::{
     ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
     ModelInventoryEntry, ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest,
@@ -24,7 +26,8 @@ impl OpenRouterProvider {
     pub fn from_api_key(api_key: impl Into<String>) -> Self {
         Self {
             client: OpenAiCompatibleClient::from_api_key(api_key, DEFAULT_BASE_URL)
-                .with_provider_id(PROVIDER_ID),
+                .with_provider_id(PROVIDER_ID)
+                .with_chat_dialect(OpenAiChatDialect::OpenRouter),
             extra_models: Vec::new(),
         }
     }
@@ -116,6 +119,7 @@ fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {
             input_modalities: vec![ModelModality::Text],
             output_modalities: vec![ModelModality::Text],
         },
+        runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_plain(),
         lifecycle: ModelLifecycle::Stable,
         pricing: None,
     }
@@ -215,6 +219,7 @@ impl OpenRouterModelData {
             context_window,
             max_output_tokens,
             conversation_capability,
+            runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_plain(),
             lifecycle: ModelLifecycle::Stable,
             pricing: None,
             runtime_status,

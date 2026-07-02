@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,6 +10,7 @@ use harness_contracts::{
     ModelRef, PricingId, PricingSnapshotId, RequestId, RunId, SessionId, StopReason, TenantId,
     ToolDescriptor, ToolUseId, UsageSnapshot,
 };
+use harness_provider_state::{ProviderContinuationKind, ProviderContinuationRecord};
 use http::HeaderMap;
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -153,6 +155,7 @@ pub struct ModelDescriptor {
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub conversation_capability: ConversationModelCapability,
+    pub runtime_semantics: ModelRuntimeSemantics,
     pub lifecycle: ModelLifecycle,
     pub pricing: Option<ModelPricing>,
 }
@@ -166,6 +169,7 @@ pub struct ModelRuntimeSnapshot {
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub conversation_capability: ConversationModelCapability,
+    pub runtime_semantics: ModelRuntimeSemantics,
     pub lifecycle: ModelLifecycle,
     pub pricing: Option<ModelPricing>,
 }
@@ -181,6 +185,7 @@ impl ModelRuntimeSnapshot {
             context_window: descriptor.context_window,
             max_output_tokens: descriptor.max_output_tokens,
             conversation_capability: descriptor.conversation_capability,
+            runtime_semantics: descriptor.runtime_semantics,
             lifecycle: descriptor.lifecycle,
             pricing: descriptor.pricing,
         }
@@ -210,6 +215,175 @@ pub enum ModelRuntimeStatus {
     Unsupported { reason: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelRuntimeSemantics {
+    pub protocol: ModelProtocol,
+    pub tool_protocol: ToolProtocolSemantics,
+    pub reasoning_protocol: ReasoningProtocolSemantics,
+    pub streaming_protocol: StreamingProtocolSemantics,
+    pub cache_protocol: CacheProtocolSemantics,
+    pub media_protocol: MediaProtocolSemantics,
+    pub output_protocol: OutputProtocolSemantics,
+    pub provider_continuation_dialect: Option<String>,
+}
+
+impl ModelRuntimeSemantics {
+    #[must_use]
+    pub fn messages_default(protocol: ModelProtocol) -> Self {
+        Self {
+            protocol,
+            tool_protocol: ToolProtocolSemantics::None,
+            reasoning_protocol: ReasoningProtocolSemantics::None,
+            streaming_protocol: StreamingProtocolSemantics::Sse,
+            cache_protocol: CacheProtocolSemantics::None,
+            media_protocol: MediaProtocolSemantics::TextOnly,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: None,
+        }
+    }
+
+    #[must_use]
+    pub fn openai_chat_plain() -> Self {
+        Self {
+            protocol: ModelProtocol::ChatCompletions,
+            tool_protocol: ToolProtocolSemantics::OpenAiChatTools,
+            reasoning_protocol: ReasoningProtocolSemantics::None,
+            streaming_protocol: StreamingProtocolSemantics::Sse,
+            cache_protocol: CacheProtocolSemantics::None,
+            media_protocol: MediaProtocolSemantics::OpenAiContentParts,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: Some("openai_chat.plain".to_owned()),
+        }
+    }
+
+    #[must_use]
+    pub fn openai_chat_minimax() -> Self {
+        Self {
+            provider_continuation_dialect: Some("openai_chat.minimax".to_owned()),
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
+    pub fn openai_chat_deepseek() -> Self {
+        Self {
+            reasoning_protocol: ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind: ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: true,
+            },
+            provider_continuation_dialect: Some("openai_chat.deepseek".to_owned()),
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
+    pub fn openai_responses_default() -> Self {
+        Self {
+            protocol: ModelProtocol::Responses,
+            tool_protocol: ToolProtocolSemantics::OpenAiResponsesTools,
+            reasoning_protocol: ReasoningProtocolSemantics::PublicSummary,
+            streaming_protocol: StreamingProtocolSemantics::Sse,
+            cache_protocol: CacheProtocolSemantics::OpenAiAuto,
+            media_protocol: MediaProtocolSemantics::OpenAiContentParts,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: None,
+        }
+    }
+
+    #[must_use]
+    pub fn anthropic_messages_default() -> Self {
+        Self {
+            protocol: ModelProtocol::Messages,
+            tool_protocol: ToolProtocolSemantics::AnthropicTools,
+            reasoning_protocol: ReasoningProtocolSemantics::PublicThinking,
+            streaming_protocol: StreamingProtocolSemantics::Sse,
+            cache_protocol: CacheProtocolSemantics::AnthropicEphemeral,
+            media_protocol: MediaProtocolSemantics::TextOnly,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: None,
+        }
+    }
+
+    #[must_use]
+    pub fn gemini_default() -> Self {
+        Self {
+            protocol: ModelProtocol::GenerateContent,
+            tool_protocol: ToolProtocolSemantics::GeminiTools,
+            reasoning_protocol: ReasoningProtocolSemantics::PublicSummary,
+            streaming_protocol: StreamingProtocolSemantics::Sse,
+            cache_protocol: CacheProtocolSemantics::GeminiContextCache,
+            media_protocol: MediaProtocolSemantics::ProviderNative,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: None,
+        }
+    }
+
+    #[must_use]
+    pub fn bedrock_converse_default() -> Self {
+        Self {
+            protocol: ModelProtocol::Messages,
+            tool_protocol: ToolProtocolSemantics::BedrockConverseTools,
+            reasoning_protocol: ReasoningProtocolSemantics::None,
+            streaming_protocol: StreamingProtocolSemantics::ProviderNative,
+            cache_protocol: CacheProtocolSemantics::None,
+            media_protocol: MediaProtocolSemantics::ProviderNative,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolProtocolSemantics {
+    None,
+    OpenAiChatTools,
+    OpenAiResponsesTools,
+    AnthropicTools,
+    GeminiTools,
+    BedrockConverseTools,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReasoningProtocolSemantics {
+    None,
+    PublicThinking,
+    PublicSummary,
+    ProviderPrivateReplay {
+        continuation_kind: ProviderContinuationKind,
+        required_for_assistant_tool_replay: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamingProtocolSemantics {
+    None,
+    Sse,
+    JsonLines,
+    ProviderNative,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CacheProtocolSemantics {
+    None,
+    OpenAiAuto,
+    AnthropicEphemeral,
+    GeminiContextCache,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaProtocolSemantics {
+    TextOnly,
+    OpenAiContentParts,
+    ProviderNative,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputProtocolSemantics {
+    Text,
+    TextAndToolUse,
+    StructuredJson,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelInventoryEntry {
     pub provider_id: String,
@@ -219,6 +393,7 @@ pub struct ModelInventoryEntry {
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub conversation_capability: ConversationModelCapability,
+    pub runtime_semantics: ModelRuntimeSemantics,
     pub lifecycle: ModelLifecycle,
     pub pricing: Option<ModelPricing>,
     pub runtime_status: ModelRuntimeStatus,
@@ -235,6 +410,7 @@ impl ModelInventoryEntry {
             context_window: descriptor.context_window,
             max_output_tokens: descriptor.max_output_tokens,
             conversation_capability: descriptor.conversation_capability,
+            runtime_semantics: descriptor.runtime_semantics,
             lifecycle: descriptor.lifecycle,
             pricing: descriptor.pricing,
             runtime_status: ModelRuntimeStatus::Runnable,
@@ -258,6 +434,7 @@ impl ModelInventoryEntry {
             context_window: 0,
             max_output_tokens: 0,
             conversation_capability,
+            runtime_semantics: ModelRuntimeSemantics::messages_default(protocol),
             lifecycle: ModelLifecycle::Stable,
             pricing: None,
             runtime_status: ModelRuntimeStatus::Unsupported {
@@ -309,7 +486,7 @@ pub enum BillingMode {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Ratio(pub f32);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ModelRequest {
     pub model_id: String,
     pub messages: Vec<Message>,
@@ -321,9 +498,52 @@ pub struct ModelRequest {
     pub cache_breakpoints: Vec<CacheBreakpoint>,
     pub protocol: ModelProtocol,
     pub extra: Value,
+    pub provider_context: ProviderRequestContext,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl fmt::Debug for ModelRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ModelRequest")
+            .field("model_id", &self.model_id)
+            .field("message_count", &self.messages.len())
+            .field(
+                "tool_count",
+                &self.tools.as_ref().map_or(0, std::vec::Vec::len),
+            )
+            .field("system_present", &self.system.is_some())
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .field("stream", &self.stream)
+            .field("cache_breakpoint_count", &self.cache_breakpoints.len())
+            .field("protocol", &self.protocol)
+            .field("extra_present", &(!self.extra.is_null()))
+            .field("provider_context", &self.provider_context)
+            .finish()
+    }
+}
+
+#[derive(Clone, Default, PartialEq)]
+pub struct ProviderRequestContext {
+    pub provider_id: String,
+    pub model_config_id: Option<String>,
+    pub dialect: Option<String>,
+    pub continuations: Vec<ProviderContinuationRecord>,
+}
+
+impl fmt::Debug for ProviderRequestContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderRequestContext")
+            .field("provider_id", &self.provider_id)
+            .field("model_config_id", &self.model_config_id)
+            .field("dialect", &self.dialect)
+            .field("continuation_count", &self.continuations.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub enum ModelStreamEvent {
     MessageStart {
         message_id: String,
@@ -345,11 +565,68 @@ pub enum ModelStreamEvent {
         usage_delta: UsageSnapshot,
     },
     MessageStop,
+    ProviderContinuationDelta {
+        kind: ProviderContinuationKind,
+        payload: Value,
+    },
     StreamError {
         error: ModelError,
         class: ErrorClass,
         hints: ErrorHints,
     },
+}
+
+impl fmt::Debug for ModelStreamEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MessageStart { message_id, usage } => formatter
+                .debug_struct("MessageStart")
+                .field("message_id", message_id)
+                .field("usage", usage)
+                .finish(),
+            Self::ContentBlockStart {
+                index,
+                content_type,
+            } => formatter
+                .debug_struct("ContentBlockStart")
+                .field("index", index)
+                .field("content_type", content_type)
+                .finish(),
+            Self::ContentBlockDelta { index, delta } => formatter
+                .debug_struct("ContentBlockDelta")
+                .field("index", index)
+                .field("delta", delta)
+                .finish(),
+            Self::ContentBlockStop { index } => formatter
+                .debug_struct("ContentBlockStop")
+                .field("index", index)
+                .finish(),
+            Self::MessageDelta {
+                stop_reason,
+                usage_delta,
+            } => formatter
+                .debug_struct("MessageDelta")
+                .field("stop_reason", stop_reason)
+                .field("usage_delta", usage_delta)
+                .finish(),
+            Self::MessageStop => formatter.debug_struct("MessageStop").finish(),
+            Self::ProviderContinuationDelta { kind, .. } => formatter
+                .debug_struct("ProviderContinuationDelta")
+                .field("kind", kind)
+                .field("payload", &"<redacted>")
+                .finish(),
+            Self::StreamError {
+                error,
+                class,
+                hints,
+            } => formatter
+                .debug_struct("StreamError")
+                .field("error", error)
+                .field("class", class)
+                .field("hints", hints)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
