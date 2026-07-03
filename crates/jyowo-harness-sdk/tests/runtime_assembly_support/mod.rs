@@ -11,11 +11,12 @@ pub use futures::{executor::block_on, stream, StreamExt};
 pub use harness_contracts::{
     BlobId, BlobRef, BudgetExceedanceSource, ConfigHash, ContextPatchSource, ContextStageId,
     ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput, Decision,
-    DeferPolicy, DeferredToolHint, EndReason, Event, HookEventKind,
-    ManifestValidationFailure as ContractManifestValidationFailure, McpServerId, McpServerSource,
-    MemoryError, MemoryId, MemoryKind, MemorySessionCtx, MemorySource, MemoryVisibility, MessageId,
-    MessagePart, ModelError, NetworkAccess, PermissionMode, PluginId, ProviderRestriction,
-    RedactRules, Redactor, RequestId, SessionCreatedEvent, SessionSummaryView, SnapshotId,
+    DecisionScope, DeferPolicy, DeferredToolHint, EndReason, Event, FallbackPolicy, HookEventKind,
+    InteractivityLevel, ManifestValidationFailure as ContractManifestValidationFailure,
+    McpServerId, McpServerSource, MemoryError, MemoryId, MemoryKind, MemorySessionCtx,
+    MemorySource, MemoryVisibility, MessageId, MessagePart, ModelError, NetworkAccess,
+    PermissionMode, PermissionSubject, PluginId, ProviderRestriction, RedactRules, Redactor,
+    RequestId, RuleSource, SessionCreatedEvent, SessionSummaryView, Severity, SnapshotId,
     SteeringBody, SteeringKind, SteeringSource, TeamId, TenantId, ToolActionPlan,
     ToolDeferredPoolChangedEvent, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
     ToolPoolChangeSource, ToolProfile, ToolProperties, ToolResult, ToolSearchMode, ToolUseId,
@@ -55,8 +56,7 @@ pub use harness_tool::{
     ValidationError,
 };
 pub use jyowo_harness_sdk::{prelude::*, testing::*, AgentCapabilityResolutionContext};
-pub use serde_json::json;
-pub use serde_json::Value;
+pub use serde_json::{json, Value};
 pub use tokio::sync::Notify;
 
 mod agents;

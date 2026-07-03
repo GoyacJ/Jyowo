@@ -19,7 +19,8 @@ use harness_contracts::{
     PermissionMode, PricingSnapshotId, RedactRules, Redactor, RequestId, RunEndedEvent, RunId,
     RunModelSnapshot, RunStartedEvent, SessionId, StopReason, TeamId, TenantId, ToolDescriptor,
     ToolError, ToolErrorPayload, ToolResult, ToolResultPart, ToolUseCompletedEvent,
-    ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, TrustLevel, TurnInput,
+    DenyReason, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
+    ToolUseRequestedEvent, TrustLevel, TurnInput,
     UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_execution::{
@@ -2382,6 +2383,13 @@ fn tool_result_events(
                 }));
             }
             events
+        }
+        Err(ToolError::PermissionDenied(_)) => {
+            vec![Event::ToolUseDenied(ToolUseDeniedEvent {
+                tool_use_id: result.tool_use_id,
+                reason: DenyReason::PolicyDenied,
+                at: harness_contracts::now(),
+            })]
         }
         Err(error) => vec![Event::ToolUseFailed(ToolUseFailedEvent {
             tool_use_id: result.tool_use_id,
