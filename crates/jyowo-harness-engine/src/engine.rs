@@ -880,6 +880,7 @@ impl EngineEmbeddedToolDispatcher {
             parent_run: None,
             model: None,
             model_config_id: None,
+            actor_source: harness_contracts::PermissionActorSource::ParentRun,
         };
 
         let tool = self.tools.get(&request.tool_name).ok_or_else(|| {

@@ -914,6 +914,7 @@ pub(crate) async fn run_turn(
                                 run_id,
                                 session_id: session.session_id,
                             }),
+                        actor_source: ctx.permission_actor_source.clone(),
                     },
                     blob_store: engine.blob_store.clone(),
                     event_emitter: tool_event_emitter,
@@ -1480,6 +1481,7 @@ async fn authorize_tool_calls(
                         run_id,
                         session_id: session.session_id,
                     }),
+                actor_source: ctx.permission_actor_source.clone(),
             };
             tool.validate(&call.input, &tool_ctx)
                 .await

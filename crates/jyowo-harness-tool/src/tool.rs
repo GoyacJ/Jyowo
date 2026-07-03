@@ -5,9 +5,9 @@ use chrono::{DateTime, Utc};
 use futures::Stream;
 use harness_contracts::{
     ActionPlanHash, ActionPlanId, ActionResource, AuthorizationTicketId, DecisionScope, Event,
-    MessagePart, NetworkAccess, PermissionActorSource, PermissionReview, PermissionSubject,
-    ResourceLimits, RunId, SandboxMode, SandboxPolicy, SandboxScope, SessionId, Severity, TenantId,
-    ToolActionPlan, ToolDescriptor, ToolError, ToolResult, ToolUseId, WorkspaceAccess,
+    MessagePart, NetworkAccess, PermissionReview, PermissionSubject, ResourceLimits, RunId,
+    SandboxMode, SandboxPolicy, SandboxScope, SessionId, Severity, TenantId, ToolActionPlan,
+    ToolDescriptor, ToolError, ToolResult, ToolUseId, WorkspaceAccess,
 };
 use harness_permission::{canonical_permission_fingerprint, PermissionCheck, PermissionRequest};
 use serde_json::Value;
@@ -174,7 +174,7 @@ pub fn action_plan_from_permission_check(
         plan_id: ActionPlanId::new(),
         tool_use_id: ctx.tool_use_id,
         tool_name: descriptor.name.clone(),
-        actor_source: PermissionActorSource::ParentRun,
+        actor_source: ctx.actor_source.clone(),
         subject,
         scope,
         severity,

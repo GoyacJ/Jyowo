@@ -251,6 +251,7 @@ fn tool_ctx_at(workspace_root: impl AsRef<Path>, cap_registry: CapabilityRegistr
         parent_run: None,
         model: None,
         model_config_id: None,
+        actor_source: harness_contracts::PermissionActorSource::ParentRun,
     }
 }
 

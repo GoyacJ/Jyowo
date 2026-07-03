@@ -110,6 +110,7 @@ async fn tool_context_retrieves_capabilities_and_reports_missing_handles() {
         parent_run: None,
         model: None,
         model_config_id: None,
+        actor_source: harness_contracts::PermissionActorSource::ParentRun,
     };
 
     let recovered = ctx
@@ -164,6 +165,7 @@ fn tool_ctx(cap_registry: CapabilityRegistry) -> ToolContext {
         parent_run: None,
         model: None,
         model_config_id: None,
+        actor_source: harness_contracts::PermissionActorSource::ParentRun,
     }
 }
 
@@ -253,4 +255,55 @@ fn descriptor(is_concurrency_safe: bool) -> ToolDescriptor {
         search_hint: None,
         service_binding: None,
     }
+}
+
+#[tokio::test]
+async fn action_plan_propagates_actor_source_from_context() {
+    use harness_contracts::PermissionActorSource;
+    use harness_contracts::{NetworkAccess, WorkspaceAccess};
+    use harness_permission::PermissionCheck;
+    use harness_tool::{action_plan_from_permission_check, ToolContext};
+
+    let ctx = ToolContext {
+        tool_use_id: ToolUseId::new(),
+        run_id: harness_contracts::RunId::new(),
+        session_id: SessionId::new(),
+        tenant_id: TenantId::SINGLE,
+        correlation_id: harness_contracts::CorrelationId::new(),
+        agent_id: harness_contracts::AgentId::from_u128(1),
+        subagent_depth: 1,
+        workspace_root: std::env::temp_dir(),
+        sandbox: None,
+        cap_registry: Arc::new(CapabilityRegistry::default()),
+        redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
+        interrupt: harness_tool::InterruptToken::default(),
+        parent_run: None,
+        model: None,
+        model_config_id: None,
+        actor_source: PermissionActorSource::Subagent {
+            subagent_id: harness_contracts::SubagentId::new(),
+            parent_session_id: SessionId::new(),
+            parent_run_id: harness_contracts::RunId::new(),
+            team_id: None,
+            team_member_profile_id: None,
+        },
+    };
+
+    let descriptor = descriptor(false);
+    let plan = action_plan_from_permission_check(
+        &descriptor,
+        &serde_json::json!({"key": "val"}),
+        &ctx,
+        PermissionCheck::Allowed,
+        Vec::new(),
+        WorkspaceAccess::None,
+        NetworkAccess::None,
+    )
+    .expect("plan created");
+
+    assert!(
+        matches!(plan.actor_source, PermissionActorSource::Subagent { .. }),
+        "action plan should carry Subagent actor source, got {:?}",
+        plan.actor_source
+    );
 }

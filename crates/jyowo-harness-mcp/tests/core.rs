@@ -660,6 +660,7 @@ fn tool_context() -> ToolContext {
         parent_run: None,
         model: None,
         model_config_id: None,
+        actor_source: harness_contracts::PermissionActorSource::ParentRun,
     }
 }
 

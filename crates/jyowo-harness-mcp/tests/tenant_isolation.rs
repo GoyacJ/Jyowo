@@ -251,5 +251,6 @@ fn tool_context(tenant_id: TenantId) -> ToolContext {
         parent_run: None,
         model: None,
         model_config_id: None,
+        actor_source: harness_contracts::PermissionActorSource::ParentRun,
     }
 }

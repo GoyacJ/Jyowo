@@ -334,6 +334,7 @@ fn ctx_with_cap_registry(cap_registry: CapabilityRegistry) -> ToolContext {
         parent_run: None,
         model: None,
         model_config_id: None,
+        actor_source: harness_contracts::PermissionActorSource::ParentRun,
     }
 }
 

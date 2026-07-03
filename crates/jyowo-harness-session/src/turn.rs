@@ -333,6 +333,7 @@ pub(crate) async fn run_turn(
                 parent_run: None,
                 model: session.turn_model_snapshot(),
                 model_config_id: session.turn_model_config_id(),
+                actor_source: harness_contracts::PermissionActorSource::ParentRun,
             },
             blob_store: runtime.blob_store.clone(),
             event_emitter: tool_event_emitter,
@@ -468,6 +469,7 @@ async fn authorize_tool_calls(
                 parent_run: None,
                 model: session.turn_model_snapshot(),
                 model_config_id: session.turn_model_config_id(),
+                actor_source: harness_contracts::PermissionActorSource::ParentRun,
             };
             tool.validate(&call.input, &tool_ctx)
                 .await
