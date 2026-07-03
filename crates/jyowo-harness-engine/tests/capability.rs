@@ -291,6 +291,10 @@ struct AllowBroker;
 
 #[async_trait]
 impl PermissionBroker for AllowBroker {
+    fn can_anchor_authority(&self) -> bool {
+        true
+    }
+
     async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
         Decision::AllowOnce
     }

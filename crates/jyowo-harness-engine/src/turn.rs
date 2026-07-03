@@ -37,6 +37,10 @@ use harness_model::{
 };
 use harness_observability::{DefaultRedactor, Span, SpanAttributes};
 use harness_permission::{NoopDecisionPersistence, PermissionAuthority};
+use harness_sandbox::{
+    ExecContext, ExecOutcome, ExecSpec, ProcessHandle, SandboxBackend, SandboxBaseConfig,
+    SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
+};
 use harness_tool::{
     AuthorizedTicketSummary, AuthorizedToolCall, AuthorizedToolInput, InterruptToken,
     OrchestratorContext, ToolCall, ToolEventEmitter, ToolOrchestrator,
@@ -1417,20 +1421,10 @@ async fn authorize_tool_calls(
     tool_calls: &[ToolCall],
     emitted: &mut Vec<Event>,
 ) -> Result<(Vec<AuthorizedToolCall>, Vec<RuntimeToolResultEnvelope>), EngineError> {
-    let Some(sandbox_backend) = engine.sandbox.clone() else {
-        let results = tool_calls
-            .iter()
-            .map(|call| {
-                authorization_failure_result(
-                    call,
-                    ToolError::PermissionDenied(
-                        "sandbox backend is required before tool authorization".to_owned(),
-                    ),
-                )
-            })
-            .collect();
-        return Ok((Vec::new(), results));
-    };
+    let sandbox_backend = engine
+        .sandbox
+        .clone()
+        .unwrap_or_else(|| Arc::new(PreflightOnlySandbox));
     let authority = PermissionAuthority::builder()
         .with_policy_broker(engine.permission_broker.clone())
         .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
@@ -2864,6 +2858,75 @@ fn tool_error_payload(error: &ToolError) -> ToolErrorPayload {
 
 fn engine_error(error: impl std::fmt::Display) -> EngineError {
     EngineError::Message(error.to_string())
+}
+
+struct PreflightOnlySandbox;
+
+#[async_trait]
+impl SandboxBackend for PreflightOnlySandbox {
+    fn backend_id(&self) -> &str {
+        "preflight-only"
+    }
+
+    fn capabilities(&self) -> SandboxCapabilities {
+        SandboxCapabilities {
+            max_concurrent_execs: 1,
+            ..SandboxCapabilities::default()
+        }
+    }
+
+    fn base_config(&self) -> SandboxBaseConfig {
+        SandboxBaseConfig::default()
+    }
+
+    async fn before_execute(
+        &self,
+        _spec: &ExecSpec,
+        _ctx: &ExecContext,
+    ) -> Result<(), harness_contracts::SandboxError> {
+        Ok(())
+    }
+
+    async fn execute(
+        &self,
+        _spec: ExecSpec,
+        _ctx: ExecContext,
+    ) -> Result<ProcessHandle, harness_contracts::SandboxError> {
+        Err(harness_contracts::SandboxError::CapabilityMismatch {
+            capability: "execute".to_owned(),
+            detail: "preflight-only sandbox does not execute".to_owned(),
+        })
+    }
+
+    async fn after_execute(
+        &self,
+        _outcome: &ExecOutcome,
+        _ctx: &ExecContext,
+    ) -> Result<(), harness_contracts::SandboxError> {
+        Ok(())
+    }
+
+    async fn snapshot_session(
+        &self,
+        _spec: &SnapshotSpec,
+    ) -> Result<SessionSnapshotFile, harness_contracts::SandboxError> {
+        Err(harness_contracts::SandboxError::SnapshotUnsupported {
+            kind: "preflight-only".to_owned(),
+        })
+    }
+
+    async fn restore_session(
+        &self,
+        _snapshot: &SessionSnapshotFile,
+    ) -> Result<(), harness_contracts::SandboxError> {
+        Err(harness_contracts::SandboxError::SnapshotUnsupported {
+            kind: "preflight-only".to_owned(),
+        })
+    }
+
+    async fn shutdown(&self) -> Result<(), harness_contracts::SandboxError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -14,6 +14,8 @@ use std::{ffi::OsStr, fs};
 use bytes::Bytes;
 #[cfg(feature = "subagent-tool")]
 use chrono::Utc;
+#[cfg(feature = "programmatic-tool-calling")]
+use chrono::Utc;
 use harness_context::ContextEngine;
 #[cfg(feature = "subagent-tool")]
 use harness_contracts::{
@@ -27,10 +29,13 @@ use harness_contracts::{
 use harness_contracts::{
     CodeLanguage, CodeRunRequest, CodeRunResult, CodeRunStats, EmbeddedRefusedReason,
     EmbeddedToolDispatchRequest, EmbeddedToolDispatchResponse, ExecuteCodeStepInvokedEvent,
-    FallbackPolicy, InteractivityLevel, PermissionMode, Redactor, ToolError, ToolResult, ToolUseId,
+    FallbackPolicy, InteractivityLevel, PermissionMode, Redactor, SessionId, TenantId, ToolError,
+    ToolResult, ToolUseId,
 };
 #[cfg(feature = "subagent-tool")]
 use harness_contracts::{NetworkAccess, SandboxPolicy, SandboxScope};
+#[cfg(feature = "programmatic-tool-calling")]
+use harness_execution::{AuthorizationContext, AuthorizationService, ExecutionError, TicketLedger};
 use harness_hook::HookDispatcher;
 use harness_journal::EventStore;
 #[cfg(feature = "subagent-tool")]
@@ -43,7 +48,7 @@ use harness_observability::DefaultRedactor;
 use harness_observability::{Observer, Tracer};
 use harness_permission::PermissionBroker;
 #[cfg(feature = "programmatic-tool-calling")]
-use harness_permission::PermissionContext;
+use harness_permission::{NoopDecisionPersistence, PermissionAuthority};
 #[cfg(feature = "programmatic-tool-calling")]
 use harness_sandbox::CodeSandbox;
 use harness_sandbox::SandboxBackend;
@@ -51,7 +56,10 @@ use harness_tool::ToolPool;
 #[cfg(feature = "subagent-tool")]
 use harness_tool::ToolPoolFilter;
 #[cfg(feature = "programmatic-tool-calling")]
-use harness_tool::{NoopToolEventEmitter, OrchestratorContext, ToolCall, ToolOrchestrator};
+use harness_tool::{
+    AuthorizedToolCall, AuthorizedToolInput, NoopToolEventEmitter, OrchestratorContext,
+    ToolOrchestrator,
+};
 use serde_json::Value;
 #[cfg(feature = "subagent-tool")]
 use std::collections::HashSet;
@@ -478,6 +486,7 @@ impl EngineBuilder {
                         workspace_root: workspace_root.clone(),
                         sandbox: self.sandbox.clone(),
                         permission_broker: Arc::clone(&permission_broker),
+                        event_store: Arc::clone(&event_store),
                         cap_registry: Arc::new(cap_registry_value.clone()),
                         redactor: self
                             .observer
@@ -818,6 +827,7 @@ struct EngineEmbeddedToolDispatcher {
     workspace_root: PathBuf,
     sandbox: Option<Arc<dyn SandboxBackend>>,
     permission_broker: Arc<dyn PermissionBroker>,
+    event_store: Arc<dyn EventStore>,
     cap_registry: Arc<CapabilityRegistry>,
     redactor: Arc<dyn Redactor>,
     blob_store: Option<Arc<dyn BlobStore>>,
@@ -842,6 +852,7 @@ impl EngineEmbeddedToolDispatcher {
             workspace_root: self.workspace_root.clone(),
             sandbox: self.sandbox.clone(),
             permission_broker: Arc::clone(&self.permission_broker),
+            event_store: Arc::clone(&self.event_store),
             cap_registry: Arc::clone(&self.cap_registry),
             redactor: Arc::clone(&self.redactor),
             blob_store: self.blob_store.clone(),
@@ -853,37 +864,96 @@ impl EngineEmbeddedToolDispatcher {
         request: EmbeddedToolDispatchRequest,
     ) -> Result<EmbeddedToolDispatchResponse, ToolError> {
         let tool_use_id = ToolUseId::new();
+        let tool_ctx = harness_tool::ToolContext {
+            tool_use_id,
+            run_id: request.run_id,
+            session_id: request.session_id,
+            tenant_id: request.tenant_id,
+            correlation_id: harness_contracts::CorrelationId::new(),
+            agent_id: harness_contracts::AgentId::from_u128(1),
+            subagent_depth: 0,
+            workspace_root: self.workspace_root.clone(),
+            sandbox: self.sandbox.clone(),
+            cap_registry: Arc::clone(&self.cap_registry),
+            redactor: Arc::clone(&self.redactor),
+            interrupt: harness_tool::InterruptToken::default(),
+            parent_run: None,
+            model: None,
+            model_config_id: None,
+        };
+
+        let tool = self.tools.get(&request.tool_name).ok_or_else(|| {
+            ToolError::Internal(format!("embedded tool not found: {}", request.tool_name))
+        })?;
+        tool.validate(&request.input, &tool_ctx)
+            .await
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+        let plan = tool.plan(&request.input, &tool_ctx).await?;
+
+        let authority = PermissionAuthority::builder()
+            .with_policy_broker(Arc::clone(&self.permission_broker))
+            .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
+            .build()
+            .map_err(|error| ToolError::Internal(error.to_string()))?;
+        let ticket_ledger = Arc::new(TicketLedger::default());
+        let sandbox = self.sandbox.clone().ok_or_else(|| {
+            ToolError::PermissionDenied(
+                "sandbox required for embedded tool authorization".to_owned(),
+            )
+        })?;
+        let auth_service = AuthorizationService::new(
+            Arc::new(authority),
+            sandbox,
+            Arc::new(JournalAuthorizationEventSink::new(Arc::clone(
+                &self.event_store,
+            ))),
+            ticket_ledger.clone(),
+        );
+        let auth_context = AuthorizationContext {
+            tenant_id: request.tenant_id,
+            session_id: request.session_id,
+            run_id: request.run_id,
+            permission_mode: PermissionMode::Default,
+            interactivity: InteractivityLevel::FullyInteractive,
+            fallback_policy: FallbackPolicy::DenyAll,
+            workspace_root: self.workspace_root,
+        };
+        let outcome = auth_service
+            .authorize_plan(auth_context, plan.clone())
+            .await
+            .map_err(|error| match error {
+                ExecutionError::PermissionDenied { decision, .. } => {
+                    ToolError::PermissionDenied(format!("embedded tool denied: {decision:?}"))
+                }
+                other => ToolError::Internal(other.to_string()),
+            })?;
+        let consumed = ticket_ledger
+            .consume(outcome.ticket.id, &outcome.ticket.claims, Utc::now())
+            .map_err(|error| ToolError::Internal(error.to_string()))?;
+        let authorized_input = AuthorizedToolInput::new(
+            request.input,
+            plan,
+            harness_tool::AuthorizedTicketSummary {
+                ticket_id: consumed.id,
+                tenant_id: consumed.claims.tenant_id,
+                session_id: consumed.claims.session_id,
+                run_id: consumed.claims.run_id,
+                tool_use_id: consumed.claims.tool_use_id,
+                tool_name: consumed.claims.tool_name,
+                action_plan_hash: consumed.claims.action_plan_hash,
+                consumed_at: Utc::now(),
+            },
+        )?;
         let results = ToolOrchestrator::new(1)
             .dispatch(
-                vec![ToolCall {
+                vec![AuthorizedToolCall {
                     tool_use_id,
                     tool_name: request.tool_name.clone(),
-                    input: request.input,
+                    input: authorized_input,
                 }],
                 OrchestratorContext {
                     pool: self.tools,
-                    tool_context: harness_tool::ToolContext {
-                        tool_use_id,
-                        run_id: request.run_id,
-                        session_id: request.session_id,
-                        tenant_id: request.tenant_id,
-                        correlation_id: harness_contracts::CorrelationId::new(),
-                        agent_id: harness_contracts::AgentId::from_u128(1),
-                        subagent_depth: 0,
-                        workspace_root: self.workspace_root,
-                        sandbox: self.sandbox,
-                        permission_broker: self.permission_broker,
-                        cap_registry: self.cap_registry,
-                        redactor: self.redactor,
-                        interrupt: harness_tool::InterruptToken::default(),
-                        parent_run: None,
-                        model: None,
-                        model_config_id: None,
-                    },
-                    permission_context: embedded_permission_context(
-                        request.tenant_id,
-                        request.session_id,
-                    ),
+                    tool_context: tool_ctx,
                     blob_store: self.blob_store,
                     event_emitter: Arc::new(NoopToolEventEmitter),
                 },
@@ -910,20 +980,33 @@ impl EngineEmbeddedToolDispatcher {
 }
 
 #[cfg(feature = "programmatic-tool-calling")]
-fn embedded_permission_context(
-    tenant_id: harness_contracts::TenantId,
-    session_id: harness_contracts::SessionId,
-) -> PermissionContext {
-    PermissionContext {
-        permission_mode: PermissionMode::Default,
-        previous_mode: None,
-        session_id,
-        tenant_id,
-        run_id: None,
-        interactivity: InteractivityLevel::FullyInteractive,
-        timeout_policy: None,
-        fallback_policy: FallbackPolicy::DenyAll,
-        hook_overrides: Vec::new(),
+struct JournalAuthorizationEventSink {
+    event_store: Arc<dyn EventStore>,
+}
+
+#[cfg(feature = "programmatic-tool-calling")]
+impl JournalAuthorizationEventSink {
+    fn new(event_store: Arc<dyn EventStore>) -> Self {
+        Self { event_store }
+    }
+}
+
+#[cfg(feature = "programmatic-tool-calling")]
+#[async_trait::async_trait]
+impl harness_execution::AuthorizationEventSink for JournalAuthorizationEventSink {
+    async fn emit_batch(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+        events: Vec<Event>,
+    ) -> Result<(), ExecutionError> {
+        self.event_store
+            .append(tenant_id, session_id, &events)
+            .await
+            .map(|_| ())
+            .map_err(|error| ExecutionError::EventSinkFailed {
+                reason: error.to_string(),
+            })
     }
 }
 

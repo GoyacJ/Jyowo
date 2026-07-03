@@ -22,7 +22,7 @@
 | crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs | 2831 | rust |
 | crates/jyowo-harness-engine/tests/subagent_tool_feature.rs | 2344 | rust |
 | crates/jyowo-harness-engine/tests/main_loop.rs | 1879 | rust |
-| crates/jyowo-harness-engine/tests/hook_pipeline.rs | 1657 | rust |
+| crates/jyowo-harness-engine/tests/hook_pipeline.rs | 1692 | rust |
 | apps/desktop/src/shared/events/run-event-schema.test.ts | 1594 | frontend |
 | crates/jyowo-harness-team/tests/team_e2e.rs | 1388 | rust |
 | crates/jyowo-harness-mcp/tests/server_protocol.rs | 1377 | rust |
@@ -55,7 +55,7 @@
 - crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs (2831 lines)
 - crates/jyowo-harness-engine/tests/subagent_tool_feature.rs (2344 lines)
 - crates/jyowo-harness-engine/tests/main_loop.rs (1879 lines)
-- crates/jyowo-harness-engine/tests/hook_pipeline.rs (1657 lines)
+- crates/jyowo-harness-engine/tests/hook_pipeline.rs (1692 lines)
 - apps/desktop/src/shared/events/run-event-schema.test.ts (1594 lines)
 - crates/jyowo-harness-team/tests/team_e2e.rs (1388 lines)
 - crates/jyowo-harness-mcp/tests/server_protocol.rs (1377 lines)

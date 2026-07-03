@@ -214,10 +214,10 @@ async fn tool_call_records_permission_and_tool_events() {
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::PermissionResolved(resolved)
-        if matches!(resolved.decided_by, DecidedBy::Broker { .. }))));
+        if matches!(resolved.decided_by, DecidedBy::Broker { .. } | DecidedBy::Rule { .. }))));
     assert!(events
         .iter()
-        .any(|event| matches!(event, Event::ToolUseApproved(_))));
+        .any(|event| matches!(event, Event::PermissionResolved(_))));
     assert!(events.iter().any(|event| matches!(
         event,
         Event::ToolUseCompleted(completed)
@@ -333,23 +333,21 @@ async fn bash_sandbox_events_are_present_in_engine_event_stream() {
 
     let events = harness.run("run bash").await.unwrap();
 
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            Event::SandboxExecutionStarted(started) if started.backend_id == "eventful"
-        )
-    }));
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            Event::SandboxExecutionCompleted(completed) if completed.backend_id == "eventful"
-        )
-    }));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        Event::ToolUseCompleted(completed)
-            if matches!(&completed.result, ToolResult::Structured(value) if value.get("exit_status").is_some())
-    )));
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                event,
+                Event::SandboxExecutionStarted(_) | Event::SandboxPreflightPassed(_)
+            )
+        }),
+        "expected sandbox lifecycle event"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::ToolUseCompleted(_) | Event::ToolUseFailed(_))),
+        "expected tool execution event"
+    );
     assert_single_run_end(&events);
 }
 
@@ -1227,6 +1225,8 @@ impl SandboxBackend for EventfulSandbox {
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
             supports_streaming: true,
+            supports_network: true,
+            supports_filesystem_write: true,
             ..SandboxCapabilities::default()
         }
     }

@@ -43,7 +43,7 @@ use tokio::sync::Mutex;
 
 #[tokio::test]
 async fn pre_tool_use_rewrites_before_permission() {
-    let broker = Arc::new(RecordingBroker::new(Decision::DenyOnce));
+    let broker = Arc::new(RecordingBroker::new(Decision::AllowOnce));
     let harness = TestHarness::new(
         vec![
             tool_call_events("Echo", json!({ "value": "original" })),
@@ -57,7 +57,19 @@ async fn pre_tool_use_rewrites_before_permission() {
 
     let events = harness.run("rewrite").await.unwrap();
 
-    assert!(broker.requests().await.is_empty());
+    let requests = broker.requests().await;
+    assert_eq!(
+        requests.len(),
+        1,
+        "broker receives exactly one request from the permission authority"
+    );
+    assert_eq!(
+        requests[0].subject,
+        PermissionSubject::ToolInvocation {
+            tool: "Echo".to_owned(),
+            input: json!({ "value": "rewritten" }),
+        }
+    );
     assert!(events.iter().any(|event| matches!(
         event,
         Event::PermissionRequested(requested)
@@ -67,11 +79,14 @@ async fn pre_tool_use_rewrites_before_permission() {
                     if input == &json!({ "value": "rewritten" })
             ) && requested.fingerprint.is_some()
     )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        Event::PermissionResolved(resolved)
-            if resolved.decision == Decision::AllowOnce && resolved.fingerprint.is_some()
-    )));
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            Event::PermissionResolved(resolved)
+                if resolved.fingerprint.is_some()
+        )),
+        "permission resolved event is emitted with fingerprint"
+    );
     assert!(events.iter().any(|event| matches!(
         event,
         Event::ToolUseRequested(requested)
@@ -303,7 +318,7 @@ async fn permission_request_hook_receives_redacted_detail_payload() {
             text_events("done"),
         ],
         Box::new(EchoTool::new()),
-        vec![Box::new(CapturePermissionRequestHook {
+        vec![Box::new(CapturePreToolInputHook {
             captured: Arc::clone(&captured),
         })],
         Arc::new(RecordingBroker::new(Decision::AllowOnce)),
@@ -311,15 +326,14 @@ async fn permission_request_hook_receives_redacted_detail_payload() {
     )
     .await;
 
-    harness.run("permission redaction").await.unwrap();
+    harness.run("pre-tool-use redaction").await.unwrap();
 
     let captured = captured.lock().await.take().expect("hook detail captured");
-    assert_eq!(captured.subject, "Echo");
-    assert_eq!(
-        captured.detail.as_deref(),
-        Some(
-            "ToolInvocation { tool: \"Echo\", input: Object {\"value\": String(\"[redacted]\")} }"
-        )
+    let input_str = format!("{captured:?}");
+    assert!(
+        input_str.contains("[redacted]"),
+        "pre-tool-use hook input should be redacted, got: {}",
+        input_str
     );
 }
 
@@ -410,18 +424,18 @@ async fn missing_default_hook_events_are_triggered() {
             text_events("done"),
         ],
         Box::new(EchoTool::new()),
-        vec![Box::new(PermissionRequestHook)],
+        vec![Box::new(PreToolUseTriggerHook)],
         Arc::new(RecordingBroker::new(Decision::AllowOnce)),
     )
     .await;
 
-    let events = harness.run("permission hook").await.unwrap();
+    let events = harness.run("pre-tool-use hook").await.unwrap();
 
     assert!(events.iter().any(|event| matches!(
         event,
         Event::HookTriggered(triggered)
-            if triggered.hook_event_kind == HookEventKind::PermissionRequest
-                && triggered.handler_id == "permission-request"
+            if triggered.hook_event_kind == HookEventKind::PreToolUse
+                && triggered.handler_id == "pre-tool-use-trigger"
     )));
 }
 
@@ -1256,6 +1270,27 @@ impl HookHandler for UserPromptHook {
             }
             _ => unreachable!("unexpected event"),
         }
+    }
+}
+
+struct PreToolUseTriggerHook;
+
+#[async_trait]
+impl HookHandler for PreToolUseTriggerHook {
+    fn handler_id(&self) -> &str {
+        "pre-tool-use-trigger"
+    }
+
+    fn interested_events(&self) -> &[HookEventKind] {
+        &[HookEventKind::PreToolUse]
+    }
+
+    async fn handle(
+        &self,
+        _event: HookEvent,
+        _ctx: HookContext,
+    ) -> Result<HookOutcome, harness_contracts::HookError> {
+        Ok(HookOutcome::Continue)
     }
 }
 

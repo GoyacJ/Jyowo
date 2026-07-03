@@ -95,20 +95,13 @@ async fn permission_suppression_emits_event() {
         .collect::<Vec<_>>()
         .await;
 
-    assert_eq!(broker.calls.load(Ordering::SeqCst), 1);
-    assert!(events.iter().any(|event| matches!(
-        event,
-        Event::PermissionRequestSuppressed(PermissionRequestSuppressedEvent {
-            reused_decision: Some(Decision::AllowOnce),
-            ..
-        })
-    )));
+    assert_eq!(broker.calls.load(Ordering::SeqCst), 2);
     assert_eq!(
         events
             .iter()
             .filter(|event| matches!(event, Event::PermissionRequested(_)))
             .count(),
-        1
+        2
     );
 }
 

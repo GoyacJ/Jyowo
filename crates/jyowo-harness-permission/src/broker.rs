@@ -11,7 +11,7 @@ use crate::rule::OverrideDecision;
 #[async_trait]
 pub trait PermissionBroker: Send + Sync + 'static {
     fn can_anchor_authority(&self) -> bool {
-        false
+        true
     }
 
     async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision;
