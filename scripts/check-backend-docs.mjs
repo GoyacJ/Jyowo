@@ -70,6 +70,13 @@ const requiredConcepts = [
   'CapabilityRouteKind',
   'ToolServiceBinding',
   'provider-capability-routes',
+  'AuthorizationTicket',
+  'AuthorizationService',
+  'ToolActionPlan',
+  'sandbox preflight',
+  'PermissionAuthority',
+  'execute_with_lifecycle',
+  'LocalIsolation',
 ]
 
 const forbiddenStageLanguage = [
@@ -120,6 +127,11 @@ const criticalTests = [
   'crates/jyowo-harness-budget/tests/budget_contract.rs',
   'crates/jyowo-harness-contracts/tests/core_contracts.rs',
   'crates/jyowo-harness-contracts/tests/tool_contracts.rs',
+  'crates/jyowo-harness-contracts/tests/provider_capability_routes.rs',
+  'crates/jyowo-harness-execution/tests/authorization_flow.rs',
+  'crates/jyowo-harness-execution/tests/ticket.rs',
+  'crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs',
+  'crates/jyowo-harness-journal/tests/conversation_read_model.rs',
   'crates/jyowo-harness-journal/tests/version.rs',
   'crates/jyowo-harness-observability/tests/journal_redactor_pipeline.rs',
   'crates/jyowo-harness-sdk/tests/runtime_assembly_agents.rs',

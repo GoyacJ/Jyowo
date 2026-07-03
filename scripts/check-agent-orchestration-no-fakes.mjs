@@ -14,6 +14,34 @@ export const AGENT_CONTEXT_PATTERNS = [
   /agent\s+orchestration/i,
 ]
 
+export const AUTHORIZATION_CONTEXT_PATTERNS = [
+  /\bauthorization\b/i,
+  /\bpermission\b/i,
+  /\bsandbox\b/i,
+  /\bauthorization[_\s]?ticket\b/i,
+  /\bpreflight\b/i,
+  /\bPermissionBroker\b/,
+  /\bPermissionAuthority\b/,
+  /\bAuthorizationService\b/,
+  /\bTicketLedger\b/,
+  /\bToolActionPlan\b/,
+  /\bAuthorizationEventSink\b/,
+  /\bDecisionStore\b/,
+  /\bDecisionHistory\b/,
+  /\bSandboxPolicy\b/,
+  /\bAuthorizationTicket\b/,
+  /\bresolve_permission\b/,
+  /\bexecute_authorized\b/,
+  /\bSandboxBackend\b/,
+  /\bSandboxPreflight\b/,
+  /\bActionResource\b/,
+  /\bPermissionReview\b/,
+  /\bPermissionConfirmation\b/,
+  /\bAuthorizationRequest\b/,
+  /\bAuthorizationOutcome\b/,
+  /\bhard[_\s]?policy\b/i,
+]
+
 export const PLACEHOLDER_PATTERNS = [
   { id: 'experimental-label', pattern: /\bexperimental\b/i },
   { id: 'coming-soon', pattern: /coming\s+soon/i },
@@ -25,6 +53,11 @@ export const PLACEHOLDER_PATTERNS = [
   { id: 'noop-marker', pattern: /\bno-?op\b/i },
   { id: 'todo-marker', pattern: /\bTODO\b/i },
   { id: 'future-tense', pattern: /\b(will be implemented|coming in a future|not available yet)\b/i },
+]
+
+export const AUTHORIZATION_SPECIFIC_PATTERNS = [
+  { id: 'allow-all', pattern: /\ballow[_\s-]all\b/i },
+  { id: 'bypass-policy', pattern: /\bbypass[_\s-](?:policy|permission)\b/i },
 ]
 
 export const FAKE_RUNTIME_PATTERNS = [
@@ -98,6 +131,9 @@ const SCOPED_RELATIVE_PATHS = [
   'crates/jyowo-harness-journal/src/conversation_worktree_projector.rs',
   'crates/jyowo-harness-journal/src/conversation_read_model.rs',
   'crates/jyowo-harness-agent-runtime',
+  'crates/jyowo-harness-execution',
+  'crates/jyowo-harness-permission',
+  'crates/jyowo-harness-sandbox',
   'crates/jyowo-harness-sdk',
   'crates/jyowo-harness-subagent',
   'crates/jyowo-harness-team',
@@ -118,6 +154,7 @@ export function scanAgentOrchestrationNoFakes(repoRoot, options = {}) {
 
   for (const absolutePath of files) {
     const rel = relative(repoRoot, absolutePath)
+    if (isExcludedProductionFile(rel)) continue
     const content = readFileSync(absolutePath, 'utf8')
     const lines = content.split(/\r?\n/)
 
@@ -127,6 +164,7 @@ export function scanAgentOrchestrationNoFakes(repoRoot, options = {}) {
     violations.push(...scanTemporaryAvailabilityAllowlists(rel, lines))
     violations.push(...scanNoopAgentCommands(rel, content, lines))
     violations.push(...scanFrontendOnlyAgentCapabilityState(rel, lines))
+      violations.push(...scanAuthorizationSpecificPatterns(rel, lines))
   }
 
   return { ok: violations.length === 0, violations }
@@ -229,7 +267,10 @@ function scanPlaceholderPatterns(rel, lines) {
       if (!pattern.test(line)) {
         continue
       }
-      if (!hasAgentContextNearby(lines, index)) {
+      if (hasFeatureGateContextNearby(lines, index)) {
+        continue
+      }
+      if (!hasAgentContextNearby(lines, index) && !hasAuthorizationContextNearby(lines, index)) {
         continue
       }
       violations.push({
@@ -320,6 +361,39 @@ function scanHardcodedUnavailableAssignments(rel, lines) {
  * @param {string} rel
  * @param {string[]} lines
  */
+/**
+ * @param {string} rel
+ * @param {string[]} lines
+ */
+function scanAuthorizationSpecificPatterns(rel, lines) {
+  /** @type {Violation[]} */
+  const violations = []
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (isCommentOnlyLine(line)) {
+      continue
+    }
+
+    for (const { id, pattern } of AUTHORIZATION_SPECIFIC_PATTERNS) {
+      if (!pattern.test(line)) {
+        continue
+      }
+      if (!hasAuthorizationContextNearby(lines, index)) {
+        continue
+      }
+      violations.push({
+        file: rel,
+        line: index + 1,
+        rule: id,
+        excerpt: line.trim(),
+      })
+    }
+  }
+
+  return violations
+}
+
 function scanTemporaryAvailabilityAllowlists(rel, lines) {
   /** @type {Violation[]} */
   const violations = []
@@ -428,8 +502,25 @@ function scanFrontendOnlyAgentCapabilityState(rel, lines) {
 export function hasAgentContextNearby(lines, lineIndex, radius = 12) {
   const start = Math.max(0, lineIndex - radius)
   const end = Math.min(lines.length - 1, lineIndex + radius)
-  const windowText = lines.slice(start, end + 1).join('\n')
+  const windowText = lines.slice(start, end + 1).filter(skipCompilerDirectives).join('\n')
   return AGENT_CONTEXT_PATTERNS.some((pattern) => pattern.test(windowText))
+}
+
+/**
+ * @param {string[]} lines
+ * @param {number} lineIndex
+ * @param {number} [radius]
+ */
+export function hasAuthorizationContextNearby(lines, lineIndex, radius = 12) {
+  const start = Math.max(0, lineIndex - radius)
+  const end = Math.min(lines.length - 1, lineIndex + radius)
+  const windowText = lines.slice(start, end + 1).filter(skipCompilerDirectives).join('\n')
+  return AUTHORIZATION_CONTEXT_PATTERNS.some((pattern) => pattern.test(windowText))
+}
+
+function skipCompilerDirectives(line) {
+  const trimmed = line.trim()
+  return !(trimmed.startsWith('#[cfg(') || trimmed.startsWith('cfg!('))
 }
 
 /**
@@ -455,8 +546,24 @@ function isCommentOnlyLine(line) {
     trimmed.startsWith('//') ||
     trimmed.startsWith('/*') ||
     trimmed.startsWith('*') ||
-    trimmed.startsWith('*/')
+    trimmed.startsWith('*/') ||
+    trimmed.startsWith('#[cfg(') ||
+    trimmed.startsWith('cfg!(')
   )
+}
+
+function hasFeatureGateContextNearby(lines, lineIndex, radius = 5) {
+  const start = Math.max(0, lineIndex - radius)
+  const end = Math.min(lines.length - 1, lineIndex + radius)
+  const windowText = lines.slice(start, end + 1).join('\n')
+  return /cfg!\s*\(/.test(windowText) || /push_feature\s*\(/.test(windowText)
+}
+
+/**
+ * @param {string} relPath
+ */
+function isExcludedProductionFile(relPath) {
+  return relPath.endsWith('/noop.rs')
 }
 
 function main() {

@@ -1091,6 +1091,12 @@ Frontend forbidden behavior:
 - no frontend-only security decision
 - no broad Tauri capabilities for convenience
 
+Permission UI is display-only. Backend-authored permission review (summary, risk,
+scope, sandbox policy, effective mode, required confirmation) is presented as-is.
+The UI submits user intent (approve/deny with optional confirmation text) and never
+infers safety, sandbox enforceability, or bypass status. Rust validates confirmation
+text and remains the final policy authority.
+
 ## State Management
 
 State classes:

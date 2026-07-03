@@ -56,8 +56,29 @@ Secret
 Ownership rules:
 
 - `Run` execution belongs to Rust.
-- `Tool` registration, routing, approval, execution, timeout, result budget, and error mapping belong to Rust.
+- `Tool` registration, routing, approval, execution, timeout, result budget, and
+  error mapping belong to Rust. Tools produce `ToolActionPlan` values; execution
+  requires a validated `AuthorizationTicket`.
+- `AuthorizationService` (L3, `jyowo-harness-execution`) is the cross-domain
+  execution authority. It turns action plans into permission requests, applies
+  hard policy, resolves consent, mints one-time authorization tickets, runs
+  sandbox preflight, and executes authorized actions.
+- Sandbox lifecycle is mandatory. `execute_with_lifecycle` calls `before_execute`
+  exactly once, then the backend, then `after_execute`. Backends must not call
+  `before_execute` internally. Sandbox `preflight_exec` validates capability
+  before execution.
+- Local no-isolation mode (`LocalIsolation::None`) is not OS sandbox enforcement.
+  It must not claim OS isolation capability.
 - `PermissionBroker` owns policy checks, request deduplication, persistence, and decision scope.
+- The permission authority stack owns hard policy, dedup, history, persistence,
+  and interactive resolution as one pipeline. `PermissionContext` does not carry
+  caller-owned rule snapshots as authority.
+- `PermissionAuthority` is the single decision authority for production
+  permission resolution. A `PermissionBroker` alone is not accepted as the
+  production authority.
+- `Tool` execution requires an authorization ticket minted by the execution
+  authority. File, network, command, MCP, and sandbox-backed tools must not
+  execute without a validated authorization ticket.
 - `MCP` tools enter the system through backend-owned registration and permission checks.
 - `Memory` recall and writes run through backend-owned tenant and visibility rules.
 - `Model` providers are backend capabilities and must not expose raw provider credentials to React.

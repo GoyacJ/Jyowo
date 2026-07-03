@@ -184,3 +184,6 @@ When an AI agent performs development tasks:
 - Use `pnpm check:quick` as the minimum verification gate before claiming completion.
 - Use `pnpm check:test-architecture` to verify naming and size rules are satisfied.
 - Use `pnpm audit:tests` to regenerate the inventory after structural changes.
+- Changes to authorization, permission, sandbox, or agent orchestration behavior
+  require a read-only subagent audit with PASS/FAIL verdict before the task
+  commit. Fix FAIL results and re-audit before closing the task.
