@@ -72,6 +72,7 @@ impl Tool for BashTool {
                 input,
                 ctx,
                 PermissionCheck::DangerousCommand {
+                    command: spec.command.clone(),
                     pattern: rule.id.clone(),
                     severity: rule.severity,
                 },
@@ -126,7 +127,7 @@ impl Tool for BashTool {
         let sandbox = ctx.sandbox.clone().ok_or_else(|| {
             ToolError::CapabilityMissing(ToolCapability::Custom("sandbox_backend".to_owned()))
         })?;
-        let spec = exec_spec_from_plan(&authorized)?;
+        let spec = exec_spec_from_plan(&authorized, &ctx)?;
         let event_sink = Arc::new(RecordingEventSink::default());
         let exec_ctx = exec_context(&ctx, event_sink.clone());
 
@@ -141,8 +142,16 @@ impl Tool for BashTool {
     }
 }
 
-fn exec_spec_from_plan(authorized: &AuthorizedToolInput) -> Result<ExecSpec, ToolError> {
-    let Some(ActionResource::Command { command, cwd, .. }) = authorized
+fn exec_spec_from_plan(
+    authorized: &AuthorizedToolInput,
+    ctx: &ToolContext,
+) -> Result<ExecSpec, ToolError> {
+    let Some(ActionResource::Command {
+        command,
+        argv,
+        cwd,
+        fingerprint,
+    }) = authorized
         .action_plan()
         .resources
         .iter()
@@ -154,17 +163,28 @@ fn exec_spec_from_plan(authorized: &AuthorizedToolInput) -> Result<ExecSpec, Too
             "authorized command resource missing".to_owned(),
         ));
     };
-    Ok(ExecSpec {
+    let spec = ExecSpec {
         command: command.clone(),
+        args: argv.clone(),
         cwd: cwd.clone(),
         stdin: StdioSpec::Null,
         stdout: StdioSpec::Piped,
         stderr: StdioSpec::Piped,
-        workspace_access: WorkspaceAccess::ReadWrite {
-            allowed_writable_subpaths: Vec::new(),
-        },
+        policy: authorized.action_plan().sandbox_policy.clone(),
+        workspace_access: authorized.action_plan().workspace_access.clone(),
         ..ExecSpec::default()
-    })
+    };
+    let base = ctx
+        .sandbox
+        .as_ref()
+        .map(|sandbox| sandbox.base_config())
+        .unwrap_or_default();
+    if spec.canonical_fingerprint(&base) != *fingerprint {
+        return Err(ToolError::PermissionDenied(
+            "authorized command fingerprint mismatch".to_owned(),
+        ));
+    }
+    Ok(spec)
 }
 
 fn exec_spec_for_input(input: &Value) -> ExecSpec {

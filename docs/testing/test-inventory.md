@@ -9,7 +9,7 @@
 | Storybook files | 13 |
 | Playwright spec files | 4 |
 | Rust test files | 295 |
-| Rust `#[test]` / `#[tokio::test]` count | 2072 |
+| Rust `#[test]` / `#[tokio::test]` count | 2081 |
 | Script policy test files | 8 |
 
 ## Largest Test Files by Line Count
@@ -32,9 +32,9 @@
 | apps/desktop/src-tauri/tests/commands/provider_routes.rs | 1171 | rust |
 | crates/jyowo-harness-subagent/tests/default_runner.rs | 1168 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_agents.rs | 1156 | rust |
+| crates/jyowo-harness-tool/tests/builtin_exec.rs | 1148 | rust |
 | crates/jyowo-harness-mcp/tests/http.rs | 1133 | rust |
 | crates/jyowo-harness-sdk/tests/agents_team.rs | 1119 | rust |
-| crates/jyowo-harness-tool/tests/builtin_exec.rs | 1108 | rust |
 | apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs | 1082 | rust |
 | crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs | 1062 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs | 1055 | rust |
@@ -68,9 +68,9 @@
 - apps/desktop/src-tauri/tests/commands/provider_routes.rs (1171 lines)
 - crates/jyowo-harness-subagent/tests/default_runner.rs (1168 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_agents.rs (1156 lines)
+- crates/jyowo-harness-tool/tests/builtin_exec.rs (1148 lines)
 - crates/jyowo-harness-mcp/tests/http.rs (1133 lines)
 - crates/jyowo-harness-sdk/tests/agents_team.rs (1119 lines)
-- crates/jyowo-harness-tool/tests/builtin_exec.rs (1108 lines)
 - apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs (1082 lines)
 - crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs (1062 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs (1055 lines)

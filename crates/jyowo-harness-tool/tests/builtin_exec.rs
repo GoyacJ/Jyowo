@@ -11,10 +11,11 @@ use bytes::Bytes;
 use chrono::Utc;
 use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
-    BlobError, BlobMeta, BlobRef, BlobStore, CapabilityRegistry, ClarifyAnswer, ClarifyPrompt,
-    Event, OutboundUserMessage, PermissionSubject, SandboxError, SandboxExecutionStartedEvent,
-    SandboxExitStatus, SandboxPolicySummary, Severity, TenantId, ToolActionPlan, ToolCapability,
-    ToolError, ToolResult, ToolUseId, UserMessageDelivery, WorkspaceAccess,
+    ActionResource, BlobError, BlobMeta, BlobRef, BlobStore, CapabilityRegistry, ClarifyAnswer,
+    ClarifyPrompt, Event, OutboundUserMessage, PermissionSubject, SandboxError,
+    SandboxExecutionStartedEvent, SandboxExitStatus, SandboxPolicySummary, Severity, TenantId,
+    ToolActionPlan, ToolCapability, ToolError, ToolResult, ToolUseId, UserMessageDelivery,
+    WorkspaceAccess,
 };
 use harness_contracts::{RedactRules, Redactor};
 use harness_sandbox::{
@@ -66,10 +67,11 @@ async fn bash_dangerous_command_precheck_sets_severity() {
     assert!(matches!(
         plan.unwrap().subject,
         PermissionSubject::DangerousCommand {
+            ref command,
             pattern_id: ref pattern,
             severity: Severity::Critical,
             ..
-        } if pattern == "unix-rm-rf-root"
+        } if command == "rm -rf /" && pattern == "unix-rm-rf-root"
     ));
 }
 
@@ -132,6 +134,44 @@ async fn bash_executes_through_sandbox_and_returns_output() {
         std::path::PathBuf::from("/workspace-root")
     );
     assert_eq!(sandbox.before_execute_count(), 1);
+}
+
+#[tokio::test]
+async fn bash_rejects_authorized_command_when_fingerprint_no_longer_matches_exec_spec() {
+    let sandbox = Arc::new(FakeSandbox::new(
+        Bytes::from_static(b"hello\n"),
+        Bytes::new(),
+        SandboxExitStatus::Code(0),
+    ));
+    let tool = BashTool::default();
+    let input = json!({ "command": "echo safe", "cwd": "/work" });
+    let ctx = tool_ctx_with_root(
+        CapabilityRegistry::default(),
+        Some(sandbox.clone()),
+        std::path::PathBuf::from("/workspace-root"),
+    );
+    let mut plan = tool.plan(&input, &ctx).await.unwrap();
+    let Some(ActionResource::Command { command, .. }) = plan
+        .resources
+        .iter_mut()
+        .find(|resource| matches!(resource, ActionResource::Command { .. }))
+    else {
+        panic!("expected command resource");
+    };
+    *command = "rm -rf /".to_owned();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+
+    let error = match tool.execute_authorized(authorized, ctx).await {
+        Ok(_) => panic!("expected authorized execution to fail"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ToolError::PermissionDenied(ref message)
+            if message == "authorized command fingerprint mismatch"
+    ));
+    assert!(sandbox.recorded_execs().is_empty());
 }
 
 #[tokio::test]

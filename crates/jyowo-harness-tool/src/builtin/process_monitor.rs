@@ -80,6 +80,7 @@ impl Tool for ProcessStartTool {
                 input,
                 ctx,
                 PermissionCheck::DangerousCommand {
+                    command: command_display,
                     pattern: rule.id.clone(),
                     severity: rule.severity,
                 },
@@ -131,7 +132,7 @@ impl Tool for ProcessStartTool {
         authorized: AuthorizedToolInput,
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
-        let request = process_start_request(authorized.raw_input()).map_err(validation_error)?;
+        let request = process_start_request_from_plan(&authorized, &ctx)?;
         let registry =
             ctx.capability::<dyn RunScopedProcessRegistryCap>(process_registry_capability())?;
         let result = registry
@@ -143,6 +144,8 @@ impl Tool for ProcessStartTool {
                     tool_use_id: ctx.tool_use_id,
                     workspace_root: ctx.workspace_root,
                     request,
+                    sandbox_policy: authorized.action_plan().sandbox_policy.clone(),
+                    workspace_access: authorized.action_plan().workspace_access.clone(),
                 },
                 Arc::clone(&ctx.redactor),
             )
@@ -382,6 +385,52 @@ fn permission_exec_spec(request: &ProcessStartRequest) -> ExecSpec {
         },
         ..ExecSpec::default()
     }
+}
+
+fn process_start_request_from_plan(
+    authorized: &AuthorizedToolInput,
+    ctx: &ToolContext,
+) -> Result<ProcessStartRequest, ToolError> {
+    let Some(ActionResource::Command {
+        command,
+        argv,
+        cwd,
+        fingerprint,
+    }) = authorized
+        .action_plan()
+        .resources
+        .iter()
+        .find_map(|resource| {
+            matches!(resource, ActionResource::Command { .. }).then_some(resource)
+        })
+    else {
+        return Err(ToolError::PermissionDenied(
+            "authorized command resource missing".to_owned(),
+        ));
+    };
+
+    let request = ProcessStartRequest {
+        command: command.clone(),
+        args: argv.clone(),
+        cwd: cwd.as_ref().map(|path| path.to_string_lossy().into_owned()),
+        buffer_bytes: authorized
+            .raw_input()
+            .get("buffer_bytes")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok()),
+    };
+    let spec = permission_exec_spec(&request);
+    let base = ctx
+        .sandbox
+        .as_ref()
+        .map(|sandbox| sandbox.base_config())
+        .unwrap_or_default();
+    if spec.canonical_fingerprint(&base) != *fingerprint {
+        return Err(ToolError::PermissionDenied(
+            "authorized command fingerprint mismatch".to_owned(),
+        ));
+    }
+    Ok(request)
 }
 
 fn command_resource(request: &ProcessStartRequest, ctx: &ToolContext) -> ActionResource {

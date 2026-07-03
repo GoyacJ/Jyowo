@@ -213,8 +213,10 @@ impl RuleEngineBroker {
         let Some(library) = &self.dangerous_patterns else {
             return false;
         };
-        let PermissionSubject::CommandExec { command, .. } = &request.subject else {
-            return false;
+        let command = match &request.subject {
+            PermissionSubject::CommandExec { command, .. }
+            | PermissionSubject::DangerousCommand { command, .. } => command,
+            _ => return false,
         };
 
         library.detect(command).is_some()

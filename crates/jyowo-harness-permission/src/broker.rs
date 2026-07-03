@@ -131,6 +131,7 @@ pub enum PermissionCheck {
         scope: DecisionScope,
     },
     DangerousCommand {
+        command: String,
         pattern: String,
         severity: Severity,
     },

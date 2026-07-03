@@ -72,6 +72,34 @@ async fn execute_code_runs_runtime_and_streams_journal_events() {
 }
 
 #[tokio::test]
+async fn execute_code_rejects_raw_source_when_authorized_script_hash_differs() {
+    let mut caps = CapabilityRegistry::default();
+    let runtime: Arc<dyn harness_contracts::CodeRuntimeCap> = Arc::new(FakeCodeRuntime);
+    let dispatcher: Arc<dyn harness_contracts::EmbeddedToolDispatcherCap> =
+        Arc::new(FakeEmbeddedDispatcher);
+    caps.install(ToolCapability::CodeRuntime, runtime);
+    caps.install(ToolCapability::EmbeddedToolDispatcher, dispatcher);
+
+    let tool = ExecuteCodeTool::default();
+    let planned_input = json!({ "language": "mini_lua", "source": "return 1" });
+    let raw_input = json!({ "language": "mini_lua", "source": "return 2" });
+    let ctx = tool_ctx(caps);
+    let plan = tool.plan(&planned_input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(raw_input, plan.clone(), ticket_for(&plan)).unwrap();
+
+    let error = match tool.execute_authorized(authorized, ctx).await {
+        Ok(_) => panic!("expected authorized execution to fail"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ToolError::PermissionDenied(ref message)
+            if message == "authorized execute_code script hash mismatch"
+    ));
+}
+
+#[tokio::test]
 async fn execute_code_denies_subagent_callers_before_runtime_execution() {
     let tool = ExecuteCodeTool::default();
     let input = json!({ "language": "mini_lua", "source": "return 1 + 2" });

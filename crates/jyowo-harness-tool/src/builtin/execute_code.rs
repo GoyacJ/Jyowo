@@ -88,6 +88,7 @@ impl Tool for ExecuteCodeTool {
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         let input = authorized.raw_input();
+        ensure_authorized_script_hash(&authorized, input)?;
         let runtime =
             ctx.capability::<dyn harness_contracts::CodeRuntimeCap>(ToolCapability::CodeRuntime)?;
         let dispatcher = ctx.capability::<dyn harness_contracts::EmbeddedToolDispatcherCap>(
@@ -134,6 +135,24 @@ impl Tool for ExecuteCodeTool {
         }))));
         Ok(Box::pin(stream::iter(events)))
     }
+}
+
+fn ensure_authorized_script_hash(
+    authorized: &AuthorizedToolInput,
+    input: &Value,
+) -> Result<(), ToolError> {
+    let DecisionScope::ExecuteCodeScript { script_hash } = authorized.action_plan().scope else {
+        return Err(ToolError::PermissionDenied(
+            "authorized execute_code script scope missing".to_owned(),
+        ));
+    };
+    let actual = blake3::hash(source(input).map_err(validation_error)?.as_bytes());
+    if *actual.as_bytes() != script_hash {
+        return Err(ToolError::PermissionDenied(
+            "authorized execute_code script hash mismatch".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn language(input: &Value) -> Result<CodeLanguage, ValidationError> {

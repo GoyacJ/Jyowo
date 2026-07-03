@@ -141,9 +141,13 @@ pub fn action_plan_from_permission_check(
             scope,
             ..
         } => (subject, severity, scope),
-        PermissionCheck::DangerousCommand { pattern, severity } => (
+        PermissionCheck::DangerousCommand {
+            command,
+            pattern,
+            severity,
+        } => (
             PermissionSubject::DangerousCommand {
-                command: descriptor.name.clone(),
+                command,
                 pattern_id: pattern,
                 severity,
             },

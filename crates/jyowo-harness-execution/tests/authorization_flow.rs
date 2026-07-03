@@ -16,7 +16,8 @@ use harness_execution::{
     TicketLedger,
 };
 use harness_permission::{
-    NoopDecisionPersistence, PermissionAuthority, PermissionRule, RuleAction, RuleEngineBroker,
+    DangerousPatternLibrary, NoopDecisionPersistence, PermissionAuthority, PermissionRule,
+    RuleAction, RuleEngineBroker,
 };
 use harness_sandbox::{
     ExecContext, ExecSpec, ProcessHandle, SandboxBackend, SandboxBaseConfig, SandboxCapabilities,
@@ -42,6 +43,92 @@ async fn authorization_service_denies_hard_policy_without_minting_ticket() {
     assert!(matches!(error, ExecutionError::PermissionDenied { .. }));
     let events = sink.events();
     assert!(matches!(events[0], Event::PermissionRequested(_)));
+    assert!(matches!(
+        &events[1],
+        Event::PermissionResolved(resolved) if resolved.decision == Decision::DenyOnce
+    ));
+    assert_eq!(events.len(), 2);
+}
+
+#[tokio::test]
+async fn authorization_service_denies_hard_policy_under_bypass_mode_without_minting_ticket() {
+    let sink = Arc::new(RecordingSink::default());
+    let ledger = Arc::new(TicketLedger::default());
+    let service = AuthorizationService::new(
+        real_authority(RuleSource::Policy, RuleAction::Deny).await,
+        Arc::new(TestSandbox::default()),
+        sink.clone(),
+        ledger.clone(),
+    );
+    let mut context = context();
+    context.permission_mode = PermissionMode::BypassPermissions;
+    let plan = action_plan("dangerous", DecisionScope::Any);
+
+    let error = service
+        .authorize_plan(context, plan.clone())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, ExecutionError::PermissionDenied { .. }));
+    assert!(matches!(
+        ledger.consume(
+            harness_contracts::AuthorizationTicketId::new(),
+            &harness_execution::AuthorizationTicketClaims {
+                tenant_id: TenantId::SINGLE,
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
+                tool_use_id: plan.tool_use_id,
+                tool_name: plan.tool_name,
+                action_plan_hash: plan.plan_hash,
+            },
+            Utc::now(),
+        ),
+        Err(ExecutionError::TicketUnknown { .. })
+    ));
+    let events = sink.events();
+    assert!(matches!(
+        &events[1],
+        Event::PermissionResolved(resolved) if resolved.decision == Decision::DenyOnce
+    ));
+    assert_eq!(events.len(), 2);
+}
+
+#[tokio::test]
+async fn authorization_service_denies_dangerous_command_under_bypass_without_minting_ticket() {
+    let sink = Arc::new(RecordingSink::default());
+    let ledger = Arc::new(TicketLedger::default());
+    let service = AuthorizationService::new(
+        dangerous_command_authority().await,
+        Arc::new(TestSandbox::default()),
+        sink.clone(),
+        ledger.clone(),
+    );
+    let mut context = context();
+    context.permission_mode = PermissionMode::BypassPermissions;
+    let plan = dangerous_command_plan("rm -rf /");
+
+    let error = service
+        .authorize_plan(context, plan.clone())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, ExecutionError::PermissionDenied { .. }));
+    assert!(matches!(
+        ledger.consume(
+            harness_contracts::AuthorizationTicketId::new(),
+            &harness_execution::AuthorizationTicketClaims {
+                tenant_id: TenantId::SINGLE,
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
+                tool_use_id: plan.tool_use_id,
+                tool_name: plan.tool_name,
+                action_plan_hash: plan.plan_hash,
+            },
+            Utc::now(),
+        ),
+        Err(ExecutionError::TicketUnknown { .. })
+    ));
+    let events = sink.events();
     assert!(matches!(
         &events[1],
         Event::PermissionResolved(resolved) if resolved.decision == Decision::DenyOnce
@@ -107,6 +194,31 @@ async fn real_authority(source: RuleSource, action: RuleAction) -> Arc<Permissio
     )
 }
 
+async fn dangerous_command_authority() -> Arc<PermissionAuthority> {
+    let broker = RuleEngineBroker::builder()
+        .with_tenant(TenantId::SINGLE)
+        .with_dangerous_library(DangerousPatternLibrary::default_unix())
+        .with_rules(vec![PermissionRule {
+            id: "allow-shell".to_owned(),
+            priority: 10,
+            scope: DecisionScope::ToolName("Bash".to_owned()),
+            action: RuleAction::Allow,
+            source: RuleSource::Session,
+        }])
+        .with_fallback(FallbackPolicy::AskUser)
+        .build()
+        .await
+        .unwrap();
+
+    Arc::new(
+        PermissionAuthority::builder()
+            .with_policy_broker(Arc::new(broker))
+            .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
+            .build()
+            .unwrap(),
+    )
+}
+
 fn context() -> AuthorizationContext {
     AuthorizationContext {
         tenant_id: TenantId::SINGLE,
@@ -154,6 +266,17 @@ fn action_plan(tool_name: &str, scope: DecisionScope) -> ToolActionPlan {
         plan_hash: ActionPlanHash::from_bytes([2; 32]),
         created_at: Utc::now(),
     }
+}
+
+fn dangerous_command_plan(command: &str) -> ToolActionPlan {
+    let mut plan = action_plan("Bash", DecisionScope::ToolName("Bash".to_owned()));
+    plan.subject = PermissionSubject::DangerousCommand {
+        command: command.to_owned(),
+        pattern_id: "unix-rm-rf-root".to_owned(),
+        severity: Severity::Critical,
+    };
+    plan.severity = Severity::Critical;
+    plan
 }
 
 #[derive(Default)]
