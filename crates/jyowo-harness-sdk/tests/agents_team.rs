@@ -1,11 +1,14 @@
 #![cfg(all(feature = "agents-team", feature = "testing"))]
 
+mod agents_team_support;
+
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
 };
 
+use agents_team_support::test_authorization_service;
 use async_trait::async_trait;
 use futures::{executor::block_on, stream};
 use harness_contracts::{
@@ -613,14 +616,14 @@ fn build_engine_with_subagent_tool(
 ) -> Arc<Engine> {
     let mut builder = Engine::builder()
         .with_engine_id(EngineId::new("sdk-team-member"))
-        .with_event_store(store)
+        .with_event_store(store.clone())
         .with_context(harness_context::ContextEngine::builder().build().unwrap())
         .with_hooks(HookDispatcher::new(
             HookRegistry::builder().build().unwrap().snapshot(),
         ))
         .with_model(model)
         .with_tools(tools)
-        .with_permission_broker(broker)
+        .with_authorization_service(test_authorization_service(broker, store.clone()))
         .with_workspace_root(std::env::temp_dir())
         .with_model_id("base-model");
     if enable_subagent_tool {

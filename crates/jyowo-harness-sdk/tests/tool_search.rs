@@ -5,9 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
-    BudgetMetric, Decision, DeferPolicy, Event, NetworkAccess, OverflowAction, ProviderRestriction,
-    ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolSearchMode, ToolUseId, TrustLevel, WorkspaceAccess,
+    BudgetMetric, Decision, DeferPolicy, Event, NetworkAccess, OverflowAction, PermissionMode,
+    ProviderRestriction, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_journal::EventStore;
 use harness_model::{ContentDelta, ModelRequest, ModelStreamEvent};
@@ -182,7 +182,8 @@ async fn admin_custom_tool_search_scorer_changes_result_order() {
         .create_session(
             SessionOptions::new(unique_workspace("sdk-tool-search-custom-scorer"))
                 .with_session_id(session_id)
-                .with_tool_search_mode(ToolSearchMode::Always),
+                .with_tool_search_mode(ToolSearchMode::Always)
+                .with_permission_mode(PermissionMode::BypassPermissions),
         )
         .await
         .expect("session should be created");

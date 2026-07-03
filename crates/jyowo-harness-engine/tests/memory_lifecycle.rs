@@ -25,6 +25,9 @@ use harness_model::{
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_tool::ToolPool;
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 #[tokio::test]
 async fn engine_calls_memory_lifecycle_at_turn_start() {
     let workspace = tempfile::tempdir().unwrap();
@@ -49,7 +52,10 @@ async fn engine_calls_memory_lifecycle_at_turn_start() {
         ))
         .with_model(Arc::new(StopModel))
         .with_tools(ToolPool::default())
-        .with_permission_broker(Arc::new(DenyBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(DenyBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("stop")
         .with_protocol(ModelProtocol::Messages)

@@ -1420,8 +1420,8 @@ mod tests {
     use bytes::Bytes;
     use harness_contracts::{KillScope, LocalIsolationTag};
     use harness_sandbox::{
-        ActivityHandle, ExecOutcome, ProcessHandle, SandboxCapabilities, SessionSnapshotFile,
-        SnapshotSpec,
+        ActivityHandle, ExecOutcome, ProcessHandle, ResourceLimitSupport, SandboxCapabilities,
+        SessionSnapshotFile, SnapshotSpec,
     };
 
     #[test]
@@ -1608,7 +1608,15 @@ mod tests {
         }
 
         fn capabilities(&self) -> SandboxCapabilities {
-            SandboxCapabilities::default()
+            SandboxCapabilities {
+                supports_network: true,
+                max_concurrent_execs: 1,
+                resource_limit_support: ResourceLimitSupport {
+                    wall_clock: true,
+                    ..ResourceLimitSupport::default()
+                },
+                ..SandboxCapabilities::default()
+            }
         }
 
         async fn execute(

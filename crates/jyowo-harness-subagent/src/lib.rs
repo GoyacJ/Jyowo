@@ -37,8 +37,8 @@ use harness_contracts::{
 use harness_journal::{AppendMetadata, EventStore, ReplayCursor};
 use harness_model::{AuxExecutor, AuxModelProvider, AuxTask, ModelProtocol, ModelRequest};
 use harness_permission::{
-    canonical_permission_fingerprint, PermissionBroker, PermissionCheck, PermissionContext,
-    PermissionRequest,
+    canonical_permission_fingerprint, PermissionAuthority, PermissionAuthorityDecisionSource,
+    PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest,
 };
 use harness_session::{Session, SessionOptions};
 use harness_tool::{
@@ -488,7 +488,7 @@ impl From<SubagentParentContext> for ParentContext {
 }
 
 pub struct SubagentPermissionBridge {
-    parent_broker: Arc<dyn PermissionBroker>,
+    parent_authority: Arc<PermissionAuthority>,
     event_store: Arc<dyn EventStore>,
     tenant_id: TenantId,
     parent_session_id: SessionId,
@@ -508,8 +508,8 @@ struct ChildPermissionContext {
 
 impl SubagentPermissionBridge {
     #[must_use]
-    pub fn new(
-        parent_broker: Arc<dyn PermissionBroker>,
+    pub fn with_parent_authority(
+        parent_authority: Arc<PermissionAuthority>,
         event_store: Arc<dyn EventStore>,
         tenant_id: TenantId,
         parent_session_id: SessionId,
@@ -517,7 +517,7 @@ impl SubagentPermissionBridge {
         subagent_id: SubagentId,
     ) -> Self {
         Self {
-            parent_broker,
+            parent_authority,
             event_store,
             tenant_id,
             parent_session_id,
@@ -565,9 +565,6 @@ impl PermissionBroker for SubagentPermissionBridge {
             correlation: CorrelationId::new(),
         });
         let causation_id = harness_contracts::EventId::new();
-        let parent_decided_by = DecidedBy::Broker {
-            broker_id: "parent".to_owned(),
-        };
         let auto_resolved = matches!(
             ctx.permission_mode,
             PermissionMode::BypassPermissions | PermissionMode::DontAsk
@@ -646,14 +643,14 @@ impl PermissionBroker for SubagentPermissionBridge {
             return Decision::DenyOnce;
         }
 
-        let decision = if self.hard_policy_denies(&request, &ctx).await {
-            Decision::DenyOnce
-        } else {
-            self.parent_broker.decide(request.clone(), ctx).await
-        };
+        let parent_outcome = self
+            .parent_authority
+            .decide_with_audit(request.clone(), ctx)
+            .await;
+        let decision = parent_outcome.decision.clone();
         let forwarded_decided_by = DecidedBy::ParentForwarded {
             parent_session_id: self.parent_session_id,
-            original_decided_by: Box::new(parent_decided_by),
+            original_decided_by: Box::new(decided_by(&parent_outcome.decided_by)),
         };
         let decision_id = DecisionId::new();
         if self
@@ -720,19 +717,44 @@ impl PermissionBroker for SubagentPermissionBridge {
         request: &PermissionRequest,
         ctx: &PermissionContext,
     ) -> bool {
-        self.parent_broker.hard_policy_denies(request, ctx).await
+        self.parent_authority
+            .policy_broker()
+            .hard_policy_denies(request, ctx)
+            .await
     }
 
     async fn persist(
         &self,
         decision: harness_permission::PersistedDecision,
     ) -> Result<(), harness_contracts::PermissionError> {
-        self.parent_broker.persist(decision).await
+        self.parent_authority
+            .decision_store()
+            .persist(decision)
+            .await
     }
 }
 
 fn legacy_action_plan_hash(request: &PermissionRequest) -> ActionPlanHash {
     ActionPlanHash::from_bytes(canonical_permission_fingerprint(request).0)
+}
+
+fn decided_by(source: &PermissionAuthorityDecisionSource) -> DecidedBy {
+    match source {
+        PermissionAuthorityDecisionSource::PermissionMode => DecidedBy::DefaultMode,
+        PermissionAuthorityDecisionSource::HardPolicy | PermissionAuthorityDecisionSource::Rule => {
+            DecidedBy::Rule {
+                rule_id: "permission_authority".to_owned(),
+            }
+        }
+        PermissionAuthorityDecisionSource::PersistedDecision { .. }
+        | PermissionAuthorityDecisionSource::Dedup { .. }
+        | PermissionAuthorityDecisionSource::Interactive
+        | PermissionAuthorityDecisionSource::NoInteractive
+        | PermissionAuthorityDecisionSource::ScopeMismatch
+        | PermissionAuthorityDecisionSource::PersistenceFailed => DecidedBy::Broker {
+            broker_id: "permission_authority".to_owned(),
+        },
+    }
 }
 
 fn permission_review_from_request(request: &PermissionRequest) -> PermissionReview {

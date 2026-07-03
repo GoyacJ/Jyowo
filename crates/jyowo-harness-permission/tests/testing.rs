@@ -122,6 +122,7 @@ fn permission_request(command: &str) -> PermissionRequest {
         },
         severity: Severity::Low,
         scope_hint: DecisionScope::ToolName("shell".to_owned()),
+        confirmation_expected: None,
         created_at: Utc::now(),
     }
 }

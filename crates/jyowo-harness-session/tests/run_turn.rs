@@ -1,3 +1,5 @@
+mod run_turn_support;
+
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -10,19 +12,18 @@ use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
     ActionResource, BudgetMetric, CapabilityRegistry, ClarifyAnswer, ClarifyChannelCap,
-    ClarifyPrompt, DecidedBy, Decision, DecisionScope, DeferPolicy, Event, HookEventKind, Message,
-    MessagePart, MessageRole, ModelError, NetworkAccess, NoopRedactor, OverflowAction,
-    PermissionError, PermissionMode, PermissionSubject, ProviderRestriction, RedactRules, Redactor,
-    ResultBudget, RunId, SessionId, StopReason, TenantId, ToolActionPlan, ToolCapability,
-    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId,
-    TrustLevel, UsageSnapshot, WorkspaceAccess,
+    ClarifyPrompt, Decision, DecisionScope, DeferPolicy, Event, HookEventKind, MessageRole,
+    ModelError, NetworkAccess, NoopRedactor, OverflowAction, PermissionError, PermissionMode,
+    PermissionSubject, ProviderRestriction, RedactRules, Redactor, ResultBudget, RunId, SessionId,
+    TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, TrustLevel, WorkspaceAccess,
 };
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookHandler, HookOutcome, HookRegistry,
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
-    ContentDelta, ConversationModelCapability, ErrorClass, ErrorHints, HealthStatus, InferContext,
+    ConversationModelCapability, ErrorClass, ErrorHints, HealthStatus, InferContext,
     ModelDescriptor, ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
@@ -32,6 +33,10 @@ use harness_tool::{
     AuthorizedToolInput, BuiltinToolset, SchemaResolverContext, Tool, ToolContext, ToolEvent,
     ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolSearchMode, ToolStream,
     ValidationError,
+};
+use run_turn_support::{
+    message_text, test_authorization_service, text_events, thinking_then_text_events,
+    tool_call_events,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -95,10 +100,10 @@ async fn run_turn_records_run_tool_permission_assistant_events() {
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::PermissionResolved(resolved)
-            if matches!(resolved.decided_by, DecidedBy::Broker { .. }))));
+            if matches!(resolved.decision, Decision::AllowOnce))));
     assert!(events
         .iter()
-        .any(|event| matches!(event, Event::ToolUseApproved(_))));
+        .any(|event| matches!(event, Event::SandboxPreflightPassed(_))));
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::ToolUseCompleted(_))));
@@ -306,10 +311,10 @@ async fn run_turn_persists_blocking_tool_journal_event_before_answer() {
         .iter()
         .position(|event| matches!(event, Event::PermissionRequested(_)))
         .expect("permission request should be persisted");
-    let tool_approved_index = events
+    let sandbox_preflight_index = events
         .iter()
-        .position(|event| matches!(event, Event::ToolUseApproved(_)))
-        .expect("tool approval should be persisted");
+        .position(|event| matches!(event, Event::SandboxPreflightPassed(_)))
+        .expect("sandbox preflight should be persisted");
     let clarification_index = events
         .iter()
         .position(|event| {
@@ -322,7 +327,7 @@ async fn run_turn_persists_blocking_tool_journal_event_before_answer() {
         .expect("clarification request should be persisted");
 
     assert!(permission_requested_index < clarification_index);
-    assert!(tool_approved_index < clarification_index);
+    assert!(sandbox_preflight_index < clarification_index);
     assert!(events.iter().any(|event| {
         matches!(
             event,
@@ -627,7 +632,7 @@ impl TestHarness {
             hooks: HookDispatcher::new(hooks.snapshot()),
             model: model.clone(),
             tools,
-            permission_broker,
+            authorization_service: test_authorization_service(permission_broker, store.clone()),
             sandbox: None,
             cap_registry: Arc::new(CapabilityRegistry::default()),
             redactor,
@@ -710,7 +715,7 @@ impl TestHarness {
             hooks: HookDispatcher::new(hooks.snapshot()),
             model: model.clone(),
             tools,
-            permission_broker: Arc::new(AllowBroker),
+            authorization_service: test_authorization_service(Arc::new(AllowBroker), store.clone()),
             sandbox: None,
             cap_registry: Arc::new(cap_registry),
             redactor: Arc::new(harness_contracts::NoopRedactor),
@@ -1129,67 +1134,4 @@ impl Tool for TestListDirTool {
             ToolResult::Structured(json!(entries)),
         )])))
     }
-}
-
-fn tool_call_events(name: &str, input: Value) -> Vec<ModelStreamEvent> {
-    let delta = ContentDelta::ToolUseComplete {
-        id: ToolUseId::new(),
-        name: name.to_owned(),
-        input,
-    };
-    assistant_events([(0, delta)], StopReason::ToolUse)
-}
-
-fn text_events(text: &str) -> Vec<ModelStreamEvent> {
-    assistant_events(
-        [(0, ContentDelta::Text(text.to_owned()))],
-        StopReason::EndTurn,
-    )
-}
-
-fn thinking_then_text_events(thinking: &str, text: &str) -> Vec<ModelStreamEvent> {
-    let thinking = ContentDelta::Thinking(harness_model::ThinkingDelta {
-        provider_native: None,
-        signature: None,
-        text: Some(thinking.to_owned()),
-    });
-    assistant_events(
-        [(0, thinking), (1, ContentDelta::Text(text.to_owned()))],
-        StopReason::EndTurn,
-    )
-}
-
-fn assistant_events<const N: usize>(
-    deltas: [(usize, ContentDelta); N],
-    stop_reason: StopReason,
-) -> Vec<ModelStreamEvent> {
-    let mut events = vec![ModelStreamEvent::MessageStart {
-        message_id: "assistant-1".to_owned(),
-        usage: UsageSnapshot::default(),
-    }];
-    events.extend(
-        deltas
-            .into_iter()
-            .map(|(index, delta)| ModelStreamEvent::ContentBlockDelta { index, delta }),
-    );
-    events.extend([
-        ModelStreamEvent::MessageDelta {
-            stop_reason: Some(stop_reason),
-            usage_delta: UsageSnapshot::default(),
-        },
-        ModelStreamEvent::MessageStop,
-    ]);
-    events
-}
-
-fn message_text(message: &Message) -> String {
-    message
-        .parts
-        .iter()
-        .filter_map(|part| match part {
-            MessagePart::Text(text) => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }

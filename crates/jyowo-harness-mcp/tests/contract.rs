@@ -68,6 +68,14 @@ use harness_mcp::{StdioEnv, StdioPolicy, StdioTransport};
 #[cfg(feature = "sse")]
 use std::convert::Infallible;
 
+#[cfg(any(
+    feature = "http",
+    feature = "sse",
+    feature = "stdio",
+    feature = "websocket"
+))]
+mod support;
+
 #[test]
 fn mcp_metric_names_are_stable_mcp_operational_names() {
     let metric = McpMetric::OAuthRefresh {
@@ -141,7 +149,7 @@ done
         McpServerSource::Workspace,
     );
     let connection = McpClient::new(Arc::new(StdioTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("connect");
 
@@ -217,7 +225,7 @@ async fn http_transport_satisfies_client_contract() {
         McpServerSource::Workspace,
     );
     let connection = McpClient::new(Arc::new(HttpTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("connect");
 
@@ -298,7 +306,7 @@ async fn websocket_transport_satisfies_client_contract() {
         McpServerSource::Workspace,
     );
     let connection = McpClient::new(Arc::new(WebsocketTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("connect");
 
@@ -319,7 +327,7 @@ async fn sse_transport_satisfies_client_contract() {
         McpServerSource::Workspace,
     );
     let connection = McpClient::new(Arc::new(SseTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("connect");
 

@@ -45,6 +45,33 @@ async fn stream_broker_sends_request_and_returns_resolved_decision() {
 }
 
 #[tokio::test]
+async fn stream_broker_preserves_confirmation_expected_on_pending_request() {
+    let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    });
+    let mut request = permission_request();
+    request.confirmation_expected = Some("DELETE".to_owned());
+    let request_id = request.request_id;
+
+    let decide =
+        tokio::spawn(async move { broker.decide(request, permission_context(None)).await });
+    receiver.recv().await.unwrap();
+
+    let pending = resolver.pending_permission_requests();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].request.request_id, request_id);
+    assert_eq!(pending[0].confirmation_expected.as_deref(), Some("DELETE"));
+
+    resolver
+        .resolve(request_id, Decision::DenyOnce)
+        .await
+        .unwrap();
+    assert_eq!(decide.await.unwrap(), Decision::DenyOnce);
+}
+
+#[tokio::test]
 async fn stream_broker_rejects_unknown_resolution() {
     let (_broker, _receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
         default_timeout: Some(Duration::from_secs(5)),
@@ -250,6 +277,7 @@ fn permission_request_with_severity(severity: Severity) -> PermissionRequest {
         },
         severity,
         scope_hint: DecisionScope::ToolName("shell".to_owned()),
+        confirmation_expected: None,
         created_at: Utc::now(),
     }
 }

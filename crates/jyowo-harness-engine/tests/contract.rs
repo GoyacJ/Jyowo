@@ -21,6 +21,9 @@ use harness_tool::ToolPool;
 use parking_lot::Mutex;
 use serde_json::json;
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 #[test]
 fn engine_builder_exposes_stable_engine_id() {
     let engine = Engine::builder()
@@ -142,14 +145,18 @@ trait EngineBuilderTestExt {
 impl EngineBuilderTestExt for EngineBuilder {
     fn with_required_test_dependencies(self) -> Self {
         let root = tempfile::tempdir().unwrap();
-        self.with_event_store(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        self.with_event_store(store.clone())
             .with_context(ContextEngine::builder().build().unwrap())
             .with_hooks(HookDispatcher::new(
                 HookRegistry::builder().build().unwrap().snapshot(),
             ))
             .with_model(Arc::new(DummyModel))
             .with_tools(ToolPool::default())
-            .with_permission_broker(Arc::new(DummyBroker))
+            .with_authorization_service(test_authorization_service(
+                Arc::new(DummyBroker),
+                store.clone(),
+            ))
             .with_workspace_root(root.path())
             .with_model_id("dummy-model")
             .with_cap_registry(Arc::new(CapabilityRegistry::default()))

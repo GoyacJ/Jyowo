@@ -93,20 +93,44 @@ impl Harness {
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub(super) async fn default_permission_broker(
     options: &HarnessOptions,
     rule_providers: &[Arc<dyn RuleProvider>],
     decision_store: Option<Arc<dyn DecisionStore>>,
 ) -> Result<Arc<dyn PermissionBroker>, HarnessError> {
-    permission_authority_broker(options, None, rule_providers, decision_store).await
+    permission_authority_runtime(options, None, rule_providers, decision_store)
+        .await
+        .map(|runtime| runtime.permission_broker)
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub(super) async fn permission_authority_broker(
     options: &HarnessOptions,
     interactive_broker: Option<Arc<dyn PermissionBroker>>,
     rule_providers: &[Arc<dyn RuleProvider>],
     decision_store: Option<Arc<dyn DecisionStore>>,
 ) -> Result<Arc<dyn PermissionBroker>, HarnessError> {
+    permission_authority_runtime(options, interactive_broker, rule_providers, decision_store)
+        .await
+        .map(|runtime| runtime.permission_broker)
+}
+
+pub(super) struct PermissionAuthorityRuntime {
+    pub(super) permission_authority: Arc<harness_permission::PermissionAuthority>,
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(super) permission_broker: Arc<dyn PermissionBroker>,
+}
+
+pub(super) async fn permission_authority_runtime(
+    options: &HarnessOptions,
+    interactive_broker: Option<Arc<dyn PermissionBroker>>,
+    rule_providers: &[Arc<dyn RuleProvider>],
+    decision_store: Option<Arc<dyn DecisionStore>>,
+) -> Result<PermissionAuthorityRuntime, HarnessError> {
     let base_policy_broker =
         policy_broker(options, interactive_broker.is_none(), rule_providers).await?;
     let policy_broker = match &interactive_broker {
@@ -130,17 +154,25 @@ pub(super) async fn permission_authority_broker(
         }
     };
 
-    builder
-        .with_optional_interactive_broker(interactive_broker)
-        .build()
-        .map(|authority| {
-            Arc::new(PermissionAuthorityBroker {
-                authority,
-                policy_broker,
-                decision_store,
-            }) as Arc<dyn PermissionBroker>
-        })
-        .map_err(HarnessError::Permission)
+    let authority = Arc::new(
+        builder
+            .with_optional_interactive_broker(interactive_broker)
+            .build()
+            .map_err(HarnessError::Permission)?,
+    );
+    #[cfg(test)]
+    let permission_broker = Arc::new(PermissionAuthorityBroker {
+        authority: Arc::clone(&authority),
+        policy_broker,
+        decision_store,
+    }) as Arc<dyn PermissionBroker>;
+    #[cfg(not(test))]
+    let _ = (policy_broker, decision_store);
+    Ok(PermissionAuthorityRuntime {
+        permission_authority: authority,
+        #[cfg(test)]
+        permission_broker,
+    })
 }
 
 async fn policy_broker(
@@ -216,10 +248,10 @@ impl PermissionBroker for AuthorityPolicyBroker {
     }
 }
 
-struct PermissionAuthorityBroker {
-    authority: harness_permission::PermissionAuthority,
-    policy_broker: Arc<dyn PermissionBroker>,
-    decision_store: Arc<dyn DecisionStore>,
+pub(super) struct PermissionAuthorityBroker {
+    pub(super) authority: Arc<harness_permission::PermissionAuthority>,
+    pub(super) policy_broker: Arc<dyn PermissionBroker>,
+    pub(super) decision_store: Arc<dyn DecisionStore>,
 }
 
 #[async_trait]
@@ -258,9 +290,11 @@ impl PermissionAuthorityBroker {
         if let Some(interactive_broker) = interactive_broker {
             builder = builder.with_interactive_broker(interactive_broker);
         }
-        let authority = builder
-            .build()
-            .expect("permission authority broker inputs must be valid");
+        let authority = Arc::new(
+            builder
+                .build()
+                .expect("permission authority broker inputs must be valid"),
+        );
         Self {
             authority,
             policy_broker,

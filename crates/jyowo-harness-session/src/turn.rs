@@ -3,24 +3,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
-use chrono::Utc;
 use futures::StreamExt;
 use harness_context::{ContextEngine, ContextSessionView};
 use harness_contracts::{
     AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobStore, CapabilityRegistry,
-    CausationId, ConversationAttachmentReference, CorrelationId, DeltaChunk, EndReason, Event,
-    EventId, FallbackPolicy, InteractivityLevel, Message, MessageContent, MessageId,
+    CausationId, ConversationAttachmentReference, CorrelationId, DeltaChunk, DenyReason, EndReason,
+    Event, EventId, FallbackPolicy, InteractivityLevel, Message, MessageContent, MessageId,
     MessageMetadata, MessagePart, MessageRole, PermissionActorSource, PermissionMode, RedactRules,
     Redactor, RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionError, SessionId,
     StopReason, TeamId, TenantId, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult,
-    ToolUseCompletedEvent, ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseSummary,
-    TrustLevel, TurnInput, UsageSnapshot,
+    ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
+    ToolUseRequestedEvent, ToolUseSummary, TrustLevel, TurnInput, UsageSnapshot,
 };
-use harness_execution::{
-    AuthorizationContext, AuthorizationEventSink, AuthorizationService, ExecutionError,
-    TicketLedger,
-};
+use harness_execution::{AuthorizationContext, AuthorizationService, ExecutionError};
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookMessageView, HookOutcome, HookSessionView,
     ReplayMode, ToolDescriptorView,
@@ -29,15 +24,13 @@ use harness_model::{
     ContentDelta, InferContext, ModelModality, ModelProtocol, ModelProvider, ModelRequest,
     ModelStreamEvent,
 };
-use harness_permission::{NoopDecisionPersistence, PermissionAuthority, PermissionBroker};
 use harness_sandbox::SandboxBackend;
 use harness_tool::{
-    AuthorizedTicketSummary, AuthorizedToolCall, AuthorizedToolInput, InterruptToken,
-    OrchestratorContext, ToolCall, ToolEventEmitter, ToolOrchestrator, ToolPool,
-    ToolResultEnvelope as RuntimeToolResultEnvelope,
+    AuthorizedToolCall, InterruptToken, OrchestratorContext, ToolCall, ToolEventEmitter,
+    ToolOrchestrator, ToolPool, ToolResultEnvelope as RuntimeToolResultEnvelope,
 };
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 
 use crate::Session;
 
@@ -49,7 +42,7 @@ pub struct SessionTurnRuntime {
     pub hooks: HookDispatcher,
     pub model: Arc<dyn ModelProvider>,
     pub tools: ToolPool,
-    pub permission_broker: Arc<dyn PermissionBroker>,
+    pub authorization_service: Arc<AuthorizationService>,
     pub sandbox: Option<Arc<dyn SandboxBackend>>,
     pub cap_registry: Arc<CapabilityRegistry>,
     pub redactor: Arc<dyn Redactor>,
@@ -407,42 +400,15 @@ async fn authorize_tool_calls(
     run_id: RunId,
     permission_mode: PermissionMode,
     tool_calls: &[ToolCall],
-    projection_events: &mut Vec<Event>,
+    _projection_events: &mut Vec<Event>,
 ) -> Result<(Vec<AuthorizedToolCall>, Vec<RuntimeToolResultEnvelope>), SessionError> {
-    let Some(sandbox_backend) = runtime.sandbox.clone() else {
-        let results = tool_calls
-            .iter()
-            .map(|call| {
-                authorization_failure_result(
-                    call,
-                    ToolError::PermissionDenied(
-                        "sandbox backend is required before tool authorization".to_owned(),
-                    ),
-                )
-            })
-            .collect();
-        return Ok((Vec::new(), results));
-    };
-    let authority = PermissionAuthority::builder()
-        .with_policy_broker(runtime.permission_broker.clone())
-        .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
-        .build()
-        .map_err(|error| SessionError::Message(error.to_string()))?;
-    let ticket_ledger = Arc::new(TicketLedger::default());
-    let event_sink = RecordingAuthorizationEventSink::default();
-    let authorization = AuthorizationService::new(
-        Arc::new(authority),
-        sandbox_backend,
-        Arc::new(event_sink.clone()),
-        ticket_ledger.clone(),
-    );
     let auth_context = AuthorizationContext {
         tenant_id: session.tenant_id(),
         session_id: session.session_id(),
         run_id,
         permission_mode,
         interactivity: interactivity_for_permission_mode(permission_mode),
-        fallback_policy: FallbackPolicy::DenyAll,
+        fallback_policy: FallbackPolicy::AskUser,
         workspace_root: session.options().workspace_root.clone(),
     };
 
@@ -476,27 +442,11 @@ async fn authorize_tool_calls(
                 .map_err(|error| ToolError::Validation(error.to_string()))?;
             let plan = tool.plan(&call.input, &tool_ctx).await?;
             tool_ctx.tool_use_id = plan.tool_use_id;
-            let outcome = authorization
-                .authorize_plan(auth_context.clone(), plan.clone())
+            let authorized_input = runtime
+                .authorization_service
+                .authorize_tool_input(auth_context.clone(), plan, call.input.clone())
                 .await
                 .map_err(authorization_error_to_tool_error)?;
-            let consumed = ticket_ledger
-                .consume(outcome.ticket.id, &outcome.ticket.claims, Utc::now())
-                .map_err(authorization_error_to_tool_error)?;
-            let authorized_input = AuthorizedToolInput::new(
-                call.input.clone(),
-                plan,
-                AuthorizedTicketSummary {
-                    ticket_id: consumed.id,
-                    tenant_id: consumed.claims.tenant_id,
-                    session_id: consumed.claims.session_id,
-                    run_id: consumed.claims.run_id,
-                    tool_use_id: consumed.claims.tool_use_id,
-                    tool_name: consumed.claims.tool_name,
-                    action_plan_hash: consumed.claims.action_plan_hash,
-                    consumed_at: Utc::now(),
-                },
-            )?;
             Ok::<AuthorizedToolCall, ToolError>(AuthorizedToolCall {
                 tool_use_id: call.tool_use_id,
                 tool_name: call.tool_name.clone(),
@@ -504,11 +454,6 @@ async fn authorize_tool_calls(
             })
         }
         .await;
-        let auth_events = event_sink.drain().await;
-        if !auth_events.is_empty() {
-            session.append_events(&auth_events).await?;
-            projection_events.extend(auth_events);
-        }
         match result {
             Ok(call) => authorized.push(call),
             Err(error) => failures.push(authorization_failure_result(call, error)),
@@ -734,30 +679,6 @@ impl ToolEventEmitter for ChannelToolEventEmitter {
     }
 }
 
-#[derive(Clone, Default)]
-struct RecordingAuthorizationEventSink {
-    events: Arc<Mutex<Vec<Event>>>,
-}
-
-impl RecordingAuthorizationEventSink {
-    async fn drain(&self) -> Vec<Event> {
-        self.events.lock().await.drain(..).collect()
-    }
-}
-
-#[async_trait]
-impl AuthorizationEventSink for RecordingAuthorizationEventSink {
-    async fn emit_batch(
-        &self,
-        _tenant_id: TenantId,
-        _session_id: SessionId,
-        events: Vec<Event>,
-    ) -> Result<(), ExecutionError> {
-        self.events.lock().await.extend(events);
-        Ok(())
-    }
-}
-
 fn hook_context(
     session: &Session,
     runtime: &SessionTurnRuntime,
@@ -813,6 +734,11 @@ fn tool_result_events(result: &RuntimeToolResultEnvelope) -> Vec<Event> {
             result: tool_result.clone(),
             usage: None,
             duration_ms: result.duration.as_millis().min(u128::from(u64::MAX)) as u64,
+            at: harness_contracts::now(),
+        })],
+        Err(ToolError::PermissionDenied(_)) => vec![Event::ToolUseDenied(ToolUseDeniedEvent {
+            tool_use_id: result.tool_use_id,
+            reason: DenyReason::PolicyDenied,
             at: harness_contracts::now(),
         })],
         Err(error) => vec![Event::ToolUseFailed(ToolUseFailedEvent {

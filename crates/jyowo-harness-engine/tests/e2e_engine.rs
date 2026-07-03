@@ -28,6 +28,9 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 const SECRET: &str = "sk-e2e-secret-value";
 
 #[tokio::test]
@@ -124,7 +127,10 @@ impl Harness {
             ))
             .with_model(model.clone())
             .with_tools(tools)
-            .with_permission_broker(Arc::new(AllowBroker))
+            .with_authorization_service(test_authorization_service(
+                Arc::new(AllowBroker),
+                store.clone(),
+            ))
             .with_workspace_root(workspace.path())
             .with_model_id("test-model")
             .with_protocol(ModelProtocol::Messages)

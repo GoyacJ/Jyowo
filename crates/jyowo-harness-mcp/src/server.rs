@@ -15,6 +15,7 @@ use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
 use futures::SinkExt;
 use futures::StreamExt;
 use harness_contracts::{
+    ManifestOriginRef, McpPromptOperation, McpResourceOperation, McpServerId, McpServerSource,
     MessagePart, Severity, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolResult,
     ToolResultPart, ToolUseId,
 };
@@ -38,10 +39,11 @@ use tokio_tungstenite::{
 };
 
 use crate::{
-    JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpContent, McpMetric, McpMetricOutcome,
-    McpMetricsSink, McpPrompt, McpPromptMessages, McpResource, McpResourceContents,
-    McpToolDescriptor, McpToolResult, NoopMcpEventSink, NoopMcpMetricsSink, SamplingJsonRpcHandler,
-    SamplingPolicy,
+    authorize_mcp_prompt, authorize_mcp_resource, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
+    McpAuthorizationContext, McpContent, McpMetric, McpMetricOutcome, McpMetricsSink, McpPrompt,
+    McpPromptMessages, McpResource, McpResourceContents, McpServerSpec, McpToolDescriptor,
+    McpToolResult, NoopMcpEventSink, NoopMcpMetricsSink, SamplingJsonRpcHandler, SamplingPolicy,
+    TransportChoice,
 };
 
 const JSONRPC_METHOD_NOT_FOUND: i32 = -32601;
@@ -770,6 +772,7 @@ pub struct McpServerAdapter {
     resource_provider: Arc<dyn ResourceProvider>,
     prompt_provider: Arc<dyn PromptProvider>,
     sampling_handler: SamplingJsonRpcHandler,
+    authorization_context: Option<McpAuthorizationContext>,
     rate_limit: Arc<Mutex<RateLimitState>>,
     audit_sink: Arc<dyn McpServerAuditSink>,
     metrics_sink: Arc<dyn McpMetricsSink>,
@@ -788,6 +791,7 @@ impl McpServerAdapter {
                 SamplingPolicy::denied(),
                 Arc::new(NoopMcpEventSink),
             ),
+            authorization_context: None,
             audit_sink: Arc::new(NoopMcpServerAuditSink),
             metrics_sink: Arc::new(NoopMcpMetricsSink),
         }
@@ -961,6 +965,7 @@ impl McpServerAdapter {
     }
 
     async fn list_resources(&self) -> Result<Value, JsonRpcError> {
+        self.authorize_resource(McpResourceOperation::List).await?;
         let resources = self
             .resource_provider
             .list_resources()
@@ -978,6 +983,10 @@ impl McpServerAdapter {
             .and_then(Value::as_str)
             .ok_or_else(|| jsonrpc_error(JSONRPC_INVALID_PARAMS, "resources/read missing uri"))?;
 
+        self.authorize_resource(McpResourceOperation::Read {
+            uri: uri.to_owned(),
+        })
+        .await?;
         let contents = self
             .resource_provider
             .read_resource(uri)
@@ -987,6 +996,7 @@ impl McpServerAdapter {
     }
 
     async fn list_prompts(&self) -> Result<Value, JsonRpcError> {
+        self.authorize_prompt(McpPromptOperation::List).await?;
         let prompts = self
             .prompt_provider
             .list_prompts()
@@ -1013,6 +1023,10 @@ impl McpServerAdapter {
             ));
         }
 
+        self.authorize_prompt(McpPromptOperation::Get {
+            name: name.to_owned(),
+        })
+        .await?;
         serde_json::to_value(
             self.prompt_provider
                 .get_prompt(name, arguments)
@@ -1020,6 +1034,47 @@ impl McpServerAdapter {
                 .map_err(server_error_to_jsonrpc)?,
         )
         .map_err(|_| internal_jsonrpc_error())
+    }
+
+    async fn authorize_resource(
+        &self,
+        operation: McpResourceOperation,
+    ) -> Result<(), JsonRpcError> {
+        let Some(context) = &self.authorization_context else {
+            return Err(jsonrpc_error(
+                JSONRPC_UNAUTHORIZED,
+                "mcp resource authorization context is not configured",
+            ));
+        };
+        authorize_mcp_resource(context, &self.authorization_spec(), operation)
+            .await
+            .map_err(|error| jsonrpc_error(JSONRPC_UNAUTHORIZED, error.to_string()))
+    }
+
+    async fn authorize_prompt(&self, operation: McpPromptOperation) -> Result<(), JsonRpcError> {
+        let Some(context) = &self.authorization_context else {
+            return Err(jsonrpc_error(
+                JSONRPC_UNAUTHORIZED,
+                "mcp prompt authorization context is not configured",
+            ));
+        };
+        authorize_mcp_prompt(context, &self.authorization_spec(), operation)
+            .await
+            .map_err(|error| jsonrpc_error(JSONRPC_UNAUTHORIZED, error.to_string()))
+    }
+
+    fn authorization_spec(&self) -> McpServerSpec {
+        McpServerSpec::new(
+            McpServerId(self.policy.server_name.clone()),
+            self.policy.server_name.clone(),
+            TransportChoice::InProcess,
+            McpServerSource::Dynamic {
+                registered_by: "server_adapter".to_owned(),
+            },
+        )
+        .with_manifest_origin(ManifestOriginRef::File {
+            path: "mcp-server-adapter".to_owned(),
+        })
     }
 
     fn record_tenant_mapping_rejection(&self, error: &McpServerError) {
@@ -1560,6 +1615,7 @@ pub struct McpServerAdapterBuilder {
     resource_provider: Arc<dyn ResourceProvider>,
     prompt_provider: Arc<dyn PromptProvider>,
     sampling_handler: SamplingJsonRpcHandler,
+    authorization_context: Option<McpAuthorizationContext>,
     audit_sink: Arc<dyn McpServerAuditSink>,
     metrics_sink: Arc<dyn McpMetricsSink>,
 }
@@ -1614,6 +1670,12 @@ impl McpServerAdapterBuilder {
     }
 
     #[must_use]
+    pub fn with_authorization_context(mut self, context: McpAuthorizationContext) -> Self {
+        self.authorization_context = Some(context);
+        self
+    }
+
+    #[must_use]
     pub fn with_audit_sink<T>(mut self, audit_sink: Arc<T>) -> Self
     where
         T: McpServerAuditSink,
@@ -1632,9 +1694,12 @@ impl McpServerAdapterBuilder {
     }
 
     pub fn build(self) -> Result<McpServerAdapter, McpServerError> {
-        let sampling_handler = self
+        let mut sampling_handler = self
             .sampling_handler
             .with_metrics_sink(Arc::clone(&self.metrics_sink));
+        if let Some(context) = &self.authorization_context {
+            sampling_handler = sampling_handler.with_authorization_context(context.clone());
+        }
         Ok(McpServerAdapter {
             registry: self.registry,
             policy: self.policy,
@@ -1645,6 +1710,7 @@ impl McpServerAdapterBuilder {
             resource_provider: self.resource_provider,
             prompt_provider: self.prompt_provider,
             sampling_handler,
+            authorization_context: self.authorization_context,
             rate_limit: Arc::new(Mutex::new(RateLimitState::default())),
             audit_sink: self.audit_sink,
             metrics_sink: self.metrics_sink,
@@ -1868,13 +1934,11 @@ fn harness_tool_descriptors() -> Vec<HarnessToolSpec> {
                         "type": "string",
                         "enum": [
                             "allow_once",
-                            "allow_session",
-                            "allow_permanent",
                             "deny_once",
-                            "deny_permanent",
                             "escalate"
                         ]
-                    }
+                    },
+                    "confirmation_text": { "type": "string" }
                 }),
             ),
         ),

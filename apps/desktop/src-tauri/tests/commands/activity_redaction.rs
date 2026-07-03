@@ -878,6 +878,7 @@ async fn list_activity_with_runtime_state_redacts_pending_permission_display_tex
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )

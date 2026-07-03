@@ -3,30 +3,24 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::Utc;
 use futures::{stream, StreamExt};
 use harness_context::{ContextSessionView, TokenBudget};
 use harness_contracts::{
     ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, AssistantDeltaProducedEvent,
     AssistantMessageCompletedEvent, BlobRef, BudgetKind, CausationId, ContextPatchLifecycle,
     ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource, ConversationAttachmentReference,
-    CorrelationId, DeltaChunk, EndReason, Event, EventId, FallbackPolicy, HookContextPatchEvent,
-    HookEventKind, HookFailedEvent, HookOutcomeInconsistentEvent, HookOutcomeSummary,
-    HookReturnedUnsupportedEvent, HookRewroteInputEvent, HookTriggeredEvent, Message,
-    MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, ModelError, ModelRef,
-    PermissionMode, PricingSnapshotId, RedactRules, Redactor, RequestId, RunEndedEvent, RunId,
-    RunModelSnapshot, RunStartedEvent, SessionId, StopReason, TeamId, TenantId, ToolDescriptor,
-    ToolError, ToolErrorPayload, ToolResult, ToolResultPart, ToolUseCompletedEvent,
-    DenyReason, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
-    ToolUseRequestedEvent, TrustLevel, TurnInput,
-    UsageAccumulatedEvent, UsageSnapshot,
+    CorrelationId, DeltaChunk, DenyReason, EndReason, Event, EventId, FallbackPolicy,
+    HookContextPatchEvent, HookEventKind, HookFailedEvent, HookOutcomeInconsistentEvent,
+    HookOutcomeSummary, HookReturnedUnsupportedEvent, HookRewroteInputEvent, HookTriggeredEvent,
+    Message, MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, ModelError,
+    ModelRef, PermissionMode, PricingSnapshotId, RedactRules, Redactor, RequestId, RunEndedEvent,
+    RunId, RunModelSnapshot, RunStartedEvent, SessionId, StopReason, TeamId, TenantId,
+    ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolResultPart, ToolUseCompletedEvent,
+    ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, TrustLevel,
+    TurnInput, UsageAccumulatedEvent, UsageSnapshot,
 };
-use harness_execution::{
-    AuthorizationContext, AuthorizationEventSink, AuthorizationService, ExecutionError,
-    TicketLedger,
-};
+use harness_execution::{AuthorizationContext, ExecutionError};
 use harness_hook::{
     DispatchResult, HookContext, HookEvent, HookFailureCause, HookMessageView, HookOutcome,
     HookSessionView, ReplayMode, ToolDescriptorView, ToolErrorView,
@@ -37,18 +31,12 @@ use harness_model::{
     PricingSource, Ratio, StreamAggregate, StreamAggregator,
 };
 use harness_observability::{DefaultRedactor, Span, SpanAttributes};
-use harness_permission::{NoopDecisionPersistence, PermissionAuthority};
-use harness_sandbox::{
-    ExecContext, ExecOutcome, ExecSpec, ProcessHandle, SandboxBackend, SandboxBaseConfig,
-    SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
-};
 use harness_tool::{
-    AuthorizedTicketSummary, AuthorizedToolCall, AuthorizedToolInput, InterruptToken,
-    OrchestratorContext, ToolCall, ToolEventEmitter, ToolOrchestrator,
-    ToolResultEnvelope as RuntimeToolResultEnvelope,
+    AuthorizedToolCall, InterruptToken, OrchestratorContext, ToolCall, ToolEventEmitter,
+    ToolOrchestrator, ToolResultEnvelope as RuntimeToolResultEnvelope,
 };
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 
 use crate::{
     end_reason_for_interrupt, result_inject, Engine, EngineError, EventStream, RunContext,
@@ -1421,32 +1409,15 @@ async fn authorize_tool_calls(
     ctx: &RunContext,
     correlation_id: CorrelationId,
     tool_calls: &[ToolCall],
-    emitted: &mut Vec<Event>,
+    _emitted: &mut Vec<Event>,
 ) -> Result<(Vec<AuthorizedToolCall>, Vec<RuntimeToolResultEnvelope>), EngineError> {
-    let sandbox_backend = engine
-        .sandbox
-        .clone()
-        .unwrap_or_else(|| Arc::new(PreflightOnlySandbox));
-    let authority = PermissionAuthority::builder()
-        .with_policy_broker(engine.permission_broker.clone())
-        .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
-        .build()
-        .map_err(engine_error)?;
-    let ticket_ledger = Arc::new(TicketLedger::default());
-    let event_sink = RecordingAuthorizationEventSink::default();
-    let authorization = AuthorizationService::new(
-        Arc::new(authority),
-        sandbox_backend,
-        Arc::new(event_sink.clone()),
-        ticket_ledger.clone(),
-    );
     let auth_context = AuthorizationContext {
         tenant_id: session.tenant_id,
         session_id: session.session_id,
         run_id: ctx.run_id,
         permission_mode: ctx.permission_mode,
         interactivity: ctx.interactivity,
-        fallback_policy: FallbackPolicy::DenyAll,
+        fallback_policy: FallbackPolicy::AskUser,
         workspace_root: engine.workspace_root.clone(),
     };
 
@@ -1488,27 +1459,11 @@ async fn authorize_tool_calls(
                 .await
                 .map_err(|error| ToolError::Validation(error.to_string()))?;
             let plan = tool.plan(&call.input, &tool_ctx).await?;
-            let outcome = authorization
-                .authorize_plan(auth_context.clone(), plan.clone())
+            let authorized_input = engine
+                .authorization_service
+                .authorize_tool_input(auth_context.clone(), plan, call.input.clone())
                 .await
                 .map_err(authorization_error_to_tool_error)?;
-            let consumed = ticket_ledger
-                .consume(outcome.ticket.id, &outcome.ticket.claims, Utc::now())
-                .map_err(authorization_error_to_tool_error)?;
-            let authorized_input = AuthorizedToolInput::new(
-                call.input.clone(),
-                plan,
-                AuthorizedTicketSummary {
-                    ticket_id: consumed.id,
-                    tenant_id: consumed.claims.tenant_id,
-                    session_id: consumed.claims.session_id,
-                    run_id: consumed.claims.run_id,
-                    tool_use_id: consumed.claims.tool_use_id,
-                    tool_name: consumed.claims.tool_name,
-                    action_plan_hash: consumed.claims.action_plan_hash,
-                    consumed_at: Utc::now(),
-                },
-            )?;
             Ok::<AuthorizedToolCall, ToolError>(AuthorizedToolCall {
                 tool_use_id: call.tool_use_id,
                 tool_name: call.tool_name.clone(),
@@ -1516,17 +1471,6 @@ async fn authorize_tool_calls(
             })
         }
         .await;
-        let auth_events = event_sink.drain().await;
-        if !auth_events.is_empty() {
-            append(
-                engine,
-                session.tenant_id,
-                session.session_id,
-                emitted,
-                auth_events,
-            )
-            .await?;
-        }
         match result {
             Ok(call) => authorized.push(call),
             Err(error) => failures.push(authorization_failure_result(call, error)),
@@ -2326,30 +2270,6 @@ impl ToolEventEmitter for ChannelToolEventEmitter {
     }
 }
 
-#[derive(Clone, Default)]
-struct RecordingAuthorizationEventSink {
-    events: Arc<Mutex<Vec<Event>>>,
-}
-
-impl RecordingAuthorizationEventSink {
-    async fn drain(&self) -> Vec<Event> {
-        self.events.lock().await.drain(..).collect()
-    }
-}
-
-#[async_trait]
-impl AuthorizationEventSink for RecordingAuthorizationEventSink {
-    async fn emit_batch(
-        &self,
-        _tenant_id: TenantId,
-        _session_id: SessionId,
-        events: Vec<Event>,
-    ) -> Result<(), ExecutionError> {
-        self.events.lock().await.extend(events);
-        Ok(())
-    }
-}
-
 fn tool_result_events(
     result: &RuntimeToolResultEnvelope,
     session_id: SessionId,
@@ -2868,75 +2788,6 @@ fn tool_error_payload(error: &ToolError) -> ToolErrorPayload {
 
 fn engine_error(error: impl std::fmt::Display) -> EngineError {
     EngineError::Message(error.to_string())
-}
-
-struct PreflightOnlySandbox;
-
-#[async_trait]
-impl SandboxBackend for PreflightOnlySandbox {
-    fn backend_id(&self) -> &str {
-        "preflight-only"
-    }
-
-    fn capabilities(&self) -> SandboxCapabilities {
-        SandboxCapabilities {
-            max_concurrent_execs: 1,
-            ..SandboxCapabilities::default()
-        }
-    }
-
-    fn base_config(&self) -> SandboxBaseConfig {
-        SandboxBaseConfig::default()
-    }
-
-    async fn before_execute(
-        &self,
-        _spec: &ExecSpec,
-        _ctx: &ExecContext,
-    ) -> Result<(), harness_contracts::SandboxError> {
-        Ok(())
-    }
-
-    async fn execute(
-        &self,
-        _spec: ExecSpec,
-        _ctx: ExecContext,
-    ) -> Result<ProcessHandle, harness_contracts::SandboxError> {
-        Err(harness_contracts::SandboxError::CapabilityMismatch {
-            capability: "execute".to_owned(),
-            detail: "preflight-only sandbox does not execute".to_owned(),
-        })
-    }
-
-    async fn after_execute(
-        &self,
-        _outcome: &ExecOutcome,
-        _ctx: &ExecContext,
-    ) -> Result<(), harness_contracts::SandboxError> {
-        Ok(())
-    }
-
-    async fn snapshot_session(
-        &self,
-        _spec: &SnapshotSpec,
-    ) -> Result<SessionSnapshotFile, harness_contracts::SandboxError> {
-        Err(harness_contracts::SandboxError::SnapshotUnsupported {
-            kind: "preflight-only".to_owned(),
-        })
-    }
-
-    async fn restore_session(
-        &self,
-        _snapshot: &SessionSnapshotFile,
-    ) -> Result<(), harness_contracts::SandboxError> {
-        Err(harness_contracts::SandboxError::SnapshotUnsupported {
-            kind: "preflight-only".to_owned(),
-        })
-    }
-
-    async fn shutdown(&self) -> Result<(), harness_contracts::SandboxError> {
-        Ok(())
-    }
 }
 
 #[cfg(test)]

@@ -7,29 +7,32 @@ use chrono::Utc;
 use harness_contracts::SandboxError;
 use harness_contracts::{
     ActionPlanHash, ActionPlanId, ActionResource, Decision, DecisionScope, Event, FallbackPolicy,
-    InteractivityLevel, NetworkAccess, PermissionActorSource, PermissionMode, PermissionSubject,
-    ResourceLimits, RuleSource, RunId, SandboxMode, SandboxPolicy, SandboxPreflightStatus,
-    SandboxScope, SessionId, Severity, TenantId, ToolActionPlan, ToolUseId, WorkspaceAccess,
+    HostRule, InteractivityLevel, NetworkAccess, PermissionActorSource, PermissionConfirmation,
+    PermissionMode, PermissionSubject, ResourceLimits, RuleSource, RunId, SandboxMode,
+    SandboxPolicy, SandboxPreflightStatus, SandboxScope, SessionId, Severity, TenantId,
+    ToolActionPlan, ToolUseId, WorkspaceAccess,
 };
 use harness_execution::{
     AuthorizationContext, AuthorizationEventSink, AuthorizationService, ExecutionError,
     TicketLedger,
 };
 use harness_permission::{
-    DangerousPatternLibrary, NoopDecisionPersistence, PermissionAuthority, PermissionRule,
-    RuleAction, RuleEngineBroker,
+    DangerousPatternLibrary, NoopDecisionPersistence, PermissionAuthority, PermissionBroker,
+    PermissionContext, PermissionRequest, PermissionRule, PersistedDecision, RuleAction,
+    RuleEngineBroker, StreamBasedBroker, StreamBrokerConfig,
 };
 use harness_sandbox::{
-    ExecContext, ExecSpec, ProcessHandle, SandboxBackend, SandboxBaseConfig, SandboxCapabilities,
-    SessionSnapshotFile, SnapshotSpec,
+    ExecContext, ExecSpec, LocalSandbox, ProcessHandle, SandboxBackend, SandboxBaseConfig,
+    SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
 };
 use parking_lot::Mutex;
+use std::time::Duration;
 
 #[tokio::test]
 async fn authorization_service_denies_hard_policy_without_minting_ticket() {
     let sink = Arc::new(RecordingSink::default());
     let service = AuthorizationService::new(
-        real_authority(RuleSource::Policy, RuleAction::Deny).await,
+        real_authority(RuleSource::Policy, RuleAction::Deny, DecisionScope::Any).await,
         Arc::new(TestSandbox::default()),
         sink.clone(),
         Arc::new(TicketLedger::default()),
@@ -55,7 +58,7 @@ async fn authorization_service_denies_hard_policy_under_bypass_mode_without_mint
     let sink = Arc::new(RecordingSink::default());
     let ledger = Arc::new(TicketLedger::default());
     let service = AuthorizationService::new(
-        real_authority(RuleSource::Policy, RuleAction::Deny).await,
+        real_authority(RuleSource::Policy, RuleAction::Deny, DecisionScope::Any).await,
         Arc::new(TestSandbox::default()),
         sink.clone(),
         ledger.clone(),
@@ -140,7 +143,7 @@ async fn authorization_service_denies_dangerous_command_under_bypass_without_min
 async fn authorization_service_emits_permission_then_preflight_events_without_journal_dependency() {
     let sink = Arc::new(RecordingSink::default());
     let service = AuthorizationService::new(
-        real_authority(RuleSource::Session, RuleAction::Allow).await,
+        real_authority(RuleSource::Session, RuleAction::Allow, DecisionScope::Any).await,
         Arc::new(TestSandbox::default()),
         sink.clone(),
         Arc::new(TicketLedger::default()),
@@ -170,13 +173,268 @@ async fn authorization_service_emits_permission_then_preflight_events_without_jo
     ));
 }
 
-async fn real_authority(source: RuleSource, action: RuleAction) -> Arc<PermissionAuthority> {
+#[tokio::test]
+async fn authorization_service_uses_sandbox_authority_for_exec_preflight() {
+    let sink = Arc::new(RecordingSink::default());
+    let workspace = tempfile::tempdir().unwrap();
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::ToolName("Bash".to_owned()),
+        )
+        .await,
+        Arc::new(LocalSandbox::new(workspace.path())),
+        sink.clone(),
+        Arc::new(TicketLedger::default()),
+    );
+
+    let error = service
+        .authorize_plan(context(), command_plan("printf blocked"))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ExecutionError::SandboxPreflightFailed { .. }),
+        "unexpected error: {error:?}"
+    );
+    let events = sink.events();
+    assert!(matches!(events[0], Event::PermissionRequested(_)));
+    assert!(matches!(
+        &events[1],
+        Event::PermissionResolved(resolved) if resolved.decision == Decision::AllowOnce
+    ));
+    assert!(matches!(
+        &events[2],
+        Event::SandboxPreflightFailed(failed)
+            if failed.status == SandboxPreflightStatus::Failed
+                && failed.backend_id == "local"
+                && failed.reason.contains("no-network")
+    ));
+}
+
+#[tokio::test]
+async fn authorization_service_uses_sandbox_authority_for_network_only_preflight() {
+    let sink = Arc::new(RecordingSink::default());
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::ToolName("mcp_transport".to_owned()),
+        )
+        .await,
+        Arc::new(NetworkCapablePreflightSandbox),
+        sink.clone(),
+        Arc::new(TicketLedger::default()),
+    );
+
+    let error = service
+        .authorize_plan(context(), network_only_plan())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ExecutionError::SandboxPreflightFailed { .. }),
+        "unexpected error: {error:?}"
+    );
+    let events = sink.events();
+    assert!(matches!(events[0], Event::PermissionRequested(_)));
+    assert!(matches!(
+        &events[1],
+        Event::PermissionResolved(resolved) if resolved.decision == Decision::AllowOnce
+    ));
+    assert!(matches!(
+        &events[2],
+        Event::SandboxPreflightFailed(failed)
+            if failed.status == SandboxPreflightStatus::Failed
+                && failed.backend_id == "network-capable"
+                && matches!(failed.policy.network, NetworkAccess::AllowList(_))
+                && failed.policy_hash != Default::default()
+                && failed.reason.contains("fine-grained network policy")
+    ));
+}
+
+#[tokio::test]
+async fn authorization_service_mints_ticket_after_sandbox_preflight() {
+    let sink = Arc::new(RecordingSink::default());
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::ToolName("Bash".to_owned()),
+        )
+        .await,
+        Arc::new(SlowPassingPreflightSandbox),
+        sink.clone(),
+        Arc::new(TicketLedger::new(Duration::from_millis(5))),
+    );
+
+    let operation = service
+        .authorize_operation(context(), command_plan("printf authorized"))
+        .await
+        .unwrap();
+
+    assert_eq!(operation.sandbox_backend_id, "slow-preflight");
+    let events = sink.events();
+    assert!(matches!(events[0], Event::PermissionRequested(_)));
+    assert!(matches!(
+        &events[1],
+        Event::PermissionResolved(resolved) if resolved.decision == Decision::AllowOnce
+    ));
+    assert!(matches!(
+        &events[2],
+        Event::SandboxPreflightPassed(passed)
+            if passed.status == SandboxPreflightStatus::Passed
+                && passed.backend_id == "slow-preflight"
+    ));
+}
+
+#[tokio::test]
+async fn authorization_service_declared_network_resource_requires_effective_network_policy() {
+    let sink = Arc::new(RecordingSink::default());
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::ToolName("custom_network_tool".to_owned()),
+        )
+        .await,
+        Arc::new(NetworkCapablePreflightSandbox),
+        sink.clone(),
+        Arc::new(TicketLedger::default()),
+    );
+
+    let error = service
+        .authorize_plan(context(), declared_network_resource_plan("network-capable"))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ExecutionError::SandboxPreflightFailed { .. }),
+        "unexpected error: {error:?}"
+    );
+    let events = sink.events();
+    assert!(matches!(events[0], Event::PermissionRequested(_)));
+    assert!(matches!(
+        &events[1],
+        Event::PermissionResolved(resolved) if resolved.decision == Decision::AllowOnce
+    ));
+    assert!(matches!(
+        &events[2],
+        Event::SandboxPreflightFailed(failed)
+            if failed.status == SandboxPreflightStatus::Failed
+                && failed.backend_id == "network-capable"
+                && failed.reason.contains("fine-grained network policy")
+    ));
+}
+
+#[tokio::test]
+async fn authorization_service_preflights_declared_network_resource_even_without_network_policy() {
+    let sink = Arc::new(RecordingSink::default());
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::ToolName("custom_network_tool".to_owned()),
+        )
+        .await,
+        Arc::new(RejectingPreflightSandbox {
+            backend_id: "network-resource-preflight",
+            reason: "declared network resource preflight".to_owned(),
+        }),
+        sink.clone(),
+        Arc::new(TicketLedger::default()),
+    );
+
+    let error = service
+        .authorize_plan(
+            context(),
+            declared_network_resource_plan("network-resource-preflight"),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ExecutionError::SandboxPreflightFailed { .. }),
+        "unexpected error: {error:?}"
+    );
+    let events = sink.events();
+    assert!(matches!(events[0], Event::PermissionRequested(_)));
+    assert!(matches!(
+        &events[1],
+        Event::PermissionResolved(resolved) if resolved.decision == Decision::AllowOnce
+    ));
+    assert!(matches!(
+        &events[2],
+        Event::SandboxPreflightFailed(failed)
+            if failed.status == SandboxPreflightStatus::Failed
+                && failed.backend_id == "network-resource-preflight"
+                && matches!(failed.policy.network, NetworkAccess::AllowList(_))
+                && failed.policy_hash != Default::default()
+                && failed.reason.contains("declared network resource preflight")
+    ));
+}
+
+#[tokio::test]
+async fn authorization_service_carries_type_to_confirm_into_pending_permission() {
+    let sink = Arc::new(RecordingSink::default());
+    let (stream_broker, _receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    });
+    let service = AuthorizationService::new(
+        interactive_authority(Arc::new(stream_broker)).await,
+        Arc::new(TestSandbox::default()),
+        sink,
+        Arc::new(TicketLedger::default()),
+    );
+    let mut context = context();
+    context.interactivity = InteractivityLevel::FullyInteractive;
+    let mut plan = action_plan(
+        "write_file",
+        DecisionScope::ToolName("write_file".to_owned()),
+    );
+    plan.review.confirmation = PermissionConfirmation::TypeToConfirm {
+        expected: "DELETE".to_owned(),
+    };
+    let request_id = plan.tool_use_id;
+
+    let authorize = tokio::spawn(async move { service.authorize_plan(context, plan).await });
+
+    let pending = wait_for_pending_confirmation(&resolver, request_id).await;
+    assert_eq!(pending.as_deref(), Some("DELETE"));
+
+    resolver
+        .resolve(
+            resolver
+                .pending_permission_requests()
+                .into_iter()
+                .find(|pending| pending.request.tool_use_id == request_id)
+                .expect("permission should still be pending")
+                .request
+                .request_id,
+            Decision::DenyOnce,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        authorize.await.unwrap(),
+        Err(ExecutionError::PermissionDenied { .. })
+    ));
+}
+
+async fn real_authority(
+    source: RuleSource,
+    action: RuleAction,
+    scope: DecisionScope,
+) -> Arc<PermissionAuthority> {
     let broker = RuleEngineBroker::builder()
         .with_tenant(TenantId::SINGLE)
         .with_rules(vec![PermissionRule {
             id: "test-rule".to_owned(),
             priority: 10,
-            scope: DecisionScope::Any,
+            scope,
             action,
             source,
         }])
@@ -188,6 +446,19 @@ async fn real_authority(source: RuleSource, action: RuleAction) -> Arc<Permissio
     Arc::new(
         PermissionAuthority::builder()
             .with_policy_broker(Arc::new(broker))
+            .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
+            .build()
+            .unwrap(),
+    )
+}
+
+async fn interactive_authority(
+    interactive_broker: Arc<dyn PermissionBroker>,
+) -> Arc<PermissionAuthority> {
+    Arc::new(
+        PermissionAuthority::builder()
+            .with_policy_broker(Arc::new(EscalatingPolicyBroker))
+            .with_interactive_broker(interactive_broker)
             .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
             .build()
             .unwrap(),
@@ -217,6 +488,23 @@ async fn dangerous_command_authority() -> Arc<PermissionAuthority> {
             .build()
             .unwrap(),
     )
+}
+
+async fn wait_for_pending_confirmation(
+    resolver: &harness_permission::ResolverHandle,
+    tool_use_id: ToolUseId,
+) -> Option<String> {
+    for _ in 0..50 {
+        if let Some(pending) = resolver
+            .pending_permission_requests()
+            .into_iter()
+            .find(|pending| pending.request.tool_use_id == tool_use_id)
+        {
+            return pending.confirmation_expected;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    None
 }
 
 fn context() -> AuthorizationContext {
@@ -279,6 +567,144 @@ fn dangerous_command_plan(command: &str) -> ToolActionPlan {
     plan
 }
 
+fn command_plan(command: &str) -> ToolActionPlan {
+    let mut plan = action_plan("Bash", DecisionScope::ToolName("Bash".to_owned()));
+    plan.subject = PermissionSubject::CommandExec {
+        command: command.to_owned(),
+        argv: Vec::new(),
+        cwd: None,
+        fingerprint: None,
+    };
+    plan.resources = vec![ActionResource::Command {
+        command: command.to_owned(),
+        argv: Vec::new(),
+        cwd: None,
+        fingerprint: harness_contracts::ExecFingerprint([0; 32]),
+    }];
+    plan
+}
+
+fn network_only_plan() -> ToolActionPlan {
+    let mut plan = action_plan(
+        "mcp_transport",
+        DecisionScope::ToolName("mcp_transport".to_owned()),
+    );
+    plan.resources = vec![
+        ActionResource::Network {
+            host: "api.example.test".to_owned(),
+            port: Some(443),
+        },
+        ActionResource::Sandbox {
+            backend_id: "network-capable".to_owned(),
+            policy_hash: Default::default(),
+        },
+    ];
+    let network_access = NetworkAccess::AllowList(vec![HostRule {
+        pattern: "api.example.test".to_owned(),
+        ports: Some(vec![443]),
+    }]);
+    plan.sandbox_policy.network = network_access.clone();
+    plan.network_access = network_access;
+    plan
+}
+
+fn declared_network_resource_plan(backend_id: &str) -> ToolActionPlan {
+    let mut plan = action_plan(
+        "custom_network_tool",
+        DecisionScope::ToolName("custom_network_tool".to_owned()),
+    );
+    plan.resources = vec![
+        ActionResource::Network {
+            host: "api.example.test".to_owned(),
+            port: Some(443),
+        },
+        ActionResource::Sandbox {
+            backend_id: backend_id.to_owned(),
+            policy_hash: Default::default(),
+        },
+    ];
+    plan
+}
+
+struct SlowPassingPreflightSandbox;
+
+#[async_trait]
+impl SandboxBackend for SlowPassingPreflightSandbox {
+    fn backend_id(&self) -> &str {
+        "slow-preflight"
+    }
+
+    fn capabilities(&self) -> SandboxCapabilities {
+        SandboxCapabilities {
+            max_concurrent_execs: 1,
+            ..SandboxCapabilities::default()
+        }
+    }
+
+    fn preflight_execute(&self, _spec: &ExecSpec) -> Result<(), SandboxError> {
+        std::thread::sleep(Duration::from_millis(30));
+        Ok(())
+    }
+
+    async fn execute(
+        &self,
+        _spec: ExecSpec,
+        _ctx: ExecContext,
+    ) -> Result<ProcessHandle, SandboxError> {
+        Err(SandboxError::CapabilityMismatch {
+            capability: "execute".to_owned(),
+            detail: "test sandbox does not execute".to_owned(),
+        })
+    }
+
+    async fn snapshot_session(
+        &self,
+        _spec: &SnapshotSpec,
+    ) -> Result<SessionSnapshotFile, SandboxError> {
+        Err(SandboxError::SnapshotUnsupported {
+            kind: "test".to_owned(),
+        })
+    }
+
+    async fn restore_session(&self, _snapshot: &SessionSnapshotFile) -> Result<(), SandboxError> {
+        Err(SandboxError::SnapshotUnsupported {
+            kind: "test".to_owned(),
+        })
+    }
+
+    async fn shutdown(&self) -> Result<(), SandboxError> {
+        Ok(())
+    }
+}
+
+struct EscalatingPolicyBroker;
+
+#[async_trait]
+impl PermissionBroker for EscalatingPolicyBroker {
+    fn can_anchor_authority(&self) -> bool {
+        true
+    }
+
+    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
+        Decision::Escalate
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        _request: &PermissionRequest,
+        _ctx: &PermissionContext,
+    ) -> bool {
+        false
+    }
+
+    async fn persist(
+        &self,
+        _decision: PersistedDecision,
+    ) -> Result<(), harness_contracts::PermissionError> {
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct RecordingSink {
     events: Mutex<Vec<Event>>,
@@ -324,6 +750,110 @@ impl SandboxBackend for TestSandbox {
 
     fn base_config(&self) -> SandboxBaseConfig {
         SandboxBaseConfig::default()
+    }
+
+    async fn execute(
+        &self,
+        _spec: ExecSpec,
+        _ctx: ExecContext,
+    ) -> Result<ProcessHandle, SandboxError> {
+        Err(SandboxError::CapabilityMismatch {
+            capability: "execute".to_owned(),
+            detail: "test sandbox does not execute".to_owned(),
+        })
+    }
+
+    async fn snapshot_session(
+        &self,
+        _spec: &SnapshotSpec,
+    ) -> Result<SessionSnapshotFile, SandboxError> {
+        Err(SandboxError::SnapshotUnsupported {
+            kind: "test".to_owned(),
+        })
+    }
+
+    async fn restore_session(&self, _snapshot: &SessionSnapshotFile) -> Result<(), SandboxError> {
+        Err(SandboxError::SnapshotUnsupported {
+            kind: "test".to_owned(),
+        })
+    }
+
+    async fn shutdown(&self) -> Result<(), SandboxError> {
+        Ok(())
+    }
+}
+
+struct NetworkCapablePreflightSandbox;
+
+#[async_trait]
+impl SandboxBackend for NetworkCapablePreflightSandbox {
+    fn backend_id(&self) -> &str {
+        "network-capable"
+    }
+
+    fn capabilities(&self) -> SandboxCapabilities {
+        SandboxCapabilities {
+            supports_network: true,
+            max_concurrent_execs: 1,
+            ..SandboxCapabilities::default()
+        }
+    }
+
+    async fn execute(
+        &self,
+        _spec: ExecSpec,
+        _ctx: ExecContext,
+    ) -> Result<ProcessHandle, SandboxError> {
+        Err(SandboxError::CapabilityMismatch {
+            capability: "execute".to_owned(),
+            detail: "test sandbox does not execute".to_owned(),
+        })
+    }
+
+    async fn snapshot_session(
+        &self,
+        _spec: &SnapshotSpec,
+    ) -> Result<SessionSnapshotFile, SandboxError> {
+        Err(SandboxError::SnapshotUnsupported {
+            kind: "test".to_owned(),
+        })
+    }
+
+    async fn restore_session(&self, _snapshot: &SessionSnapshotFile) -> Result<(), SandboxError> {
+        Err(SandboxError::SnapshotUnsupported {
+            kind: "test".to_owned(),
+        })
+    }
+
+    async fn shutdown(&self) -> Result<(), SandboxError> {
+        Ok(())
+    }
+}
+
+struct RejectingPreflightSandbox {
+    backend_id: &'static str,
+    reason: String,
+}
+
+#[async_trait]
+impl SandboxBackend for RejectingPreflightSandbox {
+    fn backend_id(&self) -> &str {
+        self.backend_id
+    }
+
+    fn capabilities(&self) -> SandboxCapabilities {
+        SandboxCapabilities {
+            supports_network: true,
+            max_concurrent_execs: 1,
+            ..SandboxCapabilities::default()
+        }
+    }
+
+    fn preflight_execute(&self, _spec: &ExecSpec) -> Result<(), SandboxError> {
+        Err(SandboxError::CapabilityMismatch {
+            capability: "network".to_owned(),
+            detail: self.reason.clone(),
+        })
     }
 
     async fn execute(

@@ -124,7 +124,11 @@ fn skill_registry_session_skill_list_uses_turn_snapshot_after_registry_reload() 
             .await
             .expect("harness should build");
         let session = harness
-            .create_session(SessionOptions::new(&workspace).with_session_id(session_id))
+            .create_session(
+                SessionOptions::new(&workspace)
+                    .with_session_id(session_id)
+                    .with_permission_mode(PermissionMode::BypassPermissions),
+            )
             .await
             .expect("session should be created");
 
@@ -139,14 +143,17 @@ fn skill_registry_session_skill_list_uses_turn_snapshot_after_registry_reload() 
             .expect("events should be readable")
             .collect()
             .await;
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                Event::ToolUseCompleted(completed)
-                    if completed.tool_use_id == tool_use_id
-                        && format!("{:?}", completed.result).contains("brief")
-            )
-        }));
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    Event::ToolUseCompleted(completed)
+                        if completed.tool_use_id == tool_use_id
+                            && format!("{:?}", completed.result).contains("brief")
+                )
+            }),
+            "skills_list should complete with brief skill; events: {events:#?}"
+        );
     });
 }
 

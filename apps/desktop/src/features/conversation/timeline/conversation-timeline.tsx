@@ -25,6 +25,7 @@ export function ConversationTimeline({
     conversationId: string
     requestId: string
     decision: 'approve' | 'deny'
+    confirmationText?: string
   }) => void
   onReviewContinue?: (prompt: string) => void
 }) {

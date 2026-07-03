@@ -22,6 +22,9 @@ use harness_tool::ToolPool;
 use parking_lot::Mutex;
 use rust_decimal::Decimal;
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 #[tokio::test]
 async fn engine_records_stream_usage_into_observer_and_usage_events() {
     let workspace = tempfile::tempdir().unwrap();
@@ -34,14 +37,17 @@ async fn engine_records_stream_usage_into_observer_and_usage_events() {
 
     let engine = Engine::builder()
         .with_engine_id(EngineId::new("usage-test"))
-        .with_event_store(store)
+        .with_event_store(store.clone())
         .with_context(ContextEngine::builder().build().unwrap())
         .with_hooks(HookDispatcher::new(
             HookRegistry::builder().build().unwrap().snapshot(),
         ))
         .with_model(model)
         .with_tools(ToolPool::default())
-        .with_permission_broker(Arc::new(DenyBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(DenyBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("usage-model")
         .with_protocol(ModelProtocol::Messages)
@@ -134,17 +140,21 @@ async fn usage_uses_session_pricing_snapshot() {
     let session_id = harness_contracts::SessionId::new();
     let run_id = harness_contracts::RunId::new();
     let model = Arc::new(MutablePricingModel::new(1));
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
     let engine = Engine::builder()
         .with_engine_id(EngineId::new("usage-pricing-snapshot-test"))
-        .with_event_store(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_event_store(store.clone())
         .with_context(ContextEngine::builder().build().unwrap())
         .with_hooks(HookDispatcher::new(
             HookRegistry::builder().build().unwrap().snapshot(),
         ))
         .with_model(model.clone())
         .with_tools(ToolPool::default())
-        .with_permission_broker(Arc::new(DenyBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(DenyBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("usage-model")
         .with_protocol(ModelProtocol::Messages)
@@ -192,17 +202,21 @@ async fn usage_uses_pricing_snapshot_resolver() {
         },
         calls: Mutex::new(Vec::new()),
     });
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
     let engine = Engine::builder()
         .with_engine_id(EngineId::new("usage-pricing-resolver-test"))
-        .with_event_store(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_event_store(store.clone())
         .with_context(ContextEngine::builder().build().unwrap())
         .with_hooks(HookDispatcher::new(
             HookRegistry::builder().build().unwrap().snapshot(),
         ))
         .with_model(Arc::new(UsageModel))
         .with_tools(ToolPool::default())
-        .with_permission_broker(Arc::new(DenyBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(DenyBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("usage-model")
         .with_protocol(ModelProtocol::Messages)
@@ -242,17 +256,21 @@ async fn pricing_snapshot_resolver_miss_is_reported_without_fallback_snapshot() 
     let session_id = harness_contracts::SessionId::new();
     let run_id = harness_contracts::RunId::new();
     let resolver = Arc::new(MissingPricingSnapshotResolver::default());
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
     let engine = Engine::builder()
         .with_engine_id(EngineId::new("usage-pricing-miss-test"))
-        .with_event_store(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_event_store(store.clone())
         .with_context(ContextEngine::builder().build().unwrap())
         .with_hooks(HookDispatcher::new(
             HookRegistry::builder().build().unwrap().snapshot(),
         ))
         .with_model(Arc::new(UsageModel))
         .with_tools(ToolPool::default())
-        .with_permission_broker(Arc::new(DenyBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(DenyBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("usage-model")
         .with_protocol(ModelProtocol::Messages)

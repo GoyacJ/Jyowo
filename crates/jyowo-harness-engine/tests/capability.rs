@@ -29,6 +29,9 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 #[tokio::test]
 async fn with_blob_store_installs_read_blob_capabilities_and_denies_unoffloaded_blob() {
     let blob_store = Arc::new(InMemoryBlobStore::default());
@@ -175,7 +178,10 @@ impl Harness {
             .with_hooks(HookDispatcher::new(hooks.snapshot()))
             .with_model(model.clone())
             .with_tools(tool_pool)
-            .with_permission_broker(Arc::new(AllowBroker))
+            .with_authorization_service(test_authorization_service(
+                Arc::new(AllowBroker),
+                store.clone(),
+            ))
             .with_workspace_root(workspace.path())
             .with_model_id("test-model")
             .with_protocol(ModelProtocol::Messages);

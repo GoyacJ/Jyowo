@@ -88,6 +88,16 @@ impl PermissionAuthority {
         PermissionAuthorityBuilder::default()
     }
 
+    #[must_use]
+    pub fn policy_broker(&self) -> Arc<dyn PermissionBroker> {
+        Arc::clone(&self.policy_broker)
+    }
+
+    #[must_use]
+    pub fn decision_store(&self) -> Arc<dyn DecisionStore> {
+        Arc::clone(&self.decision_store)
+    }
+
     pub async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
         self.decide_with_audit(request, ctx).await.decision
     }

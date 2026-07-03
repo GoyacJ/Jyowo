@@ -367,6 +367,7 @@ const resolvePermissionRequestSchema = z
     conversationId: z.string().min(1),
     decision: z.enum(['approve', 'deny']),
     requestId: z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/),
+    confirmationText: z.string().min(1).optional(),
   })
   .strict()
 
@@ -495,6 +496,7 @@ const toolPermissionStateSchema = z
     toolUseId: z.string().min(1),
     status: z.enum(['pending', 'submitting', 'approved', 'denied', 'failed']),
     summary: conversationDisplayTextSchema.optional(),
+    confirmationExpected: conversationDisplayTextSchema.optional(),
     eventRefs: z.array(conversationEventRefSchema).optional(),
   })
   .strict()

@@ -22,6 +22,9 @@ use harness_tool::ToolPool;
 use serde_json::json;
 use tokio::sync::Mutex;
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 #[tokio::test]
 async fn context_too_long_retries_once_with_emergency_compacted_prompt() {
     let workspace = tempfile::tempdir().unwrap();
@@ -35,14 +38,17 @@ async fn context_too_long_retries_once_with_emergency_compacted_prompt() {
         .unwrap();
     let engine = Engine::builder()
         .with_engine_id(EngineId::new("context-emergency-compact-test"))
-        .with_event_store(store)
+        .with_event_store(store.clone())
         .with_context(context)
         .with_hooks(HookDispatcher::new(
             HookRegistry::builder().build().unwrap().snapshot(),
         ))
         .with_model(model.clone())
         .with_tools(ToolPool::default())
-        .with_permission_broker(Arc::new(AllowBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(AllowBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("test-model")
         .with_cap_registry(Arc::new(CapabilityRegistry::default()))
@@ -106,14 +112,17 @@ async fn soft_budget_compacts_before_first_model_request() {
         .unwrap();
     let engine = Engine::builder()
         .with_engine_id(EngineId::new("context-soft-budget-compact-test"))
-        .with_event_store(store)
+        .with_event_store(store.clone())
         .with_context(context)
         .with_hooks(HookDispatcher::new(
             HookRegistry::builder().build().unwrap().snapshot(),
         ))
         .with_model(model.clone())
         .with_tools(ToolPool::default())
-        .with_permission_broker(Arc::new(AllowBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(AllowBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("test-model")
         .with_cap_registry(Arc::new(CapabilityRegistry::default()))

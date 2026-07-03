@@ -510,6 +510,7 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
             conversation_id: session_id.to_string(),
             decision: jyowo_desktop_shell::commands::PermissionDecision::Approve,
             request_id: agent_pending.request.request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -525,6 +526,7 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
             conversation_id: pending.request.session_id.to_string(),
             decision: jyowo_desktop_shell::commands::PermissionDecision::Deny,
             request_id: pending.request.request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )

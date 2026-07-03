@@ -6,6 +6,8 @@ use std::sync::Arc;
 use harness_contracts::{McpServerId, McpServerSource};
 use harness_mcp::{McpClient, McpClientAuth, McpServerSpec, TransportChoice};
 
+mod support;
+
 #[cfg(feature = "http")]
 #[tokio::test]
 #[ignore = "requires JYOWO_MCP_LIVE_HTTP_URL"]
@@ -26,7 +28,7 @@ async fn live_http_mcp_lists_tools_when_env_is_set() {
         spec.auth = McpClientAuth::Bearer(token);
     }
     let connection = McpClient::new(Arc::new(harness_mcp::HttpTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("live HTTP MCP should connect");
     connection
@@ -55,7 +57,7 @@ async fn live_sse_mcp_lists_tools_when_env_is_set() {
         spec.auth = McpClientAuth::Bearer(token);
     }
     let connection = McpClient::new(Arc::new(harness_mcp::SseTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("live SSE MCP should connect");
     connection
@@ -84,7 +86,7 @@ async fn live_websocket_mcp_lists_tools_when_env_is_set() {
         spec.auth = McpClientAuth::Bearer(token);
     }
     let connection = McpClient::new(Arc::new(harness_mcp::WebsocketTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("live WebSocket MCP should connect");
     connection

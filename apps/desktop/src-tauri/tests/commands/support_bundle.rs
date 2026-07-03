@@ -106,6 +106,7 @@ async fn export_support_bundle_with_runtime_state_writes_redacted_files_under_wo
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )

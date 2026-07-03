@@ -97,6 +97,7 @@ pub struct PermissionRequest {
     pub subject: PermissionSubject,
     pub severity: Severity,
     pub scope_hint: DecisionScope,
+    pub confirmation_expected: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

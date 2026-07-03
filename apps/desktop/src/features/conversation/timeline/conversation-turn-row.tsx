@@ -15,6 +15,7 @@ export const ConversationTurnRow = memo(function ConversationTurnRow({
     conversationId: string
     requestId: string
     decision: 'approve' | 'deny'
+    confirmationText?: string
   }) => void
   onReviewContinue?: (prompt: string) => void
 }) {

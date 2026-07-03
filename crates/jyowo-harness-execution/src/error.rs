@@ -22,6 +22,8 @@ pub enum ExecutionError {
     TicketScopeMismatch { ticket_id: AuthorizationTicketId },
     #[error("sandbox preflight failed for backend {backend_id}: {reason}")]
     SandboxPreflightFailed { backend_id: String, reason: String },
+    #[error("authorization failed: {reason}")]
+    AuthorizationFailed { reason: String },
     #[error("authorization event sink failed: {reason}")]
     EventSinkFailed { reason: String },
 }

@@ -3,17 +3,22 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use harness_contracts::{
-    AgentId, Decision, Event, McpServerId, PermissionActorSource, PermissionMode,
-    PermissionSubject, RequestId, RunId, SamplingBudgetDimension, SamplingDenyReason,
-    SamplingOutcome, SessionId, TeamId, TrustLevel,
+    Decision, Event, FallbackPolicy, InteractivityLevel, ManifestOriginRef, McpServerId,
+    McpServerScope, PermissionActorSource, PermissionMode, PermissionSubject, RequestId, RunId,
+    SamplingBudgetDimension, SamplingDenyReason, SamplingOutcome, SessionId, TenantId, TrustLevel,
+};
+use harness_execution::{
+    AuthorizationEventSink, AuthorizationService, ExecutionError, TicketLedger,
 };
 use harness_mcp::{
-    AggregateBudget, JsonRpcRequest, McpEventSink, McpMetric, McpMetricOutcome, McpMetricsSink,
-    McpTimeouts, ModelAllowlist, SamplingAllow, SamplingBudget, SamplingCachePolicy,
-    SamplingDecision, SamplingJsonRpcHandler, SamplingPolicy, SamplingProvider, SamplingRateLimit,
-    SamplingRequest, SamplingResponse, SamplingUsageSnapshot, MCP_SAMPLING_BUDGET_EXCEEDED_CODE,
-    MCP_SAMPLING_DENIED_CODE,
+    AggregateBudget, JsonRpcRequest, McpAuthorizationContext, McpEventSink, McpMetric,
+    McpMetricOutcome, McpMetricsSink, McpTimeouts, ModelAllowlist, SamplingAllow, SamplingBudget,
+    SamplingCachePolicy, SamplingDecision, SamplingJsonRpcHandler, SamplingPolicy,
+    SamplingProvider, SamplingRateLimit, SamplingRequest, SamplingResponse, SamplingUsageSnapshot,
+    MCP_SAMPLING_BUDGET_EXCEEDED_CODE, MCP_SAMPLING_DENIED_CODE,
 };
+use harness_permission::{NoopDecisionPersistence, PermissionAuthority};
+use harness_sandbox::NoopSandbox;
 use harness_tool::{PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision};
 use parking_lot::Mutex;
 use serde_json::json;
@@ -315,11 +320,14 @@ async fn jsonrpc_sampling_create_message_denies_by_default_and_emits_event() {
 async fn jsonrpc_sampling_create_message_invokes_provider_and_records_token_metrics() {
     let sink = Arc::new(CollectingSink::default());
     let metrics = Arc::new(CollectingMetrics::default());
+    let broker = Arc::new(FixedPermissionBroker::new(Decision::AllowOnce));
+    let authorization = sampling_authorization_context(broker, sink.clone());
     let handler = SamplingJsonRpcHandler::new(SamplingPolicy::allow_auto(), sink.clone())
         .with_session_id(SessionId::from_u128(1))
         .with_run_id(Some(RunId::from_u128(2)))
         .with_server_id(McpServerId("github".to_owned()))
         .with_server_trust(TrustLevel::AdminTrusted)
+        .with_authorization_context(authorization)
         .with_provider(Arc::new(EchoSamplingProvider))
         .with_metrics_sink(metrics.clone());
 
@@ -348,7 +356,7 @@ async fn jsonrpc_sampling_create_message_invokes_provider_and_records_token_metr
         }))
     );
     assert!(matches!(
-        sink.events().first(),
+        sink.events().iter().find(|event| matches!(event, Event::McpSamplingRequested(_))),
         Some(Event::McpSamplingRequested(event))
             if event.server_id == McpServerId("github".to_owned())
                 && event.model_id == Some("test".to_owned())
@@ -365,11 +373,12 @@ async fn jsonrpc_sampling_create_message_rejects_auto_allow_without_authoritativ
     let sink = Arc::new(CollectingSink::default());
     let provider = Arc::new(RecordingSamplingProvider::default());
     let broker = Arc::new(FixedPermissionBroker::new(Decision::AllowOnce));
+    let authorization = sampling_authorization_context(broker.clone(), sink.clone());
     let handler = SamplingJsonRpcHandler::new(SamplingPolicy::allow_auto(), sink.clone())
         .with_session_id(SessionId::from_u128(1))
         .with_server_id(McpServerId("github".to_owned()))
         .with_server_trust(TrustLevel::AdminTrusted)
-        .with_permission_broker(broker.clone())
+        .with_authorization_context(authorization)
         .with_provider(provider.clone());
 
     let response = handler
@@ -404,25 +413,20 @@ async fn jsonrpc_sampling_create_message_waits_for_approval_before_provider_call
     let sink = Arc::new(CollectingSink::default());
     let provider = Arc::new(RecordingSamplingProvider::default());
     let broker = Arc::new(FixedPermissionBroker::new(Decision::AllowOnce));
-    let actor_source = PermissionActorSource::TeamMember {
-        team_id: TeamId::from_u128(3),
-        agent_id: AgentId::from_u128(4),
-        role: "researcher sk-abcdefghijklmnopqrstuvwxyz".to_owned(),
-        parent_run_id: Some(RunId::from_u128(5)),
-    };
-    let expected_actor_source = PermissionActorSource::TeamMember {
-        team_id: TeamId::from_u128(3),
-        agent_id: AgentId::from_u128(4),
-        role: "[REDACTED]".to_owned(),
-        parent_run_id: Some(RunId::from_u128(5)),
+    let authorization = sampling_authorization_context(broker.clone(), sink.clone());
+    let expected_actor_source = PermissionActorSource::McpServer {
+        server_id: McpServerId("github".to_owned()),
+        origin: ManifestOriginRef::File {
+            path: "mcp-sampling-handler".to_owned(),
+        },
+        scope: McpServerScope::Session(SessionId::from_u128(1)),
     };
     let handler = SamplingJsonRpcHandler::new(SamplingPolicy::allow_with_approval(), sink.clone())
         .with_session_id(SessionId::from_u128(1))
         .with_run_id(Some(RunId::from_u128(2)))
         .with_server_id(McpServerId("github".to_owned()))
         .with_server_trust(TrustLevel::AdminTrusted)
-        .with_permission_actor_source(actor_source.clone())
-        .with_permission_broker(broker.clone())
+        .with_authorization_context(authorization)
         .with_provider(provider.clone());
 
     let response = handler
@@ -479,11 +483,12 @@ async fn jsonrpc_sampling_create_message_rejects_approval_without_authoritative_
     let sink = Arc::new(CollectingSink::default());
     let provider = Arc::new(RecordingSamplingProvider::default());
     let broker = Arc::new(FixedPermissionBroker::new(Decision::AllowOnce));
+    let authorization = sampling_authorization_context(broker.clone(), sink.clone());
     let handler = SamplingJsonRpcHandler::new(SamplingPolicy::allow_with_approval(), sink.clone())
         .with_session_id(SessionId::from_u128(1))
         .with_server_id(McpServerId("github".to_owned()))
         .with_server_trust(TrustLevel::AdminTrusted)
-        .with_permission_broker(broker.clone())
+        .with_authorization_context(authorization)
         .with_provider(provider.clone());
 
     let response = handler
@@ -517,12 +522,14 @@ async fn jsonrpc_sampling_create_message_rejects_approval_without_authoritative_
 async fn jsonrpc_sampling_create_message_does_not_call_provider_when_approval_denies() {
     let sink = Arc::new(CollectingSink::default());
     let provider = Arc::new(RecordingSamplingProvider::default());
+    let broker = Arc::new(FixedPermissionBroker::new(Decision::DenyOnce));
+    let authorization = sampling_authorization_context(broker, sink.clone());
     let handler = SamplingJsonRpcHandler::new(SamplingPolicy::allow_with_approval(), sink)
         .with_session_id(SessionId::from_u128(1))
         .with_run_id(Some(RunId::from_u128(2)))
         .with_server_id(McpServerId("github".to_owned()))
         .with_server_trust(TrustLevel::AdminTrusted)
-        .with_permission_broker(Arc::new(FixedPermissionBroker::new(Decision::DenyOnce)))
+        .with_authorization_context(authorization)
         .with_provider(provider.clone());
 
     let response = handler
@@ -578,6 +585,50 @@ impl CollectingSink {
 impl McpEventSink for CollectingSink {
     fn emit(&self, event: Event) {
         self.events.lock().push(event);
+    }
+}
+
+#[async_trait]
+impl AuthorizationEventSink for CollectingSink {
+    async fn emit_batch(
+        &self,
+        _tenant_id: TenantId,
+        _session_id: SessionId,
+        events: Vec<Event>,
+    ) -> Result<(), ExecutionError> {
+        self.events.lock().extend(events);
+        Ok(())
+    }
+}
+
+fn sampling_authorization_context(
+    broker: Arc<FixedPermissionBroker>,
+    sink: Arc<CollectingSink>,
+) -> McpAuthorizationContext {
+    let policy_broker: Arc<dyn PermissionBroker> = broker;
+    let authority = Arc::new(
+        PermissionAuthority::builder()
+            .with_policy_broker(policy_broker)
+            .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
+            .build()
+            .expect("test permission authority should build"),
+    );
+    let service = Arc::new(AuthorizationService::new(
+        authority,
+        Arc::new(NoopSandbox::new()),
+        sink,
+        Arc::new(TicketLedger::default()),
+    ));
+    McpAuthorizationContext {
+        authorization_service: service,
+        tenant_id: TenantId::SINGLE,
+        scope: McpServerScope::Session(SessionId::from_u128(1)),
+        session_id: SessionId::from_u128(1),
+        run_id: RunId::from_u128(2),
+        permission_mode: PermissionMode::Default,
+        interactivity: InteractivityLevel::FullyInteractive,
+        fallback_policy: FallbackPolicy::AskUser,
+        workspace_root: std::env::temp_dir(),
     }
 }
 

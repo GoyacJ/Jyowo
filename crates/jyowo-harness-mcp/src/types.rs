@@ -4,7 +4,7 @@ use std::{
 };
 
 pub use harness_contracts::McpServerScope;
-use harness_contracts::{McpServerId, McpServerSource, SessionId, TrustLevel};
+use harness_contracts::{ManifestOriginRef, McpServerId, McpServerSource, SessionId, TrustLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -18,6 +18,7 @@ pub struct McpServerSpec {
     pub auth: McpClientAuth,
     pub capabilities_expected: McpExpectedCapabilities,
     pub source: McpServerSource,
+    pub manifest_origin: ManifestOriginRef,
     pub trust: TrustLevel,
     pub timeouts: McpTimeouts,
     pub reconnect: ReconnectPolicy,
@@ -34,6 +35,7 @@ impl McpServerSpec {
         source: McpServerSource,
     ) -> Self {
         let trust = trust_level_for_source(&source);
+        let manifest_origin = manifest_origin_for_source(&source);
         Self {
             server_id,
             display_name: display_name.into(),
@@ -41,6 +43,7 @@ impl McpServerSpec {
             auth: McpClientAuth::None,
             capabilities_expected: McpExpectedCapabilities::default(),
             source,
+            manifest_origin,
             trust,
             timeouts: McpTimeouts::default(),
             reconnect: ReconnectPolicy::default(),
@@ -48,6 +51,12 @@ impl McpServerSpec {
             sampling: SamplingPolicy::denied(),
             resource_update_policy: McpResourceUpdatePolicy::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_manifest_origin(mut self, manifest_origin: ManifestOriginRef) -> Self {
+        self.manifest_origin = manifest_origin;
+        self
     }
 }
 
@@ -487,6 +496,35 @@ pub fn trust_level_for_source(source: &McpServerSource) -> TrustLevel {
         // Plugin source only carries PluginId here, not plugin trust. Fail closed until the
         // plugin registry supplies that trust during composition.
         TrustLevel::UserControlled
+    }
+}
+
+fn manifest_origin_for_source(source: &McpServerSource) -> ManifestOriginRef {
+    match source {
+        McpServerSource::Plugin(plugin_id) => ManifestOriginRef::CargoExtension {
+            binary: plugin_id.0.clone(),
+        },
+        McpServerSource::Managed { registry_url } => ManifestOriginRef::RemoteRegistry {
+            endpoint: registry_url.clone(),
+        },
+        McpServerSource::Workspace => ManifestOriginRef::File {
+            path: "workspace-mcp-config".to_owned(),
+        },
+        McpServerSource::Project => ManifestOriginRef::File {
+            path: "project-mcp-config".to_owned(),
+        },
+        McpServerSource::User => ManifestOriginRef::File {
+            path: "user-mcp-config".to_owned(),
+        },
+        McpServerSource::Policy => ManifestOriginRef::File {
+            path: "policy-mcp-config".to_owned(),
+        },
+        McpServerSource::Dynamic { registered_by } => ManifestOriginRef::File {
+            path: format!("dynamic-mcp-config:{registered_by}"),
+        },
+        _ => ManifestOriginRef::File {
+            path: "mcp-config".to_owned(),
+        },
     }
 }
 

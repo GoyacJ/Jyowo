@@ -1480,6 +1480,8 @@ pub struct ResolvePermissionRequest {
     pub conversation_id: String,
     pub decision: PermissionDecision,
     pub request_id: String,
+    #[serde(default)]
+    pub confirmation_text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -23,8 +23,10 @@ async fn list_activity_with_runtime_state_hides_pending_permission_without_durab
     let request_session_id = request.session_id;
     let conversation_id = session_id.to_string();
 
-    let decision_task =
-        tokio::spawn(async move { broker.decide(request, permission_context()).await });
+    let decision_task = tokio::spawn(async move {
+        let ctx = permission_context_for_request(&request, None);
+        broker.decide(request, ctx).await
+    });
 
     wait_for_pending_permission(&state, request_id).await;
 
@@ -45,6 +47,7 @@ async fn list_activity_with_runtime_state_hides_pending_permission_without_durab
             conversation_id: request_session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -114,6 +117,7 @@ async fn list_activity_with_runtime_state_reads_journaled_permission_requests_by
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -175,6 +179,7 @@ async fn start_run_permission_mode_override_wins_over_saved_default() {
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: pending.request.request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )

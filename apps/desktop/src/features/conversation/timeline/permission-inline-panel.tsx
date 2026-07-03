@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ToolPermissionState } from '@/shared/tauri/commands'
 
@@ -11,14 +12,18 @@ export function PermissionInlinePanel({
     conversationId: string
     requestId: string
     decision: 'approve' | 'deny'
+    confirmationText?: string
   }) => void
   permission: ToolPermissionState
   turnId: string
 }) {
   const { t } = useTranslation('conversation')
+  const [confirmationText, setConfirmationText] = useState('')
   const canResolve = permission.status === 'pending' || permission.status === 'failed'
   const permissionStatus = t(`timeline.permissionStatusLabel.${permission.status}`)
   const summary = displayPermissionSummary(permission.summary, permission.status)
+  const expectedConfirmation = permission.confirmationExpected
+  const canApprove = !expectedConfirmation || confirmationText === expectedConfirmation
 
   return (
     <div
@@ -43,12 +48,14 @@ export function PermissionInlinePanel({
               {t('timeline.deny')}
             </button>
             <button
-              className="rounded-md bg-primary px-2 py-1 text-primary-foreground text-xs"
+              className="rounded-md bg-primary px-2 py-1 text-primary-foreground text-xs disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={!canApprove}
               onClick={() =>
                 onResolve?.({
                   conversationId,
                   requestId: permission.requestId,
                   decision: 'approve',
+                  ...(expectedConfirmation ? { confirmationText } : {}),
                 })
               }
               type="button"
@@ -58,6 +65,16 @@ export function PermissionInlinePanel({
           </span>
         ) : null}
       </div>
+      {canResolve && expectedConfirmation ? (
+        <label className="mt-2 grid gap-1 text-xs">
+          <span className="text-muted-foreground">{t('timeline.confirmationText')}</span>
+          <input
+            className="h-8 rounded-md border border-border bg-background px-2 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onChange={(event) => setConfirmationText(event.currentTarget.value)}
+            value={confirmationText}
+          />
+        </label>
+      ) : null}
       {summary ? <p className="mt-1 text-muted-foreground text-xs">{summary}</p> : null}
     </div>
   )

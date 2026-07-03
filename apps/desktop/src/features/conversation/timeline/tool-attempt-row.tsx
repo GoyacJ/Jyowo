@@ -25,6 +25,7 @@ export function ToolAttemptRow({
     conversationId: string
     requestId: string
     decision: 'approve' | 'deny'
+    confirmationText?: string
   }) => void
   runId: string
   segmentId: string

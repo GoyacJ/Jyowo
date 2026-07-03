@@ -5,9 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
-    BudgetMetric, Decision, DeferPolicy, Event, NetworkAccess, OverflowAction, ProviderRestriction,
-    ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolSearchMode, ToolUseId, TrustLevel, WorkspaceAccess,
+    BudgetMetric, Decision, DeferPolicy, Event, NetworkAccess, OverflowAction, PermissionMode,
+    ProviderRestriction, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_journal::{EventStore, ReplayCursor};
 use harness_model::{ContentDelta, ModelRequest, ModelStreamEvent};
@@ -65,7 +65,8 @@ async fn sdk_tool_search_flow_searches_deferred_tools_by_default() {
         .create_session(
             SessionOptions::new(unique_workspace("sdk-tool-search-default"))
                 .with_session_id(session_id)
-                .with_tool_search_mode(ToolSearchMode::Always),
+                .with_tool_search_mode(ToolSearchMode::Always)
+                .with_permission_mode(PermissionMode::BypassPermissions),
         )
         .await
         .expect("session should be created");
@@ -188,7 +189,8 @@ async fn sdk_tool_search_flow_custom_scorer_controls_match_order() {
         .create_session(
             SessionOptions::new(unique_workspace("sdk-tool-search-custom"))
                 .with_session_id(session_id)
-                .with_tool_search_mode(ToolSearchMode::Always),
+                .with_tool_search_mode(ToolSearchMode::Always)
+                .with_permission_mode(PermissionMode::BypassPermissions),
         )
         .await
         .expect("session should be created");

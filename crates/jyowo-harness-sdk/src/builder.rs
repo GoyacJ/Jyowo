@@ -16,7 +16,7 @@ use harness_model::{AuxModelProvider, InferMiddleware, ModelProvider};
 use harness_observability::{Observer, Tracer};
 #[cfg(feature = "stream-permission")]
 use harness_permission::ResolverHandle;
-use harness_permission::{DecisionStore, PermissionBroker, RuleProvider};
+use harness_permission::{DecisionStore, PermissionAuthority, PermissionBroker, RuleProvider};
 use harness_plugin::PluginRegistry;
 use harness_sandbox::SandboxBackend;
 use harness_skill::SkillLoader;
@@ -56,6 +56,8 @@ pub(crate) struct BuilderExtras {
     pub(crate) model_middlewares: Vec<Arc<dyn InferMiddleware>>,
     pub(crate) rule_providers: Vec<Arc<dyn RuleProvider>>,
     pub(crate) decision_store: Option<Arc<dyn DecisionStore>>,
+    pub(crate) permission_authority: Option<Arc<PermissionAuthority>>,
+    pub(crate) authorization_service: Option<Arc<harness_execution::AuthorizationService>>,
     pub(crate) cap_registry: Option<CapabilityRegistry>,
     pub(crate) provider_capability_routes:
         Option<Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>>>,
@@ -411,6 +413,36 @@ impl<M, S, SB> HarnessBuilder<M, S, SB> {
     #[must_use]
     pub fn with_decision_persistence(mut self, persistence: Arc<dyn DecisionStore>) -> Self {
         self.extras.decision_store = Some(persistence);
+        self
+    }
+
+    #[must_use]
+    pub fn with_permission_authority(mut self, authority: PermissionAuthority) -> Self {
+        self.extras.permission_authority = Some(Arc::new(authority));
+        self
+    }
+
+    #[must_use]
+    pub fn with_permission_authority_arc(mut self, authority: Arc<PermissionAuthority>) -> Self {
+        self.extras.permission_authority = Some(authority);
+        self
+    }
+
+    #[must_use]
+    pub fn with_authorization_service(
+        mut self,
+        service: harness_execution::AuthorizationService,
+    ) -> Self {
+        self.extras.authorization_service = Some(Arc::new(service));
+        self
+    }
+
+    #[must_use]
+    pub fn with_authorization_service_arc(
+        mut self,
+        service: Arc<harness_execution::AuthorizationService>,
+    ) -> Self {
+        self.extras.authorization_service = Some(service);
         self
     }
 

@@ -6,6 +6,7 @@ import { appI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
 import { ConversationTimeline } from './conversation-timeline'
 import { resetTimelineTestState, toolEvidenceTurn, turn } from './conversation-timeline-test-utils'
+import { PermissionInlinePanel } from './permission-inline-panel'
 
 describe('ConversationTimeline', () => {
   afterEach(() => {
@@ -38,6 +39,37 @@ describe('ConversationTimeline', () => {
     expect(toolRow).not.toBeNull()
     expect(within(toolRow as HTMLElement).getByText('Permission: pending')).toBeInTheDocument()
     expect(screen.queryByText('Permission request')).not.toBeInTheDocument()
+  })
+
+  it('submits confirmation text when approving type-to-confirm permissions', () => {
+    const onResolve = vi.fn()
+
+    render(
+      <PermissionInlinePanel
+        conversationId="conversation-001"
+        onResolve={onResolve}
+        permission={{
+          confirmationExpected: 'DELETE',
+          id: 'permission:request-confirm',
+          requestId: 'request-confirm',
+          status: 'pending',
+          toolUseId: 'tool-confirm',
+        }}
+        turnId="turn-001"
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('Confirmation text'), {
+      target: { value: 'DELETE' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    expect(onResolve).toHaveBeenCalledWith({
+      conversationId: 'conversation-001',
+      requestId: 'request-confirm',
+      decision: 'approve',
+      confirmationText: 'DELETE',
+    })
   })
 
   it('scopes tool disclosure state by conversation and run identity', () => {

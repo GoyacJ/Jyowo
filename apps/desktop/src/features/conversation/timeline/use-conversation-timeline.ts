@@ -222,6 +222,7 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
       conversationId: string
       requestId: string
       decision: 'approve' | 'deny'
+      confirmationText?: string
     }) => {
       dispatch({
         type: 'permissionSubmitting',

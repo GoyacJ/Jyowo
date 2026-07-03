@@ -166,6 +166,7 @@ pub fn action_plan_from_permission_check(
         subject: subject.clone(),
         severity,
         scope_hint: scope.clone(),
+        confirmation_expected: None,
         created_at: Utc::now(),
     };
     let plan_hash = ActionPlanHash::from_bytes(canonical_permission_fingerprint(&request).0);

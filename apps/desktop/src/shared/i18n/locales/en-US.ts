@@ -91,6 +91,7 @@ export const enUS = {
       approve: 'Approve',
       assistantAuthor: 'Jyowo',
       clarificationNeeded: 'Clarification needed',
+      confirmationText: 'Confirmation text',
       deny: 'Deny',
       details: 'Details',
       emptyTitle: 'Start a conversation',
@@ -1255,6 +1256,8 @@ export const enUS = {
       diff: 'Diff',
       deny: 'Deny permission',
       approve: 'Approve permission',
+      typeToConfirm: 'Type {{expected}} to confirm',
+      typeToConfirmPlaceholder: 'Type {{expected}}',
       state: {
         approved: 'Approved',
         denied: 'Denied',

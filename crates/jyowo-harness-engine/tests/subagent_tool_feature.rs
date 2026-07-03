@@ -43,6 +43,9 @@ use harness_tool::{
     ToolStream, ValidationError,
 };
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 #[test]
 fn subagent_tool_feature_appends_agent_tool_when_enabled() {
     let workspace = tempfile::tempdir().unwrap();
@@ -51,12 +54,13 @@ fn subagent_tool_feature_appends_agent_tool_when_enabled() {
         ToolCapability::SubagentRunner,
         SubagentRunnerCapAdapter::from_runner(Arc::new(ReadyRunner)),
     );
+    let store = Arc::new(harness_journal::InMemoryEventStore::new(Arc::new(
+        NoopRedactor,
+    )));
 
     let engine = Engine::builder()
         .with_engine_id(EngineId::new("subagent-tool-feature"))
-        .with_event_store(Arc::new(harness_journal::InMemoryEventStore::new(
-            Arc::new(NoopRedactor),
-        )))
+        .with_event_store(store.clone())
         .with_context(harness_context::ContextEngine::builder().build().unwrap())
         .with_hooks(harness_hook::HookDispatcher::new(
             harness_hook::HookRegistry::builder()
@@ -66,7 +70,10 @@ fn subagent_tool_feature_appends_agent_tool_when_enabled() {
         ))
         .with_model(Arc::new(EmptyModel))
         .with_tools(ToolPool::default())
-        .with_permission_broker(Arc::new(AllowBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(AllowBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("empty-model")
         .with_cap_registry(Arc::new(registry))
@@ -80,11 +87,12 @@ fn subagent_tool_feature_appends_agent_tool_when_enabled() {
 #[test]
 fn subagent_tool_feature_installs_default_runner_when_cap_missing() {
     let workspace = tempfile::tempdir().unwrap();
+    let store = Arc::new(harness_journal::InMemoryEventStore::new(Arc::new(
+        NoopRedactor,
+    )));
     let engine = Engine::builder()
         .with_engine_id(EngineId::new("subagent-tool-default-runner"))
-        .with_event_store(Arc::new(harness_journal::InMemoryEventStore::new(
-            Arc::new(NoopRedactor),
-        )))
+        .with_event_store(store.clone())
         .with_context(harness_context::ContextEngine::builder().build().unwrap())
         .with_hooks(harness_hook::HookDispatcher::new(
             harness_hook::HookRegistry::builder()
@@ -94,7 +102,10 @@ fn subagent_tool_feature_installs_default_runner_when_cap_missing() {
         ))
         .with_model(Arc::new(EmptyModel))
         .with_tools(ToolPool::default())
-        .with_permission_broker(Arc::new(AllowBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(AllowBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("empty-model")
         .with_subagent_tool()
@@ -130,7 +141,10 @@ async fn default_runner_scopes_child_tools_and_announces_child_output() {
         ))
         .with_model(model.clone())
         .with_tools(tools)
-        .with_permission_broker(Arc::new(AllowBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(AllowBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("test-model")
         .with_subagent_tool()
@@ -1543,7 +1557,10 @@ async fn required_sandbox_capabilities_fail_closed_when_parent_backend_is_missin
         ))
         .with_model(model)
         .with_tools(ToolPool::default())
-        .with_permission_broker(Arc::new(AllowBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(AllowBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("test-model")
         .with_sandbox(Arc::new(MissingFeatureSandbox))
@@ -1693,7 +1710,7 @@ fn test_engine_with_blob_store(
 ) -> Engine {
     Engine::builder()
         .with_engine_id(EngineId::new(engine_id))
-        .with_event_store(store)
+        .with_event_store(store.clone())
         .with_context(harness_context::ContextEngine::builder().build().unwrap())
         .with_hooks(harness_hook::HookDispatcher::new(
             harness_hook::HookRegistry::builder()
@@ -1703,7 +1720,10 @@ fn test_engine_with_blob_store(
         ))
         .with_model(model)
         .with_tools(tools)
-        .with_permission_broker(Arc::new(AllowBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(AllowBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace_root)
         .with_model_id("test-model")
         .with_blob_store(blob_store)
@@ -1723,7 +1743,7 @@ fn test_engine_with_sandbox(
 ) -> Engine {
     let mut builder = Engine::builder()
         .with_engine_id(EngineId::new(engine_id))
-        .with_event_store(store)
+        .with_event_store(store.clone())
         .with_context(harness_context::ContextEngine::builder().build().unwrap())
         .with_hooks(harness_hook::HookDispatcher::new(
             harness_hook::HookRegistry::builder()
@@ -1733,7 +1753,10 @@ fn test_engine_with_sandbox(
         ))
         .with_model(model)
         .with_tools(tools)
-        .with_permission_broker(Arc::new(AllowBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(AllowBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace_root)
         .with_model_id("test-model")
         .with_subagent_tool();

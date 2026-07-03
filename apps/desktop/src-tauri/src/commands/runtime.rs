@@ -32,7 +32,10 @@ use super::stores::*;
 use super::validation::*;
 use super::*;
 use crate::agent_supervisor::BackgroundSupervisorSession;
+use async_trait::async_trait;
+use harness_execution::{AuthorizationEventSink, AuthorizationService, TicketLedger};
 use harness_model::{default_account_usage_registry, ProviderAccountUsageRegistry};
+use harness_permission::{FileDecisionPersistence, IntegrityAlgorithm, PermissionAuthority};
 
 #[derive(Clone)]
 struct DesktopBackgroundAgentStarter {
@@ -687,14 +690,6 @@ pub(crate) async fn build_desktop_harness(
     let mcp_server_store = DesktopMcpServerStore::new(workspace_root.to_path_buf());
     let mcp_diagnostic_store: Arc<dyn McpDiagnosticStore> =
         Arc::new(DesktopMcpDiagnosticStore::new(workspace_root.to_path_buf()));
-    let mcp_config = mcp_config_from_records(
-        mcp_server_store.load_records()?,
-        SessionId::new(),
-        AgentId::new(),
-        Arc::clone(&mcp_diagnostic_store),
-        workspace_root,
-    )
-    .await?;
     let provider_settings_store = DesktopProviderSettingsStore::new(workspace_root.to_path_buf());
     let conversation_metadata_store =
         DesktopConversationMetadataStore::new(workspace_root.to_path_buf());
@@ -728,6 +723,57 @@ pub(crate) async fn build_desktop_harness(
     let plugin_registry = build_plugin_registry(workspace_root, plugin_store.as_ref())?;
 
     let sandbox = Arc::new(LocalSandbox::new(workspace_root)) as Arc<dyn SandboxBackend>;
+
+    // Build the production PermissionAuthority with signed file persistence.
+    let signer = desktop_integrity_signer(workspace_root)?;
+    let decision_path = workspace_root
+        .join(".jyowo")
+        .join("runtime")
+        .join("permission-decisions.json");
+    let file_persistence: Arc<dyn harness_permission::DecisionStore> = Arc::new(
+        FileDecisionPersistence::new(TenantId::SINGLE, decision_path, signer),
+    );
+
+    let rule_broker: Arc<dyn harness_permission::PermissionBroker> = Arc::new(
+        harness_permission::RuleEngineBroker::builder()
+            .with_tenant(TenantId::SINGLE)
+            .build()
+            .await
+            .map_err(|error| {
+                runtime_init_failed(format!("rule engine broker initialization failed: {error}"))
+            })?,
+    );
+
+    let permission_authority = PermissionAuthority::builder()
+        .with_policy_broker(Arc::clone(&rule_broker))
+        .with_interactive_broker(stream_permission_runtime.broker())
+        .with_decision_store(Arc::clone(&file_persistence))
+        .build()
+        .map_err(|error| {
+            runtime_init_failed(format!(
+                "permission authority initialization failed: {error}"
+            ))
+        })?;
+
+    let event_sink: Arc<dyn AuthorizationEventSink> = Arc::new(DesktopAuthorizationEventSink {
+        event_store: Arc::clone(&event_store),
+    });
+    let authorization_service = Arc::new(AuthorizationService::new(
+        Arc::new(permission_authority),
+        Arc::clone(&sandbox),
+        event_sink,
+        Arc::new(TicketLedger::default()),
+    ));
+    let mcp_config = mcp_config_from_records(
+        mcp_server_store.load_records()?,
+        SessionId::new(),
+        AgentId::new(),
+        Arc::clone(&mcp_diagnostic_store),
+        Arc::clone(&authorization_service),
+        workspace_root,
+    )
+    .await?;
+
     let diagnostics_runner: Arc<dyn DiagnosticsRunnerCap> =
         Arc::new(DesktopDiagnosticsRunner::new(Arc::clone(&sandbox)));
     let background_agent_starter: Arc<dyn BackgroundAgentStarterCap> =
@@ -764,6 +810,8 @@ pub(crate) async fn build_desktop_harness(
         .with_plugin_registry(plugin_registry)
         .with_memory_provider(InMemoryMemoryProvider::new("desktop-memory"))
         .with_skill_loader(skill_loader)
+        .with_permission_authority_arc(authorization_service.permission_authority())
+        .with_authorization_service_arc(authorization_service)
         .with_stream_permission_broker_arc(
             stream_permission_runtime.broker(),
             stream_permission_runtime.resolver_handle(),
@@ -773,6 +821,100 @@ pub(crate) async fn build_desktop_harness(
         .map_err(|error| runtime_init_failed(format!("harness initialization failed: {error}")))?;
 
     Ok((harness, model_id, protocol))
+}
+
+fn desktop_integrity_signer(
+    workspace_root: &Path,
+) -> Result<Arc<dyn harness_permission::IntegritySigner>, CommandErrorPayload> {
+    let key = desktop_integrity_key(workspace_root)?;
+    harness_permission::StaticSignerStore::from_key(
+        "desktop-integrity",
+        key,
+        IntegrityAlgorithm::HmacSha256,
+    )
+    .map_err(|error| {
+        runtime_init_failed(format!("integrity signer initialization failed: {error}"))
+    })
+}
+
+fn desktop_integrity_key(workspace_root: &Path) -> Result<Vec<u8>, CommandErrorPayload> {
+    let path = workspace_root
+        .join(".jyowo")
+        .join("runtime")
+        .join("permission-integrity.key");
+    if path.is_file() {
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|error| runtime_init_failed(format!("integrity key read failed: {error}")))?;
+        let key = general_purpose::STANDARD
+            .decode(raw.trim())
+            .map_err(|error| {
+                runtime_init_failed(format!("integrity key decode failed: {error}"))
+            })?;
+        if key.len() == 32 {
+            return Ok(key);
+        }
+        return Err(runtime_init_failed(
+            "integrity key has invalid length".to_owned(),
+        ));
+    }
+
+    let mut key = Vec::with_capacity(32);
+    key.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+    key.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            runtime_init_failed(format!("integrity key directory creation failed: {error}"))
+        })?;
+    }
+    write_owner_only_file(&path, general_purpose::STANDARD.encode(&key).as_bytes())?;
+    Ok(key)
+}
+
+#[cfg(unix)]
+fn write_owner_only_file(path: &Path, bytes: &[u8]) -> Result<(), CommandErrorPayload> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| runtime_init_failed(format!("integrity key write failed: {error}")))?;
+    file.write_all(bytes)
+        .map_err(|error| runtime_init_failed(format!("integrity key write failed: {error}")))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|error| {
+        runtime_init_failed(format!("integrity key permission update failed: {error}"))
+    })?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_owner_only_file(path: &Path, bytes: &[u8]) -> Result<(), CommandErrorPayload> {
+    std::fs::write(path, bytes)
+        .map_err(|error| runtime_init_failed(format!("integrity key write failed: {error}")))
+}
+
+struct DesktopAuthorizationEventSink {
+    event_store: Arc<dyn EventStore>,
+}
+
+#[async_trait]
+impl AuthorizationEventSink for DesktopAuthorizationEventSink {
+    async fn emit_batch(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+        events: Vec<Event>,
+    ) -> Result<(), harness_execution::ExecutionError> {
+        self.event_store
+            .append(tenant_id, session_id, &events)
+            .await
+            .map(|_| ())
+            .map_err(|error| harness_execution::ExecutionError::EventSinkFailed {
+                reason: format!("journal append failed: {error}"),
+            })
+    }
 }
 
 pub(crate) struct DesktopDiagnosticsRunner {

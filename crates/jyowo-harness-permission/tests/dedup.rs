@@ -240,6 +240,7 @@ fn tool_request() -> PermissionRequest {
         },
         severity: Severity::Low,
         scope_hint: DecisionScope::ToolName("read_blob".to_owned()),
+        confirmation_expected: None,
         created_at: Utc::now(),
     }
 }
@@ -259,6 +260,7 @@ fn command_request(severity: Severity) -> PermissionRequest {
         },
         severity,
         scope_hint: DecisionScope::ToolName("shell".to_owned()),
+        confirmation_expected: None,
         created_at: Utc::now(),
     }
 }

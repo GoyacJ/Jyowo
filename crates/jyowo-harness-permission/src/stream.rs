@@ -46,6 +46,7 @@ struct PendingResolution {
     sender: oneshot::Sender<Decision>,
     request: PermissionRequest,
     context: PermissionContext,
+    confirmation_expected: Option<String>,
     enqueued_at: Instant,
     last_heartbeat_at: Instant,
     timeout_at: Instant,
@@ -67,6 +68,7 @@ pub struct ResolverHandle {
 pub struct PendingPermissionRequest {
     pub request: PermissionRequest,
     pub context: PermissionContext,
+    pub confirmation_expected: Option<String>,
 }
 
 impl Default for StreamBrokerConfig {
@@ -170,6 +172,7 @@ impl ResolverHandle {
             .map(|pending| PendingPermissionRequest {
                 request: pending.request.clone(),
                 context: pending.context.clone(),
+                confirmation_expected: pending.confirmation_expected.clone(),
             })
             .collect()
     }
@@ -242,6 +245,7 @@ impl PermissionBroker for StreamBasedBroker {
                 sender,
                 request: request.clone(),
                 context: ctx.clone(),
+                confirmation_expected: request.confirmation_expected.clone(),
                 enqueued_at: now,
                 last_heartbeat_at: now,
                 timeout_at: now + timeout,

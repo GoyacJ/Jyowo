@@ -148,6 +148,7 @@ export function createConversationCommandHandlers(
           fixtureTimelineEvent(
             'permission.resolved',
             {
+              autoResolved: false,
               decision: request.decision,
               requestId: request.requestId,
             },

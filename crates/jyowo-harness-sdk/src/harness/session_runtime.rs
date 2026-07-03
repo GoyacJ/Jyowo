@@ -653,7 +653,7 @@ impl Harness {
             .with_hooks(HookDispatcher::new(self.inner.hook_registry.snapshot()))
             .with_model(Arc::clone(&self.inner.model))
             .with_tools(tools)
-            .with_permission_broker(Arc::clone(&self.inner.permission_broker))
+            .with_authorization_service(Arc::clone(&self.inner.authorization_service))
             .with_workspace_root(&options.workspace_root)
             .with_model_id(model_id)
             .with_model_snapshot(model_snapshot.clone())
@@ -778,6 +778,7 @@ pub(super) fn snapshot_for_supported_model(
 }
 
 impl Harness {
+    #[cfg(any(feature = "agents-team", feature = "agents-subagent"))]
     fn tenant_allows_tool(&self, tool_name: &str) -> bool {
         match &self.inner.options.tenant_policy.allowed_tools {
             Some(allowed_tools) => allowed_tools.contains(tool_name),

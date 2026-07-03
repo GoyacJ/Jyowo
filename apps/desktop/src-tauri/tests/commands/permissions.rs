@@ -130,6 +130,7 @@ async fn start_run_with_runtime_state_exposes_runtime_permission_request_to_acti
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -144,6 +145,7 @@ fn resolve_permission_payload_requires_runtime_permission_broker() {
         conversation_id: conversation_id.clone(),
         decision: PermissionDecision::Approve,
         request_id: "01HZ0000000000000000000001".to_owned(),
+        confirmation_text: None,
     })
     .unwrap_err();
 
@@ -153,6 +155,7 @@ fn resolve_permission_payload_requires_runtime_permission_broker() {
         conversation_id: conversation_id.clone(),
         decision: PermissionDecision::Deny,
         request_id: "01HZ0000000000000000000001".to_owned(),
+        confirmation_text: None,
     })
     .unwrap_err();
 
@@ -162,6 +165,7 @@ fn resolve_permission_payload_requires_runtime_permission_broker() {
         conversation_id,
         decision: PermissionDecision::Approve,
         request_id: String::new(),
+        confirmation_text: None,
     })
     .unwrap_err();
 
@@ -174,6 +178,7 @@ fn resolve_permission_payload_rejects_invalid_request_id_before_runtime() {
         conversation_id: SessionId::new().to_string(),
         decision: PermissionDecision::Approve,
         request_id: "permission-001".to_owned(),
+        confirmation_text: None,
     })
     .unwrap_err();
 
@@ -186,6 +191,7 @@ fn resolve_permission_payload_rejects_noncanonical_request_id_before_runtime() {
         conversation_id: SessionId::new().to_string(),
         decision: PermissionDecision::Approve,
         request_id: "01hz0000000000000000000001".to_owned(),
+        confirmation_text: None,
     })
     .unwrap_err();
 
@@ -206,6 +212,7 @@ async fn runtime_state_routes_permission_decisions_to_permission_broker_resolver
             conversation_id: SessionId::new().to_string(),
             decision: PermissionDecision::Approve,
             request_id: "01HZ0000000000000000000001".to_owned(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -247,8 +254,10 @@ async fn runtime_state_resolves_pending_permission_from_harness_broker() {
     let request_id = request.request_id;
     let request_session_id = request.session_id;
 
-    let decision_task =
-        tokio::spawn(async move { broker.decide(request, permission_context()).await });
+    let decision_task = tokio::spawn(async move {
+        let ctx = permission_context_for_request(&request, None);
+        broker.decide(request, ctx).await
+    });
 
     wait_for_pending_permission(&state, request_id).await;
 
@@ -257,6 +266,42 @@ async fn runtime_state_resolves_pending_permission_from_harness_broker() {
             conversation_id: request_session_id.to_string(),
             decision: PermissionDecision::Approve,
             request_id: request_id.to_string(),
+            confirmation_text: None,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(payload.status, "resolved");
+    assert_eq!(decision_task.await.unwrap(), Decision::AllowOnce);
+}
+
+#[tokio::test]
+async fn runtime_state_waits_for_pending_permission_before_not_found() {
+    let state = runtime_state_with_harness().await;
+    let harness = state
+        .harness()
+        .expect("runtime state should retain the configured harness");
+    let broker = harness
+        .permission_broker()
+        .expect("harness should use the stream permission broker");
+    let request = permission_request();
+    let request_id = request.request_id;
+    let request_session_id = request.session_id;
+
+    let decision_task = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let ctx = permission_context_for_request(&request, None);
+        broker.decide(request, ctx).await
+    });
+
+    let payload = resolve_permission_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id: request_session_id.to_string(),
+            decision: PermissionDecision::Approve,
+            request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -280,8 +325,10 @@ async fn runtime_state_rejects_permission_resolution_for_wrong_conversation() {
     let request_id = request.request_id;
     let request_session_id = request.session_id;
 
-    let decision_task =
-        tokio::spawn(async move { broker.decide(request, permission_context()).await });
+    let decision_task = tokio::spawn(async move {
+        let ctx = permission_context_for_request(&request, None);
+        broker.decide(request, ctx).await
+    });
 
     wait_for_pending_permission(&state, request_id).await;
 
@@ -290,6 +337,7 @@ async fn runtime_state_rejects_permission_resolution_for_wrong_conversation() {
             conversation_id: SessionId::new().to_string(),
             decision: PermissionDecision::Approve,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -306,6 +354,7 @@ async fn runtime_state_rejects_permission_resolution_for_wrong_conversation() {
             conversation_id: request_session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -329,8 +378,10 @@ async fn runtime_state_requires_window_subscription_before_permission_resolution
     let conversation_id = request_session_id.to_string();
     open_conversation_session(&state, request_session_id).await;
 
-    let decision_task =
-        tokio::spawn(async move { broker.decide(request, permission_context()).await });
+    let decision_task = tokio::spawn(async move {
+        let ctx = permission_context_for_request(&request, None);
+        broker.decide(request, ctx).await
+    });
 
     wait_for_pending_permission(&state, request_id).await;
 
@@ -339,6 +390,7 @@ async fn runtime_state_requires_window_subscription_before_permission_resolution
             conversation_id: conversation_id.clone(),
             decision: PermissionDecision::Approve,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         "main".to_owned(),
         &state,
@@ -368,6 +420,7 @@ async fn runtime_state_requires_window_subscription_before_permission_resolution
             conversation_id,
             decision: PermissionDecision::Approve,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         "main".to_owned(),
         &state,
@@ -404,8 +457,10 @@ async fn list_activity_with_runtime_state_hides_pending_permission_without_durab
     let request_session_id = request.session_id;
     let conversation_id = session_id.to_string();
 
-    let decision_task =
-        tokio::spawn(async move { broker.decide(request, permission_context()).await });
+    let decision_task = tokio::spawn(async move {
+        let ctx = permission_context_for_request(&request, None);
+        broker.decide(request, ctx).await
+    });
 
     wait_for_pending_permission(&state, request_id).await;
 
@@ -426,6 +481,7 @@ async fn list_activity_with_runtime_state_hides_pending_permission_without_durab
             conversation_id: request_session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -495,6 +551,7 @@ async fn list_activity_with_runtime_state_reads_journaled_permission_requests_by
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -556,6 +613,7 @@ async fn start_run_permission_mode_override_wins_over_saved_default() {
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: pending.request.request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -737,8 +795,10 @@ async fn list_activity_with_runtime_state_does_not_expose_other_conversation_pen
     let request_id = request.request_id;
     let request_session_id = request.session_id;
 
-    let decision_task =
-        tokio::spawn(async move { broker.decide(request, permission_context()).await });
+    let decision_task = tokio::spawn(async move {
+        let ctx = permission_context_for_request(&request, None);
+        broker.decide(request, ctx).await
+    });
 
     wait_for_pending_permission(&state, request_id).await;
 
@@ -759,6 +819,7 @@ async fn list_activity_with_runtime_state_does_not_expose_other_conversation_pen
             conversation_id: request_session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -785,9 +846,8 @@ async fn list_activity_with_runtime_state_rejects_conflicting_conversation_and_r
     let run_id_string = run_id.to_string();
 
     let decision_task = tokio::spawn(async move {
-        broker
-            .decide(request, permission_context_with_run_id(Some(run_id)))
-            .await
+        let ctx = permission_context_for_request(&request, Some(run_id));
+        broker.decide(request, ctx).await
     });
 
     wait_for_pending_permission(&state, request_id).await;
@@ -809,6 +869,7 @@ async fn list_activity_with_runtime_state_rejects_conflicting_conversation_and_r
             conversation_id: request_session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -874,4 +935,202 @@ fn list_activity_payload_returns_empty_typed_event_list() {
     .unwrap_err();
 
     assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn resolve_permission_deny_ignores_confirmation_text() {
+    let workspace = unique_workspace("confirmation-deny");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_for_workspace(workspace)
+        .await
+        .expect("runtime state should initialize");
+
+    // Resolve a non-existent request with deny and a confirmation text.
+    // Deny decisions must not require confirmation text validation.
+    let error = resolve_permission_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id: SessionId::new().to_string(),
+            decision: PermissionDecision::Deny,
+            request_id: "01HZ0000000000000000000001".to_owned(),
+            confirmation_text: Some("DELETE".to_owned()),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    // The request doesn't exist, so we get NOT_FOUND (not a confirmation error).
+    assert_eq!(error.code, "NOT_FOUND");
+    assert!(error.message.contains("permission request not found"));
+}
+
+#[tokio::test]
+async fn production_runtime_wires_full_permission_authority() {
+    let workspace = unique_workspace("production-authority");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_for_workspace(workspace.clone())
+        .await
+        .expect("runtime state should initialize");
+
+    let harness = state
+        .harness()
+        .expect("production runtime should have a harness");
+
+    // Production runtime must use the full PermissionAuthority, not stream broker alone.
+    assert!(
+        harness.permission_authority().is_some(),
+        "production runtime must use full PermissionAuthority, not stream broker alone"
+    );
+
+    // Production runtime must also have the authorization service wired.
+    let _authorization_service = harness.authorization_service();
+}
+
+#[tokio::test]
+async fn resolve_permission_approve_with_correct_confirmation_text_succeeds() {
+    let workspace = unique_workspace("confirmation-approve");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_for_workspace(workspace.clone())
+        .await
+        .expect("runtime state should initialize");
+    let harness = state
+        .harness()
+        .expect("runtime state should retain the configured harness");
+    let session_id = state.default_conversation_id();
+    let broker = harness
+        .permission_broker()
+        .expect("harness should use the stream permission broker");
+    let mut request = permission_request();
+    request.session_id = session_id;
+    let expected = "DELETE".to_owned();
+    request.confirmation_expected = Some(expected.clone());
+    let request_id = request.request_id;
+    let ctx = permission_context_for_request(&request, None);
+
+    let decision_task = tokio::spawn(async move { broker.decide(request, ctx).await });
+
+    wait_for_pending_permission(&state, request_id).await;
+
+    let payload = resolve_permission_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id: session_id.to_string(),
+            decision: PermissionDecision::Approve,
+            request_id: request_id.to_string(),
+            confirmation_text: Some(expected),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(payload.status, "resolved");
+    assert_eq!(decision_task.await.unwrap(), Decision::AllowOnce);
+}
+
+#[tokio::test]
+async fn resolve_permission_approve_requires_confirmation_text_when_expected() {
+    let workspace = unique_workspace("confirmation-missing");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_for_workspace(workspace.clone())
+        .await
+        .expect("runtime state should initialize");
+    let harness = state
+        .harness()
+        .expect("runtime state should retain the configured harness");
+    let session_id = state.default_conversation_id();
+    let broker = harness
+        .permission_broker()
+        .expect("harness should use the stream permission broker");
+    let mut request = permission_request();
+    request.session_id = session_id;
+    request.confirmation_expected = Some("DELETE".to_owned());
+    let request_id = request.request_id;
+    let ctx = permission_context_for_request(&request, None);
+
+    let decision_task = tokio::spawn(async move { broker.decide(request, ctx).await });
+
+    wait_for_pending_permission(&state, request_id).await;
+
+    let error = resolve_permission_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id: session_id.to_string(),
+            decision: PermissionDecision::Approve,
+            request_id: request_id.to_string(),
+            confirmation_text: None,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("confirmation text is required"));
+
+    // Clean up with a deny (deny does not require confirmation text).
+    resolve_permission_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id: session_id.to_string(),
+            decision: PermissionDecision::Deny,
+            request_id: request_id.to_string(),
+            confirmation_text: None,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let _ = decision_task.await;
+}
+
+#[tokio::test]
+async fn resolve_permission_approve_rejects_mismatched_confirmation_text() {
+    let workspace = unique_workspace("confirmation-mismatch");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_for_workspace(workspace.clone())
+        .await
+        .expect("runtime state should initialize");
+    let harness = state
+        .harness()
+        .expect("runtime state should retain the configured harness");
+    let session_id = state.default_conversation_id();
+    let broker = harness
+        .permission_broker()
+        .expect("harness should use the stream permission broker");
+    let mut request = permission_request();
+    request.session_id = session_id;
+    request.confirmation_expected = Some("DELETE".to_owned());
+    let request_id = request.request_id;
+    let ctx = permission_context_for_request(&request, None);
+
+    let decision_task = tokio::spawn(async move { broker.decide(request, ctx).await });
+
+    wait_for_pending_permission(&state, request_id).await;
+
+    let error = resolve_permission_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id: session_id.to_string(),
+            decision: PermissionDecision::Approve,
+            request_id: request_id.to_string(),
+            confirmation_text: Some("OVERWRITE".to_owned()),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("confirmation text does not match"));
+
+    // Clean up.
+    resolve_permission_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id: session_id.to_string(),
+            decision: PermissionDecision::Deny,
+            request_id: request_id.to_string(),
+            confirmation_text: None,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let _ = decision_task.await;
 }

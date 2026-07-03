@@ -10,15 +10,16 @@ use reqwest::{
 use serde_json::Value;
 
 use crate::{
-    call_tool_request, client_auth, continue_after_elicitation_response, decode_empty_result,
-    decode_list_prompts, decode_list_resources, decode_list_tools, decode_prompt_messages,
-    decode_read_resource, decode_tool_result, get_prompt_request, initialize_request,
-    initialized_notification, list_prompts_request, list_resources_request, list_tools_request,
-    read_resource_request, subscribe_resource_request, unsubscribe_resource_request,
-    ElicitationHandler, JsonRpcNotification, JsonRpcPeer, JsonRpcRequest, JsonRpcResponse,
-    McpConnectContext, McpConnection, McpError, McpMetricsSink, McpPrompt, McpPromptMessages,
-    McpResource, McpResourceContents, McpServerSpec, McpToolDescriptor, McpToolResult,
-    McpTransport, NoopMcpMetricsSink, TransportChoice,
+    authorize_mcp_transport_connect, call_tool_request, client_auth,
+    continue_after_elicitation_response, decode_empty_result, decode_list_prompts,
+    decode_list_resources, decode_list_tools, decode_prompt_messages, decode_read_resource,
+    decode_tool_result, get_prompt_request, initialize_request, initialized_notification,
+    list_prompts_request, list_resources_request, list_tools_request, read_resource_request,
+    subscribe_resource_request, unsubscribe_resource_request, ElicitationHandler,
+    JsonRpcNotification, JsonRpcPeer, JsonRpcRequest, JsonRpcResponse, McpConnectContext,
+    McpConnection, McpError, McpMetricsSink, McpPrompt, McpPromptMessages, McpResource,
+    McpResourceContents, McpServerSpec, McpToolDescriptor, McpToolResult, McpTransport,
+    NoopMcpMetricsSink, TransportChoice,
 };
 
 pub struct HttpTransport {
@@ -81,6 +82,7 @@ impl McpTransport for HttpTransport {
         spec: McpServerSpec,
         context: McpConnectContext,
     ) -> Result<Arc<dyn McpConnection>, McpError> {
+        authorize_mcp_transport_connect(&context, &spec).await?;
         let TransportChoice::Http { url, headers } = spec.transport.clone() else {
             return Err(McpError::Unsupported(
                 "HttpTransport requires TransportChoice::Http".into(),

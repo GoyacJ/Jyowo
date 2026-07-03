@@ -6,21 +6,16 @@ use std::{
 
 use async_trait::async_trait;
 use harness_contracts::{
-    now, ActionPlanHash, DecidedBy, Decision, DecisionId, DecisionScope, Event, EventId,
-    FallbackPolicy, InteractivityLevel, McpSamplingRequestedEvent, McpServerId, NoopRedactor,
-    PermissionActorSource, PermissionMode, PermissionRequestedEvent, PermissionResolvedEvent,
-    PermissionReview, PermissionSubject, RequestId, RunId, SamplingBudgetDimension,
-    SamplingDenyReason, SamplingOutcome, SandboxPolicySummary, SessionId, Severity, TenantId,
-    TimeoutPolicy, ToolUseId, TrustLevel, UiSafeText,
-};
-use harness_tool::{
-    canonical_permission_fingerprint, PermissionBroker, PermissionContext, PermissionRequest,
+    now, Event, ManifestOriginRef, McpSamplingRequestedEvent, McpServerId, McpServerSource,
+    PermissionActorSource, PermissionMode, RequestId, RunId, SamplingBudgetDimension,
+    SamplingDenyReason, SamplingOutcome, SessionId, TrustLevel,
 };
 use serde_json::{json, Value};
 
 use crate::{
-    JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpError, McpEventSink, McpMetric,
-    McpMetricOutcome, McpMetricsSink, McpTimeouts, NoopMcpMetricsSink,
+    authorize_mcp_sampling, JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpAuthorizationContext,
+    McpError, McpEventSink, McpMetric, McpMetricOutcome, McpMetricsSink, McpServerSpec,
+    McpTimeouts, NoopMcpMetricsSink, TransportChoice,
 };
 
 pub const MCP_SAMPLING_DENIED_CODE: i32 = -32601;
@@ -488,9 +483,10 @@ pub struct SamplingJsonRpcHandler {
     permission_mode: PermissionMode,
     permission_actor_source: PermissionActorSource,
     server_trust: TrustLevel,
+    manifest_origin: ManifestOriginRef,
     metrics_sink: Arc<dyn McpMetricsSink>,
     provider: Option<Arc<dyn SamplingProvider>>,
-    permission_broker: Option<Arc<dyn PermissionBroker>>,
+    authorization_context: Option<McpAuthorizationContext>,
 }
 
 impl SamplingJsonRpcHandler {
@@ -506,9 +502,12 @@ impl SamplingJsonRpcHandler {
             permission_mode: PermissionMode::Default,
             permission_actor_source: PermissionActorSource::ParentRun,
             server_trust: TrustLevel::UserControlled,
+            manifest_origin: ManifestOriginRef::File {
+                path: "mcp-sampling-handler".to_owned(),
+            },
             metrics_sink: Arc::new(NoopMcpMetricsSink),
             provider: None,
-            permission_broker: None,
+            authorization_context: None,
         }
     }
 
@@ -553,6 +552,9 @@ impl SamplingJsonRpcHandler {
         mut self,
         permission_actor_source: PermissionActorSource,
     ) -> Self {
+        if let PermissionActorSource::McpServer { origin, .. } = &permission_actor_source {
+            self.manifest_origin = origin.clone();
+        }
         self.permission_actor_source = permission_actor_source;
         self
     }
@@ -576,8 +578,8 @@ impl SamplingJsonRpcHandler {
     }
 
     #[must_use]
-    pub fn with_permission_broker(mut self, broker: Arc<dyn PermissionBroker>) -> Self {
-        self.permission_broker = Some(broker);
+    pub fn with_authorization_context(mut self, context: McpAuthorizationContext) -> Self {
+        self.authorization_context = Some(context);
         self
     }
 
@@ -633,13 +635,13 @@ impl SamplingJsonRpcHandler {
                 effective_timeout,
                 prompt_cache_namespace,
             } => {
-                let Some(broker) = &self.permission_broker else {
+                let Some(authorization_context) = &self.authorization_context else {
                     self.record_sampling(McpMetricOutcome::Deferred);
                     return JsonRpcResponse::failure(
                         request.id,
                         JsonRpcError {
                             code: MCP_SAMPLING_DENIED_CODE,
-                            message: "sampling approval broker is not configured".to_owned(),
+                            message: "sampling authorization context is not configured".to_owned(),
                             data: Some(json!({ "server_id": self.server_id.0 })),
                         },
                     );
@@ -647,9 +649,8 @@ impl SamplingJsonRpcHandler {
 
                 match self
                     .request_sampling_approval(
-                        broker,
+                        authorization_context,
                         &sampling_request,
-                        effective_timeout,
                         &prompt_cache_namespace,
                     )
                     .await
@@ -690,13 +691,54 @@ impl SamplingJsonRpcHandler {
                 effective_timeout,
                 prompt_cache_namespace,
             } => {
-                self.invoke_provider(
-                    request.id,
-                    sampling_request,
-                    effective_timeout,
-                    prompt_cache_namespace,
-                )
-                .await
+                let Some(authorization_context) = &self.authorization_context else {
+                    self.record_sampling(McpMetricOutcome::Denied);
+                    return JsonRpcResponse::failure(
+                        request.id,
+                        JsonRpcError {
+                            code: MCP_SAMPLING_DENIED_CODE,
+                            message: "sampling authorization context is not configured".to_owned(),
+                            data: Some(json!({ "server_id": self.server_id.0 })),
+                        },
+                    );
+                };
+                match self
+                    .request_sampling_approval(
+                        authorization_context,
+                        &sampling_request,
+                        &prompt_cache_namespace,
+                    )
+                    .await
+                {
+                    SamplingApproval::Allowed => {
+                        self.invoke_provider(
+                            request.id,
+                            sampling_request,
+                            effective_timeout,
+                            prompt_cache_namespace,
+                        )
+                        .await
+                    }
+                    SamplingApproval::Denied => {
+                        self.record_sampling(McpMetricOutcome::Denied);
+                        emit_sampling_event(
+                            &sampling_request,
+                            &prompt_cache_namespace,
+                            SamplingOutcome::Denied {
+                                reason: SamplingDenyReason::ApprovalDenied,
+                            },
+                            Arc::clone(&self.event_sink),
+                        );
+                        JsonRpcResponse::failure(
+                            request.id,
+                            JsonRpcError {
+                                code: MCP_SAMPLING_DENIED_CODE,
+                                message: "sampling approval denied".to_owned(),
+                                data: Some(json!({ "server_id": self.server_id.0 })),
+                            },
+                        )
+                    }
+                }
             }
         }
     }
@@ -819,127 +861,31 @@ impl SamplingJsonRpcHandler {
 
     async fn request_sampling_approval(
         &self,
-        broker: &Arc<dyn PermissionBroker>,
+        authorization_context: &McpAuthorizationContext,
         request: &SamplingRequest,
-        effective_timeout: Duration,
         prompt_cache_namespace: &str,
     ) -> SamplingApproval {
-        let Some(run_id) = request.run_id else {
-            return SamplingApproval::Denied;
-        };
-        let tool_use_id = ToolUseId::new();
-        let permission_request = PermissionRequest {
-            request_id: request.request_id,
-            tenant_id: TenantId::SINGLE,
-            session_id: request.session_id,
-            tool_use_id,
-            tool_name: "mcp_sampling".to_owned(),
-            subject: PermissionSubject::Custom {
-                kind: "mcp_sampling".to_owned(),
-                payload: json!({
-                    "server_id": request.server_id.0,
-                    "model_id": request.model_id,
-                    "request_id": request.request_id,
-                    "prompt_cache_namespace": prompt_cache_namespace,
-                }),
+        let spec = McpServerSpec::new(
+            request.server_id.clone(),
+            request.server_id.0.clone(),
+            TransportChoice::InProcess,
+            McpServerSource::Dynamic {
+                registered_by: "sampling".to_owned(),
             },
-            severity: Severity::Medium,
-            scope_hint: DecisionScope::ToolName("mcp_sampling".to_owned()),
-            created_at: now(),
-        };
-        self.emit_permission_requested(&permission_request, request.permission_mode);
-        let decision = broker
-            .decide(
-                permission_request.clone(),
-                PermissionContext {
-                    permission_mode: request.permission_mode,
-                    previous_mode: None,
-                    session_id: request.session_id,
-                    tenant_id: TenantId::SINGLE,
-                    run_id: Some(run_id),
-                    interactivity: InteractivityLevel::FullyInteractive,
-                    timeout_policy: Some(TimeoutPolicy {
-                        deadline_ms: effective_timeout.as_millis().min(u128::from(u64::MAX)) as u64,
-                        default_on_timeout: Decision::DenyOnce,
-                        heartbeat_interval_ms: None,
-                    }),
-                    fallback_policy: FallbackPolicy::DenyAll,
-                    hook_overrides: Vec::new(),
-                },
-            )
-            .await;
-        let auto_resolved = matches!(
-            request.permission_mode,
-            PermissionMode::BypassPermissions | PermissionMode::DontAsk
-        ) && matches!(
-            decision,
-            Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent
-        );
-        self.emit_permission_resolved(&permission_request, decision.clone(), auto_resolved);
-        if matches!(
-            decision,
-            Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent
-        ) {
-            SamplingApproval::Allowed
-        } else {
-            SamplingApproval::Denied
+        )
+        .with_manifest_origin(self.manifest_origin.clone());
+        match authorize_mcp_sampling(
+            authorization_context,
+            &spec,
+            request.request_id,
+            request.model_id.as_deref(),
+            prompt_cache_namespace,
+        )
+        .await
+        {
+            Ok(()) => SamplingApproval::Allowed,
+            Err(_) => SamplingApproval::Denied,
         }
-    }
-
-    fn emit_permission_requested(
-        &self,
-        request: &PermissionRequest,
-        effective_mode: PermissionMode,
-    ) {
-        let Some(run_id) = self.run_id else {
-            return;
-        };
-        self.event_sink
-            .emit(Event::PermissionRequested(PermissionRequestedEvent {
-                request_id: request.request_id,
-                run_id,
-                session_id: request.session_id,
-                tenant_id: request.tenant_id,
-                tool_use_id: request.tool_use_id,
-                tool_name: request.tool_name.clone(),
-                subject: request.subject.clone(),
-                severity: request.severity,
-                scope_hint: request.scope_hint.clone(),
-                fingerprint: None,
-                presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
-                interactivity: InteractivityLevel::FullyInteractive,
-                auto_resolved: false,
-                actor_source: redacted_permission_actor_source(&self.permission_actor_source),
-                action_plan_hash: legacy_action_plan_hash(request),
-                review: permission_review_from_request(request),
-                effective_mode,
-                sandbox_policy: legacy_sandbox_policy_summary(),
-                causation_id: EventId::new(),
-                at: now(),
-            }));
-    }
-
-    fn emit_permission_resolved(
-        &self,
-        request: &PermissionRequest,
-        decision: Decision,
-        auto_resolved: bool,
-    ) {
-        self.event_sink
-            .emit(Event::PermissionResolved(PermissionResolvedEvent {
-                request_id: request.request_id,
-                decision,
-                decided_by: DecidedBy::Broker {
-                    broker_id: "mcp_sampling".to_owned(),
-                },
-                scope: request.scope_hint.clone(),
-                fingerprint: None,
-                rationale: None,
-                action_plan_hash: legacy_action_plan_hash(request),
-                decision_id: DecisionId::new(),
-                auto_resolved,
-                at: now(),
-            }));
     }
 
     fn record_sampling(&self, outcome: McpMetricOutcome) {
@@ -1005,117 +951,6 @@ impl SamplingJsonRpcHandler {
 enum SamplingApproval {
     Allowed,
     Denied,
-}
-
-fn safe_actor_text(value: String) -> String {
-    UiSafeText::from_redacted_display(value, &NoopRedactor).into_string()
-}
-
-fn redacted_permission_actor_source(actor_source: &PermissionActorSource) -> PermissionActorSource {
-    match actor_source {
-        PermissionActorSource::ParentRun => PermissionActorSource::ParentRun,
-        PermissionActorSource::Subagent {
-            subagent_id,
-            parent_session_id,
-            parent_run_id,
-            team_id,
-            team_member_profile_id,
-        } => PermissionActorSource::Subagent {
-            subagent_id: *subagent_id,
-            parent_session_id: *parent_session_id,
-            parent_run_id: *parent_run_id,
-            team_id: *team_id,
-            team_member_profile_id: team_member_profile_id.clone().map(safe_actor_text),
-        },
-        PermissionActorSource::TeamMember {
-            team_id,
-            agent_id,
-            role,
-            parent_run_id,
-        } => PermissionActorSource::TeamMember {
-            team_id: *team_id,
-            agent_id: *agent_id,
-            role: safe_actor_text(role.clone()),
-            parent_run_id: *parent_run_id,
-        },
-        PermissionActorSource::BackgroundAgent {
-            background_agent_id,
-            conversation_id,
-            attempt_id,
-        } => PermissionActorSource::BackgroundAgent {
-            background_agent_id: *background_agent_id,
-            conversation_id: *conversation_id,
-            attempt_id: *attempt_id,
-        },
-        PermissionActorSource::Automation {
-            automation_id,
-            conversation_id,
-            run_id,
-        } => PermissionActorSource::Automation {
-            automation_id: safe_actor_text(automation_id.clone()),
-            conversation_id: *conversation_id,
-            run_id: *run_id,
-        },
-        PermissionActorSource::McpServer {
-            server_id,
-            origin,
-            scope,
-        } => PermissionActorSource::McpServer {
-            server_id: server_id.clone(),
-            origin: origin.clone(),
-            scope: scope.clone(),
-        },
-    }
-}
-
-fn legacy_action_plan_hash(request: &PermissionRequest) -> ActionPlanHash {
-    ActionPlanHash::from_bytes(canonical_permission_fingerprint(request).0)
-}
-
-fn permission_review_from_request(request: &PermissionRequest) -> PermissionReview {
-    PermissionReview {
-        summary: format!(
-            "{} requests {}",
-            request.tool_name,
-            permission_subject_kind(&request.subject)
-        ),
-        details: vec![harness_contracts::PermissionReviewDetail {
-            label: "subject".to_owned(),
-            value: permission_subject_kind(&request.subject).to_owned(),
-            redacted: true,
-        }],
-        confirmation: harness_contracts::PermissionConfirmation::None,
-        redacted: true,
-    }
-}
-
-fn permission_subject_kind(subject: &PermissionSubject) -> &'static str {
-    match subject {
-        PermissionSubject::ToolInvocation { .. } => "tool invocation access",
-        PermissionSubject::CommandExec { .. } => "command execution access",
-        PermissionSubject::FileWrite { .. } => "file write access",
-        PermissionSubject::FileDelete { .. } => "file delete access",
-        PermissionSubject::NetworkAccess { .. } => "network access",
-        PermissionSubject::DangerousCommand { .. } => "dangerous command access",
-        PermissionSubject::McpToolCall { .. } => "MCP tool access",
-        PermissionSubject::Custom { .. } => "custom permission access",
-        _ => "runtime access",
-    }
-}
-
-fn legacy_sandbox_policy_summary() -> SandboxPolicySummary {
-    SandboxPolicySummary {
-        mode: harness_contracts::SandboxMode::None,
-        scope: harness_contracts::SandboxScope::WorkspaceOnly,
-        network: harness_contracts::NetworkAccess::None,
-        resource_limits: harness_contracts::ResourceLimits {
-            max_memory_bytes: None,
-            max_cpu_cores: None,
-            max_pids: None,
-            max_wall_clock_ms: None,
-            max_open_files: None,
-        },
-    }
 }
 
 enum EffectiveSamplingAllow {

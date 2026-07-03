@@ -29,6 +29,8 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
+mod support;
+
 #[tokio::test]
 async fn sse_transport_posts_requests_and_receives_streamed_responses() {
     let (addr, shutdown, _methods) = spawn_sse_fixture().await;
@@ -46,7 +48,7 @@ async fn sse_transport_posts_requests_and_receives_streamed_responses() {
     spec.auth = McpClientAuth::Bearer("token".into());
 
     let connection = McpClient::new(std::sync::Arc::new(SseTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("sse connects");
     let mut changes = connection.subscribe_changes().await.expect("changes");
@@ -84,7 +86,9 @@ async fn sse_transport_continues_tool_call_after_elicitation_resolution() {
     let connection = McpClient::new(Arc::new(SseTransport::new()))
         .connect_with_context(
             spec,
-            McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            support::with_transport_authorization(
+                McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            ),
         )
         .await
         .expect("sse connects");
@@ -116,7 +120,7 @@ async fn sse_transport_posts_resource_subscription_requests() {
     spec.auth = McpClientAuth::Bearer("token".into());
 
     let connection = McpClient::new(Arc::new(SseTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("sse connects");
 
@@ -184,7 +188,7 @@ async fn sse_transport_refreshes_oauth_for_stream_and_request_clients() {
     };
 
     let connection = McpClient::new(Arc::new(SseTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("sse oauth connects");
     connection.shutdown().await.expect("shutdown");

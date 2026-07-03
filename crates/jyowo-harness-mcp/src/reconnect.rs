@@ -16,11 +16,12 @@ use serde_json::Value;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 use crate::{
+    authorize_mcp_transport,
     registry::{effective_tool_schema_fingerprint, McpSchemaFingerprint},
-    ListChangedEvent, McpChange, McpConnection, McpError, McpMetric, McpMetricConnectionState,
-    McpMetricOutcome, McpMetricsSink, McpPrompt, McpPromptMessages, McpResource,
-    McpResourceContents, McpServerScope, McpServerSpec, McpToolCallStream, McpToolDescriptor,
-    McpToolResult, McpTransport, NoopMcpMetricsSink,
+    ListChangedEvent, McpChange, McpConnectContext, McpConnection, McpError, McpMetric,
+    McpMetricConnectionState, McpMetricOutcome, McpMetricsSink, McpPrompt, McpPromptMessages,
+    McpResource, McpResourceContents, McpServerScope, McpServerSpec, McpToolCallStream,
+    McpToolDescriptor, McpToolResult, McpTransport, NoopMcpMetricsSink,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +49,7 @@ pub struct ManagedMcpConnection {
     connection_id: String,
     transport: Arc<dyn McpTransport>,
     spec: McpServerSpec,
+    connect_context: McpConnectContext,
     session_id: Option<SessionId>,
     state: Arc<RwLock<McpConnectionState>>,
     connection: Arc<RwLock<Option<Arc<dyn McpConnection>>>>,
@@ -84,10 +86,37 @@ impl ManagedMcpConnection {
         event_sink: Arc<dyn McpEventSink>,
         metrics_sink: Arc<dyn McpMetricsSink>,
     ) -> Result<Self, McpError> {
+        let context = McpConnectContext::default()
+            .with_event_sink(Arc::clone(&event_sink))
+            .with_metrics_sink(Arc::clone(&metrics_sink));
+        Self::connect_with_context_and_metrics(transport, spec, scope, context).await
+    }
+
+    pub async fn connect_with_context_and_metrics(
+        transport: Arc<dyn McpTransport>,
+        spec: McpServerSpec,
+        scope: McpServerScope,
+        context: McpConnectContext,
+    ) -> Result<Self, McpError> {
         spec.reconnect.validate()?;
         let session_id = session_id_for_scope(&scope);
         let transport_id = transport.transport_id().to_owned();
-        let connection = match transport.connect(spec.clone()).await {
+        let context = if let Some(authorization) = &context.authorization {
+            authorize_mcp_transport(authorization, &spec).await?;
+            context.with_transport_authorized()
+        } else if !matches!(spec.transport, crate::TransportChoice::InProcess) {
+            return Err(McpError::PermissionDenied(
+                "mcp transport authorization context is required".to_owned(),
+            ));
+        } else {
+            context
+        };
+        let metrics_sink = context.metrics_sink_or(Arc::new(NoopMcpMetricsSink));
+        let event_sink = Arc::clone(&context.event_sink);
+        let connection = match transport
+            .connect_with_context(spec.clone(), context.clone())
+            .await
+        {
             Ok(connection) => {
                 metrics_sink.record(McpMetric::ConnectionTotal {
                     server_id: spec.server_id.clone(),
@@ -114,6 +143,7 @@ impl ManagedMcpConnection {
             connection_id: format!("managed:{}", spec.server_id.0),
             transport,
             spec,
+            connect_context: context,
             session_id,
             state: Arc::new(RwLock::new(McpConnectionState::Ready)),
             connection: Arc::new(RwLock::new(Some(connection))),
@@ -216,7 +246,29 @@ impl ManagedMcpConnection {
                 return;
             }
 
-            match self.transport.connect(self.spec.clone()).await {
+            if let Some(authorization) = &self.connect_context.authorization {
+                if let Err(error) = authorize_mcp_transport(authorization, &self.spec).await {
+                    self.record_reconnect_attempt(next_attempt, McpMetricOutcome::Error);
+                    let attempts_so_far = next_attempt;
+                    self.attempts.store(attempts_so_far, Ordering::SeqCst);
+                    let last_error = error.to_string();
+                    if self.spec.reconnect.is_exhausted(attempts_so_far) {
+                        self.fail_terminal(last_error, attempts_so_far).await;
+                        return;
+                    }
+                    *self.state.write().await = McpConnectionState::Reconnecting {
+                        attempt: attempts_so_far,
+                        last_error,
+                    };
+                    continue;
+                }
+            }
+
+            match self
+                .transport
+                .connect_with_context(self.spec.clone(), self.connect_context.clone())
+                .await
+            {
                 Ok(connection) => {
                     self.record_reconnect_attempt(next_attempt, McpMetricOutcome::Success);
                     let schema_changed = self.diff_recovered_schema(&connection).await;

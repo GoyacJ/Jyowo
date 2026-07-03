@@ -964,11 +964,7 @@ pub async fn resolve_permission_with_runtime_state(
         ));
     };
 
-    let Some(pending) = state
-        .pending_permission_requests()
-        .into_iter()
-        .find(|pending| pending.request.request_id == request_id)
-    else {
+    let Some(pending) = pending_permission_request(state, request_id).await else {
         return Err(not_found(format!(
             "permission request not found: {}",
             request.request_id
@@ -980,6 +976,25 @@ pub async fn resolve_permission_with_runtime_state(
         ));
     }
 
+    // Validate confirmation text when the backend requires it.
+    if matches!(
+        decision,
+        Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent
+    ) {
+        if let Some(expected) = &pending.confirmation_expected {
+            let Some(ref confirmation_text) = request.confirmation_text else {
+                return Err(invalid_payload(
+                    "confirmation text is required for this permission".to_owned(),
+                ));
+            };
+            if confirmation_text != expected {
+                return Err(invalid_payload(
+                    "confirmation text does not match the required value".to_owned(),
+                ));
+            }
+        }
+    }
+
     resolver.resolve_permission(request_id, decision).await?;
     let _ = crate::agent_supervisor::wake_agent_supervisor(state.workspace_root()).await;
 
@@ -988,6 +1003,29 @@ pub async fn resolve_permission_with_runtime_state(
         request_id: request.request_id,
         status: "resolved",
     })
+}
+
+async fn pending_permission_request(
+    state: &DesktopRuntimeState,
+    request_id: RequestId,
+) -> Option<jyowo_harness_sdk::ext::PendingPermissionRequest> {
+    const ATTEMPTS: usize = 25;
+    const DELAY_MS: u64 = 10;
+
+    for attempt in 0..ATTEMPTS {
+        if let Some(pending) = state
+            .pending_permission_requests()
+            .into_iter()
+            .find(|pending| pending.request.request_id == request_id)
+        {
+            return Some(pending);
+        }
+        if attempt + 1 < ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_millis(DELAY_MS)).await;
+        }
+    }
+
+    None
 }
 
 pub async fn resolve_permission_for_window_with_runtime_state(

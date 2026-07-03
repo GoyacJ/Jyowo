@@ -55,6 +55,9 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 #[tokio::test]
 async fn builder_rejects_missing_required_dependencies() {
     let error = match Engine::builder()
@@ -204,18 +207,19 @@ async fn tool_call_records_permission_and_tool_events() {
         .await;
 
     let events = harness.run("list current dir").await.unwrap();
+    let journal_events = harness.events().await;
 
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::ToolUseRequested(_))));
-    assert!(events
+    assert!(journal_events
         .iter()
         .any(|event| matches!(event, Event::PermissionRequested(_))));
-    assert!(events
+    assert!(journal_events
         .iter()
         .any(|event| matches!(event, Event::PermissionResolved(resolved)
         if matches!(resolved.decided_by, DecidedBy::Broker { .. } | DecidedBy::Rule { .. }))));
-    assert!(events
+    assert!(journal_events
         .iter()
         .any(|event| matches!(event, Event::PermissionResolved(_))));
     assert!(events.iter().any(|event| matches!(
@@ -881,7 +885,10 @@ impl TestHarness {
             .with_hooks(HookDispatcher::new(hooks.snapshot()))
             .with_model(model.clone())
             .with_tools(tools)
-            .with_permission_broker(Arc::new(AllowBroker))
+            .with_authorization_service(test_authorization_service(
+                Arc::new(AllowBroker),
+                store.clone(),
+            ))
             .with_workspace_root(workspace.path())
             .with_model_id("test-model")
             .with_protocol(ModelProtocol::Messages)
@@ -1227,6 +1234,7 @@ impl SandboxBackend for EventfulSandbox {
             supports_streaming: true,
             supports_network: true,
             supports_filesystem_write: true,
+            max_concurrent_execs: 1,
             ..SandboxCapabilities::default()
         }
     }

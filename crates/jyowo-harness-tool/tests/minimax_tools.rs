@@ -57,11 +57,13 @@ async fn minimax_tool_fails_closed_when_credential_resolver_is_missing() {
     let tool = MiniMaxTextToImageTool::default();
     let error = execute_error(&tool, json!({"request": {"prompt": "x"}}), ctx()).await;
 
-    assert!(matches!(
-        error,
-        ToolError::CapabilityMissing(ToolCapability::ProviderCredentialResolver)
-    ));
-    assert!(!error.to_string().contains("sk-"));
+    match error {
+        ToolError::PermissionDenied(reason) => {
+            assert!(reason.contains("MiniMax provider credential resolver is missing"));
+            assert!(!reason.contains("sk-"));
+        }
+        other => panic!("expected denied permission error, got {other:?}"),
+    }
 }
 
 #[tokio::test]

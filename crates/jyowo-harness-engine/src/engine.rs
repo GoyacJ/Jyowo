@@ -34,8 +34,9 @@ use harness_contracts::{
 };
 #[cfg(feature = "subagent-tool")]
 use harness_contracts::{NetworkAccess, SandboxPolicy, SandboxScope};
+use harness_execution::AuthorizationService;
 #[cfg(feature = "programmatic-tool-calling")]
-use harness_execution::{AuthorizationContext, AuthorizationService, ExecutionError, TicketLedger};
+use harness_execution::{AuthorizationContext, ExecutionError};
 use harness_hook::HookDispatcher;
 use harness_journal::EventStore;
 #[cfg(feature = "subagent-tool")]
@@ -46,9 +47,6 @@ use harness_model::{
 #[cfg(feature = "programmatic-tool-calling")]
 use harness_observability::DefaultRedactor;
 use harness_observability::{Observer, Tracer};
-use harness_permission::PermissionBroker;
-#[cfg(feature = "programmatic-tool-calling")]
-use harness_permission::{NoopDecisionPersistence, PermissionAuthority};
 #[cfg(feature = "programmatic-tool-calling")]
 use harness_sandbox::CodeSandbox;
 use harness_sandbox::SandboxBackend;
@@ -97,12 +95,12 @@ pub struct Engine {
     pub(crate) model_middlewares: Vec<Arc<dyn InferMiddleware>>,
     pub(crate) pricing_snapshot_resolver: Option<Arc<dyn PricingSnapshotResolver>>,
     pub(crate) tools: ToolPool,
-    pub(crate) permission_broker: Arc<dyn PermissionBroker>,
     pub(crate) workspace_root: PathBuf,
     pub(crate) model_id: String,
     pub(crate) model_extra: Value,
     pub(crate) protocol: ModelProtocol,
     pub(crate) system_prompt: Option<String>,
+    pub(crate) authorization_service: Arc<AuthorizationService>,
     pub(crate) sandbox: Option<Arc<dyn SandboxBackend>>,
     #[cfg(feature = "programmatic-tool-calling")]
     pub(crate) code_sandbox: Option<Arc<dyn CodeSandbox>>,
@@ -127,7 +125,7 @@ pub struct EngineBuilder {
     model_middlewares: Vec<Arc<dyn InferMiddleware>>,
     pricing_snapshot_resolver: Option<Arc<dyn PricingSnapshotResolver>>,
     tools: Option<ToolPool>,
-    permission_broker: Option<Arc<dyn PermissionBroker>>,
+    authorization_service: Option<Arc<AuthorizationService>>,
     workspace_root: Option<PathBuf>,
     model_id: Option<String>,
     model_extra: Value,
@@ -174,7 +172,7 @@ impl Engine {
             model_middlewares: self.model_middlewares,
             pricing_snapshot_resolver: self.pricing_snapshot_resolver,
             tools: Some(self.tools),
-            permission_broker: Some(self.permission_broker),
+            authorization_service: Some(self.authorization_service),
             workspace_root: Some(self.workspace_root),
             model_id: Some(self.model_id),
             model_extra: self.model_extra,
@@ -212,7 +210,7 @@ impl Default for EngineBuilder {
             model_middlewares: Vec::new(),
             pricing_snapshot_resolver: None,
             tools: None,
-            permission_broker: None,
+            authorization_service: None,
             workspace_root: None,
             model_id: None,
             model_extra: Value::Null,
@@ -306,8 +304,8 @@ impl EngineBuilder {
     }
 
     #[must_use]
-    pub fn with_permission_broker(mut self, permission_broker: Arc<dyn PermissionBroker>) -> Self {
-        self.permission_broker = Some(permission_broker);
+    pub fn with_authorization_service(mut self, service: Arc<AuthorizationService>) -> Self {
+        self.authorization_service = Some(service);
         self
     }
 
@@ -442,8 +440,8 @@ impl EngineBuilder {
         let tools = self.tools.ok_or_else(|| {
             harness_contracts::EngineError::Message("tool pool missing".to_owned())
         })?;
-        let permission_broker = self.permission_broker.ok_or_else(|| {
-            harness_contracts::EngineError::Message("permission broker missing".to_owned())
+        let authorization_service = self.authorization_service.ok_or_else(|| {
+            harness_contracts::EngineError::Message("authorization service missing".to_owned())
         })?;
         let workspace_root = self.workspace_root.ok_or_else(|| {
             harness_contracts::EngineError::Message("workspace root missing".to_owned())
@@ -485,8 +483,7 @@ impl EngineBuilder {
                         tools: tools.clone(),
                         workspace_root: workspace_root.clone(),
                         sandbox: self.sandbox.clone(),
-                        permission_broker: Arc::clone(&permission_broker),
-                        event_store: Arc::clone(&event_store),
+                        authorization_service: Arc::clone(&authorization_service),
                         cap_registry: Arc::new(cap_registry_value.clone()),
                         redactor: self
                             .observer
@@ -542,12 +539,12 @@ impl EngineBuilder {
             model_middlewares: self.model_middlewares,
             pricing_snapshot_resolver: self.pricing_snapshot_resolver,
             tools,
-            permission_broker,
             workspace_root,
             model_id,
             model_extra: self.model_extra,
             protocol: self.protocol,
             system_prompt: self.system_prompt,
+            authorization_service,
             sandbox: self.sandbox,
             #[cfg(feature = "programmatic-tool-calling")]
             code_sandbox: self.code_sandbox,
@@ -826,8 +823,7 @@ struct EngineEmbeddedToolDispatcher {
     tools: ToolPool,
     workspace_root: PathBuf,
     sandbox: Option<Arc<dyn SandboxBackend>>,
-    permission_broker: Arc<dyn PermissionBroker>,
-    event_store: Arc<dyn EventStore>,
+    authorization_service: Arc<AuthorizationService>,
     cap_registry: Arc<CapabilityRegistry>,
     redactor: Arc<dyn Redactor>,
     blob_store: Option<Arc<dyn BlobStore>>,
@@ -851,8 +847,7 @@ impl EngineEmbeddedToolDispatcher {
             tools: self.tools.clone(),
             workspace_root: self.workspace_root.clone(),
             sandbox: self.sandbox.clone(),
-            permission_broker: Arc::clone(&self.permission_broker),
-            event_store: Arc::clone(&self.event_store),
+            authorization_service: Arc::clone(&self.authorization_service),
             cap_registry: Arc::clone(&self.cap_registry),
             redactor: Arc::clone(&self.redactor),
             blob_store: self.blob_store.clone(),
@@ -891,25 +886,6 @@ impl EngineEmbeddedToolDispatcher {
             .map_err(|error| ToolError::Validation(error.to_string()))?;
         let plan = tool.plan(&request.input, &tool_ctx).await?;
 
-        let authority = PermissionAuthority::builder()
-            .with_policy_broker(Arc::clone(&self.permission_broker))
-            .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
-            .build()
-            .map_err(|error| ToolError::Internal(error.to_string()))?;
-        let ticket_ledger = Arc::new(TicketLedger::default());
-        let sandbox = self.sandbox.clone().ok_or_else(|| {
-            ToolError::PermissionDenied(
-                "sandbox required for embedded tool authorization".to_owned(),
-            )
-        })?;
-        let auth_service = AuthorizationService::new(
-            Arc::new(authority),
-            sandbox,
-            Arc::new(JournalAuthorizationEventSink::new(Arc::clone(
-                &self.event_store,
-            ))),
-            ticket_ledger.clone(),
-        );
         let auth_context = AuthorizationContext {
             tenant_id: request.tenant_id,
             session_id: request.session_id,
@@ -919,32 +895,21 @@ impl EngineEmbeddedToolDispatcher {
             fallback_policy: FallbackPolicy::DenyAll,
             workspace_root: self.workspace_root,
         };
-        let outcome = auth_service
-            .authorize_plan(auth_context, plan.clone())
+        let authorized_input = self
+            .authorization_service
+            .authorize_tool_input(auth_context, plan, request.input)
             .await
             .map_err(|error| match error {
                 ExecutionError::PermissionDenied { decision, .. } => {
                     ToolError::PermissionDenied(format!("embedded tool denied: {decision:?}"))
                 }
+                ExecutionError::SandboxPreflightFailed { reason, .. } => {
+                    ToolError::PermissionDenied(format!(
+                        "embedded tool sandbox preflight failed: {reason}"
+                    ))
+                }
                 other => ToolError::Internal(other.to_string()),
             })?;
-        let consumed = ticket_ledger
-            .consume(outcome.ticket.id, &outcome.ticket.claims, Utc::now())
-            .map_err(|error| ToolError::Internal(error.to_string()))?;
-        let authorized_input = AuthorizedToolInput::new(
-            request.input,
-            plan,
-            harness_tool::AuthorizedTicketSummary {
-                ticket_id: consumed.id,
-                tenant_id: consumed.claims.tenant_id,
-                session_id: consumed.claims.session_id,
-                run_id: consumed.claims.run_id,
-                tool_use_id: consumed.claims.tool_use_id,
-                tool_name: consumed.claims.tool_name,
-                action_plan_hash: consumed.claims.action_plan_hash,
-                consumed_at: Utc::now(),
-            },
-        )?;
         let results = ToolOrchestrator::new(1)
             .dispatch(
                 vec![AuthorizedToolCall {
@@ -977,37 +942,6 @@ impl EngineEmbeddedToolDispatcher {
             duration_ms: result.duration.as_millis().min(u128::from(u64::MAX)) as u64,
             overflow: result.overflow,
         })
-    }
-}
-
-#[cfg(feature = "programmatic-tool-calling")]
-struct JournalAuthorizationEventSink {
-    event_store: Arc<dyn EventStore>,
-}
-
-#[cfg(feature = "programmatic-tool-calling")]
-impl JournalAuthorizationEventSink {
-    fn new(event_store: Arc<dyn EventStore>) -> Self {
-        Self { event_store }
-    }
-}
-
-#[cfg(feature = "programmatic-tool-calling")]
-#[async_trait::async_trait]
-impl harness_execution::AuthorizationEventSink for JournalAuthorizationEventSink {
-    async fn emit_batch(
-        &self,
-        tenant_id: TenantId,
-        session_id: SessionId,
-        events: Vec<Event>,
-    ) -> Result<(), ExecutionError> {
-        self.event_store
-            .append(tenant_id, session_id, &events)
-            .await
-            .map(|_| ())
-            .map_err(|error| ExecutionError::EventSinkFailed {
-                reason: error.to_string(),
-            })
     }
 }
 

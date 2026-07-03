@@ -6,9 +6,9 @@ use harness_contracts::PermissionMode;
 use serde_json::Value;
 
 use crate::{
-    ElicitationHandler, McpConnectionState, McpError, McpEventSink, McpMetricsSink, McpPrompt,
-    McpPromptMessages, McpResource, McpResourceContents, McpServerSpec, McpToolDescriptor,
-    McpToolResult, NoopMcpEventSink,
+    ElicitationHandler, McpAuthorizationContext, McpConnectionState, McpError, McpEventSink,
+    McpMetricsSink, McpPrompt, McpPromptMessages, McpResource, McpResourceContents, McpServerSpec,
+    McpToolDescriptor, McpToolResult, NoopMcpEventSink,
 };
 
 pub type ListChangedEvent = Pin<Box<dyn Stream<Item = McpChange> + Send + 'static>>;
@@ -20,6 +20,8 @@ pub struct McpConnectContext {
     pub metrics_sink: Option<Arc<dyn McpMetricsSink>>,
     pub elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
     pub permission_mode: PermissionMode,
+    pub authorization: Option<McpAuthorizationContext>,
+    pub(crate) transport_authorized: bool,
 }
 
 impl Default for McpConnectContext {
@@ -29,6 +31,8 @@ impl Default for McpConnectContext {
             metrics_sink: None,
             elicitation_handler: None,
             permission_mode: PermissionMode::Default,
+            authorization: None,
+            transport_authorized: false,
         }
     }
 }
@@ -62,6 +66,17 @@ impl McpConnectContext {
     #[must_use]
     pub fn with_permission_mode(mut self, permission_mode: PermissionMode) -> Self {
         self.permission_mode = permission_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_authorization(mut self, authorization: McpAuthorizationContext) -> Self {
+        self.authorization = Some(authorization);
+        self
+    }
+
+    pub(crate) fn with_transport_authorized(mut self) -> Self {
+        self.transport_authorized = true;
         self
     }
 }

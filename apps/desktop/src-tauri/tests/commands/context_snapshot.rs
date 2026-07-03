@@ -198,6 +198,7 @@ async fn get_context_snapshot_with_runtime_state_exposes_pending_decisions() {
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: pending.request.request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -234,9 +235,8 @@ async fn get_context_snapshot_with_runtime_state_redacts_pending_decision_tool_n
     );
 
     let decision_task = tokio::spawn(async move {
-        broker
-            .decide(request, permission_context_with_run_id(Some(run_id)))
-            .await
+        let ctx = permission_context_for_request(&request, Some(run_id));
+        broker.decide(request, ctx).await
     });
     wait_for_pending_permission(&state, request_id).await;
 
@@ -262,6 +262,7 @@ async fn get_context_snapshot_with_runtime_state_redacts_pending_decision_tool_n
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )

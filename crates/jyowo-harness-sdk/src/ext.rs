@@ -34,10 +34,10 @@ pub use harness_mcp::StdioTransport;
 #[cfg(feature = "mcp-websocket")]
 pub use harness_mcp::WebsocketTransport;
 pub use harness_mcp::{
-    ElicitationHandler, McpClient, McpClientAuth, McpConnection, McpConnectionState, McpError,
-    McpEventSink, McpPrompt, McpRegistry, McpResource, McpServerScope, McpServerSpec, McpTimeouts,
-    McpToolAnnotations, McpToolDescriptor, McpToolResult, McpTransport, StdioEnv, StdioPolicy,
-    StreamElicitationHandler, TransportChoice,
+    ElicitationHandler, McpAuthorizationContext, McpClient, McpClientAuth, McpConnectContext,
+    McpConnection, McpConnectionState, McpError, McpEventSink, McpPrompt, McpRegistry, McpResource,
+    McpServerScope, McpServerSpec, McpTimeouts, McpToolAnnotations, McpToolDescriptor,
+    McpToolResult, McpTransport, StdioEnv, StdioPolicy, StreamElicitationHandler, TransportChoice,
 };
 pub use harness_memory::{
     MemoryLifecycle, MemoryMetadata, MemoryProvider, MemoryRecord, MemoryStore, MemorySummary,

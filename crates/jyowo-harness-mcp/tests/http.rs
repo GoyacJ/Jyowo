@@ -27,6 +27,8 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
+mod support;
+
 #[tokio::test]
 async fn http_transport_posts_jsonrpc_with_headers_and_auth() {
     let server = MockServer::start().await;
@@ -93,7 +95,7 @@ async fn http_transport_posts_jsonrpc_with_headers_and_auth() {
     spec.auth = McpClientAuth::Bearer("token".into());
 
     let connection = McpClient::new(std::sync::Arc::new(HttpTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("http connects");
 
@@ -166,7 +168,7 @@ async fn http_transport_decodes_elicitation_required_error() {
     );
 
     let connection = McpClient::new(std::sync::Arc::new(HttpTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("http connects");
     let error = connection
@@ -270,7 +272,9 @@ async fn http_transport_continues_tool_call_after_elicitation_resolution() {
     let connection = McpClient::new(Arc::new(HttpTransport::new()))
         .connect_with_context(
             spec,
-            McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            support::with_transport_authorization(
+                McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            ),
         )
         .await
         .expect("http connects");
@@ -341,7 +345,9 @@ async fn http_transport_fails_closed_when_elicitation_is_declined() {
     let connection = McpClient::new(Arc::new(HttpTransport::new()))
         .connect_with_context(
             spec,
-            McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            support::with_transport_authorization(
+                McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            ),
         )
         .await
         .expect("http connects");
@@ -415,7 +421,9 @@ async fn http_transport_fails_closed_when_elicitation_times_out() {
     let connection = McpClient::new(Arc::new(HttpTransport::new()))
         .connect_with_context(
             spec,
-            McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            support::with_transport_authorization(
+                McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            ),
         )
         .await
         .expect("http connects");
@@ -526,7 +534,9 @@ async fn http_transport_does_not_loop_on_repeated_elicitation() {
     let connection = McpClient::new(Arc::new(HttpTransport::new()))
         .connect_with_context(
             spec,
-            McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            support::with_transport_authorization(
+                McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            ),
         )
         .await
         .expect("http connects");
@@ -608,7 +618,7 @@ async fn http_transport_refreshes_oauth_and_posts_with_access_token() {
     };
 
     McpClient::new(std::sync::Arc::new(HttpTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("http oauth connects");
 }
@@ -692,7 +702,7 @@ async fn http_transport_refreshes_oauth_before_short_lived_token_expires() {
     let connection = McpClient::new(std::sync::Arc::new(HttpTransport::with_metrics_sink(
         metrics.clone(),
     )))
-    .connect(spec)
+    .connect_with_context(spec, support::authorized_connect_context())
     .await
     .expect("http oauth connects");
     let tools = connection.list_tools().await.expect("tools list");
@@ -799,7 +809,7 @@ async fn http_transport_retries_once_after_unauthorized_when_oauth_refresh_succe
     let connection = McpClient::new(std::sync::Arc::new(HttpTransport::with_metrics_sink(
         metrics.clone(),
     )))
-    .connect(spec)
+    .connect_with_context(spec, support::authorized_connect_context())
     .await
     .expect("http oauth connects");
     let tools = connection.list_tools().await.expect("tools list");
@@ -871,7 +881,9 @@ async fn http_transport_emits_oauth_refresh_lifecycle_events() {
     McpClient::new(std::sync::Arc::new(HttpTransport::new()))
         .connect_with_context(
             spec,
-            McpConnectContext::default().with_event_sink(events.clone()),
+            support::with_transport_authorization(
+                McpConnectContext::default().with_event_sink(events.clone()),
+            ),
         )
         .await
         .expect("http oauth connects");
@@ -977,7 +989,7 @@ async fn http_transport_fails_closed_when_unauthorized_oauth_refresh_fails() {
     let connection = McpClient::new(std::sync::Arc::new(HttpTransport::with_metrics_sink(
         metrics.clone(),
     )))
-    .connect(spec)
+    .connect_with_context(spec, support::authorized_connect_context())
     .await
     .expect("http oauth connects");
     let error = connection
@@ -1070,7 +1082,7 @@ async fn http_transport_rejects_xaa_without_request_signer() {
     };
 
     let error = match McpClient::new(std::sync::Arc::new(HttpTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
     {
         Ok(_) => panic!("xaa has no signer"),
@@ -1118,7 +1130,7 @@ async fn http_transport_can_disable_redirect_following() {
     );
 
     let error = match McpClient::new(Arc::new(HttpTransport::new().with_redirects_disabled()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
     {
         Ok(_) => panic!("redirects must fail closed when disabled"),

@@ -42,6 +42,9 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::sync::{Mutex, Notify};
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 #[tokio::test]
 async fn pre_cancelled_run_records_user_cancel_without_calling_hook_or_model() {
     let token = CancellationToken::new();
@@ -363,7 +366,10 @@ impl InterruptHarness {
             .with_hooks(HookDispatcher::new(hooks.snapshot()))
             .with_model(model.clone())
             .with_tools(tools)
-            .with_permission_broker(Arc::new(AllowBroker))
+            .with_authorization_service(test_authorization_service(
+                Arc::new(AllowBroker),
+                store.clone(),
+            ))
             .with_workspace_root(workspace.path())
             .with_model_id("test-model")
             .with_protocol(ModelProtocol::Messages)
@@ -708,6 +714,9 @@ impl SandboxBackend for QueuedJournalSandbox {
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
             supports_streaming: true,
+            supports_network: true,
+            supports_filesystem_write: true,
+            max_concurrent_execs: 1,
             ..SandboxCapabilities::default()
         }
     }

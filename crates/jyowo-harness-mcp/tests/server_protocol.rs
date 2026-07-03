@@ -1,18 +1,23 @@
 #![cfg(feature = "server-adapter")]
 #![allow(clippy::field_reassign_with_default)]
 
+#[allow(dead_code)]
+mod support;
+
 use async_trait::async_trait;
 use harness_contracts::{
-    CapabilityRegistry, NetworkAccess, SessionId, TenantId, ToolActionPlan, ToolUseId,
-    WorkspaceAccess,
+    CapabilityRegistry, McpServerId, NetworkAccess, RunId, SessionId, TenantId, ToolActionPlan,
+    ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_mcp::{
     ExposedCapability, HarnessMcpBackend, HarnessMcpServer, IsolationMode, JsonRpcRequest,
     JsonRpcResponse, McpMetric, McpMetricOutcome, McpMetricsSink, McpPrompt, McpPromptMessages,
     McpResource, McpResourceContents, McpServerAdapter, McpServerAuditEvent, McpServerAuditSink,
     McpServerAuth, McpServerAuthValidator, McpServerError, McpServerPolicy, McpServerRateLimit,
-    McpServerRequestContext, PromptProvider, ResourceProvider, StaticToolContextFactory,
-    TenantMapping, TenantResolver, ToolContextFactory, MCP_SAMPLING_DENIED_CODE,
+    McpServerRequestContext, NoopMcpEventSink, PromptProvider, ResourceProvider,
+    SamplingJsonRpcHandler, SamplingPolicy, SamplingProvider, SamplingRequest, SamplingResponse,
+    StaticToolContextFactory, TenantMapping, TenantResolver, ToolContextFactory,
+    MCP_SAMPLING_DENIED_CODE,
 };
 use harness_tool::{
     action_plan_from_permission_check, AuthorizedToolInput, BuiltinToolset, InterruptToken, Tool,
@@ -1015,9 +1020,75 @@ async fn server_adapter_routes_sampling_create_message_to_fail_closed_handler() 
     ));
 }
 
+#[tokio::test]
+async fn server_adapter_injects_authorization_context_into_sampling_handler() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .build()
+        .expect("registry");
+    let server = McpServerAdapter::builder(registry)
+        .with_tool_context_factory(StaticToolContextFactory::new(tool_context()))
+        .with_sampling_handler(
+            SamplingJsonRpcHandler::new(SamplingPolicy::allow_auto(), Arc::new(NoopMcpEventSink))
+                .with_session_id(SessionId::from_u128(1))
+                .with_run_id(Some(RunId::from_u128(2)))
+                .with_server_id(McpServerId("github".to_owned()))
+                .with_server_trust(TrustLevel::AdminTrusted)
+                .with_provider(Arc::new(EchoSamplingProvider)),
+        )
+        .with_authorization_context(support::mcp_authorization_context())
+        .build()
+        .expect("server");
+
+    let response = server
+        .handle_request(JsonRpcRequest::new(
+            json!(18),
+            "sampling/createMessage",
+            Some(json!({
+                "request_id": harness_contracts::RequestId::from_u128(4),
+                "model": "claude-3-5-sonnet",
+                "input_tokens": 1,
+                "max_tokens": 2,
+                "messages": [{ "role": "user", "content": { "type": "text", "text": "hello" } }]
+            })),
+        ))
+        .await;
+
+    assert!(
+        response.error.is_none(),
+        "unexpected response: {response:?}"
+    );
+    assert_eq!(
+        response.result,
+        Some(json!({
+            "model": "test",
+            "role": "assistant",
+            "content": { "type": "text", "text": "ok" },
+            "stopReason": "endTurn"
+        }))
+    );
+}
+
 #[derive(Default)]
 struct RecordingAudit {
     events: Mutex<Vec<McpServerAuditEvent>>,
+}
+
+struct EchoSamplingProvider;
+
+#[async_trait]
+impl SamplingProvider for EchoSamplingProvider {
+    async fn create_message(
+        &self,
+        _request: SamplingRequest,
+    ) -> Result<SamplingResponse, harness_mcp::McpError> {
+        Ok(SamplingResponse {
+            model_id: "test".to_owned(),
+            content: json!({ "type": "text", "text": "ok" }),
+            input_tokens: 1,
+            output_tokens: 1,
+        })
+    }
 }
 
 impl McpServerAuditSink for RecordingAudit {

@@ -236,6 +236,7 @@ async fn subscribe_conversation_events_accepts_cursor_after_replayed_permission_
             conversation_id,
             decision: PermissionDecision::Deny,
             request_id: pending.request.request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )

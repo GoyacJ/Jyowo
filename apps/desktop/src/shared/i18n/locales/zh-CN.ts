@@ -91,6 +91,7 @@ export const zhCN = {
       approve: '批准',
       assistantAuthor: 'Jyowo',
       clarificationNeeded: '需要澄清',
+      confirmationText: '确认文本',
       deny: '拒绝',
       details: '详情',
       emptyTitle: '开始对话',
@@ -1249,6 +1250,8 @@ export const zhCN = {
       diff: 'Diff',
       deny: '拒绝权限',
       approve: '批准权限',
+      typeToConfirm: '输入 {{expected}} 以确认',
+      typeToConfirmPlaceholder: '输入 {{expected}}',
       state: {
         approved: '已批准',
         denied: '已拒绝',

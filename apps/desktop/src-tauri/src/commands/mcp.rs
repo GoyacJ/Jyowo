@@ -500,6 +500,7 @@ pub(crate) async fn mcp_config_from_records(
     default_session_id: SessionId,
     default_agent_id: AgentId,
     diagnostic_store: Arc<dyn McpDiagnosticStore>,
+    authorization_service: Arc<harness_execution::AuthorizationService>,
     workspace_root: &Path,
 ) -> Result<McpConfig, CommandErrorPayload> {
     let registry = McpRegistry::new();
@@ -516,7 +517,9 @@ pub(crate) async fn mcp_config_from_records(
             default_session_id,
             default_agent_id,
             Arc::clone(&diagnostic_store),
+            Arc::clone(&authorization_service),
             workspace_root,
+            InteractivityLevel::NoInteractive,
         )
         .await?;
         if matches!(
@@ -548,7 +551,9 @@ pub(crate) async fn register_mcp_record_with_harness(
         default_session_id,
         AgentId::new(),
         Arc::clone(&state.mcp_diagnostic_store),
+        harness.authorization_service(),
         state.workspace_root(),
+        InteractivityLevel::FullyInteractive,
     )
     .await?;
 
@@ -587,15 +592,31 @@ pub(crate) async fn register_mcp_record_with_registry(
     default_session_id: SessionId,
     default_agent_id: AgentId,
     diagnostic_store: Arc<dyn McpDiagnosticStore>,
+    authorization_service: Arc<harness_execution::AuthorizationService>,
     workspace_root: &Path,
+    interactivity: InteractivityLevel,
 ) -> Result<McpServerId, CommandErrorPayload> {
     let spec = mcp_server_spec_from_record(record, workspace_root)?;
     let server_id = spec.server_id.clone();
     let scope = mcp_server_scope_from_record(record, default_session_id, default_agent_id)?;
     let transport = mcp_transport_for_config(&record.transport);
     let event_sink = Arc::new(DesktopMcpEventSink { diagnostic_store });
+    let connect_context =
+        McpConnectContext::default().with_authorization(mcp_authorization_context(
+            Arc::clone(&authorization_service),
+            &scope,
+            default_session_id,
+            workspace_root,
+            interactivity,
+        )?);
     match registry
-        .add_managed_server(spec.clone(), scope.clone(), transport, event_sink)
+        .add_managed_server_with_context(
+            spec.clone(),
+            scope.clone(),
+            transport,
+            event_sink,
+            connect_context,
+        )
         .await
     {
         Ok(()) => {}
@@ -608,6 +629,37 @@ pub(crate) async fn register_mcp_record_with_registry(
     }
 
     Ok(server_id)
+}
+
+fn mcp_authorization_context(
+    authorization_service: Arc<harness_execution::AuthorizationService>,
+    scope: &McpServerScope,
+    default_session_id: SessionId,
+    workspace_root: &Path,
+    interactivity: InteractivityLevel,
+) -> Result<McpAuthorizationContext, CommandErrorPayload> {
+    let session_id = match scope {
+        McpServerScope::Session(session_id) => *session_id,
+        McpServerScope::Global | McpServerScope::Agent(_) => SessionId::new(),
+        _ => {
+            return Err(runtime_operation_failed(
+                "unsupported mcp server scope".to_owned(),
+            ));
+        }
+    };
+    let _ = default_session_id;
+
+    Ok(McpAuthorizationContext {
+        authorization_service,
+        tenant_id: TenantId::SINGLE,
+        scope: scope.clone(),
+        session_id,
+        run_id: RunId::new(),
+        permission_mode: PermissionMode::Default,
+        interactivity,
+        fallback_policy: FallbackPolicy::AskUser,
+        workspace_root: workspace_root.to_path_buf(),
+    })
 }
 
 pub(crate) async fn remove_mcp_server_from_harness(

@@ -117,7 +117,11 @@ fn skill_config_resolver_secret_values_do_not_enter_tool_receipts_or_events() {
             .await
             .expect("harness should build");
         let session = harness
-            .create_session(SessionOptions::new(&workspace).with_session_id(session_id))
+            .create_session(
+                SessionOptions::new(&workspace)
+                    .with_session_id(session_id)
+                    .with_permission_mode(PermissionMode::BypassPermissions),
+            )
             .await
             .expect("session should start with configured skill config");
 
@@ -136,15 +140,18 @@ fn skill_config_resolver_secret_values_do_not_enter_tool_receipts_or_events() {
             .expect("events should be readable")
             .collect()
             .await;
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                Event::ToolUseCompleted(completed)
-                    if completed.tool_use_id == tool_use_id
-                        && format!("{:?}", completed.result).contains("github.token")
-                        && !format!("{:?}", completed.result).contains("super-secret-token")
-            )
-        }));
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    Event::ToolUseCompleted(completed)
+                        if completed.tool_use_id == tool_use_id
+                            && format!("{:?}", completed.result).contains("github.token")
+                            && !format!("{:?}", completed.result).contains("super-secret-token")
+                )
+            }),
+            "configured skill tool should complete with redacted receipt; events: {events:#?}"
+        );
         assert!(
             !format!("{events:?}").contains("super-secret-token"),
             "secret must not be persisted in events"

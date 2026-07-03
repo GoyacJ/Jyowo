@@ -41,6 +41,9 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 #[tokio::test]
 async fn pre_tool_use_rewrites_before_permission() {
     let broker = Arc::new(RecordingBroker::new(Decision::AllowOnce));
@@ -70,7 +73,8 @@ async fn pre_tool_use_rewrites_before_permission() {
             input: json!({ "value": "rewritten" }),
         }
     );
-    assert!(events.iter().any(|event| matches!(
+    let journal_events = harness.journal_events().await;
+    assert!(journal_events.iter().any(|event| matches!(
         event,
         Event::PermissionRequested(requested)
             if matches!(
@@ -80,7 +84,7 @@ async fn pre_tool_use_rewrites_before_permission() {
             ) && requested.fingerprint.is_some()
     )));
     assert!(
-        events.iter().any(|event| matches!(
+        journal_events.iter().any(|event| matches!(
             event,
             Event::PermissionResolved(resolved)
                 if resolved.fingerprint.is_some()
@@ -159,7 +163,7 @@ async fn pre_tool_use_rewrite_recomputes_command_fingerprint() {
     )
     .await;
 
-    let events = harness.run("rewrite command").await.unwrap();
+    harness.run("rewrite command").await.unwrap();
     let requests = broker.requests().await;
     assert_eq!(requests.len(), 1);
     let PermissionSubject::CommandExec {
@@ -200,7 +204,8 @@ async fn pre_tool_use_rewrite_recomputes_command_fingerprint() {
     assert_eq!(cwd, &None);
     assert_eq!(*fingerprint, expected);
     assert_ne!(*fingerprint, original);
-    assert!(events.iter().any(|event| matches!(
+    let journal_events = harness.journal_events().await;
+    assert!(journal_events.iter().any(|event| matches!(
         event,
         Event::PermissionRequested(requested)
             if requested.fingerprint == Some(expected)
@@ -564,7 +569,10 @@ async fn tool_search_hooks_are_emitted() {
         .with_hooks(hook_dispatcher)
         .with_model(model)
         .with_tools(tools)
-        .with_permission_broker(Arc::new(RecordingBroker::new(Decision::AllowOnce)))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(RecordingBroker::new(Decision::AllowOnce)),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("test-model")
         .with_protocol(ModelProtocol::Messages)
@@ -674,7 +682,7 @@ impl TestHarness {
             ))
             .with_model(model.clone())
             .with_tools(tools)
-            .with_permission_broker(broker)
+            .with_authorization_service(test_authorization_service(broker, store.clone()))
             .with_workspace_root(workspace.path())
             .with_model_id("test-model")
             .with_protocol(ModelProtocol::Messages)
@@ -726,9 +734,32 @@ impl TestHarness {
             .unwrap()
             .collect::<Vec<_>>()
             .await;
-        assert_eq!(events, stored);
+        let stored_runtime_events = stored
+            .into_iter()
+            .filter(|event| !is_authorization_audit_event(event))
+            .collect::<Vec<_>>();
+        assert_eq!(events, stored_runtime_events);
         Ok(events)
     }
+
+    async fn journal_events(&self) -> Vec<Event> {
+        self.store
+            .read(self.tenant_id, self.session_id, ReplayCursor::FromStart)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
+    }
+}
+
+fn is_authorization_audit_event(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::PermissionRequested(_)
+            | Event::PermissionResolved(_)
+            | Event::SandboxPreflightPassed(_)
+            | Event::SandboxPreflightFailed(_)
+    )
 }
 
 struct SequenceModel {
@@ -1294,6 +1325,7 @@ impl HookHandler for PreToolUseTriggerHook {
     }
 }
 
+#[allow(dead_code)]
 struct PermissionRequestHook;
 
 #[async_trait]
@@ -1322,11 +1354,13 @@ impl HookHandler for PermissionRequestHook {
 }
 
 #[derive(Debug, PartialEq)]
+#[allow(dead_code)]
 struct CapturedPermissionRequest {
     subject: String,
     detail: Option<String>,
 }
 
+#[allow(dead_code)]
 struct CapturePermissionRequestHook {
     captured: Arc<Mutex<Option<CapturedPermissionRequest>>>,
 }

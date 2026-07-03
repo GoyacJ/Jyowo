@@ -431,6 +431,7 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
         tool_use_id: "tool-use-1".to_owned(),
         status: ToolPermissionStatus::Approved,
         summary: Some(UiSafeText::from_trusted_redacted("Approved once")),
+        confirmation_expected: None,
         event_refs: vec![event_ref.clone()],
     };
     let page = ConversationWorktreePage {

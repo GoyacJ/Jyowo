@@ -659,6 +659,7 @@ fn permission_request_named(kind: &str) -> PermissionRequest {
         },
         severity: Severity::Low,
         scope_hint: DecisionScope::ToolName("test-tool".to_owned()),
+        confirmation_expected: None,
         created_at: harness_contracts::now(),
     }
 }

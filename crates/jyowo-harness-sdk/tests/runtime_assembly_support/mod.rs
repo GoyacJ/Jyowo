@@ -60,8 +60,10 @@ pub use serde_json::{json, Value};
 pub use tokio::sync::Notify;
 
 mod agents;
+mod authorization;
 mod observability;
 pub use agents::*;
+pub use authorization::*;
 pub use observability::*;
 
 pub fn conversation_turn_request(
@@ -307,11 +309,8 @@ impl harness_subagent::SubagentRunner for ReadySubagentRunner {
 }
 
 pub fn unique_workspace(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "jyowo-{name}-{}-{}",
-        std::process::id(),
-        harness_contracts::SessionId::new()
-    ))
+    let session_id = harness_contracts::SessionId::new();
+    std::env::temp_dir().join(format!("jyowo-{name}-{}-{session_id}", std::process::id()))
 }
 
 pub fn skill_registration_from(markdown: &str, source: SkillSource) -> SkillRegistration {

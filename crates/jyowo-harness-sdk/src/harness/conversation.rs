@@ -317,7 +317,7 @@ impl Harness {
                 parts,
                 request.input.client_message_id.clone(),
                 request.input.attachments.clone(),
-                None,
+                Some(run_options.permission_mode),
                 request
                     .permission_actor_source
                     .unwrap_or(harness_contracts::PermissionActorSource::ParentRun),

@@ -7,10 +7,9 @@ use harness_context::ContextEngine;
 use harness_contracts::{
     BudgetMetric, CapabilityRegistry, Decision, DecisionScope, DeferPolicy, Event, Message,
     MessageId, MessagePart, MessageRole, ModelError, NetworkAccess, NoopRedactor, OverflowAction,
-    PermissionMode, PermissionRequestSuppressedEvent, PermissionSubject, ProviderRestriction,
-    ResultBudget, RunId, SessionId, StopReason, TenantId, ToolActionPlan, ToolDescriptor,
-    ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel, TurnInput,
-    UsageSnapshot, WorkspaceAccess,
+    PermissionMode, PermissionSubject, ProviderRestriction, ResultBudget, RunId, SessionId,
+    StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, ToolUseId, TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};
@@ -27,6 +26,9 @@ use harness_tool::{
 };
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
+
+mod authorization_support;
+use authorization_support::test_authorization_service;
 
 #[tokio::test]
 async fn permission_suppression_emits_event() {
@@ -66,7 +68,7 @@ async fn permission_suppression_emits_event() {
         ))
         .with_model(Arc::new(TwoStepModel::new()))
         .with_tools(tools)
-        .with_permission_broker(broker.clone())
+        .with_authorization_service(test_authorization_service(broker.clone(), store.clone()))
         .with_workspace_root(workspace.path())
         .with_model_id("test-model")
         .with_protocol(ModelProtocol::Messages)
@@ -143,7 +145,7 @@ async fn bypass_permission_mode_journals_request_context_for_audit() {
         ))
         .with_model(Arc::new(TwoStepModel::new()))
         .with_tools(tools)
-        .with_permission_broker(broker.clone())
+        .with_authorization_service(test_authorization_service(broker.clone(), store.clone()))
         .with_workspace_root(workspace.path())
         .with_model_id("test-model")
         .with_protocol(ModelProtocol::Messages)

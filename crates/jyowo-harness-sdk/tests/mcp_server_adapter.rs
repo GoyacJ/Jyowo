@@ -577,6 +577,7 @@ fn permission_request() -> harness_permission::PermissionRequest {
             command: "echo ok".to_owned(),
             cwd: None,
         },
+        confirmation_expected: None,
         created_at: chrono::Utc::now(),
     }
 }

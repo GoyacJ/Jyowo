@@ -1,6 +1,7 @@
 #![cfg(feature = "testing")]
 
 mod runtime_assembly_support;
+#[cfg(all(feature = "agents-subagent", feature = "agents-team"))]
 use runtime_assembly_support::*;
 
 #[cfg(all(feature = "agents-subagent", feature = "agents-team"))]
