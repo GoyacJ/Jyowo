@@ -34,6 +34,8 @@ impl MemoryStore for NoopMemory {
 
 impl MemoryLifecycle for NoopMemory {}
 
+impl harness_memory::MemoryProvider for NoopMemory {}
+
 fn dyn_safe(_: &dyn MemoryStore, _: &dyn MemoryLifecycle, _: &dyn MemoryProvider) {}
 
 #[tokio::test]

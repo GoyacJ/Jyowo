@@ -52,7 +52,7 @@ pub use harness_permission::{StreamBasedBroker, StreamBrokerConfig};
 
 #[cfg(feature = "memory-builtin")]
 pub use harness_memory::BuiltinMemory;
-#[cfg(feature = "memory-external-slot")]
+#[cfg(feature = "memory-provider-registry")]
 pub use harness_memory::InMemoryMemoryProvider;
 
 #[cfg(feature = "observability-redactor")]

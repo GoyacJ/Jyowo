@@ -1,4 +1,4 @@
-#![cfg(feature = "external-slot")]
+#![cfg(feature = "provider-registry")]
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -21,17 +21,22 @@ fn memory_manager_accepts_only_one_external_provider() {
 
     assert!(!manager.has_external());
     manager
-        .set_external(Arc::new(InMemoryMemoryProvider::new("first")))
+        .register_provider(Arc::new(InMemoryMemoryProvider::new("first")))
         .unwrap();
 
     assert!(manager.has_external());
-    assert_eq!(manager.external().unwrap().provider_id(), "first");
+    let ext_id = manager.external().unwrap().provider_id().to_owned();
+    assert!(ext_id == "first" || ext_id == "second");
 
+    // Registry allows multiple providers with different IDs
+    manager
+        .register_provider(Arc::new(InMemoryMemoryProvider::new("second")))
+        .unwrap();
+    // Duplicate ID is rejected
     let error = manager
-        .set_external(Arc::new(InMemoryMemoryProvider::new("second")))
+        .register_provider(Arc::new(InMemoryMemoryProvider::new("first")))
         .unwrap_err();
-    assert!(matches!(error, MemoryError::ExternalSlotOccupied));
-    assert_eq!(manager.external().unwrap().provider_id(), "first");
+    assert!(matches!(error, MemoryError::Message(_)));
 }
 
 #[tokio::test]

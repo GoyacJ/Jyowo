@@ -166,6 +166,39 @@ pub trait MemoryLifecycle: Send + Sync + 'static {
     }
 }
 
-pub trait MemoryProvider: MemoryStore + MemoryLifecycle {}
+pub trait MemoryProvider: MemoryStore + MemoryLifecycle {
+    fn descriptor(&self) -> MemoryProviderDescriptor {
+        MemoryProviderDescriptor {
+            provider_id: self.provider_id().to_owned(),
+            priority: 0,
+            trust_level: MemoryProviderTrust::BuiltIn,
+            readable: true,
+            writable: true,
+            allowed_visibility: vec![
+                MemoryVisibilityClass::Private,
+                MemoryVisibilityClass::User,
+                MemoryVisibilityClass::Tenant,
+            ],
+            timeout_ms: 5000,
+            max_records_per_recall: 50,
+            max_chars_per_recall: 100_000,
+            max_bytes_per_record: 1024 * 1024,
+        }
+    }
+}
 
-impl<T: MemoryStore + MemoryLifecycle> MemoryProvider for T {}
+use harness_contracts::{MemoryProviderTrust, MemoryVisibilityClass};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryProviderDescriptor {
+    pub provider_id: String,
+    pub priority: i32,
+    pub trust_level: MemoryProviderTrust,
+    pub readable: bool,
+    pub writable: bool,
+    pub allowed_visibility: Vec<MemoryVisibilityClass>,
+    pub timeout_ms: u32,
+    pub max_records_per_recall: u32,
+    pub max_chars_per_recall: u32,
+    pub max_bytes_per_record: u64,
+}

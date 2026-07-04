@@ -1452,12 +1452,12 @@ git commit -m "feat(memory): define platform memory contracts"
 - Remove or rewrite every `#[cfg(feature = "memory-external-slot")]` and `#[cfg(feature = "external-slot")]` branch so no single-slot runtime path remains.
 - Add a feature matrix check for `provider-registry`, `memory-provider-registry`, and all crates that still expose `recall-memory`. Default workspace checks alone are not sufficient for this task.
 
-- [ ] Write failing tests for two providers returning overlapping records and verify dedupe/rerank.
-- [ ] Write failing test that plugin provider and local provider both participate in recall.
-- [ ] Write failing test that provider-level record, char, and byte budgets are enforced before global recall budget.
-- [ ] Write failing test that write targets choose the correct writable provider by policy.
-- [ ] Write failing architecture/gate test that rejects single-slot fields such as `external: RwLock<Option<Arc<dyn MemoryProvider>>>`.
-- [ ] Run targeted red tests:
+- [x] Write failing tests for two providers returning overlapping records and verify dedupe/rerank.
+- [x] Write failing test that plugin provider and local provider both participate in recall.
+- [x] Write failing test that provider-level record, char, and byte budgets are enforced before global recall budget.
+- [x] Write failing test that write targets choose the correct writable provider by policy.
+- [x] Write failing architecture/gate test that rejects single-slot fields such as `external: RwLock<Option<Arc<dyn MemoryProvider>>>`.
+- [x] Run targeted red tests:
 
 ```bash
 cargo test -p jyowo-harness-memory --test provider_registry -- --nocapture
@@ -1468,12 +1468,12 @@ rg -n '"(external-slot|memory-external-slot)"|feature = "(external-slot|memory-e
 
 Expected: behavior tests fail because registry behavior is not implemented; the grep gate may fail while old single-slot feature names still exist. Do not treat missing new feature names as a valid red-test signal.
 
-- [ ] Implement registry and update `MemoryManager`.
-- [ ] Remove runtime dependency on single `external` provider slot.
-- [ ] Rename memory feature flags and update every Cargo consumer.
-- [ ] Update plugin registration to append providers into registry with descriptors.
-- [ ] Update metrics to include provider id per registry participant.
-- [ ] Run targeted verification:
+- [x] Implement registry and update `MemoryManager`.
+- [x] Remove runtime dependency on single `external` provider slot.
+- [x] Rename memory feature flags and update every Cargo consumer.
+- [x] Update plugin registration to append providers into registry with descriptors.
+- [x] Update metrics to include provider id per registry participant.
+- [x] Run targeted verification:
 
 ```bash
 cargo test -p jyowo-harness-memory --test provider_registry -- --nocapture
@@ -1487,10 +1487,10 @@ cargo check -p jyowo-harness-sdk --no-default-features --features memory-provide
 pnpm check:rust-deps
 rg -n '"(external-slot|memory-external-slot)"|feature = "(external-slot|memory-external-slot)"|with_external_memory_provider|external: RwLock<Option<Arc<dyn MemoryProvider>>>' Cargo.toml crates apps && exit 1 || true
 ```
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 3.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 3.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-memory crates/jyowo-harness-context crates/jyowo-harness-engine crates/jyowo-harness-sdk crates/jyowo-harness-plugin apps/desktop/src-tauri/Cargo.toml scripts

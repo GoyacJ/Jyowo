@@ -1,6 +1,6 @@
 #![cfg(not(any(
     feature = "builtin",
-    feature = "external-slot",
+    feature = "provider-registry",
     feature = "threat-scanner"
 )))]
 
@@ -44,6 +44,8 @@ impl MemoryStore for MinimalProvider {
 }
 
 impl MemoryLifecycle for MinimalProvider {}
+
+impl harness_memory::MemoryProvider for MinimalProvider {}
 
 fn assert_provider(_: &dyn MemoryProvider) {}
 

@@ -3014,6 +3014,8 @@ impl MemoryStore for FakeMemoryProvider {
 
 impl MemoryLifecycle for FakeMemoryProvider {}
 
+impl harness_memory::MemoryProvider for FakeMemoryProvider {}
+
 fn mcp_spec(id: &str) -> McpServerSpec {
     McpServerSpec::new(
         McpServerId(id.to_owned()),

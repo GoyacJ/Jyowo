@@ -528,12 +528,12 @@ impl Harness {
             .session_limits
             .try_acquire()
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
-        #[cfg(feature = "memory-external-slot")]
+        #[cfg(feature = "memory-provider-registry")]
         let memory_manager = self
             .memory_manager_for_session(&options)
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
-        #[cfg(feature = "memory-external-slot")]
+        #[cfg(feature = "memory-provider-registry")]
         let session_engine = self
             .engine_for_session(
                 &options,
@@ -546,7 +546,7 @@ impl Harness {
             )
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
-        #[cfg(not(feature = "memory-external-slot"))]
+        #[cfg(not(feature = "memory-provider-registry"))]
         let session_engine = self
             .engine_for_session(
                 &options,
@@ -571,16 +571,16 @@ impl Harness {
             hooks: HookDispatcher::new(self.inner.hook_registry.snapshot()),
             tenant_id: turn_options.tenant_id,
             session_id: turn_options.session_id,
-            #[cfg(feature = "memory-external-slot")]
+            #[cfg(feature = "memory-provider-registry")]
             user_id: turn_options.user_id.clone(),
-            #[cfg(feature = "memory-external-slot")]
+            #[cfg(feature = "memory-provider-registry")]
             team_id: turn_options.team_id,
             workspace_root: turn_options.workspace_root.clone(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
             summary_state: parking_lot::Mutex::new(MemorySessionSummaryState::default()),
-            #[cfg(feature = "memory-external-slot")]
+            #[cfg(feature = "memory-provider-registry")]
             memory_manager,
         });
         let session = Session::builder()

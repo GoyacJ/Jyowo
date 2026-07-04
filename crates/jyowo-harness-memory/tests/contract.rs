@@ -1,32 +1,32 @@
-#![cfg(any(feature = "builtin", feature = "external-slot"))]
+#![cfg(any(feature = "builtin", feature = "provider-registry"))]
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 use std::collections::BTreeSet;
-#[cfg(all(feature = "builtin", feature = "external-slot"))]
+#[cfg(all(feature = "builtin", feature = "provider-registry"))]
 use std::sync::Arc;
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 use std::time::Duration;
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 use chrono::Utc;
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 use harness_contracts::{
     MemoryActorContext, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId, TenantId,
 };
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 use harness_memory::{
     MemoryKindFilter, MemoryListScope, MemoryMetadata, MemoryQuery, MemoryRecord, MemoryStore,
     MemoryVisibilityFilter,
 };
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 use harness_memory::InMemoryMemoryProvider;
-#[cfg(all(feature = "builtin", feature = "external-slot"))]
+#[cfg(all(feature = "builtin", feature = "provider-registry"))]
 use harness_memory::MemoryManager;
-#[cfg(all(feature = "builtin", feature = "external-slot"))]
+#[cfg(all(feature = "builtin", feature = "provider-registry"))]
 use harness_memory::{BuiltinMemory, MemdirFile};
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 #[tokio::test]
 async fn in_memory_provider_contract_upserts_lists_and_forgets() {
     let provider = InMemoryMemoryProvider::new("test-contract");
@@ -65,7 +65,7 @@ async fn in_memory_provider_contract_upserts_lists_and_forgets() {
         .is_empty());
 }
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 #[tokio::test]
 async fn in_memory_provider_contract_enforces_tenant_isolation() {
     let provider = InMemoryMemoryProvider::new("test-contract");
@@ -84,7 +84,7 @@ async fn in_memory_provider_contract_enforces_tenant_isolation() {
     assert_recalled_record(&recalled, &kept);
 }
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 #[tokio::test]
 async fn in_memory_provider_contract_enforces_private_visibility() {
     let provider = InMemoryMemoryProvider::new("test-contract");
@@ -113,7 +113,7 @@ async fn in_memory_provider_contract_enforces_private_visibility() {
     assert_recalled_record(&recalled, &visible);
 }
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 #[tokio::test]
 async fn in_memory_provider_recall_updates_access_metadata_internally() {
     let provider = InMemoryMemoryProvider::new("test-contract");
@@ -145,7 +145,7 @@ async fn in_memory_provider_recall_updates_access_metadata_internally() {
     assert!(listed[0].metadata.last_accessed_at.is_some());
 }
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 #[tokio::test]
 async fn in_memory_provider_list_returns_bounded_content_preview() {
     let provider = InMemoryMemoryProvider::new("test-contract");
@@ -170,7 +170,7 @@ async fn in_memory_provider_list_returns_bounded_content_preview() {
     assert_ne!(summaries[0].content_preview, "x".repeat(512));
 }
 
-#[cfg(all(feature = "builtin", feature = "external-slot"))]
+#[cfg(all(feature = "builtin", feature = "provider-registry"))]
 #[tokio::test]
 async fn builtin_memdir_does_not_participate_in_external_recall() {
     let root = tempfile::tempdir().unwrap();
@@ -198,7 +198,7 @@ async fn builtin_memdir_does_not_participate_in_external_recall() {
         ))
         .await
         .unwrap();
-    manager.set_external(external).unwrap();
+    manager.register_provider(external).unwrap();
 
     let recalled = manager
         .recall(query(TenantId::SINGLE, session_id, 8))
@@ -208,7 +208,7 @@ async fn builtin_memdir_does_not_participate_in_external_recall() {
     assert_eq!(recalled[0].content, "external preference");
 }
 
-#[cfg(all(feature = "builtin", feature = "external-slot"))]
+#[cfg(all(feature = "builtin", feature = "provider-registry"))]
 #[tokio::test]
 async fn memory_manager_holds_builtin_memory_snapshot() {
     let root = tempfile::tempdir().unwrap();
@@ -230,7 +230,7 @@ async fn memory_manager_holds_builtin_memory_snapshot() {
     assert!(snapshot.memory.contains("manager-owned fact"));
 }
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 fn query(tenant_id: TenantId, session_id: SessionId, max_records: u32) -> MemoryQuery {
     MemoryQuery {
         text: "memory".to_owned(),
@@ -246,7 +246,7 @@ fn query(tenant_id: TenantId, session_id: SessionId, max_records: u32) -> Memory
     }
 }
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 fn actor(tenant_id: TenantId, session_id: SessionId) -> MemoryActorContext {
     MemoryActorContext {
         tenant_id,
@@ -256,7 +256,7 @@ fn actor(tenant_id: TenantId, session_id: SessionId) -> MemoryActorContext {
     }
 }
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 fn assert_recalled_record(recalled: &[MemoryRecord], expected: &MemoryRecord) {
     assert_eq!(recalled.len(), 1);
     assert_eq!(recalled[0].id, expected.id);
@@ -268,7 +268,7 @@ fn assert_recalled_record(recalled: &[MemoryRecord], expected: &MemoryRecord) {
     assert!(recalled[0].metadata.last_accessed_at.is_some());
 }
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 fn record(tenant_id: TenantId, visibility: MemoryVisibility, content: &str) -> MemoryRecord {
     let now = Utc::now();
     MemoryRecord {

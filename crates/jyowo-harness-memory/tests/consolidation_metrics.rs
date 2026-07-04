@@ -1,7 +1,7 @@
 #![cfg(all(
     feature = "builtin",
     feature = "consolidation",
-    feature = "external-slot",
+    feature = "provider-registry",
     feature = "threat-scanner"
 ))]
 
@@ -65,7 +65,7 @@ async fn memory_metrics_cover_recall_degraded_threat_memdir_and_overflow() {
     let metrics = Arc::new(Metrics::default());
     let manager = MemoryManager::new().with_metrics_sink(metrics.clone());
     manager
-        .set_external(Arc::new(StaticProvider::ok(vec![record("recall hit")])))
+        .register_provider(Arc::new(StaticProvider::ok(vec![record("recall hit")])))
         .unwrap();
     manager
         .recall(query(Duration::from_millis(200)))
@@ -75,7 +75,7 @@ async fn memory_metrics_cover_recall_degraded_threat_memdir_and_overflow() {
 
     let degraded = MemoryManager::new().with_metrics_sink(metrics.clone());
     degraded
-        .set_external(Arc::new(StaticProvider::err("provider down")))
+        .register_provider(Arc::new(StaticProvider::err("provider down")))
         .unwrap();
     degraded
         .recall(query(Duration::from_millis(200)))
@@ -146,7 +146,7 @@ async fn memory_metrics_cover_spec_recall_and_memdir_lock_metrics() {
 
     let recalled = MemoryManager::new().with_metrics_sink(metrics.clone());
     recalled
-        .set_external(Arc::new(StaticProvider::ok(vec![record("recall hit")])))
+        .register_provider(Arc::new(StaticProvider::ok(vec![record("recall hit")])))
         .unwrap();
     recalled
         .recall(query(Duration::from_millis(200)))
@@ -155,7 +155,7 @@ async fn memory_metrics_cover_spec_recall_and_memdir_lock_metrics() {
 
     let empty = MemoryManager::new().with_metrics_sink(metrics.clone());
     empty
-        .set_external(Arc::new(StaticProvider::ok(Vec::new())))
+        .register_provider(Arc::new(StaticProvider::ok(Vec::new())))
         .unwrap();
     empty
         .recall(query(Duration::from_millis(200)))
@@ -337,6 +337,8 @@ impl MemoryStore for StaticProvider {
 }
 
 impl MemoryLifecycle for StaticProvider {}
+
+impl harness_memory::MemoryProvider for StaticProvider {}
 
 fn query(deadline: Duration) -> MemoryQuery {
     MemoryQuery {

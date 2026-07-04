@@ -505,6 +505,8 @@ impl MemoryStore for InitializingMemoryProvider {
 
 #[async_trait]
 impl MemoryLifecycle for InitializingMemoryProvider {
+
+impl harness_memory::MemoryProvider for InitializingMemoryProvider {}
     async fn initialize(&self, ctx: &MemorySessionCtx<'_>) -> Result<(), MemoryError> {
         assert_eq!(ctx.tenant_id, TenantId::SINGLE);
         assert!(ctx.session_id != SessionId::from_u128(0));
@@ -561,6 +563,8 @@ impl MemoryStore for EndingMemoryProvider {
 
 #[async_trait]
 impl MemoryLifecycle for EndingMemoryProvider {
+
+impl harness_memory::MemoryProvider for EndingMemoryProvider {}
     async fn on_session_end(
         &self,
         ctx: &MemorySessionCtx<'_>,

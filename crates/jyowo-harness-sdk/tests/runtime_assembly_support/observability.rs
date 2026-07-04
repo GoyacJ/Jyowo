@@ -88,6 +88,8 @@ impl MemoryStore for ErrorMemoryProvider {
 
 impl MemoryLifecycle for ErrorMemoryProvider {}
 
+impl harness_memory::MemoryProvider for ErrorMemoryProvider {}
+
 pub struct TestRedactor;
 
 impl Redactor for TestRedactor {

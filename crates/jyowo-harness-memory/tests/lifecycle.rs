@@ -1,4 +1,4 @@
-#![cfg(feature = "external-slot")]
+#![cfg(feature = "provider-registry")]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use harness_memory::{
 async fn memory_manager_forwards_lifecycle_hooks() {
     let manager = MemoryManager::new();
     let provider = Arc::new(RecordingProvider::default());
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
     let ctx = MemorySessionCtx {
         tenant_id: harness_contracts::TenantId::SINGLE,
         session_id: SessionId::new(),
@@ -167,3 +167,5 @@ impl MemoryLifecycle for RecordingProvider {
         Ok(())
     }
 }
+
+impl harness_memory::MemoryProvider for RecordingProvider {}

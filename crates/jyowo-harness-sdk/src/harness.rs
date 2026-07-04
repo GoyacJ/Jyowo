@@ -21,7 +21,7 @@ use harness_context::{ContextEngine, TokenBudget};
 use harness_contracts::BlobRef;
 #[cfg(feature = "tool-search")]
 use harness_contracts::CacheImpact;
-#[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+#[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
 use harness_contracts::MemdirFileTag;
 #[cfg(not(feature = "observability-redactor"))]
 use harness_contracts::RedactPatternKind;

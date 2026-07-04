@@ -91,6 +91,8 @@ impl MemoryStore for InMemoryMemoryProvider {
 
 impl MemoryLifecycle for InMemoryMemoryProvider {}
 
+impl crate::MemoryProvider for InMemoryMemoryProvider {}
+
 fn kind_matches(record: &MemoryRecord, filter: Option<&MemoryKindFilter>) -> bool {
     match filter {
         None | Some(MemoryKindFilter::Any) => true,

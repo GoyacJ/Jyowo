@@ -46,9 +46,9 @@ pub(super) struct LifecycleHookEventStore {
     pub(super) hooks: HookDispatcher,
     pub(super) tenant_id: TenantId,
     pub(super) session_id: harness_contracts::SessionId,
-    #[cfg(feature = "memory-external-slot")]
+    #[cfg(feature = "memory-provider-registry")]
     pub(super) user_id: Option<String>,
-    #[cfg(feature = "memory-external-slot")]
+    #[cfg(feature = "memory-provider-registry")]
     pub(super) team_id: Option<harness_contracts::TeamId>,
     pub(super) workspace_root: PathBuf,
     pub(super) redactor: Arc<dyn Redactor>,
@@ -56,7 +56,7 @@ pub(super) struct LifecycleHookEventStore {
     pub(super) deleted_conversation_sessions:
         Arc<parking_lot::Mutex<HashSet<(TenantId, SessionId)>>>,
     pub(super) summary_state: parking_lot::Mutex<MemorySessionSummaryState>,
-    #[cfg(feature = "memory-external-slot")]
+    #[cfg(feature = "memory-provider-registry")]
     pub(super) memory_manager: Option<Arc<harness_memory::MemoryManager>>,
 }
 
@@ -510,7 +510,7 @@ impl LifecycleHookEventStore {
         record_memory_summary_event(&mut state, event);
     }
 
-    #[cfg(feature = "memory-external-slot")]
+    #[cfg(feature = "memory-provider-registry")]
     async fn memory_summary_state(&self) -> MemorySessionSummaryState {
         let fallback = self.summary_state.lock().clone();
         let Ok(mut stream) = self
@@ -527,7 +527,7 @@ impl LifecycleHookEventStore {
         state
     }
 
-    #[cfg(feature = "memory-external-slot")]
+    #[cfg(feature = "memory-provider-registry")]
     async fn call_memory_session_end(&self, ended: &harness_contracts::SessionEndedEvent) {
         let Some(memory) = &self.memory_manager else {
             return;
@@ -550,7 +550,7 @@ impl LifecycleHookEventStore {
         let _ = memory.on_session_end(&ctx, &summary).await;
     }
 
-    #[cfg(not(feature = "memory-external-slot"))]
+    #[cfg(not(feature = "memory-provider-registry"))]
     async fn call_memory_session_end(&self, _ended: &harness_contracts::SessionEndedEvent) {}
 }
 

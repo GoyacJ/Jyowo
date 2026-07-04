@@ -22,14 +22,14 @@ use crate::ConsolidationHook;
 use crate::MemoryThreatScanner;
 use crate::{
     content_preview, visibility_matches, MemoryEventSink, MemoryKindFilter, MemoryListScope,
-    MemoryMetric, MemoryMetricsSink, MemoryProvider, MemoryQuery, MemoryRecallMetricOutcome,
-    MemoryRecord, MemorySummary, MemoryVisibilityFilter,
+    MemoryMetric, MemoryMetricsSink, MemoryProvider, MemoryProviderRegistry, MemoryQuery,
+    MemoryRecallMetricOutcome, MemoryRecord, MemorySummary, MemoryVisibilityFilter,
 };
 
 pub struct MemoryManager {
     #[cfg(feature = "builtin")]
     builtin: RwLock<Option<BuiltinMemory>>,
-    external: RwLock<Option<Arc<dyn MemoryProvider>>>,
+    provider_registry: RwLock<MemoryProviderRegistry>,
     recall_policy: RecallPolicy,
     #[cfg(feature = "consolidation")]
     consolidation_hook: Option<Arc<dyn ConsolidationHook>>,
@@ -108,7 +108,7 @@ impl Default for MemoryManager {
         Self {
             #[cfg(feature = "builtin")]
             builtin: RwLock::new(None),
-            external: RwLock::new(None),
+            provider_registry: RwLock::new(MemoryProviderRegistry::new()),
             recall_policy: RecallPolicy::default(),
             #[cfg(feature = "consolidation")]
             consolidation_hook: None,
@@ -127,22 +127,26 @@ impl MemoryManager {
         Self::default()
     }
 
-    pub fn set_external(&self, provider: Arc<dyn MemoryProvider>) -> Result<(), MemoryError> {
-        let mut slot = self
-            .external
+    pub fn register_provider(&self, provider: Arc<dyn MemoryProvider>) -> Result<(), MemoryError> {
+        self.provider_registry
             .try_write()
-            .map_err(|_| MemoryError::ExternalSlotLockBusy)?;
-        if slot.is_some() {
-            return Err(MemoryError::ExternalSlotOccupied);
-        }
-
-        *slot = Some(provider);
+            .map_err(|_| MemoryError::Message("provider registry lock busy".to_owned()))?
+            .register(provider)?;
         self.record_metric(MemoryMetric::ExternalProviderConfigured { configured: true });
         Ok(())
     }
 
+    pub fn provider_registry(&self) -> Option<MemoryProviderRegistry> {
+        self.provider_registry.try_read().ok().map(|guard| guard.clone())
+    }
+
+    /// Returns a single external provider (first writable one), for compatibility
+    /// with existing APIs that expect a single provider.
     pub fn external(&self) -> Option<Arc<dyn MemoryProvider>> {
-        self.external.try_read().ok().and_then(|slot| slot.clone())
+        self.provider_registry
+            .try_read()
+            .ok()
+            .and_then(|reg| reg.writable_providers_sorted().into_iter().next())
     }
 
     #[cfg(feature = "builtin")]
@@ -251,7 +255,7 @@ impl MemoryManager {
         mut record: MemoryRecord,
         run_id: Option<RunId>,
     ) -> Result<harness_contracts::MemoryId, MemoryError> {
-        let Some(provider) = self.external.read().await.clone() else {
+        let Some(provider) = self.external() else {
             return Err(MemoryError::ExternalProviderNotConfigured);
         };
         let now = chrono::Utc::now();
@@ -316,7 +320,7 @@ impl MemoryManager {
         &self,
         actor: MemoryActorContext,
     ) -> Result<Vec<crate::MemorySummary>, MemoryError> {
-        let Some(provider) = self.external.read().await.clone() else {
+        let Some(provider) = self.external() else {
             return Err(MemoryError::ExternalProviderNotConfigured);
         };
 
@@ -348,7 +352,7 @@ impl MemoryManager {
         id: MemoryId,
         actor: MemoryActorContext,
     ) -> Result<MemoryRecord, MemoryError> {
-        let Some(provider) = self.external.read().await.clone() else {
+        let Some(provider) = self.external() else {
             return Err(MemoryError::ExternalProviderNotConfigured);
         };
         let record = provider.get(id).await?;
@@ -386,7 +390,7 @@ impl MemoryManager {
         actor: MemoryActorContext,
         run_id: Option<RunId>,
     ) -> Result<(), MemoryError> {
-        let Some(provider) = self.external.read().await.clone() else {
+        let Some(provider) = self.external() else {
             return Err(MemoryError::ExternalProviderNotConfigured);
         };
         let record = provider.get(id).await?;
@@ -444,7 +448,7 @@ impl MemoryManager {
         &self,
         actor: MemoryActorContext,
     ) -> Result<Vec<MemoryRecord>, MemoryError> {
-        let Some(provider) = self.external.read().await.clone() else {
+        let Some(provider) = self.external() else {
             return Err(MemoryError::ExternalProviderNotConfigured);
         };
         let summaries = provider
@@ -487,7 +491,7 @@ impl MemoryManager {
     }
 
     pub async fn initialize_session(&self, ctx: &MemorySessionCtx<'_>) -> Result<(), MemoryError> {
-        if let Some(provider) = self.external.read().await.clone() {
+        if let Some(provider) = self.external() {
             provider.initialize(ctx).await?;
         }
         Ok(())
@@ -498,7 +502,7 @@ impl MemoryManager {
         turn: u32,
         message: &UserMessageView<'_>,
     ) -> Result<(), MemoryError> {
-        if let Some(provider) = self.external.read().await.clone() {
+        if let Some(provider) = self.external() {
             provider.on_turn_start(turn, message).await?;
         }
         Ok(())
@@ -508,7 +512,7 @@ impl MemoryManager {
         &self,
         messages: &[MessageView<'_>],
     ) -> Result<Option<String>, MemoryError> {
-        if let Some(provider) = self.external.read().await.clone() {
+        if let Some(provider) = self.external() {
             return provider.on_pre_compress(messages).await;
         }
         Ok(None)
@@ -520,7 +524,7 @@ impl MemoryManager {
         target: &MemoryWriteTarget,
         content_hash: ContentHash,
     ) -> Result<(), MemoryError> {
-        if let Some(provider) = self.external.read().await.clone() {
+        if let Some(provider) = self.external() {
             provider
                 .on_memory_write(action, target, content_hash)
                 .await?;
@@ -534,7 +538,7 @@ impl MemoryManager {
         result: &str,
         child_session: SessionId,
     ) -> Result<(), MemoryError> {
-        if let Some(provider) = self.external.read().await.clone() {
+        if let Some(provider) = self.external() {
             provider.on_delegation(task, result, child_session).await?;
         }
         Ok(())
@@ -545,7 +549,7 @@ impl MemoryManager {
         ctx: &MemorySessionCtx<'_>,
         summary: &SessionSummaryView<'_>,
     ) -> Result<(), MemoryError> {
-        if let Some(provider) = self.external.read().await.clone() {
+        if let Some(provider) = self.external() {
             provider.on_session_end(ctx, summary).await?;
             provider.shutdown().await?;
         }
@@ -613,7 +617,7 @@ impl MemoryManager {
             return outcome;
         }
 
-        let Some(provider) = self.external.read().await.clone() else {
+        let Some(provider) = self.external() else {
             let outcome = MemoryRecallOutcome::Skipped;
             self.record_recall_metric(None, &outcome, started);
             return outcome;

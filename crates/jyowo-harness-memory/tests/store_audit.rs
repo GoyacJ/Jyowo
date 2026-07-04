@@ -1,4 +1,4 @@
-#![cfg(feature = "external-slot")]
+#![cfg(feature = "provider-registry")]
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -26,7 +26,7 @@ async fn memory_manager_emits_upsert_and_updates_access_metadata() {
     let sink = Arc::new(RecordingSink::default());
     let provider = Arc::new(InMemoryMemoryProvider::new("test"));
     let manager = MemoryManager::new().with_event_sink(sink.clone());
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
     let record = memory_record(session_id, "prefers concise answers");
 
     let id = manager.upsert(record.clone(), None).await.unwrap();
@@ -61,7 +61,7 @@ async fn memory_manager_browser_api_enforces_actor_visibility_and_edits_visible_
     let other_session_id = SessionId::new();
     let provider = Arc::new(InMemoryMemoryProvider::new("test"));
     let manager = MemoryManager::new();
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
     let visible = memory_record(session_id, "prefers concise answers");
     let hidden = memory_record(other_session_id, "hidden session note");
     manager.upsert(visible.clone(), None).await.unwrap();
@@ -105,7 +105,7 @@ async fn memory_manager_list_does_not_trust_provider_visibility_filtering() {
         vec![visible.clone(), hidden.clone()],
     ));
     let manager = MemoryManager::new();
-    manager.set_external(provider).unwrap();
+    manager.register_provider(provider).unwrap();
 
     let listed = manager.list_for_actor(actor(session_id)).await.unwrap();
 
@@ -120,7 +120,7 @@ async fn memory_manager_delete_and_export_emit_audit_events_without_raw_content(
     let sink = Arc::new(RecordingSink::default());
     let provider = Arc::new(InMemoryMemoryProvider::new("test"));
     let manager = MemoryManager::new().with_event_sink(sink.clone());
-    manager.set_external(provider).unwrap();
+    manager.register_provider(provider).unwrap();
     let record = memory_record(session_id, "secret export fact");
     manager.upsert(record.clone(), None).await.unwrap();
 
@@ -155,7 +155,7 @@ async fn memory_manager_delete_and_export_fail_when_required_audit_fails() {
     let session_id = SessionId::new();
     let provider = Arc::new(InMemoryMemoryProvider::new("test"));
     let manager = MemoryManager::new().with_event_sink(Arc::new(FailingRequiredSink));
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
     let record = memory_record(session_id, "audited delete fact");
     manager.upsert(record.clone(), None).await.unwrap();
 
@@ -186,7 +186,7 @@ async fn memory_manager_does_not_emit_delete_audit_when_provider_forget_fails() 
     let record = memory_record(session_id, "delete failure fact");
     let provider = Arc::new(ForgetFailingProvider::new("forget-fails", record.clone()));
     let manager = MemoryManager::new().with_event_sink(sink.clone());
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
 
     let error = manager
         .forget_for_actor(record.id, actor(session_id), None)
@@ -221,7 +221,7 @@ async fn memory_manager_browser_read_paths_scan_and_redact_visible_content() {
     let manager = MemoryManager::new()
         .with_event_sink(Arc::new(RecordingSink::default()))
         .with_threat_scanner(Arc::new(scanner));
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
     let record = memory_record(session_id, "token api_key_12345");
     provider.upsert(record.clone()).await.unwrap();
 
@@ -333,6 +333,8 @@ impl MemoryStore for LeakyListProvider {
 
 impl MemoryLifecycle for LeakyListProvider {}
 
+impl harness_memory::MemoryProvider for LeakyListProvider {}
+
 struct ForgetFailingProvider {
     provider_id: String,
     record: MemoryRecord,
@@ -398,6 +400,8 @@ impl MemoryStore for ForgetFailingProvider {
 }
 
 impl MemoryLifecycle for ForgetFailingProvider {}
+
+impl harness_memory::MemoryProvider for ForgetFailingProvider {}
 
 fn query(session_id: SessionId, text: &str) -> MemoryQuery {
     MemoryQuery {

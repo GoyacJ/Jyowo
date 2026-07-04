@@ -78,13 +78,13 @@ stream-permission = ["jyowo-harness-permission/stream"]
 rule-engine-permission = ["jyowo-harness-permission/rule-engine"]
 integrity = ["jyowo-harness-permission/integrity"]
 memory-builtin = ["jyowo-harness-memory/builtin", "jyowo-harness-memory/threat-scanner"]
-memory-external-slot = [
-  "jyowo-harness-memory/external-slot",
+memory-provider-registry = [
+  "jyowo-harness-memory/provider-registry",
   "jyowo-harness-memory/threat-scanner",
   "jyowo-harness-context/recall-memory",
 ]
 memory-consolidation = [
-  "memory-external-slot",
+  "memory-provider-registry",
   "jyowo-harness-memory/consolidation",
 ]
 agents-subagent = [
@@ -123,7 +123,7 @@ steering-queue = [
 testing = [
   "in-memory-store",
   "memory-consolidation",
-  "memory-external-slot",
+  "memory-provider-registry",
   "noop-sandbox",
   "rule-engine-permission",
   "stream-permission",

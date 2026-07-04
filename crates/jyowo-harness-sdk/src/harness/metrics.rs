@@ -9,7 +9,7 @@ impl Harness {
         })
     }
 
-    #[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+    #[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
     pub(super) fn memory_metrics_sink(&self) -> Option<Arc<dyn harness_memory::MemoryMetricsSink>> {
         self.inner.observer.as_ref().map(|observer| {
             Arc::new(SdkMemoryMetricsSink {
@@ -19,7 +19,7 @@ impl Harness {
     }
 }
 
-#[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+#[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
 struct SdkMemoryMetricsSink {
     observer: Arc<Observer>,
 }
@@ -42,7 +42,7 @@ impl ModelMetricsSink for SdkModelMetricsSink {
     }
 }
 
-#[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+#[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
 impl harness_memory::MemoryMetricsSink for SdkMemoryMetricsSink {
     fn record(&self, metric: harness_memory::MemoryMetric) {
         let (name, attrs) = self.attributes(metric);
@@ -52,7 +52,7 @@ impl harness_memory::MemoryMetricsSink for SdkMemoryMetricsSink {
     }
 }
 
-#[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+#[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
 impl SdkMemoryMetricsSink {
     fn attributes(&self, metric: harness_memory::MemoryMetric) -> (&'static str, SpanAttributes) {
         match metric {
@@ -208,7 +208,7 @@ impl SdkMemoryMetricsSink {
     }
 }
 
-#[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+#[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
 fn memory_recall_outcome(outcome: harness_memory::MemoryRecallMetricOutcome) -> &'static str {
     match outcome {
         harness_memory::MemoryRecallMetricOutcome::Recalled => "recalled",
@@ -218,7 +218,7 @@ fn memory_recall_outcome(outcome: harness_memory::MemoryRecallMetricOutcome) -> 
     }
 }
 
-#[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+#[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
 fn memdir_file(file: MemdirFileTag) -> &'static str {
     match file {
         MemdirFileTag::Memory => "memory",
@@ -228,7 +228,7 @@ fn memdir_file(file: MemdirFileTag) -> &'static str {
     }
 }
 
-#[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+#[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
 fn memory_write_action(action: &harness_contracts::MemoryWriteAction) -> &'static str {
     match action {
         harness_contracts::MemoryWriteAction::AppendSection { .. } => "append_section",
@@ -240,7 +240,7 @@ fn memory_write_action(action: &harness_contracts::MemoryWriteAction) -> &'stati
     }
 }
 
-#[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+#[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
 fn memory_kind(kind: &harness_contracts::MemoryKind) -> &'static str {
     match kind {
         harness_contracts::MemoryKind::UserPreference => "user_preference",
@@ -253,7 +253,7 @@ fn memory_kind(kind: &harness_contracts::MemoryKind) -> &'static str {
     }
 }
 
-#[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+#[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
 fn memory_visibility(visibility: &harness_contracts::MemoryVisibility) -> &'static str {
     match visibility {
         harness_contracts::MemoryVisibility::Private { .. } => "private",
@@ -264,7 +264,7 @@ fn memory_visibility(visibility: &harness_contracts::MemoryVisibility) -> &'stat
     }
 }
 
-#[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+#[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
 fn threat_category(category: harness_contracts::ThreatCategory) -> &'static str {
     match category {
         harness_contracts::ThreatCategory::PromptInjection => "prompt_injection",
@@ -277,7 +277,7 @@ fn threat_category(category: harness_contracts::ThreatCategory) -> &'static str 
     }
 }
 
-#[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+#[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
 fn threat_action(action: harness_contracts::ThreatAction) -> &'static str {
     match action {
         harness_contracts::ThreatAction::Warn => "warn",
@@ -287,12 +287,12 @@ fn threat_action(action: harness_contracts::ThreatAction) -> &'static str {
     }
 }
 
-#[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+#[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
 fn u64_to_i64(value: u64) -> i64 {
     value.min(i64::MAX as u64) as i64
 }
 
-#[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
+#[cfg(any(feature = "memory-builtin", feature = "memory-provider-registry"))]
 fn truncate_chars(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }

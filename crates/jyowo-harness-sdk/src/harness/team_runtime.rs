@@ -486,9 +486,9 @@ impl Harness {
         });
         self.enforce_tenant(&options)?;
         let prompt_inputs = self.load_effective_prompt_inputs(&options)?;
-        #[cfg(feature = "memory-external-slot")]
+        #[cfg(feature = "memory-provider-registry")]
         let memory_manager = self.memory_manager_for_session(&options).await?;
-        #[cfg(feature = "memory-external-slot")]
+        #[cfg(feature = "memory-provider-registry")]
         let session_engine = self
             .engine_for_session(
                 &options,
@@ -500,7 +500,7 @@ impl Harness {
                 subagent_team_attribution.clone(),
             )
             .await?;
-        #[cfg(not(feature = "memory-external-slot"))]
+        #[cfg(not(feature = "memory-provider-registry"))]
         let session_engine = self
             .engine_for_session(
                 &options,

@@ -1,4 +1,4 @@
-#![cfg(feature = "external-slot")]
+#![cfg(feature = "provider-registry")]
 
 use std::collections::BTreeSet;
 use std::sync::{
@@ -97,6 +97,8 @@ impl MemoryStore for CountingProvider {
 
 impl MemoryLifecycle for CountingProvider {}
 
+impl harness_memory::MemoryProvider for CountingProvider {}
+
 #[tokio::test]
 async fn recall_without_external_provider_returns_empty() {
     let manager = MemoryManager::new();
@@ -112,7 +114,7 @@ async fn recall_without_external_provider_returns_empty() {
 async fn zero_deadline_bypasses_provider() {
     let manager = MemoryManager::new();
     let provider = Arc::new(CountingProvider::ok(vec![record("kept")]));
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
 
     let recalled = manager.recall(query(Duration::ZERO, 8)).await.unwrap();
 
@@ -124,7 +126,7 @@ async fn zero_deadline_bypasses_provider() {
 async fn default_fail_safe_skips_provider_errors_and_timeouts() {
     let error_manager = MemoryManager::new();
     let error_provider = Arc::new(CountingProvider::error("provider unavailable"));
-    error_manager.set_external(error_provider.clone()).unwrap();
+    error_manager.register_provider(error_provider.clone()).unwrap();
 
     assert!(error_manager
         .recall(query(Duration::from_millis(200), 8))
@@ -139,7 +141,7 @@ async fn default_fail_safe_skips_provider_errors_and_timeouts() {
         vec![record("late")],
     ));
     timeout_manager
-        .set_external(timeout_provider.clone())
+        .register_provider(timeout_provider.clone())
         .unwrap();
 
     assert!(timeout_manager
@@ -157,7 +159,7 @@ async fn surface_policy_returns_provider_errors() {
         ..RecallPolicy::default()
     });
     manager
-        .set_external(Arc::new(CountingProvider::error("provider unavailable")))
+        .register_provider(Arc::new(CountingProvider::error("provider unavailable")))
         .unwrap();
 
     let error = manager
@@ -177,7 +179,7 @@ async fn surface_policy_returns_typed_recall_deadline_error() {
         ..RecallPolicy::default()
     });
     manager
-        .set_external(Arc::new(CountingProvider::delayed(
+        .register_provider(Arc::new(CountingProvider::delayed(
             Duration::from_millis(50),
             vec![record("late")],
         )))
@@ -198,7 +200,7 @@ async fn surface_policy_returns_typed_recall_deadline_error() {
 async fn recall_once_per_turn_deduplicates_provider_calls() {
     let manager = MemoryManager::new();
     let provider = Arc::new(CountingProvider::ok(vec![record("once")]));
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
 
     assert_eq!(
         manager
@@ -223,7 +225,7 @@ async fn recall_once_per_turn_merges_concurrent_calls_into_first_result() {
         Duration::from_millis(25),
         vec![record("merged")],
     ));
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
 
     let (left, right) = tokio::join!(
         manager.recall_once_per_turn(8, query(Duration::from_millis(200), 8)),
@@ -248,7 +250,7 @@ async fn recall_applies_record_and_character_budgets() {
         ..RecallPolicy::default()
     });
     manager
-        .set_external(Arc::new(CountingProvider::ok(vec![
+        .register_provider(Arc::new(CountingProvider::ok(vec![
             record("abcd"),
             record("efgh"),
             record("too-large"),
@@ -274,7 +276,7 @@ async fn recall_applies_record_and_character_budgets() {
 async fn recall_does_not_update_access_metadata_through_provider_upsert() {
     let manager = MemoryManager::new();
     let provider = Arc::new(CountingProvider::ok(vec![record("read-only")]));
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
 
     let recalled = manager
         .recall(query(Duration::from_millis(200), 8))
@@ -309,7 +311,7 @@ async fn recall_scans_blocks_and_redacts_records() {
     ]);
     let manager = MemoryManager::new().with_threat_scanner(Arc::new(scanner));
     manager
-        .set_external(Arc::new(CountingProvider::ok(vec![
+        .register_provider(Arc::new(CountingProvider::ok(vec![
             record("safe"),
             record("block-me"),
             record("secret=ABCDEF123456"),

@@ -19,7 +19,7 @@ anthropic-cache = []
 compact-aux-llm = []
 recall-memory = [
   "jyowo-harness-memory/builtin",
-  "jyowo-harness-memory/external-slot",
+  "jyowo-harness-memory/provider-registry",
   "jyowo-harness-memory/threat-scanner",
 ]
 

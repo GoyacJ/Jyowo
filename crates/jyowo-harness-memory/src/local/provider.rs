@@ -362,6 +362,8 @@ impl MemoryStore for LocalMemoryProvider {
 
 impl MemoryLifecycle for LocalMemoryProvider {}
 
+impl crate::MemoryProvider for LocalMemoryProvider {}
+
 // ── SQL row helpers ──
 
 struct MemoryRecordRow {

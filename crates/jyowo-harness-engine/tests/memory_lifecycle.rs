@@ -36,7 +36,7 @@ async fn engine_calls_memory_lifecycle_at_turn_start() {
     let run_id = harness_contracts::RunId::new();
     let provider = Arc::new(RecordingMemoryProvider::default());
     let manager = MemoryManager::new();
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
 
     let engine = Engine::builder()
         .with_engine_id(EngineId::new("memory-lifecycle-test"))
@@ -122,6 +122,8 @@ impl MemoryStore for RecordingMemoryProvider {
 
 #[async_trait]
 impl MemoryLifecycle for RecordingMemoryProvider {
+
+impl harness_memory::MemoryProvider for RecordingMemoryProvider {}
     async fn on_turn_start(
         &self,
         _turn: u32,

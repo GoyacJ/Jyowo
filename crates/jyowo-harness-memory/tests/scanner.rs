@@ -1,25 +1,25 @@
 #![cfg(feature = "threat-scanner")]
 
 use std::collections::BTreeSet;
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 use std::sync::Arc;
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 use async_trait::async_trait;
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 use chrono::Utc;
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 use harness_contracts::{
     Event, MemoryError, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId, TenantId,
     ThreatDirection,
 };
 use harness_contracts::{Severity, ThreatAction, ThreatCategory};
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 use harness_memory::{
     InMemoryMemoryProvider, MemoryEventSink, MemoryManager, MemoryMetadata, MemoryRecord,
 };
 use harness_memory::{MemoryThreatScanner, ThreatPattern};
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 use parking_lot::Mutex;
 
 #[test]
@@ -127,7 +127,7 @@ fn scanner_redacts_overlapping_ranges_stably() {
 }
 
 #[tokio::test]
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 async fn threat_scan_emits_event() {
     let session_id = SessionId::new();
     let sink = Arc::new(RecordingSink::default());
@@ -135,7 +135,7 @@ async fn threat_scan_emits_event() {
     let manager = MemoryManager::new()
         .with_event_sink(sink.clone())
         .with_threat_scanner(Arc::new(MemoryThreatScanner::default()));
-    manager.set_external(provider).unwrap();
+    manager.register_provider(provider).unwrap();
 
     let error = manager
         .upsert(
@@ -166,13 +166,13 @@ async fn threat_scan_emits_event() {
     }));
 }
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 #[derive(Default)]
 struct RecordingSink {
     events: Mutex<Vec<Event>>,
 }
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 #[async_trait]
 impl MemoryEventSink for RecordingSink {
     async fn emit(&self, event: Event) {
@@ -180,7 +180,7 @@ impl MemoryEventSink for RecordingSink {
     }
 }
 
-#[cfg(feature = "external-slot")]
+#[cfg(feature = "provider-registry")]
 fn memory_record(session_id: SessionId, content: &str) -> MemoryRecord {
     let now = Utc::now();
     MemoryRecord {
@@ -211,7 +211,7 @@ mod memdir_integration {
 
     use super::*;
     use harness_contracts::{MemoryError, TenantId};
-    #[cfg(feature = "external-slot")]
+    #[cfg(feature = "provider-registry")]
     use harness_contracts::{RunId, SessionId};
     use harness_memory::{BuiltinMemory, MemdirFile};
 
@@ -268,7 +268,7 @@ mod memdir_integration {
     }
 
     #[tokio::test]
-    #[cfg(feature = "external-slot")]
+    #[cfg(feature = "provider-registry")]
     async fn builtin_memdir_emits_threat_events_without_raw_content() {
         let root = tempfile::tempdir().unwrap();
         let session_id = SessionId::new();

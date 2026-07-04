@@ -18,15 +18,15 @@ impl Harness {
         }
         self.enforce_tenant(&options)?;
         let limit_permit = self.inner.session_limits.try_acquire()?;
-        #[cfg(feature = "memory-external-slot")]
+        #[cfg(feature = "memory-provider-registry")]
         self.activate_plugins(&options).await?;
-        #[cfg(feature = "memory-external-slot")]
+        #[cfg(feature = "memory-provider-registry")]
         let memory_manager = self.memory_manager_for_session(&options).await?;
         let pending_session_events = Arc::new(PendingSessionEvents::default());
         let prompt_inputs = self.load_effective_prompt_inputs(&options)?;
         let prompt_inputs_hash = effective_prompt_inputs_hash(&prompt_inputs);
         let run_options = ConversationRunOptions::from_session_options(&options);
-        #[cfg(feature = "memory-external-slot")]
+        #[cfg(feature = "memory-provider-registry")]
         let session_engine = self
             .engine_for_session(
                 &options,
@@ -38,7 +38,7 @@ impl Harness {
                 None,
             )
             .await?;
-        #[cfg(not(feature = "memory-external-slot"))]
+        #[cfg(not(feature = "memory-provider-registry"))]
         let session_engine = self
             .engine_for_session(
                 &options,
@@ -56,16 +56,16 @@ impl Harness {
             hooks: HookDispatcher::new(self.inner.hook_registry.snapshot()),
             tenant_id: options.tenant_id,
             session_id: options.session_id,
-            #[cfg(feature = "memory-external-slot")]
+            #[cfg(feature = "memory-provider-registry")]
             user_id: options.user_id.clone(),
-            #[cfg(feature = "memory-external-slot")]
+            #[cfg(feature = "memory-provider-registry")]
             team_id: options.team_id,
             workspace_root: options.workspace_root.clone(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
             summary_state: parking_lot::Mutex::new(MemorySessionSummaryState::default()),
-            #[cfg(feature = "memory-external-slot")]
+            #[cfg(feature = "memory-provider-registry")]
             memory_manager,
         });
 
@@ -260,9 +260,9 @@ impl Harness {
         let prompt_inputs = self.load_effective_prompt_inputs(&options)?;
         let prompt_inputs_hash = effective_prompt_inputs_hash(&prompt_inputs);
         let run_options_hash = conversation_run_options_hash(run_options);
-        #[cfg(feature = "memory-external-slot")]
+        #[cfg(feature = "memory-provider-registry")]
         let memory_manager = self.memory_manager_for_session(&options).await?;
-        #[cfg(feature = "memory-external-slot")]
+        #[cfg(feature = "memory-provider-registry")]
         let session_engine = self
             .engine_for_session(
                 &options,
@@ -274,7 +274,7 @@ impl Harness {
                 None,
             )
             .await?;
-        #[cfg(not(feature = "memory-external-slot"))]
+        #[cfg(not(feature = "memory-provider-registry"))]
         let session_engine = self
             .engine_for_session(
                 &options,
@@ -298,16 +298,16 @@ impl Harness {
             hooks: HookDispatcher::new(self.inner.hook_registry.snapshot()),
             tenant_id: turn_options.tenant_id,
             session_id: turn_options.session_id,
-            #[cfg(feature = "memory-external-slot")]
+            #[cfg(feature = "memory-provider-registry")]
             user_id: turn_options.user_id.clone(),
-            #[cfg(feature = "memory-external-slot")]
+            #[cfg(feature = "memory-provider-registry")]
             team_id: turn_options.team_id,
             workspace_root: turn_options.workspace_root.clone(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
             summary_state: parking_lot::Mutex::new(MemorySessionSummaryState::default()),
-            #[cfg(feature = "memory-external-slot")]
+            #[cfg(feature = "memory-provider-registry")]
             memory_manager,
         });
         let session = Session::builder()
@@ -406,7 +406,7 @@ impl Harness {
         })
     }
 
-    #[cfg(feature = "memory-external-slot")]
+    #[cfg(feature = "memory-provider-registry")]
     pub(super) async fn engine_for_session(
         &self,
         options: &SessionOptions,
@@ -432,7 +432,7 @@ impl Harness {
         .await
     }
 
-    #[cfg(not(feature = "memory-external-slot"))]
+    #[cfg(not(feature = "memory-provider-registry"))]
     pub(super) async fn engine_for_session(
         &self,
         options: &SessionOptions,
@@ -712,7 +712,7 @@ impl Harness {
     async fn context_engine(
         &self,
         _options: &SessionOptions,
-        #[cfg(feature = "memory-external-slot")] memory_manager: Option<
+        #[cfg(feature = "memory-provider-registry")] memory_manager: Option<
             Arc<harness_memory::MemoryManager>,
         >,
     ) -> Result<ContextEngine, HarnessError> {
@@ -724,7 +724,7 @@ impl Harness {
         if let Some(metrics_sink) = self.model_metrics_sink() {
             builder = builder.with_model_metrics_sink(metrics_sink);
         }
-        #[cfg(feature = "memory-external-slot")]
+        #[cfg(feature = "memory-provider-registry")]
         if let Some(memory_manager) = memory_manager {
             builder = builder.with_memory_manager(memory_manager);
         }

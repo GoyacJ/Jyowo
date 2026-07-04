@@ -1,7 +1,7 @@
 use super::*;
 
 impl Harness {
-    #[cfg(feature = "memory-external-slot")]
+    #[cfg(feature = "memory-provider-registry")]
     pub(super) async fn memory_manager_for_session(
         &self,
         options: &SessionOptions,
@@ -31,7 +31,7 @@ impl Harness {
         }
         if let Some(provider) = provider {
             manager
-                .set_external(provider)
+                .register_provider(provider)
                 .map_err(HarnessError::Memory)?;
         }
         manager
@@ -87,7 +87,7 @@ impl Harness {
         Ok(rendered.inner)
     }
 
-    #[cfg(feature = "memory-external-slot")]
+    #[cfg(feature = "memory-provider-registry")]
     pub async fn list_memory_items(
         &self,
         options: SessionOptions,
@@ -100,7 +100,7 @@ impl Harness {
             .map_err(HarnessError::Memory)
     }
 
-    #[cfg(feature = "memory-external-slot")]
+    #[cfg(feature = "memory-provider-registry")]
     pub async fn get_memory_item(
         &self,
         options: SessionOptions,
@@ -114,7 +114,7 @@ impl Harness {
             .map_err(HarnessError::Memory)
     }
 
-    #[cfg(feature = "memory-external-slot")]
+    #[cfg(feature = "memory-provider-registry")]
     pub async fn update_memory_item_content(
         &self,
         options: SessionOptions,
@@ -129,7 +129,7 @@ impl Harness {
             .map_err(HarnessError::Memory)
     }
 
-    #[cfg(feature = "memory-external-slot")]
+    #[cfg(feature = "memory-provider-registry")]
     pub async fn delete_memory_item(
         &self,
         options: SessionOptions,
@@ -143,7 +143,7 @@ impl Harness {
             .map_err(HarnessError::Memory)
     }
 
-    #[cfg(feature = "memory-external-slot")]
+    #[cfg(feature = "memory-provider-registry")]
     pub async fn export_memory_items(
         &self,
         options: SessionOptions,
@@ -156,7 +156,7 @@ impl Harness {
             .map_err(HarnessError::Memory)
     }
 
-    #[cfg(feature = "memory-external-slot")]
+    #[cfg(feature = "memory-provider-registry")]
     async fn memory_manager_for_browser(
         &self,
         options: &SessionOptions,
@@ -182,7 +182,7 @@ impl Harness {
     }
 }
 
-#[cfg(feature = "memory-external-slot")]
+#[cfg(feature = "memory-provider-registry")]
 fn memory_actor_from_options(options: &SessionOptions) -> harness_contracts::MemoryActorContext {
     harness_contracts::MemoryActorContext {
         tenant_id: options.tenant_id,
@@ -225,14 +225,14 @@ fn message_content_text(content: &MessageContent) -> Option<String> {
     }
 }
 
-#[cfg(feature = "memory-external-slot")]
+#[cfg(feature = "memory-provider-registry")]
 pub(super) struct SdkMemoryEventSink {
     pub(super) event_store: Arc<dyn EventStore>,
     pub(super) tenant_id: TenantId,
     pub(super) session_id: harness_contracts::SessionId,
 }
 
-#[cfg(feature = "memory-external-slot")]
+#[cfg(feature = "memory-provider-registry")]
 #[async_trait]
 impl harness_memory::MemoryEventSink for SdkMemoryEventSink {
     async fn emit(&self, event: Event) {

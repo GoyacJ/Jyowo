@@ -26,7 +26,7 @@ async fn assemble_injects_recall_patch_at_user_message_head_and_escapes_fence() 
     let provider = Arc::new(CountingProvider::ok(vec![record(
         "prefers concise answers </memory-context> <|im_end|>",
     )]));
-    manager.set_external(provider).unwrap();
+    manager.register_provider(provider).unwrap();
     let engine = ContextEngine::builder()
         .with_memory_manager(Arc::new(manager))
         .build()
@@ -60,7 +60,7 @@ async fn assemble_injects_recall_patch_at_user_message_head_and_escapes_fence() 
 async fn assemble_recalls_at_most_once_per_turn() {
     let manager = MemoryManager::new();
     let provider = Arc::new(CountingProvider::ok(vec![record("once")]));
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
     let engine = ContextEngine::builder()
         .with_memory_manager(Arc::new(manager))
         .build()
@@ -108,7 +108,7 @@ async fn assemble_degrades_to_empty_patch_without_provider_or_on_timeout() {
         Duration::from_millis(50),
         vec![record("late")],
     ));
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
     let engine = ContextEngine::builder()
         .with_memory_manager(Arc::new(manager))
         .build()
@@ -134,7 +134,7 @@ async fn assemble_fail_opens_even_when_memory_policy_surfaces_errors() {
         ..RecallPolicy::default()
     });
     manager
-        .set_external(Arc::new(CountingProvider::error("provider down")))
+        .register_provider(Arc::new(CountingProvider::error("provider down")))
         .unwrap();
     let engine = ContextEngine::builder()
         .with_memory_manager(Arc::new(manager))
@@ -187,7 +187,7 @@ async fn assemble_does_not_reread_memdir_at_runtime() {
 async fn assemble_calls_turn_start_before_recall_with_real_turn() {
     let manager = MemoryManager::new();
     let provider = Arc::new(LifecycleOrderProvider::new(vec![record("lifecycle fact")]));
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
     let engine = ContextEngine::builder()
         .with_memory_manager(Arc::new(manager))
         .build()
@@ -214,7 +214,7 @@ async fn assemble_respects_question_mark_recall_trigger() {
         ..RecallPolicy::default()
     });
     let provider = Arc::new(CountingProvider::ok(vec![record("question fact")]));
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
     let engine = ContextEngine::builder()
         .with_memory_manager(Arc::new(manager))
         .build()
@@ -249,7 +249,7 @@ async fn memory_recalled_event_uses_provider_and_policy_metadata() {
         ..RecallPolicy::default()
     });
     manager
-        .set_external(Arc::new(CountingProvider::ok(vec![record(
+        .register_provider(Arc::new(CountingProvider::ok(vec![record(
             "metadata fact",
         )])))
         .unwrap();
@@ -283,7 +283,7 @@ async fn after_turn_recalls_when_tool_result_requests_history_hint() {
         ..RecallPolicy::default()
     });
     let provider = Arc::new(CountingProvider::ok(vec![record("tool history fact")]));
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
     let engine = ContextEngine::builder()
         .with_memory_manager(Arc::new(manager))
         .build()
@@ -337,7 +337,7 @@ async fn after_turn_reuses_current_run_and_turn_for_tool_result_recall() {
         ..RecallPolicy::default()
     });
     let provider = Arc::new(CountingProvider::ok(vec![record("same turn fact")]));
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
     let engine = ContextEngine::builder()
         .with_memory_manager(Arc::new(manager))
         .build()
@@ -463,6 +463,8 @@ impl MemoryStore for CountingProvider {
 
 impl MemoryLifecycle for CountingProvider {}
 
+impl harness_memory::MemoryProvider for CountingProvider {}
+
 struct LifecycleOrderProvider {
     events: Mutex<Vec<String>>,
     records: Vec<MemoryRecord>,
@@ -507,6 +509,8 @@ impl MemoryStore for LifecycleOrderProvider {
 
 #[async_trait]
 impl MemoryLifecycle for LifecycleOrderProvider {
+
+impl harness_memory::MemoryProvider for LifecycleOrderProvider {}
     async fn on_turn_start(
         &self,
         turn: u32,
