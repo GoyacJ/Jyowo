@@ -63,7 +63,7 @@ pub async fn get_artifact_media_preview_with_runtime_state(
     let blob_ref = record.blob_ref.ok_or_else(|| {
         runtime_operation_failed("artifact image preview is unavailable".to_owned())
     })?;
-    read_artifact_image_blob_preview(state, session_id, &blob_ref).await
+    read_artifact_image_blob_preview(state, session_id, &request.artifact_id, &blob_ref).await
 }
 
 pub async fn get_attachment_media_preview_with_runtime_state(
@@ -109,6 +109,7 @@ pub(crate) async fn collect_artifacts_from_runtime_state(
     let redactor = DefaultRedactor::default();
     let mut after_event_id = None;
     let mut artifacts_by_id = BTreeMap::<String, ArtifactSummaryPayload>::new();
+    let mut has_artifact_content_blob = false;
     let mut order = Vec::<String>::new();
 
     loop {
@@ -125,6 +126,8 @@ pub(crate) async fn collect_artifacts_from_runtime_state(
         }
 
         for envelope in page.events {
+            has_artifact_content_blob |=
+                artifact_event_has_content_blob(&envelope.payload, session_id);
             project_artifact_event(
                 envelope.payload,
                 session_id,
@@ -137,12 +140,57 @@ pub(crate) async fn collect_artifacts_from_runtime_state(
         after_event_id = page.next_event_id;
     }
 
+    let content_refs = if has_artifact_content_blob {
+        collect_artifact_content_refs_from_evidence(&harness, &session_id.to_string()).await?
+    } else {
+        BTreeMap::new()
+    };
+    for artifact in artifacts_by_id.values_mut() {
+        for revision in &mut artifact.revisions {
+            if let Some(content_ref) =
+                content_refs.get(&(artifact.id.clone(), revision.revision_id.clone()))
+            {
+                revision.content_ref = Some(content_ref.clone());
+            }
+        }
+        artifact
+            .revisions
+            .sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    }
+
     let mut artifacts = order
         .into_iter()
         .filter_map(|artifact_id| artifacts_by_id.remove(&artifact_id))
         .collect::<Vec<_>>();
-    artifacts.reverse();
+    artifacts.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     Ok(ListArtifactsResponse { artifacts })
+}
+
+pub(crate) fn artifact_event_has_content_blob(event: &Event, session_id: SessionId) -> bool {
+    match event {
+        Event::ArtifactCreated(event) => event.session_id == session_id && event.blob_ref.is_some(),
+        Event::ArtifactUpdated(event) => event.session_id == session_id && event.blob_ref.is_some(),
+        _ => false,
+    }
+}
+
+pub(crate) async fn collect_artifact_content_refs_from_evidence(
+    harness: &Harness,
+    conversation_id: &str,
+) -> Result<BTreeMap<(String, String), String>, CommandErrorPayload> {
+    let mut refs = BTreeMap::<(String, String), String>::new();
+    let evidence_refs = harness
+        .list_artifact_content_evidence_refs(TenantId::SINGLE, conversation_id)
+        .await
+        .map_err(|_| runtime_operation_failed("artifact read failed".to_owned()))?;
+    for evidence_ref in evidence_refs {
+        refs.insert(
+            (evidence_ref.artifact_id, evidence_ref.revision_id),
+            evidence_ref.content_ref.to_string(),
+        );
+    }
+
+    Ok(refs)
 }
 
 #[derive(Debug, Clone)]
@@ -277,6 +325,7 @@ pub(crate) async fn find_attachment_media_record(
 pub(crate) async fn read_artifact_image_blob_preview(
     state: &DesktopRuntimeState,
     session_id: SessionId,
+    artifact_id: &str,
     blob_ref: &BlobRef,
 ) -> Result<GetArtifactMediaPreviewResponse, CommandErrorPayload> {
     let blob_store = FileBlobStore::open(
@@ -351,14 +400,16 @@ pub(crate) async fn read_artifact_image_blob_preview(
             "artifact media preview is only available for images".to_owned(),
         ));
     }
-    let mime_type = detected_mime.to_owned();
+    let (sanitized_bytes, mime_type) =
+        sanitize_artifact_preview_image(&bytes, detected_mime, artifact_id)?;
+    let size_bytes = sanitized_bytes.len() as u64;
 
     Ok(GetArtifactMediaPreviewResponse {
         data_url: format!(
             "data:{mime_type};base64,{}",
-            general_purpose::STANDARD.encode(bytes)
+            general_purpose::STANDARD.encode(sanitized_bytes)
         ),
-        mime_type,
+        mime_type: mime_type.to_owned(),
         size_bytes,
     })
 }
@@ -540,6 +591,23 @@ pub(crate) fn sanitize_attachment_preview_image(
             "attachment media preview is only available for images".to_owned(),
         )),
     }
+}
+
+pub(crate) fn sanitize_artifact_preview_image(
+    bytes: &[u8],
+    detected_mime: &str,
+    artifact_id: &str,
+) -> Result<(Vec<u8>, &'static str), CommandErrorPayload> {
+    sanitize_attachment_preview_image(bytes, detected_mime, artifact_id).map_err(|error| {
+        let message = error
+            .message
+            .replace("attachment media preview", "artifact media preview")
+            .replace("attachment image preview", "artifact image preview");
+        CommandErrorPayload {
+            code: error.code,
+            message,
+        }
+    })
 }
 
 pub(crate) fn transcode_attachment_preview_to_png(
@@ -804,12 +872,14 @@ pub(crate) fn project_artifact_event(
                             MAX_ARTIFACT_PREVIEW_BYTES,
                         )
                     }),
+                    revisions: vec![artifact_revision_payload(event.revision_id, event.at)],
                     source_message_id: event
                         .source_message_id
                         .map(|message_id| message_id.to_string()),
                     source_run_id: event.run_id.to_string(),
                     status: artifact_status_label(event.status),
                     title: public_text_display(event.title, redactor),
+                    updated_at: Some(event.at.to_rfc3339()),
                 },
             );
         }
@@ -839,9 +909,46 @@ pub(crate) fn project_artifact_event(
             if let Some(title) = event.title {
                 artifact.title = public_text_display(title, redactor);
             }
+            upsert_artifact_revision(artifact, event.revision_id, event.at);
+            artifact.updated_at = Some(event.at.to_rfc3339());
         }
         _ => {}
     }
+}
+
+pub(crate) fn artifact_revision_payload(
+    revision_id: harness_contracts::ArtifactRevisionId,
+    updated_at: DateTime<Utc>,
+) -> ArtifactRevisionPayload {
+    ArtifactRevisionPayload {
+        revision_id: revision_id.to_string(),
+        content_ref: None,
+        preview_ref: None,
+        updated_at: updated_at.to_rfc3339(),
+    }
+}
+
+pub(crate) fn upsert_artifact_revision(
+    artifact: &mut ArtifactSummaryPayload,
+    revision_id: harness_contracts::ArtifactRevisionId,
+    updated_at: DateTime<Utc>,
+) {
+    let revision_id = revision_id.to_string();
+    if let Some(revision) = artifact
+        .revisions
+        .iter_mut()
+        .find(|revision| revision.revision_id == revision_id)
+    {
+        revision.updated_at = updated_at.to_rfc3339();
+        return;
+    }
+
+    artifact.revisions.push(ArtifactRevisionPayload {
+        revision_id,
+        content_ref: None,
+        preview_ref: None,
+        updated_at: updated_at.to_rfc3339(),
+    });
 }
 
 pub(crate) fn artifact_status_label(

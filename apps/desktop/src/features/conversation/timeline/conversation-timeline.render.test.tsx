@@ -34,8 +34,23 @@ describe('ConversationTimeline', () => {
 
       await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1))
 
+      const nextTurn = turn('Hello')
+      if (!nextTurn.assistant) {
+        throw new Error('test fixture must include assistant work')
+      }
       rendered.rerender(
-        <ConversationTimeline title="Streaming conversation" turns={[turn('Hello')]} />,
+        <ConversationTimeline
+          title="Streaming conversation"
+          turns={[
+            {
+              ...nextTurn,
+              assistant: {
+                ...nextTurn.assistant,
+                streamVersion: 1,
+              },
+            },
+          ]}
+        />,
       )
 
       await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2))

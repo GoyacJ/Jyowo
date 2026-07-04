@@ -1195,6 +1195,15 @@ const artifactPreviewSchema = z
   })
 const artifactDisplayTextSchema = conversationDisplayTextSchema
 
+const artifactListRevisionSchema = z
+  .object({
+    revisionId: z.string().min(1),
+    contentRef: evidenceRefIdSchema.optional(),
+    previewRef: evidenceRefIdSchema.optional(),
+    updatedAt: z.string().datetime({ offset: true }),
+  })
+  .strict()
+
 const artifactSummarySchema = z
   .object({
     actionLabel: artifactDisplayTextSchema.min(1),
@@ -1202,8 +1211,10 @@ const artifactSummarySchema = z
     id: z.string().min(1),
     kind: artifactDisplayTextSchema.min(1),
     preview: artifactPreviewSchema.optional(),
+    revisions: z.array(artifactListRevisionSchema).optional(),
     status: artifactStatusSchema,
     title: artifactDisplayTextSchema.min(1),
+    updatedAt: z.string().datetime({ offset: true }).optional(),
   })
   .strict()
 
@@ -1248,6 +1259,15 @@ const getArtifactMediaPreviewResponseSchema = z
     sizeBytes: z.number().int().nonnegative().max(maxArtifactMediaPreviewBytes),
   })
   .strict()
+  .superRefine((value, context) => {
+    if (imageDataUrlMimeType(value.dataUrl) !== value.mimeType) {
+      context.addIssue({
+        code: 'custom',
+        message: 'artifact image preview data URL MIME must match mimeType',
+        path: ['dataUrl'],
+      })
+    }
+  })
 
 const getAttachmentMediaPreviewRequestSchema = z
   .object({

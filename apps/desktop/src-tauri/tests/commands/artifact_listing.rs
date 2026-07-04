@@ -15,16 +15,38 @@ fn artifact_payload_skips_missing_optional_fields() {
         id: "artifact-no-preview".to_owned(),
         kind: "markdown".to_owned(),
         preview: None,
+        revisions: Vec::new(),
         source_message_id: None,
         source_run_id: "run-001".to_owned(),
         status: "ready",
         title: "Generated output".to_owned(),
+        updated_at: None,
     })
     .unwrap();
 
     assert_eq!(value.get("preview"), None);
+    assert_eq!(value.get("revisions"), None);
     assert_eq!(value.get("sourceMessageId"), None);
     assert_eq!(value.get("sourceRunId"), None);
+}
+
+#[test]
+fn artifact_revision_content_payload_skips_missing_optional_ids() {
+    let value = serde_json::to_value(
+        jyowo_desktop_shell::commands::GetArtifactRevisionContentResponse {
+            artifact_id: None,
+            byte_length: 12,
+            content: "artifact body".to_owned(),
+            content_type: "text/plain".to_owned(),
+            redaction_state: "clean".to_owned(),
+            revision_id: None,
+            truncated: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(value.get("artifactId"), None);
+    assert_eq!(value.get("revisionId"), None);
 }
 
 #[tokio::test]
@@ -213,6 +235,300 @@ async fn list_artifacts_with_runtime_state_projects_artifact_events() {
         .contains("Runtime artifact"));
     assert_eq!(artifact.source_message_id, None);
     assert_eq!(artifact.source_run_id, run_id.to_string());
+}
+
+#[tokio::test]
+async fn list_artifacts_with_runtime_state_projects_revision_content_refs_newest_first() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    let run_id = RunId::new();
+    let old_revision_id = ArtifactRevisionId::new();
+    let new_revision_id = ArtifactRevisionId::new();
+    let old_at = chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(1);
+    let new_at = chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(2);
+    let blob_store = FileBlobStore::open(
+        state
+            .workspace_root()
+            .join(".jyowo")
+            .join("runtime")
+            .join("blobs"),
+    )
+    .expect("blob store opens");
+    let old_content = bytes::Bytes::from_static(b"old artifact body");
+    let new_content = bytes::Bytes::from_static(b"new artifact body sk-abcdefghijklmnopqrstuvwxyz");
+    let old_hash = *blake3::hash(&old_content).as_bytes();
+    let new_hash = *blake3::hash(&new_content).as_bytes();
+    let old_blob_ref = blob_store
+        .put(
+            TenantId::SINGLE,
+            old_content.clone(),
+            BlobMeta {
+                content_type: Some("text/markdown".to_owned()),
+                size: old_content.len() as u64,
+                content_hash: old_hash,
+                created_at: old_at,
+                retention: BlobRetention::SessionScoped(session_id),
+            },
+        )
+        .await
+        .expect("old blob writes");
+    let new_blob_ref = blob_store
+        .put(
+            TenantId::SINGLE,
+            new_content.clone(),
+            BlobMeta {
+                content_type: Some("text/markdown".to_owned()),
+                size: new_content.len() as u64,
+                content_hash: new_hash,
+                created_at: new_at,
+                retention: BlobRetention::SessionScoped(session_id),
+            },
+        )
+        .await
+        .expect("new blob writes");
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::ArtifactCreated(ArtifactCreatedEvent {
+                    revision_id: old_revision_id,
+                    artifact_id: "artifact-revisions".to_owned(),
+                    at: old_at,
+                    blob_ref: Some(old_blob_ref),
+                    content_hash: Some(old_hash.to_vec()),
+                    kind: "markdown".to_owned(),
+                    preview: Some("Old summary".to_owned()),
+                    run_id,
+                    session_id,
+                    source: ArtifactSource::Assistant,
+                    source_message_id: None,
+                    source_tool_use_id: None,
+                    status: ArtifactStatus::Ready,
+                    title: "Revisioned artifact".to_owned(),
+                }),
+                Event::ArtifactUpdated(ArtifactUpdatedEvent {
+                    revision_id: new_revision_id,
+                    artifact_id: "artifact-revisions".to_owned(),
+                    at: new_at,
+                    blob_ref: Some(new_blob_ref),
+                    content_hash: Some(new_hash.to_vec()),
+                    kind: Some("markdown".to_owned()),
+                    preview: Some("New summary".to_owned()),
+                    run_id,
+                    session_id,
+                    source: ArtifactSource::Assistant,
+                    source_message_id: None,
+                    source_tool_use_id: None,
+                    status: Some(ArtifactStatus::Ready),
+                    title: Some("Revisioned artifact".to_owned()),
+                }),
+            ],
+        )
+        .await
+        .expect("artifact revisions should append");
+
+    let payload = list_artifacts_with_runtime_state(
+        ListArtifactsRequest {
+            conversation_id: session_id.to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("runtime artifact projection should load");
+
+    let artifact = payload
+        .artifacts
+        .first()
+        .expect("artifact event should project");
+    let new_updated_at = new_at.to_rfc3339();
+    assert_eq!(
+        artifact.updated_at.as_deref(),
+        Some(new_updated_at.as_str())
+    );
+    assert_eq!(artifact.revisions.len(), 2);
+    assert_eq!(
+        artifact.revisions[0].revision_id,
+        new_revision_id.to_string()
+    );
+    assert_eq!(
+        artifact.revisions[1].revision_id,
+        old_revision_id.to_string()
+    );
+    let new_content_ref = artifact.revisions[0]
+        .content_ref
+        .as_ref()
+        .expect("newest revision content ref")
+        .clone();
+    let old_content_ref = artifact.revisions[1]
+        .content_ref
+        .as_ref()
+        .expect("oldest revision content ref")
+        .clone();
+
+    let newest_content = get_artifact_revision_content_with_runtime_state(
+        GetArtifactRevisionContentRequest {
+            conversation_id: session_id.to_string(),
+            content_ref: new_content_ref,
+        },
+        &state,
+    )
+    .await
+    .expect("artifact content evidence should read");
+    assert!(newest_content.content.contains("new artifact body"));
+    assert!(!newest_content
+        .content
+        .contains("sk-abcdefghijklmnopqrstuvwxyz"));
+    assert_eq!(newest_content.content_type, "text/markdown");
+    assert_eq!(newest_content.redaction_state, "redacted");
+
+    let oldest_content = get_artifact_revision_content_with_runtime_state(
+        GetArtifactRevisionContentRequest {
+            conversation_id: session_id.to_string(),
+            content_ref: old_content_ref,
+        },
+        &state,
+    )
+    .await
+    .expect("old artifact content evidence should read");
+    assert_eq!(oldest_content.content, "old artifact body");
+    assert_eq!(oldest_content.content_type, "text/markdown");
+}
+
+#[tokio::test]
+async fn get_artifact_revision_content_with_runtime_state_hides_evidence_ref_errors() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+
+    let error = get_artifact_revision_content_with_runtime_state(
+        GetArtifactRevisionContentRequest {
+            conversation_id: session_id.to_string(),
+            content_ref: "evidence:artifact-content:missing-ref".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("missing artifact content ref should fail closed");
+
+    assert_eq!(error.code, "RUNTIME_UNAVAILABLE");
+    assert_eq!(error.message, "artifact content unavailable");
+    assert!(!error.message.contains("missing-ref"));
+    assert!(!error.message.contains("evidence:"));
+}
+
+#[tokio::test]
+async fn list_artifacts_with_runtime_state_uses_sanitized_content_refs_after_worktree_projection() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    let run_id = RunId::new();
+    let revision_id = ArtifactRevisionId::new();
+    let artifact_at = now();
+    let content = bytes::Bytes::from_static(b"artifact after skipped delta");
+    let content_hash = *blake3::hash(&content).as_bytes();
+    let blob_store = FileBlobStore::open(
+        state
+            .workspace_root()
+            .join(".jyowo")
+            .join("runtime")
+            .join("blobs"),
+    )
+    .expect("blob store opens");
+    let blob_ref = blob_store
+        .put(
+            TenantId::SINGLE,
+            content.clone(),
+            BlobMeta {
+                content_type: Some("text/markdown".to_owned()),
+                size: content.len() as u64,
+                content_hash,
+                created_at: artifact_at,
+                retention: BlobRetention::SessionScoped(session_id),
+            },
+        )
+        .await
+        .expect("artifact blob writes");
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                    run_id,
+                    message_id: MessageId::new(),
+                    delta: DeltaChunk::ToolUseInputDelta {
+                        tool_use_id: ToolUseId::new(),
+                        delta: "{\"path\":\"src/lib.rs\"}".to_owned(),
+                    },
+                    at: artifact_at,
+                }),
+                Event::ArtifactCreated(ArtifactCreatedEvent {
+                    revision_id,
+                    artifact_id: "artifact-worktree-first".to_owned(),
+                    at: artifact_at,
+                    blob_ref: Some(blob_ref),
+                    content_hash: Some(content_hash.to_vec()),
+                    kind: "markdown".to_owned(),
+                    preview: Some("Preview".to_owned()),
+                    run_id,
+                    session_id,
+                    source: ArtifactSource::Assistant,
+                    source_message_id: None,
+                    source_tool_use_id: None,
+                    status: ArtifactStatus::Ready,
+                    title: "Worktree first".to_owned(),
+                }),
+            ],
+        )
+        .await
+        .expect("events should append");
+
+    page_conversation_worktree_with_runtime_state(
+        PageConversationWorktreeRequest {
+            conversation_id: session_id.to_string(),
+            page_cursor: None,
+            direction: PageConversationWorktreeDirection::After,
+            limit: Some(10),
+        },
+        &state,
+    )
+    .await
+    .expect("worktree should register artifact evidence first");
+
+    let payload = list_artifacts_with_runtime_state(
+        ListArtifactsRequest {
+            conversation_id: session_id.to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("artifact listing should load sanitized evidence ref");
+
+    let content_ref = payload.artifacts[0].revisions[0]
+        .content_ref
+        .as_ref()
+        .expect("artifact content ref should be present");
+    assert!(content_ref.starts_with("evidence:artifact-content-redacted:"));
+    let content = get_artifact_revision_content_with_runtime_state(
+        GetArtifactRevisionContentRequest {
+            conversation_id: session_id.to_string(),
+            content_ref: content_ref.clone(),
+        },
+        &state,
+    )
+    .await
+    .expect("reused artifact content evidence should read");
+    assert_eq!(content.content, "artifact after skipped delta");
 }
 
 #[tokio::test]

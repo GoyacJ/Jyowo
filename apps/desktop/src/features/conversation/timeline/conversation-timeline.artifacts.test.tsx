@@ -49,7 +49,7 @@ describe('ConversationTimeline', () => {
     expect(screen.getByText('已搜索图片工具')).toBeInTheDocument()
     expect(screen.getByText('$ pnpm check:desktop')).toBeInTheDocument()
     expect(screen.getByText(/render process preview/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Copy diff' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copy diff' })).not.toBeInTheDocument()
     expect(screen.getByText('Generated image')).toBeInTheDocument()
     expect(screen.queryByText('Image artifact ready')).not.toBeInTheDocument()
     expect(screen.getByText('图片已生成。')).toBeInTheDocument()

@@ -17,8 +17,6 @@ use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use harness_context::{ContextEngine, TokenBudget};
-#[cfg(feature = "mcp-server-adapter")]
-use harness_contracts::BlobRef;
 #[cfg(feature = "tool-search")]
 use harness_contracts::CacheImpact;
 #[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
@@ -27,13 +25,14 @@ use harness_contracts::MemdirFileTag;
 use harness_contracts::RedactPatternKind;
 #[cfg(feature = "agents-team")]
 use harness_contracts::{
-    AgentId, BlobMeta, BlobRetention, Recipient, TeamCreatedEvent, TeamMemberJoinedEvent,
-    TeamTaskUpdatedEvent, TeamTerminationReason, TopologyKind,
+    AgentId, BlobMeta, Recipient, TeamCreatedEvent, TeamMemberJoinedEvent, TeamTaskUpdatedEvent,
+    TeamTerminationReason, TopologyKind,
 };
 use harness_contracts::{
-    BlobReaderCapAdapter, BlobStore, BlobWriterCapAdapter, CapabilityRegistry, ContextPatchRequest,
-    ContextPatchSinkCap, ConversationAttachmentReference, ConversationContextReference,
-    ConversationTurnInput, Decision, Event, EventId, EvidenceRefId, EvidenceRefKind, HarnessError,
+    BlobReaderCapAdapter, BlobRef, BlobRetention, BlobStore, BlobWriterCapAdapter,
+    CapabilityRegistry, ContextPatchRequest, ContextPatchSinkCap, ConversationAttachmentReference,
+    ConversationContextReference, ConversationCursor, ConversationEventRef, ConversationTurnInput,
+    Decision, Event, EventId, EvidenceRedactionState, EvidenceRefId, EvidenceRefKind, HarnessError,
     HookEventKind, InteractivityLevel, JournalOffset, ManifestOriginRef,
     ManifestValidationFailedEvent, McpServerId, Message, MessageContent, MessageId, MessagePart,
     MessageRole, ModelModality, ModelProtocol, PermissionError, PermissionMode,
@@ -45,8 +44,8 @@ use harness_contracts::{
 };
 #[cfg(feature = "sqlite-store")]
 use harness_contracts::{
-    ConversationCursor, ConversationSnapshot, ConversationSummary, ConversationTimelinePage,
-    ConversationTurnCursor, ConversationWorktreePage,
+    ConversationSnapshot, ConversationSummary, ConversationTimelinePage, ConversationTurnCursor,
+    ConversationWorktreePage,
 };
 #[cfg(feature = "stream-permission")]
 use harness_contracts::{PermissionOptionId, RequestId};
@@ -74,8 +73,8 @@ use harness_journal::ConversationTurnPageDirection;
 use harness_journal::SqliteConversationReadModelStore;
 use harness_journal::{
     AppendMetadata, AuditPage, AuditQuery, AuditStore, EventEnvelope, EventStore, EventStoreAudit,
-    EventStoreOffloadedBlobAuthorizer, PrunePolicy, PruneReport, ReplayCursor, SessionFilter,
-    SessionSnapshot, SessionSummary,
+    EventStoreOffloadedBlobAuthorizer, EvidenceRefRecord, EvidenceRefSource, PrunePolicy,
+    PruneReport, RedactionProvenance, ReplayCursor, SessionFilter, SessionSnapshot, SessionSummary,
 };
 use harness_mcp::{
     ElicitationHandler, McpEventSink, McpMetric, McpMetricConnectionState, McpMetricsSink,
@@ -141,6 +140,13 @@ use crate::skill_pack_loader::{
 };
 #[cfg(feature = "memory-builtin")]
 use crate::system_prompt::render_builtin_memory_system_prompt;
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ArtifactContentEvidenceRef {
+    pub artifact_id: String,
+    pub revision_id: String,
+    pub content_ref: EvidenceRefId,
+}
 use crate::system_prompt::{
     build_runtime_prompt_context, effective_prompt_inputs_hash, runtime_prompt_context_hash,
     workspace_instruction_section, EffectiveSystemPromptInputs, RuntimePromptContext,
@@ -254,6 +260,185 @@ struct SdkAuthorizationEventSink {
     redactor: Arc<dyn Redactor>,
 }
 
+#[cfg(feature = "sqlite-store")]
+fn artifact_content_blob_from_event(
+    event: &Event,
+    expected_session_id: SessionId,
+) -> Option<(String, String, RunId, BlobRef)> {
+    match event {
+        Event::ArtifactCreated(event) if event.session_id == expected_session_id => Some((
+            event.artifact_id.clone(),
+            event.revision_id.to_string(),
+            event.run_id,
+            event.blob_ref.clone()?,
+        )),
+        Event::ArtifactUpdated(event) if event.session_id == expected_session_id => Some((
+            event.artifact_id.clone(),
+            event.revision_id.to_string(),
+            event.run_id,
+            event.blob_ref.clone()?,
+        )),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "sqlite-store")]
+fn artifact_content_evidence_record(
+    conversation_id: &str,
+    envelope: &EventEnvelope,
+    conversation_sequence: u64,
+    artifact_id: String,
+    revision_id: String,
+    run_id: RunId,
+    content_type: String,
+    bytes: &[u8],
+    redaction_state: EvidenceRedactionState,
+) -> EvidenceRefRecord {
+    let hash = blake3::hash(bytes);
+    EvidenceRefRecord {
+        id: sanitized_artifact_content_evidence_ref_id(envelope.event_id, hash.as_bytes()),
+        kind: EvidenceRefKind::ArtifactContent,
+        conversation_id: conversation_id.to_owned(),
+        run_id: run_id.to_string(),
+        source_event_refs: vec![ConversationEventRef {
+            event_id: envelope.event_id.to_string(),
+            cursor: ConversationCursor {
+                event_id: envelope.event_id,
+                conversation_sequence,
+            },
+        }],
+        artifact_id: Some(artifact_id),
+        revision_id: Some(revision_id),
+        content_type,
+        byte_length: bytes.len() as u64,
+        content_hash: hash.as_bytes().to_vec(),
+        redaction_state,
+        redaction_provenance: RedactionProvenance {
+            redactor_version: "event-redacted-v1".to_owned(),
+        },
+        retention: BlobRetention::TenantScoped,
+        source: EvidenceRefSource::JournalPayload {
+            event_id: envelope.event_id.to_string(),
+            json_pointer: String::new(),
+        },
+    }
+}
+
+#[cfg(feature = "sqlite-store")]
+fn sanitized_artifact_content_evidence_ref_id(event_id: EventId, hash: &[u8; 32]) -> EvidenceRefId {
+    let mut hash_hex = String::with_capacity(64);
+    for byte in hash {
+        use std::fmt::Write as _;
+        write!(&mut hash_hex, "{byte:02x}").expect("writing to String should not fail");
+    }
+    EvidenceRefId::new(format!(
+        "evidence:artifact-content-redacted:{event_id}:{hash_hex}"
+    ))
+}
+
+#[cfg(feature = "sqlite-store")]
+fn is_sanitized_artifact_content_ref(id: &EvidenceRefId) -> bool {
+    id.to_string()
+        .starts_with("evidence:artifact-content-redacted:")
+}
+
+#[cfg(feature = "sqlite-store")]
+fn artifact_content_type(blob_ref: &BlobRef) -> String {
+    blob_ref
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".to_owned())
+}
+
+#[cfg(feature = "sqlite-store")]
+fn redaction_state_for_text(original: &str, redacted: &str) -> EvidenceRedactionState {
+    if original == redacted {
+        EvidenceRedactionState::Clean
+    } else {
+        EvidenceRedactionState::Redacted
+    }
+}
+
+#[cfg(feature = "sqlite-store")]
+async fn redacted_artifact_content_bytes(
+    blob_store: &dyn BlobStore,
+    redactor: &dyn Redactor,
+    tenant: TenantId,
+    blob_ref: &BlobRef,
+) -> Result<Option<(Vec<u8>, EvidenceRedactionState)>, HarnessError> {
+    let mut stream = blob_store.get(tenant, blob_ref).await.map_err(|error| {
+        HarnessError::Other(format!("artifact content blob read failed: {error}"))
+    })?;
+    let mut bytes = Vec::with_capacity(blob_ref.size as usize);
+    while let Some(chunk) = stream.next().await {
+        bytes.extend_from_slice(&chunk);
+    }
+    if bytes.len() as u64 != blob_ref.size {
+        return Err(HarnessError::Other(
+            "artifact content blob length mismatch".to_owned(),
+        ));
+    }
+    let Ok(content) = String::from_utf8(bytes) else {
+        return Ok(None);
+    };
+    let redacted = redactor.redact(&content, &RedactRules::default());
+    let redaction_state = redaction_state_for_text(&content, &redacted);
+    Ok(Some((redacted.into_bytes(), redaction_state)))
+}
+
+#[cfg(feature = "sqlite-store")]
+fn event_projects_to_conversation_timeline(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::RunStarted(_)
+            | Event::RunEnded(_)
+            | Event::UserMessageAppended(_)
+            | Event::AssistantDeltaProduced(_)
+            | Event::AssistantMessageCompleted(_)
+            | Event::AssistantReviewRequested(_)
+            | Event::AssistantClarificationRequested(_)
+            | Event::AssistantNotice(_)
+            | Event::ArtifactCreated(_)
+            | Event::ArtifactUpdated(_)
+            | Event::ToolUseRequested(_)
+            | Event::ToolUseApproved(_)
+            | Event::ToolUseDenied(_)
+            | Event::ToolUseCompleted(_)
+            | Event::ToolUseFailed(_)
+            | Event::PermissionRequested(_)
+            | Event::PermissionResolved(_)
+            | Event::ContextBudgetExceeded(_)
+            | Event::ContextStageTransitioned(_)
+            | Event::ContextPatchApplied(_)
+            | Event::SubagentSpawned(_)
+            | Event::SubagentAnnounced(_)
+            | Event::SubagentTerminated(_)
+            | Event::SubagentStalled(_)
+            | Event::TeamCreated(_)
+            | Event::TeamMemberJoined(_)
+            | Event::TeamMemberLeft(_)
+            | Event::TeamMemberStalled(_)
+            | Event::AgentMessageSent(_)
+            | Event::AgentMessageRouted(_)
+            | Event::TeamTurnCompleted(_)
+            | Event::TeamTaskUpdated(_)
+            | Event::TeamTerminated(_)
+            | Event::BackgroundAgentStarted(_)
+            | Event::BackgroundAgentStateChanged(_)
+            | Event::BackgroundAgentInputRequested(_)
+            | Event::BackgroundAgentInputSubmitted(_)
+            | Event::BackgroundAgentPermissionRequested(_)
+            | Event::BackgroundAgentPermissionResolved(_)
+            | Event::BackgroundAgentCancelled(_)
+            | Event::BackgroundAgentCompleted(_)
+            | Event::BackgroundAgentFailed(_)
+            | Event::BackgroundAgentInterrupted(_)
+            | Event::BackgroundAgentArchived(_)
+            | Event::BackgroundAgentDeleted(_)
+            | Event::EngineFailed(_)
+    )
+}
+
 #[async_trait]
 impl AuthorizationEventSink for SdkAuthorizationEventSink {
     async fn emit_batch(
@@ -338,6 +523,102 @@ impl Harness {
             .list_live_blob_roots(tenant)
             .await
             .map_err(HarnessError::Journal)
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    pub async fn list_artifact_content_evidence_refs(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+    ) -> Result<Vec<ArtifactContentEvidenceRef>, HarnessError> {
+        self.register_artifact_content_evidence_refs(tenant, conversation_id)
+            .await?;
+        let refs = self
+            .evidence_ref_store()?
+            .list_for_conversation(tenant, conversation_id)
+            .await
+            .map_err(HarnessError::Journal)?;
+        Ok(refs
+            .into_iter()
+            .filter(|record| record.kind == EvidenceRefKind::ArtifactContent)
+            .filter(|record| is_sanitized_artifact_content_ref(&record.id))
+            .filter_map(|record| {
+                Some(ArtifactContentEvidenceRef {
+                    artifact_id: record.artifact_id?,
+                    revision_id: record.revision_id?,
+                    content_ref: record.id,
+                })
+            })
+            .collect())
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    async fn register_artifact_content_evidence_refs(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+    ) -> Result<(), HarnessError> {
+        let session_id = SessionId::parse(conversation_id)
+            .map_err(|error| HarnessError::Session(SessionError::Message(error.to_string())))?;
+        let evidence_store = self.evidence_ref_store()?;
+        let blob_store = self.inner.blob_store.as_ref().ok_or_else(|| {
+            HarnessError::Other("artifact content blob store is missing".to_owned())
+        })?;
+        let redactor = self
+            .inner
+            .observer
+            .as_ref()
+            .ok_or_else(|| HarnessError::Other("artifact content redactor is missing".to_owned()))?
+            .redactor
+            .clone();
+        let mut envelopes = self
+            .inner
+            .event_store
+            .read_envelopes(tenant, session_id, ReplayCursor::FromStart)
+            .await
+            .map_err(HarnessError::Journal)?
+            .collect::<Vec<_>>()
+            .await;
+        envelopes.sort_by_key(|envelope| envelope.offset);
+
+        let mut conversation_sequence = 0_u64;
+        for envelope in envelopes {
+            if let Some((artifact_id, revision_id, run_id, blob_ref)) =
+                artifact_content_blob_from_event(&envelope.payload, session_id)
+            {
+                conversation_sequence = conversation_sequence.saturating_add(1);
+                if let Some((bytes, redaction_state)) = redacted_artifact_content_bytes(
+                    blob_store.as_ref(),
+                    redactor.as_ref(),
+                    tenant,
+                    &blob_ref,
+                )
+                .await?
+                {
+                    let record = artifact_content_evidence_record(
+                        conversation_id,
+                        &envelope,
+                        conversation_sequence,
+                        artifact_id,
+                        revision_id,
+                        run_id,
+                        artifact_content_type(&blob_ref),
+                        &bytes,
+                        redaction_state,
+                    );
+                    evidence_store
+                        .store_blob_evidence(tenant, record, bytes)
+                        .await
+                        .map_err(HarnessError::Journal)?;
+                }
+                continue;
+            }
+
+            if event_projects_to_conversation_timeline(&envelope.payload) {
+                conversation_sequence = conversation_sequence.saturating_add(1);
+            }
+        }
+        Ok(())
     }
 
     async fn read_typed_evidence(

@@ -13,7 +13,7 @@ async fn get_artifact_media_preview_with_runtime_state_returns_owned_image_data_
     let session_id = state.default_conversation_id();
     open_conversation_session(&state, session_id).await;
     let run_id = RunId::new();
-    let image_bytes = b"\x89PNG\r\n\x1A\npreview".to_vec();
+    let image_bytes = minimal_png();
     let content_hash = *blake3::hash(&image_bytes).as_bytes();
     let blob_store = FileBlobStore::open(
         state
@@ -93,11 +93,7 @@ async fn get_artifact_media_preview_with_runtime_state_accepts_image_mime_artifa
         "artifact-image-mime-kind",
         "image/png",
         ArtifactStatus::Ready,
-        Some((
-            "image/png",
-            b"\x89PNG\r\n\x1A\npreview".to_vec(),
-            session_id,
-        )),
+        Some(("image/png", minimal_png(), session_id)),
     )
     .await;
 
@@ -128,7 +124,7 @@ async fn get_artifact_media_preview_with_runtime_state_falls_back_to_detected_im
         ArtifactStatus::Ready,
         Some((
             "image/png /tmp/provider-output https://provider.example/blob",
-            b"\x89PNG\r\n\x1A\npreview".to_vec(),
+            minimal_png(),
             session_id,
         )),
     )
@@ -161,11 +157,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_safe_non_image_mi
         "artifact-image-text-mime",
         "image",
         ArtifactStatus::Ready,
-        Some((
-            "text/plain",
-            b"\x89PNG\r\n\x1A\npreview".to_vec(),
-            session_id,
-        )),
+        Some(("text/plain", minimal_png(), session_id)),
     )
     .await;
 
@@ -191,7 +183,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_cross_session_blo
     open_conversation_session(&state, session_id).await;
     open_conversation_session(&state, other_session_id).await;
     let run_id = RunId::new();
-    let image_bytes = b"\x89PNG\r\n\x1A\npreview".to_vec();
+    let image_bytes = minimal_png();
     let image_size = image_bytes.len() as u64;
     let content_hash = *blake3::hash(&image_bytes).as_bytes();
     let blob_store = FileBlobStore::open(
@@ -431,4 +423,118 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_too_large_image_b
 
     assert_eq!(error.code, "INVALID_PAYLOAD");
     assert!(error.message.contains("too large"));
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_strips_png_text_metadata() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_artifact_event_for_preview(
+        &state,
+        session_id,
+        "artifact-png-metadata",
+        "image",
+        ArtifactStatus::Ready,
+        Some((
+            "image/png",
+            png_with_ancillary_chunk(
+                *b"tEXt",
+                b"path=/Users/goya/.jyowo/runtime/blobs/private.png token=secret-value",
+            ),
+            session_id,
+        )),
+    )
+    .await;
+
+    let payload = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-png-metadata".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("PNG text metadata should be stripped");
+
+    let preview = attachment_preview_data_url_bytes(&payload.data_url);
+    assert_eq!(payload.mime_type, "image/png");
+    assert!(!String::from_utf8_lossy(&preview).contains("/Users/goya"));
+    assert!(!String::from_utf8_lossy(&preview).contains("secret-value"));
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_strips_jpeg_exif_metadata() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_artifact_event_for_preview(
+        &state,
+        session_id,
+        "artifact-jpeg-metadata",
+        "image",
+        ArtifactStatus::Ready,
+        Some((
+            "image/jpeg",
+            supported_preview_image_with_metadata(
+                "image/jpeg",
+                b"Exif\0\0path=/Users/goya/.jyowo/runtime/blobs/private.jpg token=secret-value",
+            ),
+            session_id,
+        )),
+    )
+    .await;
+
+    let payload = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-jpeg-metadata".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("JPEG EXIF metadata should be stripped by transcoding");
+
+    let preview = attachment_preview_data_url_bytes(&payload.data_url);
+    assert_eq!(payload.mime_type, "image/png");
+    assert!(!String::from_utf8_lossy(&preview).contains("/Users/goya"));
+    assert!(!String::from_utf8_lossy(&preview).contains("secret-value"));
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_strips_gif_comment_metadata() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    append_artifact_event_for_preview(
+        &state,
+        session_id,
+        "artifact-gif-metadata",
+        "image",
+        ArtifactStatus::Ready,
+        Some((
+            "image/gif",
+            supported_preview_image_with_metadata(
+                "image/gif",
+                b"path=/Users/goya/.jyowo/runtime/blobs/private.gif token=secret-value",
+            ),
+            session_id,
+        )),
+    )
+    .await;
+
+    let payload = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-gif-metadata".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("GIF comment metadata should be stripped by transcoding");
+
+    let preview = attachment_preview_data_url_bytes(&payload.data_url);
+    assert_eq!(payload.mime_type, "image/png");
+    assert!(!String::from_utf8_lossy(&preview).contains("/Users/goya"));
+    assert!(!String::from_utf8_lossy(&preview).contains("secret-value"));
 }

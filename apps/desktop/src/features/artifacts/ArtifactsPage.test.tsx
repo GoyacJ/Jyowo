@@ -11,7 +11,9 @@ import { createRejectedTestCommandClient, createTestCommandClient } from '@/test
 
 import { ArtifactsPage } from './ArtifactsPage'
 
-const artifactPreviewProps = vi.hoisted(() => [] as Array<{ content?: string; state: string }>)
+const artifactPreviewProps = vi.hoisted(
+  () => [] as Array<{ content?: string; imageDataUrl?: string; state: string }>,
+)
 
 vi.mock('./ArtifactPreview', async (importOriginal) => {
   const original = await importOriginal<typeof import('./ArtifactPreview')>()
@@ -19,7 +21,11 @@ vi.mock('./ArtifactPreview', async (importOriginal) => {
   return {
     ...original,
     ArtifactPreview: (props: import('./ArtifactPreview').ArtifactPreviewProps) => {
-      artifactPreviewProps.push({ content: props.content, state: props.state })
+      artifactPreviewProps.push({
+        content: props.content,
+        imageDataUrl: props.imageDataUrl,
+        state: props.state,
+      })
 
       return original.ArtifactPreview(props)
     },
@@ -34,8 +40,16 @@ const artifacts: ListArtifactsResponse = {
       id: 'artifact-foundation-plan',
       kind: 'markdown',
       preview: '# Foundation review',
+      revisions: [
+        {
+          contentRef: 'artifact-content-foundation',
+          revisionId: 'revision-foundation',
+          updatedAt: '2026-06-17T00:00:02.000Z',
+        },
+      ],
       status: 'ready',
       title: 'Foundation implementation review',
+      updatedAt: '2026-06-17T00:00:02.000Z',
     },
     {
       actionLabel: 'Open',
@@ -43,8 +57,16 @@ const artifacts: ListArtifactsResponse = {
       id: 'artifact-verification',
       kind: 'markdown',
       preview: '# Verification',
+      revisions: [
+        {
+          contentRef: 'artifact-content-verification',
+          revisionId: 'revision-verification',
+          updatedAt: '2026-06-17T00:00:01.000Z',
+        },
+      ],
       status: 'pending',
       title: 'Verification notes',
+      updatedAt: '2026-06-17T00:00:01.000Z',
     },
   ],
 }
@@ -77,7 +99,25 @@ describe('ArtifactsPage', () => {
   })
 
   it('loads artifact history from the command client and switches previews', async () => {
-    const commandClient = createTestCommandClient({ artifacts })
+    const getArtifactRevisionContent = vi.fn<CommandClient['getArtifactRevisionContent']>(
+      async (request) => ({
+        artifactId: request.contentRef.includes('verification')
+          ? 'artifact-verification'
+          : 'artifact-foundation-plan',
+        byteLength: request.contentRef.length,
+        content: `loaded:${request.contentRef}`,
+        contentType: 'text/markdown; charset=utf-8',
+        redactionState: 'clean',
+        revisionId: request.contentRef.includes('verification')
+          ? 'revision-verification'
+          : 'revision-foundation',
+        truncated: false,
+      }),
+    )
+    const commandClient = createTestCommandClient({
+      artifactRevisionContent: getArtifactRevisionContent,
+      artifacts,
+    })
     const listArtifacts = vi.fn(commandClient.listArtifacts)
     const trackedClient = {
       ...commandClient,
@@ -93,7 +133,7 @@ describe('ArtifactsPage', () => {
     expect(
       within(history).getByRole('article', { name: 'Foundation implementation review' }),
     ).toBeInTheDocument()
-    expect(screen.getByText('# Foundation review')).toBeInTheDocument()
+    expect(await screen.findByText('loaded:artifact-content-foundation')).toBeInTheDocument()
 
     fireEvent.click(
       within(within(history).getByRole('article', { name: 'Verification notes' })).getByRole(
@@ -105,7 +145,133 @@ describe('ArtifactsPage', () => {
     await waitFor(() => {
       expect(listArtifacts).toHaveBeenCalled()
     })
-    expect(screen.getByText('# Verification')).toBeInTheDocument()
+    expect(getArtifactRevisionContent).toHaveBeenCalledWith({
+      conversationId: 'conversation-001',
+      contentRef: 'artifact-content-verification',
+    })
+    expect(await screen.findByText('loaded:artifact-content-verification')).toBeInTheDocument()
+  })
+
+  it('renders html revisions in a sandboxed iframe', async () => {
+    const commandClient = createTestCommandClient({
+      artifactRevisionContent: () => ({
+        artifactId: 'artifact-html',
+        byteLength: 28,
+        content: '<main><h1>Preview</h1></main>',
+        contentType: 'text/html',
+        redactionState: 'clean',
+        revisionId: 'revision-html',
+        truncated: false,
+      }),
+      artifacts: {
+        artifacts: [
+          {
+            actionLabel: 'Open',
+            description: 'Generated HTML preview.',
+            id: 'artifact-html',
+            kind: 'html',
+            revisions: [
+              {
+                contentRef: 'artifact-content-html',
+                revisionId: 'revision-html',
+                updatedAt: '2026-06-17T00:00:03.000Z',
+              },
+            ],
+            status: 'ready',
+            title: 'HTML preview',
+            updatedAt: '2026-06-17T00:00:03.000Z',
+          },
+        ],
+      },
+    })
+
+    renderArtifactsPage(commandClient)
+
+    const iframe = await screen.findByTitle('HTML preview sandboxed preview')
+    expect(iframe).toHaveAttribute('sandbox', '')
+    expect(iframe).not.toHaveAttribute('sandbox', expect.stringContaining('allow-same-origin'))
+    expect(iframe).toHaveAttribute('referrerpolicy', 'no-referrer')
+    expect(iframe.getAttribute('srcdoc')).toContain("default-src 'none'")
+    expect(iframe.getAttribute('srcdoc')).toContain("connect-src 'none'")
+    expect(iframe.getAttribute('srcdoc')).toContain('<main><h1>Preview</h1></main>')
+  })
+
+  it('renders image previews from backend media data urls', async () => {
+    const getArtifactMediaPreview = vi.fn<CommandClient['getArtifactMediaPreview']>(async () => ({
+      dataUrl:
+        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+      mimeType: 'image/png',
+      sizeBytes: 68,
+    }))
+    const commandClient = {
+      ...createTestCommandClient({
+        artifacts: {
+          artifacts: [
+            {
+              actionLabel: 'Open',
+              description: 'Generated image.',
+              id: 'artifact-image',
+              kind: 'image',
+              revisions: [
+                {
+                  revisionId: 'revision-image',
+                  updatedAt: '2026-06-17T00:00:04.000Z',
+                },
+              ],
+              status: 'ready',
+              title: 'Image preview',
+              updatedAt: '2026-06-17T00:00:04.000Z',
+            },
+          ],
+        },
+      }),
+      getArtifactMediaPreview,
+    } satisfies CommandClient
+
+    renderArtifactsPage(commandClient)
+
+    const image = await screen.findByRole('img', { name: 'Image preview' })
+    expect(getArtifactMediaPreview).toHaveBeenCalledWith({
+      artifactId: 'artifact-image',
+      conversationId: 'conversation-001',
+    })
+    expect(image).toHaveAttribute('src', expect.stringMatching(/^data:image\/png;base64,/))
+    expect(artifactPreviewProps.at(-1)).toMatchObject({
+      imageDataUrl: expect.stringMatching(/^data:image\/png;base64,/),
+      state: 'ready',
+    })
+  })
+
+  it('falls back to the summary preview when a text artifact has no content ref', async () => {
+    const getArtifactRevisionContent = vi.fn()
+    renderArtifactsPage(
+      createTestCommandClient({
+        artifacts: {
+          artifacts: [
+            {
+              actionLabel: 'Open',
+              description: 'Generated notes.',
+              id: 'artifact-missing-ref',
+              kind: 'markdown',
+              preview: '# Do not render this as content',
+              revisions: [
+                {
+                  revisionId: 'revision-missing-ref',
+                  updatedAt: '2026-06-17T00:00:05.000Z',
+                },
+              ],
+              status: 'ready',
+              title: 'Missing content ref',
+              updatedAt: '2026-06-17T00:00:05.000Z',
+            },
+          ],
+        },
+        artifactRevisionContent: getArtifactRevisionContent,
+      }),
+    )
+
+    expect(await screen.findByText('# Do not render this as content')).toBeInTheDocument()
+    expect(getArtifactRevisionContent).not.toHaveBeenCalled()
   })
 
   it('renders empty, loading, and error states without raw backend details', async () => {
@@ -149,7 +315,7 @@ describe('ArtifactsPage', () => {
     } satisfies CommandClient
     const { queryClient } = renderArtifactsPage(commandClient)
 
-    expect(await screen.findByText('# Foundation review')).toBeInTheDocument()
+    expect(await screen.findByText('fixture artifact content')).toBeInTheDocument()
 
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ['artifacts'] })
@@ -159,7 +325,7 @@ describe('ArtifactsPage', () => {
       expect(screen.getByText('Artifact history could not be loaded.')).toBeInTheDocument()
     })
     expect(screen.getByText('Artifact preview unavailable.')).toBeInTheDocument()
-    expect(screen.queryByText('# Foundation review')).not.toBeInTheDocument()
+    expect(screen.queryByText('fixture artifact content')).not.toBeInTheDocument()
     expect(artifactPreviewProps.at(-1)).toMatchObject({
       content: undefined,
       state: 'error',

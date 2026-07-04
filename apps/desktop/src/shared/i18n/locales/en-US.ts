@@ -1378,6 +1378,7 @@ export const enUS = {
     preview: 'Preview',
     loadingPreview: 'Loading artifact preview.',
     noPreview: 'No preview available.',
+    missingContentRef: 'Artifact content reference is missing.',
     largePreviewTruncated: 'Large preview truncated.',
     openFullOutput: 'Open artifact to inspect the full output.',
   },

@@ -3922,7 +3922,7 @@ pub async fn get_artifact_revision_content_with_runtime_state(
             &harness_contracts::EvidenceRefId::new(&request.content_ref),
         )
         .await
-        .map_err(|e| runtime_unavailable(&format!("Evidence read failed: {e}")))?;
+        .map_err(|_| runtime_unavailable("artifact content unavailable"))?;
 
     Ok(GetArtifactRevisionContentResponse {
         content: String::from_utf8_lossy(&result.bytes).into_owned(),

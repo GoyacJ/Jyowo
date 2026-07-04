@@ -34,10 +34,11 @@ export function ConversationTimeline({
   const latestAnchorKey = latestTurn ? turnScrollAnchorKey(latestTurn) : null
   const streamingScrollTick =
     latestTurn?.assistant?.status === 'running'
-      ? latestTurn.assistant.segments.reduce(
-          (size, segment) => size + JSON.stringify(segment).length,
-          0,
-        )
+      ? [
+          latestTurn.assistant.projectionVersion,
+          latestTurn.assistant.streamVersion ?? 0,
+          latestTurn.assistant.segments.length,
+        ].join(':')
       : undefined
   const { endRef, jumpToLatest, onScroll, showJumpToLatest, viewportRef } =
     useConversationScrollAnchor(latestAnchorKey, { streamingScrollTick })

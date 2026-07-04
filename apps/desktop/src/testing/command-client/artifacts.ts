@@ -17,18 +17,34 @@ export const fixtureListArtifacts: ListArtifactsResponse = {
       actionLabel: 'Run app',
       description: 'Tauri + React + TypeScript with Vite',
       id: 'artifact-desktop-foundation',
-      kind: 'app',
+      kind: 'code',
       preview: 'Tauri command boundary, React renderer shell, and Vite development scripts.',
+      revisions: [
+        {
+          contentRef: 'artifact-content-desktop-foundation',
+          revisionId: 'revision-desktop-foundation',
+          updatedAt: timestamp,
+        },
+      ],
       status: 'ready',
       title: 'Desktop foundation created',
+      updatedAt: timestamp,
     },
     {
       actionLabel: 'Inspect',
       description: 'Follow-up verification checklist',
       id: 'artifact-verification-notes',
       kind: 'markdown',
+      revisions: [
+        {
+          contentRef: 'artifact-content-verification-notes',
+          revisionId: 'revision-verification-notes',
+          updatedAt: timestamp,
+        },
+      ],
       status: 'pending',
       title: 'Verification notes',
+      updatedAt: timestamp,
     },
     {
       actionLabel: 'Inspect diff',
@@ -53,8 +69,16 @@ export const fixtureListArtifacts: ListArtifactsResponse = {
         "+   win.loadURL(process.env.VITE_DEV_SERVER_URL || 'index.html')",
         '+ }',
       ].join('\n'),
+      revisions: [
+        {
+          contentRef: 'artifact-content-shell-diff',
+          revisionId: 'revision-shell-diff',
+          updatedAt: timestamp,
+        },
+      ],
       status: 'ready',
       title: 'src/main/main.ts',
+      updatedAt: timestamp,
     },
   ],
 }

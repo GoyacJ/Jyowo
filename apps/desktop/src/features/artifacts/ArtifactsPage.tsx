@@ -2,12 +2,49 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import type { ListArtifactsResponse } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 
 import { ArtifactHistory } from './ArtifactHistory'
 import { ArtifactPreview } from './ArtifactPreview'
 
 const artifactsQueryKey = ['artifacts'] as const
+const artifactContentMissingError = 'artifact content reference missing'
+
+type ArtifactSummary = ListArtifactsResponse['artifacts'][number]
+type ArtifactRevision = NonNullable<ArtifactSummary['revisions']>[number]
+
+function sortArtifactsByUpdatedAt(artifacts: readonly ArtifactSummary[]): ArtifactSummary[] {
+  return [...artifacts].sort((left, right) => {
+    const rightUpdatedAt = Date.parse(right.updatedAt ?? latestRevision(right)?.updatedAt ?? '')
+    const leftUpdatedAt = Date.parse(left.updatedAt ?? latestRevision(left)?.updatedAt ?? '')
+
+    return (
+      (Number.isNaN(rightUpdatedAt) ? 0 : rightUpdatedAt) -
+      (Number.isNaN(leftUpdatedAt) ? 0 : leftUpdatedAt)
+    )
+  })
+}
+
+function sortedRevisions(artifact: ArtifactSummary): ArtifactRevision[] {
+  return [...(artifact.revisions ?? [])].sort((left, right) => {
+    const rightUpdatedAt = Date.parse(right.updatedAt)
+    const leftUpdatedAt = Date.parse(left.updatedAt)
+
+    return (
+      (Number.isNaN(rightUpdatedAt) ? 0 : rightUpdatedAt) -
+      (Number.isNaN(leftUpdatedAt) ? 0 : leftUpdatedAt)
+    )
+  })
+}
+
+function latestRevision(artifact: ArtifactSummary): ArtifactRevision | undefined {
+  return sortedRevisions(artifact)[0]
+}
+
+function isImageArtifact(kind: string | undefined): boolean {
+  return kind === 'image' || kind?.startsWith('image/') === true
+}
 
 export function ArtifactsPage() {
   const { t } = useTranslation('artifacts')
@@ -31,7 +68,7 @@ export function ArtifactsPage() {
   const isError = conversationsQuery.isError || artifactsQuery.isError
   const isLoading =
     conversationsQuery.isLoading || (Boolean(conversationId) && artifactsQuery.isLoading)
-  const artifacts = isError ? [] : (artifactsQuery.data?.artifacts ?? [])
+  const artifacts = isError ? [] : sortArtifactsByUpdatedAt(artifactsQuery.data?.artifacts ?? [])
   const [activeArtifactId, setActiveArtifactId] = useState<string | undefined>()
   const activeArtifact =
     artifacts.find((artifact) => artifact.id === activeArtifactId) ?? artifacts[0]
@@ -72,14 +109,123 @@ export function ArtifactsPage() {
             onOpenArtifact={setActiveArtifactId}
           />
         )}
-        <ArtifactPreview
-          content={activeArtifact?.preview}
+        <ArtifactPreviewLoader
+          artifact={activeArtifact}
+          conversationId={conversationId}
           errorMessage={isError ? t('previewUnavailable') : t('noArtifactSelected')}
-          kind={activeArtifact?.kind}
           state={previewState}
-          title={activeArtifact?.title ?? t('pageTitle')}
         />
       </div>
     </div>
+  )
+}
+
+interface ArtifactPreviewLoaderProps {
+  artifact?: ArtifactSummary
+  conversationId?: string
+  errorMessage: string
+  state: 'error' | 'loading' | 'ready'
+}
+
+function ArtifactPreviewLoader({
+  artifact,
+  conversationId,
+  errorMessage,
+  state,
+}: ArtifactPreviewLoaderProps) {
+  const { t } = useTranslation('artifacts')
+  const commandClient = useCommandClient()
+  const revision = artifact ? latestRevision(artifact) : undefined
+  const isImage = isImageArtifact(artifact?.kind)
+  const contentRef = revision?.contentRef
+  const usesSummaryPreview = state === 'ready' && Boolean(artifact) && !isImage && !contentRef
+  const contentQuery = useQuery({
+    enabled:
+      state === 'ready' &&
+      Boolean(conversationId) &&
+      Boolean(artifact) &&
+      !isImage &&
+      Boolean(contentRef),
+    queryFn: () => {
+      if (!conversationId || !contentRef) {
+        throw new Error(artifactContentMissingError)
+      }
+
+      return commandClient.getArtifactRevisionContent({
+        conversationId,
+        contentRef,
+      })
+    },
+    queryKey: [
+      'artifact-revision-content',
+      conversationId,
+      artifact?.id,
+      revision?.revisionId,
+      contentRef,
+    ],
+  })
+  const imageQuery = useQuery({
+    enabled: state === 'ready' && Boolean(conversationId) && Boolean(artifact) && isImage,
+    queryFn: () => {
+      if (!conversationId || !artifact) {
+        throw new Error('artifact image preview context missing')
+      }
+
+      return commandClient.getArtifactMediaPreview({
+        artifactId: artifact.id,
+        conversationId,
+      })
+    },
+    queryKey: ['artifact-media-preview', conversationId, artifact?.id, revision?.revisionId],
+  })
+
+  if (state !== 'ready') {
+    return (
+      <ArtifactPreview
+        errorMessage={errorMessage}
+        kind={artifact?.kind}
+        state={state}
+        title={artifact?.title ?? t('pageTitle')}
+      />
+    )
+  }
+
+  if (!artifact) {
+    return <ArtifactPreview errorMessage={errorMessage} state="error" title={t('pageTitle')} />
+  }
+
+  if (isImage) {
+    return (
+      <ArtifactPreview
+        errorMessage={t('previewUnavailable')}
+        imageDataUrl={imageQuery.data?.dataUrl}
+        kind={artifact.kind}
+        state={imageQuery.isError ? 'error' : imageQuery.isLoading ? 'loading' : 'ready'}
+        title={artifact.title}
+      />
+    )
+  }
+
+  if (usesSummaryPreview) {
+    return (
+      <ArtifactPreview
+        content={artifact.preview}
+        errorMessage={t('missingContentRef')}
+        kind={artifact.kind}
+        state="ready"
+        title={artifact.title}
+      />
+    )
+  }
+
+  return (
+    <ArtifactPreview
+      content={contentQuery.data?.content}
+      contentType={contentQuery.data?.contentType}
+      errorMessage={t('previewUnavailable')}
+      kind={artifact.kind}
+      state={contentQuery.isError ? 'error' : contentQuery.isLoading ? 'loading' : 'ready'}
+      title={artifact.title}
+    />
   )
 }

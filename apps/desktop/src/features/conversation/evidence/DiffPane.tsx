@@ -14,10 +14,34 @@ export function DiffPane({
   onChangeSetClick?: () => void
 }) {
   const { t } = useTranslation('conversation')
+  const commandClient = useCommandClient()
   const [selectedFileIndex, setSelectedFileIndex] = useState(0)
+  const [copyingPatchRef, setCopyingPatchRef] = useState<string | null>(null)
   const selectedFile = files[selectedFileIndex]
   const isBinaryOrGenerated =
     selectedFile?.riskFlags?.some((f) => f === 'binary' || f === 'generated') ?? false
+
+  const copySelectedFile = async () => {
+    if (!selectedFile) {
+      return
+    }
+    if (selectedFile.fullPatchRef) {
+      setCopyingPatchRef(selectedFile.fullPatchRef)
+      try {
+        const response = await commandClient.getConversationDiffPatch({
+          conversationId,
+          fullPatchRef: selectedFile.fullPatchRef,
+        })
+        await navigator.clipboard?.writeText(response.patch)
+      } finally {
+        setCopyingPatchRef(null)
+      }
+      return
+    }
+    if (selectedFile.preview) {
+      await navigator.clipboard?.writeText(selectedFile.preview)
+    }
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -57,11 +81,8 @@ export function DiffPane({
                 />
               ) : null}
               <CopyButton
-                onClick={() => {
-                  if (selectedFile.preview) {
-                    void navigator.clipboard?.writeText(selectedFile.preview)
-                  }
-                }}
+                disabled={copyingPatchRef === selectedFile.fullPatchRef}
+                onClick={() => void copySelectedFile()}
               />
             </div>
           </div>
@@ -156,11 +177,12 @@ function FetchFullPatchButton({
   )
 }
 
-function CopyButton({ onClick }: { onClick: () => void }) {
+function CopyButton({ disabled = false, onClick }: { disabled?: boolean; onClick: () => void }) {
   return (
     <button
       aria-label="Copy"
       className="inline-flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+      disabled={disabled}
       onClick={onClick}
       type="button"
     >

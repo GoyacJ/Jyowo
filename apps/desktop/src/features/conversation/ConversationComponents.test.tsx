@@ -76,7 +76,7 @@ describe('conversation components', () => {
     expect(screen.getByText('apps/desktop/src-tauri/src/lib.rs')).toBeInTheDocument()
     expect(screen.getByText('+46')).toBeInTheDocument()
     expect(screen.getByText('-0')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Copy diff' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copy diff' })).not.toBeInTheDocument()
   })
 
   it('keeps diff metadata lines neutral in legacy diff previews', () => {

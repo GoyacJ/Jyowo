@@ -190,6 +190,8 @@ mod memory;
 mod model_usage_summary;
 #[path = "commands/official_quota.rs"]
 mod official_quota;
+#[path = "commands/permission_confirmation.rs"]
+mod permission_confirmation;
 #[path = "commands/permissions.rs"]
 mod permissions;
 #[path = "commands/preview_support.rs"]

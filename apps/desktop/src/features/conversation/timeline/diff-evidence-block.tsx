@@ -34,7 +34,6 @@ export function DiffEvidenceBlock({
   const { t } = useTranslation('conversation')
   const visibleLines = lines.slice(0, maxVisibleLines)
   const hiddenLineCount = Math.max(0, lines.length - visibleLines.length)
-  const copyText = useMemo(() => visibleLines.map(formatDiffLineForCopy).join('\n'), [visibleLines])
   const highlightedLines = useHighlightedDiffLines(filename, visibleLines)
 
   return (
@@ -46,27 +45,23 @@ export function DiffEvidenceBlock({
           <span className="shrink-0 text-success">+{addedLineCount}</span>
           <span className="shrink-0 text-destructive">-{removedLineCount}</span>
         </div>
-        <TooltipProvider delayDuration={150}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                aria-label={t('diff.copy')}
-                className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                type="button"
-                onClick={() => {
-                  if (onCopy) {
-                    onCopy()
-                    return
-                  }
-                  void navigator.clipboard?.writeText(copyText)
-                }}
-              >
-                <Copy className="size-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>{t('diff.copy')}</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        {onCopy ? (
+          <TooltipProvider delayDuration={150}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  aria-label={t('diff.copy')}
+                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  type="button"
+                  onClick={onCopy}
+                >
+                  <Copy className="size-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>{t('diff.copy')}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        ) : null}
       </div>
       <div
         className="max-h-[360px] overflow-auto bg-code-background font-mono text-[12px] leading-5"
@@ -277,8 +272,4 @@ function formatLineNumber(line: DiffEvidenceLine) {
     return String(line.newLineNumber)
   }
   return ''
-}
-
-function formatDiffLineForCopy(line: DiffEvidenceLine) {
-  return `${line.prefix}${line.content}`
 }

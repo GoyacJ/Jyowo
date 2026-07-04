@@ -1372,6 +1372,7 @@ export const zhCN = {
     preview: '预览',
     loadingPreview: '正在加载产物预览。',
     noPreview: '暂无预览。',
+    missingContentRef: '产物内容引用缺失。',
     largePreviewTruncated: '大型预览已截断。',
     openFullOutput: '打开产物查看完整输出。',
   },

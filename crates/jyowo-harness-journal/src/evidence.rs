@@ -310,7 +310,7 @@ impl EvidenceRefStore {
             }
             EvidenceRefSource::JournalPayload { .. } => {
                 return Err(JournalError::Message(
-                    "journal-backed evidence reads not yet implemented".to_owned(),
+                    "journal-backed evidence reads are unavailable".to_owned(),
                 ));
             }
         };
@@ -347,6 +347,17 @@ impl EvidenceRefStore {
         Ok(())
     }
 
+    /// List evidence refs registered for a conversation.
+    pub async fn list_for_conversation(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+    ) -> Result<Vec<EvidenceRefRecord>, JournalError> {
+        self.registry
+            .list_for_conversation(tenant, conversation_id)
+            .await
+    }
+
     /// List live blob roots for GC.
     pub async fn list_live_blob_roots(
         &self,
@@ -375,11 +386,18 @@ fn validate_redaction_provenance(provenance: &RedactionProvenance) -> Result<(),
 }
 
 fn same_stable_evidence_metadata(left: &EvidenceRefRecord, right: &EvidenceRefRecord) -> bool {
+    stable_evidence_ref_metadata(left, right) && left.source_event_refs == right.source_event_refs
+}
+
+fn compatible_evidence_ref_metadata(left: &EvidenceRefRecord, right: &EvidenceRefRecord) -> bool {
+    stable_evidence_ref_metadata(left, right) && left.source == right.source
+}
+
+fn stable_evidence_ref_metadata(left: &EvidenceRefRecord, right: &EvidenceRefRecord) -> bool {
     left.id == right.id
         && left.kind == right.kind
         && left.conversation_id == right.conversation_id
         && left.run_id == right.run_id
-        && left.source_event_refs == right.source_event_refs
         && left.artifact_id == right.artifact_id
         && left.revision_id == right.revision_id
         && left.content_type == right.content_type
@@ -426,7 +444,7 @@ impl EvidenceRefRegistry for InMemoryEvidenceRefRegistry {
             .lock()
             .map_err(|e| JournalError::Message(format!("lock error: {e}")))?;
         if let Some(existing) = records.iter().find(|r| r.id == record.id) {
-            if existing == &record {
+            if compatible_evidence_ref_metadata(existing, &record) {
                 return Ok(());
             }
             return Err(JournalError::Message(format!(
@@ -585,7 +603,7 @@ impl EvidenceRefRegistry for SqliteEvidenceRefRegistry {
         validate_redaction_provenance(&record.redaction_provenance)?;
         let connection = self.connection.lock().await;
         if let Some(existing) = get_sqlite_record(&connection, tenant, &record.id)? {
-            if existing == record {
+            if compatible_evidence_ref_metadata(&existing, &record) {
                 return Ok(());
             }
             return Err(JournalError::Message(format!(

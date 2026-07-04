@@ -1641,6 +1641,26 @@ describe('CommandClient', () => {
     ).rejects.toThrow(TauriCommandPayloadError)
   })
 
+  it('rejects artifact media preview payloads when data URL MIME differs from mimeType', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        dataUrl: 'data:image/jpeg;base64,iVBORw0KGgo=',
+        mimeType: 'image/png',
+        sizeBytes: 67,
+      }),
+    )
+
+    await expect(
+      getArtifactMediaPreview(
+        {
+          conversationId: 'conversation-001',
+          artifactId: 'artifact-image-001',
+        },
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
   it('models attachment media preview command without exposing blob paths', async () => {
     const invoke = vi.fn().mockResolvedValue({
       dataUrl: 'data:image/png;base64,iVBORw0KGgo=',

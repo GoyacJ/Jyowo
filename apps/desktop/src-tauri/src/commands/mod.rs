@@ -153,10 +153,10 @@ pub use background_agents::{
     resume_background_agent_with_runtime_state, send_background_agent_input_with_runtime_state,
 };
 pub use contracts::{
-    AppInfoPayload, ArtifactSummaryPayload, AttachmentBlobRefPayload, AttachmentReferencePayload,
-    AutomationStore, BackgroundAgentActionResponse, BackgroundAgentDeleteResponse,
-    BackgroundAgentIdRequest, BackgroundAgentPayload, BrowserMcpPresetId,
-    BrowserMcpPresetSummaryPayload, CancelRunRequest, CancelRunResponse,
+    AppInfoPayload, ArtifactRevisionPayload, ArtifactSummaryPayload, AttachmentBlobRefPayload,
+    AttachmentReferencePayload, AutomationStore, BackgroundAgentActionResponse,
+    BackgroundAgentDeleteResponse, BackgroundAgentIdRequest, BackgroundAgentPayload,
+    BrowserMcpPresetId, BrowserMcpPresetSummaryPayload, CancelRunRequest, CancelRunResponse,
     ClearMcpDiagnosticsRequest, ClearMcpDiagnosticsResponse, ContextDecisionPayload,
     ContextFilePayload, ContextReferencePayload, ConversationEventBatchEmitter,
     ConversationEventBatchPayload, ConversationMessagePayload, ConversationMetadataFile,

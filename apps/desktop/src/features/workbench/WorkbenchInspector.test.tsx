@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { UiState } from '@/shared/state/ui-store'
 import { uiStore } from '@/shared/state/ui-store'
@@ -240,6 +240,19 @@ describe('WorkbenchInspector', () => {
   })
 
   it('renders the selected diff pane from the worktree projection', async () => {
+    const originalClipboard = navigator.clipboard
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const getConversationDiffPatch = vi.fn().mockResolvedValue({
+      patch: 'diff --git a/WorkbenchInspector.tsx b/WorkbenchInspector.tsx\n+full patch content\n',
+      contentType: 'text/x-diff; charset=utf-8',
+      byteLength: 82,
+      truncated: false,
+      redactionState: 'clean',
+    })
     setupStore({
       inspectorOpen: true,
       workbenchSelection: {
@@ -248,16 +261,36 @@ describe('WorkbenchInspector', () => {
         changeSetId: 'change-set-inspector',
       },
     })
-    renderInspector(
-      createTestCommandClient({
-        conversationWorktreePage: worktreePage([inspectorTurn()]),
-      }),
-    )
+    try {
+      renderInspector(
+        createTestCommandClient({
+          conversationDiffPatch: getConversationDiffPatch,
+          conversationWorktreePage: worktreePage([inspectorTurn()]),
+        }),
+      )
 
-    expect(await screen.findByText('Updated inspector UI')).toBeInTheDocument()
-    expect(screen.getByText('WorkbenchInspector.tsx')).toBeInTheDocument()
-    expect(screen.getByText('+ render real inspector pane')).toBeInTheDocument()
-    expect(screen.queryByText('File changes and patch details.')).not.toBeInTheDocument()
+      expect(await screen.findByText('Updated inspector UI')).toBeInTheDocument()
+      expect(screen.getByText('WorkbenchInspector.tsx')).toBeInTheDocument()
+      expect(screen.getByText('+ render real inspector pane')).toBeInTheDocument()
+      expect(screen.queryByText('File changes and patch details.')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+
+      await waitFor(() =>
+        expect(getConversationDiffPatch).toHaveBeenCalledWith({
+          conversationId: 'conversation-inspector',
+          fullPatchRef: 'evidence-diff-inspector',
+        }),
+      )
+      expect(writeText).toHaveBeenCalledWith(
+        'diff --git a/WorkbenchInspector.tsx b/WorkbenchInspector.tsx\n+full patch content\n',
+      )
+    } finally {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: originalClipboard,
+      })
+    }
   })
 
   it('renders the selected artifact pane and fetches content through the command client', async () => {

@@ -13,7 +13,7 @@ function scrollToEnd(endElement: HTMLElement | null) {
 
 export function useConversationScrollAnchor(
   latestAnchorKey: string | null,
-  options: { isStreamingUpdate?: boolean; streamingScrollTick?: number } = {},
+  options: { isStreamingUpdate?: boolean; streamingScrollTick?: number | string } = {},
 ) {
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)

@@ -2,15 +2,17 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use harness_contracts::{
-    BlobId, BlobRef, BlobRetention, ConversationEventRef, EvidenceRedactionState, EvidenceRefId,
-    EvidenceRefKind, NoopRedactor, SessionId, TenantId,
+    ArtifactCreatedEvent, ArtifactRevisionId, ArtifactSource, ArtifactStatus, BlobId, BlobMeta,
+    BlobRef, BlobRetention, BlobStore, ConversationEventRef, Event, EvidenceRedactionState,
+    EvidenceRefId, EvidenceRefKind, NoopRedactor, RunId, SessionId, TenantId,
 };
 use harness_journal::evidence::{
     EvidenceRefRecord, EvidenceRefSource, EvidenceRefStore, InMemoryEvidenceRefRegistry,
     RedactionProvenance,
 };
-use harness_journal::InMemoryEventStore;
+use harness_journal::{EventStore, InMemoryEventStore};
 use jyowo_harness_sdk::{testing::*, Harness, SessionOptions};
 
 fn record(
@@ -69,6 +71,22 @@ async fn harness_with_store(
         builder = builder.with_evidence_ref_store_arc(store);
     }
     builder.build().await.expect("harness builds")
+}
+
+async fn harness_with_event_blob_and_evidence_stores(
+    event_store: Arc<InMemoryEventStore>,
+    blob_store: Arc<InMemoryBlobStore>,
+    evidence_store: Arc<EvidenceRefStore>,
+) -> jyowo_harness_sdk::Harness {
+    Harness::builder()
+        .with_model(TestModelProvider::default())
+        .with_store(event_store)
+        .with_sandbox(NoopSandbox::new())
+        .with_blob_store_arc(blob_store)
+        .with_evidence_ref_store_arc(evidence_store)
+        .build()
+        .await
+        .expect("harness builds")
 }
 
 #[tokio::test]
@@ -176,4 +194,64 @@ async fn delete_conversation_session_removes_configured_evidence_refs() {
         .await
         .expect("harness lists live roots after delete")
         .is_empty());
+}
+
+#[tokio::test]
+async fn artifact_content_refs_ignore_events_with_mismatched_session_id() {
+    let requested_session_id = SessionId::new();
+    let embedded_session_id = SessionId::new();
+    let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let blob_store = Arc::new(InMemoryBlobStore::default());
+    let evidence_store = Arc::new(EvidenceRefStore::new(
+        Arc::new(InMemoryEvidenceRefRegistry::new()),
+        blob_store.clone(),
+    ));
+    let bytes = Bytes::from_static(b"wrong session artifact body");
+    let content_hash = *blake3::hash(&bytes).as_bytes();
+    let blob_ref = blob_store
+        .put(
+            TenantId::SINGLE,
+            bytes.clone(),
+            BlobMeta {
+                content_type: Some("text/plain".to_owned()),
+                size: bytes.len() as u64,
+                content_hash,
+                created_at: chrono::Utc::now(),
+                retention: BlobRetention::SessionScoped(embedded_session_id),
+            },
+        )
+        .await
+        .expect("blob writes");
+    event_store
+        .append(
+            TenantId::SINGLE,
+            requested_session_id,
+            &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                revision_id: ArtifactRevisionId::new(),
+                artifact_id: "wrong-session-artifact".to_owned(),
+                at: chrono::Utc::now(),
+                blob_ref: Some(blob_ref),
+                content_hash: Some(content_hash.to_vec()),
+                kind: "text".to_owned(),
+                preview: Some("Wrong session".to_owned()),
+                run_id: RunId::new(),
+                session_id: embedded_session_id,
+                source: ArtifactSource::Assistant,
+                source_message_id: None,
+                source_tool_use_id: None,
+                status: ArtifactStatus::Ready,
+                title: "Wrong session artifact".to_owned(),
+            })],
+        )
+        .await
+        .expect("event appends");
+    let harness =
+        harness_with_event_blob_and_evidence_stores(event_store, blob_store, evidence_store).await;
+
+    let refs = harness
+        .list_artifact_content_evidence_refs(TenantId::SINGLE, &requested_session_id.to_string())
+        .await
+        .expect("artifact evidence refs list");
+
+    assert!(refs.is_empty());
 }

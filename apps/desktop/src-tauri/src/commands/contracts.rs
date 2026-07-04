@@ -1548,7 +1548,9 @@ pub struct GetArtifactRevisionContentResponse {
     pub byte_length: u64,
     pub truncated: bool,
     pub redaction_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub revision_id: Option<String>,
 }
 
@@ -1792,6 +1794,17 @@ pub struct ExportSupportBundleResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ArtifactRevisionPayload {
+    pub revision_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_ref: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ArtifactSummaryPayload {
     pub action_label: String,
     pub description: String,
@@ -1799,12 +1812,16 @@ pub struct ArtifactSummaryPayload {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub revisions: Vec<ArtifactRevisionPayload>,
     #[serde(skip_serializing)]
     pub source_message_id: Option<String>,
     #[serde(skip_serializing)]
     pub source_run_id: String,
     pub status: &'static str,
     pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

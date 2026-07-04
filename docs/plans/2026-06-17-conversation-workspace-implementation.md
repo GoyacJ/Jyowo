@@ -958,7 +958,7 @@ pnpm -C apps/desktop typecheck
 
 1. Define payload structs with explicit `serde` shape.
 2. Register commands in `generate_handler!`.
-3. For initial implementation, return SDK-backed or explicitly placeholder data that is safe and typed.
+3. For initial implementation, return SDK-backed or explicitly typed fixture metadata.
 4. Add Rust command tests.
 5. Update frontend/backend docs command lists.
 6. Run:

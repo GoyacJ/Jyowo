@@ -287,10 +287,13 @@ list_artifacts
 list_eval_cases
 get_context_snapshot
 get_artifact_media_preview
+get_artifact_revision_content
 get_attachment_media_preview
 get_app_info
 get_background_agent
 get_conversation
+get_conversation_command_output
+get_conversation_diff_patch
 get_execution_settings
 get_memory_item
 get_model_usage_summary
@@ -415,6 +418,10 @@ get_artifact_media_preview(
   conversation_id: String,
   artifact_id: String
 ) -> Result<GetArtifactMediaPreviewResponse, CommandErrorPayload>
+get_artifact_revision_content(
+  conversation_id: String,
+  content_ref: String
+) -> Result<GetArtifactRevisionContentResponse, CommandErrorPayload>
 get_attachment_media_preview(
   conversation_id: String,
   attachment_id: String
@@ -430,6 +437,14 @@ get_background_agent(
   conversation_id: Option<String>
 ) -> Result<GetBackgroundAgentResponse, CommandErrorPayload>
 get_conversation(conversation_id: String) -> Result<GetConversationResponse, CommandErrorPayload>
+get_conversation_command_output(
+  conversation_id: String,
+  full_output_ref: String
+) -> Result<GetConversationCommandOutputResponse, CommandErrorPayload>
+get_conversation_diff_patch(
+  conversation_id: String,
+  full_patch_ref: String
+) -> Result<GetConversationDiffPatchResponse, CommandErrorPayload>
 get_execution_settings(workspace_path?: string) -> Result<GetExecutionSettingsResponse, CommandErrorPayload>
 get_memory_item(id: String) -> Result<GetMemoryItemResponse, CommandErrorPayload>
 get_model_usage_summary() -> Result<GetModelUsageSummaryResponse, CommandErrorPayload>

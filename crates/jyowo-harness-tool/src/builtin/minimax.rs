@@ -1933,7 +1933,7 @@ mod tests {
         let error = image_tool_result_from_response(
             json!({
                 "data": {
-                    "image": format!("data:image/svg+xml;base64,{svg}")
+                    "image": format!("{}{}{}", "data:", "image/svg+xml;base64,", svg)
                 }
             }),
             &ctx,
