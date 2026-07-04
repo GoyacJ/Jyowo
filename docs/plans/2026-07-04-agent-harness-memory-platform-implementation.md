@@ -1902,8 +1902,8 @@ git commit -m "feat(memory): add settings and thread controls"
 - Context panel separates `Context Sources` from `Model Request Preview`.
 - UI never marks a memory setting as successful until backend command returns success.
 
-- [ ] Write failing frontend tests for settings, inbox candidate actions, recall trace rendering, and distinct preview panel.
-- [ ] Run targeted red tests:
+- [x] Write failing frontend tests for settings, inbox candidate actions, recall trace rendering, and distinct preview panel.
+- [x] Run targeted red tests:
 
 ```bash
 pnpm --dir apps/desktop test src/features/memory/MemoryBrowser.test.tsx
@@ -1911,14 +1911,14 @@ pnpm --dir apps/desktop test src/features/conversation/Composer.test.tsx
 pnpm --dir apps/desktop test src/features/context/ContextPanel.test.tsx
 ```
 
-- [ ] Implement UI using existing shared UI components and TanStack Query patterns.
-- [ ] Keep cards at existing radius and avoid nested cards.
-- [ ] Cover loading, empty, error, and ready states for every new panel.
-- [ ] Run targeted verification with the same commands.
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 11.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
+- [x] Implement UI using existing shared UI components and TanStack Query patterns.
+- [x] Keep cards at existing radius and avoid nested cards.
+- [x] Cover loading, empty, error, and ready states for every new panel.
+- [x] Run targeted verification with the same commands.
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 11.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit:
 
 ```bash
 git add apps/desktop/src/features apps/desktop/src/routes
