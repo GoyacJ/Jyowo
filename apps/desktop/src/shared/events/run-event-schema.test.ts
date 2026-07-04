@@ -1177,11 +1177,40 @@ describe('RunEvent schema', () => {
       ...runEventFixtures[9],
       payload: {
         actorSource: { type: 'parentRun' },
+        actionPlanHash: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
         decisionScope: 'current run',
+        effectiveMode: 'default',
         exposure: 'Can modify package metadata and lockfile.',
         operation: 'Install dependencies',
         reason: 'The run requested package installation.',
+        review: {
+          confirmation: {
+            type: 'typeToConfirm',
+            expected: 'OVERWRITE',
+          },
+          details: [
+            {
+              label: 'Target',
+              redacted: false,
+              value: 'workspace://package.json',
+            },
+          ],
+          redacted: false,
+          summary: 'Install dependencies',
+        },
         requestId: '01HZ0000000000000000000001',
+        sandboxPolicy: {
+          mode: { osLevel: 'none' },
+          network: 'none',
+          resourceLimits: {
+            maxCpuCores: 1,
+            maxMemoryBytes: 268435456,
+            maxOpenFiles: 128,
+            maxPids: 64,
+            maxWallClockMs: 30000,
+          },
+          scope: 'workspace_only',
+        },
         severity: 'high',
         target: 'workspace package manager',
         toolUseId: 'tool-001',
@@ -1191,9 +1220,99 @@ describe('RunEvent schema', () => {
 
     expect(event.payload).toMatchObject({
       operation: 'Install dependencies',
+      effectiveMode: 'default',
       target: 'workspace package manager',
       toolUseId: 'tool-001',
     })
+  })
+
+  it('parses automation and MCP server actor sources for permission requests', () => {
+    const permissionPayload = runEventFixtures[9].payload as Record<string, unknown>
+
+    const automation = runEventSchema.parse({
+      ...runEventFixtures[9],
+      payload: {
+        ...permissionPayload,
+        actorSource: {
+          automationId: 'automation-nightly',
+          conversationId: 'conversation-001',
+          runId: 'run-001',
+          type: 'automation',
+        },
+      },
+    })
+    expect(automation.payload).toMatchObject({
+      actorSource: {
+        automationId: 'automation-nightly',
+        conversationId: 'conversation-001',
+        runId: 'run-001',
+        type: 'automation',
+      },
+    })
+
+    const mcpServer = runEventSchema.parse({
+      ...runEventFixtures[9],
+      payload: {
+        ...permissionPayload,
+        actorSource: {
+          origin: {
+            endpoint: 'registry.example/redacted',
+            type: 'remoteRegistry',
+          },
+          scope: {
+            conversationId: 'conversation-001',
+            type: 'session',
+          },
+          serverId: 'browser',
+          type: 'mcpServer',
+        },
+      },
+    })
+    expect(mcpServer.payload).toMatchObject({
+      actorSource: {
+        serverId: 'browser',
+        type: 'mcpServer',
+      },
+    })
+  })
+
+  it('rejects unsafe permission review and actor source payloads', () => {
+    const permissionPayload = runEventFixtures[9].payload as Record<string, unknown>
+
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[9],
+        payload: {
+          ...permissionPayload,
+          review: {
+            confirmation: { type: 'typeToConfirm', expected: 'sk-abcdefghijklmnopqrstuvwxyz' },
+            details: [],
+            redacted: false,
+            summary: 'Dangerous command',
+          },
+        },
+      }),
+    ).toThrow()
+
+    expect(() =>
+      runEventSchema.parse({
+        ...runEventFixtures[9],
+        payload: {
+          ...permissionPayload,
+          actorSource: {
+            origin: {
+              endpoint: 'https://registry.example/raw?token=sk-secret-token',
+              type: 'remoteRegistry',
+            },
+            scope: {
+              type: 'global',
+            },
+            serverId: 'browser',
+            type: 'mcpServer',
+          },
+        },
+      }),
+    ).toThrow()
   })
 
   it('rejects permission requests without minimum review context', () => {

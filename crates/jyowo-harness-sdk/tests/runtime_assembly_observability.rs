@@ -209,6 +209,7 @@ fn mcp_tools_are_injected_into_default_session() {
             .create_session(
                 SessionOptions::new(&workspace)
                     .with_session_id(session_id)
+                    .with_permission_mode(PermissionMode::BypassPermissions)
                     .with_tool_search_mode(ToolSearchMode::Always),
             )
             .await
@@ -463,16 +464,24 @@ fn tool_search_pending_mcp_servers_reflect_registry_state_and_retains_deferred_d
             .build()
             .await
             .expect("harness should build");
-        let session = harness
-            .create_session(
-                SessionOptions::new(&workspace)
-                    .with_session_id(session_id)
-                    .with_tool_search_mode(ToolSearchMode::Always),
-            )
+        let options = SessionOptions::new(&workspace)
+            .with_session_id(session_id)
+            .with_tool_search_mode(ToolSearchMode::Always);
+        harness
+            .create_session(options.clone())
             .await
             .expect("session should be created");
 
-        session.run_turn("find pending mcp").await.expect("turn");
+        harness
+            .submit_conversation_turn(conversation_turn_request(
+                options,
+                ConversationTurnInput::ask("find pending mcp"),
+                Some(PermissionMode::BypassPermissions),
+                None,
+                None,
+            ))
+            .await
+            .expect("turn");
 
         let events: Vec<_> = store
             .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
@@ -491,7 +500,7 @@ fn tool_search_pending_mcp_servers_reflect_registry_state_and_retains_deferred_d
                 }
                 _ => None,
             })
-            .expect("tool_search should complete");
+            .unwrap_or_else(|| panic!("tool_search should complete; events: {events:#?}"));
 
         assert_eq!(
             tool_search_result["pending_mcp_servers"],

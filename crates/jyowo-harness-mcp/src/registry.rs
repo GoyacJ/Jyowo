@@ -17,10 +17,10 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::{
-    trust_level_for_source, FilterDecision, ManagedMcpConnection, McpChange, McpConnection,
-    McpConnectionState, McpError, McpEventSink, McpMetric, McpMetricsSink, McpServerPattern,
-    McpServerRef, McpServerScope, McpServerSpec, McpToolDescriptor, McpToolResult, McpToolWrapper,
-    McpTransport, NoopMcpMetricsSink, RequiredEvaluation,
+    trust_level_for_source, FilterDecision, ManagedMcpConnection, McpChange, McpConnectContext,
+    McpConnection, McpConnectionState, McpError, McpEventSink, McpMetric, McpMetricsSink,
+    McpServerPattern, McpServerRef, McpServerScope, McpServerSpec, McpToolDescriptor,
+    McpToolResult, McpToolWrapper, McpTransport, NoopMcpMetricsSink, RequiredEvaluation,
 };
 
 #[derive(Clone)]
@@ -132,6 +132,24 @@ impl McpRegistry {
         transport: Arc<dyn McpTransport>,
         event_sink: Arc<dyn McpEventSink>,
     ) -> Result<(), McpError> {
+        self.add_managed_server_with_context(
+            spec,
+            scope,
+            transport,
+            event_sink,
+            McpConnectContext::default(),
+        )
+        .await
+    }
+
+    pub async fn add_managed_server_with_context(
+        &self,
+        spec: McpServerSpec,
+        scope: McpServerScope,
+        transport: Arc<dyn McpTransport>,
+        event_sink: Arc<dyn McpEventSink>,
+        context: McpConnectContext,
+    ) -> Result<(), McpError> {
         let derived = trust_level_for_source(&spec.source);
         if spec.trust != derived {
             return Err(McpError::Protocol(format!(
@@ -141,12 +159,13 @@ impl McpRegistry {
         }
 
         let connection = Arc::new(
-            ManagedMcpConnection::connect_with_metrics(
+            ManagedMcpConnection::connect_with_context_and_metrics(
                 transport,
                 spec.clone(),
                 scope.clone(),
-                event_sink,
-                Arc::clone(&self.metrics_sink),
+                context
+                    .with_event_sink(Arc::clone(&event_sink))
+                    .with_metrics_sink(Arc::clone(&self.metrics_sink)),
             )
             .await?,
         );
@@ -484,6 +503,7 @@ impl McpRegistry {
             let tool = McpToolWrapper::new_with_metrics_and_cancel_ack_timeout(
                 server_id.clone(),
                 managed.spec.source.clone(),
+                managed.spec.manifest_origin.clone(),
                 managed.spec.trust,
                 mcp_tool,
                 Arc::clone(&managed.connection),
@@ -604,6 +624,7 @@ impl McpRegistry {
             let tool = McpToolWrapper::new_with_metrics_and_cancel_ack_timeout(
                 server_id.clone(),
                 managed.spec.source.clone(),
+                managed.spec.manifest_origin.clone(),
                 managed.spec.trust,
                 mcp_tool,
                 Arc::clone(&managed.connection),
@@ -1130,6 +1151,7 @@ fn session_id_for_scope(scope: &McpServerScope) -> Option<harness_contracts::Ses
     match scope {
         McpServerScope::Session(session_id) => Some(*session_id),
         McpServerScope::Global | McpServerScope::Agent(_) => None,
+        _ => None,
     }
 }
 

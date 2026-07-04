@@ -5,15 +5,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
-    BudgetMetric, Decision, DeferPolicy, Event, OverflowAction, ProviderRestriction,
-    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode,
-    ToolUseId, TrustLevel,
+    BudgetMetric, Decision, DeferPolicy, Event, NetworkAccess, OverflowAction, PermissionMode,
+    ProviderRestriction, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_journal::{EventStore, ReplayCursor};
 use harness_model::{ContentDelta, ModelRequest, ModelStreamEvent};
 use harness_tool::{
-    BuiltinToolset, PermissionCheck, Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream,
-    ValidationError,
+    action_plan_from_permission_check, AuthorizedToolInput, BuiltinToolset, PermissionCheck, Tool,
+    ToolContext, ToolEvent, ToolRegistry, ToolStream, ValidationError,
 };
 use harness_tool_search::{ScoringContext, ScoringTerms, ToolSearchScorer};
 use jyowo_harness_sdk::{prelude::*, testing::*};
@@ -65,7 +65,8 @@ async fn sdk_tool_search_flow_searches_deferred_tools_by_default() {
         .create_session(
             SessionOptions::new(unique_workspace("sdk-tool-search-default"))
                 .with_session_id(session_id)
-                .with_tool_search_mode(ToolSearchMode::Always),
+                .with_tool_search_mode(ToolSearchMode::Always)
+                .with_permission_mode(PermissionMode::BypassPermissions),
         )
         .await
         .expect("session should be created");
@@ -188,7 +189,8 @@ async fn sdk_tool_search_flow_custom_scorer_controls_match_order() {
         .create_session(
             SessionOptions::new(unique_workspace("sdk-tool-search-custom"))
                 .with_session_id(session_id)
-                .with_tool_search_mode(ToolSearchMode::Always),
+                .with_tool_search_mode(ToolSearchMode::Always)
+                .with_permission_mode(PermissionMode::BypassPermissions),
         )
         .await
         .expect("session should be created");
@@ -321,11 +323,23 @@ impl Tool for TestTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, _input: Value, _ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        _authorized: AuthorizedToolInput,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(stream::iter([ToolEvent::Final(
             ToolResult::Text("ok".to_owned()),
         )])))

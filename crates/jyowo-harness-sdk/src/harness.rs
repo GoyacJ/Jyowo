@@ -59,6 +59,7 @@ use harness_engine::{
 };
 #[cfg(feature = "steering-queue")]
 use harness_engine::{SteeringDrain, SteeringMerge};
+use harness_execution::{AuthorizationEventSink, ExecutionError};
 use harness_hook::{
     DispatchResult, ExecHookTransport, HookContext, HookDispatcher, HookEvent,
     HookExecResourceLimits, HookExecSignalPolicy, HookExecSpec, HookFailureCause, HookHandler,
@@ -94,8 +95,8 @@ use harness_model::{
 use harness_observability::DefaultRedactor;
 use harness_observability::{AttributeValue, Observer, SpanAttributes, SpanStatus, Tracer};
 use harness_permission::{
-    DecisionPersistence, PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
-    RuleProvider,
+    DecisionPersistence, DecisionStore, PermissionBroker, PermissionContext, PermissionRequest,
+    PersistedDecision, RuleProvider,
 };
 #[cfg(feature = "stream-permission")]
 use harness_permission::{PendingPermissionRequest, ResolverHandle};
@@ -190,7 +191,7 @@ use self::events::{
 use self::limits::SessionLimitState;
 use self::memory::record_memory_summary_event;
 use self::metrics::{SdkMcpEventSink, SdkMcpMetricsSink};
-use self::permissions::{default_permission_broker, policy_gated_permission_broker};
+use self::permissions::{permission_authority_runtime, PermissionAuthorityBroker};
 use self::redaction::redact_business_event_for_display;
 use self::run_state::{ActiveConversationRun, ActiveConversationRunGuard, EngineSessionTurnRunner};
 use self::session_runtime::{sdk_session_not_found, snapshot_for_supported_model};
@@ -211,6 +212,8 @@ struct HarnessInner {
     permission_broker: Arc<dyn PermissionBroker>,
     #[cfg(feature = "stream-permission")]
     permission_resolver: Option<ResolverHandle>,
+    permission_authority: Arc<harness_permission::PermissionAuthority>,
+    authorization_service: Arc<harness_execution::AuthorizationService>,
     tool_registry: ToolRegistry,
     hook_registry: HookRegistry,
     memory_provider: Option<Arc<dyn MemoryProvider>>,
@@ -245,6 +248,33 @@ struct HarnessInner {
     provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
 }
 
+struct SdkAuthorizationEventSink {
+    event_store: Arc<dyn EventStore>,
+    redactor: Arc<dyn Redactor>,
+}
+
+#[async_trait]
+impl AuthorizationEventSink for SdkAuthorizationEventSink {
+    async fn emit_batch(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+        events: Vec<Event>,
+    ) -> Result<(), ExecutionError> {
+        let events = events
+            .into_iter()
+            .map(|event| redact_business_event_for_display(event, self.redactor.as_ref()))
+            .collect::<Vec<_>>();
+        self.event_store
+            .append(tenant_id, session_id, &events)
+            .await
+            .map(|_| ())
+            .map_err(|error| ExecutionError::EventSinkFailed {
+                reason: error.to_string(),
+            })
+    }
+}
+
 impl Harness {
     #[must_use]
     pub fn builder() -> HarnessBuilder<Unset, Unset, Unset> {
@@ -271,19 +301,61 @@ impl Harness {
                 HarnessError::Hook(harness_contracts::HookError::Message(error.to_string()))
             })?,
         };
-        let permission_broker = match extras.permission_broker.take() {
-            Some(broker) => {
-                policy_gated_permission_broker(&builder.options, broker, &extras.rule_providers)
-                    .await?
-            }
-            None => {
-                default_permission_broker(
-                    &builder.options,
-                    &extras.rule_providers,
-                    extras.decision_persistence.take(),
-                )
-                .await?
-            }
+        let observer = match extras.observer.take() {
+            Some(observer) => Some(observer),
+            None => Some(Arc::new(
+                Observer::builder()
+                    .build()
+                    .map_err(|error| HarnessError::Other(error.to_string()))?,
+            )),
+        };
+        let authorization_service = extras.authorization_service.take();
+        let permission_authority =
+            match (extras.permission_authority.take(), &authorization_service) {
+                (Some(authority), Some(service)) => {
+                    let service_authority = service.permission_authority();
+                    if !Arc::ptr_eq(&authority, &service_authority) {
+                        return Err(HarnessError::PermissionDenied(
+                        "authorization service and permission authority must use the same authority"
+                            .to_owned(),
+                    ));
+                    }
+                    authority
+                }
+                (Some(authority), None) => authority,
+                (None, Some(service)) => service.permission_authority(),
+                (None, None) => {
+                    let runtime = permission_authority_runtime(
+                        &builder.options,
+                        extras.permission_broker.take(),
+                        &extras.rule_providers,
+                        extras.decision_store.take(),
+                    )
+                    .await?;
+                    runtime.permission_authority
+                }
+            };
+        let permission_broker = Arc::new(PermissionAuthorityBroker {
+            authority: Arc::clone(&permission_authority),
+            policy_broker: permission_authority.policy_broker(),
+            decision_store: permission_authority.decision_store(),
+        }) as Arc<dyn PermissionBroker>;
+        let authorization_service = if let Some(service) = authorization_service {
+            service
+        } else {
+            Arc::new(harness_execution::AuthorizationService::new(
+                Arc::clone(&permission_authority),
+                Arc::clone(&builder.sandbox.0),
+                Arc::new(SdkAuthorizationEventSink {
+                    event_store: Arc::clone(&builder.store.0),
+                    redactor: observer
+                        .as_ref()
+                        .expect("SDK observer is always initialized")
+                        .redactor
+                        .clone(),
+                }),
+                Arc::new(harness_execution::TicketLedger::default()),
+            ))
         };
         let skill_registry = SkillRegistry::builder().build();
         let mut mcp_config = extras.mcp_config.take();
@@ -303,14 +375,6 @@ impl Harness {
             registry.set_capability_registries(capability_registries);
         }
 
-        let observer = match extras.observer.take() {
-            Some(observer) => Some(observer),
-            None => Some(Arc::new(
-                Observer::builder()
-                    .build()
-                    .map_err(|error| HarnessError::Other(error.to_string()))?,
-            )),
-        };
         let tracer = extras.tracer.take().or_else(|| {
             observer
                 .as_ref()
@@ -383,6 +447,8 @@ impl Harness {
                 permission_broker,
                 #[cfg(feature = "stream-permission")]
                 permission_resolver: extras.permission_resolver.take(),
+                permission_authority,
+                authorization_service,
                 tool_registry,
                 hook_registry,
                 memory_provider: extras.memory_provider.take(),

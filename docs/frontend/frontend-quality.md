@@ -173,7 +173,7 @@ Rust workspace tests
 - active frontend docs do not contain old project names
 - required foundation concepts are present in active frontend docs
 
-Agent orchestration anti-fake gate:
+Agent orchestration and authorization anti-fake gate:
 
 ```text
 pnpm check:agent-orchestration-no-fakes
@@ -187,6 +187,16 @@ This gate fails agent-orchestration production UI and IPC surfaces that contain:
 - temporary scanner allowlists for hardcoded agent capability availability fields
 - noop agent commands that return fixed success without SDK/runtime delegation
 - frontend-only agent capability availability state not backed by command responses
+
+This gate also fails authorization, permission, and sandbox production surfaces that
+contain prohibited markers near authorization, permission, sandbox, ticket, or
+preflight context:
+
+- mock, fake, noop, placeholder, TODO, unimplemented markers near
+  authorization or sandbox context
+- allow-all or bypass-policy patterns near authorization or permission context
+- production fake, mock, or noop structs, functions, or names in permission,
+  sandbox, or execution crates
 
 Test files and unrelated placeholder UI are excluded. Capability availability in
 React must come from `shared/tauri` command responses and Zod parsing, not local

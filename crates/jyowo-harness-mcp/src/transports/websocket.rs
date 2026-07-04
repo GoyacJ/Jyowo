@@ -17,16 +17,17 @@ use tokio_tungstenite::{
 };
 
 use crate::{
-    call_tool_request, client_auth, continue_after_elicitation_response, decode_empty_result,
-    decode_list_prompts, decode_list_resources, decode_list_tools, decode_prompt_messages,
-    decode_read_resource, decode_tool_result, get_prompt_request, initialize_request,
-    initialized_notification, list_prompts_request, list_resources_request, list_tools_request,
-    notification_change, read_resource_request, response_key, subscribe_resource_request,
-    tool_call_event_from_change, unsubscribe_resource_request, ElicitationHandler,
-    JsonRpcNotification, JsonRpcPeer, JsonRpcRequest, JsonRpcResponse, ListChangedEvent, McpChange,
-    McpConnectContext, McpConnection, McpError, McpMetricsSink, McpPrompt, McpPromptMessages,
-    McpResource, McpResourceContents, McpServerSpec, McpToolCallEvent, McpToolCallStream,
-    McpToolDescriptor, McpToolResult, McpTransport, NoopMcpMetricsSink, TransportChoice,
+    authorize_mcp_transport_connect, call_tool_request, client_auth,
+    continue_after_elicitation_response, decode_empty_result, decode_list_prompts,
+    decode_list_resources, decode_list_tools, decode_prompt_messages, decode_read_resource,
+    decode_tool_result, get_prompt_request, initialize_request, initialized_notification,
+    list_prompts_request, list_resources_request, list_tools_request, notification_change,
+    read_resource_request, response_key, subscribe_resource_request, tool_call_event_from_change,
+    unsubscribe_resource_request, ElicitationHandler, JsonRpcNotification, JsonRpcPeer,
+    JsonRpcRequest, JsonRpcResponse, ListChangedEvent, McpChange, McpConnectContext, McpConnection,
+    McpError, McpMetricsSink, McpPrompt, McpPromptMessages, McpResource, McpResourceContents,
+    McpServerSpec, McpToolCallEvent, McpToolCallStream, McpToolDescriptor, McpToolResult,
+    McpTransport, NoopMcpMetricsSink, TransportChoice,
 };
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -72,6 +73,7 @@ impl McpTransport for WebsocketTransport {
         spec: McpServerSpec,
         context: McpConnectContext,
     ) -> Result<Arc<dyn McpConnection>, McpError> {
+        authorize_mcp_transport_connect(&context, &spec).await?;
         let TransportChoice::WebSocket { url, headers } = spec.transport.clone() else {
             return Err(McpError::Unsupported(
                 "WebsocketTransport requires TransportChoice::WebSocket".into(),

@@ -22,6 +22,14 @@ pub struct PermissionRequestedEvent {
     pub auto_resolved: bool,
     #[serde(default, skip_serializing_if = "PermissionActorSource::is_parent_run")]
     pub actor_source: PermissionActorSource,
+    #[serde(default)]
+    pub action_plan_hash: ActionPlanHash,
+    #[serde(default)]
+    pub review: PermissionReview,
+    #[serde(default)]
+    pub effective_mode: PermissionMode,
+    #[serde(default)]
+    pub sandbox_policy: SandboxPolicySummary,
     pub causation_id: EventId,
     pub at: DateTime<Utc>,
 }
@@ -52,6 +60,17 @@ pub enum PermissionActorSource {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         attempt_id: Option<RunId>,
     },
+    Automation {
+        automation_id: String,
+        conversation_id: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<RunId>,
+    },
+    McpServer {
+        server_id: McpServerId,
+        origin: ManifestOriginRef,
+        scope: McpServerScope,
+    },
 }
 
 impl Default for PermissionActorSource {
@@ -75,6 +94,12 @@ pub struct PermissionResolvedEvent {
     pub scope: DecisionScope,
     pub fingerprint: Option<ExecFingerprint>,
     pub rationale: Option<String>,
+    #[serde(default)]
+    pub action_plan_hash: ActionPlanHash,
+    #[serde(default)]
+    pub decision_id: DecisionId,
+    #[serde(default)]
+    pub auto_resolved: bool,
     pub at: DateTime<Utc>,
 }
 

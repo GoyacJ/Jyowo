@@ -53,6 +53,22 @@ impl Harness {
     }
 
     #[must_use]
+    pub fn permission_authority(&self) -> Option<Arc<harness_permission::PermissionAuthority>> {
+        Some(Arc::clone(&self.inner.permission_authority))
+    }
+
+    #[must_use]
+    pub fn authorization_service(&self) -> Arc<harness_execution::AuthorizationService> {
+        Arc::clone(&self.inner.authorization_service)
+    }
+
+    #[cfg(feature = "stream-permission")]
+    #[must_use]
+    pub fn permission_resolver_handle(&self) -> Option<ResolverHandle> {
+        self.inner.permission_resolver.clone()
+    }
+
+    #[must_use]
     pub fn tool_registry(&self) -> &ToolRegistry {
         &self.inner.tool_registry
     }

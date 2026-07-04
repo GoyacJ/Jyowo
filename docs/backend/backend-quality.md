@@ -127,6 +127,8 @@ crates/jyowo-harness-budget/tests/budget_contract.rs
 crates/jyowo-harness-contracts/tests/core_contracts.rs
 crates/jyowo-harness-contracts/tests/tool_contracts.rs
 crates/jyowo-harness-contracts/tests/provider_capability_routes.rs
+crates/jyowo-harness-execution/tests/authorization_flow.rs
+crates/jyowo-harness-execution/tests/ticket.rs
 crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs
 crates/jyowo-harness-journal/tests/conversation_read_model.rs
 crates/jyowo-harness-journal/tests/version.rs

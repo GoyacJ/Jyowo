@@ -76,6 +76,7 @@ mcp-server-adapter = ["jyowo-harness-mcp/server-adapter"]
 interactive-permission = ["jyowo-harness-permission/interactive"]
 stream-permission = ["jyowo-harness-permission/stream"]
 rule-engine-permission = ["jyowo-harness-permission/rule-engine"]
+integrity = ["jyowo-harness-permission/integrity"]
 memory-builtin = ["jyowo-harness-memory/builtin", "jyowo-harness-memory/threat-scanner"]
 memory-external-slot = [
   "jyowo-harness-memory/external-slot",
@@ -152,6 +153,7 @@ jyowo-harness-session = { path = "../jyowo-harness-session" }
 jyowo-harness-skill = { path = "../jyowo-harness-skill" }
 jyowo-harness-subagent = { path = "../jyowo-harness-subagent", optional = true }
 jyowo-harness-team = { path = "../jyowo-harness-team", optional = true }
+jyowo-harness-execution = { path = "../jyowo-harness-execution" }
 jyowo-harness-tool = { path = "../jyowo-harness-tool" }
 jyowo-harness-tool-search = { path = "../jyowo-harness-tool-search", optional = true }
 async-trait = { workspace = true }

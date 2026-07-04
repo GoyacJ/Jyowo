@@ -21,26 +21,30 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
-    AgentId, AgentRef, BudgetKind, CacheImpact, CapabilityRegistry, CorrelationId, DecidedBy,
-    Decision, Event, ForkReason, JournalOffset, KillScope, Message, MessageContent, MessageId,
-    MessageMetadata, MessagePart, MessageRole, NoopRedactor, PermissionActorSource, PermissionMode,
-    PermissionRequestedEvent, PermissionResolvedEvent, RunId, SandboxPolicy, SessionForkedEvent,
-    SessionId, SessionSnapshotKind, SnapshotId, SubagentAnnouncedEvent, SubagentCapAnnouncement,
+    ActionPlanHash, AgentId, AgentRef, BudgetKind, CacheImpact, CapabilityRegistry, CorrelationId,
+    DecidedBy, Decision, DecisionId, Event, ForkReason, JournalOffset, KillScope, Message,
+    MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, NoopRedactor,
+    PermissionActorSource, PermissionMode, PermissionRequestedEvent, PermissionResolvedEvent,
+    PermissionReview, RunId, SandboxPolicy, SandboxPolicySummary, SessionForkedEvent, SessionId,
+    SessionSnapshotKind, SnapshotId, SubagentAnnouncedEvent, SubagentCapAnnouncement,
     SubagentContextReport, SubagentId, SubagentParentContext, SubagentPermissionForwardedEvent,
     SubagentPermissionResolvedEvent, SubagentRunnerCap, SubagentSpawnHandle,
     SubagentSpawnPausedEvent, SubagentSpawnedEvent, SubagentStalledEvent, SubagentTerminatedEvent,
-    SubagentTerminationReason, TeamId, TenantId, ToolCapability, ToolDescriptor, ToolError,
-    ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TranscriptRef, TurnInput,
-    UsageSnapshot, UserMessageAppendedEvent,
+    SubagentTerminationReason, TeamId, TenantId, ToolActionPlan, ToolCapability, ToolDescriptor,
+    ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TranscriptRef,
+    TurnInput, UsageSnapshot, UserMessageAppendedEvent,
 };
 use harness_journal::{AppendMetadata, EventStore, ReplayCursor};
 use harness_model::{AuxExecutor, AuxModelProvider, AuxTask, ModelProtocol, ModelRequest};
 use harness_permission::{
-    hard_policy_denies_from_context, PermissionBroker, PermissionCheck, PermissionContext,
-    PermissionRequest,
+    canonical_permission_fingerprint, PermissionAuthority, PermissionAuthorityDecisionSource,
+    PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest,
 };
 use harness_session::{Session, SessionOptions};
-use harness_tool::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use harness_tool::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+    ToolStream, ValidationError,
+};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
@@ -484,7 +488,7 @@ impl From<SubagentParentContext> for ParentContext {
 }
 
 pub struct SubagentPermissionBridge {
-    parent_broker: Arc<dyn PermissionBroker>,
+    parent_authority: Arc<PermissionAuthority>,
     event_store: Arc<dyn EventStore>,
     tenant_id: TenantId,
     parent_session_id: SessionId,
@@ -504,8 +508,8 @@ struct ChildPermissionContext {
 
 impl SubagentPermissionBridge {
     #[must_use]
-    pub fn new(
-        parent_broker: Arc<dyn PermissionBroker>,
+    pub fn with_parent_authority(
+        parent_authority: Arc<PermissionAuthority>,
         event_store: Arc<dyn EventStore>,
         tenant_id: TenantId,
         parent_session_id: SessionId,
@@ -513,7 +517,7 @@ impl SubagentPermissionBridge {
         subagent_id: SubagentId,
     ) -> Self {
         Self {
-            parent_broker,
+            parent_authority,
             event_store,
             tenant_id,
             parent_session_id,
@@ -561,9 +565,6 @@ impl PermissionBroker for SubagentPermissionBridge {
             correlation: CorrelationId::new(),
         });
         let causation_id = harness_contracts::EventId::new();
-        let parent_decided_by = DecidedBy::Broker {
-            broker_id: "parent".to_owned(),
-        };
         let auto_resolved = matches!(
             ctx.permission_mode,
             PermissionMode::BypassPermissions | PermissionMode::DontAsk
@@ -592,6 +593,10 @@ impl PermissionBroker for SubagentPermissionBridge {
                     presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
                     interactivity: ctx.interactivity,
                     auto_resolved,
+                    action_plan_hash: legacy_action_plan_hash(&request),
+                    review: permission_review_from_request(&request),
+                    effective_mode: ctx.permission_mode,
+                    sandbox_policy: legacy_sandbox_policy_summary(),
                     actor_source: PermissionActorSource::Subagent {
                         subagent_id: self.subagent_id,
                         parent_session_id: self.parent_session_id,
@@ -638,15 +643,16 @@ impl PermissionBroker for SubagentPermissionBridge {
             return Decision::DenyOnce;
         }
 
-        let decision = if self.hard_policy_denies(&request, &ctx).await {
-            Decision::DenyOnce
-        } else {
-            self.parent_broker.decide(request.clone(), ctx).await
-        };
+        let parent_outcome = self
+            .parent_authority
+            .decide_with_audit(request.clone(), ctx)
+            .await;
+        let decision = parent_outcome.decision.clone();
         let forwarded_decided_by = DecidedBy::ParentForwarded {
             parent_session_id: self.parent_session_id,
-            original_decided_by: Box::new(parent_decided_by),
+            original_decided_by: Box::new(decided_by(&parent_outcome.decided_by)),
         };
+        let decision_id = DecisionId::new();
         if self
             .event_store
             .append_with_metadata(
@@ -659,10 +665,13 @@ impl PermissionBroker for SubagentPermissionBridge {
                 },
                 &[Event::PermissionResolved(PermissionResolvedEvent {
                     request_id: request.request_id,
+                    action_plan_hash: legacy_action_plan_hash(&request),
+                    decision_id,
                     decision: decision.clone(),
                     decided_by: forwarded_decided_by.clone(),
                     scope: request.scope_hint.clone(),
                     fingerprint: None,
+                    auto_resolved,
                     rationale: None,
                     at: Utc::now(),
                 })],
@@ -708,15 +717,89 @@ impl PermissionBroker for SubagentPermissionBridge {
         request: &PermissionRequest,
         ctx: &PermissionContext,
     ) -> bool {
-        self.parent_broker.hard_policy_denies(request, ctx).await
-            || hard_policy_denies_from_context(request, ctx)
+        self.parent_authority
+            .policy_broker()
+            .hard_policy_denies(request, ctx)
+            .await
     }
 
     async fn persist(
         &self,
         decision: harness_permission::PersistedDecision,
     ) -> Result<(), harness_contracts::PermissionError> {
-        self.parent_broker.persist(decision).await
+        self.parent_authority
+            .decision_store()
+            .persist(decision)
+            .await
+    }
+}
+
+fn legacy_action_plan_hash(request: &PermissionRequest) -> ActionPlanHash {
+    ActionPlanHash::from_bytes(canonical_permission_fingerprint(request).0)
+}
+
+fn decided_by(source: &PermissionAuthorityDecisionSource) -> DecidedBy {
+    match source {
+        PermissionAuthorityDecisionSource::PermissionMode => DecidedBy::DefaultMode,
+        PermissionAuthorityDecisionSource::HardPolicy | PermissionAuthorityDecisionSource::Rule => {
+            DecidedBy::Rule {
+                rule_id: "permission_authority".to_owned(),
+            }
+        }
+        PermissionAuthorityDecisionSource::PersistedDecision { .. }
+        | PermissionAuthorityDecisionSource::Dedup { .. }
+        | PermissionAuthorityDecisionSource::Interactive
+        | PermissionAuthorityDecisionSource::NoInteractive
+        | PermissionAuthorityDecisionSource::ScopeMismatch
+        | PermissionAuthorityDecisionSource::PersistenceFailed => DecidedBy::Broker {
+            broker_id: "permission_authority".to_owned(),
+        },
+    }
+}
+
+fn permission_review_from_request(request: &PermissionRequest) -> PermissionReview {
+    PermissionReview {
+        summary: format!(
+            "{} requests {}",
+            request.tool_name,
+            permission_subject_kind(&request.subject)
+        ),
+        details: vec![harness_contracts::PermissionReviewDetail {
+            label: "subject".to_owned(),
+            value: permission_subject_kind(&request.subject).to_owned(),
+            redacted: true,
+        }],
+        confirmation: harness_contracts::PermissionConfirmation::None,
+        redacted: true,
+    }
+}
+
+fn permission_subject_kind(subject: &harness_contracts::PermissionSubject) -> &'static str {
+    match subject {
+        harness_contracts::PermissionSubject::ToolInvocation { .. } => "tool invocation access",
+        harness_contracts::PermissionSubject::CommandExec { .. } => "command execution access",
+        harness_contracts::PermissionSubject::FileWrite { .. } => "file write access",
+        harness_contracts::PermissionSubject::FileDelete { .. } => "file delete access",
+        harness_contracts::PermissionSubject::NetworkAccess { .. } => "network access",
+        harness_contracts::PermissionSubject::DangerousCommand { .. } => "dangerous command access",
+        harness_contracts::PermissionSubject::McpToolCall { .. } => "MCP tool access",
+        harness_contracts::PermissionSubject::Custom { .. } => "custom permission access",
+        _ => "runtime access",
+    }
+}
+
+fn legacy_sandbox_policy_summary() -> SandboxPolicySummary {
+    SandboxPolicySummary {
+        mode: harness_contracts::SandboxMode::None,
+        scope: harness_contracts::SandboxScope::WorkspaceOnly,
+        network: harness_contracts::NetworkAccess::None,
+        resource_limits: harness_contracts::ResourceLimits {
+            max_memory_bytes: None,
+            max_cpu_cores: None,
+            max_pids: None,
+            max_wall_clock_ms: None,
+            max_open_files: None,
+        },
     }
 }
 
@@ -2069,11 +2152,24 @@ impl Tool for AgentTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            harness_contracts::WorkspaceAccess::None,
+            harness_contracts::NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
         let spec = normalize_agent_input(input)?;
         let runner = ctx.capability::<dyn SubagentRunnerCap>(ToolCapability::SubagentRunner)?;
         let parent = SubagentParentContext {
@@ -2372,33 +2468,13 @@ pub mod testing {
             subagent_depth: 0,
             workspace_root: PathBuf::from("."),
             sandbox: None,
-            permission_broker: Arc::new(AllowBroker),
             cap_registry,
             redactor: Arc::new(NoopRedactor),
             interrupt: harness_tool::InterruptToken::new(),
             parent_run: None,
             model: None,
             model_config_id: None,
-        }
-    }
-
-    struct AllowBroker;
-
-    #[async_trait]
-    impl PermissionBroker for AllowBroker {
-        async fn decide(
-            &self,
-            _request: PermissionRequest,
-            _ctx: PermissionContext,
-        ) -> harness_contracts::Decision {
-            harness_contracts::Decision::AllowOnce
-        }
-
-        async fn persist(
-            &self,
-            _decision: harness_permission::PersistedDecision,
-        ) -> Result<(), harness_contracts::PermissionError> {
-            Ok(())
+            actor_source: harness_contracts::PermissionActorSource::ParentRun,
         }
     }
 }

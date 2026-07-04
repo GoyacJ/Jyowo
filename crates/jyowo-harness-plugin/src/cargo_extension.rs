@@ -17,8 +17,8 @@ use harness_contracts::{
     McpServerSource, NetworkAccess, NoopRedactor, PermissionSubject, PluginRuntimeRpcError,
     PluginRuntimeRpcRequest, PluginRuntimeRpcResponse, ProviderRestriction, RedactRules,
     ResourceLimits, RunId, SandboxError, SandboxExitStatus, SandboxMode, SandboxPolicy,
-    SandboxScope, SessionId, TenantId, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-    ToolProperties, ToolResult, WorkspaceAccess,
+    SandboxScope, SessionId, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup,
+    ToolOrigin, ToolProperties, ToolResult, WorkspaceAccess,
 };
 use harness_hook::{
     ContextPatch, ContextPatchRole, HookContext, HookEvent, HookHandler, HookOutcome,
@@ -33,8 +33,8 @@ use harness_sandbox::{
 };
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
 use harness_tool::{
-    default_result_budget, PermissionCheck, SchemaResolverContext, Tool, ToolContext, ToolEvent,
-    ToolStream, ValidationError,
+    action_plan_from_permission_check, default_result_budget, AuthorizedToolInput, PermissionCheck,
+    SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolStream, ValidationError,
 };
 use ring::digest;
 use serde_json::{json, Value};
@@ -509,17 +509,30 @@ impl Tool for CargoExtensionToolProxy {
         Err(ValidationError::Message(message))
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
         let result = self
             .client
             .call(
@@ -1407,8 +1420,8 @@ mod tests {
     use bytes::Bytes;
     use harness_contracts::{KillScope, LocalIsolationTag};
     use harness_sandbox::{
-        ActivityHandle, ExecOutcome, ProcessHandle, SandboxCapabilities, SessionSnapshotFile,
-        SnapshotSpec,
+        ActivityHandle, ExecOutcome, ProcessHandle, ResourceLimitSupport, SandboxCapabilities,
+        SessionSnapshotFile, SnapshotSpec,
     };
 
     #[test]
@@ -1595,7 +1608,15 @@ mod tests {
         }
 
         fn capabilities(&self) -> SandboxCapabilities {
-            SandboxCapabilities::default()
+            SandboxCapabilities {
+                supports_network: true,
+                max_concurrent_execs: 1,
+                resource_limit_support: ResourceLimitSupport {
+                    wall_clock: true,
+                    ..ResourceLimitSupport::default()
+                },
+                ..SandboxCapabilities::default()
+            }
         }
 
         async fn execute(

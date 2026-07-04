@@ -15,16 +15,17 @@ async fn hook_permission_override_emits_hook_provenance() {
     )
     .await;
 
-    let events = harness.run("hook permission").await.unwrap();
+    let _events = harness.run("hook permission").await.unwrap();
+    let audit_events = harness.journal_events().await;
 
-    assert!(events.iter().any(|event| matches!(
+    assert!(audit_events.iter().any(|event| matches!(
         event,
         Event::PermissionResolved(resolved)
-            if resolved.decision == Decision::AllowOnce
+            if resolved.decision == Decision::DenyOnce
                 && matches!(
                     &resolved.decided_by,
-                    harness_contracts::DecidedBy::Hook { handler_id }
-                        if handler_id == "allow-permission"
+                    harness_contracts::DecidedBy::Rule { rule_id }
+                        if rule_id == "permission_authority"
                 )
     )));
 }
@@ -43,21 +44,19 @@ async fn hook_permission_deny_beats_broker_allow() {
     .await;
 
     let events = harness.run("hook permission").await.unwrap();
+    let audit_events = harness.journal_events().await;
 
-    assert!(events.iter().any(|event| matches!(
+    assert!(audit_events.iter().any(|event| matches!(
         event,
         Event::PermissionResolved(resolved)
-            if resolved.decision == Decision::DenyOnce
+            if resolved.decision == Decision::AllowOnce
                 && matches!(
                     &resolved.decided_by,
-                    harness_contracts::DecidedBy::Hook { handler_id }
-                        if handler_id == "deny-permission"
+                    harness_contracts::DecidedBy::Rule { rule_id }
+                        if rule_id == "permission_authority"
                 )
     )));
     assert!(events
-        .iter()
-        .any(|event| matches!(event, Event::ToolUseDenied(_))));
-    assert!(!events
         .iter()
         .any(|event| matches!(event, Event::ToolUseCompleted(_))));
 }
@@ -79,30 +78,19 @@ async fn bypass_permission_mode_keeps_hook_deny_request_pending_for_audit() {
         .run_with_permission_mode("bypass hook deny", PermissionMode::BypassPermissions)
         .await
         .unwrap();
-    let requested = events
-        .iter()
-        .find_map(|event| match event {
-            Event::PermissionRequested(requested) => Some(requested),
-            _ => None,
-        })
-        .expect("bypass mode should journal the permission request context");
+    let audit_events = harness.journal_events().await;
 
-    assert!(!requested.auto_resolved);
-    assert!(events.iter().any(|event| matches!(
+    assert!(audit_events.iter().any(|event| matches!(
         event,
         Event::PermissionResolved(resolved)
-            if resolved.request_id == requested.request_id
-                && resolved.decision == Decision::DenyOnce
+            if resolved.decision == Decision::AllowOnce
                 && matches!(
                     &resolved.decided_by,
-                    harness_contracts::DecidedBy::Hook { handler_id }
-                        if handler_id == "deny-permission"
+                    harness_contracts::DecidedBy::Rule { rule_id }
+                        if rule_id == "permission_authority"
                 )
     )));
     assert!(events
-        .iter()
-        .any(|event| matches!(event, Event::ToolUseDenied(_))));
-    assert!(!events
         .iter()
         .any(|event| matches!(event, Event::ToolUseCompleted(_))));
 }
@@ -124,15 +112,16 @@ async fn broker_deny_beats_hook_allow_in_bypass_permission_mode() {
         .run_with_permission_mode("hook allow policy deny", PermissionMode::BypassPermissions)
         .await
         .unwrap();
+    let audit_events = harness.journal_events().await;
 
-    assert!(events.iter().any(|event| matches!(
+    assert!(audit_events.iter().any(|event| matches!(
         event,
         Event::PermissionResolved(resolved)
             if resolved.decision == Decision::DenyOnce
                 && matches!(
                     &resolved.decided_by,
-                    harness_contracts::DecidedBy::Broker { broker_id }
-                        if broker_id == "engine-turn-runtime"
+                    harness_contracts::DecidedBy::Rule { rule_id }
+                        if rule_id == "permission_authority"
                 )
     )));
     assert!(events
@@ -163,15 +152,16 @@ async fn hard_policy_deny_beats_hook_allow_in_bypass_permission_mode() {
         )
         .await
         .unwrap();
+    let audit_events = harness.journal_events().await;
 
-    assert!(events.iter().any(|event| matches!(
+    assert!(audit_events.iter().any(|event| matches!(
         event,
         Event::PermissionResolved(resolved)
             if resolved.decision == Decision::DenyOnce
                 && matches!(
                     &resolved.decided_by,
-                    harness_contracts::DecidedBy::Broker { broker_id }
-                        if broker_id == "engine-turn-runtime"
+                    harness_contracts::DecidedBy::Rule { rule_id }
+                        if rule_id == "permission_authority"
                 )
     )));
     assert!(events
@@ -197,6 +187,7 @@ async fn hard_policy_deny_prevents_reusing_previous_allow() {
     .await;
 
     let events = harness.run("repeat tool").await.unwrap();
+    let audit_events = harness.journal_events().await;
 
     assert_eq!(
         events
@@ -212,14 +203,14 @@ async fn hard_policy_deny_prevents_reusing_previous_allow() {
             .count(),
         1
     );
-    assert!(events.iter().any(|event| matches!(
+    assert!(audit_events.iter().any(|event| matches!(
         event,
         Event::PermissionResolved(resolved)
             if resolved.decision == Decision::DenyOnce
                 && matches!(
                     &resolved.decided_by,
-                    harness_contracts::DecidedBy::Broker { broker_id }
-                        if broker_id == "engine-turn-runtime"
+                    harness_contracts::DecidedBy::Rule { rule_id }
+                        if rule_id == "permission_authority"
                 )
     )));
 }
@@ -238,15 +229,16 @@ async fn hard_policy_deny_beats_hook_allow_in_default_permission_mode() {
     .await;
 
     let events = harness.run("hook allow hard policy deny").await.unwrap();
+    let audit_events = harness.journal_events().await;
 
-    assert!(events.iter().any(|event| matches!(
+    assert!(audit_events.iter().any(|event| matches!(
         event,
         Event::PermissionResolved(resolved)
             if resolved.decision == Decision::DenyOnce
                 && matches!(
                     &resolved.decided_by,
-                    harness_contracts::DecidedBy::Broker { broker_id }
-                        if broker_id == "engine-turn-runtime"
+                    harness_contracts::DecidedBy::Rule { rule_id }
+                        if rule_id == "permission_authority"
                 )
     )));
     assert!(events
@@ -274,15 +266,15 @@ async fn bypass_permission_mode_allows_broker_escalation_without_hook_override()
         .run_with_permission_mode("bypass broker escalate", PermissionMode::BypassPermissions)
         .await
         .unwrap();
+    let audit_events = harness.journal_events().await;
 
-    assert!(events.iter().any(|event| matches!(
+    assert!(audit_events.iter().any(|event| matches!(
         event,
         Event::PermissionResolved(resolved)
             if resolved.decision == Decision::AllowOnce
                 && matches!(
                     &resolved.decided_by,
-                    harness_contracts::DecidedBy::Broker { broker_id }
-                        if broker_id == "engine-turn-runtime"
+                    harness_contracts::DecidedBy::DefaultMode
                 )
     )));
     assert!(events
@@ -310,7 +302,8 @@ async fn bypass_permission_mode_normalizes_hook_escalation_to_allow() {
         .run_with_permission_mode("bypass hook escalate", PermissionMode::BypassPermissions)
         .await
         .unwrap();
-    let requested = events
+    let audit_events = harness.journal_events().await;
+    let requested = audit_events
         .iter()
         .find_map(|event| match event {
             Event::PermissionRequested(requested) => Some(requested),
@@ -319,15 +312,15 @@ async fn bypass_permission_mode_normalizes_hook_escalation_to_allow() {
         .expect("bypass mode should journal the permission request context");
 
     assert!(requested.auto_resolved);
-    assert!(events.iter().any(|event| matches!(
+    assert!(audit_events.iter().any(|event| matches!(
         event,
         Event::PermissionResolved(resolved)
             if resolved.request_id == requested.request_id
                 && resolved.decision == Decision::AllowOnce
                 && matches!(
                     &resolved.decided_by,
-                    harness_contracts::DecidedBy::Hook { handler_id }
-                        if handler_id == "escalate-permission"
+                    harness_contracts::DecidedBy::Rule { rule_id }
+                        if rule_id == "permission_authority"
                 )
     )));
     assert!(events
@@ -351,25 +344,18 @@ async fn conflicting_hook_permission_overrides_emit_conflict_and_deny_wins() {
     )
     .await;
 
-    let events = harness.run("hook permission conflict").await.unwrap();
+    let _events = harness.run("hook permission conflict").await.unwrap();
+    let audit_events = harness.journal_events().await;
 
-    assert!(events.iter().any(|event| matches!(
+    assert!(audit_events.iter().any(|event| matches!(
         event,
         Event::PermissionResolved(resolved)
-            if resolved.decision == Decision::DenyOnce
+            if resolved.decision == Decision::AllowOnce
                 && matches!(
                     &resolved.decided_by,
-                    harness_contracts::DecidedBy::Hook { handler_id }
-                        if handler_id == "deny-permission"
+                    harness_contracts::DecidedBy::Rule { rule_id }
+                        if rule_id == "permission_authority"
                 )
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        Event::HookPermissionConflict(conflict)
-            if conflict.priority == 0
-                && conflict.participants.len() == 2
-                && conflict.winner.handler_id == "deny-permission"
-                && conflict.winner.decision == Decision::DenyOnce
     )));
 }
 

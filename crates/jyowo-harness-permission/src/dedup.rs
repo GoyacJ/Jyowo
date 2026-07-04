@@ -8,8 +8,8 @@ use harness_contracts::{Decision, ExecFingerprint, PermissionError, PermissionSu
 use parking_lot::Mutex;
 
 use crate::{
-    canonical_permission_fingerprint, hard_policy_denies_from_context, PermissionBroker,
-    PermissionContext, PermissionRequest, PersistedDecision,
+    canonical_permission_fingerprint, PermissionBroker, PermissionContext, PermissionRequest,
+    PersistedDecision,
 };
 
 const DEFAULT_DEDUP_WINDOW: Duration = Duration::from_secs(30);
@@ -71,6 +71,21 @@ impl DedupGate {
         })
     }
 
+    pub fn remember(&self, request: &PermissionRequest, decision: &Decision) {
+        if !should_cache_decision(request, decision) {
+            return;
+        }
+
+        self.cache.lock().insert(
+            canonical_permission_fingerprint(request),
+            CachedDecision {
+                original_request_id: request.request_id,
+                decision: decision.clone(),
+                decided_at: Utc::now(),
+            },
+        );
+    }
+
     fn is_fresh(&self, decided_at: DateTime<Utc>) -> bool {
         let Ok(age) = Utc::now().signed_duration_since(decided_at).to_std() else {
             return false;
@@ -89,6 +104,10 @@ impl Default for DedupGateConfig {
 
 #[async_trait]
 impl PermissionBroker for DedupGate {
+    fn can_anchor_authority(&self) -> bool {
+        self.inner.can_anchor_authority()
+    }
+
     async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
         if self.hard_policy_denies(&request, &ctx).await {
             return Decision::DenyOnce;
@@ -98,20 +117,9 @@ impl PermissionBroker for DedupGate {
             return hit.decision;
         }
 
-        let fingerprint = canonical_permission_fingerprint(&request);
-        let original_request_id = request.request_id;
         let decision = self.inner.decide(request.clone(), ctx).await;
 
-        if should_cache_decision(&request, &decision) {
-            self.cache.lock().insert(
-                fingerprint,
-                CachedDecision {
-                    original_request_id,
-                    decision: decision.clone(),
-                    decided_at: Utc::now(),
-                },
-            );
-        }
+        self.remember(&request, &decision);
 
         decision
     }
@@ -122,7 +130,6 @@ impl PermissionBroker for DedupGate {
         ctx: &PermissionContext,
     ) -> bool {
         self.inner.hard_policy_denies(request, ctx).await
-            || hard_policy_denies_from_context(request, ctx)
     }
 
     async fn persist(&self, decision: PersistedDecision) -> Result<(), PermissionError> {

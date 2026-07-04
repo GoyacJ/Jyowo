@@ -26,6 +26,7 @@ export function AssistantWorkView({
     conversationId: string
     requestId: string
     decision: 'approve' | 'deny'
+    confirmationText?: string
   }) => void
   onReviewContinue?: (prompt: string) => void
   turnId: string

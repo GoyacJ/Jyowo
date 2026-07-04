@@ -17,6 +17,7 @@ export function AgentActivitySegmentView({
     conversationId: string
     requestId: string
     decision: 'approve' | 'deny'
+    confirmationText?: string
   }) => void
   parentRunId?: string
   segment: AgentActivitySegmentType

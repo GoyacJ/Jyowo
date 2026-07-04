@@ -11,7 +11,7 @@ use harness_contracts::{
     CorrelationId, Event, ProcessReadInvocation, ProcessReadResult, ProcessRuntimeStatus,
     ProcessStartInvocation, ProcessStartResult, ProcessStopInvocation, ProcessStopResult,
     RedactRules, Redactor, RunId, RunScopedProcessRegistryCap, SandboxError, SandboxExitStatus,
-    SessionId, TenantId, ToolError, WorkspaceAccess,
+    SessionId, TenantId, ToolError,
 };
 use harness_sandbox::{
     execute_with_lifecycle, ActivityHandle, EventSink, ExecContext, ExecSpec, KillScope,
@@ -288,9 +288,8 @@ fn exec_spec(invocation: &ProcessStartInvocation) -> Result<ExecSpec, ToolError>
         stdin: StdioSpec::Null,
         stdout: StdioSpec::Piped,
         stderr: StdioSpec::Piped,
-        workspace_access: WorkspaceAccess::ReadWrite {
-            allowed_writable_subpaths: Vec::new(),
-        },
+        policy: invocation.sandbox_policy.clone(),
+        workspace_access: invocation.workspace_access.clone(),
         output_policy: harness_sandbox::OutputPolicy {
             max_inline_bytes: 0,
             overflow: OutputOverflowPolicy::Truncate,

@@ -146,6 +146,7 @@ const permissionModeSchema = z.enum([
   'dont_ask',
   'auto',
 ])
+const actionPlanHashSchema = z.string().regex(/^[0-9a-f]{64}$/)
 const modelProtocolSchema = z.enum([
   'chat_completions',
   'responses',
@@ -322,17 +323,152 @@ const permissionActorSourceSchema = z.discriminatedUnion('type', [
       type: z.literal('backgroundAgent'),
     })
     .strict(),
+  z
+    .object({
+      automationId: permissionDisplayTextSchema,
+      conversationId: z.string().min(1),
+      runId: z.string().min(1).optional(),
+      type: z.literal('automation'),
+    })
+    .strict(),
+  z
+    .object({
+      origin: z.discriminatedUnion('type', [
+        z
+          .object({
+            path: permissionDisplayTextSchema,
+            type: z.literal('file'),
+          })
+          .strict(),
+        z
+          .object({
+            binary: permissionDisplayTextSchema,
+            type: z.literal('cargoExtension'),
+          })
+          .strict(),
+        z
+          .object({
+            endpoint: permissionDisplayTextSchema,
+            type: z.literal('remoteRegistry'),
+          })
+          .strict(),
+      ]),
+      scope: z.discriminatedUnion('type', [
+        z
+          .object({
+            type: z.literal('global'),
+          })
+          .strict(),
+        z
+          .object({
+            conversationId: z.string().min(1),
+            type: z.literal('session'),
+          })
+          .strict(),
+        z
+          .object({
+            agentId: z.string().min(1),
+            type: z.literal('agent'),
+          })
+          .strict(),
+      ]),
+      serverId: permissionDisplayTextSchema,
+      type: z.literal('mcpServer'),
+    })
+    .strict(),
 ])
+const permissionConfirmationSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('none'),
+    })
+    .strict(),
+  z
+    .object({
+      label: permissionDisplayTextSchema,
+      type: z.literal('explicitButton'),
+    })
+    .strict(),
+  z
+    .object({
+      expected: permissionDisplayTextSchema,
+      type: z.literal('typeToConfirm'),
+    })
+    .strict(),
+])
+const permissionReviewDetailSchema = z
+  .object({
+    label: permissionDisplayTextSchema,
+    redacted: z.boolean().optional().default(false),
+    value: permissionDisplayTextSchema,
+  })
+  .strict()
+const permissionReviewSchema = z
+  .object({
+    confirmation: permissionConfirmationSchema,
+    details: z.array(permissionReviewDetailSchema),
+    redacted: z.boolean().optional().default(false),
+    summary: permissionDisplayTextSchema,
+  })
+  .strict()
+const sandboxPolicySummarySchema = z
+  .object({
+    mode: z.union([
+      z.enum(['none', 'container', 'remote']),
+      z
+        .object({
+          osLevel: z.enum(['none', 'bubblewrap', 'seatbelt', 'job_object']),
+        })
+        .strict(),
+    ]),
+    network: z.union([
+      z.enum(['none', 'loopback_only', 'unrestricted']),
+      z
+        .object({
+          allow_list: z.array(
+            z
+              .object({
+                pattern: permissionDisplayTextSchema,
+                ports: z.array(z.number().int().min(0).max(65535)).optional().nullable(),
+              })
+              .strict(),
+          ),
+        })
+        .strict(),
+    ]),
+    resourceLimits: z
+      .object({
+        maxCpuCores: z.number().positive().optional().nullable(),
+        maxMemoryBytes: z.number().int().positive().optional().nullable(),
+        maxOpenFiles: z.number().int().positive().optional().nullable(),
+        maxPids: z.number().int().positive().optional().nullable(),
+        maxWallClockMs: z.number().int().positive().optional().nullable(),
+      })
+      .strict(),
+    scope: z.union([
+      z.enum(['workspace_only', 'unrestricted']),
+      z
+        .object({
+          workspacePlus: z.array(permissionDisplayTextSchema),
+        })
+        .strict(),
+    ]),
+  })
+  .strict()
 const permissionRequestedPayloadSchema = z
   .object({
     actorSource: permissionActorSourceSchema,
+    actionPlanHash: actionPlanHashSchema.optional(),
     autoResolved: z.boolean().optional().default(false),
     decisionScope: permissionDisplayTextSchema,
     diffSummary: permissionDisplayTextSchema.optional(),
+    effectiveMode: permissionModeSchema.optional(),
     exposure: permissionDisplayTextSchema,
     operation: permissionDisplayTextSchema,
     reason: permissionDisplayTextSchema,
+    review: permissionReviewSchema.optional(),
     requestId: requestIdSchema,
+    sandboxPolicy: sandboxPolicySummarySchema.optional(),
     severity: z.enum(['low', 'medium', 'high', 'critical']),
     target: permissionDisplayTextSchema,
     toolUseId: z.string().min(1),
@@ -341,7 +477,10 @@ const permissionRequestedPayloadSchema = z
   .strict()
 const permissionResolvedPayloadSchema = z
   .object({
+    actionPlanHash: actionPlanHashSchema.optional(),
+    autoResolved: z.boolean().optional().default(false),
     decision: z.enum(['approve', 'deny']),
+    decisionId: z.string().min(1).optional(),
     requestId: requestIdSchema,
   })
   .strict()

@@ -17,8 +17,9 @@ use harness_contracts::{
     BlobRef, BlobStore, CorrelationId, Event, ExecFingerprint, KillScope, NetworkAccess,
     NoopRedactor, RedactRules, Redactor, ResourceLimits, RunId, SandboxBackendFailedEvent,
     SandboxBackendFailurePhase, SandboxError, SandboxExitStatus, SandboxMode, SandboxPolicy,
-    SandboxPostExecutionFailedEvent, SandboxScope, SessionId, SessionSnapshotKind, TenantId,
-    ToolUseId, WorkspaceAccess,
+    SandboxPolicyHash, SandboxPolicySummary, SandboxPostExecutionFailedEvent,
+    SandboxPreflightFailedEvent, SandboxPreflightPassedEvent, SandboxPreflightStatus, SandboxScope,
+    SessionId, SessionSnapshotKind, TenantId, ToolUseId, WorkspaceAccess,
 };
 use tokio::sync::Mutex;
 
@@ -37,6 +38,10 @@ pub trait SandboxBackend: Send + Sync + 'static {
 
     fn base_config(&self) -> SandboxBaseConfig {
         SandboxBaseConfig::default()
+    }
+
+    fn preflight_execute(&self, spec: &ExecSpec) -> Result<(), SandboxError> {
+        validate_preflight_capabilities(self.backend_id(), &self.capabilities(), spec)
     }
 
     async fn before_execute(
@@ -238,6 +243,16 @@ pub async fn execute_with_lifecycle(
     ctx: ExecContext,
 ) -> Result<ProcessHandle, SandboxError> {
     let backend_id = backend.backend_id().to_owned();
+    preflight_exec(backend.as_ref(), &spec, &ctx)?;
+    if let Err(error) = backend.before_execute(&spec, &ctx).await {
+        emit_backend_failed(
+            &ctx,
+            &backend_id,
+            SandboxBackendFailurePhase::Execute,
+            error.clone(),
+        );
+        return Err(error);
+    }
     let mut handle = match backend.execute(spec, ctx.clone()).await {
         Ok(handle) => handle,
         Err(error) => {
@@ -259,6 +274,64 @@ pub async fn execute_with_lifecycle(
         after_execute_started: AtomicBool::new(false),
     });
     Ok(handle)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SandboxPreflightReport {
+    pub backend_id: String,
+    pub policy: SandboxPolicySummary,
+    pub policy_hash: SandboxPolicyHash,
+    pub capabilities: SandboxCapabilities,
+}
+
+pub fn preflight_exec(
+    backend: &dyn SandboxBackend,
+    spec: &ExecSpec,
+    ctx: &ExecContext,
+) -> Result<SandboxPreflightReport, SandboxError> {
+    let backend_id = backend.backend_id().to_owned();
+    let capabilities = backend.capabilities();
+    let policy = sandbox_policy_summary(&spec.policy);
+    let policy_hash = sandbox_policy_hash(&backend_id, &spec.policy);
+    let report = SandboxPreflightReport {
+        backend_id: backend_id.clone(),
+        policy: policy.clone(),
+        policy_hash: policy_hash.clone(),
+        capabilities,
+    };
+
+    match backend.preflight_execute(spec) {
+        Ok(()) => {
+            ctx.event_sink
+                .emit(Event::SandboxPreflightPassed(SandboxPreflightPassedEvent {
+                    session_id: ctx.session_id,
+                    run_id: ctx.run_id,
+                    tool_use_id: ctx.tool_use_id,
+                    backend_id,
+                    status: SandboxPreflightStatus::Passed,
+                    policy,
+                    policy_hash,
+                    at: Utc::now(),
+                }))?;
+            Ok(report)
+        }
+        Err(error) => {
+            let redacted_error = redact_sandbox_error(error.clone(), ctx);
+            ctx.event_sink
+                .emit(Event::SandboxPreflightFailed(SandboxPreflightFailedEvent {
+                    session_id: ctx.session_id,
+                    run_id: ctx.run_id,
+                    tool_use_id: ctx.tool_use_id,
+                    backend_id,
+                    status: SandboxPreflightStatus::Failed,
+                    policy,
+                    policy_hash,
+                    reason: redacted_error.to_string(),
+                    at: Utc::now(),
+                }))?;
+            Err(error)
+        }
+    }
 }
 
 pub async fn snapshot_with_lifecycle(
@@ -397,6 +470,104 @@ fn emit_backend_failed(
             error: redact_sandbox_error(error, ctx),
             at: Utc::now(),
         }));
+}
+
+fn validate_preflight_capabilities(
+    backend_id: &str,
+    capabilities: &SandboxCapabilities,
+    spec: &ExecSpec,
+) -> Result<(), SandboxError> {
+    if capabilities.max_concurrent_execs == 0 {
+        return Err(SandboxError::CapabilityMismatch {
+            capability: "execute".to_owned(),
+            detail: format!("sandbox backend `{backend_id}` does not support execution"),
+        });
+    }
+
+    match &spec.policy.network {
+        NetworkAccess::Unrestricted => {}
+        NetworkAccess::None if capabilities.supports_network => {}
+        NetworkAccess::None => {
+            return Err(SandboxError::CapabilityMismatch {
+                capability: "network".to_owned(),
+                detail: format!("sandbox backend `{backend_id}` cannot enforce no-network policy"),
+            });
+        }
+        NetworkAccess::LoopbackOnly | NetworkAccess::AllowList(_) => {
+            return Err(SandboxError::CapabilityMismatch {
+                capability: "network".to_owned(),
+                detail: format!(
+                    "sandbox backend `{backend_id}` cannot enforce fine-grained network policy"
+                ),
+            });
+        }
+        _ => {
+            return Err(SandboxError::CapabilityMismatch {
+                capability: "network".to_owned(),
+                detail: format!("sandbox backend `{backend_id}` cannot enforce network policy"),
+            });
+        }
+    }
+
+    if matches!(spec.workspace_access, WorkspaceAccess::ReadWrite { .. })
+        && !capabilities.supports_filesystem_write
+    {
+        return Err(SandboxError::CapabilityMismatch {
+            capability: "workspace_access".to_owned(),
+            detail: format!("sandbox backend `{backend_id}` does not support filesystem writes"),
+        });
+    }
+
+    validate_resource_preflight(capabilities, &spec.policy.resource_limits)?;
+    Ok(())
+}
+
+fn validate_resource_preflight(
+    capabilities: &SandboxCapabilities,
+    limits: &ResourceLimits,
+) -> Result<(), SandboxError> {
+    let unsupported = if limits.max_memory_bytes.is_some()
+        && !capabilities.resource_limit_support.memory
+    {
+        Some("memory")
+    } else if limits.max_cpu_cores.is_some() && !capabilities.resource_limit_support.cpu {
+        Some("cpu")
+    } else if limits.max_pids.is_some() && !capabilities.resource_limit_support.pids {
+        Some("pids")
+    } else if limits.max_wall_clock_ms.is_some() && !capabilities.resource_limit_support.wall_clock
+    {
+        Some("wall_clock")
+    } else if limits.max_open_files.is_some() && !capabilities.resource_limit_support.open_files {
+        Some("open_files")
+    } else {
+        None
+    };
+
+    if let Some(limit) = unsupported {
+        return Err(SandboxError::CapabilityMismatch {
+            capability: "resource_limits".to_owned(),
+            detail: format!("sandbox backend cannot enforce {limit} resource limit"),
+        });
+    }
+    Ok(())
+}
+
+fn sandbox_policy_summary(policy: &SandboxPolicy) -> SandboxPolicySummary {
+    SandboxPolicySummary {
+        mode: policy.mode.clone(),
+        scope: policy.scope.clone(),
+        network: policy.network.clone(),
+        resource_limits: policy.resource_limits.clone(),
+    }
+}
+
+fn sandbox_policy_hash(backend_id: &str, policy: &SandboxPolicy) -> SandboxPolicyHash {
+    let mut hasher = blake3::Hasher::new();
+    write_field(&mut hasher, b"jyowo.sandbox_policy.v1");
+    write_string(&mut hasher, backend_id);
+    let policy_json = serde_json::to_vec(policy).unwrap_or_default();
+    write_field(&mut hasher, &policy_json);
+    SandboxPolicyHash::from_bytes(*hasher.finalize().as_bytes())
 }
 
 fn redact_sandbox_error(error: SandboxError, ctx: &ExecContext) -> SandboxError {

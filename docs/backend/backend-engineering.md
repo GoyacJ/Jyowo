@@ -127,19 +127,20 @@ Lower layers MUST NOT depend on higher layers.
 | `jyowo-harness-journal` | `crates/jyowo-harness-journal` | L1 | Owns event stores, snapshots, audit projections, blobs, and Replay cursors. |
 | `jyowo-harness-memory` | `crates/jyowo-harness-memory` | L1 | Owns Memory primitives, recall, consolidation, and visibility rules. |
 | `jyowo-harness-model` | `crates/jyowo-harness-model` | L1 | Owns provider abstractions, model errors, and usage reporting. |
-| `jyowo-harness-permission` | `crates/jyowo-harness-permission` | L1 | Owns PermissionBroker, rule providers, deduplication, fingerprints, and persistence. |
+| `jyowo-harness-permission` | `crates/jyowo-harness-permission` | L1 | Owns PermissionAuthority, hard policy, rule engine, deduplication, decision history, signed persistence, and interactive resolution. |
 | `jyowo-harness-provider-state` | `crates/jyowo-harness-provider-state` | L1 | `jyowo-harness-provider-state` owns private provider continuation persistence and lookup. It stores provider-private replay payloads outside Journal, Replay, logs, traces, frontend state, and public serde contracts. |
-| `jyowo-harness-sandbox` | `crates/jyowo-harness-sandbox` | L1 | Owns sandbox policies, execution isolation, resource limits, and backend errors. |
+| `jyowo-harness-sandbox` | `crates/jyowo-harness-sandbox` | L1 | Owns sandbox policies, execution isolation, capability preflight, resource limits, and backend errors. Fail-closed when requested policy cannot be enforced. |
 | `jyowo-harness-context` | `crates/jyowo-harness-context` | L2 | Owns context assembly, compaction, token budget behavior, and context events. |
 | `jyowo-harness-hook` | `crates/jyowo-harness-hook` | L2 | Owns hook execution, hook outcomes, and hook event contracts. |
-| `jyowo-harness-mcp` | `crates/jyowo-harness-mcp` | L2 | Owns MCP connection state, tool injection, resource updates, sampling, and elicitation. |
-| `jyowo-harness-session` | `crates/jyowo-harness-session` | L2 | Owns sessions, workspace bootstrap, stream handles, and session lifecycle. |
 | `jyowo-harness-skill` | `crates/jyowo-harness-skill` | L2 | Owns skill loading, validation, threat detection, and invocation contracts. |
-| `jyowo-harness-tool` | `crates/jyowo-harness-tool` | L2 | Owns Tool traits, registry, orchestration, built-ins, result budget, and permission checks. |
+| `jyowo-harness-tool` | `crates/jyowo-harness-tool` | L2 | Owns Tool traits, registry, action planning, authorized execution adapters, built-ins, result budget. No final allow/deny decision. |
 | `jyowo-harness-tool-search` | `crates/jyowo-harness-tool-search` | L2 | Owns on-demand tool search and schema materialization. |
 | `jyowo-harness-engine` | `crates/jyowo-harness-engine` | L3 | Owns run orchestration, model/tool loop, budgets, and runtime event emission. |
+| `jyowo-harness-execution` | `crates/jyowo-harness-execution` | L3 | Owns authorization service preflight, one-time execution tickets, sandbox preflight event ordering, and execution audit primitives. |
+| `jyowo-harness-mcp` | `crates/jyowo-harness-mcp` | L3 | Owns MCP connection state, tool injection, resource updates, sampling, elicitation, and MCP authorization bridging. |
 | `jyowo-harness-observability` | `crates/jyowo-harness-observability` | L3 | Owns tracing, usage accounting, Replay helpers, and Redactor implementations. |
 | `jyowo-harness-plugin` | `crates/jyowo-harness-plugin` | L3 | Owns plugin loading, manifest validation, and plugin rejection. |
+| `jyowo-harness-session` | `crates/jyowo-harness-session` | L3 | Owns sessions, workspace bootstrap, stream handles, session lifecycle, and session turn runtime assembly. |
 | `jyowo-harness-subagent` | `crates/jyowo-harness-subagent` | L3 | Owns subagent lifecycle, permission forwarding, and stalled-worker behavior. |
 | `jyowo-harness-agent-runtime` | `crates/jyowo-harness-agent-runtime` | L3 | Owns cross-domain agent orchestration storage, profile registry, capability policy inputs, background registry, team persistence, and workspace isolation leases. |
 | `jyowo-harness-team` | `crates/jyowo-harness-team` | L3 | Owns multi-agent teams, member routing, topology, quotas, and team termination. |

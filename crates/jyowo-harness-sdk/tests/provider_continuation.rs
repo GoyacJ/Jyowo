@@ -7,8 +7,9 @@ use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
     ConversationModelCapability, ConversationTurnInput, DeferPolicy, ModelError, ModelProtocol,
-    NoopRedactor, ProviderRestriction, SessionId, TenantId, ToolDescriptor, ToolError, ToolGroup,
-    ToolOrigin, ToolProperties, TrustLevel, UsageSnapshot,
+    NetworkAccess, NoopRedactor, ProviderRestriction, SessionId, TenantId, ToolActionPlan,
+    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, TrustLevel, UsageSnapshot,
+    WorkspaceAccess,
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
@@ -21,8 +22,8 @@ use harness_provider_state::{
 };
 use harness_sandbox::NoopSandbox;
 use harness_tool::{
-    default_result_budget, PermissionCheck, SchemaResolverContext, Tool, ToolContext, ToolRegistry,
-    ToolStream, ValidationError,
+    action_plan_from_permission_check, default_result_budget, AuthorizedToolInput, PermissionCheck,
+    SchemaResolverContext, Tool, ToolContext, ToolRegistry, ToolStream, ValidationError,
 };
 use jyowo_harness_sdk::{ConversationRunOptions, ConversationTurnRequest, Harness, SessionOptions};
 use serde_json::{json, Value};
@@ -424,11 +425,23 @@ impl Tool for TestTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, _input: Value, _ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        _authorized: AuthorizedToolInput,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(stream::empty()))
     }
 }

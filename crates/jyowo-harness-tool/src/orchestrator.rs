@@ -5,17 +5,14 @@ use bytes::Bytes;
 use chrono::Utc;
 use futures::{future::join_all, StreamExt};
 use harness_contracts::{
-    BlobMeta, BlobRetention, BlobStore, BudgetMetric, Decision, DecisionScope, Event,
-    OverflowAction, OverflowMetadata, PermissionSubject, RequestId, Severity, ToolCapability,
-    ToolError, ToolResult, ToolResultOffloadedEvent, ToolResultPart, ToolUseHeartbeatEvent,
-    ToolUseId, WorkspaceAccess,
+    BlobMeta, BlobRetention, BlobStore, BudgetMetric, Event, OverflowAction, OverflowMetadata,
+    ToolCapability, ToolError, ToolResult, ToolResultOffloadedEvent, ToolResultPart,
+    ToolUseHeartbeatEvent, ToolUseId,
 };
-use harness_permission::{PermissionCheck, PermissionContext, PermissionRequest};
-use harness_sandbox::{ExecSpec, StdioSpec};
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
-use crate::{ToolContext, ToolEvent, ToolJournalAuthority, ToolPool};
+use crate::{AuthorizedToolInput, ToolContext, ToolEvent, ToolJournalAuthority, ToolPool};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolCall {
@@ -24,11 +21,17 @@ pub struct ToolCall {
     pub input: Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthorizedToolCall {
+    pub tool_use_id: ToolUseId,
+    pub tool_name: String,
+    pub input: AuthorizedToolInput,
+}
+
 #[derive(Clone)]
 pub struct OrchestratorContext {
     pub pool: ToolPool,
     pub tool_context: ToolContext,
-    pub permission_context: PermissionContext,
     pub blob_store: Option<Arc<dyn BlobStore>>,
     pub event_emitter: Arc<dyn ToolEventEmitter>,
 }
@@ -74,7 +77,7 @@ impl ToolOrchestrator {
 
     pub async fn dispatch(
         &self,
-        calls: Vec<ToolCall>,
+        calls: Vec<AuthorizedToolCall>,
         ctx: OrchestratorContext,
     ) -> Vec<ToolResultEnvelope> {
         let mut results = Vec::with_capacity(calls.len());
@@ -99,7 +102,7 @@ impl ToolOrchestrator {
         results
     }
 
-    fn is_concurrency_safe(&self, pool: &ToolPool, call: &ToolCall) -> bool {
+    fn is_concurrency_safe(&self, pool: &ToolPool, call: &AuthorizedToolCall) -> bool {
         pool.get(&call.tool_name)
             .map(|tool| tool.descriptor().properties.is_concurrency_safe)
             .unwrap_or(true)
@@ -107,7 +110,7 @@ impl ToolOrchestrator {
 
     async fn dispatch_parallel(
         &self,
-        calls: Vec<ToolCall>,
+        calls: Vec<AuthorizedToolCall>,
         ctx: OrchestratorContext,
     ) -> Vec<ToolResultEnvelope> {
         let semaphore = Arc::new(Semaphore::new(self.concurrency_limit));
@@ -125,7 +128,10 @@ impl ToolOrchestrator {
         .await
     }
 
-    async fn dispatch_one(call: ToolCall, ctx: OrchestratorContext) -> ToolResultEnvelope {
+    async fn dispatch_one(
+        call: AuthorizedToolCall,
+        ctx: OrchestratorContext,
+    ) -> ToolResultEnvelope {
         let started = Instant::now();
         let tool_use_id = call.tool_use_id;
         let tool_name = call.tool_name.clone();
@@ -144,34 +150,16 @@ impl ToolOrchestrator {
             let mut tool_ctx = ctx.tool_context.clone();
             tool_ctx.tool_use_id = call.tool_use_id;
 
-            tool.validate(&call.input, &tool_ctx)
+            tool.validate(call.input.raw_input(), &tool_ctx)
                 .await
                 .map_err(|error| ToolError::Validation(error.to_string()))?;
-
-            let permission_check = tool.check_permission(&call.input, &tool_ctx).await;
-            let decision = match permission_check {
-                PermissionCheck::Denied { reason } => {
-                    return Err(ToolError::PermissionDenied(reason));
-                }
-                check => {
-                    let request = permission_request(&call, &ctx, check);
-                    tool_ctx
-                        .permission_broker
-                        .decide(request, ctx.permission_context.clone())
-                        .await
-                }
-            };
-
-            if !decision_allows(&decision) {
-                return Err(ToolError::PermissionDenied(format!(
-                    "permission denied: {decision:?}"
-                )));
-            }
 
             let long_running_policy = tool.descriptor().properties.long_running.clone();
             let journal_authority = ctx.pool.journal_authority(&call.tool_name);
             let execute_and_collect = async {
-                let stream = tool.execute(call.input, tool_ctx.clone()).await?;
+                let stream = tool
+                    .execute_authorized(call.input.clone(), tool_ctx.clone())
+                    .await?;
                 let result = if let Some(policy) = long_running_policy.as_ref() {
                     collect_stream_with_heartbeat(
                         stream,
@@ -223,116 +211,6 @@ impl ToolOrchestrator {
             progress_emitted,
         }
     }
-}
-
-fn permission_request(
-    call: &ToolCall,
-    ctx: &OrchestratorContext,
-    check: PermissionCheck,
-) -> PermissionRequest {
-    let (mut subject, severity, scope_hint) = match check {
-        PermissionCheck::Allowed => (
-            PermissionSubject::ToolInvocation {
-                tool: call.tool_name.clone(),
-                input: call.input.clone(),
-            },
-            Severity::Info,
-            DecisionScope::ToolName(call.tool_name.clone()),
-        ),
-        PermissionCheck::AskUser { subject, scope } => (subject, Severity::Medium, scope),
-        PermissionCheck::DangerousPattern {
-            severity,
-            subject,
-            scope,
-            ..
-        } => (subject, severity, scope),
-        PermissionCheck::DangerousCommand { pattern, severity } => (
-            PermissionSubject::DangerousCommand {
-                command: call.tool_name.clone(),
-                pattern_id: pattern,
-                severity,
-            },
-            severity,
-            DecisionScope::ToolName(call.tool_name.clone()),
-        ),
-        PermissionCheck::Denied { reason } => (
-            PermissionSubject::Custom {
-                kind: "denied".to_owned(),
-                payload: Value::String(reason),
-            },
-            Severity::High,
-            DecisionScope::ToolName(call.tool_name.clone()),
-        ),
-    };
-
-    apply_canonical_subject_fingerprint(&mut subject, &scope_hint, ctx);
-
-    PermissionRequest {
-        request_id: RequestId::new(),
-        tenant_id: ctx.tool_context.tenant_id,
-        session_id: ctx.tool_context.session_id,
-        tool_use_id: call.tool_use_id,
-        tool_name: call.tool_name.clone(),
-        subject,
-        severity,
-        scope_hint,
-        created_at: Utc::now(),
-    }
-}
-
-fn apply_canonical_subject_fingerprint(
-    subject: &mut PermissionSubject,
-    scope_hint: &DecisionScope,
-    ctx: &OrchestratorContext,
-) {
-    let PermissionSubject::CommandExec {
-        command,
-        cwd,
-        fingerprint,
-        ..
-    } = subject
-    else {
-        return;
-    };
-    if fingerprint.is_some() {
-        return;
-    }
-    let DecisionScope::ExactCommand {
-        command: scope_command,
-        cwd: scope_cwd,
-    } = scope_hint
-    else {
-        return;
-    };
-    if command != scope_command || cwd != scope_cwd {
-        return;
-    }
-
-    let base = ctx
-        .tool_context
-        .sandbox
-        .as_ref()
-        .map(|sandbox| sandbox.base_config())
-        .unwrap_or_default();
-    let spec = ExecSpec {
-        command: command.clone(),
-        cwd: cwd.clone(),
-        stdin: StdioSpec::Null,
-        stdout: StdioSpec::Piped,
-        stderr: StdioSpec::Piped,
-        workspace_access: WorkspaceAccess::ReadWrite {
-            allowed_writable_subpaths: Vec::new(),
-        },
-        ..ExecSpec::default()
-    };
-    *fingerprint = Some(spec.canonical_fingerprint(&base));
-}
-
-fn decision_allows(decision: &Decision) -> bool {
-    matches!(
-        decision,
-        Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent
-    )
 }
 
 async fn collect_stream(
@@ -519,6 +397,18 @@ fn authorize_tool_journal_event(
         Event::AssistantClarificationRequested(requested) => {
             require_tool_journal_authority(journal_authority, ToolJournalAuthority::Clarification)?;
             requested.run_id = ctx.tool_context.run_id;
+        }
+        Event::SandboxPreflightPassed(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::Sandbox)?;
+            event.session_id = ctx.tool_context.session_id;
+            event.run_id = ctx.tool_context.run_id;
+            event.tool_use_id = Some(tool_use_id);
+        }
+        Event::SandboxPreflightFailed(event) => {
+            require_tool_journal_authority(journal_authority, ToolJournalAuthority::Sandbox)?;
+            event.session_id = ctx.tool_context.session_id;
+            event.run_id = ctx.tool_context.run_id;
+            event.tool_use_id = Some(tool_use_id);
         }
         Event::SandboxExecutionStarted(event) => {
             require_tool_journal_authority(journal_authority, ToolJournalAuthority::Sandbox)?;

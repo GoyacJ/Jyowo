@@ -151,6 +151,7 @@ fn permission_request() -> PermissionRequest {
         },
         severity: Severity::Low,
         scope_hint: DecisionScope::ToolName("shell".to_owned()),
+        confirmation_expected: None,
         created_at: harness_contracts::now(),
     }
 }
@@ -165,11 +166,6 @@ fn permission_context(mode: PermissionMode) -> PermissionContext {
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::AskUser,
-        rule_snapshot: Arc::new(harness_permission::RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: harness_contracts::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }

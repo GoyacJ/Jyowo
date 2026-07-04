@@ -2,18 +2,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::Utc;
 use futures::stream;
 use harness_contracts::{
-    BlobError, BlobMeta, BlobRef, BlobStore, BudgetMetric, CapabilityRegistry, Decision, Event,
-    FallbackPolicy, InteractivityLevel, OverflowAction, PermissionMode, ProviderRestriction,
-    ResultBudget, TenantId, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
-    ToolResult, ToolResultPart, ToolUseId, TrustLevel,
+    BlobError, BlobMeta, BlobRef, BlobStore, BudgetMetric, CapabilityRegistry, Event,
+    OverflowAction, ProviderRestriction, ResultBudget, TenantId, ToolActionPlan, ToolDescriptor,
+    ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolResultPart, ToolUseId,
+    TrustLevel,
 };
-use harness_permission::{
-    PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest, RuleSnapshot,
-};
+use harness_permission::PermissionCheck;
 use harness_tool::{
-    InterruptToken, OrchestratorContext, Tool, ToolCall, ToolContext, ToolEvent, ToolEventEmitter,
+    AuthorizedTicketSummary, AuthorizedToolCall, AuthorizedToolInput, InterruptToken,
+    OrchestratorContext, Tool, ToolCall, ToolContext, ToolEvent, ToolEventEmitter,
     ToolOrchestrator, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolSearchMode,
     ValidationError,
 };
@@ -235,12 +235,18 @@ async fn dispatch(
     blob_store: Option<Arc<dyn BlobStore>>,
     event_emitter: Arc<dyn ToolEventEmitter>,
 ) -> Vec<harness_tool::ToolResultEnvelope> {
-    ToolOrchestrator::default()
-        .dispatch(
-            vec![call],
-            orchestrator_ctx(pool, blob_store, event_emitter),
-        )
-        .await
+    let ctx = orchestrator_ctx(pool, blob_store, event_emitter);
+    let mut tool_ctx = ctx.tool_context.clone();
+    tool_ctx.tool_use_id = call.tool_use_id;
+    let tool = ctx.pool.get(&call.tool_name).unwrap();
+    let plan = tool.plan(&call.input, &tool_ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(call.input, plan.clone(), ticket_for(&plan)).unwrap();
+    let call = AuthorizedToolCall {
+        tool_use_id: call.tool_use_id,
+        tool_name: call.tool_name,
+        input: authorized,
+    };
+    ToolOrchestrator::default().dispatch(vec![call], ctx).await
 }
 
 async fn pool_with_tool(
@@ -558,13 +564,25 @@ impl Tool for BudgetTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(
+        &self,
+        input: &Value,
+        ctx: &ToolContext,
+    ) -> Result<harness_contracts::ToolActionPlan, ToolError> {
+        harness_tool::action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            harness_contracts::WorkspaceAccess::None,
+            harness_contracts::NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: harness_tool::AuthorizedToolInput,
         _ctx: ToolContext,
     ) -> Result<harness_tool::ToolStream, ToolError> {
         Ok(Box::pin(stream::iter(self.events.clone())))
@@ -576,7 +594,6 @@ fn orchestrator_ctx(
     blob_store: Option<Arc<dyn BlobStore>>,
     event_emitter: Arc<dyn ToolEventEmitter>,
 ) -> OrchestratorContext {
-    let broker: Arc<dyn PermissionBroker> = Arc::new(AllowBroker);
     let run_id = harness_contracts::RunId::new();
     let session_id = harness_contracts::SessionId::new();
     OrchestratorContext {
@@ -591,49 +608,29 @@ fn orchestrator_ctx(
             subagent_depth: 0,
             workspace_root: std::env::temp_dir(),
             sandbox: None,
-            permission_broker: broker,
             cap_registry: Arc::new(CapabilityRegistry::default()),
             redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
             interrupt: InterruptToken::default(),
             parent_run: None,
             model: None,
             model_config_id: None,
-        },
-        permission_context: PermissionContext {
-            permission_mode: PermissionMode::Default,
-            previous_mode: None,
-            session_id,
-            tenant_id: TenantId::SINGLE,
-            run_id: None,
-            interactivity: InteractivityLevel::FullyInteractive,
-            timeout_policy: None,
-            fallback_policy: FallbackPolicy::DenyAll,
-            rule_snapshot: Arc::new(RuleSnapshot {
-                rules: vec![],
-                generation: 0,
-                built_at: chrono::Utc::now(),
-            }),
-            hook_overrides: vec![],
+            actor_source: harness_contracts::PermissionActorSource::ParentRun,
         },
         blob_store,
         event_emitter,
     }
 }
 
-#[derive(Debug)]
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(
-        &self,
-        _decision: harness_permission::PersistedDecision,
-    ) -> Result<(), harness_contracts::PermissionError> {
-        Ok(())
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: harness_contracts::SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }
 

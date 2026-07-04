@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
-    Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionError, PermissionMode,
+    Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionError,
     PermissionSubject, RuleSource, ShellKind, TenantId,
 };
 use tokio::task::JoinHandle;
@@ -33,7 +33,7 @@ pub struct RuleEngineBrokerBuilder {
     rule_providers: Vec<Arc<dyn RuleProvider>>,
     fallback: FallbackPolicy,
     dangerous_patterns: Option<DangerousPatternLibrary>,
-    persistence: Arc<dyn DecisionPersistence>,
+    persistence: Option<Arc<dyn DecisionPersistence>>,
     policy_deny_only: bool,
 }
 
@@ -44,7 +44,7 @@ impl RuleEngineBroker {
             rule_providers: Vec::new(),
             fallback: FallbackPolicy::AskUser,
             dangerous_patterns: None,
-            persistence: Arc::new(NoopDecisionPersistence),
+            persistence: None,
             policy_deny_only: false,
         }
     }
@@ -98,7 +98,7 @@ impl RuleEngineBrokerBuilder {
 
     #[must_use]
     pub fn with_persistence(mut self, persistence: Arc<dyn DecisionPersistence>) -> Self {
-        self.persistence = persistence;
+        self.persistence = Some(persistence);
         self
     }
 
@@ -115,7 +115,8 @@ impl RuleEngineBrokerBuilder {
     }
 
     pub async fn build(self) -> Result<RuleEngineBroker, PermissionError> {
-        if !self.persistence.supports_integrity() {
+        if matches!(self.persistence.as_ref(), Some(persistence) if !persistence.supports_integrity())
+        {
             return Err(PermissionError::Message(
                 "decision persistence must support integrity verification".to_owned(),
             ));
@@ -129,7 +130,9 @@ impl RuleEngineBrokerBuilder {
             rule_providers: self.rule_providers,
             fallback: self.fallback,
             tenant: self.tenant,
-            persistence: self.persistence,
+            persistence: self
+                .persistence
+                .unwrap_or_else(|| Arc::new(NoopDecisionPersistence)),
             dangerous_patterns: self.dangerous_patterns,
             policy_deny_only: self.policy_deny_only,
             watch_task,
@@ -139,6 +142,10 @@ impl RuleEngineBrokerBuilder {
 
 #[async_trait]
 impl PermissionBroker for RuleEngineBroker {
+    fn can_anchor_authority(&self) -> bool {
+        true
+    }
+
     async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
         let snapshot = self.current_snapshot();
         let rule = select_rule(&snapshot.rules, &request.scope_hint);
@@ -151,25 +158,13 @@ impl PermissionBroker for RuleEngineBroker {
         }
 
         let is_dangerous_command = self.is_dangerous_command(&request);
-        if is_dangerous_command
-            && !matches!(
-                ctx.permission_mode,
-                PermissionMode::BypassPermissions | PermissionMode::DontAsk
-            )
-        {
+        if is_dangerous_command {
             return match ctx.interactivity {
                 InteractivityLevel::NoInteractive => Decision::DenyOnce,
                 InteractivityLevel::FullyInteractive
                 | InteractivityLevel::DeferredInteractive
                 | _ => Decision::Escalate,
             };
-        }
-
-        if matches!(
-            ctx.permission_mode,
-            PermissionMode::BypassPermissions | PermissionMode::DontAsk
-        ) {
-            return Decision::AllowOnce;
         }
 
         let Some(rule) = rule else {
@@ -218,8 +213,10 @@ impl RuleEngineBroker {
         let Some(library) = &self.dangerous_patterns else {
             return false;
         };
-        let PermissionSubject::CommandExec { command, .. } = &request.subject else {
-            return false;
+        let command = match &request.subject {
+            PermissionSubject::CommandExec { command, .. }
+            | PermissionSubject::DangerousCommand { command, .. } => command,
+            _ => return false,
         };
 
         library.detect(command).is_some()
@@ -337,16 +334,10 @@ fn source_rank(source: RuleSource) -> u8 {
 fn fallback_decision(
     fallback: FallbackPolicy,
     request: &PermissionRequest,
-    ctx: &PermissionContext,
+    _ctx: &PermissionContext,
 ) -> Decision {
     match fallback {
-        FallbackPolicy::AskUser => match ctx.interactivity {
-            InteractivityLevel::FullyInteractive => Decision::Escalate,
-            InteractivityLevel::NoInteractive | InteractivityLevel::DeferredInteractive => {
-                Decision::DenyOnce
-            }
-            _ => Decision::DenyOnce,
-        },
+        FallbackPolicy::AskUser => Decision::Escalate,
         FallbackPolicy::AllowReadOnly => {
             if is_read_only_subject(&request.subject) {
                 Decision::AllowOnce

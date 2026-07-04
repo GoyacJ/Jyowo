@@ -12,8 +12,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::{
-    hard_policy_denies_from_context, DecisionPersistence, NoopDecisionPersistence,
-    PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
+    DecisionPersistence, NoopDecisionPersistence, PermissionBroker, PermissionContext,
+    PermissionRequest, PersistedDecision,
 };
 use parking_lot::Mutex;
 
@@ -46,6 +46,7 @@ struct PendingResolution {
     sender: oneshot::Sender<Decision>,
     request: PermissionRequest,
     context: PermissionContext,
+    confirmation_expected: Option<String>,
     enqueued_at: Instant,
     last_heartbeat_at: Instant,
     timeout_at: Instant,
@@ -67,6 +68,7 @@ pub struct ResolverHandle {
 pub struct PendingPermissionRequest {
     pub request: PermissionRequest,
     pub context: PermissionContext,
+    pub confirmation_expected: Option<String>,
 }
 
 impl Default for StreamBrokerConfig {
@@ -151,6 +153,11 @@ impl Drop for StreamBasedBroker {
 
 impl ResolverHandle {
     #[must_use]
+    pub fn same_origin_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.pending, &other.pending)
+    }
+
+    #[must_use]
     pub fn pending_requests(&self) -> Vec<PermissionRequest> {
         self.pending
             .iter()
@@ -165,6 +172,7 @@ impl ResolverHandle {
             .map(|pending| PendingPermissionRequest {
                 request: pending.request.clone(),
                 context: pending.context.clone(),
+                confirmation_expected: pending.confirmation_expected.clone(),
             })
             .collect()
     }
@@ -207,11 +215,11 @@ impl ResolverHandle {
 
 #[async_trait]
 impl PermissionBroker for StreamBasedBroker {
-    async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
-        if hard_policy_denies_from_context(&request, &ctx) {
-            return Decision::DenyOnce;
-        }
+    fn can_anchor_authority(&self) -> bool {
+        false
+    }
 
+    async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
         if matches!(
             ctx.permission_mode,
             PermissionMode::BypassPermissions | PermissionMode::DontAsk
@@ -237,6 +245,7 @@ impl PermissionBroker for StreamBasedBroker {
                 sender,
                 request: request.clone(),
                 context: ctx.clone(),
+                confirmation_expected: request.confirmation_expected.clone(),
                 enqueued_at: now,
                 last_heartbeat_at: now,
                 timeout_at: now + timeout,
@@ -262,10 +271,10 @@ impl PermissionBroker for StreamBasedBroker {
 
     async fn hard_policy_denies(
         &self,
-        request: &PermissionRequest,
-        ctx: &PermissionContext,
+        _request: &PermissionRequest,
+        _ctx: &PermissionContext,
     ) -> bool {
-        hard_policy_denies_from_context(request, ctx)
+        false
     }
 
     async fn persist(&self, decision: PersistedDecision) -> Result<(), PermissionError> {

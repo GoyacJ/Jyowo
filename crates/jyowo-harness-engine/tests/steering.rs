@@ -28,6 +28,9 @@ use harness_tool::{
 };
 use tokio::sync::Mutex;
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 #[tokio::test]
 async fn steering_drain_runs_before_model_infer_and_merges_prompt() {
     let workspace = tempfile::tempdir().unwrap();
@@ -55,15 +58,19 @@ async fn steering_drain_runs_before_model_infer_and_merges_prompt() {
     .await
     .unwrap();
     let steering = Arc::new(OneShotSteeringDrain::new("include blockers"));
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let engine = Engine::builder()
-        .with_event_store(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_event_store(store.clone())
         .with_context(ContextEngine::builder().build().unwrap())
         .with_hooks(HookDispatcher::new(
             HookRegistry::builder().build().unwrap().snapshot(),
         ))
         .with_model(model.clone())
         .with_tools(tools)
-        .with_permission_broker(Arc::new(AllowBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(AllowBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("test-model")
         .with_protocol(ModelProtocol::Messages)

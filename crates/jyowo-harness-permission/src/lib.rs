@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod authority;
 #[cfg(feature = "auto-mode")]
 pub mod aux_llm;
 pub mod broker;
@@ -30,6 +31,7 @@ pub mod stream;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
+pub use authority::*;
 #[cfg(feature = "auto-mode")]
 pub use aux_llm::*;
 pub use broker::*;

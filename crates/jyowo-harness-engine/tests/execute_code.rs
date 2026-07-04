@@ -1,5 +1,8 @@
 #![cfg(feature = "programmatic-tool-calling")]
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -99,8 +102,10 @@ async fn engine_execute_code_embedded_step_keeps_metadata_in_final_result() {
         text_events("done"),
     ]));
     let workspace = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let engine = Engine::builder()
         .with_required_test_dependencies()
+        .with_event_store(store.clone())
         .with_model(model)
         .with_tools(tools)
         .with_workspace_root(workspace.path())
@@ -191,7 +196,10 @@ async fn engine_execute_code_embedded_permission_denial_is_structured() {
         .with_required_test_dependencies()
         .with_model(model)
         .with_tools(tools)
-        .with_permission_broker(Arc::new(DenyGrepBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(DenyGrepBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_code_sandbox(Arc::new(harness_sandbox::MiniLuaCodeSandbox::new()))
         .with_max_iterations(2)
@@ -304,14 +312,18 @@ trait EngineBuilderTestExt {
 impl EngineBuilderTestExt for EngineBuilder {
     fn with_required_test_dependencies(self) -> Self {
         let root = tempfile::tempdir().unwrap();
-        self.with_event_store(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        self.with_event_store(store.clone())
             .with_context(ContextEngine::builder().build().unwrap())
             .with_hooks(HookDispatcher::new(
                 HookRegistry::builder().build().unwrap().snapshot(),
             ))
             .with_model(Arc::new(DummyModel))
             .with_tools(ToolPool::default())
-            .with_permission_broker(Arc::new(DummyBroker))
+            .with_authorization_service(test_authorization_service(
+                Arc::new(DummyBroker),
+                store.clone(),
+            ))
             .with_workspace_root(root.path())
             .with_model_id("dummy-model")
             .with_cap_registry(Arc::new(CapabilityRegistry::default()))

@@ -6,14 +6,14 @@ use futures::stream;
 use harness_contracts::{
     DecisionScope, DiagnosticItem, DiagnosticLanguage, DiagnosticSeverity, DiagnosticsRawOutput,
     DiagnosticsRequest, DiagnosticsResult, DiagnosticsRunRequest, DiagnosticsRunnerCap,
-    DiagnosticsRunnerKind, PermissionSubject, RedactRules, Redactor, ToolCapability,
-    ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    DiagnosticsRunnerKind, PermissionSubject, RedactRules, Redactor, ToolActionPlan,
+    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use regex::Regex;
 use serde_json::{json, Value};
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 
 const DIAGNOSTICS_RUNNER_CAPABILITY: &str = "diagnostics_runner";
 
@@ -60,18 +60,27 @@ impl Tool for DiagnosticsTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        super::generic_action_plan(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        let request = diagnostics_request(&input).map_err(validation_error)?;
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let request = diagnostics_request(authorized.raw_input()).map_err(validation_error)?;
         let runner = ctx.capability::<dyn DiagnosticsRunnerCap>(diagnostics_runner_capability())?;
         let output = runner
             .run_diagnostics(DiagnosticsRunRequest {

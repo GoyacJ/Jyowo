@@ -3,13 +3,17 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DecisionScope, PermissionSubject, ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    ActionResource, DecisionScope, HostRule, NetworkAccess, PermissionSubject, ToolActionPlan,
+    ToolDescriptor, ToolError, ToolGroup, ToolResult, WorkspaceAccess,
 };
 use harness_permission::{DangerousPatternLibrary, PermissionCheck};
 use serde_json::{json, Value};
 use url::Url;
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+    ToolStream, ValidationError,
+};
 
 #[derive(Clone)]
 pub struct WebFetchTool {
@@ -83,39 +87,70 @@ impl Tool for WebFetchTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
         let parsed = url(input).ok();
         if let Some(parsed) = parsed.as_ref() {
             let library = DangerousPatternLibrary::default_all();
             if let Some(rule) = library.detect_url(parsed.as_str()) {
-                return PermissionCheck::DangerousPattern {
-                    kind: "url".to_owned(),
-                    pattern: rule.id.clone(),
-                    severity: rule.severity,
-                    subject: PermissionSubject::NetworkAccess {
-                        host: parsed.host_str().unwrap_or_default().to_owned(),
-                        port: parsed.port(),
+                let host = parsed.host_str().unwrap_or_default().to_owned();
+                let port = parsed.port();
+                return action_plan_from_permission_check(
+                    &self.descriptor,
+                    input,
+                    ctx,
+                    PermissionCheck::DangerousPattern {
+                        kind: "url".to_owned(),
+                        pattern: rule.id.clone(),
+                        severity: rule.severity,
+                        subject: PermissionSubject::NetworkAccess {
+                            host: host.clone(),
+                            port,
+                        },
+                        scope: DecisionScope::Category("network".to_owned()),
                     },
-                    scope: DecisionScope::Category("network".to_owned()),
-                };
+                    vec![ActionResource::Network {
+                        host: host.clone(),
+                        port: parsed.port(),
+                    }],
+                    WorkspaceAccess::None,
+                    network_allow_list(host, port),
+                );
             }
         }
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::NetworkAccess {
-                host: parsed
-                    .as_ref()
-                    .and_then(Url::host_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                port: parsed.as_ref().and_then(Url::port),
+        let host = parsed
+            .as_ref()
+            .and_then(Url::host_str)
+            .unwrap_or_default()
+            .to_owned();
+        let port = parsed.as_ref().and_then(Url::port);
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::NetworkAccess {
+                    host: host.clone(),
+                    port,
+                },
+                scope: DecisionScope::Category("network".to_owned()),
             },
-            scope: DecisionScope::Category("network".to_owned()),
-        }
+            vec![ActionResource::Network {
+                host: host.clone(),
+                port,
+            }],
+            WorkspaceAccess::None,
+            network_allow_list(host, port),
+        )
     }
 
-    async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        let url = url(&input).map_err(validation_error)?;
-        let max_bytes = max_bytes(&input).map_err(validation_error)?;
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input();
+        let url = url(input).map_err(validation_error)?;
+        let max_bytes = max_bytes(input).map_err(validation_error)?;
         let backend = self.backends.first().ok_or_else(|| {
             ToolError::CapabilityMissing(harness_contracts::ToolCapability::Custom(
                 "web_fetch_backend".to_owned(),
@@ -170,6 +205,13 @@ fn max_bytes(input: &Value) -> Result<usize, ValidationError> {
         return Err(ValidationError::from("max_bytes must be greater than 0"));
     }
     usize::try_from(raw).map_err(|_| ValidationError::from("max_bytes must fit in usize"))
+}
+
+fn network_allow_list(host: String, port: Option<u16>) -> NetworkAccess {
+    NetworkAccess::AllowList(vec![HostRule {
+        pattern: host,
+        ports: port.map(|port| vec![port]),
+    }])
 }
 
 fn take_bytes_on_char_boundary(text: &str, max_bytes: usize) -> String {

@@ -2,17 +2,16 @@
 
 use std::sync::Arc;
 
+use chrono::Utc;
 use futures::{future::BoxFuture, StreamExt};
 use harness_contracts::{
-    CapabilityRegistry, CodeLanguage, CodeRunRequest, CodeRunResult, CodeRunStats, Decision,
-    DecisionScope, EmbeddedToolDispatchRequest, EmbeddedToolDispatchResponse, Event,
-    ExecuteCodeStepInvokedEvent, PermissionError, TenantId, ToolCapability, ToolGroup, ToolResult,
-    ToolUseId,
+    CapabilityRegistry, CodeLanguage, CodeRunRequest, CodeRunResult, CodeRunStats, DecisionScope,
+    EmbeddedToolDispatchRequest, EmbeddedToolDispatchResponse, Event, ExecuteCodeStepInvokedEvent,
+    TenantId, ToolActionPlan, ToolCapability, ToolError, ToolGroup, ToolResult, ToolUseId,
 };
-use harness_permission::{PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest};
 use harness_tool::{
-    builtin::ExecuteCodeTool, BuiltinToolset, InterruptToken, Tool, ToolContext, ToolEvent,
-    ToolRegistry,
+    builtin::ExecuteCodeTool, AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset,
+    InterruptToken, Tool, ToolContext, ToolEvent, ToolRegistry,
 };
 use serde_json::json;
 
@@ -51,15 +50,15 @@ async fn execute_code_runs_runtime_and_streams_journal_events() {
 
     let tool = ExecuteCodeTool::default();
     let input = json!({ "language": "mini_lua", "source": "return 1 + 2" });
+    let ctx = tool_ctx(caps);
+    let plan = tool.plan(&input, &ctx).await.unwrap();
     assert!(matches!(
-        tool.check_permission(&input, &tool_ctx(caps.clone())).await,
-        PermissionCheck::AskUser {
-            scope: DecisionScope::ExecuteCodeScript { .. },
-            ..
-        }
+        plan.scope,
+        DecisionScope::ExecuteCodeScript { .. }
     ));
 
-    let mut stream = tool.execute(input, tool_ctx(caps)).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     assert!(matches!(
         stream.next().await,
         Some(ToolEvent::Journal(Event::ExecuteCodeStepInvoked(_)))
@@ -73,17 +72,45 @@ async fn execute_code_runs_runtime_and_streams_journal_events() {
 }
 
 #[tokio::test]
+async fn execute_code_rejects_raw_source_when_authorized_script_hash_differs() {
+    let mut caps = CapabilityRegistry::default();
+    let runtime: Arc<dyn harness_contracts::CodeRuntimeCap> = Arc::new(FakeCodeRuntime);
+    let dispatcher: Arc<dyn harness_contracts::EmbeddedToolDispatcherCap> =
+        Arc::new(FakeEmbeddedDispatcher);
+    caps.install(ToolCapability::CodeRuntime, runtime);
+    caps.install(ToolCapability::EmbeddedToolDispatcher, dispatcher);
+
+    let tool = ExecuteCodeTool::default();
+    let planned_input = json!({ "language": "mini_lua", "source": "return 1" });
+    let raw_input = json!({ "language": "mini_lua", "source": "return 2" });
+    let ctx = tool_ctx(caps);
+    let plan = tool.plan(&planned_input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(raw_input, plan.clone(), ticket_for(&plan)).unwrap();
+
+    let error = match tool.execute_authorized(authorized, ctx).await {
+        Ok(_) => panic!("expected authorized execution to fail"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ToolError::PermissionDenied(ref message)
+            if message == "authorized execute_code script hash mismatch"
+    ));
+}
+
+#[tokio::test]
 async fn execute_code_denies_subagent_callers_before_runtime_execution() {
     let tool = ExecuteCodeTool::default();
     let input = json!({ "language": "mini_lua", "source": "return 1 + 2" });
     let mut ctx = tool_ctx(CapabilityRegistry::default());
     ctx.subagent_depth = 1;
 
-    let check = tool.check_permission(&input, &ctx).await;
+    let error = tool.plan(&input, &ctx).await.unwrap_err();
 
     assert!(matches!(
-        check,
-        PermissionCheck::Denied { ref reason }
+        error,
+        ToolError::PermissionDenied(ref reason)
             if reason == "execute_code is not available from subagents"
     ));
 }
@@ -164,7 +191,6 @@ fn tool_ctx(cap_registry: CapabilityRegistry) -> ToolContext {
         subagent_depth: 0,
         workspace_root: std::env::temp_dir(),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
@@ -174,18 +200,15 @@ fn tool_ctx(cap_registry: CapabilityRegistry) -> ToolContext {
     }
 }
 
-struct AllowBroker;
-
-#[async_trait::async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(
-        &self,
-        _decision: harness_permission::PersistedDecision,
-    ) -> Result<(), PermissionError> {
-        Ok(())
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: harness_contracts::SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }

@@ -3,13 +3,14 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use futures::StreamExt;
 use harness_contracts::{
-    BudgetMetric, DecisionScope, DeferPolicy, Event, McpOrigin, McpServerId, McpServerSource,
-    OverflowAction, PermissionSubject, ProviderRestriction, ResultBudget, SemverString,
-    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolResultPart,
-    ToolUseHeartbeatEvent, TrustLevel,
+    BudgetMetric, DecisionScope, DeferPolicy, Event, ManifestOriginRef, McpOrigin, McpServerId,
+    McpServerSource, NetworkAccess, OverflowAction, PermissionSubject, ProviderRestriction,
+    ResultBudget, SemverString, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, ToolResultPart, ToolUseHeartbeatEvent, TrustLevel, WorkspaceAccess,
 };
 use harness_tool::{
-    PermissionCheck, Tool, ToolContext, ToolEvent, ToolProgress, ToolStream, ValidationError,
+    action_plan_from_permission_check, AuthorizedToolInput, PermissionCheck, Tool, ToolContext,
+    ToolEvent, ToolProgress, ToolStream, ValidationError,
 };
 use serde_json::Value;
 
@@ -24,6 +25,7 @@ pub struct McpToolWrapper {
     upstream_name: String,
     connection: Arc<dyn McpConnection>,
     server_id: McpServerId,
+    origin: ManifestOriginRef,
     metrics_sink: Arc<dyn McpMetricsSink>,
     cancel_ack_timeout: Duration,
 }
@@ -32,6 +34,7 @@ impl McpToolWrapper {
     pub fn new(
         server_id: McpServerId,
         server_source: McpServerSource,
+        origin: ManifestOriginRef,
         server_trust: TrustLevel,
         mcp_tool: McpToolDescriptor,
         connection: Arc<dyn McpConnection>,
@@ -41,6 +44,7 @@ impl McpToolWrapper {
         Self::new_with_metrics(
             server_id,
             server_source,
+            origin,
             server_trust,
             mcp_tool,
             connection,
@@ -53,6 +57,7 @@ impl McpToolWrapper {
     pub fn new_with_metrics(
         server_id: McpServerId,
         server_source: McpServerSource,
+        origin: ManifestOriginRef,
         server_trust: TrustLevel,
         mcp_tool: McpToolDescriptor,
         connection: Arc<dyn McpConnection>,
@@ -63,6 +68,7 @@ impl McpToolWrapper {
         Self::new_with_metrics_and_cancel_ack_timeout(
             server_id,
             server_source,
+            origin,
             server_trust,
             mcp_tool,
             connection,
@@ -77,6 +83,7 @@ impl McpToolWrapper {
     pub fn new_with_metrics_and_cancel_ack_timeout(
         server_id: McpServerId,
         server_source: McpServerSource,
+        origin: ManifestOriginRef,
         server_trust: TrustLevel,
         mcp_tool: McpToolDescriptor,
         connection: Arc<dyn McpConnection>,
@@ -140,6 +147,7 @@ impl McpToolWrapper {
             upstream_name,
             connection,
             server_id,
+            origin,
             metrics_sink,
             cancel_ack_timeout,
         }
@@ -200,18 +208,35 @@ impl Tool for McpToolWrapper {
         validate_input_schema(&self.descriptor.input_schema, input)
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::McpToolCall {
-                server: self.server_id.0.clone(),
-                tool: self.upstream_name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::McpToolCall {
+                    server: self.server_id.0.clone(),
+                    tool: self.upstream_name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+            vec![crate::mcp_tool_resource(
+                &self.server_id,
+                &self.origin,
+                &self.upstream_name,
+            )],
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
         let mut upstream = self
             .connection
             .call_tool_events(&self.upstream_name, input)

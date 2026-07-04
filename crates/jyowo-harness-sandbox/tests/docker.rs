@@ -7,12 +7,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
 use harness_contracts::{
-    ContainerLifecycleReason, ContainerLifecycleState, Event, ResourceLimits, SandboxError,
-    SandboxExitStatus, SessionSnapshotKind,
+    ContainerLifecycleReason, ContainerLifecycleState, Event, NetworkAccess, ResourceLimits,
+    SandboxError, SandboxExitStatus, SessionSnapshotKind,
 };
 use harness_sandbox::{
-    ContainerLifecycle, DockerSandbox, EventSink, ExecContext, ExecSpec, NetworkMode,
-    OutputOverflowPolicy, SandboxBackend, SandboxBaseConfig, SnapshotSpec, StdioSpec, VolumeMount,
+    preflight_exec, ContainerLifecycle, DockerSandbox, EventSink, ExecContext, ExecSpec,
+    NetworkMode, OutputOverflowPolicy, SandboxBackend, SandboxBaseConfig, SnapshotSpec, StdioSpec,
+    VolumeMount,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -270,6 +271,7 @@ async fn docker_sandbox_rejects_unenforceable_per_exec_resource_limits() {
     let managed = DockerSandbox::builder()
         .docker_binary(docker.clone())
         .image("jyowo-test:latest")
+        .network(NetworkMode::None)
         .lifecycle(ContainerLifecycle::CreatePerSession {
             keep_alive_after_exit: Duration::ZERO,
         })
@@ -295,6 +297,7 @@ async fn docker_sandbox_rejects_unenforceable_per_exec_resource_limits() {
     let byo = DockerSandbox::builder()
         .docker_binary(docker)
         .image("jyowo-test:latest")
+        .network(NetworkMode::None)
         .lifecycle(ContainerLifecycle::BringYourOwn {
             container_id: "existing".to_owned(),
         })
@@ -316,6 +319,92 @@ async fn docker_sandbox_rejects_unenforceable_per_exec_resource_limits() {
             ..
         } if capability == "resource_limits"
     ));
+}
+
+#[tokio::test]
+async fn docker_preflight_allows_ephemeral_per_exec_network_none() {
+    let root = temp_root("ephemeral-network-preflight");
+    let sandbox = DockerSandbox::builder()
+        .docker_binary(fake_docker(&root, &root.join("docker.log")))
+        .image("jyowo-test:latest")
+        .network(NetworkMode::Bridge)
+        .lifecycle(ContainerLifecycle::EphemeralPerExec)
+        .build()
+        .expect("docker sandbox should build");
+    let mut spec = shell_spec();
+    spec.policy.network = NetworkAccess::None;
+
+    let report = preflight_exec(&sandbox, &spec, &ExecContext::for_test(Arc::new(NullSink)))
+        .expect("ephemeral docker can enforce no-network per exec");
+
+    assert_eq!(report.backend_id, "docker");
+}
+
+#[tokio::test]
+async fn docker_managed_lifecycle_rejects_per_exec_network_mismatch() {
+    let root = temp_root("managed-network-preflight");
+    for lifecycle in [
+        ContainerLifecycle::CreatePerSession {
+            keep_alive_after_exit: Duration::ZERO,
+        },
+        ContainerLifecycle::ReusePooled {
+            pool_size: 1,
+            idle_timeout: Duration::from_secs(60),
+        },
+        ContainerLifecycle::BringYourOwn {
+            container_id: "existing".to_owned(),
+        },
+    ] {
+        let sandbox = DockerSandbox::builder()
+            .docker_binary(fake_docker(
+                &root,
+                &root.join(format!("docker-{lifecycle:?}.log")),
+            ))
+            .image("jyowo-test:latest")
+            .network(NetworkMode::Bridge)
+            .lifecycle(lifecycle)
+            .build()
+            .expect("docker sandbox should build");
+        let mut spec = shell_spec();
+        spec.policy.network = NetworkAccess::None;
+
+        let error = preflight_exec(&sandbox, &spec, &ExecContext::for_test(Arc::new(NullSink)))
+            .expect_err("managed docker cannot change network policy per exec");
+
+        assert!(matches!(
+            error,
+            SandboxError::CapabilityMismatch {
+                ref capability,
+                ..
+            } if capability == "network"
+        ));
+    }
+}
+
+#[tokio::test]
+async fn docker_ephemeral_execute_uses_per_exec_network_policy() {
+    let root = temp_root("ephemeral-network-exec");
+    let log = root.join("docker.log");
+    let sandbox = DockerSandbox::builder()
+        .docker_binary(fake_docker(&root, &log))
+        .image("jyowo-test:latest")
+        .network(NetworkMode::Bridge)
+        .lifecycle(ContainerLifecycle::EphemeralPerExec)
+        .build()
+        .expect("docker sandbox should build");
+    let mut spec = shell_spec();
+    spec.policy.network = NetworkAccess::None;
+
+    let mut handle = sandbox
+        .execute(spec, ExecContext::for_test(Arc::new(NullSink)))
+        .await
+        .expect("docker run should spawn");
+    let _output = collect_stdout(handle.stdout.take().expect("stdout should be piped")).await;
+    let _outcome = handle.activity.wait().await.expect("wait should succeed");
+
+    let log_text = std::fs::read_to_string(log).expect("docker log should be written");
+    assert!(log_text.contains("run --rm"));
+    assert!(log_text.contains("--network none"));
 }
 
 #[tokio::test]
@@ -381,6 +470,7 @@ async fn docker_sandbox_rejects_unsupported_base_resource_limits_for_existing_co
         .docker_binary(fake_docker(&root, &log))
         .image("jyowo-test:latest")
         .base_config(base)
+        .network(NetworkMode::None)
         .lifecycle(ContainerLifecycle::BringYourOwn {
             container_id: "existing".to_owned(),
         })
@@ -413,6 +503,7 @@ async fn docker_sandbox_snapshots_restores_and_cleans_up_managed_container() {
         .docker_binary(docker)
         .image("jyowo-test:latest")
         .mount(VolumeMount::workspace(&root, "/workspace"))
+        .network(NetworkMode::None)
         .lifecycle(ContainerLifecycle::CreatePerSession {
             keep_alive_after_exit: std::time::Duration::from_secs(30),
         })
@@ -494,6 +585,7 @@ async fn docker_sandbox_emits_lifecycle_event_for_managed_container_start() {
         .docker_binary(docker)
         .image("jyowo-test:latest")
         .mount(VolumeMount::workspace(&root, "/workspace"))
+        .network(NetworkMode::None)
         .lifecycle(ContainerLifecycle::CreatePerSession {
             keep_alive_after_exit: std::time::Duration::from_secs(30),
         })
@@ -531,6 +623,7 @@ async fn docker_reuse_pooled_enforces_pool_size_until_activity_wait_releases_con
         .docker_binary(docker)
         .image("jyowo-test:latest")
         .mount(VolumeMount::workspace(&root, "/workspace"))
+        .network(NetworkMode::None)
         .lifecycle(ContainerLifecycle::ReusePooled {
             pool_size: 1,
             idle_timeout: Duration::from_secs(60),
@@ -601,6 +694,7 @@ async fn docker_reuse_pooled_evicts_idle_container_after_timeout() {
         .docker_binary(docker)
         .image("jyowo-test:latest")
         .mount(VolumeMount::workspace(&root, "/workspace"))
+        .network(NetworkMode::None)
         .lifecycle(ContainerLifecycle::ReusePooled {
             pool_size: 1,
             idle_timeout: Duration::from_millis(10),
@@ -658,6 +752,7 @@ async fn docker_create_per_session_keep_alive_after_exit_defers_container_remova
         .docker_binary(docker)
         .image("jyowo-test:latest")
         .mount(VolumeMount::workspace(&root, "/workspace"))
+        .network(NetworkMode::None)
         .lifecycle(ContainerLifecycle::CreatePerSession {
             keep_alive_after_exit: Duration::from_millis(30),
         })
@@ -700,6 +795,7 @@ async fn docker_create_per_session_zero_keep_alive_removes_container_on_shutdown
         .docker_binary(docker)
         .image("jyowo-test:latest")
         .mount(VolumeMount::workspace(&root, "/workspace"))
+        .network(NetworkMode::None)
         .lifecycle(ContainerLifecycle::CreatePerSession {
             keep_alive_after_exit: Duration::ZERO,
         })

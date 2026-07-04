@@ -14,9 +14,9 @@ use harness_contracts::{
     WorkspaceAccess,
 };
 use harness_sandbox::{
-    EventSink, ExecContext, ExecSpec, LocalIsolation, LocalSandbox, OutputOverflowPolicy,
-    SandboxBackend, SandboxBaseConfig, SessionSnapshotFile, SnapshotMetadata, SnapshotSpec,
-    StdioSpec,
+    execute_with_lifecycle, preflight_exec, EventSink, ExecContext, ExecSpec, LocalIsolation,
+    LocalSandbox, OutputOverflowPolicy, SandboxBackend, SandboxBaseConfig, SessionSnapshotFile,
+    SnapshotMetadata, SnapshotSpec, StdioSpec,
 };
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -268,6 +268,70 @@ async fn local_sandbox_rejects_unsupported_network_restriction_and_denied_paths(
         error,
         SandboxError::HostPathDenied { ref path } if path.ends_with("secret")
     ));
+}
+
+#[tokio::test]
+async fn local_sandbox_capability_truth_matches_unrestricted_only_without_os_isolation() {
+    let root = temp_root("capability-truth");
+    let sandbox = LocalSandbox::new(&root);
+    let ctx = ExecContext::for_test(Arc::new(NullSink));
+
+    assert!(!sandbox.capabilities().supports_network);
+
+    let unrestricted = shell_spec("printf ok");
+    preflight_exec(&sandbox, &unrestricted, &ctx)
+        .expect("unrestricted network does not require local network enforcement");
+
+    for network in [
+        NetworkAccess::None,
+        NetworkAccess::LoopbackOnly,
+        NetworkAccess::AllowList(vec![HostRule {
+            pattern: "localhost".to_owned(),
+            ports: None,
+        }]),
+    ] {
+        let mut spec = shell_spec("printf nope");
+        spec.policy.network = network;
+        let error = preflight_exec(&sandbox, &spec, &ctx)
+            .expect_err("unenforceable local network policy must fail preflight");
+        assert!(matches!(
+            error,
+            SandboxError::CapabilityMismatch {
+                ref capability,
+                ..
+            } if capability == "network"
+        ));
+    }
+}
+
+#[tokio::test]
+async fn execute_with_lifecycle_emits_local_preflight_before_started() {
+    let root = temp_root("local-lifecycle-preflight");
+    let (sink, mut rx) = recording_sink();
+    let sandbox: Arc<dyn SandboxBackend> = Arc::new(LocalSandbox::new(&root));
+
+    let mut handle = execute_with_lifecycle(
+        sandbox,
+        shell_spec("printf ok"),
+        ExecContext::for_test(sink),
+    )
+    .await
+    .expect("execute should spawn process");
+    let output = collect_stdout(handle.stdout.take().expect("stdout should be piped")).await;
+    let outcome = handle.activity.wait().await.expect("wait should succeed");
+
+    assert_eq!(output, "ok");
+    assert_eq!(outcome.exit_status, SandboxExitStatus::Code(0));
+    let events = drain_events(&mut rx);
+    let preflight_index = events
+        .iter()
+        .position(|event| matches!(event, Event::SandboxPreflightPassed(_)))
+        .expect("preflight passed event should be emitted");
+    let started_index = events
+        .iter()
+        .position(|event| matches!(event, Event::SandboxExecutionStarted(_)))
+        .expect("execution started event should be emitted");
+    assert!(preflight_index < started_index);
 }
 
 #[tokio::test]

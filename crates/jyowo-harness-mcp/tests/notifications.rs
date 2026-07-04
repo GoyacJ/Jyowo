@@ -16,6 +16,8 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
+mod support;
+
 #[tokio::test]
 async fn websocket_transport_maps_mcp_notifications_to_changes() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -102,7 +104,7 @@ async fn websocket_transport_maps_mcp_notifications_to_changes() {
         McpServerSource::Workspace,
     );
     let connection = McpClient::new(Arc::new(WebsocketTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("websocket connects");
     let mut changes = connection.subscribe_changes().await.expect("changes");

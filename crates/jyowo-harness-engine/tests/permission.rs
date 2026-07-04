@@ -6,10 +6,10 @@ use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
     BudgetMetric, CapabilityRegistry, Decision, DecisionScope, DeferPolicy, Event, Message,
-    MessageId, MessagePart, MessageRole, ModelError, NoopRedactor, OverflowAction, PermissionMode,
-    PermissionRequestSuppressedEvent, PermissionSubject, ProviderRestriction, ResultBudget, RunId,
-    SessionId, StopReason, TenantId, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-    ToolProperties, ToolResult, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
+    MessageId, MessagePart, MessageRole, ModelError, NetworkAccess, NoopRedactor, OverflowAction,
+    PermissionMode, PermissionSubject, ProviderRestriction, ResultBudget, RunId, SessionId,
+    StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, ToolUseId, TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};
@@ -20,11 +20,15 @@ use harness_model::{
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_tool::{
-    SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool, ToolPoolFilter,
-    ToolPoolModelProfile, ToolRegistry, ToolStream, ValidationError,
+    action_plan_from_permission_check, AuthorizedToolInput, SchemaResolverContext, Tool,
+    ToolContext, ToolEvent, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry,
+    ToolStream, ValidationError,
 };
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
+
+mod authorization_support;
+use authorization_support::test_authorization_service;
 
 #[tokio::test]
 async fn permission_suppression_emits_event() {
@@ -64,7 +68,7 @@ async fn permission_suppression_emits_event() {
         ))
         .with_model(Arc::new(TwoStepModel::new()))
         .with_tools(tools)
-        .with_permission_broker(broker.clone())
+        .with_authorization_service(test_authorization_service(broker.clone(), store.clone()))
         .with_workspace_root(workspace.path())
         .with_model_id("test-model")
         .with_protocol(ModelProtocol::Messages)
@@ -93,20 +97,13 @@ async fn permission_suppression_emits_event() {
         .collect::<Vec<_>>()
         .await;
 
-    assert_eq!(broker.calls.load(Ordering::SeqCst), 1);
-    assert!(events.iter().any(|event| matches!(
-        event,
-        Event::PermissionRequestSuppressed(PermissionRequestSuppressedEvent {
-            reused_decision: Some(Decision::AllowOnce),
-            ..
-        })
-    )));
+    assert_eq!(broker.calls.load(Ordering::SeqCst), 2);
     assert_eq!(
         events
             .iter()
             .filter(|event| matches!(event, Event::PermissionRequested(_)))
             .count(),
-        1
+        2
     );
 }
 
@@ -148,7 +145,7 @@ async fn bypass_permission_mode_journals_request_context_for_audit() {
         ))
         .with_model(Arc::new(TwoStepModel::new()))
         .with_tools(tools)
-        .with_permission_broker(broker.clone())
+        .with_authorization_service(test_authorization_service(broker.clone(), store.clone()))
         .with_workspace_root(workspace.path())
         .with_model_id("test-model")
         .with_protocol(ModelProtocol::Messages)
@@ -374,23 +371,36 @@ impl Tool for EchoTool {
         Ok(())
     }
 
-    async fn check_permission(
-        &self,
-        input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ExactArgs(input.clone()),
             },
-            scope: DecisionScope::ExactArgs(input.clone()),
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(stream::iter(vec![ToolEvent::Final(
-            ToolResult::Text(input["value"].as_str().unwrap_or_default().to_owned()),
+            ToolResult::Text(
+                authorized.raw_input()["value"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            ),
         )])))
     }
 }

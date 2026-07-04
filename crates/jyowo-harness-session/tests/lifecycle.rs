@@ -5,8 +5,11 @@ use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
     CapabilityRegistry, Decision, EndReason, Event, EventId, ForkReason, JournalError,
-    JournalOffset, ModelError, ModelProvider as ModelProviderId, RunId, SessionError, SessionId,
-    SnapshotId, TenantId, ToolProfile, ToolSearchMode,
+    JournalOffset, ModelError, ModelProvider as ModelProviderId, RunId, SandboxError, SessionError,
+    SessionId, SnapshotId, TenantId, ToolProfile, ToolSearchMode,
+};
+use harness_execution::{
+    AuthorizationEventSink, AuthorizationService, ExecutionError, TicketLedger,
 };
 use harness_hook::{HookDispatcher, HookRegistry};
 use harness_journal::{
@@ -17,7 +20,14 @@ use harness_model::{
     ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
     ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
-use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
+use harness_permission::{
+    NoopDecisionPersistence, PermissionAuthority, PermissionBroker, PermissionContext,
+    PermissionRequest,
+};
+use harness_sandbox::{
+    ExecContext, ExecSpec, ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile,
+    SnapshotSpec,
+};
 use harness_session::SessionProjection;
 use harness_session::{Session, SessionOptions, SessionTurnRuntime};
 use harness_tool::{
@@ -181,7 +191,7 @@ async fn session_fallback_run_started_uses_config_hash() {
         hooks: HookDispatcher::new(HookRegistry::builder().build().unwrap().snapshot()),
         model: Arc::new(TextModelProvider),
         tools,
-        permission_broker: Arc::new(AllowBroker),
+        authorization_service: test_authorization_service(Arc::new(AllowBroker)),
         sandbox: None,
         cap_registry: Arc::new(CapabilityRegistry::default()),
         redactor: Arc::new(harness_contracts::NoopRedactor),
@@ -278,6 +288,90 @@ impl PermissionBroker for AllowBroker {
         &self,
         _decision: harness_permission::PersistedDecision,
     ) -> Result<(), harness_contracts::PermissionError> {
+        Ok(())
+    }
+}
+
+fn test_authorization_service(
+    policy_broker: Arc<dyn PermissionBroker>,
+) -> Arc<AuthorizationService> {
+    let authority = PermissionAuthority::builder()
+        .with_policy_broker(policy_broker)
+        .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
+        .build()
+        .unwrap();
+    Arc::new(AuthorizationService::new(
+        Arc::new(authority),
+        Arc::new(AllowPreflightSandbox),
+        Arc::new(NoopAuthorizationEventSink),
+        Arc::new(TicketLedger::default()),
+    ))
+}
+
+struct NoopAuthorizationEventSink;
+
+#[async_trait]
+impl AuthorizationEventSink for NoopAuthorizationEventSink {
+    async fn emit_batch(
+        &self,
+        _tenant_id: TenantId,
+        _session_id: SessionId,
+        _events: Vec<Event>,
+    ) -> Result<(), ExecutionError> {
+        Ok(())
+    }
+}
+
+struct AllowPreflightSandbox;
+
+#[async_trait]
+impl SandboxBackend for AllowPreflightSandbox {
+    fn backend_id(&self) -> &str {
+        "test"
+    }
+
+    fn capabilities(&self) -> SandboxCapabilities {
+        SandboxCapabilities {
+            supports_network: true,
+            supports_filesystem_write: true,
+            resource_limit_support: harness_sandbox::ResourceLimitSupport {
+                memory: true,
+                cpu: true,
+                pids: true,
+                wall_clock: true,
+                open_files: true,
+            },
+            ..SandboxCapabilities::default()
+        }
+    }
+
+    async fn execute(
+        &self,
+        _spec: ExecSpec,
+        _ctx: ExecContext,
+    ) -> Result<ProcessHandle, SandboxError> {
+        Err(SandboxError::Unavailable {
+            backend: "test".to_owned(),
+            detail: "test sandbox does not execute processes".to_owned(),
+        })
+    }
+
+    async fn snapshot_session(
+        &self,
+        _spec: &SnapshotSpec,
+    ) -> Result<SessionSnapshotFile, SandboxError> {
+        Err(SandboxError::SnapshotUnsupported {
+            kind: "test".to_owned(),
+        })
+    }
+
+    async fn restore_session(&self, _snapshot: &SessionSnapshotFile) -> Result<(), SandboxError> {
+        Err(SandboxError::SnapshotUnsupported {
+            kind: "test".to_owned(),
+        })
+    }
+
+    async fn shutdown(&self) -> Result<(), SandboxError> {
         Ok(())
     }
 }

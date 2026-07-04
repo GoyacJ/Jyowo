@@ -25,6 +25,9 @@ use harness_tool::ToolPool;
 use serde_json::json;
 use tokio::sync::Mutex;
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 #[tokio::test]
 async fn hook_context_uses_runtime_permission_interactivity_and_redactor() {
     let workspace = tempfile::tempdir().unwrap();
@@ -45,14 +48,18 @@ async fn hook_context_uses_runtime_permission_interactivity_and_redactor() {
             .build()
             .unwrap(),
     );
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
     let engine = Engine::builder()
-        .with_event_store(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_event_store(store.clone())
         .with_context(ContextEngine::builder().build().unwrap())
         .with_hooks(HookDispatcher::new(registry.snapshot()))
         .with_model(Arc::new(OneShotModel))
         .with_tools(ToolPool::default())
-        .with_permission_broker(Arc::new(AllowBroker))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(AllowBroker),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("test-model")
         .with_protocol(ModelProtocol::Messages)

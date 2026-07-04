@@ -605,13 +605,13 @@ Do not add `ToolStarted`, `ToolCompleted`, or `ToolFailed`. This plan uses exist
 
 **Steps:**
 
-1. Write contract tests for serde shape and JsonSchema export.
-2. Write Rust tests for `PermissionActorSource::Automation` and `PermissionActorSource::McpServer` serialization plus conversation projection payloads.
-3. Write frontend Zod tests for valid and invalid permission review payloads and actor source payloads.
-4. Implement Rust contract types.
-5. Update schema export and all exhaustive actor source matches in engine, MCP, and journal projection.
-6. Update frontend Zod schema to parse new fields.
-7. Run gates.
+- Write contract tests for serde shape and JsonSchema export.
+- Write Rust tests for `PermissionActorSource::Automation` and `PermissionActorSource::McpServer` serialization plus conversation projection payloads.
+- Write frontend Zod tests for valid and invalid permission review payloads and actor source payloads.
+- Implement Rust contract types.
+- Update schema export and all exhaustive actor source matches in engine, MCP, and journal projection.
+- Update frontend Zod schema to parse new fields.
+- Run gates.
 
 **Verification:**
 
@@ -717,20 +717,20 @@ This task must complete before the execution crate is created. `jyowo-harness-ex
 
 **Steps:**
 
-1. Write failing tests proving:
-   - empty call-site snapshot cannot disable policy deny
-   - bypass cannot override policy deny
-   - stream broker alone is not accepted as production authority
-   - Noop persistence does not satisfy integrity requirement
-   - persisted scoped decisions are read through `DecisionHistory`, not by downcasting to `FileDecisionPersistence`
-   - tampered persisted decisions fail closed and are not reused
-   - duplicate high-risk allow is not silently reused as global allow
-2. Remove `rule_snapshot` from `PermissionContext`.
-3. Update every downstream `PermissionContext` constructor listed above in the same task.
-4. Update permission crate tests and helpers.
-5. Implement `PermissionAuthority`, `DecisionHistory`, `DecisionLookup`, and `DecisionStore`.
-6. Keep primitive brokers only as internal pipeline pieces or test adapters.
-7. Run gates.
+- Write failing tests proving:
+  - empty call-site snapshot cannot disable policy deny
+  - bypass cannot override policy deny
+  - stream broker alone is not accepted as production authority
+  - Noop persistence does not satisfy integrity requirement
+  - persisted scoped decisions are read through `DecisionHistory`, not by downcasting to `FileDecisionPersistence`
+  - tampered persisted decisions fail closed and are not reused
+  - duplicate high-risk allow is not silently reused as global allow
+- Remove `rule_snapshot` from `PermissionContext`.
+- Update every downstream `PermissionContext` constructor listed above in the same task.
+- Update permission crate tests and helpers.
+- Implement `PermissionAuthority`, `DecisionHistory`, `DecisionLookup`, and `DecisionStore`.
+- Keep primitive brokers only as internal pipeline pieces or test adapters.
+- Run gates.
 
 **Verification:**
 
@@ -819,13 +819,13 @@ No tool execution integration yet. This task creates compileable execution primi
 
 **Steps:**
 
-1. Write ticket ledger tests first.
-2. Write a minimal authorization flow test using the real `PermissionAuthority`, a real hard-deny policy rule, and real contract types.
-3. Write an event sink ordering test proving execution emits preflight and permission events through the sink without importing `jyowo-harness-journal`.
-4. Add crate and exports.
-5. Add workspace member.
-6. Update backend layer table and critical backend tests list.
-7. Run gates.
+- Write ticket ledger tests first.
+- Write a minimal authorization flow test using the real `PermissionAuthority`, a real hard-deny policy rule, and real contract types.
+- Write an event sink ordering test proving execution emits preflight and permission events through the sink without importing `jyowo-harness-journal`.
+- Add crate and exports.
+- Add workspace member.
+- Update backend layer table and critical backend tests list.
+- Run gates.
 
 **Verification:**
 
@@ -889,13 +889,13 @@ Capability rules:
 
 **Steps:**
 
-1. Write lifecycle tests proving `before_execute` is called exactly once by `execute_with_lifecycle`.
-2. Write capability matrix tests for local and Docker network policy.
-3. Move `before_execute` invocation into `execute_with_lifecycle`.
-4. Remove duplicate local call.
-5. Add preflight report and events.
-6. Update Docker policy validation.
-7. Run gates.
+- Write lifecycle tests proving `before_execute` is called exactly once by `execute_with_lifecycle`.
+- Write capability matrix tests for local and Docker network policy.
+- Move `before_execute` invocation into `execute_with_lifecycle`.
+- Remove duplicate local call.
+- Add preflight report and events.
+- Update Docker policy validation.
+- Run gates.
 
 **Verification:**
 
@@ -989,15 +989,15 @@ Because this task changes the public `Tool` trait, it must leave zero implemento
 
 **Steps:**
 
-1. Write failing tests proving file read/write cannot execute without authorized input.
-2. Write tests proving planned path hash mismatch fails.
-3. Write failing tests proving command-backed tools cannot execute through old raw `execute` paths after the trait change.
-4. Run the `rg -l "impl Tool for|async fn check_permission\\(" crates apps/desktop/src-tauri -S` migration scan and add every returned file to the task-owned file list.
-5. Change `Tool` trait.
-6. Migrate every implementor found by the scan in the same task.
-7. Remove permission decision logic from tool orchestrator or move it to execution crate.
-8. Run a second `rg -n "check_permission\\(|async fn execute\\(&self, input: Value|PermissionBroker::decide|\\.decide\\(" crates/jyowo-harness-tool crates/jyowo-harness-tool-search crates/jyowo-harness-plugin crates/jyowo-harness-mcp crates/jyowo-harness-subagent crates/jyowo-harness-sdk apps/desktop/src-tauri -S` scan and fail the task if production tool execution still uses the old permission/execute path.
-9. Run gates.
+- Write failing tests proving file read/write cannot execute without authorized input.
+- Write tests proving planned path hash mismatch fails.
+- Write failing tests proving command-backed tools cannot execute through old raw `execute` paths after the trait change.
+- Run the `rg -l "impl Tool for|async fn check_permission\\(" crates apps/desktop/src-tauri -S` migration scan and add every returned file to the task-owned file list.
+- Change `Tool` trait.
+- Migrate every implementor found by the scan in the same task.
+- Remove permission decision logic from tool orchestrator or move it to execution crate.
+- Run a second `rg -n "check_permission\\(|async fn execute\\(&self, input: Value|PermissionBroker::decide|\\.decide\\(" crates/jyowo-harness-tool crates/jyowo-harness-tool-search crates/jyowo-harness-plugin crates/jyowo-harness-mcp crates/jyowo-harness-subagent crates/jyowo-harness-sdk apps/desktop/src-tauri -S` scan and fail the task if production tool execution still uses the old permission/execute path.
+- Run gates.
 
 **Verification:**
 
@@ -1527,13 +1527,13 @@ git diff --check
 
 **Required Review:**
 
-Run a read-only security review subagent with GPT-5.5 Pro before final completion. If the tool requires API-style overrides, use `model: gpt-5.5`, `reasoning_effort: xhigh`, `service_tier: priority`.
+Run a read-only security review subagent with GPT-5.5 Pro before final completion. If the tool requires API-style overrides, use `model: gpt-5.5`, `reasoning_effort: xhigh`, and `service_tier: priority`.
 
 Security review prompt:
 
 ```text
 Read-only security review for the completed authorization, permission, and sandbox refactor.
-Use GPT-5.5 Pro. If the tool requires API-style overrides, use `model: gpt-5.5`, `reasoning_effort: xhigh`, `service_tier: priority`.
+Use GPT-5.5 Pro. If the tool requires API-style overrides, use `model: gpt-5.5`, `reasoning_effort: xhigh`, and `service_tier: priority`.
 Do not edit files.
 
 Verify:

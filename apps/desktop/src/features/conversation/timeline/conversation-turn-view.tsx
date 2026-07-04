@@ -17,6 +17,7 @@ export function ConversationTurnView({
     conversationId: string
     requestId: string
     decision: 'approve' | 'deny'
+    confirmationText?: string
   }) => void
   onReviewContinue?: (prompt: string) => void
 }) {

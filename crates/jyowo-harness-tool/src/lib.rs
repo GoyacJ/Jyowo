@@ -30,8 +30,8 @@ pub use context::*;
 pub use error::*;
 pub use harness_contracts::ToolSearchMode;
 pub use harness_permission::{
-    PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest, PersistedDecision,
-    RuleSnapshot,
+    canonical_permission_fingerprint, PermissionBroker, PermissionCheck, PermissionContext,
+    PermissionRequest, PersistedDecision, RuleSnapshot,
 };
 pub use orchestrator::*;
 pub use pool::*;

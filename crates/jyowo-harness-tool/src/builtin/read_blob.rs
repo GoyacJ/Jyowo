@@ -2,12 +2,12 @@ use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
     BlobReaderCap, BlobRef, DecisionScope, OffloadedBlobAuthorizerCap, PermissionSubject,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 
 const DEFAULT_READ_LIMIT: usize = 64_000;
 
@@ -61,19 +61,29 @@ impl Tool for ReadBlobTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        super::generic_action_plan(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        let blob_ref = blob_ref(&input).map_err(validation_error)?;
-        let window = read_window(&input).map_err(validation_error)?;
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input();
+        let blob_ref = blob_ref(input).map_err(validation_error)?;
+        let window = read_window(input).map_err(validation_error)?;
         let authorizer = ctx.capability::<dyn OffloadedBlobAuthorizerCap>(
             ToolCapability::OffloadedBlobAuthorizer,
         )?;

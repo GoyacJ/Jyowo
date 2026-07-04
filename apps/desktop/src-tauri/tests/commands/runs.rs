@@ -209,22 +209,26 @@ async fn list_reference_candidates_includes_workspace_files() {
             .await;
     register_test_skill(&state, "shell-state", "Shell state");
     register_test_tool(&state, "list_dir", "List directory");
-    save_mcp_server_with_runtime_state(
-        SaveMcpServerRequest {
-            enabled: true,
-            display_name: "Workspace Stdio".to_owned(),
-            id: "stdio".to_owned(),
-            scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Stdio {
-                command: "/bin/sh".to_owned(),
-                args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
-                env: Vec::new(),
-                inherit_env: Vec::new(),
-                working_dir: None,
+    let state_for_command = state.clone();
+    run_with_mcp_transport_approval(&state, async move {
+        save_mcp_server_with_runtime_state(
+            SaveMcpServerRequest {
+                enabled: true,
+                display_name: "Workspace Stdio".to_owned(),
+                id: "stdio".to_owned(),
+                scope: "global".to_owned(),
+                transport: McpServerTransportConfig::Stdio {
+                    command: "/bin/sh".to_owned(),
+                    args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
+                    env: Vec::new(),
+                    inherit_env: Vec::new(),
+                    working_dir: None,
+                },
             },
-        },
-        &state,
-    )
+            &state_for_command,
+        )
+        .await
+    })
     .await
     .expect("mcp server should register");
 

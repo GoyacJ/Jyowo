@@ -11,14 +11,16 @@ pub use futures::{executor::block_on, stream, StreamExt};
 pub use harness_contracts::{
     BlobId, BlobRef, BudgetExceedanceSource, ConfigHash, ContextPatchSource, ContextStageId,
     ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput, Decision,
-    DeferPolicy, DeferredToolHint, EndReason, Event, HookEventKind,
-    ManifestValidationFailure as ContractManifestValidationFailure, McpServerId, McpServerSource,
-    MemoryError, MemoryId, MemoryKind, MemorySessionCtx, MemorySource, MemoryVisibility, MessageId,
-    MessagePart, ModelError, PermissionMode, PluginId, ProviderRestriction, RedactRules, Redactor,
-    RequestId, SessionCreatedEvent, SessionSummaryView, SnapshotId, SteeringBody, SteeringKind,
-    SteeringSource, TeamId, TenantId, ToolDeferredPoolChangedEvent, ToolDescriptor, ToolGroup,
-    ToolOrigin, ToolPoolChangeSource, ToolProfile, ToolProperties, ToolResult, ToolSearchMode,
-    ToolUseId, TrustLevel, UsageSnapshot,
+    DecisionScope, DeferPolicy, DeferredToolHint, EndReason, Event, FallbackPolicy, HookEventKind,
+    InteractivityLevel, ManifestValidationFailure as ContractManifestValidationFailure,
+    McpServerId, McpServerSource, MemoryError, MemoryId, MemoryKind, MemorySessionCtx,
+    MemorySource, MemoryVisibility, MessageId, MessagePart, ModelError, NetworkAccess,
+    PermissionMode, PermissionSubject, PluginId, ProviderRestriction, RedactRules, Redactor,
+    RequestId, RuleSource, SessionCreatedEvent, SessionSummaryView, Severity, SnapshotId,
+    SteeringBody, SteeringKind, SteeringSource, TeamId, TenantId, ToolActionPlan,
+    ToolDeferredPoolChangedEvent, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolPoolChangeSource, ToolProfile, ToolProperties, ToolResult, ToolSearchMode, ToolUseId,
+    TrustLevel, UsageSnapshot, WorkspaceAccess,
 };
 pub use harness_hook::HookRegistry;
 pub use harness_journal::{EventStore, ReplayCursor};
@@ -49,18 +51,22 @@ pub use harness_skill::{
     SkillSourceConfig,
 };
 pub use harness_tool::{
-    default_result_budget, BuiltinToolset, PermissionCheck, SchemaResolverContext, Tool,
-    ToolContext, ToolEvent, ToolRegistry, ToolStream, ValidationError,
+    action_plan_from_permission_check, default_result_budget, AuthorizedToolInput, BuiltinToolset,
+    PermissionCheck, SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream,
+    ValidationError,
 };
 pub use jyowo_harness_sdk::{prelude::*, testing::*, AgentCapabilityResolutionContext};
-pub use serde_json::json;
-pub use serde_json::Value;
+pub use serde_json::{json, Value};
 pub use tokio::sync::Notify;
 
 mod agents;
+mod authorization;
 mod observability;
+mod runtime_context;
 pub use agents::*;
+pub use authorization::*;
 pub use observability::*;
+pub use runtime_context::*;
 
 pub fn conversation_turn_request(
     options: SessionOptions,
@@ -87,42 +93,6 @@ pub fn conversation_turn_request(
         input,
         permission_actor_source,
     }
-}
-
-pub fn assert_agent_runtime_identity(prompt: &str) {
-    assert!(prompt.contains("Jyowo"));
-    assert!(prompt.contains("本地 agent runtime 工作空间"));
-    assert!(prompt.contains("不能以底层 model provider 身份自称"));
-    assert!(prompt.contains("Rust runtime"));
-    assert!(prompt.contains("workspace instructions"));
-    assert!(prompt.contains("memory 只是辅助上下文"));
-    assert!(!prompt.contains("AI 编程伙伴"));
-    assert!(!prompt.contains("本地项目工作空间里的 AI 编程伙伴"));
-}
-
-pub fn assert_runtime_context_contract(system: &str) {
-    assert!(system.contains("<runtime-context>"));
-    assert!(system.contains("permission_mode:"));
-    assert!(system.contains("interactivity:"));
-    assert!(system.contains("tool_search:"));
-    assert!(system.contains("model_provider:"));
-    assert!(system.contains("model_id:"));
-    assert!(system.contains("model_protocol:"));
-    assert!(system.contains("tool_calling:"));
-    assert!(system.contains("builtin_memory:"));
-    assert!(system.contains("sandbox:"));
-    assert!(system.contains("subagent_tool:"));
-    assert!(system.contains("tool_calling: enabled") || system.contains("tool_calling: disabled"));
-    assert!(
-        system.contains("builtin_memory: enabled") || system.contains("builtin_memory: disabled")
-    );
-    assert!(
-        system.contains("subagent_tool: enabled") || system.contains("subagent_tool: disabled")
-    );
-    assert!(!system.contains("sk-"));
-    let lower = system.to_lowercase();
-    assert!(!lower.contains("api_key"));
-    assert!(!lower.contains("credential"));
 }
 
 pub fn workspace_bootstrap_fixture(
@@ -305,11 +275,8 @@ impl harness_subagent::SubagentRunner for ReadySubagentRunner {
 }
 
 pub fn unique_workspace(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "jyowo-{name}-{}-{}",
-        std::process::id(),
-        harness_contracts::SessionId::new()
-    ))
+    let session_id = harness_contracts::SessionId::new();
+    std::env::temp_dir().join(format!("jyowo-{name}-{}-{session_id}", std::process::id()))
 }
 
 pub fn skill_registration_from(markdown: &str, source: SkillSource) -> SkillRegistration {
@@ -937,15 +904,23 @@ impl Tool for SdkPluginTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
+    ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(futures::stream::empty()))
     }
 }
@@ -974,15 +949,23 @@ impl Tool for DeferredDeltaEmitterTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
+    ) -> Result<ToolStream, ToolError> {
         let event = Event::ToolDeferredPoolChanged(ToolDeferredPoolChangedEvent {
             session_id: ctx.session_id,
             added: vec![DeferredToolHint {
@@ -1150,9 +1133,7 @@ impl ModelProvider for TwoModelProvider {
         _req: ModelRequest,
         _ctx: InferContext,
     ) -> Result<ModelStream, ModelError> {
-        Ok(Box::pin(futures::stream::iter(vec![
-            ModelStreamEvent::MessageStop,
-        ])))
+        Ok(Box::pin(futures::stream::empty()))
     }
 }
 

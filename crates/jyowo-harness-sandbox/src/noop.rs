@@ -44,6 +44,13 @@ impl SandboxBackend for NoopSandbox {
         SandboxCapabilities::default()
     }
 
+    fn preflight_execute(&self, _spec: &ExecSpec) -> Result<(), SandboxError> {
+        Err(SandboxError::CapabilityMismatch {
+            capability: "execute".to_owned(),
+            detail: "noop sandbox rejects exec".to_owned(),
+        })
+    }
+
     async fn execute(
         &self,
         spec: ExecSpec,

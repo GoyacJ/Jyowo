@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, stream::BoxStream, StreamExt};
 use harness_contracts::{
-    CorrelationId, DecisionScope, Event, MessagePart, PermissionSubject, Redactor, SandboxError,
-    SandboxExitStatus, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
-    WorkspaceAccess,
+    ActionResource, CorrelationId, DecisionScope, Event, MessagePart, NetworkAccess,
+    PermissionSubject, Redactor, SandboxError, SandboxExitStatus, ToolActionPlan, ToolCapability,
+    ToolDescriptor, ToolError, ToolGroup, ToolResult, WorkspaceAccess,
 };
 use harness_permission::{DangerousPatternLibrary, PermissionCheck};
 use harness_sandbox::{
@@ -18,7 +18,10 @@ use harness_sandbox::{
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 
-use crate::{InterruptToken, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{
+    action_plan_from_permission_check, AuthorizedToolInput, InterruptToken, Tool, ToolContext,
+    ToolEvent, ToolStream, ValidationError,
+};
 
 #[derive(Clone)]
 pub struct BashTool {
@@ -61,13 +64,24 @@ impl Tool for BashTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, ctx: &ToolContext) -> PermissionCheck {
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
         let spec = exec_spec_for_input(input);
         if let Some(rule) = DangerousPatternLibrary::default_unix().detect_command(&spec.command) {
-            return PermissionCheck::DangerousCommand {
-                pattern: rule.id.clone(),
-                severity: rule.severity,
-            };
+            return action_plan_from_permission_check(
+                &self.descriptor,
+                input,
+                ctx,
+                PermissionCheck::DangerousCommand {
+                    command: spec.command.clone(),
+                    pattern: rule.id.clone(),
+                    severity: rule.severity,
+                },
+                vec![command_resource(spec, ctx)],
+                WorkspaceAccess::ReadWrite {
+                    allowed_writable_subpaths: Vec::new(),
+                },
+                NetworkAccess::None,
+            );
         }
 
         let base = ctx
@@ -76,25 +90,44 @@ impl Tool for BashTool {
             .map(|sandbox| sandbox.base_config())
             .unwrap_or_default();
         let fingerprint = spec.canonical_fingerprint(&base);
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::CommandExec {
-                command: spec.command.clone(),
-                argv: Vec::new(),
-                cwd: spec.cwd.clone(),
-                fingerprint: Some(fingerprint),
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::CommandExec {
+                    command: spec.command.clone(),
+                    argv: Vec::new(),
+                    cwd: spec.cwd.clone(),
+                    fingerprint: Some(fingerprint),
+                },
+                scope: DecisionScope::ExactCommand {
+                    command: spec.command.clone(),
+                    cwd: spec.cwd.clone(),
+                },
             },
-            scope: DecisionScope::ExactCommand {
+            vec![ActionResource::Command {
                 command: spec.command,
+                argv: Vec::new(),
                 cwd: spec.cwd,
+                fingerprint,
+            }],
+            WorkspaceAccess::ReadWrite {
+                allowed_writable_subpaths: Vec::new(),
             },
-        }
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         let sandbox = ctx.sandbox.clone().ok_or_else(|| {
             ToolError::CapabilityMissing(ToolCapability::Custom("sandbox_backend".to_owned()))
         })?;
-        let spec = exec_spec(&input).map_err(validation_error)?;
+        let spec = exec_spec_from_plan(&authorized, &ctx)?;
         let event_sink = Arc::new(RecordingEventSink::default());
         let exec_ctx = exec_context(&ctx, event_sink.clone());
 
@@ -109,18 +142,49 @@ impl Tool for BashTool {
     }
 }
 
-fn exec_spec(input: &Value) -> Result<ExecSpec, ValidationError> {
-    Ok(ExecSpec {
-        command: command(input)?.to_owned(),
-        cwd: cwd(input),
+fn exec_spec_from_plan(
+    authorized: &AuthorizedToolInput,
+    ctx: &ToolContext,
+) -> Result<ExecSpec, ToolError> {
+    let Some(ActionResource::Command {
+        command,
+        argv,
+        cwd,
+        fingerprint,
+    }) = authorized
+        .action_plan()
+        .resources
+        .iter()
+        .find_map(|resource| {
+            matches!(resource, ActionResource::Command { .. }).then_some(resource)
+        })
+    else {
+        return Err(ToolError::PermissionDenied(
+            "authorized command resource missing".to_owned(),
+        ));
+    };
+    let spec = ExecSpec {
+        command: command.clone(),
+        args: argv.clone(),
+        cwd: cwd.clone(),
         stdin: StdioSpec::Null,
         stdout: StdioSpec::Piped,
         stderr: StdioSpec::Piped,
-        workspace_access: WorkspaceAccess::ReadWrite {
-            allowed_writable_subpaths: Vec::new(),
-        },
+        policy: authorized.action_plan().sandbox_policy.clone(),
+        workspace_access: authorized.action_plan().workspace_access.clone(),
         ..ExecSpec::default()
-    })
+    };
+    let base = ctx
+        .sandbox
+        .as_ref()
+        .map(|sandbox| sandbox.base_config())
+        .unwrap_or_default();
+    if spec.canonical_fingerprint(&base) != *fingerprint {
+        return Err(ToolError::PermissionDenied(
+            "authorized command fingerprint mismatch".to_owned(),
+        ));
+    }
+    Ok(spec)
 }
 
 fn exec_spec_for_input(input: &Value) -> ExecSpec {
@@ -134,6 +198,21 @@ fn exec_spec_for_input(input: &Value) -> ExecSpec {
             allowed_writable_subpaths: Vec::new(),
         },
         ..ExecSpec::default()
+    }
+}
+
+fn command_resource(spec: ExecSpec, ctx: &ToolContext) -> ActionResource {
+    let base = ctx
+        .sandbox
+        .as_ref()
+        .map(|sandbox| sandbox.base_config())
+        .unwrap_or_default();
+    let fingerprint = spec.canonical_fingerprint(&base);
+    ActionResource::Command {
+        command: spec.command,
+        argv: Vec::new(),
+        cwd: spec.cwd,
+        fingerprint,
     }
 }
 
@@ -483,10 +562,6 @@ fn exit_status_json(status: &SandboxExitStatus) -> Value {
         SandboxExitStatus::BackendError => json!({ "backend_error": true }),
         _ => json!({ "unknown": true }),
     }
-}
-
-fn validation_error(error: ValidationError) -> ToolError {
-    ToolError::Validation(error.to_string())
 }
 
 fn command(input: &Value) -> Result<&str, ValidationError> {

@@ -25,7 +25,9 @@ fn tool_crate_stays_inside_allowed_dependency_boundary() {
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
 
     #[cfg(not(feature = "minimax-tools"))]
-    assert!(!manifest.contains("jyowo-harness-model"));
+    assert!(!manifest.lines().any(|line| {
+        line.trim_start().starts_with("jyowo-harness-model =") && !line.contains("optional = true")
+    }));
     assert!(!manifest.contains("jyowo-harness-journal"));
     assert!(!manifest.contains("jyowo-harness-hook"));
     #[cfg(not(feature = "minimax-tools"))]

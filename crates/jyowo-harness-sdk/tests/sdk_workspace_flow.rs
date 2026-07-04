@@ -108,7 +108,11 @@ async fn sdk_skill_flow_uses_turn_snapshot_then_next_turn_sees_reload() {
         .await
         .expect("harness should build");
     let session = harness
-        .create_session(SessionOptions::new(&workspace).with_session_id(session_id))
+        .create_session(
+            SessionOptions::new(&workspace)
+                .with_session_id(session_id)
+                .with_permission_mode(PermissionMode::BypassPermissions),
+        )
         .await
         .expect("session should be created");
 
@@ -153,7 +157,7 @@ fn tool_result_text(events: &[Event], tool_use_id: ToolUseId) -> String {
             }
             _ => None,
         })
-        .expect("tool use should complete")
+        .unwrap_or_else(|| panic!("tool use should complete; events: {events:#?}"))
 }
 
 fn skill_registration_from(markdown: &str, source: SkillSource) -> SkillRegistration {

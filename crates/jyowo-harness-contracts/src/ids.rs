@@ -153,6 +153,8 @@ define_scopes! {
     TenantScope => TenantId,
     RequestScope => RequestId,
     DecisionIdScope => DecisionId,
+    ActionPlanScope => ActionPlanId,
+    AuthorizationTicketScope => AuthorizationTicketId,
     WorkspaceScope => WorkspaceId,
     MemoryScope => MemoryId,
     SnapshotScope => SnapshotId,

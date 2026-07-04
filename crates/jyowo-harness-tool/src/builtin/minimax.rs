@@ -9,17 +9,21 @@ use bytes::Bytes;
 use chrono::Utc;
 use futures::stream;
 use harness_contracts::{
-    BlobMeta, BlobRetention, BlobWriterCap, BudgetMetric, CapabilityRouteKind, DecisionScope,
-    ModelModality, PermissionSubject, ProviderCredential, ProviderCredentialResolveContext,
-    ProviderCredentialResolverCap, ToolCapability, ToolDescriptor, ToolError, ToolGroup,
-    ToolResult, ToolResultPart, ToolServiceBinding,
+    ActionResource, BlobMeta, BlobRetention, BlobWriterCap, BudgetMetric, CapabilityRouteKind,
+    DecisionScope, HostRule, ModelModality, NetworkAccess, PermissionSubject, ProviderCredential,
+    ProviderCredentialResolveContext, ProviderCredentialResolverCap, ToolActionPlan,
+    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult, ToolResultPart,
+    ToolServiceBinding, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 use url::Url;
 
 use crate::provider_minimax::{MinimaxApiClient, MinimaxProviderClientError};
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+    ToolStream, ValidationError,
+};
 
 const DEFAULT_BASE_URL: &str = "https://api.minimaxi.com";
 const MINIMAX_PROVIDER_ID: &str = "minimax";
@@ -64,15 +68,20 @@ macro_rules! minimax_tool {
                 Ok(())
             }
 
-            async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx, &self.descriptor).await
+            async fn plan(
+                &self,
+                input: &Value,
+                ctx: &ToolContext,
+            ) -> Result<ToolActionPlan, ToolError> {
+                minimax_network_action_plan(input, ctx, &self.descriptor).await
             }
 
-            async fn execute(
+            async fn execute_authorized(
                 &self,
-                input: Value,
+                authorized: AuthorizedToolInput,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
+                let input = authorized.raw_input().clone();
                 Ok(execute_request(
                     input,
                     ctx,
@@ -122,15 +131,20 @@ macro_rules! minimax_image_tool {
                 Ok(())
             }
 
-            async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx, &self.descriptor).await
+            async fn plan(
+                &self,
+                input: &Value,
+                ctx: &ToolContext,
+            ) -> Result<ToolActionPlan, ToolError> {
+                minimax_network_action_plan(input, ctx, &self.descriptor).await
             }
 
-            async fn execute(
+            async fn execute_authorized(
                 &self,
-                input: Value,
+                authorized: AuthorizedToolInput,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
+                let input = authorized.raw_input().clone();
                 Ok(execute_image_request(input, ctx, &self.descriptor))
             }
         }
@@ -167,15 +181,20 @@ macro_rules! minimax_async_create_tool {
                 Ok(())
             }
 
-            async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx, &self.descriptor).await
+            async fn plan(
+                &self,
+                input: &Value,
+                ctx: &ToolContext,
+            ) -> Result<ToolActionPlan, ToolError> {
+                minimax_network_action_plan(input, ctx, &self.descriptor).await
             }
 
-            async fn execute(
+            async fn execute_authorized(
                 &self,
-                input: Value,
+                authorized: AuthorizedToolInput,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
+                let input = authorized.raw_input().clone();
                 let poll_operation_id = $poll_operation_id;
                 let artifact_kind = self
                     .descriptor
@@ -232,15 +251,20 @@ macro_rules! minimax_sync_media_tool {
                 Ok(())
             }
 
-            async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx, &self.descriptor).await
+            async fn plan(
+                &self,
+                input: &Value,
+                ctx: &ToolContext,
+            ) -> Result<ToolActionPlan, ToolError> {
+                minimax_network_action_plan(input, ctx, &self.descriptor).await
             }
 
-            async fn execute(
+            async fn execute_authorized(
                 &self,
-                input: Value,
+                authorized: AuthorizedToolInput,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
+                let input = authorized.raw_input().clone();
                 let artifact_kind = self
                     .descriptor
                     .service_binding
@@ -296,15 +320,20 @@ macro_rules! minimax_media_query_tool {
                 Ok(())
             }
 
-            async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx, &self.descriptor).await
+            async fn plan(
+                &self,
+                input: &Value,
+                ctx: &ToolContext,
+            ) -> Result<ToolActionPlan, ToolError> {
+                minimax_network_action_plan(input, ctx, &self.descriptor).await
             }
 
-            async fn execute(
+            async fn execute_authorized(
                 &self,
-                input: Value,
+                authorized: AuthorizedToolInput,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
+                let input = authorized.raw_input().clone();
                 let artifact_kind = self
                     .descriptor
                     .service_binding
@@ -362,15 +391,20 @@ macro_rules! minimax_string_arg_tool {
                 Ok(())
             }
 
-            async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-                minimax_network_permission(ctx, &self.descriptor).await
+            async fn plan(
+                &self,
+                input: &Value,
+                ctx: &ToolContext,
+            ) -> Result<ToolActionPlan, ToolError> {
+                minimax_network_action_plan(input, ctx, &self.descriptor).await
             }
 
-            async fn execute(
+            async fn execute_authorized(
                 &self,
-                input: Value,
+                authorized: AuthorizedToolInput,
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
+                let input = authorized.raw_input().clone();
                 Ok(execute_request(
                     input,
                     ctx,
@@ -684,11 +718,16 @@ impl Tool for MiniMaxFileUploadTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        minimax_network_permission(ctx, &self.descriptor).await
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        minimax_network_action_plan(input, ctx, &self.descriptor).await
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
         Ok(execute_request(
             input,
             ctx,
@@ -771,11 +810,16 @@ impl Tool for MiniMaxFileListTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        minimax_network_permission(ctx, &self.descriptor).await
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        minimax_network_action_plan(input, ctx, &self.descriptor).await
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
         Ok(execute_request(
             input,
             ctx,
@@ -820,11 +864,16 @@ impl Tool for MiniMaxModelsListTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        minimax_network_permission(ctx, &self.descriptor).await
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        minimax_network_action_plan(input, ctx, &self.descriptor).await
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
         Ok(execute_request(
             input,
             ctx,
@@ -863,11 +912,16 @@ impl Tool for MiniMaxAnthropicModelsListTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        minimax_network_permission(ctx, &self.descriptor).await
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        minimax_network_action_plan(input, ctx, &self.descriptor).await
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
         Ok(execute_request(
             input,
             ctx,
@@ -1440,22 +1494,58 @@ fn base64_decoded_upper_bound(value: &str) -> u64 {
         .saturating_sub(u64::try_from(padding).unwrap_or(0))
 }
 
-async fn minimax_network_permission(
+async fn minimax_network_action_plan(
+    input: &Value,
     ctx: &ToolContext,
     descriptor: &ToolDescriptor,
-) -> PermissionCheck {
+) -> Result<ToolActionPlan, ToolError> {
     let (operation_id, route_kind) = service_credential_context(descriptor);
     let credential = match minimax_credential(ctx, operation_id, route_kind).await {
         Ok(credential) => credential,
-        Err(error) => return minimax_permission_denied(error),
+        Err(error) => {
+            return action_plan_from_permission_check(
+                descriptor,
+                input,
+                ctx,
+                minimax_permission_denied(error),
+                Vec::new(),
+                WorkspaceAccess::None,
+                NetworkAccess::None,
+            );
+        }
     };
 
     match minimax_base_url_host(credential.base_url.as_deref()) {
-        Ok((host, port)) => PermissionCheck::AskUser {
-            subject: PermissionSubject::NetworkAccess { host, port },
-            scope: DecisionScope::Category("network".to_owned()),
-        },
-        Err(reason) => PermissionCheck::Denied { reason },
+        Ok((host, port)) => action_plan_from_permission_check(
+            descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::NetworkAccess {
+                    host: host.clone(),
+                    port,
+                },
+                scope: DecisionScope::Category("network".to_owned()),
+            },
+            vec![ActionResource::Network {
+                host: host.clone(),
+                port,
+            }],
+            WorkspaceAccess::None,
+            NetworkAccess::AllowList(vec![HostRule {
+                pattern: host,
+                ports: port.map(|port| vec![port]),
+            }]),
+        ),
+        Err(reason) => action_plan_from_permission_check(
+            descriptor,
+            input,
+            ctx,
+            PermissionCheck::Denied { reason },
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        ),
     }
 }
 
@@ -1732,11 +1822,8 @@ mod tests {
     use bytes::Bytes;
     use futures::future::BoxFuture;
     use harness_contracts::{
-        AgentId, BlobMeta, BlobRef, BlobWriterCap, CapabilityRegistry, CorrelationId, Decision,
-        ModelModality, PermissionError, RunId, SessionId, TenantId, ToolResultPart, ToolUseId,
-    };
-    use harness_permission::{
-        PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
+        AgentId, BlobMeta, BlobRef, BlobWriterCap, CapabilityRegistry, CorrelationId,
+        ModelModality, RunId, SessionId, TenantId, ToolResultPart, ToolUseId,
     };
 
     const PNG_1X1_BASE64: &str =
@@ -1951,13 +2038,13 @@ mod tests {
             subagent_depth: 0,
             workspace_root: PathBuf::from("/tmp"),
             sandbox: None,
-            permission_broker: Arc::new(AllowBroker),
             cap_registry: Arc::new(caps),
             redactor: Arc::new(harness_contracts::NoopRedactor),
             interrupt: crate::InterruptToken::new(),
             parent_run: None,
             model: None,
             model_config_id: None,
+            actor_source: harness_contracts::PermissionActorSource::ParentRun,
         }
     }
 
@@ -2026,19 +2113,6 @@ mod tests {
                     content_type: meta.content_type,
                 })
             })
-        }
-    }
-
-    struct AllowBroker;
-
-    #[async_trait::async_trait]
-    impl PermissionBroker for AllowBroker {
-        async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-            Decision::AllowOnce
-        }
-
-        async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
-            Ok(())
         }
     }
 }

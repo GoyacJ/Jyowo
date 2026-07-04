@@ -1078,6 +1078,8 @@ async fn runtime_assembly_team_member_sessions_use_run_workspace_root() {
 mod team_prompt_addendum {
     use std::sync::Arc;
 
+    use crate::test_authorization_service;
+
     use futures::executor::block_on;
     use harness_contracts::{
         AgentId, CorrelationId, Decision, Message, MessageId, MessagePart, MessageRole, RunId,
@@ -1105,14 +1107,17 @@ mod team_prompt_addendum {
             let engine = Arc::new(
                 Engine::builder()
                     .with_engine_id(EngineId::new("team-addendum-test"))
-                    .with_event_store(store)
+                    .with_event_store(store.clone())
                     .with_context(harness_context::ContextEngine::builder().build().unwrap())
                     .with_hooks(HookDispatcher::new(
                         HookRegistry::builder().build().unwrap().snapshot(),
                     ))
                     .with_model(model.clone())
                     .with_tools(ToolPool::default())
-                    .with_permission_broker(Arc::new(TestBroker::new(vec![Decision::AllowOnce])))
+                    .with_authorization_service(test_authorization_service(
+                        Arc::new(TestBroker::new(vec![Decision::AllowOnce])),
+                        store.clone(),
+                    ))
                     .with_workspace_root(std::env::temp_dir())
                     .with_model_id("test-model")
                     .with_system_prompt(Some(base_prompt.to_owned()))

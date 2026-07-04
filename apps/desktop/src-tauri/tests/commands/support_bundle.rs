@@ -110,6 +110,7 @@ async fn export_support_bundle_with_runtime_state_writes_redacted_files_under_wo
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
             request_id: request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -303,6 +304,10 @@ async fn support_bundle_agent_redaction_exports_child_agent_summaries_without_in
                         role: format!("reviewer {secret}"),
                         parent_run_id: Some(run_id),
                     },
+                    action_plan_hash: Default::default(),
+                    review: Default::default(),
+                    effective_mode: Default::default(),
+                    sandbox_policy: Default::default(),
                     causation_id: EventId::new(),
                     at: now(),
                 }),

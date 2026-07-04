@@ -1,12 +1,16 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    BudgetMetric, DeferPolicy, HookError, HookEventKind, OverflowAction, ProviderRestriction,
-    ResultBudget, ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties, ToolResult, TrustLevel,
+    BudgetMetric, DeferPolicy, HookError, HookEventKind, NetworkAccess, OverflowAction,
+    ProviderRestriction, ResultBudget, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup,
+    ToolOrigin, ToolProperties, ToolResult, TrustLevel, WorkspaceAccess,
 };
 use harness_hook::{HookContext, HookEvent, HookHandler, HookOutcome};
 use harness_permission::PermissionCheck;
-use harness_tool::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use harness_tool::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+    ToolStream, ValidationError,
+};
 use serde_json::{json, Value};
 
 pub use harness_contracts::NoopRedactor;
@@ -75,15 +79,23 @@ impl Tool for TestTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
+    ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(stream::iter([ToolEvent::Final(
             ToolResult::Text("test tool result".to_owned()),
         )])))

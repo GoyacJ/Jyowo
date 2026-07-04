@@ -4,16 +4,20 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DecisionScope, Event, PermissionSubject, ProcessReadInvocation, ProcessReadRequest,
-    ProcessStartInvocation, ProcessStartRequest, ProcessStopInvocation, ProcessStopRequest,
-    RunScopedProcessRegistryCap, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
-    WorkspaceAccess, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
+    ActionResource, DecisionScope, Event, NetworkAccess, PermissionSubject, ProcessReadInvocation,
+    ProcessReadRequest, ProcessStartInvocation, ProcessStartRequest, ProcessStopInvocation,
+    ProcessStopRequest, RunScopedProcessRegistryCap, ToolActionPlan, ToolCapability,
+    ToolDescriptor, ToolError, ToolGroup, ToolResult, WorkspaceAccess,
+    RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
 use harness_permission::{DangerousPatternLibrary, PermissionCheck};
 use harness_sandbox::{ExecSpec, StdioSpec};
 use serde_json::{json, Value};
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+    ToolStream, ValidationError,
+};
 
 #[derive(Clone)]
 pub struct ProcessStartTool {
@@ -61,7 +65,7 @@ impl Tool for ProcessStartTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, ctx: &ToolContext) -> PermissionCheck {
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
         let request = process_start_request(input).unwrap_or(ProcessStartRequest {
             command: String::new(),
             args: Vec::new(),
@@ -71,10 +75,21 @@ impl Tool for ProcessStartTool {
         let command_display = display_command(&request);
         if let Some(rule) = DangerousPatternLibrary::default_unix().detect_command(&command_display)
         {
-            return PermissionCheck::DangerousCommand {
-                pattern: rule.id.clone(),
-                severity: rule.severity,
-            };
+            return action_plan_from_permission_check(
+                &self.descriptor,
+                input,
+                ctx,
+                PermissionCheck::DangerousCommand {
+                    command: command_display,
+                    pattern: rule.id.clone(),
+                    severity: rule.severity,
+                },
+                vec![command_resource(&request, ctx)],
+                WorkspaceAccess::ReadWrite {
+                    allowed_writable_subpaths: Vec::new(),
+                },
+                NetworkAccess::None,
+            );
         }
         let spec = permission_exec_spec(&request);
         let base = ctx
@@ -83,22 +98,41 @@ impl Tool for ProcessStartTool {
             .map(|sandbox| sandbox.base_config())
             .unwrap_or_default();
         let fingerprint = spec.canonical_fingerprint(&base);
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::CommandExec {
-                command: request.command.clone(),
-                argv: request.args.clone(),
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::CommandExec {
+                    command: request.command.clone(),
+                    argv: request.args.clone(),
+                    cwd: request.cwd.as_ref().map(PathBuf::from),
+                    fingerprint: Some(fingerprint),
+                },
+                scope: DecisionScope::ExactCommand {
+                    command: command_display,
+                    cwd: spec.cwd,
+                },
+            },
+            vec![ActionResource::Command {
+                command: request.command,
+                argv: request.args,
                 cwd: request.cwd.map(PathBuf::from),
-                fingerprint: Some(fingerprint),
+                fingerprint,
+            }],
+            WorkspaceAccess::ReadWrite {
+                allowed_writable_subpaths: Vec::new(),
             },
-            scope: DecisionScope::ExactCommand {
-                command: command_display,
-                cwd: spec.cwd,
-            },
-        }
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        let request = process_start_request(&input).map_err(validation_error)?;
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let request = process_start_request_from_plan(&authorized, &ctx)?;
         let registry =
             ctx.capability::<dyn RunScopedProcessRegistryCap>(process_registry_capability())?;
         let result = registry
@@ -110,6 +144,8 @@ impl Tool for ProcessStartTool {
                     tool_use_id: ctx.tool_use_id,
                     workspace_root: ctx.workspace_root,
                     request,
+                    sandbox_policy: authorized.action_plan().sandbox_policy.clone(),
+                    workspace_access: authorized.action_plan().workspace_access.clone(),
                 },
                 Arc::clone(&ctx.redactor),
             )
@@ -160,18 +196,27 @@ impl Tool for ProcessReadTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        super::generic_action_plan(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        let request = process_read_request(&input).map_err(validation_error)?;
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let request = process_read_request(authorized.raw_input()).map_err(validation_error)?;
         let registry =
             ctx.capability::<dyn RunScopedProcessRegistryCap>(process_registry_capability())?;
         let result = registry
@@ -229,18 +274,27 @@ impl Tool for ProcessStopTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        super::generic_action_plan(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        let request = process_stop_request(&input).map_err(validation_error)?;
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let request = process_stop_request(authorized.raw_input()).map_err(validation_error)?;
         let registry =
             ctx.capability::<dyn RunScopedProcessRegistryCap>(process_registry_capability())?;
         let result = registry
@@ -330,6 +384,67 @@ fn permission_exec_spec(request: &ProcessStartRequest) -> ExecSpec {
             allowed_writable_subpaths: Vec::new(),
         },
         ..ExecSpec::default()
+    }
+}
+
+fn process_start_request_from_plan(
+    authorized: &AuthorizedToolInput,
+    ctx: &ToolContext,
+) -> Result<ProcessStartRequest, ToolError> {
+    let Some(ActionResource::Command {
+        command,
+        argv,
+        cwd,
+        fingerprint,
+    }) = authorized
+        .action_plan()
+        .resources
+        .iter()
+        .find_map(|resource| {
+            matches!(resource, ActionResource::Command { .. }).then_some(resource)
+        })
+    else {
+        return Err(ToolError::PermissionDenied(
+            "authorized command resource missing".to_owned(),
+        ));
+    };
+
+    let request = ProcessStartRequest {
+        command: command.clone(),
+        args: argv.clone(),
+        cwd: cwd.as_ref().map(|path| path.to_string_lossy().into_owned()),
+        buffer_bytes: authorized
+            .raw_input()
+            .get("buffer_bytes")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok()),
+    };
+    let spec = permission_exec_spec(&request);
+    let base = ctx
+        .sandbox
+        .as_ref()
+        .map(|sandbox| sandbox.base_config())
+        .unwrap_or_default();
+    if spec.canonical_fingerprint(&base) != *fingerprint {
+        return Err(ToolError::PermissionDenied(
+            "authorized command fingerprint mismatch".to_owned(),
+        ));
+    }
+    Ok(request)
+}
+
+fn command_resource(request: &ProcessStartRequest, ctx: &ToolContext) -> ActionResource {
+    let spec = permission_exec_spec(request);
+    let base = ctx
+        .sandbox
+        .as_ref()
+        .map(|sandbox| sandbox.base_config())
+        .unwrap_or_default();
+    ActionResource::Command {
+        command: request.command.clone(),
+        argv: request.args.clone(),
+        cwd: request.cwd.as_ref().map(PathBuf::from),
+        fingerprint: spec.canonical_fingerprint(&base),
     }
 }
 

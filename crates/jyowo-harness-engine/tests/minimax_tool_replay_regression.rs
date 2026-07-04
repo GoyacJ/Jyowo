@@ -9,10 +9,10 @@ use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
     CapabilityRegistry, Decision, DeferPolicy, Event, Message, MessageContent, MessageId,
-    MessagePart, MessageRole, ModelError, ModelProtocol, NoopRedactor, PermissionError,
-    ProviderRestriction, RunId, RunModelSnapshot, SessionId, StopReason, TenantId, ToolDescriptor,
-    ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseId,
-    TrustLevel, TurnInput, UsageSnapshot,
+    MessagePart, MessageRole, ModelError, ModelProtocol, NetworkAccess, NoopRedactor,
+    PermissionError, ProviderRestriction, RunId, RunModelSnapshot, SessionId, StopReason, TenantId,
+    ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
+    ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};
@@ -28,8 +28,9 @@ use harness_provider_state::{
     ProviderContinuationStore,
 };
 use harness_tool::{
-    default_result_budget, BuiltinToolset, SchemaResolverContext, Tool, ToolContext, ToolEvent,
-    ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolStream, ValidationError,
+    action_plan_from_permission_check, default_result_budget, AuthorizedToolInput, BuiltinToolset,
+    SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool, ToolPoolFilter,
+    ToolPoolModelProfile, ToolRegistry, ToolStream, ValidationError,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -37,6 +38,10 @@ use tokio::sync::Mutex;
 
 const MODEL_CONFIG_ID: &str = "minimax-regression-config";
 const DEEPSEEK_PRIVATE_SENTINEL: &str = "PRIVATE_DEEPSEEK_TOOL_REPLAY_SENTINEL";
+
+mod authorization_support;
+
+use authorization_support::test_authorization_service;
 
 mod minimax_tool_replay {
     use super::*;
@@ -124,7 +129,7 @@ impl MiniMaxReplayHarness {
         .await;
         let engine = Engine::builder()
             .with_engine_id(EngineId::new("minimax-tool-replay-regression"))
-            .with_event_store(event_store)
+            .with_event_store(event_store.clone())
             .with_context(ContextEngine::builder().build().unwrap())
             .with_hooks(HookDispatcher::new(
                 HookRegistry::builder().build().unwrap().snapshot(),
@@ -132,7 +137,10 @@ impl MiniMaxReplayHarness {
             .with_model(model.clone())
             .with_model_snapshot(model_snapshot())
             .with_tools(tools)
-            .with_permission_broker(Arc::new(AllowBroker))
+            .with_authorization_service(test_authorization_service(
+                Arc::new(AllowBroker),
+                event_store.clone(),
+            ))
             .with_workspace_root(workspace.path())
             .with_model_id("minimax-m3")
             .with_protocol(ModelProtocol::ChatCompletions)
@@ -289,15 +297,23 @@ impl Tool for CountingLookupTool {
         Ok(())
     }
 
-    async fn check_permission(
-        &self,
-        _input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, _input: Value, _ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        _authorized: AuthorizedToolInput,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(Box::pin(stream::iter([ToolEvent::Final(
             ToolResult::Text("lookup result".to_owned()),

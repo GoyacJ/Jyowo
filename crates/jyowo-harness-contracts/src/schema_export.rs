@@ -28,10 +28,21 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "message_id", MessageId);
     insert_schema!(schemas, "tool_use_id", ToolUseId);
     insert_schema!(schemas, "tenant_id", TenantId);
+    insert_schema!(schemas, "action_plan_id", ActionPlanId);
+    insert_schema!(schemas, "action_plan_hash", ActionPlanHash);
+    insert_schema!(schemas, "sandbox_policy_hash", SandboxPolicyHash);
+    insert_schema!(schemas, "authorization_ticket_id", AuthorizationTicketId);
     insert_schema!(schemas, "decision", Decision);
     insert_schema!(schemas, "decision_scope", DecisionScope);
     insert_schema!(schemas, "decided_by", DecidedBy);
     insert_schema!(schemas, "permission_subject", PermissionSubject);
+    insert_schema!(schemas, "permission_review", PermissionReview);
+    insert_schema!(schemas, "permission_confirmation", PermissionConfirmation);
+    insert_schema!(schemas, "action_resource", ActionResource);
+    insert_schema!(schemas, "tool_action_plan", ToolActionPlan);
+    insert_schema!(schemas, "mcp_resource_operation", McpResourceOperation);
+    insert_schema!(schemas, "mcp_prompt_operation", McpPromptOperation);
+    insert_schema!(schemas, "mcp_transport_target", McpTransportTarget);
     insert_schema!(schemas, "tool_result_part", ToolResultPart);
     insert_schema!(schemas, "message", Message);
     insert_schema!(schemas, "message_part", MessagePart);
@@ -322,6 +333,18 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         PluginCapabilitiesSummary
     );
     insert_schema!(schemas, "manifest_origin_ref", ManifestOriginRef);
+    insert_schema!(schemas, "mcp_server_scope", McpServerScope);
+    insert_schema!(schemas, "sandbox_preflight_status", SandboxPreflightStatus);
+    insert_schema!(
+        schemas,
+        "sandbox_preflight_passed_event",
+        SandboxPreflightPassedEvent
+    );
+    insert_schema!(
+        schemas,
+        "sandbox_preflight_failed_event",
+        SandboxPreflightFailedEvent
+    );
     insert_schema!(schemas, "rejection_reason", RejectionReason);
     insert_schema!(schemas, "plugin_summary", PluginSummary);
     insert_schema!(schemas, "plugin_detail", PluginDetail);

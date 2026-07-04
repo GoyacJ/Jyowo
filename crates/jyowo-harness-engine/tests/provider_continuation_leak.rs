@@ -37,6 +37,10 @@ const PRIVATE_SENTINEL: &str = "PRIVATE_DEEPSEEK_REASONING_SENTINEL";
 const MODEL_CONFIG_ID: &str = "deepseek-leak-config";
 const DEEPSEEK_CONTINUATION_DIALECT: &str = "openai_chat.deepseek";
 
+mod authorization_support;
+
+use authorization_support::test_authorization_service;
+
 mod provider_continuation_leak {
     use super::*;
 
@@ -209,7 +213,10 @@ impl ProviderContinuationLeakHarness {
             .with_model(model.clone())
             .with_model_snapshot(model_snapshot())
             .with_tools(ToolPool::default())
-            .with_permission_broker(Arc::new(AllowBroker))
+            .with_authorization_service(test_authorization_service(
+                Arc::new(AllowBroker),
+                event_store.clone(),
+            ))
             .with_workspace_root(workspace.path())
             .with_model_id("deepseek-chat")
             .with_protocol(ModelProtocol::ChatCompletions)

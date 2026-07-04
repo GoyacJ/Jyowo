@@ -15,8 +15,8 @@ use harness_contracts::{
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_permission::{
-    PermissionBroker, PermissionContext, PermissionError, PermissionRequest, PersistedDecision,
-    RuleSnapshot,
+    NoopDecisionPersistence, PermissionAuthority, PermissionBroker, PermissionContext,
+    PermissionError, PermissionRequest, PersistedDecision,
 };
 use harness_subagent::SubagentPermissionBridge;
 
@@ -83,8 +83,17 @@ async fn permission_bridge_attributes_subagent_source_on_forward_and_resolve() {
     let child_run_id = RunId::new();
     let subagent_id = SubagentId::new();
     let correlation_id = CorrelationId::new();
-    let bridge = SubagentPermissionBridge::new(
-        Arc::new(AllowBroker),
+    let broker: Arc<dyn PermissionBroker> = Arc::new(AllowBroker);
+    let parent_authority = Arc::new(
+        PermissionAuthority::builder()
+            .with_policy_broker(Arc::clone(&broker))
+            .with_interactive_broker(Arc::clone(&broker))
+            .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
+            .build()
+            .expect("test permission authority should build"),
+    );
+    let bridge = SubagentPermissionBridge::with_parent_authority(
+        parent_authority,
         store.clone(),
         TenantId::SINGLE,
         parent_session_id,
@@ -109,6 +118,7 @@ async fn permission_bridge_attributes_subagent_source_on_forward_and_resolve() {
                 subject: subject.clone(),
                 severity: Severity::High,
                 scope_hint: DecisionScope::Any,
+                confirmation_expected: None,
                 created_at: harness_contracts::now(),
             },
             PermissionContext {
@@ -120,11 +130,6 @@ async fn permission_bridge_attributes_subagent_source_on_forward_and_resolve() {
                 interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
                 timeout_policy: None,
                 fallback_policy: harness_contracts::FallbackPolicy::DenyAll,
-                rule_snapshot: Arc::new(RuleSnapshot {
-                    rules: Vec::new(),
-                    generation: 0,
-                    built_at: harness_contracts::now(),
-                }),
                 hook_overrides: Vec::new(),
             },
         )

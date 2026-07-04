@@ -3,20 +3,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use futures::StreamExt;
 use harness_context::{ContextEngine, ContextSessionView};
 use harness_contracts::{
     AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobStore, CapabilityRegistry,
-    CausationId, ConversationAttachmentReference, CorrelationId, DecidedBy, Decision, DecisionId,
-    DeltaChunk, DenyReason, EndReason, Event, EventId, FallbackPolicy, InteractivityLevel, Message,
-    MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, PermissionActorSource,
-    PermissionMode, PermissionRequestedEvent, PermissionResolvedEvent, RedactRules, Redactor,
-    RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionError, SessionId, StopReason,
-    TeamId, TenantId, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult,
-    ToolUseApprovedEvent, ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
+    CausationId, ConversationAttachmentReference, CorrelationId, DeltaChunk, DenyReason, EndReason,
+    Event, EventId, FallbackPolicy, InteractivityLevel, Message, MessageContent, MessageId,
+    MessageMetadata, MessagePart, MessageRole, PermissionActorSource, PermissionMode, RedactRules,
+    Redactor, RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionError, SessionId,
+    StopReason, TeamId, TenantId, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult,
+    ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
     ToolUseRequestedEvent, ToolUseSummary, TrustLevel, TurnInput, UsageSnapshot,
 };
+use harness_execution::{AuthorizationContext, AuthorizationService, ExecutionError};
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookMessageView, HookOutcome, HookSessionView,
     ReplayMode, ToolDescriptorView,
@@ -25,17 +24,13 @@ use harness_model::{
     ContentDelta, InferContext, ModelModality, ModelProtocol, ModelProvider, ModelRequest,
     ModelStreamEvent,
 };
-use harness_permission::{
-    hard_policy_denies_from_context, PermissionBroker, PermissionContext, PermissionRequest,
-    PersistedDecision, RuleSnapshot,
-};
 use harness_sandbox::SandboxBackend;
 use harness_tool::{
-    InterruptToken, OrchestratorContext, ToolCall, ToolEventEmitter, ToolOrchestrator, ToolPool,
-    ToolResultEnvelope as RuntimeToolResultEnvelope,
+    AuthorizedToolCall, InterruptToken, OrchestratorContext, ToolCall, ToolEventEmitter,
+    ToolOrchestrator, ToolPool, ToolResultEnvelope as RuntimeToolResultEnvelope,
 };
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 
 use crate::Session;
 
@@ -47,7 +42,7 @@ pub struct SessionTurnRuntime {
     pub hooks: HookDispatcher,
     pub model: Arc<dyn ModelProvider>,
     pub tools: ToolPool,
-    pub permission_broker: Arc<dyn PermissionBroker>,
+    pub authorization_service: Arc<AuthorizationService>,
     pub sandbox: Option<Arc<dyn SandboxBackend>>,
     pub cap_registry: Arc<CapabilityRegistry>,
     pub redactor: Arc<dyn Redactor>,
@@ -302,12 +297,21 @@ pub(crate) async fn run_turn(
     session.append_events(&pre_tool_events).await?;
     projection_events.extend(pre_tool_events);
 
-    let permission_recorder = Arc::new(RecordingPermissionBroker::new(runtime.permission_broker));
     let (tool_event_emitter, mut tool_event_receiver) = ChannelToolEventEmitter::channel();
     let orchestrator = ToolOrchestrator::default();
-    let mut flushed_permission_records = 0;
+    let (authorized_tool_calls, mut tool_results) = authorize_tool_calls(
+        session,
+        &runtime,
+        run_id,
+        permission_mode,
+        session.options().interactivity,
+        permission_actor_source.clone(),
+        &tool_calls,
+        &mut projection_events,
+    )
+    .await?;
     let mut dispatch = Box::pin(orchestrator.dispatch(
-        tool_calls.clone(),
+        authorized_tool_calls,
         OrchestratorContext {
             pool: runtime.tools.clone(),
             tool_context: harness_tool::ToolContext {
@@ -320,59 +324,32 @@ pub(crate) async fn run_turn(
                 subagent_depth: 0,
                 workspace_root: session.options().workspace_root.clone(),
                 sandbox: runtime.sandbox.clone(),
-                permission_broker: permission_recorder.clone(),
                 cap_registry: runtime.cap_registry.clone(),
                 redactor: runtime.redactor.clone(),
                 interrupt: InterruptToken::new(),
                 parent_run: None,
                 model: session.turn_model_snapshot(),
                 model_config_id: session.turn_model_config_id(),
+                actor_source: permission_actor_source,
             },
-            permission_context: permission_context(session, run_id, permission_mode),
             blob_store: runtime.blob_store.clone(),
             event_emitter: tool_event_emitter,
         },
     ));
-    let tool_results = loop {
+    let executed_tool_results = loop {
         tokio::select! {
             results = &mut dispatch => break results,
             Some(event) = tool_event_receiver.recv() => {
-                flush_session_permission_events(
-                    session,
-                    &mut projection_events,
-                    run_id,
-                    permission_recorder.as_ref(),
-                    &mut flushed_permission_records,
-                    &permission_actor_source,
-                )
-                .await?;
                 session.append_events(std::slice::from_ref(&event)).await?;
                 projection_events.push(event);
             }
         }
     };
     while let Ok(event) = tool_event_receiver.try_recv() {
-        flush_session_permission_events(
-            session,
-            &mut projection_events,
-            run_id,
-            permission_recorder.as_ref(),
-            &mut flushed_permission_records,
-            &permission_actor_source,
-        )
-        .await?;
         session.append_events(std::slice::from_ref(&event)).await?;
         projection_events.push(event);
     }
-    flush_session_permission_events(
-        session,
-        &mut projection_events,
-        run_id,
-        permission_recorder.as_ref(),
-        &mut flushed_permission_records,
-        &permission_actor_source,
-    )
-    .await?;
+    tool_results.extend(executed_tool_results);
 
     let mut post_tool_events = Vec::new();
     for result in &tool_results {
@@ -419,6 +396,99 @@ pub(crate) async fn run_turn(
     projection_events.extend(final_events);
     session.apply_projection_events(&projection_events).await;
     Ok(())
+}
+
+async fn authorize_tool_calls(
+    session: &Session,
+    runtime: &SessionTurnRuntime,
+    run_id: RunId,
+    permission_mode: PermissionMode,
+    interactivity: InteractivityLevel,
+    permission_actor_source: PermissionActorSource,
+    tool_calls: &[ToolCall],
+    _projection_events: &mut Vec<Event>,
+) -> Result<(Vec<AuthorizedToolCall>, Vec<RuntimeToolResultEnvelope>), SessionError> {
+    let auth_context = AuthorizationContext {
+        tenant_id: session.tenant_id(),
+        session_id: session.session_id(),
+        run_id,
+        permission_mode,
+        interactivity,
+        fallback_policy: FallbackPolicy::AskUser,
+        workspace_root: session.options().workspace_root.clone(),
+    };
+
+    let mut authorized = Vec::new();
+    let mut failures = Vec::new();
+    for call in tool_calls {
+        let result = async {
+            let tool = runtime.tools.get(&call.tool_name).ok_or_else(|| {
+                ToolError::Internal(format!("tool not found: {}", call.tool_name))
+            })?;
+            let mut tool_ctx = harness_tool::ToolContext {
+                tool_use_id: call.tool_use_id,
+                run_id,
+                session_id: session.session_id(),
+                tenant_id: session.tenant_id(),
+                correlation_id: CorrelationId::new(),
+                agent_id: harness_contracts::AgentId::from_u128(1),
+                subagent_depth: 0,
+                workspace_root: session.options().workspace_root.clone(),
+                sandbox: runtime.sandbox.clone(),
+                cap_registry: runtime.cap_registry.clone(),
+                redactor: runtime.redactor.clone(),
+                interrupt: InterruptToken::new(),
+                parent_run: None,
+                model: session.turn_model_snapshot(),
+                model_config_id: session.turn_model_config_id(),
+                actor_source: permission_actor_source.clone(),
+            };
+            tool.validate(&call.input, &tool_ctx)
+                .await
+                .map_err(|error| ToolError::Validation(error.to_string()))?;
+            let plan = tool.plan(&call.input, &tool_ctx).await?;
+            tool_ctx.tool_use_id = plan.tool_use_id;
+            let authorized_input = runtime
+                .authorization_service
+                .authorize_tool_input(auth_context.clone(), plan, call.input.clone())
+                .await
+                .map_err(authorization_error_to_tool_error)?;
+            Ok::<AuthorizedToolCall, ToolError>(AuthorizedToolCall {
+                tool_use_id: call.tool_use_id,
+                tool_name: call.tool_name.clone(),
+                input: authorized_input,
+            })
+        }
+        .await;
+        match result {
+            Ok(call) => authorized.push(call),
+            Err(error) => failures.push(authorization_failure_result(call, error)),
+        }
+    }
+    Ok((authorized, failures))
+}
+
+fn authorization_error_to_tool_error(error: ExecutionError) -> ToolError {
+    match error {
+        ExecutionError::PermissionDenied { decision, .. } => {
+            ToolError::PermissionDenied(format!("authorization denied: {decision:?}"))
+        }
+        ExecutionError::SandboxPreflightFailed { reason, .. } => {
+            ToolError::PermissionDenied(format!("sandbox preflight failed: {reason}"))
+        }
+        other => ToolError::Internal(other.to_string()),
+    }
+}
+
+fn authorization_failure_result(call: &ToolCall, error: ToolError) -> RuntimeToolResultEnvelope {
+    RuntimeToolResultEnvelope {
+        tool_use_id: call.tool_use_id,
+        tool_name: call.tool_name.clone(),
+        result: Err(error),
+        overflow: None,
+        duration: Duration::ZERO,
+        progress_emitted: 0,
+    }
 }
 
 fn run_model_snapshot(runtime: &SessionTurnRuntime) -> Result<RunModelSnapshot, SessionError> {
@@ -587,78 +657,6 @@ impl HookSessionView for TurnHookView {
     }
 }
 
-#[derive(Clone)]
-struct PermissionDecisionRecord {
-    request: PermissionRequest,
-    decision: Decision,
-    auto_resolved: bool,
-}
-
-struct RecordingPermissionBroker {
-    inner: Arc<dyn PermissionBroker>,
-    records: Mutex<Vec<PermissionDecisionRecord>>,
-}
-
-impl RecordingPermissionBroker {
-    fn new(inner: Arc<dyn PermissionBroker>) -> Self {
-        Self {
-            inner,
-            records: Mutex::new(Vec::new()),
-        }
-    }
-
-    async fn records(&self) -> Vec<PermissionDecisionRecord> {
-        self.records.lock().await.clone()
-    }
-}
-
-#[async_trait]
-impl PermissionBroker for RecordingPermissionBroker {
-    async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
-        if self.hard_policy_denies(&request, &ctx).await {
-            let decision = Decision::DenyOnce;
-            self.records.lock().await.push(PermissionDecisionRecord {
-                request,
-                decision: decision.clone(),
-                auto_resolved: false,
-            });
-            return decision;
-        }
-
-        let permission_mode = ctx.permission_mode;
-        let decision = normalize_permission_decision(
-            self.inner.decide(request.clone(), ctx).await,
-            permission_mode,
-        );
-        let auto_resolved = matches!(
-            permission_mode,
-            PermissionMode::BypassPermissions | PermissionMode::DontAsk
-        ) && decision_allows(&decision);
-        self.records.lock().await.push(PermissionDecisionRecord {
-            request,
-            decision: decision.clone(),
-            auto_resolved,
-        });
-        decision
-    }
-
-    async fn hard_policy_denies(
-        &self,
-        request: &PermissionRequest,
-        ctx: &PermissionContext,
-    ) -> bool {
-        self.inner.hard_policy_denies(request, ctx).await
-            || hard_policy_denies_from_context(request, ctx)
-    }
-
-    async fn persist(
-        &self,
-        decision: PersistedDecision,
-    ) -> Result<(), harness_contracts::PermissionError> {
-        self.inner.persist(decision).await
-    }
-}
-
 struct ChannelToolEventEmitter {
     sender: mpsc::UnboundedSender<Event>,
 }
@@ -692,7 +690,7 @@ fn hook_context(
         causation_id: CausationId::new(),
         trust_level: TrustLevel::UserControlled,
         permission_mode,
-        interactivity: InteractivityLevel::NoInteractive,
+        interactivity: session.options().interactivity,
         at: harness_contracts::now(),
         view: Arc::new(TurnHookView {
             workspace_root: session.options().workspace_root.clone(),
@@ -724,107 +722,6 @@ fn redact_json_strings(value: Value, redactor: &dyn Redactor) -> Value {
     }
 }
 
-fn permission_context(
-    session: &Session,
-    run_id: RunId,
-    permission_mode: PermissionMode,
-) -> PermissionContext {
-    PermissionContext {
-        permission_mode,
-        previous_mode: None,
-        session_id: session.session_id(),
-        tenant_id: session.tenant_id(),
-        run_id: Some(run_id),
-        interactivity: InteractivityLevel::NoInteractive,
-        timeout_policy: None,
-        fallback_policy: FallbackPolicy::DenyAll,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: harness_contracts::now(),
-        }),
-        hook_overrides: Vec::new(),
-    }
-}
-
-async fn flush_session_permission_events(
-    session: &Session,
-    projection_events: &mut Vec<Event>,
-    run_id: RunId,
-    permission_recorder: &RecordingPermissionBroker,
-    flushed_permission_records: &mut usize,
-    actor_source: &PermissionActorSource,
-) -> Result<(), SessionError> {
-    let records = permission_recorder.records().await;
-    if records.len() <= *flushed_permission_records {
-        return Ok(());
-    }
-
-    let events = permission_events(
-        run_id,
-        records[*flushed_permission_records..].to_vec(),
-        actor_source.clone(),
-    );
-    *flushed_permission_records = records.len();
-    session.append_events(&events).await?;
-    projection_events.extend(events);
-    Ok(())
-}
-
-fn permission_events(
-    run_id: RunId,
-    records: Vec<PermissionDecisionRecord>,
-    actor_source: PermissionActorSource,
-) -> Vec<Event> {
-    let mut events = Vec::with_capacity(records.len() * 3);
-    for record in records {
-        events.push(Event::PermissionRequested(PermissionRequestedEvent {
-            request_id: record.request.request_id,
-            run_id,
-            session_id: record.request.session_id,
-            tenant_id: record.request.tenant_id,
-            tool_use_id: record.request.tool_use_id,
-            tool_name: record.request.tool_name.clone(),
-            subject: record.request.subject.clone(),
-            severity: record.request.severity,
-            scope_hint: record.request.scope_hint.clone(),
-            fingerprint: None,
-            presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
-            interactivity: InteractivityLevel::NoInteractive,
-            auto_resolved: record.auto_resolved,
-            actor_source: actor_source.clone(),
-            causation_id: EventId::new(),
-            at: harness_contracts::now(),
-        }));
-        events.push(Event::PermissionResolved(PermissionResolvedEvent {
-            request_id: record.request.request_id,
-            decision: record.decision.clone(),
-            decided_by: DecidedBy::Broker {
-                broker_id: "session-turn-runtime".to_owned(),
-            },
-            scope: record.request.scope_hint.clone(),
-            fingerprint: None,
-            rationale: None,
-            at: harness_contracts::now(),
-        }));
-        if decision_allows(&record.decision) {
-            events.push(Event::ToolUseApproved(ToolUseApprovedEvent {
-                tool_use_id: record.request.tool_use_id,
-                decision_id: DecisionId::new(),
-                scope: record.request.scope_hint,
-                at: harness_contracts::now(),
-            }));
-        } else {
-            events.push(Event::ToolUseDenied(ToolUseDeniedEvent {
-                tool_use_id: record.request.tool_use_id,
-                reason: DenyReason::UserDenied,
-                at: harness_contracts::now(),
-            }));
-        }
-    }
-    events
-}
-
 fn tool_result_events(result: &RuntimeToolResultEnvelope) -> Vec<Event> {
     match &result.result {
         Ok(tool_result) => vec![Event::ToolUseCompleted(ToolUseCompletedEvent {
@@ -832,6 +729,11 @@ fn tool_result_events(result: &RuntimeToolResultEnvelope) -> Vec<Event> {
             result: tool_result.clone(),
             usage: None,
             duration_ms: result.duration.as_millis().min(u128::from(u64::MAX)) as u64,
+            at: harness_contracts::now(),
+        })],
+        Err(ToolError::PermissionDenied(_)) => vec![Event::ToolUseDenied(ToolUseDeniedEvent {
+            tool_use_id: result.tool_use_id,
+            reason: DenyReason::PolicyDenied,
             at: harness_contracts::now(),
         })],
         Err(error) => vec![Event::ToolUseFailed(ToolUseFailedEvent {
@@ -1003,30 +905,6 @@ fn add_usage(total: &mut UsageSnapshot, delta: &UsageSnapshot) {
     total.tool_calls = total.tool_calls.saturating_add(delta.tool_calls);
 }
 
-fn normalize_permission_decision(decision: Decision, permission_mode: PermissionMode) -> Decision {
-    if matches!(
-        permission_mode,
-        PermissionMode::BypassPermissions | PermissionMode::DontAsk
-    ) && !decision_allows(&decision)
-        && !decision_denies(&decision)
-    {
-        return Decision::AllowOnce;
-    }
-
-    decision
-}
-
-fn decision_allows(decision: &Decision) -> bool {
-    matches!(
-        decision,
-        Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent
-    )
-}
-
-fn decision_denies(decision: &Decision) -> bool {
-    matches!(decision, Decision::DenyOnce | Decision::DenyPermanent)
-}
-
 fn tool_error_payload(error: &ToolError) -> ToolErrorPayload {
     ToolErrorPayload {
         code: match error {
@@ -1052,9 +930,6 @@ fn tool_error_payload(error: &ToolError) -> ToolErrorPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use harness_contracts::{DecisionScope, PermissionSubject, RequestId, Severity};
 
     #[test]
     fn turn_and_message_metadata_keep_only_uuid_v4_client_message_ids() {
@@ -1078,87 +953,5 @@ mod tests {
         assert!(!message_metadata(Some(uuid_v1))
             .labels
             .contains_key("clientMessageId"));
-    }
-
-    #[derive(Default)]
-    struct HardPolicyBroker {
-        decide_calls: AtomicUsize,
-    }
-
-    #[async_trait]
-    impl PermissionBroker for HardPolicyBroker {
-        async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-            self.decide_calls.fetch_add(1, Ordering::SeqCst);
-            Decision::AllowOnce
-        }
-
-        async fn hard_policy_denies(
-            &self,
-            _request: &PermissionRequest,
-            _ctx: &PermissionContext,
-        ) -> bool {
-            true
-        }
-
-        async fn persist(
-            &self,
-            _decision: PersistedDecision,
-        ) -> Result<(), harness_contracts::PermissionError> {
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn recording_permission_broker_denies_hard_policy_before_inner_decide() {
-        let inner = Arc::new(HardPolicyBroker::default());
-        let broker = RecordingPermissionBroker::new(inner.clone());
-        let request = permission_request();
-        let ctx = permission_context_for(&request);
-
-        assert_eq!(
-            broker.decide(request.clone(), ctx.clone()).await,
-            Decision::DenyOnce
-        );
-        assert!(broker.hard_policy_denies(&request, &ctx).await);
-        assert_eq!(inner.decide_calls.load(Ordering::SeqCst), 0);
-        let records = broker.records().await;
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].decision, Decision::DenyOnce);
-    }
-
-    fn permission_request() -> PermissionRequest {
-        PermissionRequest {
-            request_id: RequestId::new(),
-            tenant_id: TenantId::SINGLE,
-            session_id: SessionId::new(),
-            tool_use_id: ToolUseId::new(),
-            tool_name: "FileWrite".to_owned(),
-            subject: PermissionSubject::ToolInvocation {
-                tool: "FileWrite".to_owned(),
-                input: json!({ "path": "README.md" }),
-            },
-            severity: Severity::High,
-            scope_hint: DecisionScope::Any,
-            created_at: harness_contracts::now(),
-        }
-    }
-
-    fn permission_context_for(request: &PermissionRequest) -> PermissionContext {
-        PermissionContext {
-            permission_mode: PermissionMode::Default,
-            previous_mode: None,
-            session_id: request.session_id,
-            tenant_id: request.tenant_id,
-            run_id: Some(RunId::new()),
-            interactivity: InteractivityLevel::FullyInteractive,
-            timeout_policy: None,
-            fallback_policy: FallbackPolicy::DenyAll,
-            rule_snapshot: Arc::new(RuleSnapshot {
-                rules: Vec::new(),
-                generation: 0,
-                built_at: harness_contracts::now(),
-            }),
-            hook_overrides: Vec::new(),
-        }
     }
 }

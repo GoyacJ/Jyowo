@@ -7,7 +7,9 @@ import test from 'node:test'
 
 import {
   AGENT_CONTEXT_PATTERNS,
+  AUTHORIZATION_CONTEXT_PATTERNS,
   hasAgentContextNearby,
+  hasAuthorizationContextNearby,
   scanAgentOrchestrationNoFakes,
 } from './check-agent-orchestration-no-fakes.mjs'
 
@@ -147,6 +149,36 @@ test('mock agent runtime fixture', () => {
 test('agent context patterns cover orchestration keywords', () => {
   const sample = 'background agent runtime orchestration'
   assert.ok(AGENT_CONTEXT_PATTERNS.some((pattern) => pattern.test(sample)))
+})
+
+test('authorization context patterns cover authorization sandbox permission keywords', () => {
+  const samples = [
+    'authorization ticket validation',
+    'permission broker decision',
+    'sandbox preflight check',
+    'PermissionAuthority decides',
+    'AuthorizationService authorize',
+    'TicketLedger mint',
+    'hard policy deny',
+  ]
+  for (const sample of samples) {
+    assert.ok(
+      AUTHORIZATION_CONTEXT_PATTERNS.some((pattern) => pattern.test(sample)),
+      `authorization context pattern must match: ${sample}`,
+    )
+  }
+})
+
+test('hasAuthorizationContextNearby detects authorization context within radius', () => {
+  const lines = [
+    '// unrelated',
+    'pub fn check_permission() -> PermissionDecision {',
+    '  // TODO: wire real authorization',
+    '  Decision::Allow',
+    '}',
+  ]
+
+  assert.equal(hasAuthorizationContextNearby(lines, 2), true)
 })
 
 test('fails hardcoded subagent availability assignment outside resolver', () => {
@@ -351,6 +383,192 @@ export const copy = [
   const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
 
   assert.equal(result.ok, true)
+})
+
+// ── Authorization / sandbox / permission context tests ──
+
+test('fails mock marker near authorization context in production Rust', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'crates/jyowo-harness-permission/src/broker.rs',
+    content: `
+pub fn decide() -> Decision {
+  let mock = AuthorizationTicket::default();
+  mock
+}
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some((violation) => violation.rule === 'mock-marker'),
+  )
+})
+
+test('fails fake marker near sandbox context in production Rust', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'crates/jyowo-harness-sandbox/src/backend.rs',
+    content: `
+pub fn run() -> Result<(), Error> {
+  let fake = SandboxPolicy::default();
+  Ok(())
+}
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some((violation) => violation.rule === 'fake-marker'),
+  )
+})
+
+test('fails noop marker near authorization context in production Rust', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'crates/jyowo-harness-execution/src/service.rs',
+    content: `
+pub fn authorize() -> AuthorizationOutcome {
+  let noop = AuthorizationService::new();
+  noop
+}
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some((violation) => violation.rule === 'noop-marker'),
+  )
+})
+
+test('fails placeholder marker near authorization context in production Rust', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'crates/jyowo-harness-execution/src/ticket.rs',
+    content: `
+pub fn mint_ticket() -> AuthorizationTicket {
+  let placeholder = PermissionAuthority::new();
+  placeholder
+}
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some((violation) => violation.rule === 'placeholder-marker'),
+  )
+})
+
+test('fails TODO marker near authorization context in production Rust', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'crates/jyowo-harness-permission/src/authority.rs',
+    content: `
+  let decision = Decision::Allow; // TODO replace with real authorization authority
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some((violation) => violation.rule === 'todo-marker'),
+  )
+})
+
+test('fails unimplemented marker near permission context in production Rust', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'crates/jyowo-harness-permission/src/broker.rs',
+    content: `
+pub fn validate_ticket() -> bool {
+  let broker = PermissionBroker::default();
+  unimplemented!("ticket validation")
+}
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some((violation) => violation.rule === 'unimplemented'),
+  )
+})
+
+test('fails allow-all marker in production permission crate', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'crates/jyowo-harness-permission/src/broker.rs',
+    content: `
+pub fn decide() -> Decision {
+  let broker = PermissionBroker::default();
+  Decision::allow_all
+}
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some((violation) => violation.rule === 'allow-all'),
+  )
+})
+
+test('fails bypass-policy marker in production execution crate', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'crates/jyowo-harness-execution/src/service.rs',
+    content: `
+pub fn authorize() -> AuthorizationOutcome {
+  let bypass_permission = true;
+  AuthorizationOutcome::Authorized(Default::default())
+}
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some((violation) => violation.rule === 'bypass-policy'),
+  )
+})
+
+test('does not fail generic mock outside authorization/sandbox context', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'crates/jyowo-harness-context/src/assembly.rs',
+    content: `
+pub fn build_context() {
+  let mock = "safe test value";
+}
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, true)
+})
+
+test('fails fake marker near sandbox context in typescript IPC surface', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'apps/desktop/src/shared/tauri/commands.ts',
+    content: `
+async function handlePermission() {
+  let permission = true;
+  const fake = Promise.resolve({ status: 'resolved' });
+  return fake;
+}
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some((violation) => violation.rule === 'fake-marker'),
+  )
 })
 
 function writeFixtureAtRoot({ root, relativePath, content }) {

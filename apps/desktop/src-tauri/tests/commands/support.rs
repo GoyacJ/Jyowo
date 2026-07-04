@@ -2,6 +2,8 @@
 #![allow(unused_imports)]
 
 use super::*;
+use harness_contracts::{NetworkAccess, ToolActionPlan};
+use harness_tool::{action_plan_from_permission_check, AuthorizedToolInput};
 
 pub(crate) fn permission_request() -> PermissionRequest {
     permission_request_with_subject(PermissionSubject::CommandExec {
@@ -76,25 +78,37 @@ impl Tool for NeedsPermissionTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
         let command = input
             .get("command")
             .and_then(Value::as_str)
             .unwrap_or("needs-permission")
             .to_owned();
 
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::CommandExec {
-                command: command.clone(),
-                argv: vec![command.clone()],
-                cwd: None,
-                fingerprint: None,
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::CommandExec {
+                    command: command.clone(),
+                    argv: vec![command.clone()],
+                    cwd: None,
+                    fingerprint: None,
+                },
+                scope: DecisionScope::ExactCommand { command, cwd: None },
             },
-            scope: DecisionScope::ExactCommand { command, cwd: None },
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, _input: Value, _ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        _authorized: AuthorizedToolInput,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(stream::iter(vec![ToolEvent::Final(
             ToolResult::Text("done".to_owned()),
         )])))
@@ -181,6 +195,7 @@ pub(crate) fn permission_request_with_subject(subject: PermissionSubject) -> Per
         subject,
         severity: Severity::Low,
         scope_hint: DecisionScope::ToolName("shell".to_owned()),
+        confirmation_expected: None,
         created_at: now(),
     }
 }
@@ -199,12 +214,19 @@ pub(crate) fn permission_context_with_run_id(run_id: Option<RunId>) -> Permissio
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::AskUser,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: now(),
-        }),
         hook_overrides: Vec::new(),
+    }
+}
+
+pub(crate) fn permission_context_for_request(
+    request: &PermissionRequest,
+    run_id: Option<RunId>,
+) -> PermissionContext {
+    PermissionContext {
+        session_id: request.session_id,
+        tenant_id: request.tenant_id,
+        run_id,
+        ..permission_context_with_run_id(run_id)
     }
 }
 
@@ -274,6 +296,86 @@ pub(crate) async fn wait_for_pending_permission_for_session(
     }
 }
 
+pub(crate) async fn run_with_mcp_transport_approval<T>(
+    state: &DesktopRuntimeState,
+    command: impl std::future::Future<Output = Result<T, jyowo_desktop_shell::commands::CommandErrorPayload>>
+        + Send
+        + 'static,
+) -> Result<T, jyowo_desktop_shell::commands::CommandErrorPayload>
+where
+    T: Send + 'static,
+{
+    let command_task = tokio::spawn(command);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let pending = loop {
+        if let Some(pending) = state
+            .pending_permission_requests()
+            .into_iter()
+            .find(|pending| {
+                matches!(
+                    &pending.request.subject,
+                    PermissionSubject::Custom { kind, .. } if kind == "mcp_transport"
+                )
+            })
+        {
+            break pending;
+        }
+
+        if command_task.is_finished() {
+            return command_task
+                .await
+                .expect("mcp command task should complete without panicking");
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!("mcp transport permission request should become pending");
+        }
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    };
+
+    resolve_permission_with_runtime_state(
+        ResolvePermissionRequest {
+            conversation_id: pending.request.session_id.to_string(),
+            decision: PermissionDecision::Approve,
+            request_id: pending.request.request_id.to_string(),
+            confirmation_text: None,
+        },
+        state,
+    )
+    .await?;
+
+    command_task
+        .await
+        .expect("mcp command task should complete without panicking")
+}
+
+pub(crate) async fn wait_for_pending_mcp_transport_permission(
+    state: &DesktopRuntimeState,
+) -> jyowo_harness_sdk::ext::PendingPermissionRequest {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        if let Some(pending) = state
+            .pending_permission_requests()
+            .into_iter()
+            .find(|pending| {
+                matches!(
+                    &pending.request.subject,
+                    PermissionSubject::Custom { kind, .. } if kind == "mcp_transport"
+                )
+            })
+        {
+            return pending;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!("mcp transport permission request should become pending");
+        }
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
 pub(crate) async fn open_conversation_session(state: &DesktopRuntimeState, session_id: SessionId) {
     state
         .harness()
@@ -281,6 +383,65 @@ pub(crate) async fn open_conversation_session(state: &DesktopRuntimeState, sessi
         .open_or_create_conversation_session(state.conversation_session_options(session_id))
         .await
         .expect("conversation session should open");
+}
+
+#[derive(Debug, Default)]
+struct AllowExecPreflightSandbox;
+
+#[async_trait]
+impl jyowo_harness_sdk::ext::SandboxBackend for AllowExecPreflightSandbox {
+    fn backend_id(&self) -> &'static str {
+        "allow-exec-preflight"
+    }
+
+    fn capabilities(&self) -> jyowo_harness_sdk::ext::SandboxCapabilities {
+        jyowo_harness_sdk::ext::SandboxCapabilities {
+            supports_network: true,
+            supports_filesystem_write: true,
+            max_concurrent_execs: 1,
+            ..jyowo_harness_sdk::ext::SandboxCapabilities::default()
+        }
+    }
+
+    fn preflight_execute(
+        &self,
+        _spec: &jyowo_harness_sdk::ext::ExecSpec,
+    ) -> Result<(), harness_contracts::SandboxError> {
+        Ok(())
+    }
+
+    async fn execute(
+        &self,
+        _spec: jyowo_harness_sdk::ext::ExecSpec,
+        _ctx: jyowo_harness_sdk::ext::ExecContext,
+    ) -> Result<jyowo_harness_sdk::ext::ProcessHandle, harness_contracts::SandboxError> {
+        Err(harness_contracts::SandboxError::CapabilityMismatch {
+            capability: "execute".to_owned(),
+            detail: "test sandbox only supports preflight".to_owned(),
+        })
+    }
+
+    async fn snapshot_session(
+        &self,
+        _spec: &jyowo_harness_sdk::ext::SnapshotSpec,
+    ) -> Result<jyowo_harness_sdk::ext::SessionSnapshotFile, harness_contracts::SandboxError> {
+        Err(harness_contracts::SandboxError::SnapshotUnsupported {
+            kind: "allow_exec_preflight_snapshot".to_owned(),
+        })
+    }
+
+    async fn restore_session(
+        &self,
+        _snapshot: &jyowo_harness_sdk::ext::SessionSnapshotFile,
+    ) -> Result<(), harness_contracts::SandboxError> {
+        Err(harness_contracts::SandboxError::SnapshotUnsupported {
+            kind: "allow_exec_preflight_restore".to_owned(),
+        })
+    }
+
+    async fn shutdown(&self) -> Result<(), harness_contracts::SandboxError> {
+        Ok(())
+    }
 }
 
 pub(crate) fn test_run_started_event(session_id: SessionId, run_id: RunId) -> RunStartedEvent {
@@ -356,6 +517,10 @@ pub(crate) fn test_permission_requested_event(
         interactivity: InteractivityLevel::FullyInteractive,
         auto_resolved: false,
         actor_source: PermissionActorSource::ParentRun,
+        action_plan_hash: Default::default(),
+        review: Default::default(),
+        effective_mode: Default::default(),
+        sandbox_policy: Default::default(),
         presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
         request_id,
         run_id,
@@ -475,7 +640,7 @@ pub(crate) async fn runtime_state_with_mcp_registry_for_workspace(
             .with_options(test_harness_options(&workspace))
             .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
-            .with_sandbox(NoopSandbox::new())
+            .with_sandbox(AllowExecPreflightSandbox)
             .with_stream_permission_broker_arc(
                 stream_permission_runtime.broker(),
                 stream_permission_runtime.resolver_handle(),

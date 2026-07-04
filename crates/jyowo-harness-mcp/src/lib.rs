@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod authorization;
 pub mod client;
 mod client_auth;
 pub mod elicitation;
@@ -25,6 +26,7 @@ pub mod transports;
 pub mod types;
 pub mod wrapper;
 
+pub use authorization::*;
 pub use client::*;
 pub use elicitation::*;
 pub use error::*;

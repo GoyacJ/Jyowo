@@ -390,27 +390,43 @@ async fn save_mcp_server_with_runtime_state_registers_and_injects_stdio_tools() 
         runtime_state_with_mcp_registry_for_workspace(workspace, McpRegistry::new(), Vec::new())
             .await;
 
-    let payload = save_mcp_server_with_runtime_state(
-        SaveMcpServerRequest {
-            enabled: true,
-            display_name: "Workspace Stdio".to_owned(),
-            id: "stdio".to_owned(),
-            scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Stdio {
-                command: "/bin/sh".to_owned(),
-                args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
-                env: Vec::new(),
-                inherit_env: Vec::new(),
-                working_dir: None,
+    let state_for_command = state.clone();
+    let payload = run_with_mcp_transport_approval(&state, async move {
+        save_mcp_server_with_runtime_state(
+            SaveMcpServerRequest {
+                enabled: true,
+                display_name: "Workspace Stdio".to_owned(),
+                id: "stdio".to_owned(),
+                scope: "global".to_owned(),
+                transport: McpServerTransportConfig::Stdio {
+                    command: "/bin/sh".to_owned(),
+                    args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
+                    env: Vec::new(),
+                    inherit_env: Vec::new(),
+                    working_dir: None,
+                },
             },
-        },
-        &state,
-    )
+            &state_for_command,
+        )
+        .await
+    })
     .await
     .unwrap();
     let harness = state.harness().unwrap();
 
-    assert_eq!(payload.server.status, "ready");
+    let connection_state = state
+        .harness()
+        .unwrap()
+        .mcp_config()
+        .unwrap()
+        .registry
+        .connection_state(&McpServerId("stdio".to_owned()))
+        .await;
+    assert_eq!(
+        payload.server.status, "ready",
+        "connection state: {:?}",
+        connection_state
+    );
     assert_eq!(payload.server.exposed_tool_count, 1);
     assert!(harness.tool_registry().get("mcp__stdio__echo").is_some());
 }
@@ -483,17 +499,33 @@ async fn set_mcp_server_enabled_registers_and_injects_tools() {
     .await
     .unwrap();
 
-    let payload = set_mcp_server_enabled_with_runtime_state(
-        SetMcpServerEnabledRequest {
-            id: "stdio".to_owned(),
-            enabled: true,
-        },
-        &state,
-    )
+    let state_for_command = state.clone();
+    let payload = run_with_mcp_transport_approval(&state, async move {
+        set_mcp_server_enabled_with_runtime_state(
+            SetMcpServerEnabledRequest {
+                id: "stdio".to_owned(),
+                enabled: true,
+            },
+            &state_for_command,
+        )
+        .await
+    })
     .await
     .unwrap();
 
-    assert_eq!(payload.server.status, "ready");
+    let connection_state = state
+        .harness()
+        .unwrap()
+        .mcp_config()
+        .unwrap()
+        .registry
+        .connection_state(&McpServerId("stdio".to_owned()))
+        .await;
+    assert_eq!(
+        payload.server.status, "ready",
+        "connection state: {:?}",
+        connection_state
+    );
     assert!(payload.server.enabled);
     assert!(state
         .harness()
@@ -511,35 +543,55 @@ async fn restart_mcp_server_removes_registers_and_injects_tools() {
     let state =
         runtime_state_with_mcp_registry_for_workspace(workspace, McpRegistry::new(), Vec::new())
             .await;
-    save_mcp_server_with_runtime_state(
-        SaveMcpServerRequest {
-            enabled: true,
-            display_name: "Workspace Stdio".to_owned(),
-            id: "stdio".to_owned(),
-            scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Stdio {
-                command: "/bin/sh".to_owned(),
-                args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
-                env: Vec::new(),
-                inherit_env: Vec::new(),
-                working_dir: None,
+    let state_for_command = state.clone();
+    run_with_mcp_transport_approval(&state, async move {
+        save_mcp_server_with_runtime_state(
+            SaveMcpServerRequest {
+                enabled: true,
+                display_name: "Workspace Stdio".to_owned(),
+                id: "stdio".to_owned(),
+                scope: "global".to_owned(),
+                transport: McpServerTransportConfig::Stdio {
+                    command: "/bin/sh".to_owned(),
+                    args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
+                    env: Vec::new(),
+                    inherit_env: Vec::new(),
+                    working_dir: None,
+                },
             },
-        },
-        &state,
-    )
+            &state_for_command,
+        )
+        .await
+    })
     .await
     .unwrap();
 
-    let payload = restart_mcp_server_with_runtime_state(
-        RestartMcpServerRequest {
-            id: "stdio".to_owned(),
-        },
-        &state,
-    )
+    let state_for_command = state.clone();
+    let payload = run_with_mcp_transport_approval(&state, async move {
+        restart_mcp_server_with_runtime_state(
+            RestartMcpServerRequest {
+                id: "stdio".to_owned(),
+            },
+            &state_for_command,
+        )
+        .await
+    })
     .await
     .unwrap();
 
-    assert_eq!(payload.server.status, "ready");
+    let connection_state = state
+        .harness()
+        .unwrap()
+        .mcp_config()
+        .unwrap()
+        .registry
+        .connection_state(&McpServerId("stdio".to_owned()))
+        .await;
+    assert_eq!(
+        payload.server.status, "ready",
+        "connection state: {:?}",
+        connection_state
+    );
     assert!(state
         .harness()
         .unwrap()

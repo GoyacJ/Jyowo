@@ -8,8 +8,8 @@ use harness_contracts::{
 };
 
 use crate::{
-    hard_policy_denies_from_context, DecisionPersistence, NoopDecisionPersistence,
-    PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
+    DecisionPersistence, NoopDecisionPersistence, PermissionBroker, PermissionContext,
+    PermissionRequest, PersistedDecision,
 };
 
 pub struct ChainedBroker {
@@ -103,6 +103,12 @@ impl ChainedBrokerBuilder {
 
 #[async_trait]
 impl PermissionBroker for ChainedBroker {
+    fn can_anchor_authority(&self) -> bool {
+        self.chain
+            .iter()
+            .any(|broker| broker.can_anchor_authority())
+    }
+
     async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision {
         if self.hard_policy_denies(&request, &ctx).await {
             return Decision::DenyOnce;
@@ -127,7 +133,7 @@ impl PermissionBroker for ChainedBroker {
                 return true;
             }
         }
-        hard_policy_denies_from_context(request, ctx)
+        false
     }
 
     async fn persist(&self, decision: PersistedDecision) -> Result<(), PermissionError> {
@@ -146,10 +152,6 @@ impl FallbackTerminator {
 impl PermissionTerminator for FallbackTerminator {
     #[allow(clippy::match_same_arms)]
     async fn terminate(&self, request: &PermissionRequest, ctx: &PermissionContext) -> Decision {
-        if hard_policy_denies_from_context(request, ctx) {
-            return Decision::DenyOnce;
-        }
-
         if matches!(
             ctx.permission_mode,
             PermissionMode::BypassPermissions | PermissionMode::DontAsk

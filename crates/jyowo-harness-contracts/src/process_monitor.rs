@@ -5,7 +5,10 @@ use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Event, Redactor, RunId, SandboxExitStatus, SessionId, TenantId, ToolError, ToolUseId};
+use crate::{
+    Event, Redactor, RunId, SandboxExitStatus, SandboxPolicy, SessionId, TenantId, ToolError,
+    ToolUseId, WorkspaceAccess,
+};
 
 pub const RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY: &str = "run_scoped_process_registry";
 
@@ -75,7 +78,7 @@ pub struct ProcessStopResult {
     pub status: ProcessRuntimeStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProcessStartInvocation {
     pub tenant_id: TenantId,
     pub session_id: SessionId,
@@ -83,6 +86,8 @@ pub struct ProcessStartInvocation {
     pub tool_use_id: ToolUseId,
     pub workspace_root: PathBuf,
     pub request: ProcessStartRequest,
+    pub sandbox_policy: SandboxPolicy,
+    pub workspace_access: WorkspaceAccess,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

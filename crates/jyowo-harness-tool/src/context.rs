@@ -5,10 +5,9 @@ use std::sync::{
 };
 
 use harness_contracts::{
-    AgentId, CapabilityRegistry, CorrelationId, Redactor, RunId, RunModelSnapshot, SessionId,
-    TenantId, ToolCapability, ToolError, ToolUseId,
+    AgentId, CapabilityRegistry, CorrelationId, PermissionActorSource, Redactor, RunId,
+    RunModelSnapshot, SessionId, TenantId, ToolCapability, ToolError, ToolUseId,
 };
-use harness_permission::PermissionBroker;
 use harness_sandbox::SandboxBackend;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,11 +36,11 @@ pub struct ToolContext {
     pub subagent_depth: u8,
     pub workspace_root: PathBuf,
     pub sandbox: Option<Arc<dyn SandboxBackend>>,
-    pub permission_broker: Arc<dyn PermissionBroker>,
     pub cap_registry: Arc<CapabilityRegistry>,
     pub redactor: Arc<dyn Redactor>,
     pub interrupt: InterruptToken,
     pub parent_run: Option<ParentRunHandle>,
+    pub actor_source: PermissionActorSource,
 }
 
 impl ToolContext {

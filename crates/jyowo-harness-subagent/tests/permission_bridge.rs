@@ -22,7 +22,10 @@ use harness_journal::{
     AppendMetadata, EventEnvelope, EventEnvelopePage, EventStore, InMemoryEventStore, PrunePolicy,
     PruneReport, ReplayCursor, SessionFilter, SessionSnapshot, SessionSummary,
 };
-use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest, RuleSnapshot};
+use harness_permission::{
+    NoopDecisionPersistence, PermissionAuthority, PermissionBroker, PermissionContext,
+    PermissionRequest,
+};
 use harness_subagent::{
     ChildRunOutcome, ChildRunRequest, ChildSessionRunner, DefaultSubagentRunner, ParentContext,
     SubagentAdmin, SubagentError, SubagentPermissionBridge, SubagentRunner,
@@ -40,7 +43,7 @@ async fn bridge_forwards_and_resolves_child_permission_requests() {
     let child_run_id = RunId::new();
     let correlation_id = CorrelationId::new();
     let broker = Arc::new(AllowBroker);
-    let bridge = SubagentPermissionBridge::new(
+    let bridge = permission_bridge(
         broker,
         store.clone(),
         TenantId::SINGLE,
@@ -66,6 +69,7 @@ async fn bridge_forwards_and_resolves_child_permission_requests() {
                 subject: subject.clone(),
                 severity: Severity::High,
                 scope_hint: DecisionScope::Any,
+                confirmation_expected: None,
                 created_at: harness_contracts::now(),
             },
             PermissionContext {
@@ -81,11 +85,6 @@ async fn bridge_forwards_and_resolves_child_permission_requests() {
                     heartbeat_interval_ms: None,
                 }),
                 fallback_policy: FallbackPolicy::DenyAll,
-                rule_snapshot: Arc::new(RuleSnapshot {
-                    rules: Vec::new(),
-                    generation: 0,
-                    built_at: harness_contracts::now(),
-                }),
                 hook_overrides: Vec::new(),
             },
         )
@@ -179,7 +178,7 @@ async fn bridge_records_team_member_permission_attribution() {
     let subagent_id = SubagentId::new();
     let team_id = TeamId::new();
     let request_id = RequestId::new();
-    let bridge = SubagentPermissionBridge::new(
+    let bridge = permission_bridge(
         Arc::new(AllowBroker),
         store.clone(),
         TenantId::SINGLE,
@@ -204,6 +203,7 @@ async fn bridge_records_team_member_permission_attribution() {
                 },
                 severity: Severity::High,
                 scope_hint: DecisionScope::Any,
+                confirmation_expected: None,
                 created_at: harness_contracts::now(),
             },
             permission_context(child_session_id),
@@ -246,7 +246,7 @@ async fn bridge_denies_without_parent_broker_when_permission_audit_append_fails(
     let child_session_id = SessionId::new();
     let subagent_id = SubagentId::new();
     let broker = Arc::new(CountingBroker::default());
-    let bridge = SubagentPermissionBridge::new(
+    let bridge = permission_bridge(
         broker.clone(),
         Arc::new(FailingAppendStore),
         TenantId::SINGLE,
@@ -270,6 +270,7 @@ async fn bridge_denies_without_parent_broker_when_permission_audit_append_fails(
                 },
                 severity: Severity::High,
                 scope_hint: DecisionScope::Any,
+                confirmation_expected: None,
                 created_at: harness_contracts::now(),
             },
             permission_context(child_session_id),
@@ -351,7 +352,7 @@ async fn bridge_forwards_parent_hard_policy_probe() {
     let parent_session_id = SessionId::new();
     let parent_run_id = RunId::new();
     let child_session_id = SessionId::new();
-    let bridge = SubagentPermissionBridge::new(
+    let bridge = permission_bridge(
         Arc::new(HardPolicyBroker),
         store,
         TenantId::SINGLE,
@@ -371,6 +372,7 @@ async fn bridge_forwards_parent_hard_policy_probe() {
         },
         severity: Severity::High,
         scope_hint: DecisionScope::Any,
+        confirmation_expected: None,
         created_at: harness_contracts::now(),
     };
 
@@ -390,7 +392,7 @@ async fn bridge_decide_denies_parent_hard_policy_before_parent_allow() {
     let child_run_id = RunId::new();
     let subagent_id = SubagentId::new();
     let correlation_id = CorrelationId::new();
-    let bridge = SubagentPermissionBridge::new(
+    let bridge = permission_bridge(
         Arc::new(HardPolicyBroker),
         store.clone(),
         TenantId::SINGLE,
@@ -415,6 +417,7 @@ async fn bridge_decide_denies_parent_hard_policy_before_parent_allow() {
                 },
                 severity: Severity::High,
                 scope_hint: DecisionScope::Any,
+                confirmation_expected: None,
                 created_at: harness_contracts::now(),
             },
             permission_context(child_session_id),
@@ -464,7 +467,7 @@ async fn bridge_marks_child_permission_request_auto_resolved_for_bypass_mode() {
     let child_session_id = SessionId::new();
     let child_run_id = RunId::new();
     let correlation_id = CorrelationId::new();
-    let bridge = SubagentPermissionBridge::new(
+    let bridge = permission_bridge(
         Arc::new(AllowBroker),
         store.clone(),
         TenantId::SINGLE,
@@ -492,6 +495,7 @@ async fn bridge_marks_child_permission_request_auto_resolved_for_bypass_mode() {
                 },
                 severity: Severity::High,
                 scope_hint: DecisionScope::Any,
+                confirmation_expected: None,
                 created_at: harness_contracts::now(),
             },
             ctx,
@@ -562,7 +566,7 @@ async fn bridge_preserves_decision_scope_matrix() {
         let child_run_id = RunId::new();
         let subagent_id = SubagentId::new();
         let correlation_id = CorrelationId::new();
-        let bridge = SubagentPermissionBridge::new(
+        let bridge = permission_bridge(
             Arc::new(FixedBroker {
                 decision: decision.clone(),
             }),
@@ -589,6 +593,7 @@ async fn bridge_preserves_decision_scope_matrix() {
                     },
                     severity: Severity::Medium,
                     scope_hint: scope.clone(),
+                    confirmation_expected: None,
                     created_at: harness_contracts::now(),
                 },
                 permission_context(child_session_id),
@@ -643,6 +648,32 @@ async fn bridge_preserves_decision_scope_matrix() {
                 )
         }));
     }
+}
+
+fn permission_bridge(
+    parent_broker: Arc<dyn PermissionBroker>,
+    event_store: Arc<dyn EventStore>,
+    tenant_id: TenantId,
+    parent_session_id: SessionId,
+    parent_run_id: RunId,
+    subagent_id: SubagentId,
+) -> SubagentPermissionBridge {
+    let parent_authority = Arc::new(
+        PermissionAuthority::builder()
+            .with_policy_broker(Arc::clone(&parent_broker))
+            .with_interactive_broker(Arc::clone(&parent_broker))
+            .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
+            .build()
+            .expect("test permission authority should build"),
+    );
+    SubagentPermissionBridge::with_parent_authority(
+        parent_authority,
+        event_store,
+        tenant_id,
+        parent_session_id,
+        parent_run_id,
+        subagent_id,
+    )
 }
 
 #[tokio::test]
@@ -975,11 +1006,6 @@ fn permission_context(session_id: SessionId) -> PermissionContext {
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::DenyAll,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: harness_contracts::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }

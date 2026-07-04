@@ -8,9 +8,10 @@ use std::sync::{
 use async_trait::async_trait;
 use harness_contracts::{
     DeferPolicy, Event, HookFailureMode, ManifestOriginRef, McpServerId, McpServerSource,
-    MemoryError, MemoryId, PluginId, PluginRecentEvent, ProviderRestriction, RejectionReason,
-    SteeringBody, SteeringId, SteeringKind, SteeringPriority, SteeringRequest, SteeringSource,
-    ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties, TrustLevel,
+    MemoryError, MemoryId, NetworkAccess, PluginId, PluginRecentEvent, ProviderRestriction,
+    RejectionReason, SteeringBody, SteeringId, SteeringKind, SteeringPriority, SteeringRequest,
+    SteeringSource, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, TrustLevel, WorkspaceAccess,
 };
 use harness_hook::{
     HookContext, HookEvent, HookHandler, HookOrigin, HookOutcome, HookRegistrationKind,
@@ -34,8 +35,8 @@ use harness_plugin::{
 };
 use harness_skill::{Skill, SkillFrontmatter, SkillPrerequisites, SkillRegistry, SkillSource};
 use harness_tool::{
-    default_result_budget, PermissionCheck, SchemaResolverContext, Tool, ToolContext, ToolRegistry,
-    ToolStream, ValidationError,
+    action_plan_from_permission_check, default_result_budget, AuthorizedToolInput, PermissionCheck,
+    SchemaResolverContext, Tool, ToolContext, ToolRegistry, ValidationError,
 };
 use parking_lot::Mutex;
 use ring::signature::{Ed25519KeyPair, KeyPair};
@@ -2781,15 +2782,23 @@ impl Tool for FakeTool {
         Ok(())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
+    ) -> Result<harness_tool::ToolStream, ToolError> {
         Ok(Box::pin(futures::stream::empty()))
     }
 }

@@ -29,6 +29,8 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
+mod support;
+
 #[tokio::test]
 async fn websocket_transport_handles_requests_and_list_changed_notifications() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -113,7 +115,7 @@ async fn websocket_transport_handles_requests_and_list_changed_notifications() {
     );
 
     let connection = McpClient::new(std::sync::Arc::new(WebsocketTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("websocket connects");
     let mut changes = connection.subscribe_changes().await.expect("changes");
@@ -219,7 +221,9 @@ async fn websocket_transport_continues_tool_call_after_elicitation_resolution() 
     let connection = McpClient::new(Arc::new(WebsocketTransport::new()))
         .connect_with_context(
             spec,
-            McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            support::with_transport_authorization(
+                McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            ),
         )
         .await
         .expect("websocket connects");
@@ -294,7 +298,7 @@ async fn websocket_transport_sends_resource_subscription_requests() {
     );
 
     let connection = McpClient::new(Arc::new(WebsocketTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("websocket connects");
     connection
@@ -410,7 +414,7 @@ async fn websocket_tool_call_stream_filters_progress_by_request_id_and_finishes(
         McpServerSource::Workspace,
     );
     let connection = McpClient::new(Arc::new(WebsocketTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("websocket connects");
 
@@ -516,7 +520,7 @@ async fn websocket_transport_refreshes_oauth_for_handshake_authorization() {
     };
 
     McpClient::new(Arc::new(WebsocketTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("websocket oauth connects");
 
@@ -627,7 +631,7 @@ async fn websocket_transport_retries_handshake_after_unauthorized_oauth_refresh(
     };
 
     McpClient::new(Arc::new(WebsocketTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("websocket oauth connects after refresh");
 
@@ -652,7 +656,7 @@ async fn websocket_transport_rejects_xaa_without_request_signer() {
     };
 
     let error = match McpClient::new(Arc::new(WebsocketTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
     {
         Ok(_) => panic!("xaa has no signer"),

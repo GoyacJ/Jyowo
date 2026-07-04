@@ -9,13 +9,14 @@ mod capability_route_filter {
     use futures::stream;
     use harness_contracts::{
         CapabilityRouteKind, ConversationModelCapability, DeferPolicy, ModelModality,
-        ProviderCapabilityRoute, ProviderCapabilityRouteSettings, ProviderRestriction,
-        ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-        ToolServiceBinding, TrustLevel,
+        NetworkAccess, ProviderCapabilityRoute, ProviderCapabilityRouteSettings,
+        ProviderRestriction, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+        ToolProperties, ToolResult, ToolServiceBinding, TrustLevel, WorkspaceAccess,
     };
     use harness_tool::{
-        default_result_budget, BuiltinToolset, PermissionCheck, Tool, ToolContext, ToolEvent,
-        ToolPoolFilter, ToolRegistry, ToolRegistryBuilder, ToolStream, ValidationError,
+        action_plan_from_permission_check, default_result_budget, AuthorizedToolInput,
+        BuiltinToolset, PermissionCheck, Tool, ToolContext, ToolEvent, ToolPoolFilter,
+        ToolRegistry, ToolRegistryBuilder, ToolStream, ValidationError,
     };
     use jyowo_harness_sdk::filter_unrouted_service_tools;
     use serde_json::{json, Value};
@@ -113,13 +114,29 @@ mod capability_route_filter {
             Ok(())
         }
 
-        async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-            PermissionCheck::Allowed
+        async fn plan(
+            &self,
+            input: &Value,
+            ctx: &ToolContext,
+        ) -> Result<ToolActionPlan, ToolError> {
+            action_plan_from_permission_check(
+                self.descriptor(),
+                input,
+                ctx,
+                PermissionCheck::Allowed,
+                Vec::new(),
+                WorkspaceAccess::None,
+                NetworkAccess::None,
+            )
         }
 
-        async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolStream, ToolError> {
+        async fn execute_authorized(
+            &self,
+            authorized: AuthorizedToolInput,
+            _ctx: ToolContext,
+        ) -> Result<ToolStream, ToolError> {
             Ok(Box::pin(stream::iter([ToolEvent::Final(
-                ToolResult::Structured(input),
+                ToolResult::Structured(authorized.raw_input().clone()),
             )])))
         }
     }

@@ -17,6 +17,7 @@ export function ToolGroupSegmentView({
     conversationId: string
     requestId: string
     decision: 'approve' | 'deny'
+    confirmationText?: string
   }) => void
   runId: string
   segment: ToolGroupSegment

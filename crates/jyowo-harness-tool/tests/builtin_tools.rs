@@ -2,16 +2,18 @@
 
 use std::{path::Path, sync::Arc};
 
-use async_trait::async_trait;
+use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
-    CapabilityRegistry, Decision, DecisionScope, PermissionError, TenantId, ToolCapability,
-    ToolError, ToolGroup, ToolResult, ToolUseId,
+    CapabilityRegistry, DecisionScope, TenantId, ToolActionPlan, ToolCapability, ToolError,
+    ToolGroup, ToolResult, ToolUseId,
 };
-use harness_permission::{PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest};
 use harness_tool::{
-    builtin::{FileEditTool, GlobTool, TaskStopTool, TodoTool, WebFetchTool},
-    BuiltinToolset, InterruptToken, Tool, ToolContext, ToolRegistry,
+    builtin::{
+        FileEditTool, GlobTool, GrepTool, ListDirTool, TaskStopTool, TodoTool, WebFetchTool,
+    },
+    AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken, Tool,
+    ToolContext, ToolRegistry,
 };
 use serde_json::{json, Value};
 
@@ -80,16 +82,10 @@ async fn file_edit_replaces_text_and_asks_for_path_permission() {
         "old": "beta",
         "new": "gamma"
     });
-    let check = tool
-        .check_permission(&input, &tool_ctx(CapabilityRegistry::default()))
+    let plan = tool
+        .plan(&input, &tool_ctx(CapabilityRegistry::default()))
         .await;
-    assert!(matches!(
-        check,
-        PermissionCheck::AskUser {
-            scope: DecisionScope::PathPrefix(_),
-            ..
-        }
-    ));
+    assert!(matches!(plan.unwrap().scope, DecisionScope::PathPrefix(_)));
 
     let result = execute_final(
         &tool,
@@ -139,8 +135,16 @@ async fn file_edit_and_glob_reject_workspace_escape_paths_before_fs_access() {
     std::fs::create_dir(&workspace).unwrap();
     let outside_file = root.path().join("outside.txt");
     let outside_dir = root.path().join("outside_dir");
+    let outside_ssh_dir = root.path().join(".ssh");
+    let empty_parent = root.path().join("empty");
+    let empty_outside_ssh_dir = empty_parent.join(".ssh");
     std::fs::create_dir(&outside_dir).unwrap();
+    std::fs::create_dir(&outside_ssh_dir).unwrap();
+    std::fs::create_dir(&empty_parent).unwrap();
+    std::fs::create_dir(&empty_outside_ssh_dir).unwrap();
+    let outside_ssh_key = outside_ssh_dir.join("id_rsa");
     std::fs::write(&outside_file, "secret").unwrap();
+    std::fs::write(&outside_ssh_key, "private-key").unwrap();
     std::fs::write(outside_dir.join("secret.rs"), "fn secret() {}").unwrap();
     std::os::unix::fs::symlink(&outside_file, workspace.join("link.txt")).unwrap();
     std::os::unix::fs::symlink(&outside_dir, workspace.join("linked_dir")).unwrap();
@@ -167,6 +171,28 @@ async fn file_edit_and_glob_reject_workspace_escape_paths_before_fs_access() {
     assert_eq!(std::fs::read_to_string(&outside_file).unwrap(), "secret");
     assert!(matches!(
         execute_error(
+            &FileEditTool::default(),
+            json!({ "path": outside_ssh_key, "old": "private-key", "new": "changed" }),
+            ctx()
+        )
+        .await,
+        ToolError::PermissionDenied(_)
+    ));
+    assert_eq!(
+        std::fs::read_to_string(outside_ssh_dir.join("id_rsa")).unwrap(),
+        "private-key"
+    );
+    assert!(matches!(
+        execute_error(
+            &GrepTool::default(),
+            json!({ "path": outside_ssh_key, "pattern": "NO_MATCH" }),
+            ctx()
+        )
+        .await,
+        ToolError::PermissionDenied(_)
+    ));
+    assert!(matches!(
+        execute_error(
             &GlobTool::default(),
             json!({ "path": outside_dir, "pattern": "**/*.rs" }),
             ctx()
@@ -178,6 +204,24 @@ async fn file_edit_and_glob_reject_workspace_escape_paths_before_fs_access() {
         execute_error(
             &GlobTool::default(),
             json!({ "path": "linked_dir", "pattern": "**/*.rs" }),
+            ctx()
+        )
+        .await,
+        ToolError::PermissionDenied(_)
+    ));
+    assert!(matches!(
+        execute_error(
+            &GlobTool::default(),
+            json!({ "path": empty_outside_ssh_dir, "pattern": "**/*.rs" }),
+            ctx()
+        )
+        .await,
+        ToolError::PermissionDenied(_)
+    ));
+    assert!(matches!(
+        execute_error(
+            &ListDirTool::default(),
+            json!({ "path": empty_outside_ssh_dir }),
             ctx()
         )
         .await,
@@ -214,7 +258,9 @@ fn descriptors_match_architecture_groups_and_capabilities() {
 
 async fn execute_final(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolResult {
     tool.validate(&input, &ctx).await.unwrap();
-    let mut stream = tool.execute(input, ctx).await.unwrap();
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     match stream.next().await {
         Some(harness_tool::ToolEvent::Final(result)) => result,
         other => panic!("expected final result, got {other:?}"),
@@ -223,7 +269,12 @@ async fn execute_final(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolR
 
 async fn execute_error(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolError {
     tool.validate(&input, &ctx).await.unwrap();
-    match tool.execute(input, ctx).await {
+    let plan = match tool.plan(&input, &ctx).await {
+        Ok(plan) => plan,
+        Err(error) => return error,
+    };
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    match tool.execute_authorized(authorized, ctx).await {
         Ok(_) => panic!("expected tool error"),
         Err(error) => error,
     }
@@ -244,29 +295,25 @@ fn tool_ctx_at(workspace_root: impl AsRef<Path>, cap_registry: CapabilityRegistr
         subagent_depth: 0,
         workspace_root: workspace_root.as_ref().to_path_buf(),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::default(),
         parent_run: None,
         model: None,
         model_config_id: None,
+        actor_source: harness_contracts::PermissionActorSource::ParentRun,
     }
 }
 
-#[derive(Debug)]
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(
-        &self,
-        _decision: harness_permission::PersistedDecision,
-    ) -> Result<(), PermissionError> {
-        Ok(())
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: harness_contracts::SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }

@@ -16,6 +16,8 @@ use harness_mcp::{
 use parking_lot::Mutex;
 use serde_json::json;
 
+mod support;
+
 #[tokio::test]
 async fn stdio_transport_initializes_lists_and_calls_tool() {
     let script = r#"
@@ -46,7 +48,7 @@ done
     );
 
     let connection = McpClient::new(std::sync::Arc::new(StdioTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("stdio connects");
 
@@ -107,7 +109,9 @@ done
     let connection = McpClient::new(Arc::new(StdioTransport::new()))
         .connect_with_context(
             spec,
-            McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            support::with_transport_authorization(
+                McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
+            ),
         )
         .await
         .expect("stdio connects");
@@ -152,7 +156,7 @@ done
     );
 
     let connection = McpClient::new(Arc::new(StdioTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("stdio connects");
     let mut changes = connection.subscribe_changes().await.expect("changes");
@@ -205,7 +209,7 @@ done
     );
 
     let connection = McpClient::new(Arc::new(StdioTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("stdio connects");
 
@@ -279,7 +283,7 @@ done
     let connection = McpClient::new(Arc::new(
         StdioTransport::with_event_sink(sink.clone()).with_redactor(Arc::new(TokenRedactor)),
     ))
-    .connect(spec)
+    .connect_with_context(spec, support::authorized_connect_context())
     .await
     .expect("stdio connects");
 
@@ -336,7 +340,7 @@ done
     );
 
     let connection = McpClient::new(Arc::new(StdioTransport::new()))
-        .connect(spec)
+        .connect_with_context(spec, support::authorized_connect_context())
         .await
         .expect("stdio connects");
     connection.shutdown().await.expect("shutdown");

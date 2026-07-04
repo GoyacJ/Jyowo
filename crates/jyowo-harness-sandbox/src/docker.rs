@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_contracts::{
     ContainerLifecycleReason, ContainerLifecycleState, ContainerRef, Event, KillScope,
-    ResourceLimits, SandboxContainerLifecycleTransitionEvent, SandboxError, SessionSnapshotKind,
+    NetworkAccess, ResourceLimits, SandboxContainerLifecycleTransitionEvent, SandboxError,
+    SessionSnapshotKind,
 };
 use tokio::process::Command;
 use tokio::sync::{Mutex, Notify};
@@ -193,7 +194,11 @@ impl DockerSandbox {
     ) -> Result<(), SandboxError> {
         let mut command = Command::new(&self.docker_binary);
         command.arg("run").arg("-d").arg("--name").arg(container_id);
-        self.apply_run_options(&mut command, &self.base.default_resource_limits);
+        self.apply_run_options(
+            &mut command,
+            &self.base.default_resource_limits,
+            &self.network,
+        );
         command.arg(image).arg("tail").arg("-f").arg("/dev/null");
         let output = command.output().await.map_err(sandbox_error)?;
         if !output.status.success() {
@@ -295,8 +300,13 @@ impl DockerSandbox {
         }
     }
 
-    fn apply_run_options(&self, command: &mut Command, resource_limits: &ResourceLimits) {
-        command.arg("--network").arg(self.network.as_docker_arg());
+    fn apply_run_options(
+        &self,
+        command: &mut Command,
+        resource_limits: &ResourceLimits,
+        network: &NetworkMode,
+    ) {
+        command.arg("--network").arg(network.as_docker_arg());
         apply_resource_options(command, resource_limits);
         if let Some(user) = &self.user {
             command.arg("--user").arg(user);
@@ -340,6 +350,30 @@ impl DockerSandbox {
         }
     }
 
+    fn validate_network_policy(&self, spec: &ExecSpec) -> Result<(), SandboxError> {
+        let requested = network_mode_for_policy(&spec.policy.network)?;
+        match self.lifecycle {
+            ContainerLifecycle::EphemeralPerExec => Ok(()),
+            ContainerLifecycle::CreatePerSession { .. }
+            | ContainerLifecycle::ReusePooled { .. }
+            | ContainerLifecycle::BringYourOwn { .. } => {
+                if requested == self.network {
+                    Ok(())
+                } else {
+                    Err(SandboxError::CapabilityMismatch {
+                        capability: "network".to_owned(),
+                        detail: format!(
+                            "docker {} lifecycle cannot change per-exec network policy from {:?} to {:?}",
+                            lifecycle_name(&self.lifecycle),
+                            self.network,
+                            requested
+                        ),
+                    })
+                }
+            }
+        }
+    }
+
     fn command_for_execute(&self, spec: &ExecSpec, container_id: Option<&str>) -> Command {
         let mut command = Command::new(&self.docker_binary);
         if let Some(container_id) = container_id {
@@ -349,7 +383,13 @@ impl DockerSandbox {
             }
         } else {
             command.arg("run").arg("--rm").arg("-i");
-            self.apply_run_options(&mut command, &effective_resource_limits(spec, &self.base));
+            let network = network_mode_for_policy(&spec.policy.network)
+                .unwrap_or_else(|_| self.network.clone());
+            self.apply_run_options(
+                &mut command,
+                &effective_resource_limits(spec, &self.base),
+                &network,
+            );
             command.arg(&self.image);
         }
         command.arg(&spec.command).args(&spec.args);
@@ -432,11 +472,28 @@ impl SandboxBackend for DockerSandbox {
         self.base.clone()
     }
 
+    fn preflight_execute(&self, spec: &ExecSpec) -> Result<(), SandboxError> {
+        self.validate_network_policy(spec)?;
+        let mut spec = spec.clone();
+        self.validate_resource_policy(&mut spec)
+    }
+
+    async fn before_execute(
+        &self,
+        spec: &ExecSpec,
+        _ctx: &ExecContext,
+    ) -> Result<(), SandboxError> {
+        self.validate_network_policy(spec)?;
+        let mut spec = spec.clone();
+        self.validate_resource_policy(&mut spec)
+    }
+
     async fn execute(
         &self,
         mut spec: ExecSpec,
         ctx: ExecContext,
     ) -> Result<ProcessHandle, SandboxError> {
+        self.validate_network_policy(&spec)?;
         self.validate_resource_policy(&mut spec)?;
         self.ensure_available().await?;
         let lease = match self.lifecycle {
@@ -772,6 +829,32 @@ impl NetworkMode {
             Self::None => "none".to_owned(),
             Self::Custom(name) => name.clone(),
         }
+    }
+}
+
+fn network_mode_for_policy(network: &NetworkAccess) -> Result<NetworkMode, SandboxError> {
+    match network {
+        NetworkAccess::None => Ok(NetworkMode::None),
+        NetworkAccess::Unrestricted => Ok(NetworkMode::Bridge),
+        NetworkAccess::LoopbackOnly | NetworkAccess::AllowList(_) => {
+            Err(SandboxError::CapabilityMismatch {
+                capability: "network".to_owned(),
+                detail: format!("docker network policy is not implemented: {network:?}"),
+            })
+        }
+        _ => Err(SandboxError::CapabilityMismatch {
+            capability: "network".to_owned(),
+            detail: "unsupported docker network policy".to_owned(),
+        }),
+    }
+}
+
+fn lifecycle_name(lifecycle: &ContainerLifecycle) -> &'static str {
+    match lifecycle {
+        ContainerLifecycle::CreatePerSession { .. } => "create-per-session",
+        ContainerLifecycle::ReusePooled { .. } => "reuse-pooled",
+        ContainerLifecycle::BringYourOwn { .. } => "bring-your-own",
+        ContainerLifecycle::EphemeralPerExec => "ephemeral-per-exec",
     }
 }
 

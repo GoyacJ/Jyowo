@@ -9,9 +9,10 @@ use harness_contracts::{
     ConversationSummary, ConversationTimelineEvent, ConversationTimelinePage,
     ConversationTurnCursor, ConversationWorktreePage, Decision, DecisionScope, DeltaChunk, Event,
     EventId, JournalError, MemberLeaveReason, MessageContent, MessagePart, PermissionActorSource,
-    PermissionSubject, RequestId, RoutingPolicyKind, RunId, RunModelSnapshot, SessionId, Severity,
-    SubagentStatus, SubagentTerminationReason, TeamTerminationReason, TenantId, ToolResult,
-    ToolResultPart, ToolUseId, TopologyKind, UiSafeText,
+    PermissionConfirmation, PermissionMode, PermissionReview, PermissionSubject, RequestId,
+    RoutingPolicyKind, RunId, RunModelSnapshot, SandboxMode, SandboxPolicySummary, SandboxScope,
+    SessionId, Severity, SubagentStatus, SubagentTerminationReason, TeamTerminationReason,
+    TenantId, ToolResult, ToolResultPart, ToolUseId, TopologyKind, UiSafeText,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
@@ -955,11 +956,15 @@ fn project_envelope(
                 "public",
                 json!({
                     "autoResolved": event.auto_resolved,
+                    "actionPlanHash": event.action_plan_hash.to_string(),
                     "decisionScope": decision_scope_display(&event.scope_hint),
+                    "effectiveMode": permission_mode_label(event.effective_mode),
                     "exposure": subject.exposure,
                     "operation": subject.operation,
                     "reason": reason,
+                    "review": permission_review_payload(&event.review),
                     "requestId": event.request_id.to_string(),
+                    "sandboxPolicy": sandbox_policy_payload(&event.sandbox_policy),
                     "severity": severity_label(event.severity),
                     "target": subject.target,
                     "toolUseId": event.tool_use_id.to_string(),
@@ -975,7 +980,10 @@ fn project_envelope(
             "policy",
             "public",
             json!({
+                "actionPlanHash": event.action_plan_hash.to_string(),
+                "autoResolved": event.auto_resolved,
                 "decision": permission_decision_label(&event.decision),
+                "decisionId": event.decision_id.to_string(),
                 "requestId": event.request_id.to_string(),
             }),
             None,
@@ -1615,6 +1623,155 @@ fn permission_actor_source_payload(actor_source: &PermissionActorSource) -> Valu
             }
             Value::Object(payload)
         }
+        PermissionActorSource::Automation {
+            automation_id,
+            conversation_id,
+            run_id,
+        } => {
+            let mut payload = serde_json::Map::from_iter([
+                ("type".to_owned(), json!("automation")),
+                (
+                    "automationId".to_owned(),
+                    json!(safe_text(automation_id).into_string()),
+                ),
+                (
+                    "conversationId".to_owned(),
+                    json!(conversation_id.to_string()),
+                ),
+            ]);
+            if let Some(run_id) = run_id {
+                payload.insert("runId".to_owned(), json!(run_id.to_string()));
+            }
+            Value::Object(payload)
+        }
+        PermissionActorSource::McpServer {
+            server_id,
+            origin,
+            scope,
+        } => json!({
+            "type": "mcpServer",
+            "serverId": safe_text(&server_id.0).into_string(),
+            "origin": manifest_origin_payload(origin),
+            "scope": mcp_server_scope_payload(scope),
+        }),
+    }
+}
+
+fn permission_review_payload(review: &PermissionReview) -> Value {
+    json!({
+        "summary": safe_text(&review.summary).into_string(),
+        "details": review
+            .details
+            .iter()
+            .map(|detail| {
+                json!({
+                    "label": safe_text(&detail.label).into_string(),
+                    "value": safe_text(&detail.value).into_string(),
+                    "redacted": detail.redacted,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "confirmation": permission_confirmation_payload(&review.confirmation),
+        "redacted": review.redacted,
+    })
+}
+
+fn permission_confirmation_payload(confirmation: &PermissionConfirmation) -> Value {
+    match confirmation {
+        PermissionConfirmation::None => json!({ "type": "none" }),
+        PermissionConfirmation::ExplicitButton { label } => json!({
+            "type": "explicitButton",
+            "label": safe_text(label).into_string(),
+        }),
+        PermissionConfirmation::TypeToConfirm { expected } => json!({
+            "type": "typeToConfirm",
+            "expected": safe_text(expected).into_string(),
+        }),
+        _ => json!({ "type": "none" }),
+    }
+}
+
+fn sandbox_policy_payload(policy: &SandboxPolicySummary) -> Value {
+    json!({
+        "mode": sandbox_mode_payload(&policy.mode),
+        "scope": sandbox_scope_payload(&policy.scope),
+        "network": serde_json::to_value(&policy.network).unwrap_or(Value::Null),
+        "resourceLimits": {
+            "maxMemoryBytes": policy.resource_limits.max_memory_bytes,
+            "maxCpuCores": policy.resource_limits.max_cpu_cores,
+            "maxPids": policy.resource_limits.max_pids,
+            "maxWallClockMs": policy.resource_limits.max_wall_clock_ms,
+            "maxOpenFiles": policy.resource_limits.max_open_files,
+        },
+    })
+}
+
+fn sandbox_mode_payload(mode: &SandboxMode) -> Value {
+    match mode {
+        SandboxMode::None => json!("none"),
+        SandboxMode::OsLevel(tag) => json!({ "osLevel": tag }),
+        SandboxMode::Container => json!("container"),
+        SandboxMode::Remote => json!("remote"),
+        _ => json!("unknown"),
+    }
+}
+
+fn sandbox_scope_payload(scope: &SandboxScope) -> Value {
+    match scope {
+        SandboxScope::WorkspaceOnly => json!("workspace_only"),
+        SandboxScope::WorkspacePlus(paths) => json!({
+            "workspacePlus": paths
+                .iter()
+                .map(|path| safe_path_label(path.as_path()))
+                .collect::<Vec<_>>(),
+        }),
+        SandboxScope::Unrestricted => json!("unrestricted"),
+        _ => json!("unknown"),
+    }
+}
+
+fn permission_mode_label(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Default => "default",
+        PermissionMode::Plan => "plan",
+        PermissionMode::AcceptEdits => "accept_edits",
+        PermissionMode::BypassPermissions => "bypass_permissions",
+        PermissionMode::DontAsk => "dont_ask",
+        PermissionMode::Auto => "auto",
+        _ => "default",
+    }
+}
+
+fn manifest_origin_payload(origin: &harness_contracts::ManifestOriginRef) -> Value {
+    match origin {
+        harness_contracts::ManifestOriginRef::File { path } => json!({
+            "type": "file",
+            "path": safe_text(path).into_string(),
+        }),
+        harness_contracts::ManifestOriginRef::CargoExtension { binary } => json!({
+            "type": "cargoExtension",
+            "binary": safe_text(binary).into_string(),
+        }),
+        harness_contracts::ManifestOriginRef::RemoteRegistry { endpoint } => json!({
+            "type": "remoteRegistry",
+            "endpoint": safe_text(endpoint).into_string(),
+        }),
+        _ => json!({ "type": "unknown" }),
+    }
+}
+
+fn mcp_server_scope_payload(scope: &harness_contracts::McpServerScope) -> Value {
+    match scope {
+        harness_contracts::McpServerScope::Global => json!({ "type": "global" }),
+        harness_contracts::McpServerScope::Session(session_id) => json!({
+            "type": "session",
+            "conversationId": session_id.to_string(),
+        }),
+        harness_contracts::McpServerScope::Agent(agent_id) => json!({
+            "type": "agent",
+            "agentId": agent_id.to_string(),
+        }),
+        _ => json!({ "type": "unknown" }),
     }
 }
 

@@ -7,15 +7,18 @@ use chrono::Utc;
 use futures::stream;
 use harness_contracts::{
     BudgetMetric, CacheImpact, DeferPolicy, Event, OverflowAction, ProviderRestriction,
-    ResultBudget, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
-    ToolResult, ToolSchemaMaterializedEvent, ToolSearchQueriedEvent, ToolSearchQueryKind,
-    TrustLevel,
+    ResultBudget, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, ToolSchemaMaterializedEvent, ToolSearchQueriedEvent,
+    ToolSearchQueryKind, TrustLevel,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use harness_tool::{PermissionCheck, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use harness_tool::{
+    action_plan_from_permission_check, AuthorizedToolInput, PermissionCheck, Tool, ToolContext,
+    ToolEvent, ToolStream, ValidationError,
+};
 
 use crate::{
     AnthropicToolReferenceBackend, DefaultBackendSelector, InlineReinjectionBackend,
@@ -166,11 +169,24 @@ impl Tool for ToolSearchTool {
         parse_input(input, self.default_max_results).map(|_| ())
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            harness_contracts::WorkspaceAccess::None,
+            harness_contracts::NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
         let mut input = parse_input(&input, self.default_max_results)
             .map_err(|error| ToolError::Validation(error.to_string()))?;
         let runtime = ctx.capability::<dyn ToolSearchRuntimeCap>(ToolCapability::Custom(

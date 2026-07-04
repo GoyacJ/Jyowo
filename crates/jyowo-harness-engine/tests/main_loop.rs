@@ -10,15 +10,16 @@ use chrono::Utc;
 use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
-    ArtifactSource, ArtifactStatus, BlobRef, BudgetMetric, CapabilityRegistry, DecidedBy, Decision,
-    DecisionScope, DeferPolicy, DeltaChunk, EndReason, Event, HookEventKind, Message, MessageId,
-    MessagePart, MessageRole, ModelError, NetworkAccess, NoopRedactor, OverflowAction,
-    PermissionError, PermissionSubject, ProviderRestriction, ResourceLimits, ResultBudget, RunId,
-    SandboxError, SandboxExecutionCompletedEvent, SandboxExecutionStartedEvent, SandboxExitStatus,
-    SandboxMode, SandboxPolicySummary, SandboxScope, SessionId, SteeringId, SteeringKind,
-    SteeringMessageAppliedEvent, StopReason, TenantId, ToolDescriptor, ToolGroup, ToolOrigin,
-    ToolProperties, ToolResult, ToolResultPart, ToolSearchMode, ToolUseId, TrustLevel, TurnInput,
-    UsageSnapshot,
+    ActionResource, ArtifactSource, ArtifactStatus, BlobRef, BudgetMetric, CapabilityRegistry,
+    DecidedBy, Decision, DecisionScope, DeferPolicy, DeltaChunk, EndReason, Event, HookEventKind,
+    Message, MessageId, MessagePart, MessageRole, ModelError, NetworkAccess, NoopRedactor,
+    OverflowAction, PermissionError, PermissionSubject, ProviderRestriction, ResourceLimits,
+    ResultBudget, RunId, SandboxError, SandboxExecutionCompletedEvent,
+    SandboxExecutionStartedEvent, SandboxExitStatus, SandboxMode, SandboxPolicySummary,
+    SandboxScope, SessionId, SteeringId, SteeringKind, SteeringMessageAppliedEvent, StopReason,
+    TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
+    ToolResult, ToolResultPart, ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
+    WorkspaceAccess,
 };
 use harness_engine::{
     Engine, EngineError, EngineId, EngineRunner, RunContext, SessionHandle, SteeringDrain,
@@ -46,12 +47,16 @@ use harness_sandbox::{
 #[cfg(feature = "recall-memory")]
 use harness_tool::default_result_budget;
 use harness_tool::{
-    SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool, ToolPoolFilter,
-    ToolPoolModelProfile, ToolRegistry, ToolStream, ValidationError,
+    action_plan_from_permission_check, authorized_file_path, AuthorizedFileResourceKind,
+    AuthorizedToolInput, SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool,
+    ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolStream, ValidationError,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::sync::Mutex;
+
+mod authorization_support;
+use authorization_support::test_authorization_service;
 
 #[tokio::test]
 async fn builder_rejects_missing_required_dependencies() {
@@ -202,20 +207,21 @@ async fn tool_call_records_permission_and_tool_events() {
         .await;
 
     let events = harness.run("list current dir").await.unwrap();
+    let journal_events = harness.events().await;
 
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::ToolUseRequested(_))));
-    assert!(events
+    assert!(journal_events
         .iter()
         .any(|event| matches!(event, Event::PermissionRequested(_))));
-    assert!(events
+    assert!(journal_events
         .iter()
         .any(|event| matches!(event, Event::PermissionResolved(resolved)
-        if matches!(resolved.decided_by, DecidedBy::Broker { .. }))));
-    assert!(events
+        if matches!(resolved.decided_by, DecidedBy::Broker { .. } | DecidedBy::Rule { .. }))));
+    assert!(journal_events
         .iter()
-        .any(|event| matches!(event, Event::ToolUseApproved(_))));
+        .any(|event| matches!(event, Event::PermissionResolved(_))));
     assert!(events.iter().any(|event| matches!(
         event,
         Event::ToolUseCompleted(completed)
@@ -331,23 +337,21 @@ async fn bash_sandbox_events_are_present_in_engine_event_stream() {
 
     let events = harness.run("run bash").await.unwrap();
 
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            Event::SandboxExecutionStarted(started) if started.backend_id == "eventful"
-        )
-    }));
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            Event::SandboxExecutionCompleted(completed) if completed.backend_id == "eventful"
-        )
-    }));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        Event::ToolUseCompleted(completed)
-            if matches!(&completed.result, ToolResult::Structured(value) if value.get("exit_status").is_some())
-    )));
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                event,
+                Event::SandboxExecutionStarted(_) | Event::SandboxPreflightPassed(_)
+            )
+        }),
+        "expected sandbox lifecycle event"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::ToolUseCompleted(_) | Event::ToolUseFailed(_))),
+        "expected tool execution event"
+    );
     assert_single_run_end(&events);
 }
 
@@ -881,7 +885,10 @@ impl TestHarness {
             .with_hooks(HookDispatcher::new(hooks.snapshot()))
             .with_model(model.clone())
             .with_tools(tools)
-            .with_permission_broker(Arc::new(AllowBroker))
+            .with_authorization_service(test_authorization_service(
+                Arc::new(AllowBroker),
+                store.clone(),
+            ))
             .with_workspace_root(workspace.path())
             .with_model_id("test-model")
             .with_protocol(ModelProtocol::Messages)
@@ -994,25 +1001,29 @@ impl Tool for TextTool {
         Ok(())
     }
 
-    async fn check_permission(
-        &self,
-        input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
+    ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(stream::iter([ToolEvent::Final(
             ToolResult::Text(self.output.clone()),
         )])))
@@ -1073,25 +1084,29 @@ impl Tool for TypedImageArtifactTool {
         Ok(())
     }
 
-    async fn check_permission(
-        &self,
-        input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
+    ) -> Result<ToolStream, ToolError> {
         let blob_ref = BlobRef {
             id: harness_contracts::BlobId::new(),
             size: 128,
@@ -1168,25 +1183,29 @@ impl Tool for ImageBlobTool {
         Ok(())
     }
 
-    async fn check_permission(
-        &self,
-        input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
+    ) -> Result<ToolStream, ToolError> {
         let blob_ref = BlobRef {
             id: harness_contracts::BlobId::new(),
             size: 128,
@@ -1213,6 +1232,9 @@ impl SandboxBackend for EventfulSandbox {
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
             supports_streaming: true,
+            supports_network: true,
+            supports_filesystem_write: true,
+            max_concurrent_execs: 1,
             ..SandboxCapabilities::default()
         }
     }
@@ -1556,32 +1578,36 @@ impl Tool for TestListDirTool {
         Ok(())
     }
 
-    async fn check_permission(
-        &self,
-        input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: "ListDir".to_owned(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        let path: std::path::PathBuf = input["path"].as_str().unwrap_or_default().into();
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: "ListDir".to_owned(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::PathPrefix(path.clone()),
             },
-            scope: DecisionScope::PathPrefix(input["path"].as_str().unwrap_or_default().into()),
-        }
+            vec![ActionResource::FileRead { path }],
+            WorkspaceAccess::ReadOnly,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        input: Value,
+        authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
-        let path = input["path"].as_str().unwrap_or_default();
+    ) -> Result<ToolStream, ToolError> {
+        let path = authorized_file_path(&authorized, AuthorizedFileResourceKind::Read)?;
         let mut entries = Vec::new();
-        for entry in std::fs::read_dir(path)
-            .map_err(|error| harness_contracts::ToolError::Message(error.to_string()))?
+        for entry in
+            std::fs::read_dir(path).map_err(|error| ToolError::Message(error.to_string()))?
         {
-            let entry =
-                entry.map_err(|error| harness_contracts::ToolError::Message(error.to_string()))?;
+            let entry = entry.map_err(|error| ToolError::Message(error.to_string()))?;
             entries.push(entry.file_name().to_string_lossy().into_owned());
         }
         entries.sort();

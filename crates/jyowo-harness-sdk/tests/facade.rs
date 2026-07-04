@@ -15,9 +15,9 @@ use harness_model::{
     AuxModelProvider, AuxOptions, AuxTask, InferContext, InferMiddleware, ModelRequest,
 };
 use harness_permission::{
-    DecisionPersistence, PermissionBroker, PermissionContext, PermissionRequest, PermissionRule,
-    PersistedDecision, RuleAction, RuleProvider, RuleSnapshot, StreamBasedBroker,
-    StreamBrokerConfig,
+    DecisionHistory, DecisionLookup, DecisionPersistence, PermissionBroker, PermissionContext,
+    PermissionRequest, PermissionRule, PersistedDecision, RuleAction, RuleProvider,
+    StreamBasedBroker, StreamBrokerConfig,
 };
 use jyowo_harness_sdk::{builtin::*, prelude::*, testing::*};
 use parking_lot::Mutex;
@@ -249,23 +249,21 @@ fn harness_builder_applies_policy_deny_gate_to_explicit_permission_broker() {
             .await
             .expect("harness should build with explicit broker and policy provider");
 
-        let mut ctx = permission_context();
+        let request = permission_request();
+        let mut ctx = permission_context_for(&request);
         ctx.permission_mode = PermissionMode::BypassPermissions;
         let broker = harness
             .permission_broker()
             .expect("permission broker should be configured");
 
-        assert!(broker.hard_policy_denies(&permission_request(), &ctx).await);
+        assert!(broker.hard_policy_denies(&request, &ctx).await);
 
-        assert_eq!(
-            broker.decide(permission_request(), ctx).await,
-            Decision::DenyOnce
-        );
+        assert_eq!(broker.decide(request, ctx).await, Decision::DenyOnce);
     });
 }
 
 #[test]
-fn policy_gated_permission_broker_preserves_explicit_inner_hard_policy_probe() {
+fn permission_authority_preserves_explicit_inner_hard_policy_probe() {
     block_on(async {
         let harness = Harness::builder()
             .with_model(TestModelProvider::default())
@@ -280,13 +278,11 @@ fn policy_gated_permission_broker_preserves_explicit_inner_hard_policy_probe() {
         let broker = harness
             .permission_broker()
             .expect("permission broker should be configured");
-        let ctx = permission_context();
+        let request = permission_request();
+        let ctx = permission_context_for(&request);
 
-        assert!(broker.hard_policy_denies(&permission_request(), &ctx).await);
-        assert_eq!(
-            broker.decide(permission_request(), ctx).await,
-            Decision::DenyOnce
-        );
+        assert!(broker.hard_policy_denies(&request, &ctx).await);
+        assert_eq!(broker.decide(request, ctx).await, Decision::DenyOnce);
     });
 }
 
@@ -332,11 +328,11 @@ fn harness_resolves_stream_permission_requests() {
 
         let request = permission_request();
         let request_id = request.request_id;
+        let ctx = permission_context_for(&request);
         let broker = harness
             .permission_broker()
             .expect("permission broker should be configured");
-        let decision_task =
-            tokio::spawn(async move { broker.decide(request, permission_context()).await });
+        let decision_task = tokio::spawn(async move { broker.decide(request, ctx).await });
 
         let outbound = receiver
             .recv()
@@ -362,10 +358,10 @@ fn stream_permission_runtime_does_not_backpressure_resolved_requests() {
         });
         let broker = runtime.broker();
 
-        let first = permission_request();
+        let first = permission_request_named("first");
         let first_request_id = first.request_id;
-        let first_task =
-            tokio::spawn(async move { broker.decide(first, permission_context()).await });
+        let first_ctx = permission_context_for(&first);
+        let first_task = tokio::spawn(async move { broker.decide(first, first_ctx).await });
         wait_for_pending_permission(&runtime, first_request_id).await;
         runtime
             .resolve_permission(first_request_id, Decision::AllowOnce)
@@ -374,10 +370,10 @@ fn stream_permission_runtime_does_not_backpressure_resolved_requests() {
         assert_eq!(first_task.await.unwrap(), Decision::AllowOnce);
 
         let broker = runtime.broker();
-        let second = permission_request();
+        let second = permission_request_named("second");
         let second_request_id = second.request_id;
-        let second_task =
-            tokio::spawn(async move { broker.decide(second, permission_context()).await });
+        let second_ctx = permission_context_for(&second);
+        let second_task = tokio::spawn(async move { broker.decide(second, second_ctx).await });
         wait_for_pending_permission(&runtime, second_request_id).await;
         runtime
             .resolve_permission(second_request_id, Decision::DenyOnce)
@@ -647,6 +643,10 @@ fn tokio_runtime() -> tokio::runtime::Runtime {
 }
 
 fn permission_request() -> PermissionRequest {
+    permission_request_named("test")
+}
+
+fn permission_request_named(kind: &str) -> PermissionRequest {
     PermissionRequest {
         request_id: RequestId::new(),
         tenant_id: TenantId::SINGLE,
@@ -654,30 +654,26 @@ fn permission_request() -> PermissionRequest {
         tool_use_id: ToolUseId::new(),
         tool_name: "test-tool".to_owned(),
         subject: PermissionSubject::Custom {
-            kind: "test".to_owned(),
+            kind: kind.to_owned(),
             payload: json!({}),
         },
         severity: Severity::Low,
         scope_hint: DecisionScope::ToolName("test-tool".to_owned()),
+        confirmation_expected: None,
         created_at: harness_contracts::now(),
     }
 }
 
-fn permission_context() -> PermissionContext {
+fn permission_context_for(request: &PermissionRequest) -> PermissionContext {
     PermissionContext {
         permission_mode: PermissionMode::Default,
         previous_mode: None,
-        session_id: SessionId::new(),
-        tenant_id: TenantId::SINGLE,
+        session_id: request.session_id,
+        tenant_id: request.tenant_id,
         run_id: None,
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::AskUser,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: harness_contracts::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }
@@ -894,11 +890,23 @@ impl DecisionPersistence for RecordingDecisionPersistence {
     }
 }
 
+#[async_trait]
+impl DecisionHistory for RecordingDecisionPersistence {
+    async fn find_scoped_decision(
+        &self,
+        _lookup: DecisionLookup,
+    ) -> Result<Option<PersistedDecision>, PermissionError> {
+        Ok(None)
+    }
+}
+
 fn persisted_decision(source: RuleSource) -> PersistedDecision {
     PersistedDecision {
         decision_id: DecisionId::new(),
+        decision: Decision::AllowPermanent,
         scope: DecisionScope::ToolName("shell".to_owned()),
         source,
+        session_id: None,
         fingerprint: None,
     }
 }

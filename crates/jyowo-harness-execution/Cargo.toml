@@ -1,0 +1,34 @@
+[package]
+name = "jyowo-harness-execution"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+name = "harness_execution"
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-permission = { path = "../jyowo-harness-permission" }
+jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox" }
+jyowo-harness-tool = { path = "../jyowo-harness-tool" }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+chrono = { workspace = true }
+parking_lot = "0.12.5"
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+jyowo-harness-permission = { path = "../jyowo-harness-permission", features = ["rule-engine", "stream"] }
+jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox", features = ["local"] }
+futures = { workspace = true }
+parking_lot = "0.12.5"
+tempfile = { workspace = true }

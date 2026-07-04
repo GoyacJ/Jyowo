@@ -185,7 +185,11 @@ fn sdk_default_profile_matches_architecture() {
         );
 
         let session = harness
-            .create_session(SessionOptions::new(&workspace).with_session_id(session_id))
+            .create_session(
+                SessionOptions::new(&workspace)
+                    .with_session_id(session_id)
+                    .with_permission_mode(PermissionMode::BypassPermissions),
+            )
             .await
             .expect("session should be created");
         #[cfg(feature = "steering-queue")]
@@ -258,9 +262,12 @@ fn sdk_default_profile_matches_architecture() {
             .expect("run start event should exist");
         assert_ne!(run_started.snapshot_id, SnapshotId::from_u128(0));
         assert_eq!(run_started.effective_config_hash, created_hash);
-        assert!(events.iter().any(|event| {
-            matches!(event, Event::ToolSearchQueried(queried) if queried.tool_use_id == tool_use_id)
-        }));
+        assert!(
+            events.iter().any(|event| {
+                matches!(event, Event::ToolSearchQueried(queried) if queried.tool_use_id == tool_use_id)
+            }),
+            "tool_search should be queried; events: {events:#?}"
+        );
         assert!(events.iter().any(|event| {
             matches!(event, Event::ToolUseCompleted(completed) if completed.tool_use_id == tool_use_id)
         }));
@@ -435,7 +442,8 @@ fn tool_search_uses_conversation_model_capabilities() {
                 SessionOptions::new(&workspace)
                     .with_session_id(session_id)
                     .with_model_id("test-model")
-                    .with_tool_search_mode(ToolSearchMode::Always),
+                    .with_tool_search_mode(ToolSearchMode::Always)
+                    .with_permission_mode(PermissionMode::BypassPermissions),
             )
             .await
             .expect("session should be created");
@@ -520,7 +528,8 @@ fn tool_search_inline_reinjection_makes_deferred_schema_visible_to_next_turn_req
                 SessionOptions::new(&workspace)
                     .with_session_id(session_id)
                     .with_model_id("test-model")
-                    .with_tool_search_mode(ToolSearchMode::Always),
+                    .with_tool_search_mode(ToolSearchMode::Always)
+                    .with_permission_mode(PermissionMode::BypassPermissions),
             )
             .await
             .expect("session should be created");
@@ -696,7 +705,11 @@ fn default_session_installs_tool_search_runtime_cap_when_tool_search_is_enabled(
             .expect("harness should build");
 
         let session = harness
-            .create_session(SessionOptions::new(&workspace).with_session_id(session_id))
+            .create_session(
+                SessionOptions::new(&workspace)
+                    .with_session_id(session_id)
+                    .with_permission_mode(PermissionMode::BypassPermissions),
+            )
             .await
             .expect("session should be created");
 
@@ -783,7 +796,11 @@ fn default_session_installs_skill_registry_cap_when_skill_loader_is_configured()
             .expect("harness should build");
 
         let session = harness
-            .create_session(SessionOptions::new(&workspace).with_session_id(session_id))
+            .create_session(
+                SessionOptions::new(&workspace)
+                    .with_session_id(session_id)
+                    .with_permission_mode(PermissionMode::BypassPermissions),
+            )
             .await
             .expect("session should be created");
 
@@ -988,7 +1005,11 @@ async fn running_turn_uses_snapshot_captured_before_skill_reload() {
         .await
         .expect("harness should build");
     let session = harness
-        .create_session(SessionOptions::new(&workspace).with_session_id(session_id))
+        .create_session(
+            SessionOptions::new(&workspace)
+                .with_session_id(session_id)
+                .with_permission_mode(PermissionMode::BypassPermissions),
+        )
         .await
         .expect("session should be created");
 
@@ -1030,7 +1051,7 @@ New body.
             }
             _ => None,
         })
-        .expect("skills_list should complete");
+        .unwrap_or_else(|| panic!("skills_list should complete; events: {events:#?}"));
 
     assert!(completed.contains("old-skill"));
     assert!(!completed.contains("new-skill"));

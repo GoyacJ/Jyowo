@@ -1813,6 +1813,55 @@ describe('CommandClient', () => {
     expect(invoke).not.toHaveBeenCalledWith('execute', expect.anything())
   })
 
+  it('passes confirmationText through resolve permission IPC', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      decision: 'approve',
+      requestId: '01HZ0000000000000000000001',
+      status: 'resolved',
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      resolvePermission(
+        {
+          confirmationText: 'DELETE',
+          conversationId: 'conversation-001',
+          decision: 'approve',
+          requestId: '01HZ0000000000000000000001',
+        },
+        client,
+      ),
+    ).resolves.toEqual({
+      decision: 'approve',
+      requestId: '01HZ0000000000000000000001',
+      status: 'resolved',
+    })
+    expect(invoke).toHaveBeenCalledWith('resolve_permission', {
+      confirmationText: 'DELETE',
+      conversationId: 'conversation-001',
+      decision: 'approve',
+      requestId: '01HZ0000000000000000000001',
+    })
+  })
+
+  it('rejects empty confirmationText before invoking IPC', async () => {
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      resolvePermission(
+        {
+          confirmationText: '',
+          conversationId: 'conversation-001',
+          decision: 'approve',
+          requestId: '01HZ0000000000000000000001',
+        },
+        client,
+      ),
+    ).rejects.toBeInstanceOf(TauriCommandPayloadError)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
   it('models conversation event subscription commands through parsed payloads', async () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === 'subscribe_conversation_events') {

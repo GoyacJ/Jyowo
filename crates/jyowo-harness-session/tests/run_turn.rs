@@ -1,3 +1,6 @@
+mod run_turn_support;
+
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex as StdMutex,
@@ -8,26 +11,33 @@ use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
-    BudgetMetric, CapabilityRegistry, ClarifyAnswer, ClarifyChannelCap, ClarifyPrompt, DecidedBy,
-    Decision, DecisionScope, DeferPolicy, Event, HookEventKind, Message, MessagePart, MessageRole,
-    ModelError, NoopRedactor, OverflowAction, PermissionError, PermissionMode, PermissionSubject,
-    ProviderRestriction, RedactRules, Redactor, ResultBudget, RunId, SessionId, StopReason,
-    TenantId, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
-    ToolResult, ToolUseId, TrustLevel, UsageSnapshot,
+    ActionResource, BudgetMetric, CapabilityRegistry, ClarifyAnswer, ClarifyChannelCap,
+    ClarifyPrompt, Decision, DecisionScope, DeferPolicy, Event, HookEventKind, InteractivityLevel,
+    MessagePart, MessageRole, ModelError, NetworkAccess, NoopRedactor, OverflowAction,
+    PermissionActorSource, PermissionError, PermissionMode, PermissionSubject, ProviderRestriction,
+    RedactRules, Redactor, ResultBudget, RunId, SessionId, TenantId, ToolActionPlan,
+    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
+    TrustLevel, WorkspaceAccess,
 };
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookHandler, HookOutcome, HookRegistry,
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
-    ContentDelta, ConversationModelCapability, ErrorClass, ErrorHints, HealthStatus, InferContext,
+    ConversationModelCapability, ErrorClass, ErrorHints, HealthStatus, InferContext,
     ModelDescriptor, ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_session::{Session, SessionOptions, SessionTurnRuntime};
 use harness_tool::{
-    BuiltinToolset, SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool, ToolPoolFilter,
-    ToolPoolModelProfile, ToolRegistry, ToolSearchMode, ToolStream, ValidationError,
+    action_plan_from_permission_check, authorized_file_path, AuthorizedFileResourceKind,
+    AuthorizedToolInput, BuiltinToolset, SchemaResolverContext, Tool, ToolContext, ToolEvent,
+    ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolSearchMode, ToolStream,
+    ValidationError,
+};
+use run_turn_support::{
+    message_text, test_authorization_service, text_events, thinking_then_text_events,
+    tool_call_events,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -89,10 +99,10 @@ async fn run_turn_records_run_tool_permission_assistant_events() {
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::PermissionResolved(resolved)
-            if matches!(resolved.decided_by, DecidedBy::Broker { .. }))));
+            if matches!(resolved.decision, Decision::AllowOnce))));
     assert!(events
         .iter()
-        .any(|event| matches!(event, Event::ToolUseApproved(_))));
+        .any(|event| matches!(event, Event::SandboxPreflightPassed(_))));
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::ToolUseCompleted(_))));
@@ -140,7 +150,7 @@ async fn run_turn_hook_payload_and_recent_messages_are_redacted() {
 }
 
 #[tokio::test]
-async fn run_turn_uses_session_permission_mode_for_hooks_and_permissions() {
+async fn run_turn_uses_session_permission_mode_interactivity_and_actor_source_for_authorization() {
     let captured_hooks = Arc::new(Mutex::new(Vec::new()));
     let captured_permissions = Arc::new(Mutex::new(Vec::new()));
     let broker = Arc::new(RecordingPermissionBroker {
@@ -156,22 +166,51 @@ async fn run_turn_uses_session_permission_mode_for_hooks_and_permissions() {
         broker,
     )
     .await;
+    let actor_source = PermissionActorSource::TeamMember {
+        team_id: harness_contracts::TeamId::from_u128(7),
+        agent_id: harness_contracts::AgentId::from_u128(9),
+        role: "implementer".to_owned(),
+        parent_run_id: Some(RunId::from_u128(11)),
+    };
+    let parts = vec![MessagePart::Text("list current dir".to_owned())];
 
-    harness.session.run_turn("list current dir").await.unwrap();
+    harness
+        .session
+        .run_turn_parts_with_client_message_id_attachments_permission_mode_and_actor_source(
+            parts,
+            None,
+            Vec::new(),
+            None,
+            actor_source.clone(),
+        )
+        .await
+        .unwrap();
 
     let captured_hooks = captured_hooks.lock().await.clone();
-    assert_eq!(
-        captured_hooks[0].permission_mode,
-        PermissionMode::BypassPermissions
-    );
-    assert_eq!(
-        captured_hooks[0].view_permission_mode,
-        PermissionMode::BypassPermissions
-    );
+    let hook = &captured_hooks[0];
+    assert_eq!(hook.permission_mode, PermissionMode::BypassPermissions);
+    assert_eq!(hook.interactivity, InteractivityLevel::FullyInteractive);
     assert_eq!(
         captured_permissions.lock().await.as_slice(),
-        &[PermissionMode::BypassPermissions]
+        &[CapturedPermissionContext {
+            permission_mode: PermissionMode::BypassPermissions,
+            interactivity: InteractivityLevel::FullyInteractive,
+        }]
     );
+    let requested = harness
+        .events()
+        .await
+        .into_iter()
+        .find_map(|event| match event {
+            Event::PermissionRequested(requested) => Some(requested),
+            _ => None,
+        })
+        .expect("permission request should be journaled");
+    assert_eq!(
+        requested.interactivity,
+        InteractivityLevel::FullyInteractive
+    );
+    assert_eq!(requested.actor_source, actor_source);
 }
 
 #[tokio::test]
@@ -300,10 +339,10 @@ async fn run_turn_persists_blocking_tool_journal_event_before_answer() {
         .iter()
         .position(|event| matches!(event, Event::PermissionRequested(_)))
         .expect("permission request should be persisted");
-    let tool_approved_index = events
+    let sandbox_preflight_index = events
         .iter()
-        .position(|event| matches!(event, Event::ToolUseApproved(_)))
-        .expect("tool approval should be persisted");
+        .position(|event| matches!(event, Event::SandboxPreflightPassed(_)))
+        .expect("sandbox preflight should be persisted");
     let clarification_index = events
         .iter()
         .position(|event| {
@@ -316,7 +355,7 @@ async fn run_turn_persists_blocking_tool_journal_event_before_answer() {
         .expect("clarification request should be persisted");
 
     assert!(permission_requested_index < clarification_index);
-    assert!(tool_approved_index < clarification_index);
+    assert!(sandbox_preflight_index < clarification_index);
     assert!(events.iter().any(|event| {
         matches!(
             event,
@@ -583,6 +622,25 @@ impl TestHarness {
         permission_mode: PermissionMode,
         permission_broker: Arc<dyn PermissionBroker>,
     ) -> Self {
+        Self::new_with_permission_mode_interactivity_hooks_redactor_and_broker(
+            events,
+            hooks,
+            redactor,
+            permission_mode,
+            InteractivityLevel::FullyInteractive,
+            permission_broker,
+        )
+        .await
+    }
+
+    async fn new_with_permission_mode_interactivity_hooks_redactor_and_broker(
+        events: Vec<ModelStreamEvent>,
+        hooks: Vec<Box<dyn HookHandler>>,
+        redactor: Arc<dyn Redactor>,
+        permission_mode: PermissionMode,
+        interactivity: InteractivityLevel,
+        permission_broker: Arc<dyn PermissionBroker>,
+    ) -> Self {
         let workspace = tempfile::tempdir().unwrap();
         let tenant_id = TenantId::SINGLE;
         let session_id = SessionId::new();
@@ -621,7 +679,7 @@ impl TestHarness {
             hooks: HookDispatcher::new(hooks.snapshot()),
             model: model.clone(),
             tools,
-            permission_broker,
+            authorization_service: test_authorization_service(permission_broker, store.clone()),
             sandbox: None,
             cap_registry: Arc::new(CapabilityRegistry::default()),
             redactor,
@@ -637,7 +695,8 @@ impl TestHarness {
                     SessionOptions::new(workspace.path())
                         .with_tenant_id(tenant_id)
                         .with_session_id(session_id)
-                        .with_permission_mode(permission_mode),
+                        .with_permission_mode(permission_mode)
+                        .with_interactivity(interactivity),
                 )
                 .with_event_store(store.clone())
                 .with_turn_runtime(runtime)
@@ -704,7 +763,7 @@ impl TestHarness {
             hooks: HookDispatcher::new(hooks.snapshot()),
             model: model.clone(),
             tools,
-            permission_broker: Arc::new(AllowBroker),
+            authorization_service: test_authorization_service(Arc::new(AllowBroker), store.clone()),
             sandbox: None,
             cap_registry: Arc::new(cap_registry),
             redactor: Arc::new(harness_contracts::NoopRedactor),
@@ -911,14 +970,23 @@ impl PermissionBroker for AllowBroker {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CapturedPermissionContext {
+    permission_mode: PermissionMode,
+    interactivity: InteractivityLevel,
+}
+
 struct RecordingPermissionBroker {
-    captured: Arc<Mutex<Vec<PermissionMode>>>,
+    captured: Arc<Mutex<Vec<CapturedPermissionContext>>>,
 }
 
 #[async_trait]
 impl PermissionBroker for RecordingPermissionBroker {
     async fn decide(&self, _request: PermissionRequest, ctx: PermissionContext) -> Decision {
-        self.captured.lock().await.push(ctx.permission_mode);
+        self.captured.lock().await.push(CapturedPermissionContext {
+            permission_mode: ctx.permission_mode,
+            interactivity: ctx.interactivity,
+        });
         Decision::AllowOnce
     }
 
@@ -975,7 +1043,7 @@ struct CapturedUserPromptHook {
     prompt: String,
     recent_messages: Vec<String>,
     permission_mode: PermissionMode,
-    view_permission_mode: PermissionMode,
+    interactivity: InteractivityLevel,
 }
 
 struct CaptureUserPromptHook {
@@ -1011,7 +1079,7 @@ impl HookHandler for CaptureUserPromptHook {
             prompt,
             recent_messages,
             permission_mode: ctx.permission_mode,
-            view_permission_mode: ctx.view.permission_mode(),
+            interactivity: ctx.interactivity,
         });
         Ok(HookOutcome::Continue)
     }
@@ -1084,26 +1152,35 @@ impl Tool for TestListDirTool {
         Ok(())
     }
 
-    async fn check_permission(
+    async fn plan(
         &self,
         input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: "ListDir".to_owned(),
-                input: input.clone(),
+        ctx: &ToolContext,
+    ) -> Result<ToolActionPlan, harness_contracts::ToolError> {
+        let path = PathBuf::from(input["path"].as_str().unwrap_or_default());
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: "ListDir".to_owned(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::PathPrefix(path.clone()),
             },
-            scope: DecisionScope::PathPrefix(input["path"].as_str().unwrap_or_default().into()),
-        }
+            vec![ActionResource::FileRead { path }],
+            WorkspaceAccess::ReadOnly,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        input: Value,
+        authorized: AuthorizedToolInput,
         _ctx: ToolContext,
     ) -> Result<ToolStream, harness_contracts::ToolError> {
-        let path = input["path"].as_str().unwrap_or_default();
+        let path = authorized_file_path(&authorized, AuthorizedFileResourceKind::Read)?;
         let mut entries = Vec::new();
         for entry in std::fs::read_dir(path)
             .map_err(|error| harness_contracts::ToolError::Message(error.to_string()))?
@@ -1117,82 +1194,4 @@ impl Tool for TestListDirTool {
             ToolResult::Structured(json!(entries)),
         )])))
     }
-}
-
-fn tool_call_events(name: &str, input: Value) -> Vec<ModelStreamEvent> {
-    vec![
-        ModelStreamEvent::MessageStart {
-            message_id: "assistant-1".to_owned(),
-            usage: UsageSnapshot::default(),
-        },
-        ModelStreamEvent::ContentBlockDelta {
-            index: 0,
-            delta: ContentDelta::ToolUseComplete {
-                id: ToolUseId::new(),
-                name: name.to_owned(),
-                input,
-            },
-        },
-        ModelStreamEvent::MessageDelta {
-            stop_reason: Some(StopReason::ToolUse),
-            usage_delta: UsageSnapshot::default(),
-        },
-        ModelStreamEvent::MessageStop,
-    ]
-}
-
-fn text_events(text: &str) -> Vec<ModelStreamEvent> {
-    vec![
-        ModelStreamEvent::MessageStart {
-            message_id: "assistant-1".to_owned(),
-            usage: UsageSnapshot::default(),
-        },
-        ModelStreamEvent::ContentBlockDelta {
-            index: 0,
-            delta: ContentDelta::Text(text.to_owned()),
-        },
-        ModelStreamEvent::MessageDelta {
-            stop_reason: Some(StopReason::EndTurn),
-            usage_delta: UsageSnapshot::default(),
-        },
-        ModelStreamEvent::MessageStop,
-    ]
-}
-
-fn thinking_then_text_events(thinking: &str, text: &str) -> Vec<ModelStreamEvent> {
-    vec![
-        ModelStreamEvent::MessageStart {
-            message_id: "assistant-1".to_owned(),
-            usage: UsageSnapshot::default(),
-        },
-        ModelStreamEvent::ContentBlockDelta {
-            index: 0,
-            delta: ContentDelta::Thinking(harness_model::ThinkingDelta {
-                provider_native: None,
-                signature: None,
-                text: Some(thinking.to_owned()),
-            }),
-        },
-        ModelStreamEvent::ContentBlockDelta {
-            index: 1,
-            delta: ContentDelta::Text(text.to_owned()),
-        },
-        ModelStreamEvent::MessageDelta {
-            stop_reason: Some(StopReason::EndTurn),
-            usage_delta: UsageSnapshot::default(),
-        },
-        ModelStreamEvent::MessageStop,
-    ]
-}
-
-fn message_text(message: &Message) -> String {
-    message
-        .parts
-        .iter()
-        .filter_map(|part| match part {
-            MessagePart::Text(text) => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }

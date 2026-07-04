@@ -25,6 +25,8 @@ pub enum McpError {
     OAuth(String),
     #[error("elicitation: {0}")]
     Elicitation(String),
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
 }
 
 impl From<RegistrationError> for McpError {

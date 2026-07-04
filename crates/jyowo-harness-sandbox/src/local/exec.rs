@@ -91,7 +91,7 @@ impl SandboxBackend for LocalSandbox {
         mut spec: ExecSpec,
         ctx: ExecContext,
     ) -> Result<ProcessHandle, SandboxError> {
-        self.before_execute(&spec, &ctx).await?;
+        validate_local_exec(self, &spec)?;
         apply_supported_resource_limits(&mut spec, &self.base.default_resource_limits);
 
         let cwd = resolve_cwd(&self.root, spec.cwd.as_deref(), &spec.policy.scope)?;
@@ -158,20 +158,7 @@ impl SandboxBackend for LocalSandbox {
         spec: &ExecSpec,
         _ctx: &ExecContext,
     ) -> Result<(), SandboxError> {
-        let cwd = resolve_cwd(&self.root, spec.cwd.as_deref(), &spec.policy.scope)?;
-        validate_network_policy(self.isolation, &spec.policy.network)?;
-        validate_resource_policy(self.isolation, &spec.policy.resource_limits)?;
-        validate_resource_policy(self.isolation, &self.base.default_resource_limits)?;
-        validate_isolation(self.isolation)?;
-        validate_workspace_access(
-            self.isolation,
-            &self.root,
-            &spec.policy.scope,
-            &spec.workspace_access,
-        )?;
-        validate_denied_paths(&self.root, &cwd, spec, &self.base.denied_host_paths)?;
-        validate_denied_paths(&self.root, &cwd, spec, &spec.policy.denied_host_paths)?;
-        Ok(())
+        validate_local_exec(self, spec)
     }
 
     async fn snapshot_session(
@@ -199,6 +186,23 @@ impl SandboxBackend for LocalSandbox {
     async fn shutdown(&self) -> Result<(), SandboxError> {
         Ok(())
     }
+}
+
+fn validate_local_exec(sandbox: &LocalSandbox, spec: &ExecSpec) -> Result<(), SandboxError> {
+    let cwd = resolve_cwd(&sandbox.root, spec.cwd.as_deref(), &spec.policy.scope)?;
+    validate_network_policy(sandbox.isolation, &spec.policy.network)?;
+    validate_resource_policy(sandbox.isolation, &spec.policy.resource_limits)?;
+    validate_resource_policy(sandbox.isolation, &sandbox.base.default_resource_limits)?;
+    validate_isolation(sandbox.isolation)?;
+    validate_workspace_access(
+        sandbox.isolation,
+        &sandbox.root,
+        &spec.policy.scope,
+        &spec.workspace_access,
+    )?;
+    validate_denied_paths(&sandbox.root, &cwd, spec, &sandbox.base.denied_host_paths)?;
+    validate_denied_paths(&sandbox.root, &cwd, spec, &spec.policy.denied_host_paths)?;
+    Ok(())
 }
 
 pub struct LocalActivity {

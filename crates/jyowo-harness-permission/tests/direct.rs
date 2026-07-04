@@ -11,7 +11,7 @@ use harness_contracts::{
 };
 use harness_permission::{
     DecisionPersistence, DirectBroker, PermissionBroker, PermissionContext, PermissionRequest,
-    PersistedDecision, RuleSnapshot,
+    PersistedDecision,
 };
 use parking_lot::Mutex;
 
@@ -57,8 +57,10 @@ async fn direct_broker_persist_delegates_to_persistence() {
     let scope = DecisionScope::ToolName("shell".to_owned());
     let decision = PersistedDecision {
         decision_id,
+        decision: Decision::DenyOnce,
         scope: scope.clone(),
         source: harness_contracts::RuleSource::Session,
+        session_id: None,
         fingerprint: None,
     };
 
@@ -84,6 +86,7 @@ fn permission_request() -> PermissionRequest {
         },
         severity: Severity::Low,
         scope_hint: DecisionScope::ToolName("shell".to_owned()),
+        confirmation_expected: None,
         created_at: Utc::now(),
     }
 }
@@ -98,11 +101,6 @@ fn permission_context() -> PermissionContext {
         interactivity: InteractivityLevel::FullyInteractive,
         timeout_policy: None,
         fallback_policy: FallbackPolicy::AskUser,
-        rule_snapshot: Arc::new(RuleSnapshot {
-            rules: Vec::new(),
-            generation: 0,
-            built_at: Utc::now(),
-        }),
         hook_overrides: Vec::new(),
     }
 }

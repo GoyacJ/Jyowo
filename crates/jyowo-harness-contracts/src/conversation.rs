@@ -565,6 +565,8 @@ pub struct ToolPermissionState {
     pub status: ToolPermissionStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<UiSafeText>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation_expected: Option<UiSafeText>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_refs: Vec<ConversationEventRef>,
 }

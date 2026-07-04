@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use harness_contracts::{KillScope, SandboxError, SessionSnapshotKind};
+use harness_contracts::{KillScope, NetworkAccess, SandboxError, SessionSnapshotKind};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
@@ -240,6 +240,12 @@ impl SandboxBackend for SshSandbox {
         self.base.clone()
     }
 
+    fn preflight_execute(&self, spec: &ExecSpec) -> Result<(), SandboxError> {
+        validate_ssh_network_policy(&spec.policy.network)?;
+        let mut spec = spec.clone();
+        self.validate_resource_policy(&mut spec)
+    }
+
     async fn before_execute(
         &self,
         _spec: &ExecSpec,
@@ -256,9 +262,9 @@ impl SandboxBackend for SshSandbox {
         mut spec: ExecSpec,
         ctx: ExecContext,
     ) -> Result<ProcessHandle, SandboxError> {
+        validate_ssh_network_policy(&spec.policy.network)?;
         self.validate_resource_policy(&mut spec)?;
         self.ensure_available().await?;
-        self.before_execute(&spec, &ctx).await?;
         let command = self.command_for_execute(&spec);
         spawn_backend_process(BACKEND_ID, command, spec, ctx, self.base.clone()).await
     }
@@ -367,6 +373,22 @@ impl SshSandbox {
             ));
         }
         Ok(())
+    }
+}
+
+fn validate_ssh_network_policy(network: &NetworkAccess) -> Result<(), SandboxError> {
+    match network {
+        NetworkAccess::Unrestricted => Ok(()),
+        NetworkAccess::None | NetworkAccess::LoopbackOnly | NetworkAccess::AllowList(_) => {
+            Err(SandboxError::CapabilityMismatch {
+                capability: "network".to_owned(),
+                detail: format!("ssh sandbox cannot enforce per-exec network policy: {network:?}"),
+            })
+        }
+        _ => Err(SandboxError::CapabilityMismatch {
+            capability: "network".to_owned(),
+            detail: "unsupported ssh network policy".to_owned(),
+        }),
     }
 }
 

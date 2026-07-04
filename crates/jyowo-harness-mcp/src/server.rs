@@ -15,9 +15,12 @@ use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
 use futures::SinkExt;
 use futures::StreamExt;
 use harness_contracts::{
-    MessagePart, Severity, TenantId, ToolDescriptor, ToolResult, ToolResultPart, ToolUseId,
+    ManifestOriginRef, McpPromptOperation, McpResourceOperation, McpServerId, McpServerSource,
+    MessagePart, Severity, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolResult,
+    ToolResultPart, ToolUseId,
 };
-use harness_tool::{PermissionCheck, ToolContext, ToolEvent, ToolRegistry};
+use harness_execution::ExecutionError;
+use harness_tool::{AuthorizedToolInput, ToolContext, ToolEvent, ToolRegistry};
 #[cfg(feature = "oauth")]
 use jsonwebtoken::{
     decode, decode_header,
@@ -37,10 +40,11 @@ use tokio_tungstenite::{
 };
 
 use crate::{
-    JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpContent, McpMetric, McpMetricOutcome,
-    McpMetricsSink, McpPrompt, McpPromptMessages, McpResource, McpResourceContents,
-    McpToolDescriptor, McpToolResult, NoopMcpEventSink, NoopMcpMetricsSink, SamplingJsonRpcHandler,
-    SamplingPolicy,
+    authorize_mcp_prompt, authorize_mcp_resource, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
+    McpAuthorizationContext, McpContent, McpMetric, McpMetricOutcome, McpMetricsSink, McpPrompt,
+    McpPromptMessages, McpResource, McpResourceContents, McpServerSpec, McpToolDescriptor,
+    McpToolResult, NoopMcpEventSink, NoopMcpMetricsSink, SamplingJsonRpcHandler, SamplingPolicy,
+    TransportChoice,
 };
 
 const JSONRPC_METHOD_NOT_FOUND: i32 = -32601;
@@ -656,6 +660,79 @@ pub trait ToolContextFactory: Send + Sync + 'static {
 }
 
 #[async_trait]
+pub trait ToolCallAuthorizer: Send + Sync + 'static {
+    async fn authorize_tool_call(
+        &self,
+        raw_input: Value,
+        action_plan: ToolActionPlan,
+        context: &ToolContext,
+    ) -> Result<AuthorizedToolInput, ToolError>;
+}
+
+#[derive(Debug, Default)]
+pub struct DenyToolCallAuthorizer;
+
+#[async_trait]
+impl ToolCallAuthorizer for DenyToolCallAuthorizer {
+    async fn authorize_tool_call(
+        &self,
+        _raw_input: Value,
+        _action_plan: ToolActionPlan,
+        _context: &ToolContext,
+    ) -> Result<AuthorizedToolInput, ToolError> {
+        Err(ToolError::PermissionDenied(
+            "tool authorization service is not configured".to_owned(),
+        ))
+    }
+}
+
+#[derive(Clone)]
+pub struct AuthorizationContextToolCallAuthorizer {
+    authorization_context: McpAuthorizationContext,
+}
+
+impl AuthorizationContextToolCallAuthorizer {
+    #[must_use]
+    pub fn new(authorization_context: McpAuthorizationContext) -> Self {
+        Self {
+            authorization_context,
+        }
+    }
+}
+
+#[async_trait]
+impl ToolCallAuthorizer for AuthorizationContextToolCallAuthorizer {
+    async fn authorize_tool_call(
+        &self,
+        raw_input: Value,
+        action_plan: ToolActionPlan,
+        _context: &ToolContext,
+    ) -> Result<AuthorizedToolInput, ToolError> {
+        self.authorization_context
+            .authorization_service
+            .authorize_tool_input(
+                self.authorization_context.authorization_context(),
+                action_plan,
+                raw_input,
+            )
+            .await
+            .map_err(mcp_authorization_error_to_tool_error)
+    }
+}
+
+fn mcp_authorization_error_to_tool_error(error: ExecutionError) -> ToolError {
+    match error {
+        ExecutionError::PermissionDenied { decision, .. } => {
+            ToolError::PermissionDenied(format!("authorization denied: {decision:?}"))
+        }
+        ExecutionError::SandboxPreflightFailed { reason, .. } => {
+            ToolError::PermissionDenied(format!("sandbox preflight failed: {reason}"))
+        }
+        other => ToolError::Internal(other.to_string()),
+    }
+}
+
+#[async_trait]
 pub trait ResourceProvider: Send + Sync + 'static {
     async fn list_resources(&self) -> Result<Vec<McpResource>, McpServerError>;
 
@@ -738,9 +815,11 @@ pub struct McpServerAdapter {
     registry: ToolRegistry,
     policy: McpServerPolicy,
     tool_context_factory: Arc<dyn ToolContextFactory>,
+    tool_authorizer: Arc<dyn ToolCallAuthorizer>,
     resource_provider: Arc<dyn ResourceProvider>,
     prompt_provider: Arc<dyn PromptProvider>,
     sampling_handler: SamplingJsonRpcHandler,
+    authorization_context: Option<McpAuthorizationContext>,
     rate_limit: Arc<Mutex<RateLimitState>>,
     audit_sink: Arc<dyn McpServerAuditSink>,
     metrics_sink: Arc<dyn McpMetricsSink>,
@@ -752,12 +831,15 @@ impl McpServerAdapter {
             registry,
             policy: McpServerPolicy::default(),
             tool_context_factory: None,
+            tool_authorizer: Arc::new(DenyToolCallAuthorizer),
+            tool_authorizer_configured: false,
             resource_provider: Arc::new(EmptyResourceProvider),
             prompt_provider: Arc::new(EmptyPromptProvider),
             sampling_handler: SamplingJsonRpcHandler::new(
                 SamplingPolicy::denied(),
                 Arc::new(NoopMcpEventSink),
             ),
+            authorization_context: None,
             audit_sink: Arc::new(NoopMcpServerAuditSink),
             metrics_sink: Arc::new(NoopMcpMetricsSink),
         }
@@ -909,32 +991,20 @@ impl McpServerAdapter {
             return Ok(tool_error_result(format!("validation: {error}")));
         }
 
-        match tool.check_permission(&arguments, &context).await {
-            PermissionCheck::Allowed => {}
-            PermissionCheck::Denied { reason } => {
-                return Ok(tool_error_result(format!("permission denied: {reason}")));
-            }
-            PermissionCheck::AskUser { .. } => {
-                return Ok(tool_error_result("permission required"));
-            }
-            PermissionCheck::DangerousCommand { pattern, severity } => {
-                return Ok(tool_error_result(format!(
-                    "permission required for dangerous command {pattern} ({severity:?})"
-                )));
-            }
-            PermissionCheck::DangerousPattern {
-                kind,
-                pattern,
-                severity,
-                ..
-            } => {
-                return Ok(tool_error_result(format!(
-                    "permission required for dangerous pattern {kind}:{pattern} ({severity:?})"
-                )));
-            }
-        }
+        let action_plan = match tool.plan(&arguments, &context).await {
+            Ok(plan) => plan,
+            Err(error) => return Ok(tool_error_result(error.to_string())),
+        };
+        let authorized = match self
+            .tool_authorizer
+            .authorize_tool_call(arguments, action_plan, &context)
+            .await
+        {
+            Ok(authorized) => authorized,
+            Err(error) => return Ok(tool_error_result(error.to_string())),
+        };
 
-        let stream = match tool.execute(arguments, context).await {
+        let stream = match tool.execute_authorized(authorized, context).await {
             Ok(stream) => stream,
             Err(error) => return Ok(tool_error_result(error.to_string())),
         };
@@ -943,6 +1013,7 @@ impl McpServerAdapter {
     }
 
     async fn list_resources(&self) -> Result<Value, JsonRpcError> {
+        self.authorize_resource(McpResourceOperation::List).await?;
         let resources = self
             .resource_provider
             .list_resources()
@@ -960,6 +1031,10 @@ impl McpServerAdapter {
             .and_then(Value::as_str)
             .ok_or_else(|| jsonrpc_error(JSONRPC_INVALID_PARAMS, "resources/read missing uri"))?;
 
+        self.authorize_resource(McpResourceOperation::Read {
+            uri: uri.to_owned(),
+        })
+        .await?;
         let contents = self
             .resource_provider
             .read_resource(uri)
@@ -969,6 +1044,7 @@ impl McpServerAdapter {
     }
 
     async fn list_prompts(&self) -> Result<Value, JsonRpcError> {
+        self.authorize_prompt(McpPromptOperation::List).await?;
         let prompts = self
             .prompt_provider
             .list_prompts()
@@ -995,6 +1071,10 @@ impl McpServerAdapter {
             ));
         }
 
+        self.authorize_prompt(McpPromptOperation::Get {
+            name: name.to_owned(),
+        })
+        .await?;
         serde_json::to_value(
             self.prompt_provider
                 .get_prompt(name, arguments)
@@ -1002,6 +1082,47 @@ impl McpServerAdapter {
                 .map_err(server_error_to_jsonrpc)?,
         )
         .map_err(|_| internal_jsonrpc_error())
+    }
+
+    async fn authorize_resource(
+        &self,
+        operation: McpResourceOperation,
+    ) -> Result<(), JsonRpcError> {
+        let Some(context) = &self.authorization_context else {
+            return Err(jsonrpc_error(
+                JSONRPC_UNAUTHORIZED,
+                "mcp resource authorization context is not configured",
+            ));
+        };
+        authorize_mcp_resource(context, &self.authorization_spec(), operation)
+            .await
+            .map_err(|error| jsonrpc_error(JSONRPC_UNAUTHORIZED, error.to_string()))
+    }
+
+    async fn authorize_prompt(&self, operation: McpPromptOperation) -> Result<(), JsonRpcError> {
+        let Some(context) = &self.authorization_context else {
+            return Err(jsonrpc_error(
+                JSONRPC_UNAUTHORIZED,
+                "mcp prompt authorization context is not configured",
+            ));
+        };
+        authorize_mcp_prompt(context, &self.authorization_spec(), operation)
+            .await
+            .map_err(|error| jsonrpc_error(JSONRPC_UNAUTHORIZED, error.to_string()))
+    }
+
+    fn authorization_spec(&self) -> McpServerSpec {
+        McpServerSpec::new(
+            McpServerId(self.policy.server_name.clone()),
+            self.policy.server_name.clone(),
+            TransportChoice::InProcess,
+            McpServerSource::Dynamic {
+                registered_by: "server_adapter".to_owned(),
+            },
+        )
+        .with_manifest_origin(ManifestOriginRef::File {
+            path: "mcp-server-adapter".to_owned(),
+        })
     }
 
     fn record_tenant_mapping_rejection(&self, error: &McpServerError) {
@@ -1538,9 +1659,12 @@ pub struct McpServerAdapterBuilder {
     registry: ToolRegistry,
     policy: McpServerPolicy,
     tool_context_factory: Option<Arc<dyn ToolContextFactory>>,
+    tool_authorizer: Arc<dyn ToolCallAuthorizer>,
+    tool_authorizer_configured: bool,
     resource_provider: Arc<dyn ResourceProvider>,
     prompt_provider: Arc<dyn PromptProvider>,
     sampling_handler: SamplingJsonRpcHandler,
+    authorization_context: Option<McpAuthorizationContext>,
     audit_sink: Arc<dyn McpServerAuditSink>,
     metrics_sink: Arc<dyn McpMetricsSink>,
 }
@@ -1558,6 +1682,16 @@ impl McpServerAdapterBuilder {
         T: ToolContextFactory,
     {
         self.tool_context_factory = Some(Arc::new(factory));
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_authorizer<T>(mut self, authorizer: T) -> Self
+    where
+        T: ToolCallAuthorizer,
+    {
+        self.tool_authorizer = Arc::new(authorizer);
+        self.tool_authorizer_configured = true;
         self
     }
 
@@ -1586,6 +1720,12 @@ impl McpServerAdapterBuilder {
     }
 
     #[must_use]
+    pub fn with_authorization_context(mut self, context: McpAuthorizationContext) -> Self {
+        self.authorization_context = Some(context);
+        self
+    }
+
+    #[must_use]
     pub fn with_audit_sink<T>(mut self, audit_sink: Arc<T>) -> Self
     where
         T: McpServerAuditSink,
@@ -1604,18 +1744,30 @@ impl McpServerAdapterBuilder {
     }
 
     pub fn build(self) -> Result<McpServerAdapter, McpServerError> {
-        let sampling_handler = self
+        let mut sampling_handler = self
             .sampling_handler
             .with_metrics_sink(Arc::clone(&self.metrics_sink));
+        if let Some(context) = &self.authorization_context {
+            sampling_handler = sampling_handler.with_authorization_context(context.clone());
+        }
+        let tool_authorizer = if self.tool_authorizer_configured {
+            self.tool_authorizer
+        } else if let Some(context) = &self.authorization_context {
+            Arc::new(AuthorizationContextToolCallAuthorizer::new(context.clone()))
+        } else {
+            self.tool_authorizer
+        };
         Ok(McpServerAdapter {
             registry: self.registry,
             policy: self.policy,
             tool_context_factory: self
                 .tool_context_factory
                 .ok_or(McpServerError::MissingToolContextFactory)?,
+            tool_authorizer,
             resource_provider: self.resource_provider,
             prompt_provider: self.prompt_provider,
             sampling_handler,
+            authorization_context: self.authorization_context,
             rate_limit: Arc::new(Mutex::new(RateLimitState::default())),
             audit_sink: self.audit_sink,
             metrics_sink: self.metrics_sink,
@@ -1839,13 +1991,11 @@ fn harness_tool_descriptors() -> Vec<HarnessToolSpec> {
                         "type": "string",
                         "enum": [
                             "allow_once",
-                            "allow_session",
-                            "allow_permanent",
                             "deny_once",
-                            "deny_permanent",
                             "escalate"
                         ]
-                    }
+                    },
+                    "confirmation_text": { "type": "string" }
                 }),
             ),
         ),

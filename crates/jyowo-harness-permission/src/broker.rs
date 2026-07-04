@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use harness_contracts::{
@@ -8,10 +6,14 @@ use harness_contracts::{
     Severity, TenantId, TimeoutPolicy, ToolUseId,
 };
 
-use crate::rule::{OverrideDecision, RuleAction, RuleSnapshot};
+use crate::rule::OverrideDecision;
 
 #[async_trait]
 pub trait PermissionBroker: Send + Sync + 'static {
+    fn can_anchor_authority(&self) -> bool {
+        true
+    }
+
     async fn decide(&self, request: PermissionRequest, ctx: PermissionContext) -> Decision;
 
     async fn hard_policy_denies(
@@ -23,18 +25,6 @@ pub trait PermissionBroker: Send + Sync + 'static {
     }
 
     async fn persist(&self, decision: PersistedDecision) -> Result<(), PermissionError>;
-}
-
-#[must_use]
-pub fn hard_policy_denies_from_context(
-    request: &PermissionRequest,
-    ctx: &PermissionContext,
-) -> bool {
-    ctx.rule_snapshot.rules.iter().any(|rule| {
-        rule.source == RuleSource::Policy
-            && policy_scope_matches_request(&rule.scope, &request.scope_hint)
-            && matches!(rule.action, RuleAction::Deny)
-    })
 }
 
 #[must_use]
@@ -65,10 +55,6 @@ pub struct NoopDecisionPersistence;
 
 #[async_trait]
 impl DecisionPersistence for NoopDecisionPersistence {
-    fn supports_integrity(&self) -> bool {
-        true
-    }
-
     async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
         Ok(())
     }
@@ -77,8 +63,10 @@ impl DecisionPersistence for NoopDecisionPersistence {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PersistedDecision {
     pub decision_id: DecisionId,
+    pub decision: Decision,
     pub scope: DecisionScope,
     pub source: RuleSource,
+    pub session_id: Option<SessionId>,
     pub fingerprint: Option<ExecFingerprint>,
 }
 
@@ -109,6 +97,7 @@ pub struct PermissionRequest {
     pub subject: PermissionSubject,
     pub severity: Severity,
     pub scope_hint: DecisionScope,
+    pub confirmation_expected: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -122,7 +111,6 @@ pub struct PermissionContext {
     pub interactivity: InteractivityLevel,
     pub timeout_policy: Option<TimeoutPolicy>,
     pub fallback_policy: FallbackPolicy,
-    pub rule_snapshot: Arc<RuleSnapshot>,
     pub hook_overrides: Vec<OverrideDecision>,
 }
 
@@ -144,6 +132,7 @@ pub enum PermissionCheck {
         scope: DecisionScope,
     },
     DangerousCommand {
+        command: String,
         pattern: String,
         severity: Severity,
     },

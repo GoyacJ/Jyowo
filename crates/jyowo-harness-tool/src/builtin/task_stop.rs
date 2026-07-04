@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DecisionScope, PermissionSubject, RunCancellerCap, ToolCapability, ToolDescriptor, ToolError,
-    ToolGroup, ToolResult,
+    DecisionScope, PermissionSubject, RunCancellerCap, ToolActionPlan, ToolCapability,
+    ToolDescriptor, ToolError, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 
 #[derive(Clone)]
 pub struct TaskStopTool {
@@ -49,19 +49,30 @@ impl Tool for TaskStopTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        super::generic_action_plan(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         let canceller = ctx.capability::<dyn RunCancellerCap>(ToolCapability::RunCanceller)?;
-        let reason = reason(&input).map_err(validation_error)?.to_owned();
+        let reason = reason(authorized.raw_input())
+            .map_err(validation_error)?
+            .to_owned();
         canceller
             .request_stop(ctx.tenant_id, ctx.session_id, ctx.run_id, reason.clone())
             .await?;

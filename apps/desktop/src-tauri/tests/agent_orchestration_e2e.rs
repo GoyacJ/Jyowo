@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
-    AgentUsePolicy, AgentWorkspaceIsolationMode, BackgroundAgentState, PermissionActorSource,
-    Redactor,
+    AgentUsePolicy, AgentWorkspaceIsolationMode, BackgroundAgentState, NetworkAccess,
+    PermissionActorSource, Redactor, ToolActionPlan, WorkspaceAccess,
 };
+use harness_tool::{action_plan_from_permission_check, AuthorizedToolInput};
 use jyowo_desktop_shell::commands::{
     cancel_background_agent_with_runtime_state, get_background_agent_with_runtime_state,
     list_background_agents_with_runtime_state, page_conversation_worktree_with_runtime_state,
@@ -509,6 +510,7 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
             conversation_id: session_id.to_string(),
             decision: jyowo_desktop_shell::commands::PermissionDecision::Approve,
             request_id: agent_pending.request.request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -524,6 +526,7 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
             conversation_id: pending.request.session_id.to_string(),
             decision: jyowo_desktop_shell::commands::PermissionDecision::Deny,
             request_id: pending.request.request_id.to_string(),
+            confirmation_text: None,
         },
         &state,
     )
@@ -841,24 +844,37 @@ impl Tool for NeedsPermissionTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, _ctx: &ToolContext) -> PermissionCheck {
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
         let command = input
             .get("command")
             .and_then(Value::as_str)
             .unwrap_or("needs-permission")
             .to_owned();
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::CommandExec {
-                command: command.clone(),
-                argv: vec![command.clone()],
-                cwd: None,
-                fingerprint: None,
+
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::CommandExec {
+                    command: command.clone(),
+                    argv: vec![command.clone()],
+                    cwd: None,
+                    fingerprint: None,
+                },
+                scope: DecisionScope::ExactCommand { command, cwd: None },
             },
-            scope: DecisionScope::ExactCommand { command, cwd: None },
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, _input: Value, _ctx: ToolContext) -> Result<ToolStream, ToolError> {
+    async fn execute_authorized(
+        &self,
+        _authorized: AuthorizedToolInput,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(stream::iter(vec![ToolEvent::Final(
             ToolResult::Text("done".to_owned()),
         )])))

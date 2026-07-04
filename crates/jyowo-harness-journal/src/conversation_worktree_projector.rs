@@ -734,6 +734,7 @@ impl ProjectionState<'_> {
                     ToolPermissionStatus::Pending
                 },
                 summary: string_field(&event.payload, "reason").map(ui_text),
+                confirmation_expected: permission_confirmation_expected(&event.payload),
                 event_refs: vec![event_ref],
             });
         }
@@ -763,6 +764,7 @@ impl ProjectionState<'_> {
             if let Some(permission) = attempt.permission.as_mut() {
                 permission.status = status;
                 permission.summary = None;
+                permission.confirmation_expected = None;
                 permission.event_refs.push(event_ref);
             }
         }
@@ -2989,6 +2991,14 @@ fn permission_status_from_decision(payload: &Value) -> ToolPermissionStatus {
         Some("failed") => ToolPermissionStatus::Failed,
         _ => ToolPermissionStatus::Denied,
     }
+}
+
+fn permission_confirmation_expected(payload: &Value) -> Option<UiSafeText> {
+    let confirmation = payload.get("review")?.get("confirmation")?;
+    if confirmation.get("type")?.as_str()? != "typeToConfirm" {
+        return None;
+    }
+    string_field(confirmation, "expected").map(ui_text)
 }
 
 fn background_agent_state_status(state: &str) -> AgentActivityStatus {

@@ -93,10 +93,14 @@ pub use web_search::{WebSearchBackend, WebSearchRequest, WebSearchResult, WebSea
 pub use write::FileWriteTool;
 
 use harness_contracts::{
-    BudgetMetric, DeferPolicy, OverflowAction, ProviderRestriction, ResultBudget, ToolCapability,
-    ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties, ToolServiceBinding, TrustLevel,
+    BudgetMetric, DeferPolicy, NetworkAccess, OverflowAction, ProviderRestriction, ResultBudget,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, ToolServiceBinding, TrustLevel, WorkspaceAccess,
 };
+use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
+
+use crate::{action_plan_from_permission_check, ToolContext};
 
 fn descriptor(
     name: &str,
@@ -177,4 +181,21 @@ fn object_schema(required: &[&str], properties: Value) -> Value {
         "required": required,
         "properties": properties
     })
+}
+
+fn generic_action_plan(
+    descriptor: &ToolDescriptor,
+    input: &Value,
+    ctx: &ToolContext,
+    check: PermissionCheck,
+) -> Result<ToolActionPlan, ToolError> {
+    action_plan_from_permission_check(
+        descriptor,
+        input,
+        ctx,
+        check,
+        Vec::new(),
+        WorkspaceAccess::None,
+        NetworkAccess::None,
+    )
 }

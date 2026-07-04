@@ -1,23 +1,21 @@
 #![cfg(feature = "minimax-tools")]
 
 use base64::{engine::general_purpose, Engine as _};
+use chrono::Utc;
 use futures::{future::BoxFuture, StreamExt};
 use harness_contracts::{
-    BlobMeta, BlobRef, BlobWriterCap, CapabilityRegistry, CapabilityRouteKind, Decision,
-    ModelModality, PermissionError, PermissionSubject, ProviderCredential,
-    ProviderCredentialResolveContext, ProviderCredentialResolverCap, ToolCapability, ToolError,
-    ToolResult, ToolResultPart,
-};
-use harness_permission::{
-    PermissionBroker, PermissionCheck, PermissionContext, PermissionRequest, PersistedDecision,
+    BlobMeta, BlobRef, BlobWriterCap, CapabilityRegistry, CapabilityRouteKind, ModelModality,
+    PermissionSubject, ProviderCredential, ProviderCredentialResolveContext,
+    ProviderCredentialResolverCap, ToolActionPlan, ToolCapability, ToolError, ToolResult,
+    ToolResultPart,
 };
 use harness_tool::provider_media::MAX_MINIMAX_MEDIA_BYTES;
 use harness_tool::{
-    BuiltinToolset, InterruptToken, MiniMaxImageToImageTool, MiniMaxMusicGenerationTool,
-    MiniMaxResponsesTool, MiniMaxTextToImageTool, MiniMaxTextToSpeechAsyncQueryTool,
-    MiniMaxTextToSpeechAsyncTool, MiniMaxTextToSpeechTool, MiniMaxTextToVideoTool,
-    MiniMaxVideoGenerationQueryTool, MiniMaxVideoTemplateQueryTool, Tool, ToolContext, ToolEvent,
-    ToolRegistryBuilder,
+    AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken,
+    MiniMaxImageToImageTool, MiniMaxMusicGenerationTool, MiniMaxResponsesTool,
+    MiniMaxTextToImageTool, MiniMaxTextToSpeechAsyncQueryTool, MiniMaxTextToSpeechAsyncTool,
+    MiniMaxTextToSpeechTool, MiniMaxTextToVideoTool, MiniMaxVideoGenerationQueryTool,
+    MiniMaxVideoTemplateQueryTool, Tool, ToolContext, ToolEvent, ToolRegistryBuilder,
 };
 use serde_json::json;
 use std::{
@@ -59,11 +57,13 @@ async fn minimax_tool_fails_closed_when_credential_resolver_is_missing() {
     let tool = MiniMaxTextToImageTool::default();
     let error = execute_error(&tool, json!({"request": {"prompt": "x"}}), ctx()).await;
 
-    assert!(matches!(
-        error,
-        ToolError::CapabilityMissing(ToolCapability::ProviderCredentialResolver)
-    ));
-    assert!(!error.to_string().contains("sk-"));
+    match error {
+        ToolError::PermissionDenied(reason) => {
+            assert!(reason.contains("MiniMax provider credential resolver is missing"));
+            assert!(!reason.contains("sk-"));
+        }
+        other => panic!("expected denied permission error, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -85,8 +85,8 @@ async fn minimax_tool_uses_provider_credential_resolver() {
 #[tokio::test]
 async fn minimax_permission_uses_configured_credential_base_url_host() {
     let tool = MiniMaxTextToImageTool::default();
-    let check = tool
-        .check_permission(
+    let plan = tool
+        .plan(
             &json!({"request": {"prompt": "x"}}),
             &ctx_with_resolver(Arc::new(MiniMaxResolver {
                 api_key: "sk-redacted-test-key".to_owned(),
@@ -95,11 +95,8 @@ async fn minimax_permission_uses_configured_credential_base_url_host() {
         )
         .await;
 
-    match check {
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::NetworkAccess { host, port },
-            ..
-        } => {
+    match plan.unwrap().subject {
+        PermissionSubject::NetworkAccess { host, port } => {
             assert_eq!(host, "api.minimax.io");
             assert_eq!(port, None);
         }
@@ -111,38 +108,40 @@ async fn minimax_permission_uses_configured_credential_base_url_host() {
 async fn minimax_permission_denies_when_credential_resolver_is_missing() {
     std::env::remove_var("MINIMAX_API_KEY");
     let tool = MiniMaxTextToImageTool::default();
-    let check = tool
-        .check_permission(&json!({"request": {"prompt": "x"}}), &ctx())
-        .await;
+    let error = tool
+        .plan(&json!({"request": {"prompt": "x"}}), &ctx())
+        .await
+        .unwrap_err();
 
-    match check {
-        PermissionCheck::Denied { reason } => {
+    match error {
+        ToolError::PermissionDenied(reason) => {
             assert!(reason.contains("MiniMax provider credential resolver is missing"));
             assert!(!reason.contains("sk-"));
         }
-        other => panic!("expected denied permission check, got {other:?}"),
+        other => panic!("expected denied permission error, got {other:?}"),
     }
 }
 
 #[tokio::test]
 async fn minimax_permission_denies_invalid_credential_base_url() {
     let tool = MiniMaxTextToImageTool::default();
-    let check = tool
-        .check_permission(
+    let error = tool
+        .plan(
             &json!({"request": {"prompt": "x"}}),
             &ctx_with_resolver(Arc::new(MiniMaxResolver {
                 api_key: "sk-redacted-test-key".to_owned(),
                 base_url: Some("not a url".to_owned()),
             })),
         )
-        .await;
+        .await
+        .unwrap_err();
 
-    match check {
-        PermissionCheck::Denied { reason } => {
+    match error {
+        ToolError::PermissionDenied(reason) => {
             assert!(reason.contains("MiniMax provider base URL is invalid"));
             assert!(!reason.contains("sk-"));
         }
-        other => panic!("expected denied permission check, got {other:?}"),
+        other => panic!("expected denied permission error, got {other:?}"),
     }
 }
 
@@ -151,7 +150,7 @@ async fn credential_route_image_tool_passes_image_generation_operation_id() {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let tool = MiniMaxTextToImageTool::default();
     let _ = tool
-        .check_permission(
+        .plan(
             &json!({"request": {"prompt": "x"}}),
             &ctx_with_resolver(Arc::new(ContextCapturingResolver {
                 captured: Arc::clone(&captured),
@@ -179,7 +178,7 @@ async fn credential_route_video_tool_passes_video_generation_operation_id() {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let tool = MiniMaxTextToVideoTool::default();
     let _ = tool
-        .check_permission(
+        .plan(
             &json!({"request": {}}),
             &ctx_with_resolver(Arc::new(ContextCapturingResolver {
                 captured: Arc::clone(&captured),
@@ -207,7 +206,7 @@ async fn credential_route_tts_tool_passes_text_to_speech_operation_id() {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let tool = MiniMaxTextToSpeechTool::default();
     let _ = tool
-        .check_permission(
+        .plan(
             &json!({"request": {}}),
             &ctx_with_resolver(Arc::new(ContextCapturingResolver {
                 captured: Arc::clone(&captured),
@@ -232,7 +231,7 @@ async fn credential_route_non_service_tool_uses_provider_only_context() {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let tool = MiniMaxResponsesTool::default();
     let _ = tool
-        .check_permission(
+        .plan(
             &json!({"request": {}}),
             &ctx_with_resolver(Arc::new(ContextCapturingResolver {
                 captured: Arc::clone(&captured),
@@ -635,7 +634,9 @@ async fn minimax_service_artifact_rejects_excessive_content_length() {
 
 async fn execute_final(tool: &dyn Tool, input: serde_json::Value, ctx: ToolContext) -> ToolResult {
     tool.validate(&input, &ctx).await.unwrap();
-    let stream = tool.execute(input, ctx).await.unwrap();
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     let events = stream.collect::<Vec<_>>().await;
     events
         .into_iter()
@@ -739,7 +740,12 @@ impl BlobWriterCap for CapturingBlobWriter {
 
 async fn execute_error(tool: &dyn Tool, input: serde_json::Value, ctx: ToolContext) -> ToolError {
     tool.validate(&input, &ctx).await.unwrap();
-    let stream = tool.execute(input, ctx).await.unwrap();
+    let plan = match tool.plan(&input, &ctx).await {
+        Ok(plan) => plan,
+        Err(error) => return error,
+    };
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     let events = stream.collect::<Vec<_>>().await;
     events
         .into_iter()
@@ -771,13 +777,26 @@ fn ctx_with_cap_registry(cap_registry: CapabilityRegistry) -> ToolContext {
         subagent_depth: 0,
         workspace_root: PathBuf::from("/tmp"),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
         interrupt: InterruptToken::new(),
         parent_run: None,
         model: None,
         model_config_id: None,
+        actor_source: harness_contracts::PermissionActorSource::ParentRun,
+    }
+}
+
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: harness_contracts::TenantId::SINGLE,
+        session_id: harness_contracts::SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }
 
@@ -840,18 +859,5 @@ impl ProviderCredentialResolverCap for MiniMaxResolver {
                 base_url,
             })
         })
-    }
-}
-
-struct AllowBroker;
-
-#[async_trait::async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(&self, _decision: PersistedDecision) -> Result<(), PermissionError> {
-        Ok(())
     }
 }

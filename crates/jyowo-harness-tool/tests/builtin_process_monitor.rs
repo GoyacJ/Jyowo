@@ -9,23 +9,24 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::Utc;
 use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
-    CapabilityRegistry, CorrelationId, Decision, Event, ProcessReadInvocation, ProcessReadRequest,
-    ProcessReadResult, ProcessRuntimeStatus, ProcessStartInvocation, ProcessStartRequest,
-    ProcessStartResult, ProcessStopInvocation, ProcessStopRequest, ProcessStopResult, RedactRules,
-    Redactor, RunScopedProcessRegistryCap, SandboxError, SessionId, TenantId, ToolCapability,
-    ToolError, ToolResult, ToolUseHeartbeatEvent, ToolUseId,
-    RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
+    ActionResource, CapabilityRegistry, CorrelationId, Event, ProcessReadInvocation,
+    ProcessReadRequest, ProcessReadResult, ProcessRuntimeStatus, ProcessStartInvocation,
+    ProcessStartRequest, ProcessStartResult, ProcessStopInvocation, ProcessStopRequest,
+    ProcessStopResult, RedactRules, Redactor, RunScopedProcessRegistryCap, SandboxError, SessionId,
+    TenantId, ToolActionPlan, ToolCapability, ToolError, ToolResult, ToolUseHeartbeatEvent,
+    ToolUseId, WorkspaceAccess, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
-use harness_permission::{PermissionBroker, PermissionContext, PermissionError, PermissionRequest};
 use harness_sandbox::{
     ActivityHandle, ExecContext, ExecOutcome, ExecSpec, KillScope, ProcessHandle, SandboxBackend,
     SandboxCapabilities, SessionSnapshotFile,
 };
 use harness_tool::{
     builtin::{ProcessReadTool, ProcessStartTool, ProcessStopTool},
-    DefaultRunScopedProcessRegistry, InterruptToken, Tool, ToolContext, ValidationError,
+    AuthorizedTicketSummary, AuthorizedToolInput, DefaultRunScopedProcessRegistry, InterruptToken,
+    Tool, ToolContext, ValidationError,
 };
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -137,6 +138,162 @@ async fn process_start_streams_sandbox_events_before_final_result() {
 }
 
 #[tokio::test]
+async fn process_start_default_registry_streams_sandbox_preflight_before_final_result() {
+    let sandbox = Arc::new(FakeSandbox::new(vec![Bytes::from_static(b"ready")]));
+    let registry = Arc::new(DefaultRunScopedProcessRegistry::new(sandbox));
+    let mut caps = CapabilityRegistry::default();
+    caps.install::<dyn RunScopedProcessRegistryCap>(
+        ToolCapability::Custom(RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY.to_owned()),
+        registry,
+    );
+
+    let events = execute_events(
+        &ProcessStartTool::default(),
+        json!({ "command": "serve" }),
+        tool_ctx(caps, Arc::new(NoopRedactor)),
+    )
+    .await;
+
+    let preflight_index = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                harness_tool::ToolEvent::Journal(Event::SandboxPreflightPassed(_))
+            )
+        })
+        .expect("expected sandbox preflight event");
+    let final_index = events
+        .iter()
+        .position(|event| matches!(event, harness_tool::ToolEvent::Final(_)))
+        .expect("expected final result");
+    assert!(preflight_index < final_index);
+}
+
+#[tokio::test]
+async fn process_start_default_registry_uses_authorized_sandbox_policy() {
+    let sandbox = Arc::new(FakeSandbox::new(vec![Bytes::from_static(b"ready")]));
+    let registry = Arc::new(DefaultRunScopedProcessRegistry::new(sandbox.clone()));
+    let mut caps = CapabilityRegistry::default();
+    caps.install::<dyn RunScopedProcessRegistryCap>(
+        ToolCapability::Custom(RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY.to_owned()),
+        registry,
+    );
+    let ctx = tool_ctx(caps, Arc::new(NoopRedactor));
+    let tool = ProcessStartTool::default();
+    let input = json!({ "command": "serve" });
+    let mut plan = tool.plan(&input, &ctx).await.unwrap();
+    plan.sandbox_policy
+        .denied_host_paths
+        .push(std::path::PathBuf::from("/tmp/blocked"));
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
+    while stream.next().await.is_some() {}
+
+    let specs = sandbox.recorded_execs();
+    assert_eq!(specs.len(), 1);
+    assert_eq!(
+        specs[0].policy.denied_host_paths,
+        [std::path::PathBuf::from("/tmp/blocked")]
+    );
+}
+
+#[tokio::test]
+async fn process_start_uses_authorized_command_resource_not_raw_input() {
+    let registry = Arc::new(FakeProcessRegistry::default());
+    let mut caps = CapabilityRegistry::default();
+    caps.install::<dyn RunScopedProcessRegistryCap>(
+        ToolCapability::Custom(RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY.to_owned()),
+        registry.clone(),
+    );
+    let ctx = tool_ctx(caps, Arc::new(NoopRedactor));
+    let tool = ProcessStartTool::default();
+    let planned_input = json!({ "command": "pnpm", "args": ["dev"], "cwd": "apps/desktop" });
+    let raw_input = json!({ "command": "rm", "args": ["-rf", "/"], "cwd": "tmp" });
+    let plan = tool.plan(&planned_input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(raw_input, plan.clone(), ticket_for(&plan)).unwrap();
+
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
+    while stream.next().await.is_some() {}
+
+    let invocation = registry.last_start.lock().clone().unwrap();
+    assert_eq!(invocation.request.command, "pnpm");
+    assert_eq!(invocation.request.args, ["dev"]);
+    assert_eq!(invocation.request.cwd.as_deref(), Some("apps/desktop"));
+}
+
+#[tokio::test]
+async fn process_start_rejects_authorized_command_when_fingerprint_no_longer_matches_exec_spec() {
+    let registry = Arc::new(FakeProcessRegistry::default());
+    let mut caps = CapabilityRegistry::default();
+    caps.install::<dyn RunScopedProcessRegistryCap>(
+        ToolCapability::Custom(RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY.to_owned()),
+        registry.clone(),
+    );
+    let ctx = tool_ctx(caps, Arc::new(NoopRedactor));
+    let tool = ProcessStartTool::default();
+    let input = json!({ "command": "pnpm", "args": ["dev"] });
+    let mut plan = tool.plan(&input, &ctx).await.unwrap();
+    let Some(ActionResource::Command { command, .. }) = plan
+        .resources
+        .iter_mut()
+        .find(|resource| matches!(resource, ActionResource::Command { .. }))
+    else {
+        panic!("expected command resource");
+    };
+    *command = "rm".to_owned();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+
+    let error = match tool.execute_authorized(authorized, ctx).await {
+        Ok(_) => panic!("expected authorized execution to fail"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ToolError::PermissionDenied(ref message)
+            if message == "authorized command fingerprint mismatch"
+    ));
+    assert!(registry.last_start.lock().is_none());
+}
+
+#[tokio::test]
+async fn process_start_rejects_ticket_with_mismatched_plan_hash() {
+    let registry = Arc::new(FakeProcessRegistry::default());
+    let mut caps = CapabilityRegistry::default();
+    caps.install::<dyn RunScopedProcessRegistryCap>(
+        ToolCapability::Custom(RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY.to_owned()),
+        registry.clone(),
+    );
+    let ctx = tool_ctx(caps, Arc::new(NoopRedactor));
+    let tool = ProcessStartTool::default();
+    let plan = tool
+        .plan(&json!({ "command": "pnpm", "args": ["dev"] }), &ctx)
+        .await
+        .unwrap();
+    let other_plan = tool
+        .plan(&json!({ "command": "serve" }), &ctx)
+        .await
+        .unwrap();
+    let ticket_for_other = ticket_for(&other_plan);
+
+    let error = AuthorizedToolInput::new(
+        json!({ "command": "pnpm", "args": ["dev"] }),
+        plan.clone(),
+        ticket_for_other,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ToolError::PermissionDenied(ref message)
+            if message == "authorization ticket action plan hash does not match action plan"
+    ));
+    assert!(registry.last_start.lock().is_none());
+}
+
+#[tokio::test]
 async fn process_start_rejects_command_with_inline_args() {
     let error = validate_error(
         &ProcessStartTool::default(),
@@ -173,6 +330,10 @@ async fn default_registry_buffers_truncates_redacts_and_stops_processes() {
                     args: Vec::new(),
                     cwd: None,
                     buffer_bytes: Some(8),
+                },
+                sandbox_policy: ExecSpec::default().policy,
+                workspace_access: WorkspaceAccess::ReadWrite {
+                    allowed_writable_subpaths: Vec::new(),
                 },
             },
             Arc::new(SecretRedactor),
@@ -230,6 +391,10 @@ async fn default_registry_read_after_stop_returns_stopped_status() {
                     args: Vec::new(),
                     cwd: None,
                     buffer_bytes: None,
+                },
+                sandbox_policy: ExecSpec::default().policy,
+                workspace_access: WorkspaceAccess::ReadWrite {
+                    allowed_writable_subpaths: Vec::new(),
                 },
             },
             Arc::new(NoopRedactor),
@@ -349,6 +514,7 @@ impl Redactor for NoopRedactor {
 
 struct FakeSandbox {
     stdout: Mutex<Vec<Bytes>>,
+    recorded_execs: Mutex<Vec<ExecSpec>>,
     activity: Arc<FakeActivity>,
     kill_count: Arc<AtomicUsize>,
 }
@@ -358,12 +524,17 @@ impl FakeSandbox {
         let kill_count = Arc::new(AtomicUsize::new(0));
         Self {
             stdout: Mutex::new(stdout),
+            recorded_execs: Mutex::new(Vec::new()),
             activity: Arc::new(FakeActivity {
                 kill_count: kill_count.clone(),
                 last_activity: Instant::now(),
             }),
             kill_count,
         }
+    }
+
+    fn recorded_execs(&self) -> Vec<ExecSpec> {
+        self.recorded_execs.lock().clone()
     }
 }
 
@@ -374,14 +545,21 @@ impl SandboxBackend for FakeSandbox {
     }
 
     fn capabilities(&self) -> SandboxCapabilities {
-        SandboxCapabilities::default()
+        SandboxCapabilities {
+            supports_streaming: true,
+            supports_network: true,
+            supports_filesystem_write: true,
+            max_concurrent_execs: 1,
+            ..SandboxCapabilities::default()
+        }
     }
 
     async fn execute(
         &self,
-        _spec: ExecSpec,
+        spec: ExecSpec,
         _ctx: ExecContext,
     ) -> Result<ProcessHandle, SandboxError> {
+        self.recorded_execs.lock().push(spec);
         let stdout = std::mem::take(&mut *self.stdout.lock());
         Ok(ProcessHandle {
             pid: Some(42),
@@ -453,7 +631,9 @@ async fn execute_events(
     ctx: ToolContext,
 ) -> Vec<harness_tool::ToolEvent> {
     tool.validate(&input, &ctx).await.unwrap();
-    let mut stream = tool.execute(input, ctx).await.unwrap();
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
     let mut events = Vec::new();
     while let Some(event) = stream.next().await {
         events.push(event);
@@ -467,7 +647,12 @@ async fn validate_error(tool: &dyn Tool, input: Value, ctx: ToolContext) -> Vali
 
 async fn execute_error(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolError {
     tool.validate(&input, &ctx).await.unwrap();
-    match tool.execute(input, ctx).await {
+    let plan = match tool.plan(&input, &ctx).await {
+        Ok(plan) => plan,
+        Err(error) => return error,
+    };
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    match tool.execute_authorized(authorized, ctx).await {
         Ok(_) => panic!("expected tool error"),
         Err(error) => error,
     }
@@ -500,30 +685,26 @@ fn tool_ctx_at(
         subagent_depth: 0,
         workspace_root: workspace_root.as_ref().to_path_buf(),
         sandbox: None,
-        permission_broker: Arc::new(AllowBroker),
         cap_registry: Arc::new(cap_registry),
         redactor,
         interrupt: InterruptToken::default(),
         parent_run: None,
         model: None,
         model_config_id: None,
+        actor_source: harness_contracts::PermissionActorSource::ParentRun,
     }
 }
 
-#[derive(Debug)]
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(
-        &self,
-        _decision: harness_permission::PersistedDecision,
-    ) -> Result<(), PermissionError> {
-        Ok(())
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: harness_contracts::AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: harness_contracts::SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }
 

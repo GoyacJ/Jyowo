@@ -355,7 +355,14 @@ impl Harness {
         arguments: Value,
     ) -> Result<Value, McpServerError> {
         let args: PermissionsRespondArgs = mcp_args(arguments)?;
-        self.resolve_permission(parse_request_id(&args.request_id)?, args.decision)
+        validate_mcp_permission_decision(args.decision.clone())?;
+        let request_id = parse_request_id(&args.request_id)?;
+        validate_mcp_permission_confirmation(
+            self.inner.permission_resolver.as_ref(),
+            request_id,
+            &args,
+        )?;
+        self.resolve_permission(request_id, args.decision)
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         Ok(json!({ "resolved": true }))
@@ -718,6 +725,61 @@ impl PermissionsListOpenArgs {
 struct PermissionsRespondArgs {
     request_id: String,
     decision: Decision,
+    #[serde(default)]
+    confirmation_text: Option<String>,
+}
+
+#[cfg(feature = "mcp-server-adapter")]
+fn validate_mcp_permission_decision(decision: Decision) -> Result<(), McpServerError> {
+    match decision {
+        Decision::AllowOnce | Decision::DenyOnce | Decision::Escalate => Ok(()),
+        Decision::AllowSession | Decision::AllowPermanent | Decision::DenyPermanent => {
+            Err(McpServerError::InvalidParams(
+                "permissions_respond only accepts allow_once, deny_once, or escalate".to_owned(),
+            ))
+        }
+        _ => Err(McpServerError::InvalidParams(
+            "permissions_respond received an unsupported decision".to_owned(),
+        )),
+    }
+}
+
+#[cfg(all(feature = "mcp-server-adapter", feature = "stream-permission"))]
+fn validate_mcp_permission_confirmation(
+    resolver: Option<&ResolverHandle>,
+    request_id: RequestId,
+    args: &PermissionsRespondArgs,
+) -> Result<(), McpServerError> {
+    if !matches!(args.decision, Decision::AllowOnce) {
+        return Ok(());
+    }
+    let Some(resolver) = resolver else {
+        return Ok(());
+    };
+    let Some(pending) = resolver
+        .pending_permission_requests()
+        .into_iter()
+        .find(|pending| pending.request.request_id == request_id)
+    else {
+        return Ok(());
+    };
+    if let Some(expected) = pending.confirmation_expected {
+        if args.confirmation_text.as_deref() != Some(expected.as_str()) {
+            return Err(McpServerError::InvalidParams(
+                "confirmation text does not match the required value".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "mcp-server-adapter", not(feature = "stream-permission")))]
+fn validate_mcp_permission_confirmation(
+    _resolver: Option<&()>,
+    _request_id: RequestId,
+    _args: &PermissionsRespondArgs,
+) -> Result<(), McpServerError> {
+    Ok(())
 }
 
 #[cfg(feature = "mcp-server-adapter")]

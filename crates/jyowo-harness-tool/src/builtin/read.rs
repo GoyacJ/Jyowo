@@ -1,12 +1,16 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DecisionScope, PermissionSubject, ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    ActionResource, DecisionScope, NetworkAccess, PermissionSubject, ToolActionPlan,
+    ToolDescriptor, ToolError, ToolGroup, ToolResult, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 
-use crate::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{
+    action_plan_from_permission_check, authorized_file_path, AuthorizedFileResourceKind,
+    AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError,
+};
 
 #[derive(Clone)]
 pub struct FileReadTool {
@@ -52,14 +56,10 @@ impl Tool for FileReadTool {
         Ok(())
     }
 
-    async fn check_permission(&self, input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        let path = match super::workspace_path::scope_path(input, ctx) {
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        let path = match super::workspace_path::resolve_existing(input, ctx) {
             Ok(path) => path,
-            Err(error) => {
-                return PermissionCheck::Denied {
-                    reason: error.to_string(),
-                };
-            }
+            Err(error) => return Err(error),
         };
         if let Some(check) = super::workspace_path::dangerous_path_permission(
             input,
@@ -70,33 +70,46 @@ impl Tool for FileReadTool {
             },
             DecisionScope::PathPrefix(path.clone()),
         ) {
-            return check;
+            return action_plan_from_permission_check(
+                &self.descriptor,
+                input,
+                ctx,
+                check,
+                vec![ActionResource::FileRead { path }],
+                WorkspaceAccess::ReadOnly,
+                NetworkAccess::None,
+            );
         }
-        let path = match super::workspace_path::resolve_existing(input, ctx) {
-            Ok(path) => path,
-            Err(error) => {
-                return PermissionCheck::Denied {
-                    reason: error.to_string(),
-                };
-            }
-        };
-        PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+        action_plan_from_permission_check(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::PathPrefix(path.clone()),
             },
-            scope: DecisionScope::PathPrefix(path),
-        }
+            vec![ActionResource::FileRead { path }],
+            WorkspaceAccess::ReadOnly,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolStream, ToolError> {
-        let path = super::workspace_path::resolve_existing(&input, &ctx)?;
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        _ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let path = authorized_file_path(&authorized, AuthorizedFileResourceKind::Read)?;
+        let input = authorized.raw_input();
         let content =
             std::fs::read_to_string(path).map_err(|error| ToolError::Message(error.to_string()))?;
         let content = slice_lines(
             &content,
-            line_number(&input, "start_line").map_err(validation_error)?,
-            line_number(&input, "end_line").map_err(validation_error)?,
+            line_number(input, "start_line").map_err(validation_error)?,
+            line_number(input, "end_line").map_err(validation_error)?,
         );
         Ok(Box::pin(stream::iter([ToolEvent::Final(
             ToolResult::Text(content),

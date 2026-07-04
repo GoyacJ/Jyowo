@@ -158,6 +158,8 @@ pub enum Event {
     PluginRejected(PluginRejectedEvent),
     PluginFailed(PluginFailedEvent),
     ManifestValidationFailed(ManifestValidationFailedEvent),
+    SandboxPreflightPassed(SandboxPreflightPassedEvent),
+    SandboxPreflightFailed(SandboxPreflightFailedEvent),
     SandboxExecutionStarted(SandboxExecutionStartedEvent),
     SandboxExecutionCompleted(SandboxExecutionCompletedEvent),
     SandboxActivityHeartbeat(SandboxActivityHeartbeatEvent),

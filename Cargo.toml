@@ -6,6 +6,7 @@ members = [
   "crates/jyowo-harness-context",
   "crates/jyowo-harness-contracts",
   "crates/jyowo-harness-engine",
+  "crates/jyowo-harness-execution",
   "crates/jyowo-harness-hook",
   "crates/jyowo-harness-journal",
   "crates/jyowo-harness-mcp",

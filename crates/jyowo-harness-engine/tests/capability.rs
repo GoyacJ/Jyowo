@@ -6,10 +6,11 @@ use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
     BlobMeta, BlobRetention, BlobStore, BudgetMetric, CapabilityRegistry, Decision, DecisionScope,
-    DeferPolicy, Event, Message, MessageId, MessagePart, MessageRole, ModelError, NoopRedactor,
-    OverflowAction, PermissionError, PermissionSubject, ProviderRestriction, ResultBudget, RunId,
-    SessionId, TenantId, ToolCapability, ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties,
-    ToolResult, ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
+    DeferPolicy, Event, Message, MessageId, MessagePart, MessageRole, ModelError, NetworkAccess,
+    NoopRedactor, OverflowAction, PermissionError, PermissionSubject, ProviderRestriction,
+    ResultBudget, RunId, SessionId, TenantId, ToolActionPlan, ToolCapability, ToolDescriptor,
+    ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseId,
+    TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};
@@ -20,12 +21,16 @@ use harness_model::{
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_tool::{
-    ReadBlobTool, SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool, ToolPoolFilter,
-    ToolPoolModelProfile, ToolRegistry, ToolStream, ValidationError,
+    action_plan_from_permission_check, AuthorizedToolInput, ReadBlobTool, SchemaResolverContext,
+    Tool, ToolContext, ToolEvent, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry,
+    ToolStream, ValidationError,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::sync::Mutex;
+
+mod authorization_support;
+use authorization_support::test_authorization_service;
 
 #[tokio::test]
 async fn with_blob_store_installs_read_blob_capabilities_and_denies_unoffloaded_blob() {
@@ -173,7 +178,10 @@ impl Harness {
             .with_hooks(HookDispatcher::new(hooks.snapshot()))
             .with_model(model.clone())
             .with_tools(tool_pool)
-            .with_permission_broker(Arc::new(AllowBroker))
+            .with_authorization_service(test_authorization_service(
+                Arc::new(AllowBroker),
+                store.clone(),
+            ))
             .with_workspace_root(workspace.path())
             .with_model_id("test-model")
             .with_protocol(ModelProtocol::Messages);
@@ -292,6 +300,10 @@ struct AllowBroker;
 
 #[async_trait]
 impl PermissionBroker for AllowBroker {
+    fn can_anchor_authority(&self) -> bool {
+        true
+    }
+
     async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
         Decision::AllowOnce
     }
@@ -348,25 +360,29 @@ impl Tool for CustomCapTool {
         Ok(())
     }
 
-    async fn check_permission(
-        &self,
-        input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: self.descriptor.name.clone(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: self.descriptor.name.clone(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
-            scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
+    ) -> Result<ToolStream, ToolError> {
         let cap = ctx.capability::<dyn TestCustomCap>(custom_capability())?;
         Ok(Box::pin(stream::iter([ToolEvent::Final(
             ToolResult::Text(cap.label().to_owned()),

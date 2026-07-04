@@ -48,19 +48,19 @@ use jyowo_harness_sdk::ext::{
     build_provider, now, provider_catalog_entries, resolve_model_descriptor,
     runnable_inventory_models, AgentId, BlobMeta, BlobRef, BlobRetention, BlobStore,
     ConversationModelCapability, Decision, DecisionScope, DeltaChunk, DirectorySourceKind,
-    EndReason, Event, EventId, EventStore, HttpTransport, InteractivityLevel, McpConnectionState,
-    McpEventSink, McpRegistry, McpServerId, McpServerScope, McpServerSource, McpServerSpec,
-    MemoryId, MemoryKind, MemoryRecord, MemorySource, MemorySummary, MemoryVisibility,
-    MessageContent, MessagePart, ModelDescriptor, ModelInventoryEntry, ModelLifecycle,
-    ModelModality, ModelProtocol, ModelProvider, ModelRuntimeStatus, PendingPermissionRequest,
-    PermissionMode, PermissionSubject, ProviderAuthScheme, ProviderBaseUrlRegion,
-    ProviderBuildConfig, ProviderCredential, ProviderCredentialResolveContext,
-    ProviderCredentialResolverCap, ProviderProbeInput, ProviderProbeRunner, ProviderRegistryError,
-    ProviderRuntimeCapability, ProviderServiceCapability, ProviderServiceCategory,
-    ProviderServiceCostRisk, ProviderServiceExecution, RedactPatternSet, RedactRules, RedactScope,
-    Redactor, RequestId, RunId, SessionId, Severity, SkillLoader, SkillSourceConfig, StdioEnv,
-    StdioPolicy, StdioTransport, TenantId, ToolCapability, ToolError, ToolProfile, ToolUseId,
-    TransportChoice,
+    EndReason, Event, EventId, EventStore, FallbackPolicy, HttpTransport, InteractivityLevel,
+    McpAuthorizationContext, McpConnectContext, McpConnectionState, McpEventSink, McpRegistry,
+    McpServerId, McpServerScope, McpServerSource, McpServerSpec, MemoryId, MemoryKind,
+    MemoryRecord, MemorySource, MemorySummary, MemoryVisibility, MessageContent, MessagePart,
+    ModelDescriptor, ModelInventoryEntry, ModelLifecycle, ModelModality, ModelProtocol,
+    ModelProvider, ModelRuntimeStatus, PendingPermissionRequest, PermissionMode, PermissionSubject,
+    ProviderAuthScheme, ProviderBaseUrlRegion, ProviderBuildConfig, ProviderCredential,
+    ProviderCredentialResolveContext, ProviderCredentialResolverCap, ProviderProbeInput,
+    ProviderProbeRunner, ProviderRegistryError, ProviderRuntimeCapability,
+    ProviderServiceCapability, ProviderServiceCategory, ProviderServiceCostRisk,
+    ProviderServiceExecution, RedactPatternSet, RedactRules, RedactScope, Redactor, RequestId,
+    RunId, SessionId, Severity, SkillLoader, SkillSourceConfig, StdioEnv, StdioPolicy,
+    StdioTransport, TenantId, ToolCapability, ToolError, ToolProfile, ToolUseId, TransportChoice,
 };
 use jyowo_harness_sdk::{
     resolve_agent_runtime_policy, AgentCapabilitiesInput, AgentCapabilityResolutionContext,
@@ -1547,6 +1547,7 @@ pub async fn cancel_run(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn resolve_permission(
     conversation_id: String,
+    confirmation_text: Option<String>,
     decision: PermissionDecision,
     request_id: String,
     window: tauri::Window,
@@ -1557,6 +1558,7 @@ pub async fn resolve_permission(
     resolve_permission_for_window_with_runtime_state(
         ResolvePermissionRequest {
             conversation_id,
+            confirmation_text,
             decision,
             request_id,
         },

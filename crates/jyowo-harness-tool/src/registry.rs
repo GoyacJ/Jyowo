@@ -4,14 +4,15 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use harness_contracts::{
     canonical_mcp_tool_name, parse_canonical_mcp_tool_name, validate_tool_name, McpServerId,
-    McpServerSource, ProviderServiceAdapterAvailability, ShadowReason, ToolCapability,
-    ToolDescriptor, ToolGroup, ToolOrigin, ToolServiceBinding, TrustLevel,
+    McpServerSource, ProviderServiceAdapterAvailability, ShadowReason, ToolActionPlan,
+    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolServiceBinding,
+    TrustLevel,
 };
 use parking_lot::RwLock;
 use serde_json::Value;
 
 use crate::{
-    PermissionCheck, SchemaResolverContext, Tool, ToolContext, ToolJournalAuthority,
+    AuthorizedToolInput, SchemaResolverContext, Tool, ToolContext, ToolJournalAuthority,
     ToolRegistryBuilder, ToolStream, ValidationError,
 };
 
@@ -280,16 +281,16 @@ impl Tool for PluginOriginTool {
         self.inner.validate(input, ctx).await
     }
 
-    async fn check_permission(&self, input: &Value, ctx: &ToolContext) -> PermissionCheck {
-        self.inner.check_permission(input, ctx).await
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        self.inner.plan(input, ctx).await
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        input: Value,
+        authorized: AuthorizedToolInput,
         ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
-        self.inner.execute(input, ctx).await
+    ) -> Result<ToolStream, ToolError> {
+        self.inner.execute_authorized(authorized, ctx).await
     }
 }
 

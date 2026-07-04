@@ -165,6 +165,36 @@ fn blob_ref_with_content_type(size: u64, content_type: &str) -> BlobRef {
     }
 }
 
+fn test_permission_review() -> PermissionReview {
+    PermissionReview {
+        summary: "Approve command execution".to_owned(),
+        details: vec![PermissionReviewDetail {
+            label: "Command".to_owned(),
+            value: "rm".to_owned(),
+            redacted: true,
+        }],
+        confirmation: PermissionConfirmation::TypeToConfirm {
+            expected: "DELETE".to_owned(),
+        },
+        redacted: true,
+    }
+}
+
+fn test_sandbox_policy_summary() -> SandboxPolicySummary {
+    SandboxPolicySummary {
+        mode: SandboxMode::OsLevel(LocalIsolationTag::None),
+        scope: SandboxScope::WorkspaceOnly,
+        network: NetworkAccess::None,
+        resource_limits: ResourceLimits {
+            max_memory_bytes: Some(268_435_456),
+            max_cpu_cores: Some(1.0),
+            max_pids: Some(64),
+            max_wall_clock_ms: Some(30_000),
+            max_open_files: Some(128),
+        },
+    }
+}
+
 #[tokio::test]
 async fn sqlite_conversation_read_model_projects_only_safe_command_preview() {
     let root = temp_root("safe-command-preview");
@@ -1916,6 +1946,13 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
                     role: "researcher sk-abcdefghijklmnopqrstuvwxyz".to_owned(),
                     parent_run_id: Some(run_id),
                 },
+                action_plan_hash: ActionPlanHash::from_hex(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .expect("valid action plan hash"),
+                review: test_permission_review(),
+                effective_mode: PermissionMode::Default,
+                sandbox_policy: test_sandbox_policy_summary(),
                 causation_id: EventId::new(),
                 at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(3),
             }),
@@ -1931,6 +1968,12 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
                 scope: DecisionScope::Any,
                 fingerprint: None,
                 rationale: None,
+                action_plan_hash: ActionPlanHash::from_hex(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .expect("valid action plan hash"),
+                decision_id: DecisionId::from_u128(44),
+                auto_resolved: false,
                 at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(4),
             }),
         ),
@@ -2051,6 +2094,24 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
     assert_eq!(page.events[3].payload["target"], "rm");
     assert_eq!(page.events[3].payload["toolUseId"], tool_use_id.to_string());
     assert_eq!(
+        page.events[3].payload["actionPlanHash"],
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(page.events[3].payload["effectiveMode"], "default");
+    assert_eq!(
+        page.events[3].payload["review"]["summary"],
+        "Approve command execution"
+    );
+    assert_eq!(
+        page.events[3].payload["review"]["confirmation"]["type"],
+        "typeToConfirm"
+    );
+    assert_eq!(
+        page.events[3].payload["sandboxPolicy"]["mode"],
+        serde_json::json!({ "osLevel": "none" })
+    );
+    assert_eq!(page.events[3].payload["sandboxPolicy"]["network"], "none");
+    assert_eq!(
         page.events[3].payload["actorSource"],
         serde_json::json!({
             "type": "teamMember",
@@ -2061,6 +2122,15 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
         })
     );
     assert_eq!(page.events[4].payload["decision"], "deny");
+    assert_eq!(
+        page.events[4].payload["actionPlanHash"],
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(
+        page.events[4].payload["decisionId"],
+        DecisionId::from_u128(44).to_string()
+    );
+    assert_eq!(page.events[4].payload["autoResolved"], false);
     assert_eq!(page.events[5].payload["artifactId"], "artifact-001");
     assert_eq!(page.events[5].payload["title"], "Report");
     assert_eq!(page.events[5].payload["summary"], "Image artifact ready");
@@ -2090,6 +2160,135 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
     assert_eq!(
         page.events[8].payload["body"],
         "Tool output was summarized from [REDACTED]"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_conversation_read_model_projects_new_permission_actor_sources() {
+    let root = temp_root("permission-new-actor-sources");
+    let store = SqliteConversationReadModelStore::open(root.join("read-model.sqlite"))
+        .await
+        .expect("store opens");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let automation_request_id = RequestId::new();
+    let mcp_request_id = RequestId::new();
+    let automation_tool_use_id = ToolUseId::new();
+    let mcp_tool_use_id = ToolUseId::new();
+    let action_plan_hash = ActionPlanHash::from_hex(
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    .expect("valid action plan hash");
+    let envelopes = vec![
+        envelope(
+            tenant_id,
+            session_id,
+            1,
+            Event::PermissionRequested(PermissionRequestedEvent {
+                request_id: automation_request_id,
+                run_id,
+                session_id,
+                tenant_id,
+                tool_use_id: automation_tool_use_id,
+                tool_name: "write_file".to_owned(),
+                subject: PermissionSubject::FileWrite {
+                    path: "workspace://schedule.md".into(),
+                    bytes_preview: Vec::new(),
+                },
+                severity: Severity::Medium,
+                scope_hint: DecisionScope::ToolName("write_file".to_owned()),
+                fingerprint: None,
+                presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+                interactivity: InteractivityLevel::DeferredInteractive,
+                auto_resolved: true,
+                actor_source: PermissionActorSource::Automation {
+                    automation_id: "automation-nightly".to_owned(),
+                    conversation_id: session_id,
+                    run_id: Some(run_id),
+                },
+                action_plan_hash: action_plan_hash.clone(),
+                review: test_permission_review(),
+                effective_mode: PermissionMode::DontAsk,
+                sandbox_policy: test_sandbox_policy_summary(),
+                causation_id: EventId::new(),
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(1),
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            2,
+            Event::PermissionRequested(PermissionRequestedEvent {
+                request_id: mcp_request_id,
+                run_id,
+                session_id,
+                tenant_id,
+                tool_use_id: mcp_tool_use_id,
+                tool_name: "mcp.resource.read".to_owned(),
+                subject: PermissionSubject::McpToolCall {
+                    server: "browser".to_owned(),
+                    tool: "resources/read".to_owned(),
+                    input: serde_json::json!({ "uri": "workspace://page" }),
+                },
+                severity: Severity::Low,
+                scope_hint: DecisionScope::ToolName("mcp.resource.read".to_owned()),
+                fingerprint: None,
+                presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+                interactivity: InteractivityLevel::FullyInteractive,
+                auto_resolved: false,
+                actor_source: PermissionActorSource::McpServer {
+                    server_id: McpServerId("browser".to_owned()),
+                    origin: ManifestOriginRef::RemoteRegistry {
+                        endpoint: "registry.example/redacted".to_owned(),
+                    },
+                    scope: McpServerScope::Session(session_id),
+                },
+                action_plan_hash,
+                review: test_permission_review(),
+                effective_mode: PermissionMode::Default,
+                sandbox_policy: test_sandbox_policy_summary(),
+                causation_id: EventId::new(),
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(2),
+            }),
+        ),
+    ];
+
+    store
+        .apply_envelopes(tenant_id, session_id, &envelopes, None)
+        .await
+        .expect("projection applies");
+
+    let page = store
+        .page_timeline(tenant_id, session_id, None, 20)
+        .await
+        .expect("timeline loads");
+
+    assert_eq!(
+        page.events[0].payload["actorSource"],
+        serde_json::json!({
+            "type": "automation",
+            "automationId": "automation-nightly",
+            "conversationId": session_id.to_string(),
+            "runId": run_id.to_string(),
+        })
+    );
+    assert_eq!(page.events[0].payload["autoResolved"], true);
+    assert_eq!(page.events[0].payload["effectiveMode"], "dont_ask");
+    assert_eq!(
+        page.events[1].payload["actorSource"],
+        serde_json::json!({
+            "type": "mcpServer",
+            "serverId": "browser",
+            "origin": {
+                "type": "remoteRegistry",
+                "endpoint": "registry.example/redacted",
+            },
+            "scope": {
+                "type": "session",
+                "conversationId": session_id.to_string(),
+            },
+        })
     );
 }
 

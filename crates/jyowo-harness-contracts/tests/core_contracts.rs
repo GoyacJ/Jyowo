@@ -162,6 +162,10 @@ fn permission_requested_serializes_auto_resolved_and_defaults_legacy_events() {
         interactivity: InteractivityLevel::FullyInteractive,
         auto_resolved: true,
         actor_source: PermissionActorSource::ParentRun,
+        action_plan_hash: ActionPlanHash::default(),
+        review: PermissionReview::default(),
+        effective_mode: PermissionMode::Default,
+        sandbox_policy: SandboxPolicySummary::default(),
         causation_id: EventId::new(),
         at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
     };
@@ -427,6 +431,7 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
         tool_use_id: "tool-use-1".to_owned(),
         status: ToolPermissionStatus::Approved,
         summary: Some(UiSafeText::from_trusted_redacted("Approved once")),
+        confirmation_expected: None,
         event_refs: vec![event_ref.clone()],
     };
     let page = ConversationWorktreePage {

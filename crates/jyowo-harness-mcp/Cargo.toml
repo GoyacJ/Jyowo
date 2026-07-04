@@ -25,6 +25,9 @@ oauth = ["dep:jsonwebtoken", "dep:reqwest", "dep:ring"]
 
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-execution = { path = "../jyowo-harness-execution" }
+jyowo-harness-permission = { path = "../jyowo-harness-permission" }
+jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox" }
 jyowo-harness-tool = { path = "../jyowo-harness-tool" }
 async-trait = { workspace = true }
 async-stream = { workspace = true }
@@ -51,5 +54,6 @@ reqwest-eventsource-client = { package = "reqwest", version = "0.13.4", default-
 tokio-tungstenite = { workspace = true, optional = true }
 
 [dev-dependencies]
+jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox", features = ["noop"] }
 parking_lot = "0.12.5"
 wiremock = "0.6.5"

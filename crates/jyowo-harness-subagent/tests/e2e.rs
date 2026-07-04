@@ -1,18 +1,23 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
-    BudgetMetric, CapabilityRegistry, DeferPolicy, OverflowAction, ProviderRestriction,
-    ResultBudget, SubagentRunnerCap, ToolCapability, ToolDescriptor, ToolGroup, ToolOrigin,
-    ToolProperties, ToolResult, TrustLevel, UsageSnapshot,
+    AuthorizationTicketId, BudgetMetric, CapabilityRegistry, DeferPolicy, NetworkAccess,
+    OverflowAction, ProviderRestriction, ResultBudget, RunId, SessionId, SubagentRunnerCap,
+    TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, TrustLevel, UsageSnapshot, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use harness_subagent::{
     AgentTool, ParentContext, SubagentAnnouncement, SubagentHandle, SubagentRunner,
     SubagentRunnerCapAdapter, SubagentSpec, SubagentStatus,
 };
-use harness_tool::{Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use harness_tool::{
+    action_plan_from_permission_check, AuthorizedTicketSummary, AuthorizedToolInput, Tool,
+    ToolContext, ToolEvent, ToolStream, ValidationError,
+};
 use serde_json::{json, Value};
 
 #[tokio::test]
@@ -28,16 +33,16 @@ async fn parent_agent_tool_spawns_child_that_calls_tool_and_announces_back() {
     let parent_tool = AgentTool::default();
     let parent_ctx = harness_subagent::testing::tool_context_with_caps(Arc::new(registry));
     let parent_session_id = parent_ctx.session_id;
-    let stream = parent_tool
-        .execute(
-            json!({
-                "role": "reviewer",
-                "task": "call child tool"
-            }),
-            parent_ctx,
-        )
-        .await
-        .unwrap();
+    let stream = execute_authorized_tool(
+        &parent_tool,
+        json!({
+            "role": "reviewer",
+            "task": "call child tool"
+        }),
+        parent_ctx,
+    )
+    .await
+    .unwrap();
 
     let events: Vec<_> = stream.collect().await;
     let ToolEvent::Final(ToolResult::Structured(announcement)) = events.last().unwrap() else {
@@ -69,11 +74,13 @@ impl SubagentRunner for ChildToolRunner {
         let child_ctx = harness_subagent::testing::tool_context_with_caps(Arc::new(
             CapabilityRegistry::default(),
         ));
-        let stream = self
-            .child_tool
-            .execute(json!({ "task": spec.task }), child_ctx)
-            .await
-            .map_err(|error| harness_subagent::SubagentError::Engine(error.to_string()))?;
+        let stream = execute_authorized_tool(
+            self.child_tool.as_ref(),
+            json!({ "task": spec.task }),
+            child_ctx,
+        )
+        .await
+        .map_err(|error| harness_subagent::SubagentError::Engine(error.to_string()))?;
         let events: Vec<_> = stream.collect().await;
         let Some(ToolEvent::Final(ToolResult::Structured(result))) = events.last() else {
             return Err(harness_subagent::SubagentError::Engine(
@@ -160,16 +167,25 @@ impl Tool for ChildTool {
         }
     }
 
-    async fn check_permission(&self, _input: &Value, _ctx: &ToolContext) -> PermissionCheck {
-        PermissionCheck::Allowed
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        input: Value,
+        authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
-        let task = input
+    ) -> Result<ToolStream, ToolError> {
+        let task = authorized
+            .raw_input()
             .get("task")
             .and_then(Value::as_str)
             .unwrap_or_default()
@@ -180,5 +196,31 @@ impl Tool for ChildTool {
                 "task": task
             })),
         )])))
+    }
+}
+
+async fn execute_authorized_tool<T: Tool + ?Sized>(
+    tool: &T,
+    input: Value,
+    ctx: ToolContext,
+) -> Result<ToolStream, ToolError> {
+    tool.validate(&input, &ctx)
+        .await
+        .expect("test input validates");
+    let plan = tool.plan(&input, &ctx).await?;
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan))?;
+    tool.execute_authorized(authorized, ctx).await
+}
+
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    AuthorizedTicketSummary {
+        ticket_id: AuthorizationTicketId::new(),
+        tenant_id: TenantId::SINGLE,
+        session_id: SessionId::new(),
+        run_id: RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+        consumed_at: Utc::now(),
     }
 }

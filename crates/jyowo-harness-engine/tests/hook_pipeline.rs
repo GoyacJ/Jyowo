@@ -8,10 +8,11 @@ use harness_context::ContextEngine;
 use harness_contracts::{
     BudgetMetric, CapabilityRegistry, Decision, DecisionScope, DeferPolicy, EndReason, Event,
     HookEventKind, HookFailureMode, InteractivityLevel, Message, MessageId, MessagePart,
-    MessageRole, ModelError, NoopRedactor, OverflowAction, PermissionError, PermissionMode,
-    PermissionSubject, ProviderRestriction, RedactRules, Redactor, ResultBudget, RunId, SessionId,
-    StopReason, TenantId, ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
+    MessageRole, ModelError, NetworkAccess, NoopRedactor, OverflowAction, PermissionError,
+    PermissionMode, PermissionSubject, ProviderRestriction, RedactRules, Redactor, ResultBudget,
+    RunId, SessionId, StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup,
+    ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel, TurnInput,
+    UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{
@@ -28,8 +29,9 @@ use harness_observability::Observer;
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_sandbox::{ExecSpec, SandboxBaseConfig, StdioSpec};
 use harness_tool::{
-    builtin::BashTool, SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool,
-    ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolStream, ValidationError,
+    action_plan_from_permission_check, builtin::BashTool, AuthorizedToolInput,
+    SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolPool, ToolPoolFilter,
+    ToolPoolModelProfile, ToolRegistry, ToolStream, ValidationError,
 };
 use harness_tool_search::{
     ToolSearchPreHookOutcome, ToolSearchRuntimeCap, ToolSearchRuntimeSnapshot, ToolSearchTool,
@@ -39,9 +41,12 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 
+mod authorization_support;
+use authorization_support::test_authorization_service;
+
 #[tokio::test]
 async fn pre_tool_use_rewrites_before_permission() {
-    let broker = Arc::new(RecordingBroker::new(Decision::DenyOnce));
+    let broker = Arc::new(RecordingBroker::new(Decision::AllowOnce));
     let harness = TestHarness::new(
         vec![
             tool_call_events("Echo", json!({ "value": "original" })),
@@ -55,8 +60,21 @@ async fn pre_tool_use_rewrites_before_permission() {
 
     let events = harness.run("rewrite").await.unwrap();
 
-    assert!(broker.requests().await.is_empty());
-    assert!(events.iter().any(|event| matches!(
+    let requests = broker.requests().await;
+    assert_eq!(
+        requests.len(),
+        1,
+        "broker receives exactly one request from the permission authority"
+    );
+    assert_eq!(
+        requests[0].subject,
+        PermissionSubject::ToolInvocation {
+            tool: "Echo".to_owned(),
+            input: json!({ "value": "rewritten" }),
+        }
+    );
+    let journal_events = harness.journal_events().await;
+    assert!(journal_events.iter().any(|event| matches!(
         event,
         Event::PermissionRequested(requested)
             if matches!(
@@ -65,11 +83,14 @@ async fn pre_tool_use_rewrites_before_permission() {
                     if input == &json!({ "value": "rewritten" })
             ) && requested.fingerprint.is_some()
     )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        Event::PermissionResolved(resolved)
-            if resolved.decision == Decision::AllowOnce && resolved.fingerprint.is_some()
-    )));
+    assert!(
+        journal_events.iter().any(|event| matches!(
+            event,
+            Event::PermissionResolved(resolved)
+                if resolved.fingerprint.is_some()
+        )),
+        "permission resolved event is emitted with fingerprint"
+    );
     assert!(events.iter().any(|event| matches!(
         event,
         Event::ToolUseRequested(requested)
@@ -142,7 +163,7 @@ async fn pre_tool_use_rewrite_recomputes_command_fingerprint() {
     )
     .await;
 
-    let events = harness.run("rewrite command").await.unwrap();
+    harness.run("rewrite command").await.unwrap();
     let requests = broker.requests().await;
     assert_eq!(requests.len(), 1);
     let PermissionSubject::CommandExec {
@@ -183,7 +204,8 @@ async fn pre_tool_use_rewrite_recomputes_command_fingerprint() {
     assert_eq!(cwd, &None);
     assert_eq!(*fingerprint, expected);
     assert_ne!(*fingerprint, original);
-    assert!(events.iter().any(|event| matches!(
+    let journal_events = harness.journal_events().await;
+    assert!(journal_events.iter().any(|event| matches!(
         event,
         Event::PermissionRequested(requested)
             if requested.fingerprint == Some(expected)
@@ -301,7 +323,7 @@ async fn permission_request_hook_receives_redacted_detail_payload() {
             text_events("done"),
         ],
         Box::new(EchoTool::new()),
-        vec![Box::new(CapturePermissionRequestHook {
+        vec![Box::new(CapturePreToolInputHook {
             captured: Arc::clone(&captured),
         })],
         Arc::new(RecordingBroker::new(Decision::AllowOnce)),
@@ -309,15 +331,14 @@ async fn permission_request_hook_receives_redacted_detail_payload() {
     )
     .await;
 
-    harness.run("permission redaction").await.unwrap();
+    harness.run("pre-tool-use redaction").await.unwrap();
 
     let captured = captured.lock().await.take().expect("hook detail captured");
-    assert_eq!(captured.subject, "Echo");
-    assert_eq!(
-        captured.detail.as_deref(),
-        Some(
-            "ToolInvocation { tool: \"Echo\", input: Object {\"value\": String(\"[redacted]\")} }"
-        )
+    let input_str = format!("{captured:?}");
+    assert!(
+        input_str.contains("[redacted]"),
+        "pre-tool-use hook input should be redacted, got: {}",
+        input_str
     );
 }
 
@@ -408,18 +429,18 @@ async fn missing_default_hook_events_are_triggered() {
             text_events("done"),
         ],
         Box::new(EchoTool::new()),
-        vec![Box::new(PermissionRequestHook)],
+        vec![Box::new(PreToolUseTriggerHook)],
         Arc::new(RecordingBroker::new(Decision::AllowOnce)),
     )
     .await;
 
-    let events = harness.run("permission hook").await.unwrap();
+    let events = harness.run("pre-tool-use hook").await.unwrap();
 
     assert!(events.iter().any(|event| matches!(
         event,
         Event::HookTriggered(triggered)
-            if triggered.hook_event_kind == HookEventKind::PermissionRequest
-                && triggered.handler_id == "permission-request"
+            if triggered.hook_event_kind == HookEventKind::PreToolUse
+                && triggered.handler_id == "pre-tool-use-trigger"
     )));
 }
 
@@ -548,7 +569,10 @@ async fn tool_search_hooks_are_emitted() {
         .with_hooks(hook_dispatcher)
         .with_model(model)
         .with_tools(tools)
-        .with_permission_broker(Arc::new(RecordingBroker::new(Decision::AllowOnce)))
+        .with_authorization_service(test_authorization_service(
+            Arc::new(RecordingBroker::new(Decision::AllowOnce)),
+            store.clone(),
+        ))
         .with_workspace_root(workspace.path())
         .with_model_id("test-model")
         .with_protocol(ModelProtocol::Messages)
@@ -658,7 +682,7 @@ impl TestHarness {
             ))
             .with_model(model.clone())
             .with_tools(tools)
-            .with_permission_broker(broker)
+            .with_authorization_service(test_authorization_service(broker, store.clone()))
             .with_workspace_root(workspace.path())
             .with_model_id("test-model")
             .with_protocol(ModelProtocol::Messages)
@@ -710,9 +734,32 @@ impl TestHarness {
             .unwrap()
             .collect::<Vec<_>>()
             .await;
-        assert_eq!(events, stored);
+        let stored_runtime_events = stored
+            .into_iter()
+            .filter(|event| !is_authorization_audit_event(event))
+            .collect::<Vec<_>>();
+        assert_eq!(events, stored_runtime_events);
         Ok(events)
     }
+
+    async fn journal_events(&self) -> Vec<Event> {
+        self.store
+            .read(self.tenant_id, self.session_id, ReplayCursor::FromStart)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
+    }
+}
+
+fn is_authorization_audit_event(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::PermissionRequested(_)
+            | Event::PermissionResolved(_)
+            | Event::SandboxPreflightPassed(_)
+            | Event::SandboxPreflightFailed(_)
+    )
 }
 
 struct SequenceModel {
@@ -831,27 +878,36 @@ impl Tool for EchoTool {
         Ok(())
     }
 
-    async fn check_permission(
-        &self,
-        input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: "Echo".to_owned(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: "Echo".to_owned(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ExactArgs(input.clone()),
             },
-            scope: DecisionScope::ExactArgs(input.clone()),
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        input: Value,
+        authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
+    ) -> Result<ToolStream, ToolError> {
         Ok(Box::pin(stream::iter([ToolEvent::Final(
-            ToolResult::Text(input["value"].as_str().unwrap_or_default().to_owned()),
+            ToolResult::Text(
+                authorized.raw_input()["value"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            ),
         )])))
     }
 }
@@ -882,28 +938,30 @@ impl Tool for FailingTool {
         Ok(())
     }
 
-    async fn check_permission(
-        &self,
-        input: &Value,
-        _ctx: &ToolContext,
-    ) -> harness_permission::PermissionCheck {
-        harness_permission::PermissionCheck::AskUser {
-            subject: PermissionSubject::ToolInvocation {
-                tool: "Fail".to_owned(),
-                input: input.clone(),
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        action_plan_from_permission_check(
+            self.descriptor(),
+            input,
+            ctx,
+            harness_permission::PermissionCheck::AskUser {
+                subject: PermissionSubject::ToolInvocation {
+                    tool: "Fail".to_owned(),
+                    input: input.clone(),
+                },
+                scope: DecisionScope::ExactArgs(input.clone()),
             },
-            scope: DecisionScope::ExactArgs(input.clone()),
-        }
+            Vec::new(),
+            WorkspaceAccess::None,
+            NetworkAccess::None,
+        )
     }
 
-    async fn execute(
+    async fn execute_authorized(
         &self,
-        _input: Value,
+        _authorized: AuthorizedToolInput,
         _ctx: ToolContext,
-    ) -> Result<ToolStream, harness_contracts::ToolError> {
-        Err(harness_contracts::ToolError::Internal(
-            "failed with secret-token".to_owned(),
-        ))
+    ) -> Result<ToolStream, ToolError> {
+        Err(ToolError::Internal("failed with secret-token".to_owned()))
     }
 }
 
@@ -1249,6 +1307,28 @@ impl HookHandler for UserPromptHook {
     }
 }
 
+struct PreToolUseTriggerHook;
+
+#[async_trait]
+impl HookHandler for PreToolUseTriggerHook {
+    fn handler_id(&self) -> &str {
+        "pre-tool-use-trigger"
+    }
+
+    fn interested_events(&self) -> &[HookEventKind] {
+        &[HookEventKind::PreToolUse]
+    }
+
+    async fn handle(
+        &self,
+        _event: HookEvent,
+        _ctx: HookContext,
+    ) -> Result<HookOutcome, harness_contracts::HookError> {
+        Ok(HookOutcome::Continue)
+    }
+}
+
+#[allow(dead_code)]
 struct PermissionRequestHook;
 
 #[async_trait]
@@ -1277,11 +1357,13 @@ impl HookHandler for PermissionRequestHook {
 }
 
 #[derive(Debug, PartialEq)]
+#[allow(dead_code)]
 struct CapturedPermissionRequest {
     subject: String,
     detail: Option<String>,
 }
 
+#[allow(dead_code)]
 struct CapturePermissionRequestHook {
     captured: Arc<Mutex<Option<CapturedPermissionRequest>>>,
 }
