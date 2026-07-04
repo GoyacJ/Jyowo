@@ -8,7 +8,6 @@ import { ErrorSegmentView } from './error-segment-view'
 import { NoticeSegmentView } from './notice-segment-view'
 import { ProcessPanel } from './process-panel'
 import { ReviewRequestSegmentView } from './review-request-segment-view'
-import { ThinkingPanel } from './thinking-panel'
 import { ToolGroupSegmentView } from './tool-group-segment-view'
 
 export function AssistantWorkView({
@@ -67,8 +66,6 @@ export function AssistantWorkView({
                   segment={segment}
                 />
               )
-            case 'thinking':
-              return <ThinkingPanel key={segment.id} segment={segment} />
             case 'text':
               return <AssistantTextSegmentView key={segment.id} segment={segment} />
             case 'toolGroup':
@@ -86,7 +83,7 @@ export function AssistantWorkView({
             case 'artifact':
               if (
                 segment.status === 'ready' &&
-                segment.media?.kind === 'image' &&
+                segment.revision.media?.kind === 'image' &&
                 processImageArtifactIds.has(segment.artifactId)
               ) {
                 return null

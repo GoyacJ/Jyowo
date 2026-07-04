@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import type { AgentActivitySegment as AgentActivitySegmentType } from '@/shared/tauri/commands'
 import { Button } from '@/shared/ui/button'
 
-import { PermissionInlinePanel } from './timeline/permission-inline-panel'
+import { DecisionPanel } from './evidence/DecisionPanel'
 
 export function AgentActivitySegmentView({
   conversationId,
@@ -67,14 +67,27 @@ export function AgentActivitySegmentView({
               {parentRunId ? <span>{parentRunId}</span> : null}
             </div>
           ) : null}
-          <PermissionInlinePanel
+          <DecisionPanel
             conversationId={conversationId}
-            onResolve={onPermissionResolve}
-            permission={{
-              ...segment.permission,
+            decision={{
+              id: segment.permission.id,
+              requestId: segment.permission.requestId,
               toolUseId: segment.agentId,
+              status: segment.permission.status,
+              operation: 'unknown',
+              target: { kind: 'unknown', label: segment.role },
+              riskLevel: 'medium',
+              reason: segment.permission.summary ?? '',
+              policy: { mode: 'default' },
+              decisionOptions: [],
+              dataExposure: {
+                sendsWorkspaceData: false,
+                sendsNetworkData: false,
+                touchesPrivatePath: false,
+                secretRisk: 'none',
+              },
             }}
-            turnId={turnId}
+            onResolve={onPermissionResolve}
           />
         </div>
       ) : null}

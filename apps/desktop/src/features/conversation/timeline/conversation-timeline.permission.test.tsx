@@ -6,7 +6,7 @@ import { appI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
 import { ConversationTimeline } from './conversation-timeline'
 import { resetTimelineTestState, toolEvidenceTurn, turn } from './conversation-timeline-test-utils'
-import { PermissionInlinePanel } from './permission-inline-panel'
+import { DecisionPanel } from '../evidence/DecisionPanel'
 
 describe('ConversationTimeline', () => {
   afterEach(() => {
@@ -45,29 +45,40 @@ describe('ConversationTimeline', () => {
     const onResolve = vi.fn()
 
     render(
-      <PermissionInlinePanel
+      <DecisionPanel
         conversationId="conversation-001"
-        onResolve={onResolve}
-        permission={{
-          confirmationExpected: 'DELETE',
+        decision={{
           id: 'permission:request-confirm',
           requestId: 'request-confirm',
-          status: 'pending',
           toolUseId: 'tool-confirm',
+          status: 'pending',
+          operation: 'execute',
+          target: { kind: 'command', label: 'delete files' },
+          riskLevel: 'high',
+          reason: 'Destructive operation',
+          policy: { mode: 'default' },
+          decisionOptions: [
+            { id: 'opt-1', decision: 'approve', label: 'Approve once', lifetime: 'once', matcher: { kind: 'exactCommand', label: 'rm' }, requiresConfirmation: false },
+          ],
+          dataExposure: { sendsWorkspaceData: false, sendsNetworkData: false, touchesPrivatePath: true, secretRisk: 'none' },
+          confirmation: { expectedText: 'DELETE', label: 'Type DELETE to confirm' },
         }}
-        turnId="turn-001"
+        onResolve={onResolve}
       />,
     )
 
     fireEvent.change(screen.getByLabelText('Confirmation text'), {
       target: { value: 'DELETE' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    // Select the option first, then approve
+    fireEvent.click(screen.getByText('Approve once'))
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }))
 
     expect(onResolve).toHaveBeenCalledWith({
       conversationId: 'conversation-001',
       requestId: 'request-confirm',
       decision: 'approve',
+      optionId: 'opt-1',
       confirmationText: 'DELETE',
     })
   })
