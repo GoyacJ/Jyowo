@@ -2,14 +2,17 @@ import '@testing-library/jest-dom/vitest'
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { uiStore } from '@/shared/state/ui-store'
 import type { ConversationTurn } from '@/shared/tauri/commands'
 import { createTestCommandClient } from '@/testing/command-client'
 import { assistantWork } from '@/testing/conversation-worktree-builders'
 import { ConversationTimeline } from './conversation-timeline'
 import {
+  imageProcessTurn,
   renderTimelineWithClient,
   resetTimelineTestState,
   timestamp,
+  toolEvidenceTurn,
   turn,
 } from './conversation-timeline-test-utils'
 
@@ -164,5 +167,61 @@ describe('ConversationTimeline', () => {
 
     expect(screen.getByText('Review changes')).toBeInTheDocument()
     expect(screen.getByText('Which style should I use?')).toBeInTheDocument()
+  })
+
+  it('opens command and diff process cards in the inspector without clearing selection', () => {
+    renderTimelineWithClient(
+      <ConversationTimeline title="Process cards" turns={[imageProcessTurn()]} />,
+      createTestCommandClient(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open command in inspector' }))
+    expect(uiStore.getState().inspectorOpen).toBe(true)
+    expect(uiStore.getState().workbenchSelection).toMatchObject({
+      kind: 'command',
+      conversationId: 'conversation-image',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open diff in inspector' }))
+    expect(uiStore.getState().inspectorOpen).toBe(true)
+    expect(uiStore.getState().workbenchSelection).toEqual({
+      kind: 'diff',
+      conversationId: 'conversation-image',
+      changeSetId: 'change-set-image',
+    })
+  })
+
+  it('opens tool and artifact cards in the inspector', () => {
+    renderTimelineWithClient(
+      <>
+        <ConversationTimeline title="Tool cards" turns={[toolEvidenceTurn()]} />
+        <ConversationTimeline title="Artifact cards" turns={[imageProcessTurn()]} />
+      </>,
+      createTestCommandClient(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open read_file in inspector' }))
+    expect(uiStore.getState().workbenchSelection).toEqual({
+      kind: 'tool',
+      conversationId: 'conversation-tool-evidence',
+      toolUseId: 'tool-read-file',
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open permission permission-write-file in inspector' }),
+    )
+    expect(uiStore.getState().workbenchSelection).toEqual({
+      kind: 'decision',
+      conversationId: 'conversation-tool-evidence',
+      requestId: 'permission-write-file',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open artifact in inspector' }))
+    expect(uiStore.getState().workbenchSelection).toEqual({
+      kind: 'artifact',
+      conversationId: 'conversation-image',
+      artifactId: 'artifact-image-001',
+      revisionId: 'revision-image-001',
+    })
   })
 })

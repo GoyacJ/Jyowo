@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/shared/lib/utils'
 import { useUiStore } from '@/shared/state/ui-store'
@@ -41,6 +41,8 @@ export function ToolAttemptRow({
   const disclosureId = `tool-attempt:${conversationId}:${runId}:${turnId}:${segmentId}:${attempt.id}`
   const storedOpen = useUiStore((state) => state.evidenceDisclosureOpen[disclosureId])
   const setDisclosureOpen = useUiStore((state) => state.setEvidenceDisclosureOpen)
+  const setSelection = useUiStore((state) => state.setWorkbenchSelection)
+  const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
   const hasDetails = Boolean(attempt.permission || attempt.failureSummary)
   const forcedOpen = isForcedOpenAttempt(attempt)
   const defaultOpen = defaultDetailOpen ?? getDefaultOpen(attempt, attemptCount)
@@ -81,24 +83,61 @@ export function ToolAttemptRow({
             />
           </div>
         )}
-        {eventRef ? (
+        <div className="flex items-center gap-1">
           <button
-            className="rounded-md border border-border px-2 py-1 text-xs"
-            onClick={() => onOpenDetails?.(eventRef)}
+            aria-label={`Open ${attempt.toolName} in inspector`}
+            className="inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => {
+              setSelection({
+                kind: 'tool',
+                conversationId,
+                toolUseId: attempt.toolUseId,
+              })
+              setInspectorOpen(true)
+            }}
             type="button"
           >
-            {t('timeline.details')}
+            <ExternalLink className="size-3.5" />
           </button>
-        ) : null}
+          {eventRef ? (
+            <button
+              className="rounded-md border border-border px-2 py-1 text-xs"
+              onClick={() => onOpenDetails?.(eventRef)}
+              type="button"
+            >
+              {t('timeline.details')}
+            </button>
+          ) : null}
+        </div>
       </div>
       {open && hasDetails ? (
         <div className="grid gap-2 pl-5">
           {attempt.permission ? (
-            <DecisionPanel
-              conversationId={conversationId}
-              decision={attempt.permission}
-              onResolve={onPermissionResolve}
-            />
+            <div className="grid gap-2">
+              <div className="flex justify-end">
+                <button
+                  aria-label={`Open permission ${attempt.permission.requestId} in inspector`}
+                  className="inline-flex items-center gap-1 rounded px-2 py-1 text-muted-foreground text-xs hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => {
+                    setSelection({
+                      kind: 'decision',
+                      conversationId,
+                      requestId: attempt.permission?.requestId ?? '',
+                    })
+                    setInspectorOpen(true)
+                  }}
+                  type="button"
+                >
+                  <ExternalLink className="size-3" />
+                  {t('timeline.openInInspector', 'Open in inspector')}
+                </button>
+              </div>
+              <DecisionPanel
+                conversationId={conversationId}
+                decision={attempt.permission}
+                onResolve={onPermissionResolve}
+              />
+            </div>
           ) : null}
           {attempt.failureSummary ? (
             <p className="border-destructive/40 border-l pl-3 text-destructive text-sm">

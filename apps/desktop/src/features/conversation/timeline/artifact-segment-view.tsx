@@ -23,6 +23,7 @@ export function ArtifactSegmentView({
       <div className="flex items-center justify-between">
         <div className="font-medium text-sm">{segment.title}</div>
         <button
+          aria-label="Open artifact in inspector"
           className="inline-flex items-center gap-1 rounded px-2 py-1 text-muted-foreground text-xs hover:bg-muted hover:text-foreground"
           onClick={() => {
             setSelection({

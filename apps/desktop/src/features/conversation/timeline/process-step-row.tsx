@@ -1,5 +1,6 @@
 import {
   CircleDot,
+  ExternalLink,
   FilePenLine,
   FileText,
   Image,
@@ -10,6 +11,7 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useUiStore } from '@/shared/state/ui-store'
+import type { WorkbenchSelection } from '@/shared/state/workbench-selection'
 import type { ProcessStep } from '@/shared/tauri/commands'
 import { ArtifactImagePreview } from './artifact-segment-view'
 import { CommandEvidenceBlock } from './command-evidence-block'
@@ -17,11 +19,13 @@ import { DiffEvidenceBlock, parseDiffEvidenceLines } from './diff-evidence-block
 import { ProcessStatusRow } from './process-status-row'
 
 export function ProcessStepRow({
+  artifactRevisionIdsByArtifactId = {},
   conversationId,
   defaultDetailOpen = true,
   disclosureId,
   step,
 }: {
+  artifactRevisionIdsByArtifactId?: Record<string, string>
   conversationId: string
   defaultDetailOpen?: boolean
   disclosureId: string
@@ -31,25 +35,47 @@ export function ProcessStepRow({
   const detail = step.detail
   const storedOpen = useUiStore((state) => state.evidenceDisclosureOpen[disclosureId])
   const setDisclosureOpen = useUiStore((state) => state.setEvidenceDisclosureOpen)
+  const setSelection = useUiStore((state) => state.setWorkbenchSelection)
+  const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
   const shouldCollapseBody = detail?.type === 'activity' && Boolean(step.body)
   const forcedOpen = step.status === 'failed' || step.status === 'running'
   const canToggle = detail !== undefined && detail.type !== 'activity' && !forcedOpen
   const detailOpen = forcedOpen || (storedOpen ?? defaultDetailOpen)
+  const inspectorSelection = getInspectorSelection(
+    conversationId,
+    step,
+    artifactRevisionIdsByArtifactId,
+  )
 
   return (
     <li className="grid gap-1.5">
-      <ProcessStatusRow
-        collapsible={canToggle}
-        countLabel={getCountLabel(step)}
-        durationMs={
-          detail?.type === 'command' || detail?.type === 'tool' ? detail.durationMs : undefined
-        }
-        icon={getStepIcon(step)}
-        onToggle={canToggle ? () => setDisclosureOpen(disclosureId, !detailOpen) : undefined}
-        open={detailOpen}
-        status={step.status}
-        title={step.title}
-      />
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <ProcessStatusRow
+          collapsible={canToggle}
+          countLabel={getCountLabel(step)}
+          durationMs={
+            detail?.type === 'command' || detail?.type === 'tool' ? detail.durationMs : undefined
+          }
+          icon={getStepIcon(step)}
+          onToggle={canToggle ? () => setDisclosureOpen(disclosureId, !detailOpen) : undefined}
+          open={detailOpen}
+          status={step.status}
+          title={step.title}
+        />
+        {inspectorSelection ? (
+          <button
+            aria-label={getInspectorLabel(step)}
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => {
+              setSelection(inspectorSelection)
+              setInspectorOpen(true)
+            }}
+            type="button"
+          >
+            <ExternalLink className="size-3.5" />
+          </button>
+        ) : null}
+      </div>
       {step.status === 'withheld' ? (
         <p className="text-muted-foreground text-sm">{t('timeline.processWithheld')}</p>
       ) : (
@@ -177,6 +203,58 @@ function getCountLabel(step: ProcessStep) {
   }
 
   return undefined
+}
+
+function getInspectorSelection(
+  conversationId: string,
+  step: ProcessStep,
+  artifactRevisionIdsByArtifactId: Record<string, string>,
+): WorkbenchSelection | null {
+  const detail = step.detail
+  if (!detail) {
+    return null
+  }
+
+  switch (detail.type) {
+    case 'command':
+      return {
+        kind: 'command',
+        conversationId,
+        ...(detail.fullOutputRef ? { fullOutputRef: detail.fullOutputRef } : {}),
+        ...(!detail.fullOutputRef && step.eventRefs?.[0] ? { eventRef: step.eventRefs[0] } : {}),
+      }
+    case 'diff':
+      return {
+        kind: 'diff',
+        conversationId,
+        changeSetId: detail.id,
+      }
+    case 'artifact':
+      return {
+        kind: 'artifact',
+        conversationId,
+        artifactId: detail.artifactId,
+        ...(artifactRevisionIdsByArtifactId[detail.artifactId]
+          ? { revisionId: artifactRevisionIdsByArtifactId[detail.artifactId] }
+          : {}),
+      }
+    case 'activity':
+    case 'tool':
+      return null
+  }
+}
+
+function getInspectorLabel(step: ProcessStep) {
+  switch (step.detail?.type) {
+    case 'command':
+      return 'Open command in inspector'
+    case 'diff':
+      return 'Open diff in inspector'
+    case 'artifact':
+      return 'Open artifact in inspector'
+    default:
+      return 'Open in inspector'
+  }
 }
 
 function shortFilename(path: string) {

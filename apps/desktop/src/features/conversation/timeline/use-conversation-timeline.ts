@@ -3,7 +3,10 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { useUiStore } from '@/shared/state/ui-store'
-import type { ResolvePermissionRequest } from '@/shared/tauri/commands'
+import type {
+  PageConversationWorktreeResponse,
+  ResolvePermissionRequest,
+} from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 import type { ComposerSubmitPayload } from '../Composer'
 import {
@@ -261,6 +264,9 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
       pageCursor: firstPage?.cursor ?? undefined,
       limit: 50,
     })
+    queryClient.setQueryData<PageConversationWorktreeResponse>(worktreeQueryKey, (current) =>
+      current ? mergeWorktreePage(current, page, 'before') : page,
+    )
     dispatch({
       type: 'prependPage',
       turns: page.turns,
@@ -273,6 +279,8 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     displayState.pages,
     commandClient,
     dispatch,
+    queryClient,
+    worktreeQueryKey,
   ])
 
   const loadLater = useCallback(async () => {
@@ -284,6 +292,9 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
       pageCursor: lastPage?.cursor ?? undefined,
       limit: 50,
     })
+    queryClient.setQueryData<PageConversationWorktreeResponse>(worktreeQueryKey, (current) =>
+      current ? mergeWorktreePage(current, page, 'after') : page,
+    )
     dispatch({
       type: 'appendPage',
       turns: page.turns,
@@ -297,6 +308,8 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     displayState.pages,
     commandClient,
     dispatch,
+    queryClient,
+    worktreeQueryKey,
   ])
 
   const retryGap = useCallback(() => {
@@ -354,6 +367,42 @@ function activeRunIdsFromTurns(turns: Array<{ assistant?: { runId: string; statu
   return turns.flatMap((turn) =>
     turn.assistant?.status === 'running' ? [turn.assistant.runId] : [],
   )
+}
+
+function mergeWorktreePage(
+  current: PageConversationWorktreeResponse,
+  page: PageConversationWorktreeResponse,
+  direction: 'before' | 'after',
+): PageConversationWorktreeResponse {
+  const turns =
+    direction === 'before' ? [...page.turns, ...current.turns] : [...current.turns, ...page.turns]
+
+  return {
+    ...current,
+    turns: dedupeTurns(turns),
+    pageCursor:
+      direction === 'before' ? (page.pageCursor ?? current.pageCursor) : current.pageCursor,
+    eventCursor:
+      direction === 'after' ? (page.eventCursor ?? current.eventCursor) : current.eventCursor,
+    hasMoreBefore: direction === 'before' ? page.hasMoreBefore : current.hasMoreBefore,
+    hasMoreAfter: direction === 'after' ? page.hasMoreAfter : current.hasMoreAfter,
+    gap: current.gap || page.gap,
+  }
+}
+
+function dedupeTurns(turns: PageConversationWorktreeResponse['turns']) {
+  const seen = new Set<string>()
+  const deduped: PageConversationWorktreeResponse['turns'] = []
+
+  for (const turn of turns) {
+    if (seen.has(turn.id)) {
+      continue
+    }
+    seen.add(turn.id)
+    deduped.push(turn)
+  }
+
+  return deduped
 }
 
 function createClientMessageId() {

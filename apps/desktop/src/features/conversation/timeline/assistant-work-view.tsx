@@ -31,6 +31,7 @@ export function AssistantWorkView({
 }) {
   const { t } = useTranslation('conversation')
   const processImageArtifactIds = getProcessImageArtifactIds(assistant)
+  const artifactRevisionIdsByArtifactId = getArtifactRevisionIdsByArtifactId(assistant)
   const modelLabel = assistant.model?.displayName
 
   return (
@@ -59,6 +60,7 @@ export function AssistantWorkView({
             case 'process':
               return (
                 <ProcessPanel
+                  artifactRevisionIdsByArtifactId={artifactRevisionIdsByArtifactId}
                   conversationId={conversationId}
                   key={segment.id}
                   runId={assistant.runId}
@@ -147,4 +149,16 @@ function getProcessImageArtifactIds(assistant: AssistantWork) {
   }
 
   return artifactIds
+}
+
+function getArtifactRevisionIdsByArtifactId(assistant: AssistantWork) {
+  const revisionIds: Record<string, string> = {}
+
+  for (const segment of assistant.segments) {
+    if (segment.kind === 'artifact') {
+      revisionIds[segment.artifactId] = segment.revision.revisionId
+    }
+  }
+
+  return revisionIds
 }

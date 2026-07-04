@@ -16,10 +16,12 @@ type ProcessDisplayItem =
     }
 
 export function ProcessPanel({
+  artifactRevisionIdsByArtifactId = {},
   conversationId,
   runId,
   segment,
 }: {
+  artifactRevisionIdsByArtifactId?: Record<string, string>
   conversationId: string
   runId: string
   segment: ProcessSegment
@@ -46,6 +48,7 @@ export function ProcessPanel({
           {displayItems.map((item) =>
             item.kind === 'step' ? (
               <ProcessStepRow
+                artifactRevisionIdsByArtifactId={artifactRevisionIdsByArtifactId}
                 conversationId={conversationId}
                 defaultDetailOpen={defaultDetailOpen(item.step, {
                   hasActiveOrFailedCommand,
@@ -57,6 +60,7 @@ export function ProcessPanel({
               />
             ) : (
               <ProcessStepGroup
+                artifactRevisionIdsByArtifactId={artifactRevisionIdsByArtifactId}
                 conversationId={conversationId}
                 group={item}
                 key={item.id}
@@ -72,11 +76,13 @@ export function ProcessPanel({
 }
 
 function ProcessStepGroup({
+  artifactRevisionIdsByArtifactId,
   conversationId,
   group,
   runId,
   segmentId,
 }: {
+  artifactRevisionIdsByArtifactId: Record<string, string>
   conversationId: string
   group: Extract<ProcessDisplayItem, { kind: 'group' }>
   runId: string
@@ -103,6 +109,7 @@ function ProcessStepGroup({
         <ol className="grid gap-3 pl-5">
           {group.steps.map((step) => (
             <ProcessStepRow
+              artifactRevisionIdsByArtifactId={artifactRevisionIdsByArtifactId}
               conversationId={conversationId}
               defaultDetailOpen
               disclosureId={`process-step:${conversationId}:${runId}:${segmentId}:${group.id}:${step.id}`}
