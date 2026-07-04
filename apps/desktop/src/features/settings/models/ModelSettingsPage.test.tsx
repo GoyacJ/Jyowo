@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -372,9 +372,9 @@ describe('ModelSettingsPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'Models' })).toBeInTheDocument()
     expect(await screen.findByRole('row', { name: /Primary OpenAI/ })).toBeInTheDocument()
-    expect(screen.getByText('3 configured')).toBeInTheDocument()
-    expect(screen.getByText('1 available')).toBeInTheDocument()
-    expect(screen.getByText('2 failing')).toBeInTheDocument()
+    expect(await screen.findByText('3 configured')).toBeInTheDocument()
+    expect(await screen.findByText('1 available')).toBeInTheDocument()
+    expect(await screen.findByText('2 failing')).toBeInTheDocument()
     expect(screen.getAllByText('Today').length).toBeGreaterThan(0)
     expect(screen.getByText('200 tokens')).toBeInTheDocument()
     expect(screen.getByLabelText('Model settings summary')).toHaveTextContent('660 tokens')
@@ -384,12 +384,22 @@ describe('ModelSettingsPage', () => {
     expect(primaryRow.getByText('OpenAI')).toBeInTheDocument()
     expect(primaryRow.getByText('Default')).toBeInTheDocument()
     expect(primaryRow.getByText('Online')).toBeInTheDocument()
-    expect(primaryRow.getByText('118 ms')).toBeInTheDocument()
-    expect(primaryRow.getByText('10,000 ms')).toBeInTheDocument()
-    expect(primaryRow.getByText('100 tokens')).toBeInTheDocument()
-    expect(primaryRow.getByText('310 tokens')).toBeInTheDocument()
-    expect(primaryRow.getByText('1,400 tokens')).toBeInTheDocument()
+    expect(primaryRow.getByText('118')).toBeInTheDocument()
+    expect(primaryRow.getByText('10,000')).toBeInTheDocument()
+    expect(primaryRow.getByText('100')).toBeInTheDocument()
+    expect(primaryRow.getByText('310')).toBeInTheDocument()
+    expect(primaryRow.getByText('1,400')).toBeInTheDocument()
     expect(primaryRow.getByText('Supported')).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Latency ms' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Timeout threshold ms' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Today tokens' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Month-to-date tokens' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Total tokens' })).toBeInTheDocument()
+    const matrix = screen.getByLabelText('Model matrix')
+    expect(matrix).toHaveClass('model-matrix-layout')
+    expect(matrix.querySelector('.model-matrix-table-wrap')).toBeInTheDocument()
+    expect(matrix.querySelector('table')).toHaveClass('min-w-[1040px]')
+    expect(matrix.querySelector('ul')).toHaveClass('model-matrix-card-list')
 
     expect(screen.getByRole('row', { name: /Research Claude.*Unsupported/ })).toBeInTheDocument()
     expect(screen.getByRole('row', { name: /Backup OpenAI.*Failed/ })).toBeInTheDocument()
@@ -404,6 +414,53 @@ describe('ModelSettingsPage', () => {
     expect(screen.queryByText('Provider metadata accepted.')).not.toBeInTheDocument()
     expect(screen.queryByText('Check accepted')).not.toBeInTheDocument()
     expect(screen.queryByText('Check failed')).not.toBeInTheDocument()
+  })
+
+  it('uses one row entry point and saves configuration inside the details dialog', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: {
+        ...settings.configs[0],
+        displayName: 'Primary OpenAI Edited',
+      },
+      status: 'saved',
+    })
+    renderModelSettingsPage({
+      ...readyClient(),
+      saveProviderSettings,
+    })
+
+    const row = within(await screen.findByRole('row', { name: /Primary OpenAI/ }))
+
+    expect(row.getByRole('button', { name: 'Configure Primary OpenAI' })).toBeInTheDocument()
+    expect(
+      row.queryByRole('button', { name: 'View details for Primary OpenAI' }),
+    ).not.toBeInTheDocument()
+    expect(row.queryByRole('button', { name: 'Edit Primary OpenAI' })).not.toBeInTheDocument()
+
+    fireEvent.click(row.getByRole('button', { name: 'Configure Primary OpenAI' }))
+
+    const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
+    expect(within(dialog).queryByRole('tab', { name: 'Configuration' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('dialog', { name: 'Edit model configuration' }),
+    ).not.toBeInTheDocument()
+
+    fireEvent.change(within(dialog).getByLabelText('Configuration name'), {
+      target: { value: 'Primary OpenAI Edited' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(saveProviderSettings).toHaveBeenCalledWith({
+        configId: 'cfg-openai',
+        displayName: 'Primary OpenAI Edited',
+        modelId: 'gpt-4.1',
+        providerId: 'openai',
+        setDefault: true,
+      }),
+    )
+    expect(saveProviderSettings.mock.calls[0]?.[0]).not.toHaveProperty('apiKey')
+    expect(saveProviderSettings.mock.calls[0]?.[0]).not.toHaveProperty('officialQuotaApiKey')
   })
 
   it('filters by provider, health, default state, failing state, and search', async () => {
@@ -504,6 +561,75 @@ describe('ModelSettingsPage', () => {
     resolveQuota?.()
   })
 
+  it('sets a non-default row as the default without resubmitting stored keys', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: {
+        ...settings.configs[1],
+        isDefault: true,
+      },
+      status: 'saved',
+    })
+    const client = {
+      ...readyClient(),
+      saveProviderSettings,
+    } satisfies CommandClient
+    renderModelSettingsPage(client)
+
+    const row = within(await screen.findByRole('row', { name: /Research Claude/ }))
+    fireEvent.click(row.getByRole('button', { name: 'Set Research Claude as default' }))
+
+    await waitFor(() =>
+      expect(saveProviderSettings).toHaveBeenCalledWith({
+        configId: 'cfg-anthropic',
+        displayName: 'Research Claude',
+        modelId: 'claude-sonnet',
+        providerId: 'anthropic',
+        setDefault: true,
+      }),
+    )
+    expect(saveProviderSettings.mock.calls[0]?.[0]).not.toHaveProperty('apiKey')
+    expect(saveProviderSettings.mock.calls[0]?.[0]).not.toHaveProperty('officialQuotaApiKey')
+  })
+
+  it('blocks concurrent default writes while a default save is pending', async () => {
+    let resolveSave: (() => void) | undefined
+    const saveProviderSettings = vi.fn(
+      () =>
+        new Promise<Awaited<ReturnType<CommandClient['saveProviderSettings']>>>((resolve) => {
+          resolveSave = () =>
+            resolve({
+              config: {
+                ...settings.configs[1],
+                isDefault: true,
+              },
+              status: 'saved',
+            })
+        }),
+    )
+    renderModelSettingsPage({
+      ...readyClient(),
+      saveProviderSettings,
+    })
+
+    const researchRow = within(await screen.findByRole('row', { name: /Research Claude/ }))
+    fireEvent.click(researchRow.getByRole('button', { name: 'Set Research Claude as default' }))
+    expect(
+      await researchRow.findByRole('button', { name: 'Setting Research Claude as default' }),
+    ).toBeDisabled()
+
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai' } })
+
+    const backupRow = within(screen.getByRole('row', { name: /Backup OpenAI/ }))
+    const backupDefault = backupRow.getByRole('button', {
+      name: 'Set Backup OpenAI as default',
+    })
+    expect(backupDefault).toBeDisabled()
+    fireEvent.click(backupDefault)
+    expect(saveProviderSettings).toHaveBeenCalledTimes(1)
+
+    resolveSave?.()
+  })
+
   it('keeps partial probe, usage, and quota failures local to affected metrics', async () => {
     const client = {
       ...readyClient(),
@@ -514,7 +640,7 @@ describe('ModelSettingsPage', () => {
     renderModelSettingsPage(client)
 
     expect(await screen.findByRole('row', { name: /Primary OpenAI/ })).toBeInTheDocument()
-    expect(screen.getAllByText('Unavailable').length).toBeGreaterThanOrEqual(3)
+    await waitFor(() => expect(screen.getAllByText('Unavailable').length).toBeGreaterThanOrEqual(3))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 

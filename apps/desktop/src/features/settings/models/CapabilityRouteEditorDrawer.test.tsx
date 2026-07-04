@@ -63,6 +63,16 @@ describe('CapabilityRouteEditorDrawer', () => {
       providerId: 'openai',
     })
   })
+
+  it('uses the shared centered dialog placement', () => {
+    renderDrawer()
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit image generation route' })
+    expect(dialog).not.toHaveClass('right-4')
+    expect(dialog).not.toHaveClass('top-4')
+    expect(dialog).not.toHaveClass('translate-x-0')
+    expect(dialog).not.toHaveClass('translate-y-0')
+  })
 })
 
 const imageRoute: CapabilityRouteRow = {

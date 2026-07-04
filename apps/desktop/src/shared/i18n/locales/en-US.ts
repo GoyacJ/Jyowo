@@ -488,6 +488,7 @@ export const enUS = {
         quotaSupportedCount: '{{count}} supported',
         quotaBreakdown: '{{unsupported}} unsupported · {{authRequired}} auth · {{failed}} failed',
         noDefault: 'No default selected',
+        loadingMetric: 'Loading',
         unavailableMetric: 'Unavailable',
       },
       filters: {
@@ -504,6 +505,10 @@ export const enUS = {
       },
       matrix: {
         label: 'Model matrix',
+      },
+      units: {
+        milliseconds: 'ms',
+        tokens: 'tokens',
       },
       columns: {
         identity: 'Model',
@@ -547,6 +552,14 @@ export const enUS = {
         detailsShort: 'View details',
         edit: 'Edit {{name}}',
         editShort: 'Edit configuration',
+        configure: 'Configure {{name}}',
+        configureShort: 'Configure',
+        setDefault: 'Set {{name}} as default',
+        setDefaultShort: 'Set as default',
+        settingDefault: 'Setting {{name}} as default',
+        settingDefaultShort: 'Setting default',
+        currentDefault: '{{name}} is the current default',
+        currentDefaultShort: 'Current default',
       },
       details: {
         notDefault: 'Not default',
@@ -562,6 +575,11 @@ export const enUS = {
         connectivity: {
           status: 'Status',
           checkedAt: 'Checked time',
+        },
+        overview: {
+          summary: 'Summary',
+          connectionAndUsage: 'Connection and usage',
+          configuration: 'Configuration',
         },
         usage: {
           modelLevel: 'Model-level usage',

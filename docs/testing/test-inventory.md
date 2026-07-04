@@ -5,11 +5,11 @@
 | Layer | Count |
 |---|---|
 | Frontend Vitest files | 64 |
-| Frontend Vitest test cases | 558 |
+| Frontend Vitest test cases | 566 |
 | Storybook files | 13 |
 | Playwright spec files | 4 |
 | Rust test files | 314 |
-| Rust `#[test]` / `#[tokio::test]` count | 2168 |
+| Rust `#[test]` / `#[tokio::test]` count | 2173 |
 | Script policy test files | 8 |
 
 ## Largest Test Files by Line Count
@@ -24,7 +24,7 @@
 | crates/jyowo-harness-engine/tests/main_loop.rs | 1890 | rust |
 | crates/jyowo-harness-engine/tests/hook_pipeline.rs | 1729 | rust |
 | apps/desktop/src/shared/events/run-event-schema.test.ts | 1594 | frontend |
-| crates/jyowo-harness-mcp/tests/server_protocol.rs | 1549 | rust |
+| crates/jyowo-harness-mcp/tests/server_protocol.rs | 1594 | rust |
 | crates/jyowo-harness-team/tests/team_e2e.rs | 1388 | rust |
 | crates/jyowo-harness-plugin/tests/sources.rs | 1273 | rust |
 | crates/jyowo-harness-session/tests/run_turn.rs | 1198 | rust |
@@ -38,6 +38,7 @@
 | crates/jyowo-harness-sdk/tests/agents_team.rs | 1125 | rust |
 | apps/desktop/src-tauri/tests/commands/provider_settings.rs | 1092 | rust |
 | apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs | 1087 | rust |
+| apps/desktop/src-tauri/tests/commands/mcp.rs | 1078 | rust |
 | crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs | 1062 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_tools.rs | 1059 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs | 1055 | rust |
@@ -45,7 +46,6 @@
 | crates/jyowo-harness-subagent/tests/permission_bridge.rs | 1045 | rust |
 | apps/desktop/src-tauri/tests/commands/conversations.rs | 1016 | rust |
 | crates/jyowo-harness-team/tests/routing.rs | 977 | rust |
-| apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx | 957 | frontend |
 
 ## Files Over 1200 Lines (hard fail)
 
@@ -57,7 +57,7 @@
 - crates/jyowo-harness-engine/tests/main_loop.rs (1890 lines)
 - crates/jyowo-harness-engine/tests/hook_pipeline.rs (1729 lines)
 - apps/desktop/src/shared/events/run-event-schema.test.ts (1594 lines)
-- crates/jyowo-harness-mcp/tests/server_protocol.rs (1549 lines)
+- crates/jyowo-harness-mcp/tests/server_protocol.rs (1594 lines)
 - crates/jyowo-harness-team/tests/team_e2e.rs (1388 lines)
 - crates/jyowo-harness-plugin/tests/sources.rs (1273 lines)
 
@@ -74,6 +74,7 @@
 - crates/jyowo-harness-sdk/tests/agents_team.rs (1125 lines)
 - apps/desktop/src-tauri/tests/commands/provider_settings.rs (1092 lines)
 - apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs (1087 lines)
+- apps/desktop/src-tauri/tests/commands/mcp.rs (1078 lines)
 - crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs (1062 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_tools.rs (1059 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs (1055 lines)
@@ -93,7 +94,6 @@
 - crates/jyowo-harness-execution/tests/authorization_flow.rs (889 lines)
 - apps/desktop/src-tauri/tests/commands/activity_redaction.rs (888 lines)
 - crates/jyowo-harness-tool/tests/minimax_tools.rs (864 lines)
-- apps/desktop/src-tauri/tests/commands/mcp.rs (858 lines)
 - crates/jyowo-harness-mcp/tests/core.rs (822 lines)
 
 ## Disallowed or Suspect Names
@@ -113,19 +113,19 @@ None.
 ## createTestCommandClient Usage by File
 
 - apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx (22)
-- apps/desktop/src/features/settings/MCPManager.test.tsx (18)
+- apps/desktop/src/features/settings/MCPManager.test.tsx (19)
 - apps/desktop/src/features/settings/ExecutionSettings.test.tsx (15)
 - apps/desktop/src/features/skills/SkillsPage.test.tsx (15)
 - apps/desktop/src/features/settings/PluginsManager.test.tsx (13)
 - apps/desktop/src/features/workspace/SidebarNav.test.tsx (10)
 - apps/desktop/src/app/shell/AppShell.test.tsx (9)
-- apps/desktop/src/features/settings/models/ModelDetailsDrawer.test.tsx (9)
 - apps/desktop/src/features/background-agents/BackgroundAgentsPanel.test.tsx (8)
 - apps/desktop/src/features/memory/MemoryBrowser.test.tsx (8)
 - apps/desktop/src/features/settings/AutomationSettings.test.tsx (8)
 - apps/desktop/src/app/App.test.tsx (7)
 - apps/desktop/src/features/conversation/timeline/conversation-timeline.artifacts.test.tsx (7)
 - apps/desktop/src/features/settings/models/ModelConfigDialog.test.tsx (7)
+- apps/desktop/src/features/settings/models/ModelDetailsDrawer.test.tsx (7)
 - apps/desktop/src/shared/tauri/commands.test.ts (7)
 - apps/desktop/src/features/artifacts/ArtifactsPage.test.tsx (6)
 - apps/desktop/src/features/settings/models/ModelSettingsPage.stories.tsx (5)

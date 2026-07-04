@@ -83,8 +83,16 @@ async fn browser_mcp_preset_save_writes_disabled_workspace_server_by_default() {
     assert_eq!(stored.id, "browser-playwright");
     assert!(matches!(
         stored.transport,
-        McpServerTransportConfig::Stdio { ref command, ref args, ref env, .. }
-            if command == "npx" && args == &vec!["@playwright/mcp@latest".to_owned()] && env.is_empty()
+        McpServerTransportConfig::Stdio { ref command, ref args, ref env, ref inherit_env, .. }
+            if command == "npx"
+                && args == &vec!["-y".to_owned(), "@playwright/mcp@latest".to_owned()]
+                && env.is_empty()
+                && inherit_env == &vec![
+                    "PATH".to_owned(),
+                    "HOME".to_owned(),
+                    "USER".to_owned(),
+                    "TMPDIR".to_owned()
+                ]
     ));
     assert!(!serde_json::to_string(&stored)
         .unwrap()
@@ -113,15 +121,22 @@ async fn browser_mcp_preset_can_be_explicitly_enabled() {
     assert!(stored.enabled);
     assert!(matches!(
         stored.transport,
-        McpServerTransportConfig::Stdio { ref command, ref args, .. }
-            if command == "npx" && args == &vec!["chrome-devtools-mcp@latest".to_owned()]
+        McpServerTransportConfig::Stdio { ref command, ref args, ref inherit_env, .. }
+            if command == "npx"
+                && args == &vec!["-y".to_owned(), "chrome-devtools-mcp@latest".to_owned()]
+                && inherit_env == &vec![
+                    "PATH".to_owned(),
+                    "HOME".to_owned(),
+                    "USER".to_owned(),
+                    "TMPDIR".to_owned()
+                ]
     ));
 }
 
 #[tokio::test]
-async fn save_mcp_server_payload_rejects_secret_bearing_stdio_args() {
+async fn save_mcp_server_payload_allows_secret_bearing_stdio_args() {
     let store = RecordingMcpServerStore::default();
-    let error = save_mcp_server_with_store(
+    let payload = save_mcp_server_with_store(
         SaveMcpServerRequest {
             enabled: true,
             display_name: "Workspace GitHub".to_owned(),
@@ -138,16 +153,21 @@ async fn save_mcp_server_payload_rejects_secret_bearing_stdio_args() {
         &store,
     )
     .await
-    .unwrap_err();
+    .unwrap();
+    let stored = store.record.lock().unwrap().clone().unwrap();
 
-    assert_eq!(error.code, "INVALID_PAYLOAD");
-    assert!(store.record.lock().unwrap().is_none());
+    assert!(payload.server.enabled);
+    assert!(matches!(
+        stored.transport,
+        McpServerTransportConfig::Stdio { ref args, .. }
+            if args == &vec!["--token=mcp-secret-token".to_owned()]
+    ));
 }
 
 #[tokio::test]
-async fn save_mcp_server_payload_rejects_raw_secret_like_stdio_args() {
+async fn save_mcp_server_payload_allows_raw_secret_like_stdio_args() {
     let store = RecordingMcpServerStore::default();
-    let error = save_mcp_server_with_store(
+    let payload = save_mcp_server_with_store(
         SaveMcpServerRequest {
             enabled: true,
             display_name: "Workspace GitHub".to_owned(),
@@ -164,10 +184,15 @@ async fn save_mcp_server_payload_rejects_raw_secret_like_stdio_args() {
         &store,
     )
     .await
-    .unwrap_err();
+    .unwrap();
+    let stored = store.record.lock().unwrap().clone().unwrap();
 
-    assert_eq!(error.code, "INVALID_PAYLOAD");
-    assert!(store.record.lock().unwrap().is_none());
+    assert!(payload.server.enabled);
+    assert!(matches!(
+        stored.transport,
+        McpServerTransportConfig::Stdio { ref args, .. }
+            if args == &vec!["ghp_abcdefghijklmnopqrstuvwxyz0123456789".to_owned()]
+    ));
 }
 
 #[tokio::test]
@@ -429,6 +454,145 @@ async fn save_mcp_server_with_runtime_state_registers_and_injects_stdio_tools() 
     );
     assert_eq!(payload.server.exposed_tool_count, 1);
     assert!(harness.tool_registry().get("mcp__stdio__echo").is_some());
+}
+
+#[tokio::test]
+async fn save_mcp_server_with_runtime_state_runs_npx_without_explicit_inherited_env() {
+    let _guard = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let workspace = unique_workspace("mcp-save-npx-empty-env");
+    let fake_bin = workspace.join("bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    write_test_executable(&fake_bin.join("npx"), &context7_npx_fixture_script());
+    let path_guard = EnvVarGuard::set("PATH", fake_bin.as_os_str());
+    let home_guard = EnvVarGuard::set("HOME", workspace.as_os_str());
+    let state =
+        runtime_state_with_mcp_registry_for_workspace(workspace, McpRegistry::new(), Vec::new())
+            .await;
+
+    let state_for_command = state.clone();
+    let payload = run_with_mcp_transport_approval(&state, async move {
+        save_mcp_server_with_runtime_state(
+            SaveMcpServerRequest {
+                enabled: true,
+                display_name: "Context7".to_owned(),
+                id: "context7".to_owned(),
+                scope: "global".to_owned(),
+                transport: McpServerTransportConfig::Stdio {
+                    command: "npx".to_owned(),
+                    args: vec![
+                        "-y".to_owned(),
+                        "@upstash/context7-mcp".to_owned(),
+                        "--api-key".to_owned(),
+                        "ctx7sk-test-token".to_owned(),
+                    ],
+                    env: Vec::new(),
+                    inherit_env: Vec::new(),
+                    working_dir: None,
+                },
+            },
+            &state_for_command,
+        )
+        .await
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(payload.server.id, "context7");
+    assert_eq!(payload.server.status, "ready");
+    assert_eq!(payload.server.exposed_tool_count, 1);
+    drop(home_guard);
+    drop(path_guard);
+}
+
+#[tokio::test]
+async fn save_mcp_server_with_runtime_state_accepts_workspace_relative_working_dir() {
+    let _guard = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let workspace = unique_workspace("mcp-save-relative-working-dir");
+    let fake_bin = workspace.join("bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    write_test_executable(&fake_bin.join("npx"), &context7_npx_fixture_script());
+    let path_guard = EnvVarGuard::set("PATH", fake_bin.as_os_str());
+    let home_guard = EnvVarGuard::set("HOME", workspace.as_os_str());
+    let state = runtime_state_with_mcp_registry_for_workspace(
+        workspace.clone(),
+        McpRegistry::new(),
+        Vec::new(),
+    )
+    .await;
+
+    let state_for_command = state.clone();
+    let payload = run_with_mcp_transport_approval(&state, async move {
+        save_mcp_server_with_runtime_state(
+            SaveMcpServerRequest {
+                enabled: true,
+                display_name: "Context7".to_owned(),
+                id: "context7".to_owned(),
+                scope: "global".to_owned(),
+                transport: McpServerTransportConfig::Stdio {
+                    command: "npx".to_owned(),
+                    args: vec![
+                        "-y".to_owned(),
+                        "@upstash/context7-mcp".to_owned(),
+                        "--api-key".to_owned(),
+                        "ctx7sk-test-token".to_owned(),
+                    ],
+                    env: Vec::new(),
+                    inherit_env: Vec::new(),
+                    working_dir: Some(".".to_owned()),
+                },
+            },
+            &state_for_command,
+        )
+        .await
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(payload.server.id, "context7");
+    assert_eq!(payload.server.status, "ready");
+    assert_eq!(payload.server.exposed_tool_count, 1);
+    drop(home_guard);
+    drop(path_guard);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn save_mcp_server_with_runtime_state_rejects_invalid_working_dir_without_persisting() {
+    let _guard = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let workspace = unique_workspace("mcp-save-invalid-working-dir");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_with_mcp_registry_for_workspace(
+        workspace.clone(),
+        McpRegistry::new(),
+        Vec::new(),
+    )
+    .await;
+
+    let error = save_mcp_server_with_runtime_state(
+        SaveMcpServerRequest {
+            enabled: true,
+            display_name: "Context7".to_owned(),
+            id: "context7".to_owned(),
+            scope: "global".to_owned(),
+            transport: McpServerTransportConfig::Stdio {
+                command: "npx".to_owned(),
+                args: vec![
+                    "-y".to_owned(),
+                    "@upstash/context7-mcp".to_owned(),
+                    "--api-key".to_owned(),
+                    "ctx7sk-test-token".to_owned(),
+                ],
+                env: Vec::new(),
+                inherit_env: Vec::new(),
+                working_dir: Some("missing-dir".to_owned()),
+            },
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(!workspace.join(".jyowo/runtime/mcp-servers.json").exists());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -788,6 +952,37 @@ async fn list_mcp_servers_with_runtime_state_includes_origin_scope_and_tool_coun
     );
 }
 
+#[tokio::test]
+async fn list_mcp_servers_with_runtime_state_projects_safe_failed_connection_error() {
+    let server_id = McpServerId("playwright".to_owned());
+    let mcp_registry = McpRegistry::new();
+    mcp_registry
+        .add_failed_server(
+            McpServerSpec::new(
+                server_id.clone(),
+                "Playwright Browser",
+                TransportChoice::InProcess,
+                McpServerSource::Workspace,
+            ),
+            McpServerScope::Global,
+            "spawn npx failed at /Users/alice/.npm with token=mcp-secret-token: No such file or directory (os error 2)".to_owned(),
+        )
+        .await
+        .unwrap();
+    let state = runtime_state_with_mcp_registry(mcp_registry, vec![server_id]).await;
+
+    let payload = list_mcp_servers_with_runtime_state(&state).await.unwrap();
+    let serialized = serde_json::to_string(&payload).unwrap();
+
+    assert_eq!(payload.servers[0].status, "failed");
+    assert_eq!(
+        payload.servers[0].last_error.as_deref(),
+        Some("MCP server command was not found.")
+    );
+    assert!(!serialized.contains("mcp-secret-token"));
+    assert!(!serialized.contains("/Users/alice"));
+}
+
 #[test]
 fn mcp_diagnostic_event_summary_does_not_expose_raw_connection_error() {
     let diagnostic =
@@ -854,4 +1049,29 @@ async fn mcp_diagnostic_store_retains_recent_records_and_filters_by_server() {
             .collect::<Vec<_>>(),
         vec!["event-2", "event-3"]
     );
+}
+
+fn write_test_executable(path: &std::path::Path, body: &str) {
+    std::fs::write(path, format!("#!/bin/sh\n{body}")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+}
+
+fn context7_npx_fixture_script() -> String {
+    format!(
+        r#"
+if [ "$#" -ne 4 ] || [ "$1" != "-y" ] || [ "$2" != "@upstash/context7-mcp" ] || [ "$3" != "--api-key" ] || [ "$4" != "ctx7sk-test-token" ]; then
+  printf '%s\n' "unexpected npx args: $*" >&2
+  exit 64
+fi
+{}
+"#,
+        stdio_mcp_fixture_script()
+    )
 }

@@ -1,4 +1,4 @@
-import { Eye, Gauge, Pencil, RefreshCw, Wifi } from 'lucide-react'
+import { Gauge, RefreshCw, Settings2, Star, Wifi } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -14,22 +14,26 @@ import {
 } from './model-settings-view-model'
 
 type ModelMatrixProps = {
+  isAnySetDefaultPending: boolean
   isProbePending: (configId: string) => boolean
   isQuotaRefreshPending: (configId: string) => boolean
+  isSetDefaultPending: (configId: string) => boolean
   onDetails: (configId: string) => void
-  onEdit: (configId: string) => void
   onProbe: (configId: string) => void
   onRefreshQuota: (configId: string) => void
+  onSetDefault: (row: ModelAssetRow) => void
   rows: ModelAssetRow[]
 }
 
 export function ModelMatrix({
+  isAnySetDefaultPending,
   isProbePending,
   isQuotaRefreshPending,
+  isSetDefaultPending,
   onDetails,
-  onEdit,
   onProbe,
   onRefreshQuota,
+  onSetDefault,
   rows,
 }: ModelMatrixProps) {
   const { t } = useTranslation('settings')
@@ -45,140 +49,185 @@ export function ModelMatrix({
       </section>
     )
   }
-
   return (
     <TooltipProvider>
-      <section aria-label={t('models.matrix.label')} className="min-w-0">
-        <table className="hidden w-full min-w-[980px] border-separate border-spacing-0 text-left text-sm min-[1100px]:table">
-          <thead>
-            <tr className="text-muted-foreground text-xs">
-              <HeaderCell>{t('models.columns.identity')}</HeaderCell>
-              <HeaderCell>{t('models.columns.provider')}</HeaderCell>
-              <HeaderCell>{t('models.columns.default')}</HeaderCell>
-              <HeaderCell>{t('models.columns.connectivity')}</HeaderCell>
-              <HeaderCell>{t('models.columns.latency')}</HeaderCell>
-              <HeaderCell>{t('models.columns.timeout')}</HeaderCell>
-              <HeaderCell className="max-lg:hidden">{t('models.columns.todayUsage')}</HeaderCell>
-              <HeaderCell className="max-lg:hidden">{t('models.columns.monthUsage')}</HeaderCell>
-              <HeaderCell className="max-lg:hidden">{t('models.columns.totalUsage')}</HeaderCell>
-              <HeaderCell>{t('models.columns.quota')}</HeaderCell>
-              <HeaderCell>{t('models.columns.actions')}</HeaderCell>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const probePending = isProbePending(row.configId)
-              const quotaPending = isQuotaRefreshPending(row.configId)
+      <section aria-label={t('models.matrix.label')} className="model-matrix-layout min-w-0">
+        <div className="model-matrix-table-wrap">
+          <table className="w-full min-w-[1040px] border-separate border-spacing-0 text-left text-sm">
+            <thead>
+              <tr className="text-muted-foreground text-xs">
+                <HeaderCell>{t('models.columns.identity')}</HeaderCell>
+                <HeaderCell>{t('models.columns.provider')}</HeaderCell>
+                <HeaderCell>{t('models.columns.default')}</HeaderCell>
+                <HeaderCell>{t('models.columns.connectivity')}</HeaderCell>
+                <MetricHeaderCell
+                  label={t('models.columns.latency')}
+                  unit={t('models.units.milliseconds')}
+                />
+                <MetricHeaderCell
+                  label={t('models.columns.timeout')}
+                  unit={t('models.units.milliseconds')}
+                />
+                <MetricHeaderCell
+                  className="max-lg:hidden"
+                  label={t('models.columns.todayUsage')}
+                  unit={t('models.units.tokens')}
+                />
+                <MetricHeaderCell
+                  className="max-lg:hidden"
+                  label={t('models.columns.monthUsage')}
+                  unit={t('models.units.tokens')}
+                />
+                <MetricHeaderCell
+                  className="max-lg:hidden"
+                  label={t('models.columns.totalUsage')}
+                  unit={t('models.units.tokens')}
+                />
+                <HeaderCell>{t('models.columns.quota')}</HeaderCell>
+                <HeaderCell>{t('models.columns.actions')}</HeaderCell>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const probePending = isProbePending(row.configId)
+                const quotaPending = isQuotaRefreshPending(row.configId)
+                const defaultPending = isSetDefaultPending(row.configId)
 
-              return (
-                <tr key={row.configId} className="group">
-                  <BodyCell className="rounded-l-md border-l">
-                    <div className="min-w-0">
-                      <div className="truncate font-medium">{row.displayName}</div>
-                      <div className="truncate text-muted-foreground text-xs">{row.modelId}</div>
-                    </div>
-                  </BodyCell>
-                  <BodyCell>{row.providerDisplayName}</BodyCell>
-                  <BodyCell>
-                    {row.isDefault ? (
-                      <Badge>{t('models.defaultMarker')}</Badge>
-                    ) : (
-                      <span className="text-muted-foreground">-</span>
-                    )}
-                  </BodyCell>
-                  <BodyCell>
-                    <ConnectivityBadge row={row} />
-                  </BodyCell>
-                  <BodyCell>{formatLatency(row, t('models.unavailable'))}</BodyCell>
-                  <BodyCell>{formatTimeout(row)}</BodyCell>
-                  <BodyCell className="max-lg:hidden">
-                    {formatUsage(row.usage, 'today', t('models.unavailable'))}
-                  </BodyCell>
-                  <BodyCell className="max-lg:hidden">
-                    {formatUsage(row.usage, 'monthToDate', t('models.unavailable'))}
-                  </BodyCell>
-                  <BodyCell className="max-lg:hidden">
-                    {formatUsage(row.usage, 'allTime', t('models.unavailable'))}
-                  </BodyCell>
-                  <BodyCell>
-                    <QuotaBadge quota={row.quota} />
-                  </BodyCell>
-                  <BodyCell className="rounded-r-md border-r">
-                    <div className="flex items-center gap-1.5">
-                      <DetailsButton
-                        displayName={row.displayName}
-                        onDetails={() => onDetails(row.configId)}
-                      />
-                      <EditButton
-                        displayName={row.displayName}
-                        onEdit={() => onEdit(row.configId)}
-                      />
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            aria-label={
-                              probePending
-                                ? t('models.actions.probing', { name: row.displayName })
-                                : t('models.actions.probe', { name: row.displayName })
-                            }
-                            disabled={probePending}
-                            onClick={() => onProbe(row.configId)}
-                            size="icon"
-                            type="button"
-                            variant="outline"
-                          >
-                            <Wifi aria-hidden="true" className="size-4" data-icon />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          {probePending
-                            ? t('models.actions.probingShort')
-                            : t('models.actions.probeShort')}
-                        </TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            aria-label={
-                              quotaPending
-                                ? t('models.actions.refreshingQuota', { name: row.displayName })
-                                : t('models.actions.refreshQuota', { name: row.displayName })
-                            }
-                            disabled={quotaPending}
-                            onClick={() => onRefreshQuota(row.configId)}
-                            size="icon"
-                            type="button"
-                            variant="outline"
-                          >
-                            {quotaPending ? (
-                              <RefreshCw
-                                aria-hidden="true"
-                                className="size-4 animate-spin"
-                                data-icon
-                              />
-                            ) : (
-                              <Gauge aria-hidden="true" className="size-4" data-icon />
-                            )}
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          {quotaPending
-                            ? t('models.actions.refreshingQuotaShort')
-                            : t('models.actions.refreshQuotaShort')}
-                        </TooltipContent>
-                      </Tooltip>
-                    </div>
-                  </BodyCell>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+                return (
+                  <tr key={row.configId} className="group">
+                    <BodyCell className="rounded-l-md border-l">
+                      <div className="min-w-0">
+                        <div className="truncate font-medium">{row.displayName}</div>
+                        <div className="truncate text-muted-foreground text-xs">{row.modelId}</div>
+                      </div>
+                    </BodyCell>
+                    <BodyCell>{row.providerDisplayName}</BodyCell>
+                    <BodyCell>
+                      {row.isDefault ? (
+                        <Badge>{t('models.defaultMarker')}</Badge>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </BodyCell>
+                    <BodyCell>
+                      <ConnectivityBadge row={row} />
+                    </BodyCell>
+                    <BodyCell>
+                      {formatLatency(
+                        row,
+                        t('models.summary.loadingMetric'),
+                        t('models.unavailable'),
+                      )}
+                    </BodyCell>
+                    <BodyCell>{formatTimeout(row, t('models.summary.loadingMetric'))}</BodyCell>
+                    <BodyCell className="max-lg:hidden">
+                      {formatUsage(
+                        row.usage,
+                        'today',
+                        t('models.summary.loadingMetric'),
+                        t('models.unavailable'),
+                      )}
+                    </BodyCell>
+                    <BodyCell className="max-lg:hidden">
+                      {formatUsage(
+                        row.usage,
+                        'monthToDate',
+                        t('models.summary.loadingMetric'),
+                        t('models.unavailable'),
+                      )}
+                    </BodyCell>
+                    <BodyCell className="max-lg:hidden">
+                      {formatUsage(
+                        row.usage,
+                        'allTime',
+                        t('models.summary.loadingMetric'),
+                        t('models.unavailable'),
+                      )}
+                    </BodyCell>
+                    <BodyCell>
+                      <QuotaBadge quota={row.quota} />
+                    </BodyCell>
+                    <BodyCell className="rounded-r-md border-r">
+                      <div className="flex items-center gap-1.5">
+                        <ConfigureButton
+                          displayName={row.displayName}
+                          onDetails={() => onDetails(row.configId)}
+                        />
+                        <DefaultButton
+                          displayName={row.displayName}
+                          isDisabled={isAnySetDefaultPending}
+                          isDefault={row.isDefault}
+                          isPending={defaultPending}
+                          onSetDefault={() => onSetDefault(row)}
+                        />
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              aria-label={
+                                probePending
+                                  ? t('models.actions.probing', { name: row.displayName })
+                                  : t('models.actions.probe', { name: row.displayName })
+                              }
+                              disabled={probePending}
+                              onClick={() => onProbe(row.configId)}
+                              size="icon"
+                              type="button"
+                              variant="outline"
+                            >
+                              <Wifi aria-hidden="true" className="size-4" data-icon />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {probePending
+                              ? t('models.actions.probingShort')
+                              : t('models.actions.probeShort')}
+                          </TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              aria-label={
+                                quotaPending
+                                  ? t('models.actions.refreshingQuota', { name: row.displayName })
+                                  : t('models.actions.refreshQuota', { name: row.displayName })
+                              }
+                              disabled={quotaPending}
+                              onClick={() => onRefreshQuota(row.configId)}
+                              size="icon"
+                              type="button"
+                              variant="outline"
+                            >
+                              {quotaPending ? (
+                                <RefreshCw
+                                  aria-hidden="true"
+                                  className="size-4 animate-spin"
+                                  data-icon
+                                />
+                              ) : (
+                                <Gauge aria-hidden="true" className="size-4" data-icon />
+                              )}
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {quotaPending
+                              ? t('models.actions.refreshingQuotaShort')
+                              : t('models.actions.refreshQuotaShort')}
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
+                    </BodyCell>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
 
-        <ul className="grid gap-3 min-[1100px]:hidden">
+        <ul className="model-matrix-card-list gap-3">
           {rows.map((row) => {
             const probePending = isProbePending(row.configId)
             const quotaPending = isQuotaRefreshPending(row.configId)
+            const defaultPending = isSetDefaultPending(row.configId)
 
             return (
               <li
@@ -195,11 +244,17 @@ export function ModelMatrix({
                     </div>
                   </div>
                   <div className="flex shrink-0 items-start gap-1.5">
-                    <DetailsButton
+                    <ConfigureButton
                       displayName={row.displayName}
                       onDetails={() => onDetails(row.configId)}
                     />
-                    <EditButton displayName={row.displayName} onEdit={() => onEdit(row.configId)} />
+                    <DefaultButton
+                      displayName={row.displayName}
+                      isDisabled={isAnySetDefaultPending}
+                      isDefault={row.isDefault}
+                      isPending={defaultPending}
+                      onSetDefault={() => onSetDefault(row)}
+                    />
                     <ProbeButton
                       displayName={row.displayName}
                       isPending={probePending}
@@ -217,23 +272,48 @@ export function ModelMatrix({
                   <CompactMetric label={t('models.columns.connectivity')}>
                     <ConnectivityBadge row={row} />
                   </CompactMetric>
-                  <CompactMetric label={t('models.columns.timeout')}>
-                    {formatTimeout(row)}
+                  <CompactMetric
+                    label={`${t('models.columns.timeout')} ${t('models.units.milliseconds')}`}
+                  >
+                    {formatTimeout(row, t('models.summary.loadingMetric'))}
                   </CompactMetric>
-                  <CompactMetric label={t('models.columns.latency')}>
-                    {formatLatency(row, t('models.unavailable'))}
+                  <CompactMetric
+                    label={`${t('models.columns.latency')} ${t('models.units.milliseconds')}`}
+                  >
+                    {formatLatency(row, t('models.summary.loadingMetric'), t('models.unavailable'))}
                   </CompactMetric>
                   <CompactMetric label={t('models.columns.quota')}>
                     <QuotaBadge quota={row.quota} />
                   </CompactMetric>
-                  <CompactMetric label={t('models.columns.todayUsage')}>
-                    {formatUsage(row.usage, 'today', t('models.unavailable'))}
+                  <CompactMetric
+                    label={`${t('models.columns.todayUsage')} ${t('models.units.tokens')}`}
+                  >
+                    {formatUsage(
+                      row.usage,
+                      'today',
+                      t('models.summary.loadingMetric'),
+                      t('models.unavailable'),
+                    )}
                   </CompactMetric>
-                  <CompactMetric label={t('models.columns.monthUsage')}>
-                    {formatUsage(row.usage, 'monthToDate', t('models.unavailable'))}
+                  <CompactMetric
+                    label={`${t('models.columns.monthUsage')} ${t('models.units.tokens')}`}
+                  >
+                    {formatUsage(
+                      row.usage,
+                      'monthToDate',
+                      t('models.summary.loadingMetric'),
+                      t('models.unavailable'),
+                    )}
                   </CompactMetric>
-                  <CompactMetric label={t('models.columns.totalUsage')}>
-                    {formatUsage(row.usage, 'allTime', t('models.unavailable'))}
+                  <CompactMetric
+                    label={`${t('models.columns.totalUsage')} ${t('models.units.tokens')}`}
+                  >
+                    {formatUsage(
+                      row.usage,
+                      'allTime',
+                      t('models.summary.loadingMetric'),
+                      t('models.unavailable'),
+                    )}
                   </CompactMetric>
                   <CompactMetric label={t('models.columns.default')}>
                     {row.isDefault ? (
@@ -252,44 +332,75 @@ export function ModelMatrix({
   )
 }
 
-function DetailsButton({ displayName, onDetails }: { displayName: string; onDetails: () => void }) {
+function ConfigureButton({
+  displayName,
+  onDetails,
+}: {
+  displayName: string
+  onDetails: () => void
+}) {
   const { t } = useTranslation('settings')
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
-          aria-label={t('models.actions.details', { name: displayName })}
+          aria-label={t('models.actions.configure', { name: displayName })}
           onClick={onDetails}
           size="icon"
           type="button"
           variant="outline"
         >
-          <Eye aria-hidden="true" className="size-4" data-icon />
+          <Settings2 aria-hidden="true" className="size-4" data-icon />
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{t('models.actions.detailsShort')}</TooltipContent>
+      <TooltipContent>{t('models.actions.configureShort')}</TooltipContent>
     </Tooltip>
   )
 }
 
-function EditButton({ displayName, onEdit }: { displayName: string; onEdit: () => void }) {
+function DefaultButton({
+  displayName,
+  isDisabled,
+  isDefault,
+  isPending,
+  onSetDefault,
+}: {
+  displayName: string
+  isDisabled: boolean
+  isDefault: boolean
+  isPending: boolean
+  onSetDefault: () => void
+}) {
   const { t } = useTranslation('settings')
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
-          aria-label={t('models.actions.edit', { name: displayName })}
-          onClick={onEdit}
+          aria-label={
+            isPending
+              ? t('models.actions.settingDefault', { name: displayName })
+              : isDefault
+                ? t('models.actions.currentDefault', { name: displayName })
+                : t('models.actions.setDefault', { name: displayName })
+          }
+          disabled={isDefault || isDisabled}
+          onClick={onSetDefault}
           size="icon"
           type="button"
           variant="outline"
         >
-          <Pencil aria-hidden="true" className="size-4" data-icon />
+          <Star aria-hidden="true" className="size-4" data-icon />
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{t('models.actions.editShort')}</TooltipContent>
+      <TooltipContent>
+        {isPending
+          ? t('models.actions.settingDefaultShort')
+          : isDefault
+            ? t('models.actions.currentDefaultShort')
+            : t('models.actions.setDefaultShort')}
+      </TooltipContent>
     </Tooltip>
   )
 }
@@ -389,6 +500,28 @@ function HeaderCell({ children, className }: { children: ReactNode; className?: 
   )
 }
 
+function MetricHeaderCell({
+  className,
+  label,
+  unit,
+}: {
+  className?: string
+  label: string
+  unit: string
+}) {
+  return (
+    <th
+      aria-label={`${label} ${unit}`}
+      className={`border-border border-b px-3 py-2 font-medium ${className ?? ''}`}
+    >
+      <span className="grid gap-0.5">
+        <span>{label}</span>
+        <span className="font-normal text-[11px]">{unit}</span>
+      </span>
+    </th>
+  )
+}
+
 function BodyCell({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <td className={`border-border border-b bg-surface px-3 py-3 align-middle ${className ?? ''}`}>
@@ -401,6 +534,9 @@ function ConnectivityBadge({ row }: { row: ModelAssetRow }) {
   const { t } = useTranslation('settings')
   const status = row.connectivity.status
 
+  if (status === 'loading') {
+    return <Badge variant="outline">{t('models.summary.loadingMetric')}</Badge>
+  }
   if (status === 'online') {
     return <Badge variant="success">{t('models.connectivity.online')}</Badge>
   }
@@ -420,6 +556,10 @@ function ConnectivityBadge({ row }: { row: ModelAssetRow }) {
 function QuotaBadge({ quota }: { quota: QuotaDisplayState }) {
   const { t } = useTranslation('settings')
 
+  if (quota.status === 'loading') {
+    return <Badge variant="outline">{t('models.summary.loadingMetric')}</Badge>
+  }
+
   if (quota.status === 'unavailable') {
     return <Badge variant="outline">{t('models.unavailable')}</Badge>
   }
@@ -434,28 +574,38 @@ function QuotaBadge({ quota }: { quota: QuotaDisplayState }) {
   return <Badge variant={variant}>{t(`models.quota.${quota.status}`)}</Badge>
 }
 
-function formatLatency(row: ModelAssetRow, unavailableLabel: string) {
+function formatLatency(row: ModelAssetRow, loadingLabel: string, unavailableLabel: string) {
+  if (row.connectivity.status === 'loading') {
+    return loadingLabel
+  }
   if (row.connectivity.status === 'unavailable') {
     return unavailableLabel
   }
   if (row.connectivity.status === 'never_checked' || row.connectivity.latencyMs === undefined) {
     return '-'
   }
-  return `${new Intl.NumberFormat().format(row.connectivity.latencyMs)} ms`
+  return new Intl.NumberFormat().format(row.connectivity.latencyMs)
 }
 
-function formatTimeout(row: ModelAssetRow) {
+function formatTimeout(row: ModelAssetRow, loadingLabel: string) {
+  if (row.connectivity.status === 'loading') {
+    return loadingLabel
+  }
   if (row.connectivity.status === 'never_checked' || row.connectivity.status === 'unavailable') {
     return '-'
   }
-  return `${new Intl.NumberFormat().format(row.connectivity.timeoutMs)} ms`
+  return new Intl.NumberFormat().format(row.connectivity.timeoutMs)
 }
 
 function formatUsage(
   usage: UsageDisplayState,
   period: 'today' | 'monthToDate' | 'allTime',
+  loadingLabel: string,
   unavailableLabel: string,
 ) {
+  if (usage.status === 'loading') {
+    return loadingLabel
+  }
   if (usage.status === 'unavailable') {
     return unavailableLabel
   }
@@ -470,5 +620,5 @@ function formatTokenTotal(usage: {
 }) {
   const total =
     usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens
-  return `${new Intl.NumberFormat().format(total)} tokens`
+  return new Intl.NumberFormat().format(total)
 }

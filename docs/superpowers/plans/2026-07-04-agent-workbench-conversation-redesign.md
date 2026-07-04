@@ -277,6 +277,7 @@ type DecisionMatcherSummary = {
 }
 
 type DecisionOption = {
+  // Opaque backend-issued option id. React never derives this value.
   id: string
   decision: 'approve' | 'deny'
   label: string
@@ -394,6 +395,11 @@ Rust serde boundary naming:
 Permission decision ownership:
 
 - Rust projects `decisionOptions` from backend policy state.
+- Replace the current event-level `presented_options: Vec<Decision>` shape with backend-authored selectable options. The public event contract must expose `presented_options: Vec<PermissionDecisionOption>`, not bare `Decision` values.
+- Add an opaque backend option id type for selectable permission options. Do not reuse `DecisionId`: `PermissionResolvedEvent.decision_id` is the resolved/persisted decision id, not the UI-selectable option id.
+- `PermissionDecisionOption` must include `option_id`, `decision`, `scope`, `lifetime`, `matcher_summary`, `label`, `requires_confirmation`, `action_plan_hash`, and optional `fingerprint`.
+- The option id must be minted by Rust when the pending request is created. It must bind to the request id, action plan hash, scope, decision, and fingerprint. It must be stable only for that pending request and invalid after timeout, resolution, restart without pending state, or request mismatch.
+- The projector maps backend `option_id` to UI `DecisionOption.id`. React never constructs, hashes, indexes, or guesses an option id.
 - `DecisionScope` remains a backend matcher concept: exact command, exact args, tool name, category, path prefix, glob, code script, or any.
 - UI lifetime labels are display data derived by Rust, not policy rules invented by React.
 - React submits only `requestId`, `decision`, backend-issued `optionId`, and optional `confirmationText`.
@@ -401,6 +407,7 @@ Permission decision ownership:
 - `ResolvePermissionRequest` must include `option_id` at the Rust serde boundary and `optionId` at the TypeScript/Tauri boundary.
 - Rust must resolve `(conversation_id, request_id, option_id)` against the still-pending backend-authored decision option. Missing, stale, mismatched, already-resolved, or unauthorized options fail closed.
 - Rust must not map frontend `approve` directly to `Decision::AllowOnce` or `deny` directly to `Decision::DenyOnce`. The real `Decision` is derived only from the selected backend option.
+- The submitted `decision: approve | deny` is a consistency check against the selected backend option category. It is not authority. If it conflicts with the selected option, fail closed.
 
 Evidence ref ownership:
 
@@ -420,7 +427,9 @@ Evidence ref ownership:
 
 Backend contracts:
 
+- Modify `crates/jyowo-harness-contracts/src/ids.rs` if a new typed permission option id is introduced there
 - Modify `crates/jyowo-harness-contracts/src/conversation.rs`
+- Modify `crates/jyowo-harness-contracts/src/events/permission.rs`
 - Modify `crates/jyowo-harness-contracts/src/events/artifact.rs`
 - Modify `crates/jyowo-harness-contracts/src/schema_export.rs`
 - Modify `crates/jyowo-harness-contracts/tests/core_contracts.rs`
@@ -433,10 +442,17 @@ Backend projection and read model:
 - Modify `crates/jyowo-harness-journal/src/lib.rs`
 - Modify `crates/jyowo-harness-journal/src/conversation_worktree_projector.rs`
 - Modify `crates/jyowo-harness-journal/src/conversation_read_model.rs`
+- Modify `crates/jyowo-harness-journal/src/retention.rs`
+- Modify `crates/jyowo-harness-journal/src/store.rs`
+- Modify `crates/jyowo-harness-journal/src/sqlite.rs`
+- Modify `crates/jyowo-harness-journal/src/jsonl.rs`
+- Modify `crates/jyowo-harness-journal/src/memory.rs`
 - Create `crates/jyowo-harness-journal/tests/evidence_ref_store.rs`
 - Modify `crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs`
 - Modify `crates/jyowo-harness-journal/tests/conversation_read_model.rs`
 - Create `crates/jyowo-harness-journal/tests/conversation_workbench_projection.rs`
+- Modify `crates/jyowo-harness-journal/tests/l1b_stores.rs`
+- Modify `crates/jyowo-harness-journal/tests/contract.rs`
 
 SDK facade:
 
@@ -535,7 +551,9 @@ Docs:
 
 **Files:**
 
+- Modify `crates/jyowo-harness-contracts/src/ids.rs` if the permission option id is introduced in the shared id macro module
 - Modify `crates/jyowo-harness-contracts/src/conversation.rs`
+- Modify `crates/jyowo-harness-contracts/src/events/permission.rs`
 - Modify `crates/jyowo-harness-contracts/src/events/artifact.rs`
 - Modify `crates/jyowo-harness-contracts/src/schema_export.rs`
 - Modify `crates/jyowo-harness-contracts/tests/core_contracts.rs`
@@ -554,6 +572,14 @@ Docs:
 - Modify `apps/desktop/src/shared/tauri/commands.test.ts`
 
 **Design requirement:** Replace the thin timeline projection with typed workbench projection across the public contract, Rust projector, Tauri response path, permission command contract, and frontend Zod boundary in one compiling vertical slice. Do not add a second legacy shape. Do not keep `AssistantSegment::Thinking`. Do not defer downstream compile fixes to a later task. This task defines optional evidence ref fields but does not mint readable refs yet; Task 3 owns real ref creation after the durable registry exists.
+
+Mandatory split:
+
+- **Task 1A contract slice:** change public Rust contracts, serde fixtures, schema export, artifact revision ids, and backend-issued permission option contracts. This slice must compile with contract tests before projector work starts.
+- **Task 1B projector/read-model slice:** update `conversation_worktree_projector.rs` and `conversation_read_model.rs` to emit the new contract without React inference.
+- **Task 1C Tauri/Zod boundary slice:** update Tauri command contracts, permission resolve payload, TS command client schemas, and frontend boundary tests.
+
+Treat Task 1A, 1B, and 1C as separate audited tasks for the Mandatory Execution Protocol. Each slice needs its own Task Intent Check, failing tests, Reality Check, read-only subagent audit, and commit. Later references to "Task 1" mean all three slices are complete.
 
 - [ ] Step 1: Run the Task Intent Check.
 - [ ] Step 2: Read required context and every file above.
@@ -582,6 +608,10 @@ fn conversation_worktree_page_contains_typed_decision_tool_command_diff_and_arti
         .expect("fixture must include a backend-authored decision request");
     assert!(!decision.decision_options.is_empty());
     assert!(decision.decision_options.iter().all(|option| !option.id.as_str().is_empty()));
+    assert!(decision
+        .decision_options
+        .iter()
+        .all(|option| option.id.as_str() != "approve" && option.id.as_str() != "deny"));
 
     let command = assistant
         .segments
@@ -672,6 +702,9 @@ Required Rust-facing changes:
 - add `projection_version: u64` and `stream_version: u64` to `AssistantWork`
 - remove `AssistantSegment::Thinking`
 - replace `ToolPermissionState` with `DecisionRequestState`, `DecisionOption`, `DecisionLifetime`, and `DecisionMatcherSummary`
+- replace `PermissionRequestedEvent.presented_options: Vec<Decision>` with `Vec<PermissionDecisionOption>`; do not project selectable options from array index or decision strings
+- add an opaque backend permission option id and expose it as `DecisionOption.id`
+- keep `PermissionResolvedEvent.decision_id` separate from permission option ids
 - expand `ToolAttempt` exactly per target design
 - replace command detail fields with `CommandExecution`
 - replace diff detail with `ChangeSet`
@@ -680,7 +713,8 @@ Required Rust-facing changes:
 - add `EvidenceRefId` and `EvidenceRefSummary` contract types without adding fetch commands yet
 - add `UiVisibility` to process steps and force user-safe or withheld rendering
 - add `option_id` to `ResolvePermissionRequest`, Tauri command handler arguments, TS request schema, and TS command client request type
-- resolve permission decisions from backend-authored `(request_id, option_id)` state instead of hardcoded approve/deny to `AllowOnce`/`DenyOnce`
+- update pending permission state and resolver APIs so resolution uses backend-authored `(conversation_id, request_id, option_id)` state instead of hardcoded approve/deny to `AllowOnce`/`DenyOnce`
+- reject missing, stale, already-resolved, request-mismatched, conversation-mismatched, and decision-category-mismatched option ids
 
 Artifact revision migration:
 
@@ -696,12 +730,13 @@ Required downstream migration:
 
 - `conversation_worktree_projector.rs` must compile against the new contract.
 - Existing projected permission data must map to backend-authored `decisionOptions`; React must not invent decision lifetime or matcher options.
+- `decisionOptions` must come from `PermissionRequestedEvent.presented_options: Vec<PermissionDecisionOption>` or pending backend state carrying the same option ids. It must not come from `Vec<Decision>` order, option labels, or frontend-derived hashes.
 - Existing command and diff projection must populate previews and leave `fullOutputRef`, `fullPatchRef`, and `contentRef` absent until Task 3 creates a readable registry entry.
 - Existing artifact projection must emit `ArtifactRevisionSummary` with event-backed `revision_id`.
 - Existing thinking projection must become user-safe `ProcessStep` or withheld process state. It must not serialize `kind: "thinking"`.
 - `conversation_read_model.rs` must keep complete-turn paging semantics and compile with new cursor and segment shapes.
 - Tauri worktree command tests must parse the new serde shape.
-- Tauri permission command tests must prove that valid `optionId` resolves the backend-authored decision and invalid/mismatched/stale `optionId` fails closed.
+- Tauri permission command tests must prove that valid `optionId` resolves the backend-authored decision and missing, invalid, mismatched, stale, already-resolved, and decision-category-conflicting `optionId` fails closed.
 
 - [ ] Step 7: Replace TypeScript Zod schemas in `commands.ts` with the same shape.
 - [ ] Step 8: Update the fixture JSON to the new shape.
@@ -799,8 +834,15 @@ git diff --check
 - Modify `crates/jyowo-harness-journal/src/lib.rs`
 - Modify `crates/jyowo-harness-journal/src/conversation_worktree_projector.rs`
 - Modify `crates/jyowo-harness-journal/src/conversation_read_model.rs`
+- Modify `crates/jyowo-harness-journal/src/retention.rs`
+- Modify `crates/jyowo-harness-journal/src/store.rs`
+- Modify `crates/jyowo-harness-journal/src/sqlite.rs`
+- Modify `crates/jyowo-harness-journal/src/jsonl.rs`
+- Modify `crates/jyowo-harness-journal/src/memory.rs`
 - Create `crates/jyowo-harness-journal/tests/evidence_ref_store.rs`
 - Modify `crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs`
+- Modify `crates/jyowo-harness-journal/tests/l1b_stores.rs`
+- Modify `crates/jyowo-harness-journal/tests/contract.rs`
 - Modify `crates/jyowo-harness-sdk/src/harness/read_model.rs`
 - Modify `crates/jyowo-harness-sdk/src/harness/accessors.rs`
 - Modify `crates/jyowo-harness-sdk/src/harness.rs`
@@ -825,6 +867,9 @@ Required behaviors:
 - conversation deletion or journal/blob deletion makes the ref unreadable
 - ref lookup after process restart still succeeds for persisted refs
 - orphan blob created during failed registry write is removed before returning the error
+- blob GC keeps blobs that are referenced by live registry rows
+- journal prune and conversation deletion delete or invalidate registry rows before any ref can be read again
+- registry rows do not make deleted conversations readable again
 
 - [ ] Step 4: Implement `EvidenceRefStore`.
 
@@ -837,6 +882,7 @@ pub struct EvidenceRefStore {
     event_store: Arc<dyn EventStore>,
 }
 
+#[async_trait::async_trait]
 pub trait EvidenceRefRegistry: Send + Sync + 'static {
     async fn insert(&self, tenant: TenantId, record: EvidenceRefRecord) -> Result<(), JournalError>;
     async fn get(&self, tenant: TenantId, id: &EvidenceRefId) -> Result<Option<EvidenceRefRecord>, JournalError>;
@@ -891,6 +937,10 @@ Persistence design:
 - Journal-backed refs store only source event refs and JSON pointer metadata. Reads must re-load the journal payload and re-check the hash.
 - Conversation deletion, journal prune, or artifact deletion must delete or invalidate matching registry rows before any ref can be read again.
 - GC must treat live registry blob refs as roots. A blob referenced by a registry row cannot be collected.
+- Wire registry roots into the existing retention path. `RetentionEnforcer::collect_garbage(...)` must receive live blob ids from `EvidenceRefRegistry::list_live_blob_roots(...)` before deleting from `FileBlobStore`.
+- Wire registry invalidation into the existing journal prune/delete paths in `store.rs`, `sqlite.rs`, `jsonl.rs`, and `memory.rs`. If a store implementation cannot support durable invalidation, evidence reads for affected refs must fail closed.
+- Test the SQLite-backed registry across process restart. Test-only in-memory registry may be used only for non-persistence unit tests.
+- Use existing workspace `async-trait`. Do not add a new async abstraction or a second registry trait unless the Task Intent Check proves it removes object-safety risk.
 
 - [ ] Step 5: Add SDK read methods that resolve evidence refs through the registry.
 
@@ -918,6 +968,8 @@ Required:
 ```bash
 cargo test -p jyowo-harness-journal evidence_ref_store --test evidence_ref_store
 cargo test -p jyowo-harness-journal conversation_worktree_projector --test conversation_worktree_projector
+cargo test -p jyowo-harness-journal retention --test l1b_stores
+cargo test -p jyowo-harness-journal prune --test contract
 cargo test -p jyowo-harness-sdk evidence_refs --test evidence_refs
 cargo fmt --all --check
 cargo check --workspace
@@ -1288,6 +1340,8 @@ git diff --check
 **Files:**
 
 - Modify `apps/desktop/src-tauri/src/commands/artifacts.rs`
+- Modify `apps/desktop/src-tauri/tests/commands.rs`
+- Create `apps/desktop/src-tauri/tests/commands/artifact_revision.rs`
 - Modify `apps/desktop/src/shared/tauri/commands.ts`
 - Modify `apps/desktop/src/features/conversation/timeline/artifact-segment-view.tsx`
 - Modify `apps/desktop/src/features/artifacts/ArtifactPreview.tsx`
@@ -1304,6 +1358,8 @@ git diff --check
 
 Required tests:
 
+- Rust command tests in `artifact_revision.rs` must use the `artifact_revision_` prefix so the cargo filter below cannot run zero newly owned tests.
+- `apps/desktop/src-tauri/tests/commands.rs` must register `commands/artifact_revision.rs`.
 - artifact pane consumes projected `revisionId` values from `ArtifactRevisionSummary`
 - artifact pane lists revisions newest-first
 - image preview uses media preview ref
@@ -1319,7 +1375,10 @@ Required tests:
 
 ```bash
 cargo test -p jyowo-harness-contracts artifact --test core_contracts
-cargo test -p jyowo-desktop-shell artifacts
+cargo test -p jyowo-desktop-shell artifact_revision
+cargo test -p jyowo-desktop-shell artifact_listing
+cargo test -p jyowo-desktop-shell artifact_preview
+cargo test -p jyowo-desktop-shell artifact_evidence
 pnpm -C apps/desktop test -- src/features/artifacts/ArtifactPane.test.tsx
 pnpm -C apps/desktop test -- src/features/artifacts/ArtifactPreview.test.tsx
 cargo fmt --all --check
@@ -1459,6 +1518,7 @@ git diff --check
 - Modify `docs/backend/backend-runtime.md`
 - Modify `docs/backend/backend-engineering.md`
 - Modify `docs/testing/testing-strategy.md` only if implementation adds new test categories, naming rules, or gates; otherwise state in the task response that no testing-strategy change was required.
+- Modify `docs/testing/test-inventory.md` only by regenerating it with `pnpm audit:tests > docs/testing/test-inventory.md` when test files were added, removed, renamed, split, or when `pnpm check:testing-docs` reports an inventory mismatch.
 
 **Design requirement:** Docs must match the implemented architecture. Do not create docs that describe future work. Do not write temporary plans into normative docs.
 
@@ -1478,10 +1538,11 @@ git diff --check
 - [ ] Step 5: Run gates.
 
 ```bash
+pnpm audit:tests > docs/testing/test-inventory.md
+pnpm check:testing-docs
 pnpm check:docs
 pnpm check:frontend-docs
 pnpm check:backend-docs
-pnpm check:testing-docs
 git diff --check
 ```
 
@@ -1522,6 +1583,9 @@ Expected:
 - [ ] Step 3: Run full gates.
 
 ```bash
+pnpm audit:tests > docs/testing/test-inventory.md
+pnpm audit:tests
+pnpm check:testing-docs
 pnpm check
 pnpm check:docs
 pnpm check:agent-docs
@@ -1529,9 +1593,8 @@ pnpm check:frontend-docs
 pnpm check:backend-docs
 pnpm check:desktop
 pnpm check:rust
-pnpm audit:tests
-pnpm check:test-architecture
 pnpm check:testing-docs
+pnpm check:test-architecture
 pnpm check:agent-orchestration-no-fakes
 pnpm check:agent-supervisor-sidecar
 pnpm check:quick

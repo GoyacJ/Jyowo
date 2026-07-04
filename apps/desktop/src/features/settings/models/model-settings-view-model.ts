@@ -40,6 +40,7 @@ export type ModelSettingsQueryInputs = {
 }
 
 export type ConnectivityDisplayState =
+  | { status: 'loading' }
   | { status: 'never_checked' }
   | { status: 'unavailable' }
   | {
@@ -52,6 +53,7 @@ export type ConnectivityDisplayState =
     }
 
 export type UsageDisplayState =
+  | { status: 'loading' }
   | { status: 'unavailable' }
   | {
       status: 'ready'
@@ -62,6 +64,7 @@ export type UsageDisplayState =
     }
 
 export type QuotaDisplayState =
+  | { status: 'loading' }
   | { status: 'unavailable' }
   | ({
       scope: OfficialQuotaScope
@@ -88,10 +91,11 @@ export type ModelAssetRow = {
   providerDisplayName: string
   isDefault: boolean
   hasApiKey: boolean
+  hasOfficialQuotaApiKey: boolean
   connectivity: ConnectivityDisplayState
   usage: UsageDisplayState
   quota: QuotaDisplayState
-  routeBindings: ModelRouteBinding[]
+  routeBindings: SectionState<ModelRouteBinding[]>
 }
 
 type ModelSettingsSummaryMetric<T> = SectionState<T>
@@ -234,9 +238,6 @@ export function buildModelSettingsViewModel(
   const providerDisplayNames = new Map(
     catalog.providers.map((provider) => [provider.providerId, provider.displayName]),
   )
-  const probeAvailable = input.probeSnapshots.status === 'ready'
-  const quotaAvailable = input.quotaSnapshots.status === 'ready'
-  const usageAvailable = input.usageSummary.status === 'ready'
   const probeByConfigId = buildProbeIndex(input.probeSnapshots)
   const quotaByConfigId = buildQuotaIndex(input.quotaSnapshots)
   const usageLookup = buildUsageLookup(input.usageSummary)
@@ -248,9 +249,9 @@ export function buildModelSettingsViewModel(
       providerDisplayName: providerDisplayNames.get(config.providerId) ?? config.providerId,
       probe: probeByConfigId.get(config.id),
       quota: quotaByConfigId.get(config.id),
-      probeAvailable,
-      quotaAvailable,
-      usageAvailable,
+      probeStatus: input.probeSnapshots.status,
+      quotaStatus: input.quotaSnapshots.status,
+      usageStatus: input.usageSummary.status,
       usageLookup,
       sharedUsageKeys,
     }),
@@ -369,9 +370,9 @@ function buildModelAssetRow({
   providerDisplayName,
   probe,
   quota,
-  probeAvailable,
-  quotaAvailable,
-  usageAvailable,
+  probeStatus,
+  quotaStatus,
+  usageStatus,
   usageLookup,
   sharedUsageKeys,
 }: {
@@ -379,9 +380,9 @@ function buildModelAssetRow({
   providerDisplayName: string
   probe: ProviderProbeSnapshot | undefined
   quota: OfficialQuotaSnapshot | undefined
-  probeAvailable: boolean
-  quotaAvailable: boolean
-  usageAvailable: boolean
+  probeStatus: QuerySlice<ListProviderProbeSnapshotsResponse>['status']
+  quotaStatus: QuerySlice<ListOfficialQuotaSnapshotsResponse>['status']
+  usageStatus: QuerySlice<GetModelUsageSummaryResponse>['status']
   usageLookup: Map<
     string,
     { today: UsageSnapshot; monthToDate: UsageSnapshot; allTime: UsageSnapshot }
@@ -389,13 +390,14 @@ function buildModelAssetRow({
   sharedUsageKeys: Set<string>
 }): ModelAssetRow {
   const usageKey = modelUsageKey(config.providerId, config.modelId)
-  const usageValues = usageAvailable
-    ? (usageLookup.get(usageKey) ?? {
-        today: ZERO_USAGE,
-        monthToDate: ZERO_USAGE,
-        allTime: ZERO_USAGE,
-      })
-    : undefined
+  const usageValues =
+    usageStatus === 'ready'
+      ? (usageLookup.get(usageKey) ?? {
+          today: ZERO_USAGE,
+          monthToDate: ZERO_USAGE,
+          allTime: ZERO_USAGE,
+        })
+      : undefined
 
   return {
     configId: config.id,
@@ -407,18 +409,23 @@ function buildModelAssetRow({
     providerDisplayName,
     isDefault: config.isDefault,
     hasApiKey: config.hasApiKey,
-    connectivity: buildConnectivityDisplay(probe, probeAvailable),
-    usage: buildUsageDisplay(usageValues, sharedUsageKeys.has(usageKey)),
-    quota: buildQuotaDisplay(quota, quotaAvailable),
-    routeBindings: [],
+    hasOfficialQuotaApiKey: config.hasOfficialQuotaApiKey,
+    connectivity: buildConnectivityDisplay(probe, probeStatus),
+    usage: buildUsageDisplay(usageValues, sharedUsageKeys.has(usageKey), usageStatus),
+    quota: buildQuotaDisplay(quota, quotaStatus),
+    routeBindings: { status: 'loading' },
   }
 }
 
 function buildConnectivityDisplay(
   probe: ProviderProbeSnapshot | undefined,
-  probeAvailable: boolean,
+  probeStatus: QuerySlice<ListProviderProbeSnapshotsResponse>['status'],
 ): ConnectivityDisplayState {
-  if (!probeAvailable) {
+  if (isQuerySliceLoading(probeStatus)) {
+    return { status: 'loading' }
+  }
+
+  if (probeStatus !== 'ready') {
     return { status: 'unavailable' }
   }
 
@@ -439,7 +446,12 @@ function buildConnectivityDisplay(
 function buildUsageDisplay(
   usage: { today: UsageSnapshot; monthToDate: UsageSnapshot; allTime: UsageSnapshot } | undefined,
   sharedModelUsage: boolean,
+  usageStatus: QuerySlice<GetModelUsageSummaryResponse>['status'],
 ): UsageDisplayState {
+  if (isQuerySliceLoading(usageStatus)) {
+    return { status: 'loading' }
+  }
+
   if (!usage) {
     return { status: 'unavailable' }
   }
@@ -455,9 +467,13 @@ function buildUsageDisplay(
 
 function buildQuotaDisplay(
   quota: OfficialQuotaSnapshot | undefined,
-  quotaAvailable: boolean,
+  quotaStatus: QuerySlice<ListOfficialQuotaSnapshotsResponse>['status'],
 ): QuotaDisplayState {
-  if (!quotaAvailable) {
+  if (isQuerySliceLoading(quotaStatus)) {
+    return { status: 'loading' }
+  }
+
+  if (quotaStatus !== 'ready') {
     return { status: 'unavailable' }
   }
 
@@ -519,16 +535,32 @@ function buildModelSettingsSummary({
           },
         }
       : { status: 'unavailable' },
-    configuredModels: {
-      status: 'ready',
-      data: {
-        total: rows.length,
-        available: rows.filter((row) => row.connectivity.status === 'online').length,
-        failing: rows.filter((row) => isFailingConnectivity(row.connectivity)).length,
-      },
-    },
+    configuredModels: buildSummaryConfiguredModels(rows),
     localUsage: buildSummaryLocalUsage(usageSummary),
     officialQuota: buildSummaryOfficialQuota(rows.length, quotaSnapshots),
+  }
+}
+
+function buildSummaryConfiguredModels(rows: ModelAssetRow[]): ModelSettingsSummaryMetric<{
+  total: number
+  available: number
+  failing: number
+}> {
+  if (rows.some((row) => row.connectivity.status === 'loading')) {
+    return { status: 'loading' }
+  }
+
+  if (rows.some((row) => row.connectivity.status === 'unavailable')) {
+    return { status: 'unavailable' }
+  }
+
+  return {
+    status: 'ready',
+    data: {
+      total: rows.length,
+      available: rows.filter((row) => row.connectivity.status === 'online').length,
+      failing: rows.filter((row) => isFailingConnectivity(row.connectivity)).length,
+    },
   }
 }
 
@@ -539,6 +571,10 @@ function buildSummaryLocalUsage(
   monthToDate: UsageSnapshot
   allTime: UsageSnapshot
 }> {
+  if (isQuerySliceLoading(usageSummary.status)) {
+    return { status: 'loading' }
+  }
+
   if (usageSummary.status !== 'ready') {
     return { status: 'unavailable' }
   }
@@ -563,6 +599,10 @@ function buildSummaryOfficialQuota(
   authRequired: number
   failed: number
 }> {
+  if (isQuerySliceLoading(quotaSnapshots.status)) {
+    return { status: 'loading' }
+  }
+
   if (quotaSnapshots.status !== 'ready') {
     return { status: 'unavailable' }
   }
@@ -747,11 +787,19 @@ function capabilityRouteKindSortValue(kind: CapabilityRouteKind): number {
 }
 
 export function isFailingConnectivity(connectivity: ConnectivityDisplayState): boolean {
-  if (connectivity.status === 'never_checked' || connectivity.status === 'unavailable') {
+  if (
+    connectivity.status === 'loading' ||
+    connectivity.status === 'never_checked' ||
+    connectivity.status === 'unavailable'
+  ) {
     return false
   }
 
   return FAILING_PROBE_STATUSES.has(connectivity.status)
+}
+
+function isQuerySliceLoading(status: QuerySlice<unknown>['status']): boolean {
+  return status === 'loading' || status === 'idle'
 }
 
 export function isModelScopedQuota(scope: OfficialQuotaScope): boolean {
@@ -763,18 +811,34 @@ function attachRouteBindingsToRows(
   capabilityRoutes: SectionState<CapabilityRouteRow[]>,
 ): ModelAssetRow[] {
   if (capabilityRoutes.status !== 'ready') {
-    return rows
+    return rows.map((row) => ({
+      ...row,
+      routeBindings: routeBindingsSectionFromCapabilityRoutes(capabilityRoutes),
+    }))
   }
 
   return rows.map((row) => ({
     ...row,
-    routeBindings: capabilityRoutes.data
-      .filter((route) => route.savedRoute?.configId === row.configId)
-      .map((route) => ({
-        kind: route.kind,
-        operationIds: route.savedRoute?.operationIds ?? [],
-      })),
+    routeBindings: {
+      status: 'ready',
+      data: capabilityRoutes.data
+        .filter((route) => route.savedRoute?.configId === row.configId)
+        .map((route) => ({
+          kind: route.kind,
+          operationIds: route.savedRoute?.operationIds ?? [],
+        })),
+    },
   }))
+}
+
+function routeBindingsSectionFromCapabilityRoutes(
+  capabilityRoutes: Exclude<SectionState<CapabilityRouteRow[]>, { status: 'ready' }>,
+): SectionState<ModelRouteBinding[]> {
+  if (capabilityRoutes.status === 'error') {
+    return { status: 'error', safeMessage: capabilityRoutes.safeMessage }
+  }
+
+  return { status: capabilityRoutes.status }
 }
 
 export function emptyUsageSummary(): GetModelUsageSummaryResponse {

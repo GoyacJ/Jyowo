@@ -461,9 +461,12 @@ describe('model-settings-view-model', () => {
       'text_to_speech',
       'music_generation',
     ])
-    expect(viewModel.rows[0]?.routeBindings).toEqual([
-      expect.objectContaining({ kind: 'image_generation', operationIds: ['images.generate'] }),
-    ])
+    expect(viewModel.rows[0]?.routeBindings).toEqual({
+      status: 'ready',
+      data: [
+        expect.objectContaining({ kind: 'image_generation', operationIds: ['images.generate'] }),
+      ],
+    })
   })
 
   it('keeps an existing saved route visible when its target becomes unavailable', () => {
@@ -543,6 +546,32 @@ describe('model-settings-view-model', () => {
     expect(viewModel.rows.every((row) => row.usage.status === 'unavailable')).toBe(true)
     expect(viewModel.rows.every((row) => row.connectivity.status === 'unavailable')).toBe(true)
     expect(viewModel.rows.every((row) => row.quota.status === 'unavailable')).toBe(true)
+  })
+
+  it('keeps secondary query pending states as loading after critical data is ready', () => {
+    const state = buildModelSettingsPageState(
+      baseInput({
+        probeSnapshots: { status: 'loading' },
+        usageSummary: { status: 'loading' },
+        quotaSnapshots: { status: 'loading' },
+        routes: { status: 'loading' },
+        routeOptions: { status: 'loading' },
+      }),
+    )
+
+    expect(state.kind).toBe('ready')
+    if (state.kind !== 'ready') {
+      return
+    }
+
+    expect(state.viewModel.summary.configuredModels).toEqual({ status: 'loading' })
+    expect(state.viewModel.summary.localUsage).toEqual({ status: 'loading' })
+    expect(state.viewModel.summary.officialQuota).toEqual({ status: 'loading' })
+    expect(state.viewModel.rows.every((row) => row.connectivity.status === 'loading')).toBe(true)
+    expect(state.viewModel.rows.every((row) => row.usage.status === 'loading')).toBe(true)
+    expect(state.viewModel.rows.every((row) => row.quota.status === 'loading')).toBe(true)
+    expect(state.viewModel.rows.every((row) => row.routeBindings.status === 'loading')).toBe(true)
+    expect(state.viewModel.capabilityRoutes).toEqual({ status: 'loading' })
   })
 
   it('returns distinct route loading and error states for the capability route surface', () => {

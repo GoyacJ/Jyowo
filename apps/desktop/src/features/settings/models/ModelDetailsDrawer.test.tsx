@@ -7,14 +7,24 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { AppI18nProvider } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
-import type { CommandClient } from '@/shared/tauri/commands'
+import type { CommandClient, ModelProviderCatalogResponse } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
 import { createTestCommandClient } from '@/testing/command-client'
 
 import { ModelDetailsDrawer } from './ModelDetailsDrawer'
 import type { ModelAssetRow } from './model-settings-view-model'
 
-function renderDrawer(row: ModelAssetRow, client: CommandClient = createTestCommandClient()) {
+function renderDrawer({
+  client = createTestCommandClient(),
+  onSaved,
+  open = true,
+  row,
+}: {
+  client?: CommandClient
+  onSaved?: () => void
+  open?: boolean
+  row: ModelAssetRow
+}) {
   uiStore.getState().setLocale('en-US')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -30,40 +40,65 @@ function renderDrawer(row: ModelAssetRow, client: CommandClient = createTestComm
     )
   }
 
-  return render(<ModelDetailsDrawer onOpenChange={vi.fn()} open row={row} />, { wrapper: Wrapper })
+  return render(
+    <ModelDetailsDrawer
+      catalog={catalog}
+      onOpenChange={vi.fn()}
+      onSaved={onSaved}
+      open={open}
+      row={row}
+    />,
+    { wrapper: Wrapper },
+  )
 }
 
 describe('ModelDetailsDrawer', () => {
-  it('renders required tabs and connectivity details with safe error text', () => {
-    renderDrawer(failingRow)
+  it('uses three tabs and folds connectivity, usage, and configuration into overview', () => {
+    renderDrawer({ row: failingRow })
 
     const dialog = screen.getByRole('dialog', { name: 'Research Claude' })
     expect(within(dialog).getByRole('tab', { name: 'Overview' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('tab', { name: 'Connectivity' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('tab', { name: 'Usage' })).toBeInTheDocument()
     expect(within(dialog).getByRole('tab', { name: 'Official quota' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('tab', { name: 'Configuration' })).toBeInTheDocument()
     expect(within(dialog).getByRole('tab', { name: 'Capabilities' })).toBeInTheDocument()
+    expect(within(dialog).queryByRole('tab', { name: 'Connectivity' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('tab', { name: 'Usage' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('tab', { name: 'Configuration' })).not.toBeInTheDocument()
 
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Connectivity' }))
     expect(dialog).toHaveTextContent('Failed')
     expect(dialog).toHaveTextContent('10,000 ms')
     expect(dialog).toHaveTextContent('Unavailable')
     expect(dialog).toHaveTextContent('2026-06-30T10:05:00Z')
     expect(dialog).toHaveTextContent('Provider returned a safe failure summary.')
+    expect(dialog).toHaveTextContent('Model-level usage')
+    expect(within(dialog).getByLabelText('Configuration name')).toHaveValue('Research Claude')
+    expect(within(dialog).getByLabelText('Provider')).toHaveValue('anthropic')
+    expect(within(dialog).getByLabelText('Model')).toHaveValue('claude-sonnet')
+    expect(within(dialog).getByLabelText('API key')).toHaveAttribute('type', 'password')
   })
 
   it('labels usage as model-level and shows shared usage when profiles share provider/model', () => {
-    renderDrawer(sharedUsageRow)
+    renderDrawer({ row: sharedUsageRow })
 
     const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Usage' }))
-
     expect(dialog).toHaveTextContent('Model-level usage')
     expect(dialog).toHaveTextContent('Shared model usage')
     expect(dialog).toHaveTextContent('100 tokens')
     expect(dialog).toHaveTextContent('310 tokens')
     expect(dialog).toHaveTextContent('1,400 tokens')
+  })
+
+  it('renders compact overview status cards and single inline key state badges', () => {
+    renderDrawer({ row: sharedUsageRow })
+
+    const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
+    expect(dialog).toHaveTextContent('Provider')
+    expect(dialog).toHaveTextContent('Model')
+    expect(dialog).toHaveTextContent('Default')
+    expect(dialog).toHaveTextContent('Connectivity')
+    expect(dialog).toHaveTextContent('Online')
+    expect(dialog.querySelectorAll('[data-icon]').length).toBeGreaterThanOrEqual(6)
+    expect(within(dialog).getAllByText('API key saved')).toHaveLength(1)
+    expect(within(dialog).getAllByText('Not saved')).toHaveLength(1)
   })
 
   it('renders official quota states with scope labels', () => {
@@ -75,17 +110,19 @@ describe('ModelDetailsDrawer', () => {
       ['notConfigured', 'account', 'Account quota'],
     ] as const) {
       const { unmount } = renderDrawer({
-        ...sharedUsageRow,
-        quota: {
-          status,
-          scope,
-          scopeLabel: scope,
-          sourceUrl: 'https://provider.example/docs/usage',
-          fetchedAt: '2026-06-30T11:00:00Z',
-          expiresAt: '2026-06-30T12:00:00Z',
-          isStale: false,
-          safeMessage:
-            status === 'supported' || status === 'notConfigured' ? undefined : 'Safe state.',
+        row: {
+          ...sharedUsageRow,
+          quota: {
+            status,
+            scope,
+            scopeLabel: scope,
+            sourceUrl: 'https://provider.example/docs/usage',
+            fetchedAt: '2026-06-30T11:00:00Z',
+            expiresAt: '2026-06-30T12:00:00Z',
+            isStale: false,
+            safeMessage:
+              status === 'supported' || status === 'notConfigured' ? undefined : 'Safe state.',
+          },
         },
       })
       const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
@@ -108,28 +145,21 @@ describe('ModelDetailsDrawer', () => {
       apiKey: rawKey,
       configId: 'cfg-openai',
     })
-    renderDrawer(
-      {
-        ...sharedUsageRow,
-        hasApiKey: true,
-      },
-      {
+    renderDrawer({
+      row: { ...sharedUsageRow, hasApiKey: true },
+      client: {
         ...createTestCommandClient(),
         requestProviderConfigApiKeyReveal,
         getProviderConfigApiKey,
       },
-    )
+    })
 
     const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Configuration' }))
     expect(dialog).toHaveTextContent('API key saved')
     expect(dialog).not.toHaveTextContent(rawKey)
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'View key' }))
-    expect(
-      await within(dialog).findByText('API key reveal was verified without displaying the secret.'),
-    ).toBeInTheDocument()
-    expect(dialog).not.toHaveTextContent(rawKey)
+    expect(await within(dialog).findByText(rawKey)).toBeInTheDocument()
     expect(requestProviderConfigApiKeyReveal).toHaveBeenCalledWith('cfg-openai')
     expect(getProviderConfigApiKey).toHaveBeenCalledWith('cfg-openai', 'reveal-token')
   })
@@ -145,20 +175,16 @@ describe('ModelDetailsDrawer', () => {
     const key = deferred<{ apiKey: string; configId: string }>()
     const requestProviderConfigApiKeyReveal = vi.fn().mockReturnValue(reveal.promise)
     const getProviderConfigApiKey = vi.fn().mockReturnValue(key.promise)
-    const { rerender } = renderDrawer(
-      {
-        ...sharedUsageRow,
-        hasApiKey: true,
-      },
-      {
+    const { rerender } = renderDrawer({
+      row: { ...sharedUsageRow, hasApiKey: true },
+      client: {
         ...createTestCommandClient(),
         requestProviderConfigApiKeyReveal,
         getProviderConfigApiKey,
       },
-    )
+    })
 
     const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Configuration' }))
     fireEvent.click(within(dialog).getByRole('button', { name: 'View key' }))
 
     await act(async () => {
@@ -174,16 +200,19 @@ describe('ModelDetailsDrawer', () => {
     )
 
     rerender(
-      <ModelDetailsDrawer onOpenChange={vi.fn()} open row={{ ...failingRow, hasApiKey: true }} />,
+      <ModelDetailsDrawer
+        catalog={catalog}
+        onOpenChange={vi.fn()}
+        open
+        row={{ ...failingRow, hasApiKey: true }}
+      />,
     )
 
     await act(async () => {
       key.resolve({ apiKey: rawKey, configId: 'cfg-openai' })
     })
 
-    const nextDialog = screen.getByRole('dialog', { name: 'Research Claude' })
-    fireEvent.click(within(nextDialog).getByRole('tab', { name: 'Configuration' }))
-    expect(nextDialog).not.toHaveTextContent(rawKey)
+    expect(screen.getByRole('dialog', { name: 'Research Claude' })).not.toHaveTextContent(rawKey)
   })
 
   it('does not fetch the raw key when the row changes before reveal token returns', async () => {
@@ -195,24 +224,28 @@ describe('ModelDetailsDrawer', () => {
     }>()
     const requestProviderConfigApiKeyReveal = vi.fn().mockReturnValue(reveal.promise)
     const getProviderConfigApiKey = vi.fn()
-    const { rerender } = renderDrawer(
-      {
-        ...sharedUsageRow,
-        hasApiKey: true,
-      },
-      {
+    const { rerender } = renderDrawer({
+      row: { ...sharedUsageRow, hasApiKey: true },
+      client: {
         ...createTestCommandClient(),
         requestProviderConfigApiKeyReveal,
         getProviderConfigApiKey,
       },
+    })
+
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: 'Primary OpenAI' })).getByRole('button', {
+        name: 'View key',
+      }),
     )
 
-    const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Configuration' }))
-    fireEvent.click(within(dialog).getByRole('button', { name: 'View key' }))
-
     rerender(
-      <ModelDetailsDrawer onOpenChange={vi.fn()} open row={{ ...failingRow, hasApiKey: true }} />,
+      <ModelDetailsDrawer
+        catalog={catalog}
+        onOpenChange={vi.fn()}
+        open
+        row={{ ...failingRow, hasApiKey: true }}
+      />,
     )
 
     await act(async () => {
@@ -227,180 +260,18 @@ describe('ModelDetailsDrawer', () => {
     expect(getProviderConfigApiKey).not.toHaveBeenCalled()
   })
 
-  it('does not render an already revealed key after switching rows', async () => {
-    const rawKey = 'sk-already-visible-key'
-    const requestProviderConfigApiKeyReveal = vi.fn().mockResolvedValue({
-      configId: 'cfg-openai',
-      expiresInSeconds: 60,
-      revealToken: 'reveal-token',
-      status: 'ready',
-    })
-    const getProviderConfigApiKey = vi.fn().mockResolvedValue({
-      apiKey: rawKey,
-      configId: 'cfg-openai',
-    })
-    const { rerender } = renderDrawer(
-      {
-        ...sharedUsageRow,
-        hasApiKey: true,
-      },
-      {
-        ...createTestCommandClient(),
-        requestProviderConfigApiKeyReveal,
-        getProviderConfigApiKey,
-      },
-    )
+  it('uses the shared centered dialog placement', () => {
+    renderDrawer({ row: sharedUsageRow })
 
     const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Configuration' }))
-    fireEvent.click(within(dialog).getByRole('button', { name: 'View key' }))
-    expect(
-      await within(dialog).findByText('API key reveal was verified without displaying the secret.'),
-    ).toBeInTheDocument()
-    expect(dialog).not.toHaveTextContent(rawKey)
-
-    rerender(
-      <ModelDetailsDrawer onOpenChange={vi.fn()} open row={{ ...failingRow, hasApiKey: true }} />,
-    )
-
-    expect(screen.getByRole('dialog', { name: 'Research Claude' })).not.toHaveTextContent(rawKey)
-  })
-
-  it('does not apply a late reveal response after closing and reopening the same row', async () => {
-    const rawKey = 'sk-late-same-config-key'
-    const reveal = deferred<{
-      configId: string
-      expiresInSeconds: number
-      revealToken: string
-      status: 'ready'
-    }>()
-    const key = deferred<{ apiKey: string; configId: string }>()
-    const requestProviderConfigApiKeyReveal = vi.fn().mockReturnValue(reveal.promise)
-    const getProviderConfigApiKey = vi.fn().mockReturnValue(key.promise)
-    const { rerender } = renderDrawer(
-      {
-        ...sharedUsageRow,
-        hasApiKey: true,
-      },
-      {
-        ...createTestCommandClient(),
-        requestProviderConfigApiKeyReveal,
-        getProviderConfigApiKey,
-      },
-    )
-
-    const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Configuration' }))
-    fireEvent.click(within(dialog).getByRole('button', { name: 'View key' }))
-
-    await act(async () => {
-      reveal.resolve({
-        configId: 'cfg-openai',
-        expiresInSeconds: 60,
-        revealToken: 'reveal-token',
-        status: 'ready',
-      })
-    })
-    await waitFor(() =>
-      expect(getProviderConfigApiKey).toHaveBeenCalledWith('cfg-openai', 'reveal-token'),
-    )
-
-    rerender(<ModelDetailsDrawer onOpenChange={vi.fn()} open={false} row={sharedUsageRow} />)
-    rerender(<ModelDetailsDrawer onOpenChange={vi.fn()} open row={sharedUsageRow} />)
-
-    await act(async () => {
-      key.resolve({ apiKey: rawKey, configId: 'cfg-openai' })
-    })
-
-    const reopenedDialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
-    fireEvent.click(within(reopenedDialog).getByRole('tab', { name: 'Configuration' }))
-    expect(reopenedDialog).not.toHaveTextContent(rawKey)
-  })
-
-  it('keeps a reopened same-config reveal session isolated from the previous request', async () => {
-    const firstReveal = deferred<{
-      configId: string
-      expiresInSeconds: number
-      revealToken: string
-      status: 'ready'
-    }>()
-    const secondReveal = deferred<{
-      configId: string
-      expiresInSeconds: number
-      revealToken: string
-      status: 'ready'
-    }>()
-    const firstKey = deferred<{ apiKey: string; configId: string }>()
-    const secondKey = deferred<{ apiKey: string; configId: string }>()
-    const requestProviderConfigApiKeyReveal = vi
-      .fn()
-      .mockReturnValueOnce(firstReveal.promise)
-      .mockReturnValueOnce(secondReveal.promise)
-    const getProviderConfigApiKey = vi
-      .fn()
-      .mockReturnValueOnce(firstKey.promise)
-      .mockReturnValueOnce(secondKey.promise)
-    const { rerender } = renderDrawer(
-      {
-        ...sharedUsageRow,
-        hasApiKey: true,
-      },
-      {
-        ...createTestCommandClient(),
-        requestProviderConfigApiKeyReveal,
-        getProviderConfigApiKey,
-      },
-    )
-
-    const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Configuration' }))
-    fireEvent.click(within(dialog).getByRole('button', { name: 'View key' }))
-    await act(async () => {
-      firstReveal.resolve({
-        configId: 'cfg-openai',
-        expiresInSeconds: 60,
-        revealToken: 'first-token',
-        status: 'ready',
-      })
-    })
-    await waitFor(() =>
-      expect(getProviderConfigApiKey).toHaveBeenCalledWith('cfg-openai', 'first-token'),
-    )
-
-    rerender(<ModelDetailsDrawer onOpenChange={vi.fn()} open={false} row={sharedUsageRow} />)
-    rerender(<ModelDetailsDrawer onOpenChange={vi.fn()} open row={sharedUsageRow} />)
-    const reopenedDialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
-    fireEvent.click(within(reopenedDialog).getByRole('tab', { name: 'Configuration' }))
-    fireEvent.click(within(reopenedDialog).getByRole('button', { name: 'View key' }))
-    await act(async () => {
-      secondReveal.resolve({
-        configId: 'cfg-openai',
-        expiresInSeconds: 60,
-        revealToken: 'second-token',
-        status: 'ready',
-      })
-      secondKey.resolve({ apiKey: 'sk-second-session', configId: 'cfg-openai' })
-    })
-
-    expect(
-      await within(reopenedDialog).findByText(
-        'API key reveal was verified without displaying the secret.',
-      ),
-    ).toBeInTheDocument()
-    expect(reopenedDialog).not.toHaveTextContent('sk-second-session')
-
-    await act(async () => {
-      firstKey.resolve({ apiKey: 'sk-first-session', configId: 'cfg-openai' })
-    })
-
-    expect(reopenedDialog).toHaveTextContent(
-      'API key reveal was verified without displaying the secret.',
-    )
-    expect(reopenedDialog).not.toHaveTextContent('sk-first-session')
+    expect(dialog).not.toHaveClass('right-4')
+    expect(dialog).not.toHaveClass('top-4')
+    expect(dialog).not.toHaveClass('translate-x-0')
+    expect(dialog).not.toHaveClass('translate-y-0')
   })
 
   it('renders backend catalog model capabilities when available', () => {
-    renderDrawer(sharedUsageRow)
+    renderDrawer({ row: sharedUsageRow })
 
     const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
     fireEvent.click(within(dialog).getByRole('tab', { name: 'Capabilities' }))
@@ -416,17 +287,16 @@ describe('ModelDetailsDrawer', () => {
     const onUseForRoute = vi.fn()
     render(
       <ModelDetailsDrawer
+        catalog={catalog}
         onOpenChange={vi.fn()}
         onUseForRoute={onUseForRoute}
         open
         row={{
           ...sharedUsageRow,
-          routeBindings: [
-            {
-              kind: 'image_generation',
-              operationIds: ['images.generate'],
-            },
-          ],
+          routeBindings: {
+            status: 'ready',
+            data: [{ kind: 'image_generation', operationIds: ['images.generate'] }],
+          },
         }}
       />,
       { wrapper: DrawerWrapper },
@@ -443,6 +313,105 @@ describe('ModelDetailsDrawer', () => {
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Use for image generation' }))
     expect(onUseForRoute).toHaveBeenCalledWith('image_generation', sharedUsageRow.configId)
+  })
+
+  it('shows route binding loading state instead of an empty binding fallback', () => {
+    render(
+      <ModelDetailsDrawer
+        catalog={catalog}
+        onOpenChange={vi.fn()}
+        open
+        row={{ ...sharedUsageRow, routeBindings: { status: 'loading' } }}
+      />,
+      { wrapper: DrawerWrapper },
+    )
+
+    const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Capabilities' }))
+
+    expect(dialog).toHaveTextContent('Loading')
+    expect(dialog).not.toHaveTextContent('No capability routes target this profile.')
+  })
+
+  it('saves overview configuration inline without opening a nested edit dialog', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: {
+        id: 'cfg-openai',
+        baseUrl: 'https://api.openai.com/v1',
+        displayName: 'Primary OpenAI Edited',
+        providerId: 'openai',
+        modelId: 'gpt-4.1',
+        isDefault: true,
+        hasApiKey: true,
+        hasOfficialQuotaApiKey: false,
+        modelDescriptor,
+      },
+      status: 'saved',
+    })
+    const onSaved = vi.fn()
+    renderDrawer({
+      row: sharedUsageRow,
+      onSaved,
+      client: { ...createTestCommandClient(), saveProviderSettings },
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
+    expect(
+      screen.queryByRole('dialog', { name: 'Edit model configuration' }),
+    ).not.toBeInTheDocument()
+    fireEvent.change(within(dialog).getByLabelText('Configuration name'), {
+      target: { value: 'Primary OpenAI Edited' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings).toHaveBeenCalledWith({
+      baseUrl: 'https://api.openai.com/v1',
+      configId: 'cfg-openai',
+      displayName: 'Primary OpenAI Edited',
+      modelId: 'gpt-4.1',
+      providerId: 'openai',
+      setDefault: true,
+    })
+    expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('apiKey')
+    expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('officialQuotaApiKey')
+    expect(onSaved).toHaveBeenCalled()
+  })
+
+  it('does not clear typed secrets when the same row or catalog refreshes', () => {
+    const { rerender } = renderDrawer({ row: sharedUsageRow })
+
+    const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
+    const apiKey = within(dialog).getByLabelText('API key')
+    const officialQuotaApiKey = within(dialog).getByLabelText('Official quota admin key')
+    fireEvent.change(apiKey, { target: { value: 'sk-unsaved-secret' } })
+    fireEvent.change(officialQuotaApiKey, { target: { value: 'quota-unsaved-secret' } })
+
+    rerender(
+      <ModelDetailsDrawer
+        catalog={{ providers: [...catalog.providers] }}
+        onOpenChange={vi.fn()}
+        open
+        row={{
+          ...sharedUsageRow,
+          connectivity: {
+            status: 'online',
+            checkedAt: '2026-06-30T10:10:00Z',
+            latencyMs: 120,
+            timeoutMs: 10_000,
+          },
+        }}
+      />,
+    )
+
+    expect(
+      within(screen.getByRole('dialog', { name: 'Primary OpenAI' })).getByLabelText('API key'),
+    ).toHaveValue('sk-unsaved-secret')
+    expect(
+      within(screen.getByRole('dialog', { name: 'Primary OpenAI' })).getByLabelText(
+        'Official quota admin key',
+      ),
+    ).toHaveValue('quota-unsaved-secret')
   })
 })
 
@@ -461,34 +430,81 @@ function DrawerWrapper({ children }: { children: ReactNode }) {
   )
 }
 
+const modelDescriptor = {
+  protocol: 'responses',
+  conversationCapability: {
+    inputModalities: ['text'],
+    outputModalities: ['text'],
+    contextWindow: 128000,
+    maxOutputTokens: 8192,
+    streaming: true,
+    toolCalling: true,
+    reasoning: false,
+    promptCache: false,
+    structuredOutput: true,
+  },
+  contextWindow: 128000,
+  displayName: 'GPT-4.1',
+  lifecycle: { kind: 'stable' },
+  maxOutputTokens: 8192,
+  modelId: 'gpt-4.1',
+  runtimeStatus: { kind: 'runnable' },
+} satisfies NonNullable<ModelAssetRow['modelDescriptor']>
+
+const catalog: ModelProviderCatalogResponse = {
+  providers: [
+    {
+      providerId: 'openai',
+      displayName: 'OpenAI',
+      defaultBaseUrl: 'https://api.openai.com/v1',
+      models: [modelDescriptor],
+      runtimeCapability: {
+        authScheme: 'bearer',
+        baseUrlRegions: [{ id: 'default', label: 'Default', baseUrl: 'https://api.openai.com/v1' }],
+        supportsLiveValidation: true,
+        supportsStreamingValidation: true,
+        secretRevealSupported: true,
+      },
+      serviceCapabilities: [],
+      sourceUrl: 'https://platform.openai.com/docs',
+      verifiedDate: '2026-06-30',
+    },
+    {
+      providerId: 'anthropic',
+      displayName: 'Anthropic',
+      defaultBaseUrl: 'https://api.anthropic.com',
+      models: [
+        {
+          ...modelDescriptor,
+          displayName: 'Claude Sonnet',
+          modelId: 'claude-sonnet',
+        },
+      ],
+      runtimeCapability: {
+        authScheme: 'bearer',
+        baseUrlRegions: [{ id: 'default', label: 'Default', baseUrl: 'https://api.anthropic.com' }],
+        supportsLiveValidation: true,
+        supportsStreamingValidation: true,
+        secretRevealSupported: true,
+      },
+      serviceCapabilities: [],
+      sourceUrl: 'https://docs.anthropic.com',
+      verifiedDate: '2026-06-30',
+    },
+  ],
+}
+
 const sharedUsageRow: ModelAssetRow = {
   configId: 'cfg-openai',
   providerId: 'openai',
   modelId: 'gpt-4.1',
-  modelDescriptor: {
-    protocol: 'responses',
-    conversationCapability: {
-      inputModalities: ['text'],
-      outputModalities: ['text'],
-      contextWindow: 128000,
-      maxOutputTokens: 8192,
-      streaming: true,
-      toolCalling: true,
-      reasoning: false,
-      promptCache: false,
-      structuredOutput: true,
-    },
-    contextWindow: 128000,
-    displayName: 'GPT-4.1',
-    lifecycle: { kind: 'stable' },
-    maxOutputTokens: 8192,
-    modelId: 'gpt-4.1',
-    runtimeStatus: { kind: 'runnable' },
-  },
+  modelDescriptor,
   displayName: 'Primary OpenAI',
   providerDisplayName: 'OpenAI',
   isDefault: true,
   hasApiKey: true,
+  hasOfficialQuotaApiKey: false,
+  baseUrl: 'https://api.openai.com/v1',
   connectivity: {
     status: 'online',
     checkedAt: '2026-06-30T10:00:00Z',
@@ -515,7 +531,7 @@ const sharedUsageRow: ModelAssetRow = {
     quotaRemaining: 90,
     unit: 'usd',
   },
-  routeBindings: [],
+  routeBindings: { status: 'ready', data: [] },
 }
 
 const failingRow: ModelAssetRow = {
@@ -526,6 +542,7 @@ const failingRow: ModelAssetRow = {
   displayName: 'Research Claude',
   providerDisplayName: 'Anthropic',
   isDefault: false,
+  baseUrl: 'https://api.anthropic.com',
   connectivity: {
     status: 'failed',
     checkedAt: '2026-06-30T10:05:00Z',

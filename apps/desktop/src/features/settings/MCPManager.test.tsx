@@ -276,8 +276,9 @@ describe('MCPManager', () => {
     expect(saveMcpServer).not.toHaveBeenCalled()
   })
 
-  it('renders a sanitized connection failure without leaking raw backend details', async () => {
-    const rawError = 'spawn failed: Authorization=Bearer mcp-secret-token'
+  it('renders a redacted connection failure without leaking raw backend details', async () => {
+    const rawError =
+      'spawn failed at /var/folders/run: npx --api-key ctx7sk-secret-token --token=sk_secret sk-proj-secret-token-1234567890'
     const client = {
       ...createTestCommandClient({ mcpDiagnostics: { events: [] }, mcpServers: { servers: [] } }),
       saveMcpServer: vi.fn().mockRejectedValue(new Error(rawError)),
@@ -294,9 +295,46 @@ describe('MCPManager', () => {
     fireEvent.change(screen.getByLabelText('Argument'), { target: { value: 'mcp-server' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
 
-    expect(await screen.findByText('MCP server could not be saved.')).toBeInTheDocument()
+    expect(await screen.findByText(/spawn failed at <path>/)).toBeInTheDocument()
+    expect(screen.getByText(/--api-key <redacted>/)).toBeInTheDocument()
+    expect(screen.getByText(/--token=<redacted>/)).toBeInTheDocument()
     expect(screen.queryByText(rawError)).not.toBeInTheDocument()
-    expect(screen.queryByText(/mcp-secret-token/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/ctx7sk-secret-token/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/sk_secret/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/sk-proj-secret-token/)).not.toBeInTheDocument()
+  })
+
+  it('renders safe backend validation errors when saving a server fails', async () => {
+    const client = {
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: { servers: [] },
+      }),
+      saveMcpServer: vi.fn().mockRejectedValue({
+        code: 'INVALID_PAYLOAD',
+        message: 'transport.args must not contain empty values',
+      }),
+    }
+
+    renderMCPManager(client)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
+    fireEvent.change(await screen.findByLabelText('Server name'), {
+      target: { value: 'Workspace GitHub' },
+    })
+    fireEvent.change(screen.getByLabelText('Command'), {
+      target: { value: 'node' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add argument' }))
+    fireEvent.change(screen.getByLabelText('Argument'), {
+      target: { value: 'mcp-server' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
+
+    expect(
+      await screen.findByText('transport.args must not contain empty values'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('MCP server could not be saved.')).not.toBeInTheDocument()
   })
 
   it('toggles a workspace-managed server', async () => {

@@ -168,3 +168,26 @@ select {
 .overflow-wrap-anywhere {
   overflow-wrap: anywhere;
 }
+
+.model-matrix-layout {
+  container-type: inline-size;
+}
+
+.model-matrix-table-wrap {
+  display: none;
+  overflow-x: auto;
+}
+
+.model-matrix-card-list {
+  display: grid;
+}
+
+@container (min-width: 1120px) {
+  .model-matrix-table-wrap {
+    display: block;
+  }
+
+  .model-matrix-card-list {
+    display: none;
+  }
+}

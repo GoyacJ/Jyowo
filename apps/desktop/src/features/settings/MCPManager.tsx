@@ -22,6 +22,7 @@ import {
   saveBrowserMcpPreset,
   saveMcpServer,
 } from '@/shared/tauri/commands'
+import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Badge, type BadgeProps } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
@@ -332,6 +333,10 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     setValue('displayName', value)
   }
 
+  const saveErrorMessage = saveMutation.isError
+    ? safeMcpSaveErrorMessage(saveMutation.error, t('mcp.saveError'))
+    : null
+
   return (
     <section className="space-y-5 rounded-md border border-border bg-surface p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -636,9 +641,9 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
 
               {configLoadError ? <ErrorMessage>{t('mcp.configLoadError')}</ErrorMessage> : null}
 
-              {saveMutation.isError ? (
+              {saveErrorMessage ? (
                 <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
-                  {t('mcp.saveError')}
+                  {saveErrorMessage}
                 </div>
               ) : null}
 
@@ -1169,6 +1174,37 @@ function formErrorMessage(error: unknown): string | undefined {
   }
   const message = (error as { message?: unknown }).message
   return typeof message === 'string' && message.length > 0 ? message : undefined
+}
+
+function safeMcpSaveErrorMessage(error: unknown, fallback: string): string {
+  const message = getCommandErrorMessage(error)
+  if (message === 'Unknown command error') {
+    return fallback
+  }
+  const safeMessage = redactMcpSaveErrorMessage(message)
+  return safeMessage.length > 0 ? safeMessage : fallback
+}
+
+function redactMcpSaveErrorMessage(value: string): string {
+  return value
+    .replaceAll(/(?:\/Users\/|\/home\/|\/private\/var\/|\/var\/folders\/)[^\s'",)]+/g, '<path>')
+    .replaceAll(/[A-Za-z]:[\\/][^\s'",)]+/g, '<path>')
+    .replaceAll(/\bbearer\s+\S+/gi, 'Bearer <redacted>')
+    .replaceAll(
+      /\B(--(?:api[_-]?key|token|secret|password))(=|\s+)\S+/gi,
+      (_match, flag: string, separator: string) =>
+        separator === '=' ? `${flag}=<redacted>` : `${flag} <redacted>`,
+    )
+    .replaceAll(
+      /\b(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S+/gi,
+      (match) => `${match.split(/[:=]/, 1)[0]}=<redacted>`,
+    )
+    .replaceAll(
+      /\b(?:ctx7sk|gh[pousr]|sk|rk|npm|lin_api|secret)_[A-Za-z0-9_-]{12,}\b/gi,
+      '<redacted>',
+    )
+    .replaceAll(/\bctx7sk-[A-Za-z0-9-]{12,}\b/gi, '<redacted>')
+    .replaceAll(/\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/gi, '<redacted>')
 }
 
 function diagnosticEventTypeLabel(eventType: string, t: TFunction<'settings'>): string {

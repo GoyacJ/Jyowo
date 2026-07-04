@@ -108,6 +108,7 @@ pub async fn save_mcp_server_with_runtime_state(
         transport: request.transport,
     };
 
+    let _ = mcp_server_spec_from_record(&record, state.workspace_root())?;
     state.mcp_server_store.save_record(&record)?;
 
     let Some(harness) = state.harness() else {
@@ -709,7 +710,7 @@ pub(crate) fn mcp_server_spec_from_record(
                 TransportChoice::Stdio {
                     command: command.clone(),
                     args: args.clone(),
-                    env: mcp_stdio_env(env, inherit_env),
+                    env: mcp_stdio_env(command, env, inherit_env),
                     policy,
                 },
                 McpServerSource::Workspace,
@@ -750,19 +751,42 @@ pub(crate) fn mcp_transport_for_config(
     }
 }
 
-pub(crate) fn mcp_stdio_env(env: &[McpNameValueRecord], inherit_env: &[String]) -> StdioEnv {
+pub(crate) fn mcp_stdio_env(
+    command: &str,
+    env: &[McpNameValueRecord],
+    inherit_env: &[String],
+) -> StdioEnv {
     let extra = env
         .iter()
         .map(|record| (record.key.clone(), record.value.clone()))
         .collect::<BTreeMap<_, _>>();
+    let inherit_env = mcp_effective_stdio_inherit_env(command, inherit_env);
     if inherit_env.is_empty() {
         StdioEnv::Empty { extra }
     } else {
         StdioEnv::Allowlist {
-            inherit: inherit_env.iter().cloned().collect::<BTreeSet<_>>(),
+            inherit: inherit_env.into_iter().collect::<BTreeSet<_>>(),
             extra,
         }
     }
+}
+
+pub(crate) fn mcp_effective_stdio_inherit_env(
+    command: &str,
+    inherit_env: &[String],
+) -> Vec<String> {
+    if !inherit_env.is_empty() || !mcp_stdio_command_needs_execution_env(command) {
+        return inherit_env.to_vec();
+    }
+    browser_mcp_preset_inherit_env()
+}
+
+fn mcp_stdio_command_needs_execution_env(command: &str) -> bool {
+    let command_name = Path::new(command)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(command);
+    matches!(command_name, "npx" | "npm" | "pnpm" | "yarn" | "bun")
 }
 
 pub(crate) fn mcp_stdio_working_dir(
@@ -1058,12 +1082,22 @@ pub(crate) fn browser_mcp_preset_record(
         scope: "global".to_owned(),
         transport: McpServerTransportConfig::Stdio {
             command: "npx".to_owned(),
-            args: vec![browser_mcp_preset_package_arg(preset_id).to_owned()],
+            args: vec![
+                "-y".to_owned(),
+                browser_mcp_preset_package_arg(preset_id).to_owned(),
+            ],
             env: Vec::new(),
-            inherit_env: Vec::new(),
+            inherit_env: browser_mcp_preset_inherit_env(),
             working_dir: None,
         },
     }
+}
+
+pub(crate) fn browser_mcp_preset_inherit_env() -> Vec<String> {
+    ["PATH", "HOME", "USER", "TMPDIR"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }
 
 pub(crate) fn browser_mcp_preset_server_id(preset_id: BrowserMcpPresetId) -> &'static str {

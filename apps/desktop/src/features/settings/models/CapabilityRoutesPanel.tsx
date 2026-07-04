@@ -163,6 +163,9 @@ function routeHealthLabel(route: CapabilityRouteRow, t: ReturnType<typeof useTra
   if (health.status === 'never_checked') {
     return t('models.connectivity.neverChecked')
   }
+  if (health.status === 'loading') {
+    return t('models.summary.loadingMetric')
+  }
   if (health.status === 'unavailable') {
     return t('models.unavailable')
   }

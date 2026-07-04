@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, process::Stdio, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
@@ -118,6 +123,7 @@ impl McpTransport for StdioTransport {
 
         let parent = std::env::vars().collect::<BTreeMap<_, _>>();
         let resolved_env = Self::resolve_env(&env, &parent);
+        let (command, resolved_env) = prepare_stdio_process(&command, resolved_env, &parent);
         let mut command_builder = Command::new(&command);
         command_builder
             .args(args)
@@ -186,6 +192,100 @@ impl McpTransport for StdioTransport {
             .await?;
         Ok(connection)
     }
+}
+
+fn prepare_stdio_process(
+    command: &str,
+    env: BTreeMap<String, String>,
+    parent: &BTreeMap<String, String>,
+) -> (String, BTreeMap<String, String>) {
+    let execution_path = stdio_execution_path(&env, parent);
+    if command_has_path_separator(command) {
+        return (command.to_owned(), env);
+    }
+    let resolved_command = find_executable_on_path(command, &execution_path)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| command.to_owned());
+    (resolved_command, env)
+}
+
+fn stdio_execution_path(
+    env: &BTreeMap<String, String>,
+    parent: &BTreeMap<String, String>,
+) -> String {
+    let mut paths = Vec::new();
+    extend_path_dirs(&mut paths, env.get("PATH"));
+    extend_path_dirs(&mut paths, parent.get("PATH"));
+    extend_common_node_paths(&mut paths, env.get("HOME").or_else(|| parent.get("HOME")));
+    std::env::join_paths(paths)
+        .ok()
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_default()
+}
+
+fn extend_path_dirs(paths: &mut Vec<PathBuf>, value: Option<&String>) {
+    if let Some(value) = value {
+        paths.extend(std::env::split_paths(value));
+    }
+}
+
+fn extend_common_node_paths(paths: &mut Vec<PathBuf>, home: Option<&String>) {
+    paths.extend([
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/opt/homebrew/sbin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+        PathBuf::from("/usr/sbin"),
+        PathBuf::from("/sbin"),
+    ]);
+    let Some(home) = home else {
+        return;
+    };
+    let home = PathBuf::from(home);
+    paths.extend([
+        home.join(".volta/bin"),
+        home.join(".asdf/shims"),
+        home.join(".mise/shims"),
+        home.join(".local/bin"),
+        home.join("Library/pnpm"),
+    ]);
+    let nvm_versions = home.join(".nvm/versions/node");
+    if let Ok(entries) = std::fs::read_dir(nvm_versions) {
+        let mut bins = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("bin"))
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        bins.sort();
+        bins.reverse();
+        paths.extend(bins);
+    }
+}
+
+fn command_has_path_separator(command: &str) -> bool {
+    command.contains('/') || command.contains('\\')
+}
+
+fn find_executable_on_path(command: &str, path: &str) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .map(|dir| dir.join(command))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 pub struct StdioConnection {
@@ -520,4 +620,53 @@ fn truncate_utf8_bytes(input: &str, max_bytes: usize) -> String {
         end -= 1;
     }
     input[..end].to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn prepare_stdio_process_resolves_bare_command_from_parent_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root =
+            std::env::temp_dir().join(format!("jyowo-mcp-stdio-path-{}", std::process::id()));
+        let bin = root.join("bin");
+        let executable = bin.join("fake-mcp");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&executable, permissions).unwrap();
+
+        let parent = BTreeMap::from([
+            ("PATH".to_owned(), bin.to_string_lossy().into_owned()),
+            ("HOME".to_owned(), root.to_string_lossy().into_owned()),
+            ("USER".to_owned(), "tester".to_owned()),
+            ("TMPDIR".to_owned(), "/tmp".to_owned()),
+        ]);
+        let (command, env) = prepare_stdio_process("fake-mcp", BTreeMap::new(), &parent);
+
+        assert_eq!(command, executable.to_string_lossy());
+        assert!(env.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prepare_stdio_process_does_not_expand_resolved_env() {
+        let parent = BTreeMap::from([
+            ("PATH".to_owned(), "/usr/bin".to_owned()),
+            ("HOME".to_owned(), "/parent-home".to_owned()),
+        ]);
+        let explicit = BTreeMap::from([("HOME".to_owned(), "/explicit-home".to_owned())]);
+
+        let (_command, env) = prepare_stdio_process("/bin/sh", explicit, &parent);
+
+        assert_eq!(env.get("HOME").map(String::as_str), Some("/explicit-home"));
+        assert!(!env.contains_key("PATH"));
+    }
 }

@@ -76,7 +76,7 @@ export function CapabilityRouteEditorDrawer({
   return (
     <Dialog onOpenChange={onOpenChange} open={open && route !== null}>
       {route ? (
-        <DialogContent className="right-4 left-auto top-4 max-h-[calc(100vh-2rem)] w-[min(680px,92vw)] translate-x-0 translate-y-0 overflow-y-auto sm:rounded-md">
+        <DialogContent className="max-h-[calc(100vh-2rem)] w-[min(680px,92vw)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
               {t('models.routes.editor.title', {

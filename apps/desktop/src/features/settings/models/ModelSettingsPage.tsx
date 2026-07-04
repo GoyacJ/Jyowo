@@ -23,14 +23,17 @@ type HealthFilter = 'all' | 'online' | 'failing' | 'never_checked' | 'unavailabl
 export function ModelSettingsPage() {
   const { t } = useTranslation('settings')
   const {
+    isAnySetDefaultPending,
     isProbePending,
     isQuotaRefreshPending,
+    isSetDefaultPending,
     pageState,
     probeConfig,
     refreshQuota,
     refetchAll,
     deleteCapabilityRoute,
     saveCapabilityRoute,
+    setDefaultConfig,
   } = useModelSettingsViewModel()
   const [activeSurface, setActiveSurface] = useState('models')
   const [providerFilter, setProviderFilter] = useState('all')
@@ -39,7 +42,6 @@ export function ModelSettingsPage() {
   const [failingOnly, setFailingOnly] = useState(false)
   const [search, setSearch] = useState('')
   const [detailsConfigId, setDetailsConfigId] = useState<string | null>(null)
-  const [editConfigId, setEditConfigId] = useState<string | null>(null)
   const [createConfigOpen, setCreateConfigOpen] = useState(false)
   const [routeEditorRoute, setRouteEditorRoute] = useState<CapabilityRouteRow | null>(null)
 
@@ -93,8 +95,6 @@ export function ModelSettingsPage() {
   const providerOptions = buildProviderOptions(pageState.viewModel.rows)
   const detailsRow =
     pageState.viewModel.rows.find((row) => row.configId === detailsConfigId) ?? null
-  const editProfile =
-    pageState.viewModel.configs.find((config) => config.id === editConfigId) ?? null
 
   return (
     <section className="space-y-4" data-testid="model-settings-page">
@@ -186,15 +186,19 @@ export function ModelSettingsPage() {
           </search>
 
           <ModelMatrix
+            isAnySetDefaultPending={isAnySetDefaultPending}
             isProbePending={isProbePending}
             isQuotaRefreshPending={isQuotaRefreshPending}
+            isSetDefaultPending={isSetDefaultPending}
             onDetails={setDetailsConfigId}
-            onEdit={setEditConfigId}
             onProbe={(configId) => {
               void probeConfig(configId, 10_000).catch(() => undefined)
             }}
             onRefreshQuota={(configId) => {
               void refreshQuota(configId).catch(() => undefined)
+            }}
+            onSetDefault={(row) => {
+              void setDefaultConfig(defaultRequestFromRow(row)).catch(() => undefined)
             }}
             rows={filteredRows}
           />
@@ -209,9 +213,9 @@ export function ModelSettingsPage() {
       </Tabs>
 
       <ModelDetailsDrawer
-        onEdit={(row) => {
-          setDetailsConfigId(null)
-          setEditConfigId(row.configId)
+        catalog={pageState.viewModel.catalog}
+        onSaved={async () => {
+          await refetchAll()
         }}
         onUseForRoute={(kind) => {
           if (pageState.viewModel.capabilityRoutes.status !== 'ready') {
@@ -237,15 +241,14 @@ export function ModelSettingsPage() {
         catalog={pageState.viewModel.catalog}
         onOpenChange={(open) => {
           if (!open) {
-            setEditConfigId(null)
             setCreateConfigOpen(false)
           }
         }}
         onSaved={() => {
           void refetchAll()
         }}
-        open={createConfigOpen || editProfile !== null}
-        profile={editProfile}
+        open={createConfigOpen}
+        profile={null}
       />
       <CapabilityRouteEditorDrawer
         onClear={async (request) => {
@@ -268,6 +271,16 @@ export function ModelSettingsPage() {
       />
     </section>
   )
+}
+
+function defaultRequestFromRow(row: ModelAssetRow) {
+  return {
+    ...(row.baseUrl ? { baseUrl: row.baseUrl } : {}),
+    configId: row.configId,
+    displayName: row.displayName,
+    modelId: row.modelId,
+    providerId: row.providerId,
+  }
 }
 
 function buildProviderOptions(rows: ModelAssetRow[]) {

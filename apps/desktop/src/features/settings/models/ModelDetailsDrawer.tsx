@@ -1,7 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { Activity, KeyRound, Link2, Server, ShieldCheck, Star } from 'lucide-react'
+import type { FormEvent, ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { getProviderConfigApiKey, requestProviderConfigApiKeyReveal } from '@/shared/tauri/commands'
+import {
+  getProviderConfigApiKey,
+  type ModelProviderCatalogResponse,
+  type ProviderSettingsRequest,
+  requestProviderConfigApiKeyReveal,
+  saveProviderSettings,
+} from '@/shared/tauri/commands'
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Badge } from '@/shared/ui/badge'
@@ -17,41 +25,70 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 
 import { routeKindLabel } from './CapabilityRoutesPanel'
 import type {
+  CapabilityRouteRow,
   ModelAssetRow,
   QuotaDisplayState,
   UsageDisplayState,
 } from './model-settings-view-model'
 
 type ModelDetailsDrawerProps = {
+  catalog: ModelProviderCatalogResponse
   open: boolean
   row: ModelAssetRow | null
   onOpenChange: (open: boolean) => void
-  onEdit?: (row: ModelAssetRow) => void
-  onUseForRoute?: (kind: ModelAssetRow['routeBindings'][number]['kind'], configId: string) => void
-}
-
-type RevealedApiKeyState = {
-  configId: string
-  generation: number
+  onSaved?: () => void | Promise<void>
+  onUseForRoute?: (kind: CapabilityRouteRow['kind'], configId: string) => void
 }
 
 export function ModelDetailsDrawer({
-  onEdit,
+  catalog,
   onOpenChange,
+  onSaved,
   onUseForRoute,
   open,
   row,
 }: ModelDetailsDrawerProps) {
   const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
+  const secretFormRef = useRef<HTMLFormElement>(null)
+  const revealedApiKeyRef = useRef<HTMLElement>(null)
   const [activeTab, setActiveTab] = useState('overview')
-  const [revealedApiKey, setRevealedApiKey] = useState<RevealedApiKeyState | null>(null)
+  const [displayName, setDisplayName] = useState('')
+  const [providerId, setProviderId] = useState('')
+  const [modelId, setModelId] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [isSaving, setIsSaving] = useState(false)
+  const [revealedApiKeyVisible, setRevealedApiKeyVisible] = useState(false)
   const [revealError, setRevealError] = useState<string | null>(null)
   const [isRevealing, setIsRevealing] = useState(false)
   const currentConfigId = open && row ? row.configId : null
   const activeConfigIdRef = useRef<string | null>(currentConfigId)
   const lastActiveConfigIdRef = useRef<string | null>(currentConfigId)
   const revealGenerationRef = useRef(0)
+
+  const selectedProvider = useMemo(
+    () =>
+      catalog.providers.find((provider) => provider.providerId === providerId) ??
+      catalog.providers[0],
+    [catalog.providers, providerId],
+  )
+  const modelOptions = useMemo(() => {
+    const models = [...(selectedProvider?.models ?? [])]
+    if (
+      row &&
+      row.providerId === selectedProvider?.providerId &&
+      row.modelDescriptor &&
+      !models.some((model) => model.modelId === row.modelId)
+    ) {
+      models.push({
+        ...row.modelDescriptor,
+        displayName: row.modelId,
+        modelId: row.modelId,
+      })
+    }
+    return models
+  }, [row?.modelDescriptor, row?.modelId, row?.providerId, selectedProvider])
 
   if (lastActiveConfigIdRef.current !== currentConfigId) {
     lastActiveConfigIdRef.current = currentConfigId
@@ -63,10 +100,35 @@ export function ModelDetailsDrawer({
 
   useEffect(() => {
     setActiveTab('overview')
-    setRevealedApiKey(null)
+    setDisplayName(row?.displayName ?? '')
+    setProviderId(row?.providerId ?? catalog.providers[0]?.providerId ?? '')
+    setModelId(row?.modelId ?? catalog.providers[0]?.models[0]?.modelId ?? '')
+    setBaseUrl(row?.baseUrl ?? '')
+    setSaveError(null)
+    setIsSaving(false)
+    clearSecretFormFields(secretFormRef.current)
+    clearRevealedApiKey(revealedApiKeyRef.current)
+    setRevealedApiKeyVisible(false)
     setRevealError(null)
     setIsRevealing(false)
   }, [currentConfigId])
+
+  useEffect(() => {
+    const modelExists = modelOptions.some((model) => model.modelId === modelId)
+    const firstModel = modelOptions[0]
+    if (!modelExists && firstModel) {
+      setModelId(firstModel.modelId)
+    }
+  }, [modelId, modelOptions])
+
+  function changeOpen(nextOpen: boolean) {
+    if (!nextOpen) {
+      clearSecretFormFields(secretFormRef.current)
+      clearRevealedApiKey(revealedApiKeyRef.current)
+      setRevealedApiKeyVisible(false)
+    }
+    onOpenChange(nextOpen)
+  }
 
   async function revealApiKey() {
     if (!row?.hasApiKey || isRevealing) {
@@ -78,6 +140,8 @@ export function ModelDetailsDrawer({
     revealGenerationRef.current = revealGeneration
     setIsRevealing(true)
     setRevealError(null)
+    clearRevealedApiKey(revealedApiKeyRef.current)
+    setRevealedApiKeyVisible(false)
     try {
       const reveal = await requestProviderConfigApiKeyReveal(configId, commandClient)
       if (
@@ -92,10 +156,10 @@ export function ModelDetailsDrawer({
         payload.configId === configId &&
         revealGenerationRef.current === revealGeneration
       ) {
-        setRevealedApiKey({
-          configId,
-          generation: revealGeneration,
-        })
+        if (revealedApiKeyRef.current) {
+          revealedApiKeyRef.current.textContent = payload.apiKey
+        }
+        setRevealedApiKeyVisible(true)
       }
     } catch (error) {
       if (
@@ -103,7 +167,8 @@ export function ModelDetailsDrawer({
         revealGenerationRef.current === revealGeneration
       ) {
         setRevealError(getCommandErrorMessage(error))
-        setRevealedApiKey(null)
+        clearRevealedApiKey(revealedApiKeyRef.current)
+        setRevealedApiKeyVisible(false)
       }
     } finally {
       if (
@@ -115,15 +180,61 @@ export function ModelDetailsDrawer({
     }
   }
 
-  const apiKeyRevealVerified =
-    revealedApiKey &&
-    revealedApiKey.configId === currentConfigId &&
-    revealedApiKey.generation === revealGenerationRef.current
+  async function submitConfiguration(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!row || isSaving) {
+      return
+    }
+
+    const form = event.currentTarget
+    const request: ProviderSettingsRequest = {
+      configId: row.configId,
+      modelId,
+      providerId,
+      setDefault: row.isDefault,
+    }
+    const trimmedDisplayName = displayName.trim()
+    const trimmedBaseUrl = baseUrl.trim()
+    const apiKey = readSecretFormValue(form, 'apiKey')
+    const officialQuotaApiKey = readSecretFormValue(form, 'officialQuotaApiKey')
+
+    if (trimmedDisplayName) {
+      request.displayName = trimmedDisplayName
+    }
+    if (trimmedBaseUrl) {
+      request.baseUrl = trimmedBaseUrl
+    }
+    if (apiKey) {
+      request.apiKey = apiKey
+    }
+    if (officialQuotaApiKey) {
+      request.officialQuotaApiKey = officialQuotaApiKey
+    }
+    if (!row.hasApiKey && !apiKey) {
+      setSaveError(t('provider.errors.apiKeyRequired'))
+      return
+    }
+
+    setIsSaving(true)
+    setSaveError(null)
+    try {
+      await saveProviderSettings(request, commandClient)
+      clearSecretFormFields(form)
+      clearRevealedApiKey(revealedApiKeyRef.current)
+      setRevealedApiKeyVisible(false)
+      await onSaved?.()
+    } catch (error) {
+      clearSecretFormFields(form)
+      setSaveError(getCommandErrorMessage(error))
+    } finally {
+      setIsSaving(false)
+    }
+  }
 
   return (
-    <Dialog onOpenChange={onOpenChange} open={open && row !== null}>
+    <Dialog onOpenChange={changeOpen} open={open && row !== null}>
       {row ? (
-        <DialogContent className="right-4 left-auto top-4 max-h-[calc(100vh-2rem)] w-[min(720px,92vw)] translate-x-0 translate-y-0 overflow-y-auto sm:rounded-md">
+        <DialogContent className="max-h-[calc(100vh-2rem)] w-[min(880px,94vw)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{row.displayName}</DialogTitle>
             <DialogDescription>
@@ -136,114 +247,201 @@ export function ModelDetailsDrawer({
               <TabsTrigger onClick={() => setActiveTab('overview')} value="overview">
                 {t('models.details.tabs.overview')}
               </TabsTrigger>
-              <TabsTrigger onClick={() => setActiveTab('connectivity')} value="connectivity">
-                {t('models.details.tabs.connectivity')}
-              </TabsTrigger>
-              <TabsTrigger onClick={() => setActiveTab('usage')} value="usage">
-                {t('models.details.tabs.usage')}
-              </TabsTrigger>
               <TabsTrigger onClick={() => setActiveTab('quota')} value="quota">
                 {t('models.details.tabs.quota')}
-              </TabsTrigger>
-              <TabsTrigger onClick={() => setActiveTab('configuration')} value="configuration">
-                {t('models.details.tabs.configuration')}
               </TabsTrigger>
               <TabsTrigger onClick={() => setActiveTab('capabilities')} value="capabilities">
                 {t('models.details.tabs.capabilities')}
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="overview">
-              <DetailGrid>
-                <DetailRow label={t('models.columns.provider')}>
-                  {row.providerDisplayName}
-                </DetailRow>
-                <DetailRow label={t('models.columns.identity')}>{row.modelId}</DetailRow>
-                <DetailRow label={t('models.columns.default')}>
-                  {row.isDefault ? t('models.defaultMarker') : t('models.details.notDefault')}
-                </DetailRow>
-                <DetailRow label={t('models.columns.connectivity')}>
-                  <ConnectivityText row={row} />
-                </DetailRow>
-              </DetailGrid>
-            </TabsContent>
+            <TabsContent className="space-y-4" value="overview">
+              <OverviewStatusStrip row={row} />
 
-            <TabsContent value="connectivity">
-              <DetailGrid>
-                <DetailRow label={t('models.details.connectivity.status')}>
-                  <ConnectivityText row={row} />
-                </DetailRow>
-                <DetailRow label={t('models.columns.timeout')}>
-                  {formatMilliseconds(
-                    'timeoutMs' in row.connectivity ? row.connectivity.timeoutMs : undefined,
-                    t('models.unavailable'),
-                  )}
-                </DetailRow>
-                <DetailRow label={t('models.columns.latency')}>
-                  {formatMilliseconds(
-                    'latencyMs' in row.connectivity ? row.connectivity.latencyMs : undefined,
-                    t('models.unavailable'),
-                  )}
-                </DetailRow>
-                <DetailRow label={t('models.details.connectivity.checkedAt')}>
-                  {'checkedAt' in row.connectivity
-                    ? row.connectivity.checkedAt
-                    : t('models.unavailable')}
-                </DetailRow>
-                {'safeMessage' in row.connectivity && row.connectivity.safeMessage ? (
-                  <DetailRow label={t('models.details.safeMessage')}>
-                    {row.connectivity.safeMessage}
+              <section className="space-y-3">
+                <SectionTitle>{t('models.details.overview.connectionAndUsage')}</SectionTitle>
+                <DetailGrid>
+                  <DetailRow label={t('models.columns.latency')}>
+                    {formatConnectivityMilliseconds(
+                      row.connectivity,
+                      'latencyMs',
+                      t('models.summary.loadingMetric'),
+                      t('models.unavailable'),
+                    )}
                   </DetailRow>
-                ) : null}
-              </DetailGrid>
-            </TabsContent>
+                  <DetailRow label={t('models.columns.timeout')}>
+                    {formatConnectivityMilliseconds(
+                      row.connectivity,
+                      'timeoutMs',
+                      t('models.summary.loadingMetric'),
+                      t('models.unavailable'),
+                    )}
+                  </DetailRow>
+                  <DetailRow label={t('models.details.connectivity.checkedAt')}>
+                    {row.connectivity.status === 'loading'
+                      ? t('models.summary.loadingMetric')
+                      : 'checkedAt' in row.connectivity
+                        ? row.connectivity.checkedAt
+                        : t('models.unavailable')}
+                  </DetailRow>
+                  {'safeMessage' in row.connectivity && row.connectivity.safeMessage ? (
+                    <DetailRow label={t('models.details.safeMessage')}>
+                      {row.connectivity.safeMessage}
+                    </DetailRow>
+                  ) : null}
+                </DetailGrid>
+                <UsageDetails usage={row.usage} />
+              </section>
 
-            <TabsContent value="usage">
-              <UsageDetails usage={row.usage} />
+              <section className="space-y-3">
+                <SectionTitle>{t('models.details.overview.configuration')}</SectionTitle>
+                <form
+                  className="grid gap-3 rounded-sm border border-border bg-background p-3"
+                  onSubmit={(event) => void submitConfiguration(event)}
+                  ref={secretFormRef}
+                >
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="grid gap-1 text-sm">
+                      <span className="font-medium">{t('provider.profileName')}</span>
+                      <input
+                        className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onChange={(event) => setDisplayName(event.target.value)}
+                        value={displayName}
+                      />
+                    </label>
+
+                    <label className="grid gap-1 text-sm">
+                      <span className="font-medium">{t('provider.provider')}</span>
+                      <select
+                        className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onChange={(event) => setProviderId(event.target.value)}
+                        value={providerId}
+                      >
+                        {catalog.providers.map((provider) => (
+                          <option key={provider.providerId} value={provider.providerId}>
+                            {provider.displayName}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="grid gap-1 text-sm">
+                      <span className="font-medium">{t('provider.model')}</span>
+                      <select
+                        className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onChange={(event) => setModelId(event.target.value)}
+                        value={modelId}
+                      >
+                        {modelOptions.map((model) => (
+                          <option key={model.modelId} value={model.modelId}>
+                            {model.displayName}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="grid gap-1 text-sm">
+                      <span className="font-medium">{t('provider.baseUrl')}</span>
+                      <input
+                        className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onChange={(event) => setBaseUrl(event.target.value)}
+                        placeholder={selectedProvider?.defaultBaseUrl}
+                        value={baseUrl}
+                      />
+                    </label>
+
+                    <label className="grid gap-1 text-sm">
+                      <span className="flex items-center justify-between gap-2 font-medium">
+                        {t('provider.apiKey')}
+                        <SavedStateBadge saved={row.hasApiKey}>
+                          {row.hasApiKey
+                            ? t('models.details.configuration.apiKeySaved')
+                            : t('models.details.configuration.apiKeyMissing')}
+                        </SavedStateBadge>
+                      </span>
+                      <input
+                        aria-label={t('provider.apiKey')}
+                        className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        name="apiKey"
+                        placeholder={
+                          row.hasApiKey
+                            ? t('provider.apiKeyExistingPlaceholder')
+                            : t('provider.apiKeyPlaceholder')
+                        }
+                        type="password"
+                      />
+                    </label>
+
+                    <label className="grid gap-1 text-sm">
+                      <span className="flex items-center justify-between gap-2 font-medium">
+                        {t('provider.officialQuotaApiKey')}
+                        <SavedStateBadge saved={row.hasOfficialQuotaApiKey}>
+                          {row.hasOfficialQuotaApiKey
+                            ? t('provider.savedApiKeyAvailable')
+                            : t('provider.savedApiKeyMissing')}
+                        </SavedStateBadge>
+                      </span>
+                      <input
+                        aria-label={t('provider.officialQuotaApiKey')}
+                        className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        name="officialQuotaApiKey"
+                        placeholder={
+                          row.hasOfficialQuotaApiKey
+                            ? t('provider.officialQuotaApiKeyExistingPlaceholder')
+                            : t('provider.officialQuotaApiKeyPlaceholder')
+                        }
+                        type="password"
+                      />
+                    </label>
+                  </div>
+
+                  {row.hasApiKey ? (
+                    <div className="space-y-2">
+                      <Button
+                        disabled={isRevealing}
+                        onClick={() => void revealApiKey()}
+                        type="button"
+                        variant="outline"
+                      >
+                        {isRevealing ? t('provider.revealingApiKey') : t('provider.revealApiKey')}
+                      </Button>
+                      <div
+                        className="grid gap-1 rounded-sm border border-border bg-muted px-3 py-2 text-sm"
+                        hidden={!revealedApiKeyVisible}
+                      >
+                        <span className="text-muted-foreground text-xs">
+                          {t('provider.savedApiKey')}
+                        </span>
+                        <code
+                          className="break-all font-mono text-foreground"
+                          ref={revealedApiKeyRef}
+                        />
+                      </div>
+                      {revealError ? (
+                        <p className="text-destructive text-sm" role="alert">
+                          {revealError}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {saveError ? (
+                    <p className="text-destructive text-sm" role="alert">
+                      {saveError}
+                    </p>
+                  ) : null}
+
+                  <div className="flex justify-end">
+                    <Button disabled={isSaving} type="submit">
+                      {isSaving ? t('provider.saving') : t('provider.save')}
+                    </Button>
+                  </div>
+                </form>
+              </section>
             </TabsContent>
 
             <TabsContent value="quota">
               <QuotaDetails quota={row.quota} />
-            </TabsContent>
-
-            <TabsContent value="configuration">
-              <DetailGrid>
-                <DetailRow label={t('provider.profileName')}>{row.displayName}</DetailRow>
-                <DetailRow label={t('provider.provider')}>{row.providerDisplayName}</DetailRow>
-                <DetailRow label={t('provider.model')}>{row.modelId}</DetailRow>
-                <DetailRow label={t('provider.apiKey')}>
-                  {row.hasApiKey
-                    ? t('models.details.configuration.apiKeySaved')
-                    : t('models.details.configuration.apiKeyMissing')}
-                </DetailRow>
-              </DetailGrid>
-              {row.hasApiKey ? (
-                <div className="mt-4 space-y-2">
-                  <Button
-                    disabled={isRevealing}
-                    onClick={() => void revealApiKey()}
-                    type="button"
-                    variant="outline"
-                  >
-                    {isRevealing ? t('provider.revealingApiKey') : t('provider.revealApiKey')}
-                  </Button>
-                  {apiKeyRevealVerified ? (
-                    <p className="rounded-sm border border-border bg-muted px-2 py-1 text-muted-foreground text-sm">
-                      {t('provider.apiKeyRevealVerified')}
-                    </p>
-                  ) : null}
-                  {revealError ? (
-                    <p className="text-destructive text-sm" role="alert">
-                      {revealError}
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-              {onEdit ? (
-                <Button className="mt-4" onClick={() => onEdit(row)} type="button">
-                  {t('models.details.configuration.edit')}
-                </Button>
-              ) : null}
             </TabsContent>
 
             <TabsContent value="capabilities">
@@ -253,6 +451,87 @@ export function ModelDetailsDrawer({
         </DialogContent>
       ) : null}
     </Dialog>
+  )
+}
+
+function OverviewStatusStrip({ row }: { row: ModelAssetRow }) {
+  const { t } = useTranslation('settings')
+  const connectivityTone = connectivityToneClass(row.connectivity.status)
+
+  return (
+    <section className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      <StatusCard
+        icon={<Server aria-hidden="true" className="size-4" data-icon />}
+        label={t('models.columns.provider')}
+        value={row.providerDisplayName}
+      />
+      <StatusCard
+        icon={<Link2 aria-hidden="true" className="size-4" data-icon />}
+        label={t('models.columns.identity')}
+        value={row.modelId}
+      />
+      <StatusCard
+        icon={<Star aria-hidden="true" className="size-4" data-icon />}
+        label={t('models.columns.default')}
+        tone={row.isDefault ? 'text-primary bg-primary/10 border-primary/20' : undefined}
+        value={row.isDefault ? t('models.defaultMarker') : t('models.details.notDefault')}
+      />
+      <StatusCard
+        icon={<Activity aria-hidden="true" className="size-4" data-icon />}
+        label={t('models.columns.connectivity')}
+        tone={connectivityTone}
+        value={<ConnectivityText row={row} />}
+      />
+    </section>
+  )
+}
+
+function StatusCard({
+  icon,
+  label,
+  tone,
+  value,
+}: {
+  icon: ReactNode
+  label: string
+  tone?: string
+  value: ReactNode
+}) {
+  return (
+    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-2 rounded-sm border border-border bg-muted/40 px-3 py-2">
+      <div
+        className={[
+          'mt-0.5 flex size-7 items-center justify-center rounded-sm border border-border bg-background text-muted-foreground',
+          tone ?? '',
+        ].join(' ')}
+      >
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <div className="text-muted-foreground text-xs">{label}</div>
+        <div className="truncate font-medium text-sm">{value}</div>
+      </div>
+    </div>
+  )
+}
+
+function SavedStateBadge({ children, saved }: { children: ReactNode; saved: boolean }) {
+  return (
+    <span
+      className={[
+        'inline-flex shrink-0 items-center gap-1 rounded-sm border px-1.5 py-0.5 font-medium text-[11px]',
+        saved
+          ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+          : 'border-border bg-muted text-muted-foreground',
+      ].join(' ')}
+    >
+      {saved ? (
+        <ShieldCheck aria-hidden="true" className="size-3" data-icon />
+      ) : (
+        <KeyRound aria-hidden="true" className="size-3" data-icon />
+      )}
+      {children}
+    </span>
   )
 }
 
@@ -292,9 +571,17 @@ function CapabilitiesDetails({
 
       <section className="space-y-2">
         <h3 className="font-medium text-sm">{t('models.details.capabilities.routeBindings')}</h3>
-        {row.routeBindings.length > 0 ? (
+        {row.routeBindings.status === 'loading' ? (
+          <p className="text-muted-foreground text-sm">{t('models.summary.loadingMetric')}</p>
+        ) : row.routeBindings.status === 'error' ? (
+          <p className="text-destructive text-sm" role="alert">
+            {row.routeBindings.safeMessage}
+          </p>
+        ) : row.routeBindings.status === 'unavailable' ? (
+          <p className="text-muted-foreground text-sm">{t('models.unavailable')}</p>
+        ) : row.routeBindings.data.length > 0 ? (
           <div className="space-y-2">
-            {row.routeBindings.map((binding) => (
+            {row.routeBindings.data.map((binding) => (
               <div className="rounded-md border border-border bg-background p-3" key={binding.kind}>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
@@ -331,6 +618,10 @@ function CapabilitiesDetails({
 function UsageDetails({ usage }: { usage: UsageDisplayState }) {
   const { t } = useTranslation('settings')
 
+  if (usage.status === 'loading') {
+    return <p className="text-muted-foreground text-sm">{t('models.summary.loadingMetric')}</p>
+  }
+
   if (usage.status === 'unavailable') {
     return <p className="text-muted-foreground text-sm">{t('models.unavailable')}</p>
   }
@@ -356,6 +647,10 @@ function UsageDetails({ usage }: { usage: UsageDisplayState }) {
 
 function QuotaDetails({ quota }: { quota: QuotaDisplayState }) {
   const { t } = useTranslation('settings')
+
+  if (quota.status === 'loading') {
+    return <p className="text-muted-foreground text-sm">{t('models.summary.loadingMetric')}</p>
+  }
 
   if (quota.status === 'unavailable') {
     return <p className="text-muted-foreground text-sm">{t('models.unavailable')}</p>
@@ -385,14 +680,21 @@ function QuotaDetails({ quota }: { quota: QuotaDisplayState }) {
 function ConnectivityText({ row }: { row: ModelAssetRow }) {
   const { t } = useTranslation('settings')
   const status = row.connectivity.status
+  if (status === 'loading') {
+    return t('models.summary.loadingMetric')
+  }
   return status === 'unavailable' ? t('models.unavailable') : t(`models.connectivity.${status}`)
 }
 
-function DetailGrid({ children }: { children: React.ReactNode }) {
-  return <dl className="grid gap-3 text-sm">{children}</dl>
+function SectionTitle({ children }: { children: ReactNode }) {
+  return <h3 className="font-medium text-sm">{children}</h3>
 }
 
-function DetailRow({ children, label }: { children: React.ReactNode; label: string }) {
+function DetailGrid({ children }: { children: ReactNode }) {
+  return <dl className="grid gap-3 text-sm sm:grid-cols-2">{children}</dl>
+}
+
+function DetailRow({ children, label }: { children: ReactNode; label: string }) {
   return (
     <div className="grid gap-1 rounded-sm border border-border bg-background px-3 py-2">
       <dt className="text-muted-foreground text-xs">{label}</dt>
@@ -401,8 +703,38 @@ function DetailRow({ children, label }: { children: React.ReactNode; label: stri
   )
 }
 
+function connectivityToneClass(
+  status: ModelAssetRow['connectivity']['status'],
+): string | undefined {
+  if (status === 'online') {
+    return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+  }
+  if (status === 'loading' || status === 'never_checked') {
+    return 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+  }
+  if (status === 'unavailable' || status === 'unsupported') {
+    return 'border-border bg-muted text-muted-foreground'
+  }
+  return 'border-destructive/25 bg-destructive/10 text-destructive'
+}
+
 function formatMilliseconds(value: number | undefined, unavailable: string) {
   return value === undefined ? unavailable : `${value.toLocaleString()} ms`
+}
+
+function formatConnectivityMilliseconds(
+  connectivity: ModelAssetRow['connectivity'],
+  key: 'latencyMs' | 'timeoutMs',
+  loading: string,
+  unavailable: string,
+) {
+  if (connectivity.status === 'loading') {
+    return loading
+  }
+  if (connectivity.status === 'never_checked' || connectivity.status === 'unavailable') {
+    return unavailable
+  }
+  return formatMilliseconds(connectivity[key], unavailable)
 }
 
 function formatBoolean(value: boolean, yes: string, no: string) {
@@ -418,4 +750,27 @@ function formatUsage(usage: {
   const tokens =
     usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens
   return `${tokens.toLocaleString()} tokens`
+}
+
+function readSecretFormValue(form: HTMLFormElement, name: string): string {
+  const value = new FormData(form).get(name)
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function clearSecretFormFields(form: HTMLFormElement | null) {
+  if (!form) {
+    return
+  }
+  for (const name of ['apiKey', 'officialQuotaApiKey']) {
+    const field = form.elements.namedItem(name)
+    if (field instanceof HTMLInputElement) {
+      field.value = ''
+    }
+  }
+}
+
+function clearRevealedApiKey(element: HTMLElement | null) {
+  if (element) {
+    element.textContent = ''
+  }
 }

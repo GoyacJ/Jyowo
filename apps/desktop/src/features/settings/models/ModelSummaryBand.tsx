@@ -38,7 +38,7 @@ export function ModelSummaryBand({ summary }: ModelSummaryBandProps) {
         value={
           summary.configuredModels.status === 'ready'
             ? t('models.summary.configuredCount', { count: summary.configuredModels.data.total })
-            : t('models.unavailable')
+            : summaryStatusLabel(summary.configuredModels.status, t)
         }
         detail={
           summary.configuredModels.status === 'ready' ? (
@@ -55,7 +55,7 @@ export function ModelSummaryBand({ summary }: ModelSummaryBandProps) {
               </Badge>
             </span>
           ) : (
-            t('models.summary.unavailableMetric')
+            summaryStatusLabel(summary.configuredModels.status, t)
           )
         }
       />
@@ -65,7 +65,7 @@ export function ModelSummaryBand({ summary }: ModelSummaryBandProps) {
         value={
           summary.localUsage.status === 'ready'
             ? formatTokens(summary.localUsage.data.today)
-            : t('models.unavailable')
+            : summaryStatusLabel(summary.localUsage.status, t)
         }
         detail={
           summary.localUsage.status === 'ready'
@@ -74,7 +74,7 @@ export function ModelSummaryBand({ summary }: ModelSummaryBandProps) {
               )} · ${t('models.columns.totalUsage')}: ${formatTokens(
                 summary.localUsage.data.allTime,
               )}`
-            : t('models.summary.unavailableMetric')
+            : summaryStatusLabel(summary.localUsage.status, t)
         }
       />
       <SummaryMetric
@@ -85,7 +85,7 @@ export function ModelSummaryBand({ summary }: ModelSummaryBandProps) {
             ? t('models.summary.quotaSupportedCount', {
                 count: summary.officialQuota.data.supported,
               })
-            : t('models.unavailable')
+            : summaryStatusLabel(summary.officialQuota.status, t)
         }
         detail={
           summary.officialQuota.status === 'ready'
@@ -94,11 +94,20 @@ export function ModelSummaryBand({ summary }: ModelSummaryBandProps) {
                 authRequired: summary.officialQuota.data.authRequired,
                 failed: summary.officialQuota.data.failed,
               })
-            : t('models.summary.unavailableMetric')
+            : summaryStatusLabel(summary.officialQuota.status, t)
         }
       />
     </section>
   )
+}
+
+function summaryStatusLabel(
+  status: Exclude<ModelSettingsSummaryView['configuredModels']['status'], 'ready'>,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  return status === 'loading'
+    ? t('models.summary.loadingMetric')
+    : t('models.summary.unavailableMetric')
 }
 
 function SummaryMetric({

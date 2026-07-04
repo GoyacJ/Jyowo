@@ -21,8 +21,8 @@ Use branch prefix `goya`.
 ```bash
 cd /Users/goya/Repo/Git/Jyowo
 git status --short --branch
-git switch main
-git ls-files --error-unmatch docs/plans/2026-07-04-agent-harness-memory-platform-implementation.md
+git rev-parse --verify main
+git ls-tree -r --name-only main -- docs/plans/2026-07-04-agent-harness-memory-platform-implementation.md | grep -Fx docs/plans/2026-07-04-agent-harness-memory-platform-implementation.md
 git show main:docs/plans/2026-07-04-agent-harness-memory-platform-implementation.md >/dev/null
 git worktree add ../Jyowo-memory-platform -b goya/memory-platform main
 cd ../Jyowo-memory-platform
@@ -33,7 +33,8 @@ git status --short --branch
 Expected:
 
 ```text
-git ls-files exits 0
+git rev-parse exits 0
+git ls-tree grep exits 0
 git show exits 0
 test command exits 0
 ## goya/memory-platform
@@ -49,6 +50,8 @@ test -f docs/plans/2026-07-04-agent-harness-memory-platform-implementation.md
 ```
 
 All implementation commits must be created from the isolated worktree path.
+
+The original checkout may contain unrelated uncommitted files. Do not revert, stash, or include those files. The isolated implementation worktree must be clean before Task 0 starts; if `git status --short` inside the worktree shows tracked modifications, stop and recreate the worktree from `main`.
 
 After every task, audit, and gate passes, merge the implementation branch into `main` from the original repository path. Do not leave the completed implementation only on a feature branch.
 
@@ -166,7 +169,7 @@ These issues were found during architecture review of this plan. The classificat
 
 | # | Classification | Required fix in this plan |
 |---|---|---|
-| 1 | Delivery state issue | The plan must be committed on `main` before worktree creation; the execution command now verifies tracked presence with `git ls-files` and `git show main:...`. |
+| 1 | Delivery state issue | The plan must be committed on `main` before worktree creation; the execution command verifies tracked presence with `git ls-tree` and `git show main:...` without switching or modifying the original checkout. |
 | 2 | Writing issue | The mandatory design reading file is `docs/design/DESIGN.md`; obsolete design doc paths must not be referenced. |
 | 3 | Writing issue | The final gate must not call nonexistent docs scripts; new gate scripts must be added to `package.json` with tests before use. |
 | 4 | Writing issue | Tauri Rust tests must use package `jyowo-desktop-shell`, matching `apps/desktop/src-tauri/Cargo.toml`. |
@@ -271,6 +274,41 @@ final_score =
 ```
 
 If no vector score exists, do not renormalize weights. This makes lexical-only recall deterministic and prevents hidden semantic behavior from being implied.
+
+SQLite schema decision:
+
+- `schema_version(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)` records applied migrations.
+- `memory_records` stores durable records with these columns:
+  - `id TEXT PRIMARY KEY`
+  - `tenant_id TEXT NOT NULL`
+  - `kind TEXT NOT NULL`
+  - `visibility TEXT NOT NULL`
+  - `content TEXT NOT NULL`
+  - `metadata_json TEXT NOT NULL`
+  - `content_hash TEXT NOT NULL`
+  - `source_kind TEXT NOT NULL`
+  - `evidence_json TEXT NOT NULL`
+  - `confidence REAL NOT NULL DEFAULT 1.0`
+  - `access_count INTEGER NOT NULL DEFAULT 0`
+  - `last_accessed_at TEXT`
+  - `created_at TEXT NOT NULL`
+  - `updated_at TEXT NOT NULL`
+  - `expires_at TEXT`
+  - `deleted_at TEXT`
+- `memory_embeddings` stores provider-independent vectors with these columns:
+  - `memory_id TEXT PRIMARY KEY REFERENCES memory_records(id) ON DELETE CASCADE`
+  - `embedding_state TEXT NOT NULL CHECK (embedding_state IN ('missing', 'ready', 'failed', 'disabled'))`
+  - `dimension INTEGER`
+  - `vector_le_f32 BLOB`
+  - `model_id TEXT`
+  - `updated_at TEXT NOT NULL`
+  - `error_kind TEXT`
+- `memory_tombstones` stores deletion barriers with `id`, `tenant_id`, `memory_id`, `content_hash`, `reason`, `evidence_json`, and `created_at`.
+- Add indexes for `(tenant_id, visibility)`, `(tenant_id, content_hash)`, `(tenant_id, expires_at)`, `(tenant_id, deleted_at)`, and `(tenant_id, last_accessed_at)`.
+- Add an FTS5 table `memory_records_fts` using `unicode61 remove_diacritics 2`, with `content`, `metadata_text`, `memory_id UNINDEXED`, and `tenant_id UNINDEXED`.
+- Add insert/update/delete triggers so FTS rows stay synchronized with `memory_records`. Tests must prove update and tombstone/delete paths remove stale searchable text.
+- Open SQLite with `PRAGMA foreign_keys=ON`, `PRAGMA journal_mode=WAL`, and a nonzero `busy_timeout`.
+- Every write path must use an explicit transaction. Recall must read from one connection snapshot and must not update access counters until final provider-level filters pass.
 
 ### Problem 2: No controlled long-term memory write tool
 
@@ -603,6 +641,10 @@ define_scopes! {
 
 pub type MemoryProviderId = String;
 
+pub type MemoryOriginName = String;
+pub type MemoryOriginLabel = String;
+pub type MemoryPageCursor = String;
+
 pub struct MemoryRecord {
     pub id: MemoryId,
     pub tenant_id: TenantId,
@@ -616,13 +658,77 @@ pub struct MemoryRecord {
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
+pub enum MemorySource {
+    UserInput,
+    AgentDerived,
+    SubagentDerived,
+    ToolOutput,
+    McpToolOutput,
+    PluginOutput,
+    WebRetrieval,
+    WorkspaceFile,
+    ExternalRetrieval,
+    Imported,
+    Consolidated,
+}
+
 pub struct MemoryEvidence {
     pub source: MemorySource,
+    pub origin: MemoryEvidenceOrigin,
     pub content_hash: ContentHash,
     pub session_id: Option<SessionId>,
     pub run_id: Option<RunId>,
     pub message_id: Option<MessageId>,
     pub tool_use_id: Option<ToolUseId>,
+}
+
+pub enum MemoryEvidenceOrigin {
+    UserMessage {
+        session_id: SessionId,
+        run_id: RunId,
+        message_id: MessageId,
+    },
+    AssistantMessage {
+        session_id: SessionId,
+        run_id: RunId,
+        message_id: MessageId,
+    },
+    SubagentOutput {
+        parent_session_id: SessionId,
+        child_session_id: SessionId,
+        run_id: RunId,
+        agent_id: Option<AgentId>,
+    },
+    BuiltinToolOutput {
+        tool_name: MemoryOriginName,
+        tool_use_id: ToolUseId,
+    },
+    McpToolOutput {
+        server_id: String,
+        tool_name: MemoryOriginName,
+        tool_use_id: ToolUseId,
+    },
+    PluginOutput {
+        plugin_id: String,
+        tool_name: Option<MemoryOriginName>,
+        tool_use_id: Option<ToolUseId>,
+    },
+    WebRetrieval {
+        url_hash: ContentHash,
+        fetch_tool_use_id: Option<ToolUseId>,
+    },
+    WorkspaceFile {
+        workspace_id: WorkspaceId,
+        path_hash: ContentHash,
+        snapshot_id: Option<SnapshotId>,
+    },
+    Imported {
+        importer: MemoryOriginName,
+        import_id: String,
+    },
+    Consolidated {
+        from: Vec<MemoryId>,
+    },
 }
 
 pub struct MemoryCandidate {
@@ -773,42 +879,72 @@ pub struct MemoryThreadSettings {
     pub memory_mode: MemoryThreadMode,
 }
 
-pub struct MemoryToolRequest {
+pub enum MemoryActor {
+    User { user_label: Option<MemoryOriginLabel> },
+    Model,
+    System,
+    Subagent { child_session_id: SessionId, agent_id: Option<AgentId> },
+}
+
+pub struct MemoryPermissionContext {
+    pub explicit_user_instruction: bool,
+    pub action_plan_id: Option<ActionPlanId>,
+    pub authorization_ticket_id: Option<AuthorizationTicketId>,
+    pub non_interactive_policy_grant: bool,
+}
+
+pub struct MemoryToolArgs {
     pub action: MemoryToolAction,
+}
+
+pub struct MemoryToolRuntimeContext {
+    pub actor: MemoryActor,
+    pub permission_context: MemoryPermissionContext,
     pub tenant_id: TenantId,
     pub session_id: SessionId,
     pub run_id: RunId,
+    pub provider_policy: MemoryProviderSelectionPolicy,
+}
+
+pub struct MemoryToolRequest {
+    pub args: MemoryToolArgs,
+    pub runtime: MemoryToolRuntimeContext,
+}
+
+pub enum MemoryProviderSelectionPolicy {
+    PolicySelected,
+    RequireProvider { provider_id: MemoryProviderId },
+    DenyModelSelectedProvider,
 }
 
 pub enum MemoryToolAction {
     Search(MemorySearchRequest),
     Read(MemoryReadRequest),
-    Create(MemoryCreateRequest),
-    Update(MemoryUpdateRequest),
+    Create(MemoryToolCreateArgs),
+    Update(MemoryToolUpdateArgs),
     Delete(MemoryDeleteRequest),
     List(MemoryListRequest),
-    Propose(MemoryProposeRequest),
+    Propose(MemoryToolProposeArgs),
 }
 
 pub struct MemorySearchRequest {
     pub query: String,
     pub max_records: u32,
     pub visibility: Option<MemoryVisibility>,
+    pub cursor: Option<MemoryPageCursor>,
 }
 
 pub struct MemoryReadRequest {
     pub memory_id: MemoryId,
 }
 
-pub struct MemoryCreateRequest {
+pub struct MemoryToolCreateArgs {
     pub draft: MemoryRecordDraft,
-    pub evidence: MemoryEvidence,
 }
 
-pub struct MemoryUpdateRequest {
+pub struct MemoryToolUpdateArgs {
     pub memory_id: MemoryId,
     pub draft: MemoryRecordDraft,
-    pub evidence: MemoryEvidence,
 }
 
 pub struct MemoryDeleteRequest {
@@ -821,11 +957,11 @@ pub struct MemoryListRequest {
     pub include_expired: bool,
     pub include_deleted: bool,
     pub limit: u32,
+    pub cursor: Option<MemoryPageCursor>,
 }
 
-pub struct MemoryProposeRequest {
+pub struct MemoryToolProposeArgs {
     pub draft: MemoryRecordDraft,
-    pub evidence: MemoryEvidence,
 }
 
 pub struct MemoryToolResponse {
@@ -833,8 +969,34 @@ pub struct MemoryToolResponse {
     pub state: MemoryToolState,
     pub memory_ids: Vec<MemoryId>,
     pub candidate_ids: Vec<MemoryCandidateId>,
+    pub records: Vec<MemoryToolRecordView>,
+    pub next_cursor: Option<MemoryPageCursor>,
+    pub action_plan_id: Option<ActionPlanId>,
+    pub denial: Option<MemoryToolDenial>,
+    pub redaction: MemoryRedactionSummary,
     pub trace_id: Option<MemoryTraceId>,
     pub takes_effect: MemoryTakesEffect,
+}
+
+pub struct MemoryToolRecordView {
+    pub memory_id: MemoryId,
+    pub provider_id: MemoryProviderId,
+    pub kind: MemoryKind,
+    pub visibility: MemoryVisibility,
+    pub redacted_content: Option<String>,
+    pub content_hash: ContentHash,
+    pub score: Option<MemoryScoreBreakdown>,
+}
+
+pub struct MemoryToolDenial {
+    pub reason: MemoryPolicyDenyReason,
+    pub safe_message: String,
+    pub action_plan_id: Option<ActionPlanId>,
+}
+
+pub struct MemoryRedactionSummary {
+    pub redacted_count: u32,
+    pub dropped_count: u32,
 }
 
 pub enum MemoryToolState {
@@ -878,6 +1040,9 @@ pub struct MemoryProviderDescriptor {
     pub writable: bool,
     pub allowed_visibility: Vec<MemoryVisibilityClass>,
     pub timeout_ms: u32,
+    pub max_records_per_recall: u32,
+    pub max_chars_per_recall: u32,
+    pub max_bytes_per_record: u64,
 }
 
 pub trait MemoryProvider: MemoryStore + MemoryLifecycle {
@@ -897,6 +1062,8 @@ memory.list
 memory.propose
 ```
 
+Only `MemoryToolArgs` is prompt-visible. `MemoryToolRuntimeContext` is injected by the harness after tool-call parsing and must never be accepted from model JSON. A model-selected provider id is not trusted input; provider choice is resolved by `MemoryPolicyEngine` and `MemoryProviderSelectionPolicy`. Evidence for create, update, delete, and propose actions is constructed by the runtime from the current turn, actor, tool call id, and redacted source context; it is never accepted from model-provided arguments.
+
 Required IPC surfaces:
 
 ```text
@@ -915,6 +1082,159 @@ get_model_request_preview
 
 All IPC request and response payloads must be backed by Rust serde contracts and mirrored by frontend Zod schemas. Do not define frontend-only memory payloads.
 
+Required IPC payload contracts:
+
+```rust
+pub struct GetMemorySettingsRequest {
+    pub tenant_id: TenantId,
+}
+
+pub struct GetMemorySettingsResponse {
+    pub settings: MemoryGlobalSettings,
+}
+
+pub struct UpdateMemorySettingsRequest {
+    pub tenant_id: TenantId,
+    pub settings: MemoryGlobalSettings,
+}
+
+pub struct UpdateMemorySettingsResponse {
+    pub settings: MemoryGlobalSettings,
+}
+
+pub struct GetThreadMemorySettingsRequest {
+    pub tenant_id: TenantId,
+    pub session_id: SessionId,
+}
+
+pub struct GetThreadMemorySettingsResponse {
+    pub settings: MemoryThreadSettings,
+}
+
+pub struct UpdateThreadMemorySettingsRequest {
+    pub tenant_id: TenantId,
+    pub settings: MemoryThreadSettings,
+}
+
+pub struct UpdateThreadMemorySettingsResponse {
+    pub settings: MemoryThreadSettings,
+}
+
+pub struct ListMemoryCandidatesRequest {
+    pub tenant_id: TenantId,
+    pub session_id: Option<SessionId>,
+    pub state: Option<MemoryCandidateState>,
+    pub limit: u32,
+    pub cursor: Option<MemoryPageCursor>,
+}
+
+pub struct ListMemoryCandidatesResponse {
+    pub candidates: Vec<MemoryCandidateListItem>,
+    pub next_cursor: Option<MemoryPageCursor>,
+}
+
+pub struct MemoryCandidateListItem {
+    pub id: MemoryCandidateId,
+    pub state: MemoryCandidateState,
+    pub proposed_record: MemoryRecordDraft,
+    pub evidence: MemoryEvidence,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+pub struct ApproveMemoryCandidateRequest {
+    pub tenant_id: TenantId,
+    pub candidate_id: MemoryCandidateId,
+    pub action_plan_id: Option<ActionPlanId>,
+}
+
+pub struct ApproveMemoryCandidateResponse {
+    pub candidate: MemoryCandidate,
+    pub memory_id: MemoryId,
+}
+
+pub struct RejectMemoryCandidateRequest {
+    pub tenant_id: TenantId,
+    pub candidate_id: MemoryCandidateId,
+    pub reason: String,
+}
+
+pub struct RejectMemoryCandidateResponse {
+    pub candidate: MemoryCandidate,
+}
+
+pub struct MergeMemoryCandidateRequest {
+    pub tenant_id: TenantId,
+    pub candidate_ids: Vec<MemoryCandidateId>,
+    pub merged_record: MemoryRecordDraft,
+    pub evidence: MemoryEvidence,
+    pub action_plan_id: Option<ActionPlanId>,
+}
+
+pub struct MergeMemoryCandidateResponse {
+    pub candidate_ids: Vec<MemoryCandidateId>,
+    pub memory_id: MemoryId,
+}
+
+pub struct ListMemoryRecallTracesRequest {
+    pub tenant_id: TenantId,
+    pub session_id: Option<SessionId>,
+    pub run_id: Option<RunId>,
+    pub limit: u32,
+    pub cursor: Option<MemoryPageCursor>,
+}
+
+pub struct ListMemoryRecallTracesResponse {
+    pub traces: Vec<MemoryRecallTraceSummary>,
+    pub next_cursor: Option<MemoryPageCursor>,
+}
+
+pub struct MemoryRecallTraceSummary {
+    pub trace_id: MemoryTraceId,
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub injected_count: u32,
+    pub dropped_count: u32,
+    pub redacted_count: u32,
+    pub at: DateTime<Utc>,
+}
+
+pub struct GetMemoryRecallTraceRequest {
+    pub tenant_id: TenantId,
+    pub trace_id: MemoryTraceId,
+}
+
+pub struct GetMemoryRecallTraceResponse {
+    pub trace: MemoryRecallTrace,
+}
+
+pub struct GetModelRequestPreviewRequest {
+    pub tenant_id: TenantId,
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub trace_id: Option<MemoryTraceId>,
+}
+
+pub struct GetModelRequestPreviewResponse {
+    pub preview: MemoryModelRequestPreview,
+}
+
+pub struct MemoryModelRequestPreview {
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub sections: Vec<MemoryModelRequestPreviewSection>,
+    pub redacted_count: u32,
+    pub content_hash: ContentHash,
+}
+
+pub struct MemoryModelRequestPreviewSection {
+    pub source: MemorySource,
+    pub provider_id: Option<MemoryProviderId>,
+    pub memory_ids: Vec<MemoryId>,
+    pub redacted_content: String,
+}
+```
+
 ## Task 0: Baseline Repository And Gate Sanity
 
 **Purpose:** Ensure the plan is executable from `main` and remove known gate drift before product implementation starts.
@@ -932,16 +1252,18 @@ All IPC request and response payloads must be backed by Rust serde contracts and
 - Every final gate command in this plan must exist in `package.json` or be a direct `cargo` command.
 - `docs/testing/test-inventory.md` must match `pnpm audit:tests`.
 - Do not add a nonexistent design docs gate; this repository currently has `docs/design/DESIGN.md`.
+- Task 0 must run inside the isolated worktree. Dirty files in the original checkout are not evidence of plan failure and must not be reverted, stashed, staged, or committed by this plan.
 
 - [ ] Verify plan tracking and worktree entry preconditions:
 
 ```bash
-git switch main
-git ls-files --error-unmatch docs/plans/2026-07-04-agent-harness-memory-platform-implementation.md
+git rev-parse --verify main
+git ls-tree -r --name-only main -- docs/plans/2026-07-04-agent-harness-memory-platform-implementation.md | grep -Fx docs/plans/2026-07-04-agent-harness-memory-platform-implementation.md
 git show main:docs/plans/2026-07-04-agent-harness-memory-platform-implementation.md >/dev/null
+git status --short
 ```
 
-Expected: every command exits 0.
+Expected: every command exits 0, and `git status --short` inside the isolated worktree prints no tracked modifications.
 
 - [ ] Verify mandatory reading files exist:
 
@@ -1009,6 +1331,7 @@ git diff --cached --quiet || git commit -m "chore(testing): refresh baseline doc
 **Files:**
 
 - Modify: `crates/jyowo-harness-contracts/src/enums.rs`
+- Modify: `crates/jyowo-harness-contracts/src/ids.rs`
 - Modify: `crates/jyowo-harness-contracts/src/events/memory.rs`
 - Modify: `crates/jyowo-harness-contracts/src/events/types.rs`
 - Modify: `crates/jyowo-harness-contracts/src/messages.rs`
@@ -1019,7 +1342,7 @@ git diff --cached --quiet || git commit -m "chore(testing): refresh baseline doc
 - Modify: `docs/frontend/frontend-engineering.md`
 - Test: `crates/jyowo-harness-contracts/tests/memory_platform_contracts.rs`
 
-- [ ] Write contract tests for every type in "Target Contracts": records, drafts, evidence, candidates, trace child structures, score breakdown, drop reasons, policy decisions, global/thread settings, tool request/response, provider descriptor, provider trust, visibility classes, IPC request/response payloads, and typed denial reasons.
+- [ ] Write contract tests for every type in "Target Contracts": ids, records, drafts, evidence origin, candidates, trace child structures, score breakdown, drop reasons, policy decisions, global/thread settings, prompt-visible tool args, runtime tool context, tool request/response, provider descriptor budgets, provider trust, visibility classes, IPC request/response payloads, and typed denial reasons.
 - [ ] Run targeted red test:
 
 ```bash
@@ -1075,7 +1398,9 @@ git commit -m "feat(memory): define platform memory contracts"
 
 - Use SQLite under caller-provided path.
 - Use FTS5 for lexical search.
+- Implement the exact schema, indexes, FTS triggers, WAL settings, and transaction rules from "SQLite schema decision". Do not replace them with ad hoc tables.
 - Store embeddings as typed binary vectors or JSON arrays with explicit dimension.
+- Store embedding state with the explicit enum values `missing`, `ready`, `failed`, and `disabled`; do not fake semantic recall with empty or zero vectors.
 - Enforce tenant, visibility, `expires_at`, and `deleted_at` in SQL queries.
 - Increment `access_count` and `last_accessed_at` only after a record survives provider-level visibility and expiry filters.
 - Do not depend on network APIs.
@@ -1092,6 +1417,9 @@ git commit -m "feat(memory): define platform memory contracts"
   - tombstoned records are not recalled/listed/get by default.
   - tenant and visibility filters cannot leak records.
   - search result order changes when lexical relevance changes.
+  - FTS triggers update indexed text after record update.
+  - tombstoned/deleted records are removed from FTS recall.
+  - migrations create `schema_version`, indexes, FTS table, and triggers.
   - embedding vectors are stored and dimension-validated.
   - desktop runtime uses `LocalMemoryProvider` and does not construct `InMemoryMemoryProvider`.
 - [ ] Run targeted red test:
@@ -1115,6 +1443,7 @@ cargo test -p jyowo-harness-memory --test local_provider -- --nocapture
 cargo test -p jyowo-harness-memory --test contract -- --nocapture
 cargo test -p jyowo-desktop-shell --test commands memory -- --nocapture
 rg -n "InMemoryMemoryProvider::new\\(\"desktop-memory\"\\)|use .*InMemoryMemoryProvider" apps/desktop/src-tauri/src && exit 1 || true
+rg -n "InMemoryMemoryProvider::new\\(|with_memory_provider\\(InMemoryMemoryProvider|use .*InMemoryMemoryProvider" apps/desktop/src-tauri/src crates/jyowo-harness-sdk/src crates/jyowo-harness-engine/src crates/jyowo-harness-context/src crates/jyowo-harness-tool/src && exit 1 || true
 ```
 
 - [ ] Complete task-completion analysis.
@@ -1153,6 +1482,7 @@ git commit -m "feat(memory): add local sqlite provider"
 - `MemoryManager` owns `MemoryProviderRegistry`.
 - Registry supports multiple providers.
 - Provider descriptors define read/write capability and visibility limits.
+- Provider descriptors define per-provider recall budgets: max records, max chars, and max bytes per record.
 - Recall fans out with provider-specific timeout.
 - Fanout failures degrade only that provider unless policy requires fail-closed.
 - Dedupe occurs by content hash, source evidence, and record id.
@@ -1160,9 +1490,11 @@ git commit -m "feat(memory): add local sqlite provider"
 - Builder APIs register providers. They do not overwrite previous providers.
 - Rename `external-slot` and `memory-external-slot` features to registry feature names and update all Cargo consumers.
 - Remove or rewrite every `#[cfg(feature = "memory-external-slot")]` and `#[cfg(feature = "external-slot")]` branch so no single-slot runtime path remains.
+- Add a feature matrix check for `provider-registry`, `memory-provider-registry`, and all crates that still expose `recall-memory`. Default workspace checks alone are not sufficient for this task.
 
 - [ ] Write failing tests for two providers returning overlapping records and verify dedupe/rerank.
 - [ ] Write failing test that plugin provider and local provider both participate in recall.
+- [ ] Write failing test that provider-level record, char, and byte budgets are enforced before global recall budget.
 - [ ] Write failing test that write targets choose the correct writable provider by policy.
 - [ ] Write failing architecture/gate test that rejects single-slot fields such as `external: RwLock<Option<Arc<dyn MemoryProvider>>>`.
 - [ ] Run targeted red tests:
@@ -1171,15 +1503,30 @@ git commit -m "feat(memory): add local sqlite provider"
 cargo test -p jyowo-harness-memory --test provider_registry -- --nocapture
 cargo test -p jyowo-harness-sdk runtime_assembly_memory -- --nocapture
 cargo test -p jyowo-harness-plugin registry -- --nocapture
-pnpm check:rust-deps
+rg -n '"(external-slot|memory-external-slot)"|feature = "(external-slot|memory-external-slot)"|with_external_memory_provider|external: RwLock<Option<Arc<dyn MemoryProvider>>>' Cargo.toml crates apps && exit 1 || true
 ```
+
+Expected: behavior tests fail because registry behavior is not implemented; the grep gate may fail while old single-slot feature names still exist. Do not treat missing new feature names as a valid red-test signal.
 
 - [ ] Implement registry and update `MemoryManager`.
 - [ ] Remove runtime dependency on single `external` provider slot.
 - [ ] Rename memory feature flags and update every Cargo consumer.
 - [ ] Update plugin registration to append providers into registry with descriptors.
 - [ ] Update metrics to include provider id per registry participant.
-- [ ] Run targeted verification with the same commands.
+- [ ] Run targeted verification:
+
+```bash
+cargo test -p jyowo-harness-memory --test provider_registry -- --nocapture
+cargo test -p jyowo-harness-sdk runtime_assembly_memory -- --nocapture
+cargo test -p jyowo-harness-plugin registry -- --nocapture
+cargo check -p jyowo-harness-memory --no-default-features --features provider-registry
+cargo test -p jyowo-harness-memory --no-default-features --features provider-registry --test provider_registry -- --nocapture
+cargo check -p jyowo-harness-context --no-default-features --features recall-memory
+cargo check -p jyowo-harness-engine --no-default-features --features recall-memory
+cargo check -p jyowo-harness-sdk --no-default-features --features memory-provider-registry,stream-permission,rule-engine-permission,integrity,jsonl-store,sqlite-store,blob-file,local-sandbox,mcp-http,mcp-stdio
+pnpm check:rust-deps
+rg -n '"(external-slot|memory-external-slot)"|feature = "(external-slot|memory-external-slot)"|with_external_memory_provider|external: RwLock<Option<Arc<dyn MemoryProvider>>>' Cargo.toml crates apps && exit 1 || true
+```
 - [ ] Complete task-completion analysis.
 - [ ] Run read-only subagent audit for Task 3.
 - [ ] Fix audit findings and re-run targeted verification.
@@ -1206,6 +1553,7 @@ git commit -m "refactor(memory): use provider registry"
 **Design requirements:**
 
 - Memory policy resolves global settings, thread settings, provider trust, actor, source, visibility, requested action, and external-context state.
+- Source trust decisions must use `MemoryEvidenceOrigin`, not only `MemorySource`. MCP server id, plugin id, builtin tool name, workspace file hash, and web retrieval hash must remain available to policy and audit.
 - Writes fail closed when policy is missing.
 - External content and tool/MCP/plugin output default to candidate-only.
 - Team/tenant visibility writes require explicit policy allowance.
@@ -1371,10 +1719,12 @@ git commit -m "feat(memory): hydrate references and preview context"
 **Design requirements:**
 
 - Tool actions: `search`, `read`, `create`, `update`, `delete`, `list`, `propose`.
+- Tool descriptors expose only `MemoryToolArgs` to the model. Tool handlers must build `MemoryToolRequest` internally by combining parsed args with harness-injected `MemoryToolRuntimeContext`.
+- The model must not be able to provide or override actor, tenant id, session id, run id, permission context, provider policy, action plan id, authorization ticket id, or any non-interactive policy grant.
 - Write/delete/update actions produce action plans and require permission unless policy explicitly grants non-interactive write.
 - All writes pass policy, threat scan, redaction, event emission, provider registry, and tombstone checks.
 - `propose` creates inbox candidate only.
-- Tool result returns structured ids, state, and takes-effect metadata. It does not echo full secret-bearing content.
+- Tool result returns structured ids, state, redacted record views, denial detail, and takes-effect metadata. It does not echo full secret-bearing content.
 - `TodoTool` remains run-scoped and is not marketed as long-term memory.
 
 - [ ] Write failing tool tests for every action.
@@ -1388,7 +1738,7 @@ cargo test -p jyowo-harness-engine --test main_loop memory -- --nocapture
 cargo test -p jyowo-harness-sdk runtime_assembly_tools -- --nocapture
 ```
 
-- [ ] Implement memory tool descriptors, validation, action planning, and authorized execution.
+- [ ] Implement memory tool descriptors, model-argument validation, runtime context injection, action planning, and authorized execution.
 - [ ] Wire memory capabilities into tool context.
 - [ ] Update prompt-visible tool descriptors so the model sees exact actions and trust boundary.
 - [ ] Run targeted verification with the same commands.
@@ -1728,7 +2078,9 @@ git commit -m "fix(memory): harden redaction and export"
 - Modify: `docs/frontend/frontend-engineering.md`
 - Modify: `docs/frontend/frontend-product-ux.md`
 - Modify: `docs/testing/testing-strategy.md`
-- Modify: docs gate scripts only if they need new architecture checks.
+- Create: `scripts/memory-architecture-policy.mjs`
+- Create: `scripts/memory-architecture-policy.test.mjs`
+- Modify: `package.json` to run `scripts/memory-architecture-policy.mjs` from the existing `check:backend-docs` script. Do not add a new final gate command name.
 - Test: docs gates and architecture gates.
 
 **Design requirements:**
@@ -1742,8 +2094,19 @@ git commit -m "fix(memory): harden redaction and export"
   - single external provider runtime slot,
   - raw memory content in events/traces/metrics,
   - `DREAMS.md` runtime semantics.
+- `scripts/memory-architecture-policy.mjs` must fail on these concrete patterns outside explicit test-only allowlists:
+  - `memory-external-slot` or `external-slot` in `Cargo.toml`, `crates`, or `apps`;
+  - `#[cfg(feature = "memory-external-slot")]` or `#[cfg(feature = "external-slot")]`;
+  - `external: RwLock<Option<Arc<dyn MemoryProvider>>>`;
+  - `with_external_memory_provider`;
+  - `InMemoryMemoryProvider::new(` in production runtime, SDK, engine, context, tool, or Tauri command paths;
+  - `"- memory: {} ({})"` and any `ConversationContextReference::Memory` rendering path that formats only `id` and `label` instead of hydrated redacted content;
+  - `DREAMS.md` in prompt rendering, recall, provider registry, context assembly, memory tool, settings, export defaults, frontend UI, or any runtime semantic path after migration;
+  - `MemoryRecallTrace`, `MemoryProviderTrace`, `MemoryInjectedTrace`, or `MemoryDroppedTrace` fields named `content`, `raw_content`, `prompt`, or `message_text`; `content_hash`, `redacted_content`, and redaction counts are allowed.
+- The only allowed `DREAMS.md` references are one-shot migration code, migration tests, and historical documentation explaining the migration. The gate must require those references to live under explicit migration modules/tests and must fail if they are used by prompt rendering, recall, or normal runtime reads.
+- The policy test file must include one failing fixture for each forbidden pattern and one allowed fixture for each documented exception, including the migration-only `DREAMS.md` allowlist.
 
-- [ ] Write or update docs-gate tests for forbidden patterns.
+- [ ] Write or update docs-gate tests for forbidden patterns in `scripts/memory-architecture-policy.test.mjs`.
 - [ ] Run targeted red gate if a new rule is added:
 
 ```bash
@@ -1777,6 +2140,11 @@ Run these after Task 14 and after all audit findings are fixed:
 cargo fmt --all --check
 cargo check --workspace
 cargo test --workspace
+cargo check -p jyowo-harness-memory --no-default-features --features provider-registry
+cargo test -p jyowo-harness-memory --no-default-features --features provider-registry --test provider_registry -- --nocapture
+cargo check -p jyowo-harness-context --no-default-features --features recall-memory
+cargo check -p jyowo-harness-engine --no-default-features --features recall-memory
+cargo check -p jyowo-harness-sdk --no-default-features --features memory-provider-registry,stream-permission,rule-engine-permission,integrity,jsonl-store,sqlite-store,blob-file,local-sandbox,mcp-http,mcp-stdio
 pnpm check:docs
 pnpm check:agent-docs
 pnpm check:frontend-docs
@@ -1838,11 +2206,12 @@ After all gates and final audit pass:
 cd /Users/goya/Repo/Git/Jyowo
 git switch main
 git status --short --branch
+test -z "$(git status --porcelain)" || { echo "original main checkout has uncommitted changes; stop before merge"; exit 1; }
 git merge --ff-only goya/memory-platform
 git status --short --branch
 ```
 
-If fast-forward merge is not possible, stop and inspect. Do not force merge.
+If the original checkout has uncommitted changes, stop and report that merge requires a clean `main` checkout. Do not stash, revert, delete, or commit unrelated user changes. If fast-forward merge is not possible, stop and inspect. Do not force merge.
 
 Run a final smoke gate on `main`:
 

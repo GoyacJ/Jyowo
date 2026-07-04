@@ -486,6 +486,7 @@ export const zhCN = {
         quotaSupportedCount: '{{count}} 个支持',
         quotaBreakdown: '{{unsupported}} 个不支持 · {{authRequired}} 个需认证 · {{failed}} 个失败',
         noDefault: '未选择默认模型',
+        loadingMetric: '加载中',
         unavailableMetric: '不可用',
       },
       filters: {
@@ -502,6 +503,10 @@ export const zhCN = {
       },
       matrix: {
         label: '模型矩阵',
+      },
+      units: {
+        milliseconds: 'ms',
+        tokens: 'tokens',
       },
       columns: {
         identity: '模型',
@@ -545,6 +550,14 @@ export const zhCN = {
         detailsShort: '查看详情',
         edit: '编辑 {{name}}',
         editShort: '编辑配置',
+        configure: '配置 {{name}}',
+        configureShort: '配置',
+        setDefault: '将 {{name}} 设为默认',
+        setDefaultShort: '设为默认',
+        settingDefault: '正在将 {{name}} 设为默认',
+        settingDefaultShort: '正在设为默认',
+        currentDefault: '{{name}} 已是当前默认',
+        currentDefaultShort: '当前默认',
       },
       details: {
         notDefault: '非默认',
@@ -560,6 +573,11 @@ export const zhCN = {
         connectivity: {
           status: '状态',
           checkedAt: '检查时间',
+        },
+        overview: {
+          summary: '概览',
+          connectionAndUsage: '连接与用量',
+          configuration: '配置',
         },
         usage: {
           modelLevel: '模型级用量',

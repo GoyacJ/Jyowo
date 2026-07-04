@@ -658,14 +658,6 @@ pub(crate) fn ensure_mcp_server_transport(
                     "transport.args must contain at most 64 values".to_owned(),
                 ));
             }
-            if args
-                .iter()
-                .any(|arg| mcp_stdio_arg_looks_secret_bearing(arg))
-            {
-                return Err(invalid_payload(
-                    "transport.args must not contain secret-bearing values".to_owned(),
-                ));
-            }
             if env.len() > 64 {
                 return Err(invalid_payload(
                     "transport.env must contain at most 64 values".to_owned(),
@@ -816,23 +808,6 @@ pub(crate) fn mcp_header_value_looks_secret_bearing(value: &str) -> bool {
         || normalized.contains("password")
 }
 
-pub(crate) fn mcp_stdio_arg_looks_secret_bearing(arg: &str) -> bool {
-    let normalized = arg.to_ascii_lowercase().replace('-', "_");
-    [
-        "auth",
-        "api_key",
-        "apikey",
-        "authorization",
-        "bearer",
-        "password",
-        "secret",
-        "token",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker))
-        || looks_like_raw_secret(arg)
-}
-
 pub(crate) fn looks_like_raw_secret(value: &str) -> bool {
     let trimmed = value.trim();
     let lower = trimmed.to_ascii_lowercase();
@@ -937,9 +912,25 @@ pub(crate) fn mcp_connection_state_payload(
             "reconnecting",
             Some("MCP server is reconnecting.".to_owned()),
         ),
-        McpConnectionState::Failed { .. } => {
-            ("failed", Some("MCP server connection failed.".to_owned()))
-        }
+        McpConnectionState::Failed { last_error } => (
+            "failed",
+            Some(mcp_safe_connection_error_message(last_error)),
+        ),
         McpConnectionState::Closed => ("closed", None),
     }
+}
+
+pub(crate) fn mcp_safe_connection_error_message(last_error: &str) -> String {
+    let normalized = last_error.to_ascii_lowercase();
+    if normalized.contains("no such file or directory") || normalized.contains("program not found")
+    {
+        return "MCP server command was not found.".to_owned();
+    }
+    if normalized.contains("permission denied") {
+        return "MCP server command could not be executed.".to_owned();
+    }
+    if normalized.contains("timed out") || normalized.contains("timeout") {
+        return "MCP server did not respond before the timeout.".to_owned();
+    }
+    "MCP server failed to start.".to_owned()
 }

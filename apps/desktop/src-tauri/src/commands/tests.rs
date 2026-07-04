@@ -222,10 +222,23 @@ mod tests {
     }
 
     #[test]
-    fn mcp_stdio_empty_inherit_env_uses_empty_environment() {
-        let env = mcp_stdio_env(&[], &[]);
+    fn mcp_stdio_empty_inherit_env_uses_empty_environment_for_plain_commands() {
+        let env = mcp_stdio_env("node", &[], &[]);
 
         assert!(matches!(env, StdioEnv::Empty { extra } if extra.is_empty()));
+    }
+
+    #[test]
+    fn mcp_stdio_empty_inherit_env_adds_execution_env_for_package_runners() {
+        let env = mcp_stdio_env("npx", &[], &[]);
+
+        assert!(matches!(env, StdioEnv::Allowlist { inherit, extra }
+            if inherit == BTreeSet::from([
+                "HOME".to_owned(),
+                "PATH".to_owned(),
+                "TMPDIR".to_owned(),
+                "USER".to_owned(),
+            ]) && extra.is_empty()));
     }
 
     #[test]
