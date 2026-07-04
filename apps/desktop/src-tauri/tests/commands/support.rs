@@ -593,12 +593,32 @@ pub(crate) async fn runtime_state_with_harness_for_workspace(
         heartbeat_interval: None,
         max_pending: 16,
     }));
+    let blob_store: Arc<dyn BlobStore> = Arc::new(
+        FileBlobStore::open(workspace.join(".jyowo").join("runtime").join("blobs"))
+            .expect("test blob store should open"),
+    );
+    let evidence_registry = Arc::new(
+        SqliteEvidenceRefRegistry::open(
+            workspace
+                .join(".jyowo")
+                .join("runtime")
+                .join("evidence.sqlite"),
+        )
+        .await
+        .expect("test evidence registry should open"),
+    );
+    let evidence_ref_store = Arc::new(EvidenceRefStore::new(
+        evidence_registry,
+        Arc::clone(&blob_store),
+    ));
     let harness = Arc::new(
         Harness::builder()
             .with_options(test_harness_options(&workspace))
             .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
+            .with_blob_store_arc(blob_store)
+            .with_evidence_ref_store_arc(evidence_ref_store)
             .with_stream_permission_broker_arc(
                 stream_permission_runtime.broker(),
                 stream_permission_runtime.resolver_handle(),

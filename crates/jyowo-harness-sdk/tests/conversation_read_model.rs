@@ -14,9 +14,9 @@ use harness_contracts::{
     TenantId, UsageSnapshot, UserMessageAppendedEvent,
 };
 use harness_journal::{
-    AppendMetadata, EventEnvelope, EventEnvelopePage, EventStore, InMemoryEventStore, PrunePolicy,
-    PruneReport, ReplayCursor, SessionFilter, SessionSnapshot, SessionSummary,
-    SqliteConversationReadModelStore,
+    AppendMetadata, EventEnvelope, EventEnvelopePage, EventStore, EvidenceRefStore,
+    InMemoryBlobStore, InMemoryEventStore, InMemoryEvidenceRefRegistry, PrunePolicy, PruneReport,
+    ReplayCursor, SessionFilter, SessionSnapshot, SessionSummary, SqliteConversationReadModelStore,
 };
 use jyowo_harness_sdk::{
     testing, ConversationEventsPageRequest, Harness, HarnessOptions, SessionOptions,
@@ -38,6 +38,13 @@ fn harness_options(workspace: PathBuf) -> HarnessOptions {
 
 fn read_model_path(workspace: &std::path::Path) -> PathBuf {
     workspace.join(".jyowo/runtime/conversation-read-model.sqlite")
+}
+
+fn evidence_store() -> Arc<EvidenceRefStore> {
+    Arc::new(EvidenceRefStore::new(
+        Arc::new(InMemoryEvidenceRefRegistry::default()),
+        Arc::new(InMemoryBlobStore::default()),
+    ))
 }
 
 fn user_message(run_id: RunId, message_id: MessageId, body: &str) -> Event {
@@ -465,6 +472,7 @@ async fn conversation_read_model_facade_returns_worktree_page() {
         .with_options(harness_options(workspace.clone()))
         .with_model(testing::TestModelProvider::default())
         .with_store_arc(store.clone())
+        .with_evidence_ref_store_arc(evidence_store())
         .with_sandbox(testing::NoopSandbox::new())
         .build()
         .await

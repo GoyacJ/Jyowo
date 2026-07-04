@@ -1,6 +1,7 @@
 //! Conversation read model projection store.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
@@ -19,13 +20,14 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use crate::{
-    journal_error, project_conversation_worktree_snapshot, ConversationTurnPageDirection,
-    EventEnvelope, SessionSummary,
+    journal_error, project_conversation_worktree_snapshot,
+    project_conversation_worktree_snapshot_with_evidence, ConversationTurnPageDirection,
+    ConversationWorktreeProjection, EventEnvelope, EvidenceRefStore, SessionSummary,
 };
 
 const CONVERSATION_READ_MODEL_PROJECTION_VERSION_KEY: &str =
     "conversation_read_model_projection_version";
-const CONVERSATION_READ_MODEL_PROJECTION_VERSION: &str = "9";
+const CONVERSATION_READ_MODEL_PROJECTION_VERSION: &str = "10";
 const CONVERSATION_READ_MODEL_CACHE_TABLES: [&str; 7] = [
     "conversation_projection_background_context",
     "conversation_projection_permission_context",
@@ -443,7 +445,9 @@ impl SqliteConversationReadModelStore {
             .map_err(journal_error)?;
         let mut events = Vec::new();
         for row in rows {
-            events.push(row.map_err(journal_error)?);
+            let mut event = row.map_err(journal_error)?;
+            sanitize_public_timeline_event(&mut event);
+            events.push(event);
         }
         let cursor = events.last().map(|event| event.cursor);
         Ok(ConversationTimelinePage {
@@ -463,6 +467,36 @@ impl SqliteConversationReadModelStore {
     ) -> Result<ConversationWorktreePage, JournalError> {
         let events = self.load_complete_timeline(tenant_id, session_id).await?;
         let projection = project_conversation_worktree_snapshot(&session_id.to_string(), events);
+        self.page_worktree_from_projection(projection, page_cursor, direction, limit_turns)
+    }
+
+    pub async fn page_worktree_with_evidence(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+        page_cursor: Option<ConversationTurnCursor>,
+        direction: ConversationTurnPageDirection,
+        limit_turns: usize,
+        evidence_store: Arc<EvidenceRefStore>,
+    ) -> Result<ConversationWorktreePage, JournalError> {
+        let events = self.load_complete_timeline(tenant_id, session_id).await?;
+        let projection = project_conversation_worktree_snapshot_with_evidence(
+            &session_id.to_string(),
+            events,
+            tenant_id,
+            evidence_store,
+        )
+        .await?;
+        self.page_worktree_from_projection(projection, page_cursor, direction, limit_turns)
+    }
+
+    fn page_worktree_from_projection(
+        &self,
+        projection: ConversationWorktreeProjection,
+        page_cursor: Option<ConversationTurnCursor>,
+        direction: ConversationTurnPageDirection,
+        limit_turns: usize,
+    ) -> Result<ConversationWorktreePage, JournalError> {
         let all_turns = projection.turns;
         let limit = limit_turns.clamp(1, 100);
         let boundary = match page_cursor.as_ref() {
@@ -758,6 +792,7 @@ fn project_envelope(
             let mut payload = json!({
                 "artifactId": event.artifact_id,
                 "kind": public_kind,
+                "revisionId": event.revision_id.to_string(),
                 "status": artifact_status_label(event.status),
                 "source": artifact_source_label(event.source),
                 "title": safe_text(&event.title).into_string(),
@@ -769,6 +804,9 @@ fn project_envelope(
                 artifact_media_payload(event.blob_ref.as_ref(), Some(event.kind.as_str()))
             {
                 payload["media"] = media;
+            }
+            if let Some(blob_ref) = event.blob_ref.as_ref() {
+                payload["blobRef"] = json!(blob_ref);
             }
             (
                 "artifact.created",
@@ -782,6 +820,7 @@ fn project_envelope(
         Event::ArtifactUpdated(event) => {
             let mut payload = json!({
                 "artifactId": event.artifact_id,
+                "revisionId": event.revision_id.to_string(),
                 "source": artifact_source_label(event.source),
             });
             if let Some(title) = event.title.as_ref() {
@@ -800,6 +839,9 @@ fn project_envelope(
                 artifact_media_payload(event.blob_ref.as_ref(), event.kind.as_deref())
             {
                 payload["media"] = media;
+            }
+            if let Some(blob_ref) = event.blob_ref.as_ref() {
+                payload["blobRef"] = json!(blob_ref);
             }
             (
                 "artifact.updated",
@@ -2117,6 +2159,22 @@ fn project_safe_tool_result_fields(
         if let Some(output_summary) = safe_tool_result_output_summary(result) {
             payload["outputSummary"] = json!(output_summary);
         }
+        if let Some(value) = structured_tool_result_value(result) {
+            let mut redacted = false;
+            if let Some((stdout, was_redacted)) = safe_tool_result_full_text_field(value, "stdout")
+            {
+                redacted |= was_redacted;
+                payload["stdout"] = json!(stdout);
+            }
+            if let Some((stderr, was_redacted)) = safe_tool_result_full_text_field(value, "stderr")
+            {
+                redacted |= was_redacted;
+                payload["stderr"] = json!(stderr);
+            }
+            if redacted {
+                payload["redactionState"] = json!("redacted");
+            }
+        }
         return;
     }
     if is_file_activity_tool_name(tool_name) {
@@ -2124,8 +2182,11 @@ fn project_safe_tool_result_fields(
             payload["itemCount"] = json!(item_count);
         }
         if is_file_edit_tool_name(tool_name) {
-            if let Some(diff) = safe_tool_result_diff(result) {
+            if let Some((diff, redacted)) = safe_tool_result_diff(result) {
                 payload["diff"] = diff;
+                if redacted {
+                    payload["redactionState"] = json!("redacted");
+                }
             }
         }
     }
@@ -2239,18 +2300,23 @@ fn safe_structured_output_summary(value: &Value) -> Option<String> {
         .and_then(|items| Some(format!("{} results", items.len())))
 }
 
-fn safe_tool_result_diff(result: &ToolResult) -> Option<Value> {
+fn safe_tool_result_diff(result: &ToolResult) -> Option<(Value, bool)> {
     let value = structured_tool_result_value(result)?;
     let diff = value.get("diff").unwrap_or(value);
     let files = diff.get("files")?.as_array()?;
+    let mut redacted = false;
     let safe_files = files
         .iter()
-        .filter_map(safe_diff_file_payload)
+        .filter_map(|file| {
+            let (file, was_redacted) = safe_diff_file_payload(file)?;
+            redacted |= was_redacted;
+            Some(file)
+        })
         .collect::<Vec<_>>();
-    (!safe_files.is_empty()).then(|| json!({ "files": safe_files }))
+    (!safe_files.is_empty()).then(|| (json!({ "files": safe_files }), redacted))
 }
 
-fn safe_diff_file_payload(value: &Value) -> Option<Value> {
+fn safe_diff_file_payload(value: &Value) -> Option<(Value, bool)> {
     let path = value
         .get("path")
         .and_then(Value::as_str)
@@ -2279,7 +2345,16 @@ fn safe_diff_file_payload(value: &Value) -> Option<Value> {
     {
         file["preview"] = json!(preview);
     }
-    Some(file)
+    let mut redacted = false;
+    if let Some((patch, was_redacted)) = value
+        .get("patch")
+        .and_then(Value::as_str)
+        .and_then(safe_tool_result_full_text)
+    {
+        redacted |= was_redacted;
+        file["patch"] = json!(patch);
+    }
+    Some((file, redacted))
 }
 
 fn structured_tool_result_value(result: &ToolResult) -> Option<&Value> {
@@ -2292,6 +2367,22 @@ fn structured_tool_result_value(result: &ToolResult) -> Option<&Value> {
         ToolResult::Text(_) | ToolResult::Blob { .. } => None,
         _ => None,
     }
+}
+
+fn safe_tool_result_full_text_field(value: &Value, field: &str) -> Option<(String, bool)> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .and_then(safe_tool_result_full_text)
+}
+
+fn safe_tool_result_full_text(value: &str) -> Option<(String, bool)> {
+    if value.is_empty() {
+        return None;
+    }
+    let safe = safe_text(value).into_string();
+    let redacted = safe != value;
+    Some((safe, redacted))
 }
 
 fn is_command_tool_name(tool_name: &str) -> bool {
@@ -3168,6 +3259,36 @@ fn timeline_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversa
         payload: serde_json::from_str::<Value>(&row.get::<_, String>(8)?)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
     })
+}
+
+fn sanitize_public_timeline_event(event: &mut ConversationTimelineEvent) {
+    match event.event_type.as_str() {
+        "artifact.created" | "artifact.updated" => {
+            if let Value::Object(payload) = &mut event.payload {
+                payload.remove("revisionId");
+                payload.remove("blobRef");
+            }
+        }
+        "tool.completed" => {
+            if let Value::Object(payload) = &mut event.payload {
+                payload.remove("redactionState");
+                payload.remove("stdout");
+                payload.remove("stderr");
+                if let Some(files) = payload
+                    .get_mut("diff")
+                    .and_then(|diff| diff.get_mut("files"))
+                    .and_then(Value::as_array_mut)
+                {
+                    for file in files {
+                        if let Value::Object(file) = file {
+                            file.remove("patch");
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn parse_rfc3339(value: String) -> Result<DateTime<Utc>, chrono::ParseError> {

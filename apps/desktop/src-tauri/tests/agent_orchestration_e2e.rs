@@ -17,8 +17,9 @@ use jyowo_desktop_shell::commands::{
     ProviderSettingsRecord, ProviderSettingsStore, ResolvePermissionRequest,
     SetExecutionSettingsRequest, StartRunRequest,
 };
+use jyowo_harness_sdk::builtin::FileBlobStore;
 use jyowo_harness_sdk::ext::{
-    ContentDelta, Decision, DecisionScope, DeferPolicy, Event, EventStore, HealthStatus,
+    BlobStore, ContentDelta, Decision, DecisionScope, DeferPolicy, Event, EventStore, HealthStatus,
     InferContext, ModelDescriptor, ModelError, ModelLifecycle, ModelProtocol, ModelProvider,
     ModelRequest, ModelStream, ModelStreamEvent, OverflowAction, PermissionCheck, PermissionMode,
     PermissionSubject, ProviderRestriction, ReplayCursor, ResultBudget, StreamBrokerConfig,
@@ -30,7 +31,8 @@ use jyowo_harness_sdk::testing::{
     InMemoryEventStore, NoopRedactor, NoopSandbox, ScriptedProvider, ScriptedResponse,
 };
 use jyowo_harness_sdk::{
-    AgentCapabilityResolutionContext, Harness, HarnessOptions, StreamPermissionRuntime,
+    AgentCapabilityResolutionContext, EvidenceRefStore, Harness, HarnessOptions,
+    SqliteEvidenceRefRegistry, StreamPermissionRuntime,
 };
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -597,12 +599,15 @@ async fn runtime_state_with_scripted_model_for_workspace(
         heartbeat_interval: None,
         max_pending: 16,
     }));
+    let (blob_store, evidence_ref_store) = test_blob_and_evidence_ref_store(&workspace).await;
     let harness = Arc::new(
         Harness::builder()
             .with_options(test_harness_options(&workspace))
             .with_model_arc(Arc::new(ScriptedProvider::new(responses)))
             .with_store_arc(event_store)
             .with_sandbox(NoopSandbox::new())
+            .with_blob_store_arc(blob_store)
+            .with_evidence_ref_store_arc(evidence_ref_store)
             .with_capability(
                 ToolCapability::Custom("jyowo.background_agent.starter".to_owned()),
                 background_agent_starter,
@@ -682,12 +687,15 @@ async fn runtime_state_with_session_routed_model(
         heartbeat_interval: None,
         max_pending: 16,
     }));
+    let (blob_store, evidence_ref_store) = test_blob_and_evidence_ref_store(&workspace).await;
     let harness = Arc::new(
         Harness::builder()
             .with_options(test_harness_options(&workspace))
             .with_model_arc(Arc::new(SessionRoutedProvider::new(parent_session_id)))
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
+            .with_blob_store_arc(blob_store)
+            .with_evidence_ref_store_arc(evidence_ref_store)
             .with_stream_permission_broker_arc(
                 stream_permission_runtime.broker(),
                 stream_permission_runtime.resolver_handle(),
@@ -709,6 +717,30 @@ async fn runtime_state_with_session_routed_model(
         stream_permission_runtime,
     )
     .expect("state uses harness broker")
+}
+
+async fn test_blob_and_evidence_ref_store(
+    workspace: &Path,
+) -> (Arc<dyn BlobStore>, Arc<EvidenceRefStore>) {
+    let blob_store: Arc<dyn BlobStore> = Arc::new(
+        FileBlobStore::open(workspace.join(".jyowo").join("runtime").join("blobs"))
+            .expect("test blob store opens"),
+    );
+    let evidence_registry = Arc::new(
+        SqliteEvidenceRefRegistry::open(
+            workspace
+                .join(".jyowo")
+                .join("runtime")
+                .join("evidence.sqlite"),
+        )
+        .await
+        .expect("test evidence registry opens"),
+    );
+    let evidence_ref_store = Arc::new(EvidenceRefStore::new(
+        evidence_registry,
+        Arc::clone(&blob_store),
+    ));
+    (blob_store, evidence_ref_store)
 }
 
 fn test_harness_options(workspace: &Path) -> HarnessOptions {

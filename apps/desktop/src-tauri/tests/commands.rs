@@ -18,9 +18,9 @@ use harness_contracts::{
     PermissionActorSource, PermissionDecisionOption, PermissionOptionId, PermissionRequestedEvent,
     PermissionResolvedEvent, ProviderCapabilityRoute, ProviderCapabilityRouteSettings,
     ProviderServiceAdapterAvailability, ReasoningSummaryChunk, RunModelSnapshot, RunStartedEvent,
-    SandboxMode, SnapshotId, StopReason, ToolErrorPayload, ToolServiceBinding, ToolUseFailedEvent,
-    ToolUseRequestedEvent, ToolUseSummary, TurnInput, UiSafeText, UserMessageAppendedEvent,
-    WorkspaceAccess,
+    SandboxMode, SnapshotId, StopReason, ToolErrorPayload, ToolServiceBinding,
+    ToolUseCompletedEvent, ToolUseFailedEvent, ToolUseRequestedEvent, ToolUseSummary, TurnInput,
+    UiSafeText, UserMessageAppendedEvent, WorkspaceAccess,
 };
 use harness_journal::ReplayCursor;
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
@@ -38,8 +38,10 @@ use jyowo_desktop_shell::commands::{
     delete_skill_with_runtime_state, desktop_provider_credential_resolver_with_stores,
     export_memory_items_with_runtime_state, export_support_bundle_with_runtime_state,
     get_app_info_payload, get_artifact_media_preview_with_runtime_state,
+    get_artifact_revision_content_with_runtime_state,
     get_attachment_media_preview_with_runtime_state, get_background_agent_with_runtime_state,
-    get_context_snapshot_with_runtime_state, get_conversation_with_runtime_state,
+    get_context_snapshot_with_runtime_state, get_conversation_command_output_with_runtime_state,
+    get_conversation_diff_patch_with_runtime_state, get_conversation_with_runtime_state,
     get_execution_settings_for_request, get_execution_settings_with_store,
     get_mcp_server_config_with_runtime_state, get_mcp_server_config_with_store,
     get_memory_item_with_runtime_state, get_provider_config_api_key_with_runtime_state,
@@ -84,14 +86,15 @@ use jyowo_desktop_shell::commands::{
     DeleteSkillRequest, DesktopConversationMetadataStore, DesktopExecutionSettingsStore,
     DesktopMcpDiagnosticStore, DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore,
     DesktopRuntimeState, DesktopSkillStore, ExportSupportBundleRequest,
-    GetArtifactMediaPreviewRequest, GetAttachmentMediaPreviewRequest, GetBackgroundAgentRequest,
-    GetContextSnapshotRequest, GetConversationRequest, GetExecutionSettingsRequest,
-    GetMcpServerConfigRequest, GetMemoryItemRequest, GetProviderConfigApiKeyRequest,
-    GetSkillDetailRequest, GetSkillFileRequest, ImportSkillRequest, ListActivityRequest,
-    ListArtifactsRequest, ListBackgroundAgentsRequest, ListReferenceCandidatesRequest,
-    McpDiagnosticRecord, McpDiagnosticSeverity, McpDiagnosticStore, McpHeaderEnvRecord,
-    McpNameValueRecord, McpServerConfigRecord, McpServerStore, McpServerTransportConfig,
-    PageConversationTimelineRequest, PageConversationWorktreeDirection,
+    GetArtifactMediaPreviewRequest, GetArtifactRevisionContentRequest,
+    GetAttachmentMediaPreviewRequest, GetBackgroundAgentRequest, GetContextSnapshotRequest,
+    GetConversationCommandOutputRequest, GetConversationDiffPatchRequest, GetConversationRequest,
+    GetExecutionSettingsRequest, GetMcpServerConfigRequest, GetMemoryItemRequest,
+    GetProviderConfigApiKeyRequest, GetSkillDetailRequest, GetSkillFileRequest, ImportSkillRequest,
+    ListActivityRequest, ListArtifactsRequest, ListBackgroundAgentsRequest,
+    ListReferenceCandidatesRequest, McpDiagnosticRecord, McpDiagnosticSeverity, McpDiagnosticStore,
+    McpHeaderEnvRecord, McpNameValueRecord, McpServerConfigRecord, McpServerStore,
+    McpServerTransportConfig, PageConversationTimelineRequest, PageConversationWorktreeDirection,
     PageConversationWorktreeRequest, PermissionDecision, ProviderCapabilityRouteStore,
     ProviderConfigRecord, ProviderModelDescriptorRecord, ProviderModelLifecycleRecord,
     ProviderModelModalityRecord, ProviderSettingsRecord, ProviderSettingsRequest,
@@ -125,8 +128,8 @@ use jyowo_harness_sdk::testing::{
     ScriptedResponse, TestModelProvider,
 };
 use jyowo_harness_sdk::{
-    AgentCapabilityResolutionContext, ConversationEventsPageRequest, Harness, HarnessOptions,
-    McpConfig, SessionOptions, StreamPermissionRuntime,
+    AgentCapabilityResolutionContext, ConversationEventsPageRequest, EvidenceRefStore, Harness,
+    HarnessOptions, McpConfig, SessionOptions, SqliteEvidenceRefRegistry, StreamPermissionRuntime,
 };
 use parking_lot::RwLock as ParkingRwLock;
 use serde_json::{json, Value};

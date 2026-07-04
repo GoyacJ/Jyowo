@@ -1,25 +1,32 @@
 //! Pure conversation worktree projection.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
+use std::sync::Arc;
+
+use crate::evidence::{
+    EvidenceRefRecord, EvidenceRefSource, EvidenceRefStore, RedactionProvenance,
+};
 
 use harness_contracts::{
     AgentActivityKind, AgentActivityPermissionState, AgentActivitySegment, AgentActivityStatus,
     AgentTeamActivityDetails, AgentTeamMemberActivity, AgentTeamTaskActivity, ArtifactMediaKind,
     ArtifactMediaPreview, ArtifactRevisionKind, ArtifactRevisionStatus, ArtifactRevisionSummary,
     ArtifactSegment, ArtifactSource, ArtifactStatus, AssistantNoticeCode, AssistantSegment,
-    AssistantWork, AssistantWorkModelSnapshot, AssistantWorkStatus, BlobId, BlobRef, ChangeSet,
-    ChangeSetFile, ChangeSetFileStatus, ClarificationRequestSegment, CommandExecution,
+    AssistantWork, AssistantWorkModelSnapshot, AssistantWorkStatus, BlobId, BlobRef, BlobRetention,
+    ChangeSet, ChangeSetFile, ChangeSetFileStatus, ClarificationRequestSegment, CommandExecution,
     ConversationAttachmentReference, ConversationCursor, ConversationEventRef,
     ConversationTimelineEvent, ConversationTurn, ConversationTurnUserMessage,
     ConversationWorktreePage, DataExposure, DataExposureSecretRisk, DecisionConfirmation,
     DecisionKind, DecisionLifetime, DecisionMatcherKind, DecisionMatcherSummary, DecisionOperation,
     DecisionOption, DecisionPolicy, DecisionRequestState, DecisionRequestStatus, DecisionTarget,
-    DecisionTargetKind, ErrorSegment, EvidenceRedactionState, NoticeSegment, ProcessSegment,
-    ProcessSegmentStatus, ProcessStep, ProcessStepDetail, ProcessStepKind, ProcessStepStatus,
-    ReviewRequestSegment, RiskLevel, TextSegment, ToolAttempt, ToolAttemptOrigin,
-    ToolAttemptStatus, ToolGroupSegment, UiSafeText, UiVisibility,
+    DecisionTargetKind, ErrorSegment, EvidenceRedactionState, EvidenceRefId, EvidenceRefKind,
+    JournalError, NoticeSegment, ProcessSegment, ProcessSegmentStatus, ProcessStep,
+    ProcessStepDetail, ProcessStepKind, ProcessStepStatus, ReviewRequestSegment, RiskLevel,
+    TenantId, TextSegment, ToolAttempt, ToolAttemptOrigin, ToolAttemptStatus, ToolGroupSegment,
+    UiSafeText, UiVisibility,
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ConversationTurnPageDirection {
@@ -143,6 +150,23 @@ pub fn project_conversation_worktree_snapshot(
     }
 }
 
+pub async fn project_conversation_worktree_snapshot_with_evidence(
+    conversation_id: &str,
+    events: impl IntoIterator<Item = ConversationTimelineEvent>,
+    tenant_id: TenantId,
+    evidence_store: Arc<EvidenceRefStore>,
+) -> Result<ConversationWorktreeProjection, JournalError> {
+    let mut enriched_events = Vec::new();
+    for mut event in events {
+        enrich_event_with_evidence(conversation_id, tenant_id, &evidence_store, &mut event).await?;
+        enriched_events.push(event);
+    }
+    Ok(project_conversation_worktree_snapshot(
+        conversation_id,
+        enriched_events,
+    ))
+}
+
 #[must_use]
 pub fn worktree_projection_page(
     projection: ConversationWorktreeProjection,
@@ -156,6 +180,274 @@ pub fn worktree_projection_page(
         has_more_after: false,
         gap,
     }
+}
+
+async fn enrich_event_with_evidence(
+    conversation_id: &str,
+    tenant_id: TenantId,
+    evidence_store: &Arc<EvidenceRefStore>,
+    event: &mut ConversationTimelineEvent,
+) -> Result<(), JournalError> {
+    match event.event_type.as_str() {
+        "tool.completed" => {
+            if process_step_kind_for_tool_name(
+                &string_field(&event.payload, "toolName").unwrap_or_default(),
+            ) == ProcessStepKind::Command
+            {
+                if let Some(bytes) = command_output_bytes(&event.payload) {
+                    let ref_id = store_blob_payload_evidence(
+                        evidence_store,
+                        tenant_id,
+                        conversation_id,
+                        event,
+                        EvidenceRefKind::CommandOutput,
+                        "text/plain; charset=utf-8",
+                        None,
+                        None,
+                        bytes,
+                    )
+                    .await?;
+                    set_object_field(
+                        &mut event.payload,
+                        "fullOutputRef",
+                        Value::String(String::from(ref_id)),
+                    );
+                }
+            }
+            enrich_diff_evidence(conversation_id, tenant_id, evidence_store, event).await?;
+        }
+        "artifact.created" | "artifact.updated" => {
+            enrich_artifact_evidence(conversation_id, tenant_id, evidence_store, event).await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn enrich_diff_evidence(
+    conversation_id: &str,
+    tenant_id: TenantId,
+    evidence_store: &Arc<EvidenceRefStore>,
+    event: &mut ConversationTimelineEvent,
+) -> Result<(), JournalError> {
+    let Some(files) = event
+        .payload
+        .get("diff")
+        .and_then(|diff| diff.get("files"))
+        .and_then(Value::as_array)
+        .cloned()
+    else {
+        return Ok(());
+    };
+
+    let mut refs = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        let Some(patch) = string_field(file, "patch") else {
+            continue;
+        };
+        let ref_id = store_blob_payload_evidence(
+            evidence_store,
+            tenant_id,
+            conversation_id,
+            event,
+            EvidenceRefKind::DiffPatch,
+            "text/x-diff; charset=utf-8",
+            None,
+            None,
+            patch.into_bytes(),
+        )
+        .await?;
+        refs.push((index, ref_id));
+    }
+
+    if refs.is_empty() {
+        return Ok(());
+    }
+    let Some(files) = event
+        .payload
+        .get_mut("diff")
+        .and_then(|diff| diff.get_mut("files"))
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(());
+    };
+    for (index, ref_id) in refs {
+        if let Some(Value::Object(file)) = files.get_mut(index) {
+            file.insert(
+                "fullPatchRef".to_owned(),
+                Value::String(String::from(ref_id)),
+            );
+            file.remove("patch");
+        }
+    }
+    Ok(())
+}
+
+async fn enrich_artifact_evidence(
+    conversation_id: &str,
+    tenant_id: TenantId,
+    evidence_store: &Arc<EvidenceRefStore>,
+    event: &mut ConversationTimelineEvent,
+) -> Result<(), JournalError> {
+    let Some(revision_id) = string_field(&event.payload, "revisionId") else {
+        return Ok(());
+    };
+    let Some(artifact_id) = string_field(&event.payload, "artifactId") else {
+        return Ok(());
+    };
+    let Some(blob_ref) = event
+        .payload
+        .get("blobRef")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<BlobRef>(value).ok())
+    else {
+        return Ok(());
+    };
+    let content_type = blob_ref
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".to_owned());
+    let ref_id = register_existing_blob_evidence(
+        evidence_store,
+        tenant_id,
+        conversation_id,
+        event,
+        EvidenceRefKind::ArtifactContent,
+        content_type,
+        Some(artifact_id),
+        Some(revision_id),
+        blob_ref,
+    )
+    .await?;
+    set_object_field(
+        &mut event.payload,
+        "contentRef",
+        Value::String(String::from(ref_id)),
+    );
+    Ok(())
+}
+
+async fn store_blob_payload_evidence(
+    evidence_store: &EvidenceRefStore,
+    tenant_id: TenantId,
+    conversation_id: &str,
+    event: &ConversationTimelineEvent,
+    kind: EvidenceRefKind,
+    content_type: &str,
+    artifact_id: Option<String>,
+    revision_id: Option<String>,
+    bytes: Vec<u8>,
+) -> Result<EvidenceRefId, JournalError> {
+    let hash = blake3::hash(&bytes);
+    let content_hash = hash.as_bytes().to_vec();
+    let record = EvidenceRefRecord {
+        id: evidence_ref_id(kind, event, hash.as_bytes()),
+        kind,
+        conversation_id: conversation_id.to_owned(),
+        run_id: event.run_id.clone(),
+        source_event_refs: vec![event_ref(event)],
+        artifact_id,
+        revision_id,
+        content_type: content_type.to_owned(),
+        byte_length: bytes.len() as u64,
+        content_hash,
+        redaction_state: redaction_state_from_event(event),
+        redaction_provenance: RedactionProvenance {
+            redactor_version: "event-redacted-v1".to_owned(),
+        },
+        retention: BlobRetention::TenantScoped,
+        source: EvidenceRefSource::JournalPayload {
+            event_id: event.id.clone(),
+            json_pointer: String::new(),
+        },
+    };
+    evidence_store
+        .store_blob_evidence(tenant_id, record, bytes)
+        .await
+}
+
+async fn register_existing_blob_evidence(
+    evidence_store: &EvidenceRefStore,
+    tenant_id: TenantId,
+    conversation_id: &str,
+    event: &ConversationTimelineEvent,
+    kind: EvidenceRefKind,
+    content_type: String,
+    artifact_id: Option<String>,
+    revision_id: Option<String>,
+    blob_ref: BlobRef,
+) -> Result<EvidenceRefId, JournalError> {
+    let record = EvidenceRefRecord {
+        id: evidence_ref_id(kind, event, &blob_ref.content_hash),
+        kind,
+        conversation_id: conversation_id.to_owned(),
+        run_id: event.run_id.clone(),
+        source_event_refs: vec![event_ref(event)],
+        artifact_id,
+        revision_id,
+        content_type,
+        byte_length: blob_ref.size,
+        content_hash: blob_ref.content_hash.to_vec(),
+        redaction_state: redaction_state_from_event(event),
+        redaction_provenance: RedactionProvenance {
+            redactor_version: "event-redacted-v1".to_owned(),
+        },
+        retention: BlobRetention::TenantScoped,
+        source: EvidenceRefSource::Blob { blob_ref },
+    };
+    evidence_store
+        .store_journal_evidence(tenant_id, record)
+        .await
+}
+
+fn evidence_ref_id(
+    kind: EvidenceRefKind,
+    event: &ConversationTimelineEvent,
+    hash: &[u8; 32],
+) -> EvidenceRefId {
+    let kind = match kind {
+        EvidenceRefKind::CommandOutput => "command-output",
+        EvidenceRefKind::DiffPatch => "diff-patch",
+        EvidenceRefKind::ArtifactContent => "artifact-content",
+    };
+    let mut hash_hex = String::with_capacity(64);
+    for byte in hash {
+        write!(&mut hash_hex, "{byte:02x}").expect("writing to String should not fail");
+    }
+    EvidenceRefId::new(format!("evidence:{kind}:{}:{hash_hex}", event.id))
+}
+
+fn command_output_bytes(payload: &Value) -> Option<Vec<u8>> {
+    let stdout = string_field(payload, "stdout");
+    let stderr = string_field(payload, "stderr");
+    match (stdout, stderr) {
+        (Some(stdout), Some(stderr)) if !stdout.is_empty() && !stderr.is_empty() => {
+            Some(format!("{stdout}\n{stderr}").into_bytes())
+        }
+        (Some(stdout), _) if !stdout.is_empty() => Some(stdout.into_bytes()),
+        (_, Some(stderr)) if !stderr.is_empty() => Some(stderr.into_bytes()),
+        _ => None,
+    }
+}
+
+fn redaction_state_from_event(event: &ConversationTimelineEvent) -> EvidenceRedactionState {
+    match string_field(&event.payload, "redactionState").as_deref() {
+        Some("redacted") => EvidenceRedactionState::Redacted,
+        Some("withheld") => EvidenceRedactionState::Withheld,
+        Some("clean") => EvidenceRedactionState::Clean,
+        _ if event.visibility == "withheld" => EvidenceRedactionState::Withheld,
+        _ => EvidenceRedactionState::Clean,
+    }
+}
+
+fn set_object_field(payload: &mut Value, key: &str, value: Value) {
+    if let Value::Object(map) = payload {
+        map.insert(key.to_owned(), value);
+        return;
+    }
+    let mut map = Map::new();
+    map.insert(key.to_owned(), value);
+    *payload = Value::Object(map);
 }
 
 struct ProjectionState<'a> {
@@ -836,6 +1128,10 @@ impl ProjectionState<'_> {
         let Some(artifact_id) = string_field(&event.payload, "artifactId") else {
             return;
         };
+        let Some(revision_id) = string_field(&event.payload, "revisionId") else {
+            return;
+        };
+        let content_ref = string_field(&event.payload, "contentRef").map(EvidenceRefId::new);
         let existing_snapshot = self.artifact_segment_snapshot(&event.run_id, &artifact_id);
         let existing_process_snapshot =
             self.artifact_process_step_snapshot(&event.run_id, &artifact_id);
@@ -915,6 +1211,8 @@ impl ProjectionState<'_> {
             existing.kind = kind.clone();
             existing.status = status;
             existing.source = source;
+            existing.revision.revision_id = revision_id;
+            existing.revision.content_ref = content_ref;
             existing.revision.media = media.clone();
             existing.event_refs.push(event_ref);
             return;
@@ -933,7 +1231,7 @@ impl ProjectionState<'_> {
                 summary: summary.clone(),
                 revision: ArtifactRevisionSummary {
                     artifact_id: artifact_id.clone(),
-                    revision_id: format!("rev:{artifact_id}"),
+                    revision_id,
                     kind: artifact_revision_kind_from_str(&kind),
                     status: match status {
                         ArtifactStatus::Pending => ArtifactRevisionStatus::Pending,
@@ -946,7 +1244,7 @@ impl ProjectionState<'_> {
                     title: title.clone().unwrap_or_else(|| "Artifact".to_owned()),
                     summary: summary.as_ref().map(|s| s.as_str().to_owned()),
                     preview_ref: None,
-                    content_ref: None,
+                    content_ref,
                     media: media.clone(),
                 },
                 event_refs: vec![event_ref],
@@ -2352,7 +2650,7 @@ fn change_set_file_from_payload(value: &Value) -> Option<ChangeSetFile> {
         added_lines,
         removed_lines,
         preview,
-        full_patch_ref: None,
+        full_patch_ref: string_field(value, "fullPatchRef").map(EvidenceRefId::new),
         risk_flags: vec![],
     })
 }
@@ -2395,9 +2693,9 @@ fn process_step_detail_for_tool(
             duration_ms: u64_field(&event.payload, "durationMs"),
             stdout_preview: string_field(&event.payload, "outputSummary"),
             stderr_preview: None,
-            full_output_ref: None,
+            full_output_ref: string_field(&event.payload, "fullOutputRef").map(EvidenceRefId::new),
             truncated: true,
-            redaction_state: EvidenceRedactionState::Clean,
+            redaction_state: redaction_state_from_event(event),
             risk_level: RiskLevel::Low,
         })),
         ProcessStepKind::FileRead | ProcessStepKind::FileSearch | ProcessStepKind::FileEdit => {

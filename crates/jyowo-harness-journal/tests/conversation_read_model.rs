@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use harness_contracts::*;
 use harness_journal::*;
@@ -13,6 +14,13 @@ fn temp_root(name: &str) -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&root);
     root
+}
+
+fn evidence_store() -> Arc<EvidenceRefStore> {
+    Arc::new(EvidenceRefStore::new(
+        Arc::new(InMemoryEvidenceRefRegistry::default()),
+        Arc::new(InMemoryBlobStore::default()),
+    ))
 }
 
 fn test_run_model_snapshot() -> RunModelSnapshot {
@@ -473,6 +481,9 @@ async fn safe_tool_process_extracts_only_allowlisted_projection_fields() {
         bash_completed["outputSummary"],
         "passed\n[REDACTED]\n[REDACTED]\n[REDACTED]\n[REDACTED]\n[REDACTED]\nerror:[REDACTED]\nurl:<[REDACTED]>\nhome:[REDACTED]"
     );
+    assert!(bash_completed.get("redactionState").is_none());
+    assert!(bash_completed.get("stdout").is_none());
+    assert!(bash_completed.get("stderr").is_none());
     assert_eq!(
         edit_completed["diff"]["files"][0]["path"],
         "apps/desktop/src/features/conversation/timeline/process-panel.tsx"
@@ -491,6 +502,47 @@ async fn safe_tool_process_extracts_only_allowlisted_projection_fields() {
     assert!(!serialized.contains(".jyowo/runtime/blobs"));
     assert!(!serialized.contains("~/.ssh"));
     assert!(!serialized.contains("example.invalid"));
+
+    let evidence_store = evidence_store();
+    let worktree = store
+        .page_worktree_with_evidence(
+            tenant_id,
+            session_id,
+            None,
+            ConversationTurnPageDirection::After,
+            20,
+            evidence_store.clone(),
+        )
+        .await
+        .expect("worktree loads");
+    let command = worktree.turns[0]
+        .assistant
+        .as_ref()
+        .expect("assistant projects")
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::Process(process) => process.steps.iter().find_map(|step| {
+                if let Some(ProcessStepDetail::Command(command)) = &step.detail {
+                    Some(command)
+                } else {
+                    None
+                }
+            }),
+            _ => None,
+        })
+        .expect("command projects");
+    assert_eq!(command.redaction_state, EvidenceRedactionState::Redacted);
+    let evidence = evidence_store
+        .read_evidence(
+            tenant_id,
+            &session_id.to_string(),
+            command.full_output_ref.as_ref().expect("full output ref"),
+            EvidenceRefKind::CommandOutput,
+        )
+        .await
+        .expect("command evidence reads");
+    assert_eq!(evidence.redaction_state, EvidenceRedactionState::Redacted);
 }
 
 #[tokio::test]
@@ -862,6 +914,62 @@ async fn sqlite_conversation_read_model_clears_cached_projection_on_version_mism
 }
 
 #[tokio::test]
+async fn sqlite_conversation_read_model_clears_cached_v9_projection_for_evidence_payload_shape() {
+    let root = temp_root("version-v9-evidence-payload-shape");
+    let path = root.join("read-model.sqlite");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let envelopes = vec![envelope(
+        tenant_id,
+        session_id,
+        0,
+        user_message(run_id, MessageId::new(), "stale-v9"),
+    )];
+    {
+        let store = SqliteConversationReadModelStore::open(&path)
+            .await
+            .expect("store opens");
+        store
+            .apply_envelopes(tenant_id, session_id, &envelopes, None)
+            .await
+            .expect("projection applies");
+        assert_eq!(
+            store
+                .list_summaries(tenant_id, 10)
+                .await
+                .expect("summaries load")
+                .len(),
+            1
+        );
+    }
+    {
+        let connection = rusqlite::Connection::open(&path).expect("sqlite opens");
+        connection
+            .execute(
+                "UPDATE conversation_read_model_meta
+                 SET value = '9'
+                 WHERE key = 'conversation_read_model_projection_version'",
+                [],
+            )
+            .expect("v9 projection version is written");
+    }
+
+    let reopened = SqliteConversationReadModelStore::open(&path)
+        .await
+        .expect("store reopens");
+
+    assert!(
+        reopened
+            .list_summaries(tenant_id, 10)
+            .await
+            .expect("summaries load")
+            .is_empty(),
+        "v9 cached rows must be cleared because evidence payload fields changed"
+    );
+}
+
+#[tokio::test]
 async fn sqlite_conversation_read_model_projects_assistant_delta_message_id() {
     let root = temp_root("assistant-delta-message-id");
     let store = SqliteConversationReadModelStore::open(root.join("read-model.sqlite"))
@@ -1224,6 +1332,7 @@ async fn sqlite_conversation_read_model_projects_image_artifact_media_metadata()
     assert_eq!(artifact.payload["media"]["mimeType"], "image/png");
     assert_eq!(artifact.payload["media"]["sizeBytes"], 512);
     assert!(!serialized.contains("contentHash"));
+    assert!(!serialized.contains("revisionId"));
     assert!(!serialized.contains("blobRef"));
 }
 

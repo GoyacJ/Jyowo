@@ -380,6 +380,8 @@ const resolvePermissionResponseSchema = z
   })
   .strict()
 
+const evidenceRedactionStateSchema = z.enum(['clean', 'redacted', 'withheld'])
+
 // ── Evidence fetch schemas ──
 
 const getConversationCommandOutputRequestSchema = z
@@ -395,7 +397,7 @@ const getConversationCommandOutputResponseSchema = z
     contentType: z.string(),
     byteLength: z.number().int().nonnegative(),
     truncated: z.boolean(),
-    redactionState: z.string(),
+    redactionState: evidenceRedactionStateSchema,
   })
   .strict()
 
@@ -412,7 +414,7 @@ const getConversationDiffPatchResponseSchema = z
     contentType: z.string(),
     byteLength: z.number().int().nonnegative(),
     truncated: z.boolean(),
-    redactionState: z.string(),
+    redactionState: evidenceRedactionStateSchema,
   })
   .strict()
 
@@ -429,7 +431,7 @@ const getArtifactRevisionContentResponseSchema = z
     contentType: z.string(),
     byteLength: z.number().int().nonnegative(),
     truncated: z.boolean(),
-    redactionState: z.string(),
+    redactionState: evidenceRedactionStateSchema,
     artifactId: z.string().optional(),
     revisionId: z.string().optional(),
   })
@@ -741,8 +743,6 @@ const artifactMediaPreviewSchema = z
   })
 
 const evidenceRefIdSchema = z.string().min(1)
-
-const evidenceRedactionStateSchema = z.enum(['clean', 'redacted', 'withheld'])
 
 const changeSetFileStatusSchema = z.enum(['added', 'modified', 'deleted', 'renamed'])
 

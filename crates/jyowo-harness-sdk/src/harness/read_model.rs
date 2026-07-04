@@ -172,9 +172,17 @@ impl Harness {
         let session_id = parse_conversation_session_id(conversation_id)?;
         self.catch_up_conversation_projection(tenant_id, session_id)
             .await?;
+        let evidence_store = self.evidence_ref_store()?;
         self.conversation_read_model()
             .await?
-            .page_worktree(tenant_id, session_id, page_cursor, direction, limit_turns)
+            .page_worktree_with_evidence(
+                tenant_id,
+                session_id,
+                page_cursor,
+                direction,
+                limit_turns,
+                evidence_store,
+            )
             .await
             .map_err(HarnessError::Journal)
     }

@@ -7,7 +7,9 @@
 use chrono::{DateTime, Utc};
 use harness_contracts::*;
 use harness_journal::conversation_worktree_projector::*;
+use harness_journal::{EvidenceRefStore, InMemoryBlobStore, InMemoryEvidenceRefRegistry};
 use serde_json::json;
+use std::sync::Arc;
 
 fn event_cursor() -> ConversationCursor {
     ConversationCursor {
@@ -35,7 +37,7 @@ fn make_event(
     }
 }
 
-fn run_started_payload(run_id: &str) -> serde_json::Value {
+fn run_started_payload(_run_id: &str) -> serde_json::Value {
     json!({
         "model": {
             "providerId": "test-provider",
@@ -51,6 +53,13 @@ fn user_message_payload(body: &str) -> serde_json::Value {
         "messageId": "user-msg-1",
         "body": body
     })
+}
+
+fn evidence_store() -> Arc<EvidenceRefStore> {
+    Arc::new(EvidenceRefStore::new(
+        Arc::new(InMemoryEvidenceRefRegistry::new()),
+        Arc::new(InMemoryBlobStore::default()),
+    ))
 }
 
 // ── Permission projection tests ──
@@ -181,6 +190,103 @@ fn command_completion_projects_to_command_execution() {
     }
 }
 
+#[tokio::test]
+async fn command_completion_projects_full_output_ref_without_inline_output() {
+    let cursor = event_cursor();
+    let store = evidence_store();
+    let events = vec![
+        make_event(cursor, "run-1", "run.started", run_started_payload("run-1")),
+        make_event(
+            cursor,
+            "run-1",
+            "user.message.appended",
+            user_message_payload("run tests"),
+        ),
+        make_event(
+            cursor,
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "bash"
+            }),
+        ),
+        make_event(
+            cursor,
+            "run-1",
+            "tool.completed",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "bash",
+                "command": "cargo test",
+                "exitCode": 0,
+                "durationMs": 1200,
+                "stdout": "full stdout\nline 2",
+                "stderr": "full stderr",
+                "outputSummary": "test result: ok"
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot_with_evidence(
+        "conv-1",
+        events,
+        TenantId::SINGLE,
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    let page = worktree_projection_page(projection, false);
+
+    let assistant = page.turns[0].assistant.as_ref().unwrap();
+    let command = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::Process(process) => process.steps.iter().find_map(|step| {
+                if let Some(ProcessStepDetail::Command(command)) = &step.detail {
+                    Some(command)
+                } else {
+                    None
+                }
+            }),
+            _ => None,
+        })
+        .expect("command detail");
+
+    assert_eq!(command.stdout_preview.as_deref(), Some("test result: ok"));
+    assert_ne!(
+        command.stdout_preview.as_deref(),
+        Some("full stdout\nline 2")
+    );
+    let full_output_ref = command
+        .full_output_ref
+        .as_ref()
+        .expect("full output evidence ref");
+    assert_eq!(
+        full_output_ref
+            .to_string()
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .len(),
+        64
+    );
+    let read = store
+        .read_evidence(
+            TenantId::SINGLE,
+            "conv-1",
+            full_output_ref,
+            EvidenceRefKind::CommandOutput,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(read.bytes).unwrap(),
+        "full stdout\nline 2\nfull stderr"
+    );
+}
+
 // ── Diff projection tests ──
 
 #[test]
@@ -255,6 +361,95 @@ fn diff_completion_projects_to_change_set() {
     }
 }
 
+#[tokio::test]
+async fn diff_completion_projects_full_patch_ref_without_inline_patch() {
+    let cursor = event_cursor();
+    let store = evidence_store();
+    let patch = "@@\n- old\n+ new\n+ another\n";
+    let events = vec![
+        make_event(cursor, "run-1", "run.started", run_started_payload("run-1")),
+        make_event(
+            cursor,
+            "run-1",
+            "user.message.appended",
+            user_message_payload("edit file"),
+        ),
+        make_event(
+            cursor,
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "apply_patch"
+            }),
+        ),
+        make_event(
+            cursor,
+            "run-1",
+            "tool.completed",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "apply_patch",
+                "diff": {
+                    "files": [
+                        {
+                            "path": "src/main.rs",
+                            "addedLines": 2,
+                            "removedLines": 1,
+                            "preview": "@@\n- old\n+ new",
+                            "patch": patch
+                        }
+                    ]
+                }
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot_with_evidence(
+        "conv-1",
+        events,
+        TenantId::SINGLE,
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    let page = worktree_projection_page(projection, false);
+
+    let assistant = page.turns[0].assistant.as_ref().unwrap();
+    let file = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::Process(process) => process.steps.iter().find_map(|step| {
+                if let Some(ProcessStepDetail::Diff(change_set)) = &step.detail {
+                    change_set.files.first()
+                } else {
+                    None
+                }
+            }),
+            _ => None,
+        })
+        .expect("diff file");
+
+    assert_eq!(file.preview.as_deref(), Some("@@\n- old\n+ new"));
+    assert_ne!(file.preview.as_deref(), Some(patch));
+    let full_patch_ref = file.full_patch_ref.as_ref().expect("full patch ref");
+    assert_eq!(
+        full_patch_ref.to_string().rsplit(':').next().unwrap().len(),
+        64
+    );
+    let read = store
+        .read_evidence(
+            TenantId::SINGLE,
+            "conv-1",
+            full_patch_ref,
+            EvidenceRefKind::DiffPatch,
+        )
+        .await
+        .unwrap();
+    assert_eq!(String::from_utf8(read.bytes).unwrap(), patch);
+}
+
 // ── Thinking/safety projection tests ──
 
 #[test]
@@ -293,12 +488,7 @@ fn thinking_delta_projects_to_process_step_with_visibility() {
         })
         .unwrap();
 
-    // Should NOT contain thinking segment
-    let has_thinking = assistant.segments.iter().any(|s| {
-        // All segments are Process/Text/ToolGroup/Artifact/etc - no thinking
-        false
-    });
-    assert!(!has_thinking);
+    // Thinking deltas are projected as process steps, not as standalone segments.
 
     assert_eq!(process.status, ProcessSegmentStatus::Running);
     // When a delta is streaming, the summary defaults to the running text
@@ -315,24 +505,6 @@ fn thinking_delta_projects_to_process_step_with_visibility() {
 #[test]
 fn withheld_thinking_projects_to_withheld_process() {
     let cursor = event_cursor();
-    let events = vec![
-        make_event(cursor, "run-1", "run.started", run_started_payload("run-1")),
-        make_event(
-            cursor,
-            "run-1",
-            "user.message.appended",
-            user_message_payload("hi"),
-        ),
-        make_event(
-            cursor,
-            "run-1",
-            "assistant.thinking.delta",
-            json!({
-                "status": "withheld"
-            }),
-        ),
-    ];
-
     // Withheld events have different visibility
     let withheld_event = ConversationTimelineEvent {
         id: EventId::new().to_string(),
@@ -390,6 +562,7 @@ fn artifact_created_projects_revision_summary() {
             "run-1",
             "artifact.created",
             json!({
+                "revisionId": "revision-real-1",
                 "artifactId": "artifact-1",
                 "title": "Generated code",
                 "kind": "code",
@@ -416,6 +589,94 @@ fn artifact_created_projects_revision_summary() {
     assert_eq!(artifact.revision.artifact_id, "artifact-1");
     assert!(!artifact.revision.revision_id.is_empty());
     assert_eq!(artifact.revision.source_run_id, "run-1");
+}
+
+#[tokio::test]
+async fn artifact_projection_uses_event_revision_id_and_content_ref() {
+    use bytes::Bytes;
+    use harness_contracts::{BlobMeta, BlobRetention, BlobStore};
+
+    let cursor = event_cursor();
+    let blob_store = Arc::new(InMemoryBlobStore::default());
+    let store = Arc::new(EvidenceRefStore::new(
+        Arc::new(InMemoryEvidenceRefRegistry::new()),
+        blob_store.clone(),
+    ));
+    let artifact_bytes = Bytes::from_static(b"artifact body");
+    let artifact_hash = *blake3::hash(&artifact_bytes).as_bytes();
+    let blob_ref = blob_store
+        .put(
+            TenantId::SINGLE,
+            artifact_bytes,
+            BlobMeta {
+                content_type: Some("text/markdown".to_owned()),
+                size: "artifact body".len() as u64,
+                content_hash: artifact_hash,
+                created_at: DateTime::<Utc>::UNIX_EPOCH,
+                retention: BlobRetention::TenantScoped,
+            },
+        )
+        .await
+        .unwrap();
+    let events = vec![
+        make_event(cursor, "run-1", "run.started", run_started_payload("run-1")),
+        make_event(
+            cursor,
+            "run-1",
+            "user.message.appended",
+            user_message_payload("gen doc"),
+        ),
+        make_event(
+            cursor,
+            "run-1",
+            "artifact.created",
+            json!({
+                "revisionId": "revision-real-1",
+                "artifactId": "artifact-1",
+                "title": "Generated doc",
+                "kind": "document",
+                "status": "ready",
+                "source": "tool",
+                "blobRef": blob_ref,
+                "contentHash": artifact_hash
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot_with_evidence(
+        "conv-1",
+        events,
+        TenantId::SINGLE,
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    let page = worktree_projection_page(projection, false);
+
+    let assistant = page.turns[0].assistant.as_ref().unwrap();
+    let artifact = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::Artifact(artifact) => Some(artifact),
+            _ => None,
+        })
+        .expect("artifact segment");
+
+    assert_eq!(artifact.revision.revision_id, "revision-real-1");
+    assert_ne!(artifact.revision.revision_id, "rev:artifact-1");
+    let content_ref = artifact.revision.content_ref.as_ref().expect("content ref");
+    let read = store
+        .read_evidence(
+            TenantId::SINGLE,
+            "conv-1",
+            content_ref,
+            EvidenceRefKind::ArtifactContent,
+        )
+        .await
+        .unwrap();
+    assert_eq!(String::from_utf8(read.bytes).unwrap(), "artifact body");
+    assert_eq!(read.content_type, "text/markdown");
 }
 
 // ── projection_version tests ──

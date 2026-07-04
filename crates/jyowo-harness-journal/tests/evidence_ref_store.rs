@@ -305,6 +305,37 @@ async fn sqlite_registry_survives_restart_and_reads_blob_evidence() {
     assert_eq!(read.content_type, "text/plain");
 }
 
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn file_blob_store_blob_evidence_write_is_idempotent_for_same_ref() {
+    let root = temp_root("file-blob-idempotent");
+    let registry = Arc::new(
+        harness_journal::SqliteEvidenceRefRegistry::open(root.join("evidence.sqlite"))
+            .await
+            .expect("registry opens"),
+    );
+    let blob_store = Arc::new(FileBlobStore::open(root.join("blobs")).expect("blob store opens"));
+    let store = EvidenceRefStore::new(registry.clone(), blob_store);
+    let bytes = b"repeatable command output".to_vec();
+    let record = blob_record("ref-repeatable", "conv-1", &bytes);
+
+    store
+        .store_blob_evidence(TenantId::SINGLE, record.clone(), bytes.clone())
+        .await
+        .expect("first evidence write stores");
+    store
+        .store_blob_evidence(TenantId::SINGLE, record.clone(), bytes)
+        .await
+        .expect("second evidence write is idempotent");
+
+    let records = registry
+        .list_for_conversation(TenantId::SINGLE, "conv-1")
+        .await
+        .expect("registry lists");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].id, record.id);
+}
+
 #[tokio::test]
 async fn read_rejects_hash_mismatch_from_blob_store() {
     let registry = Arc::new(InMemoryEvidenceRefRegistry::new());

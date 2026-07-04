@@ -7,8 +7,15 @@ fn event(
     id: &str,
     run_id: &str,
     event_type: &str,
-    payload: serde_json::Value,
+    mut payload: serde_json::Value,
 ) -> ConversationTimelineEvent {
+    if matches!(event_type, "artifact.created" | "artifact.updated") {
+        if let Some(payload) = payload.as_object_mut() {
+            payload
+                .entry("revisionId")
+                .or_insert_with(|| json!(format!("revision-{sequence}")));
+        }
+    }
     ConversationTimelineEvent {
         id: id.to_owned(),
         cursor: ConversationCursor {

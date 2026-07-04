@@ -127,6 +127,13 @@ impl EvidenceRefStore {
             created_at: chrono::Utc::now(),
             retention,
         };
+        let id = record.id.clone();
+
+        if let Some(existing) = self.registry.get(tenant, &id).await? {
+            self.validate_existing_blob_evidence(tenant, &record, &existing)
+                .await?;
+            return Ok(id);
+        }
 
         // Write blob first
         let stored_ref = self
@@ -138,10 +145,9 @@ impl EvidenceRefStore {
         record.source = EvidenceRefSource::Blob {
             blob_ref: stored_ref.clone(),
         };
-        let id = record.id.clone();
 
         // Then write registry row
-        match self.registry.insert(tenant, record).await {
+        match self.registry.insert(tenant, record.clone()).await {
             Ok(()) => Ok(id),
             Err(registry_error) => {
                 if let Err(delete_error) = self.blob_store.delete(tenant, &stored_ref).await {
@@ -149,9 +155,59 @@ impl EvidenceRefStore {
                         "evidence registry insert failed: {registry_error}; orphan blob cleanup failed: {delete_error}"
                     )));
                 }
+                if let Some(existing) = self.registry.get(tenant, &id).await? {
+                    self.validate_existing_blob_evidence(tenant, &record, &existing)
+                        .await?;
+                    return Ok(id);
+                }
                 Err(registry_error)
             }
         }
+    }
+
+    async fn validate_existing_blob_evidence(
+        &self,
+        tenant: TenantId,
+        record: &EvidenceRefRecord,
+        existing: &EvidenceRefRecord,
+    ) -> Result<(), JournalError> {
+        if !same_stable_evidence_metadata(record, existing) {
+            return Err(JournalError::Message(format!(
+                "conflicting evidence ref metadata for id: {}",
+                record.id
+            )));
+        }
+        let EvidenceRefSource::Blob { blob_ref } = &existing.source else {
+            return Err(JournalError::Message(format!(
+                "conflicting evidence ref source for id: {}",
+                record.id
+            )));
+        };
+        let expected_hash = record_hash_array(record)?;
+        if blob_ref.size != record.byte_length || blob_ref.content_hash != expected_hash {
+            return Err(JournalError::Message(format!(
+                "existing evidence blob metadata mismatch for id: {}",
+                record.id
+            )));
+        }
+        let meta = self
+            .blob_store
+            .head(tenant, blob_ref)
+            .await
+            .map_err(|e| JournalError::Message(format!("blob head failed: {e}")))?
+            .ok_or_else(|| {
+                JournalError::Message(format!(
+                    "existing evidence blob not found for id: {}",
+                    record.id
+                ))
+            })?;
+        if meta.size != record.byte_length || meta.content_hash != expected_hash {
+            return Err(JournalError::Message(format!(
+                "existing evidence blob content metadata mismatch for id: {}",
+                record.id
+            )));
+        }
+        Ok(())
     }
 
     /// Store journal-backed evidence by registering a source event pointer.
@@ -316,6 +372,22 @@ fn validate_redaction_provenance(provenance: &RedactionProvenance) -> Result<(),
         ));
     }
     Ok(())
+}
+
+fn same_stable_evidence_metadata(left: &EvidenceRefRecord, right: &EvidenceRefRecord) -> bool {
+    left.id == right.id
+        && left.kind == right.kind
+        && left.conversation_id == right.conversation_id
+        && left.run_id == right.run_id
+        && left.source_event_refs == right.source_event_refs
+        && left.artifact_id == right.artifact_id
+        && left.revision_id == right.revision_id
+        && left.content_type == right.content_type
+        && left.byte_length == right.byte_length
+        && left.content_hash == right.content_hash
+        && left.redaction_state == right.redaction_state
+        && left.redaction_provenance == right.redaction_provenance
+        && left.retention == right.retention
 }
 
 fn record_hash_array(record: &EvidenceRefRecord) -> Result<[u8; 32], JournalError> {

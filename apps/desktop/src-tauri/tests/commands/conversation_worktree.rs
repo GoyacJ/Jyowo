@@ -218,6 +218,252 @@ async fn page_conversation_worktree_with_runtime_state_returns_safe_turn_tree() 
 }
 
 #[tokio::test]
+async fn page_conversation_worktree_refs_fetch_full_evidence_content() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let user_message_id = MessageId::new();
+    let command_tool_use_id = ToolUseId::new();
+    let diff_tool_use_id = ToolUseId::new();
+    let revision_id = ArtifactRevisionId::new();
+    let command_stdout = "line 1\nline 2";
+    let command_stderr = "warning: still safe";
+    let patch = "@@\n- old\n+ new\n+ another\n";
+    let artifact_content = b"fn generated() -> &'static str { \"ready\" }\n".to_vec();
+    let artifact_hash = blake3::hash(&artifact_content);
+    let mut artifact_content_hash = [0u8; 32];
+    artifact_content_hash.copy_from_slice(artifact_hash.as_bytes());
+
+    open_conversation_session(&state, session_id).await;
+    let artifact_blob_ref = state
+        .harness()
+        .expect("runtime harness should exist")
+        .blob_store()
+        .expect("test harness should expose blob store")
+        .put(
+            TenantId::SINGLE,
+            bytes::Bytes::from(artifact_content.clone()),
+            BlobMeta {
+                content_type: Some("text/rust".to_owned()),
+                size: artifact_content.len() as u64,
+                content_hash: artifact_content_hash,
+                created_at: now(),
+                retention: BlobRetention::TenantScoped,
+            },
+        )
+        .await
+        .expect("artifact blob should be stored");
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::UserMessageAppended(UserMessageAppendedEvent {
+                    run_id,
+                    message_id: user_message_id,
+                    content: MessageContent::Text(
+                        "run command, patch file, create artifact".to_owned(),
+                    ),
+                    metadata: MessageMetadata::default(),
+                    attachments: Vec::new(),
+                    at: now(),
+                }),
+                Event::ToolUseRequested(test_tool_use_requested_event(
+                    run_id,
+                    command_tool_use_id,
+                    "shell",
+                )),
+                Event::ToolUseCompleted(ToolUseCompletedEvent {
+                    tool_use_id: command_tool_use_id,
+                    result: ToolResult::Structured(json!({
+                        "exitCode": 0,
+                        "stdout": command_stdout,
+                        "stderr": command_stderr,
+                    })),
+                    usage: None,
+                    duration_ms: 21,
+                    at: now(),
+                }),
+                Event::ToolUseRequested(test_tool_use_requested_event(
+                    run_id,
+                    diff_tool_use_id,
+                    "apply_patch",
+                )),
+                Event::ToolUseCompleted(ToolUseCompletedEvent {
+                    tool_use_id: diff_tool_use_id,
+                    result: ToolResult::Structured(json!({
+                        "diff": {
+                            "files": [
+                                {
+                                    "path": "src/lib.rs",
+                                    "addedLines": 2,
+                                    "removedLines": 1,
+                                    "preview": "+ new",
+                                    "patch": patch,
+                                }
+                            ]
+                        }
+                    })),
+                    usage: None,
+                    duration_ms: 12,
+                    at: now(),
+                }),
+                Event::ArtifactCreated(ArtifactCreatedEvent {
+                    revision_id,
+                    artifact_id: "artifact-code".to_owned(),
+                    at: now(),
+                    blob_ref: Some(artifact_blob_ref.clone()),
+                    content_hash: Some(artifact_content_hash.to_vec()),
+                    kind: "code".to_owned(),
+                    preview: Some("Generated Rust code".to_owned()),
+                    run_id,
+                    session_id,
+                    source: ArtifactSource::Assistant,
+                    source_message_id: None,
+                    source_tool_use_id: None,
+                    status: ArtifactStatus::Ready,
+                    title: "generated.rs".to_owned(),
+                }),
+            ],
+        )
+        .await
+        .expect("events should append");
+
+    let page = page_conversation_worktree_with_runtime_state(
+        PageConversationWorktreeRequest {
+            conversation_id: session_id.to_string(),
+            page_cursor: None,
+            direction: PageConversationWorktreeDirection::After,
+            limit: Some(1),
+        },
+        &state,
+    )
+    .await
+    .expect("worktree should load");
+    let serialized = serde_json::to_string(&page).unwrap();
+
+    assert!(!serialized.contains(command_stdout));
+    assert!(!serialized.contains(command_stderr));
+    assert!(!serialized.contains(patch));
+    assert!(!serialized.contains(&String::from_utf8_lossy(&artifact_content).to_string()));
+    assert!(!serialized.contains(&artifact_blob_ref.id.to_string()));
+
+    let assistant = page.turns[0].assistant.as_ref().unwrap();
+    let command_ref = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            harness_contracts::AssistantSegment::Process(process) => {
+                process.steps.iter().find_map(|step| match &step.detail {
+                    Some(harness_contracts::ProcessStepDetail::Command(command)) => {
+                        command.full_output_ref.as_ref().map(ToString::to_string)
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("command output ref should be projected");
+    let diff_ref = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            harness_contracts::AssistantSegment::Process(process) => {
+                process.steps.iter().find_map(|step| match &step.detail {
+                    Some(harness_contracts::ProcessStepDetail::Diff(change_set)) => change_set
+                        .files
+                        .first()
+                        .and_then(|file| file.full_patch_ref.as_ref())
+                        .map(ToString::to_string),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("diff patch ref should be projected");
+    let content_ref = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            harness_contracts::AssistantSegment::Artifact(artifact) => artifact
+                .revision
+                .content_ref
+                .as_ref()
+                .map(ToString::to_string),
+            _ => None,
+        })
+        .expect("artifact content ref should be projected");
+
+    let command_output = get_conversation_command_output_with_runtime_state(
+        GetConversationCommandOutputRequest {
+            conversation_id: session_id.to_string(),
+            full_output_ref: command_ref,
+        },
+        &state,
+    )
+    .await
+    .expect("command output evidence should fetch");
+    assert_eq!(
+        command_output.output,
+        format!("{command_stdout}\n{command_stderr}")
+    );
+    assert_eq!(command_output.redaction_state, "clean");
+
+    let diff_patch = get_conversation_diff_patch_with_runtime_state(
+        GetConversationDiffPatchRequest {
+            conversation_id: session_id.to_string(),
+            full_patch_ref: diff_ref,
+        },
+        &state,
+    )
+    .await
+    .expect("diff patch evidence should fetch");
+    assert_eq!(diff_patch.patch, patch);
+    assert_eq!(diff_patch.redaction_state, "clean");
+
+    let artifact = get_artifact_revision_content_with_runtime_state(
+        GetArtifactRevisionContentRequest {
+            conversation_id: session_id.to_string(),
+            content_ref,
+        },
+        &state,
+    )
+    .await
+    .expect("artifact content evidence should fetch");
+    assert_eq!(artifact.content.as_bytes(), artifact_content.as_slice());
+    assert_eq!(artifact.content_type, "text/rust");
+    assert_eq!(artifact.redaction_state, "clean");
+}
+
+#[tokio::test]
+async fn get_conversation_evidence_with_runtime_state_rejects_invalid_ref() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    open_conversation_session(&state, session_id).await;
+
+    let error = get_conversation_command_output_with_runtime_state(
+        GetConversationCommandOutputRequest {
+            conversation_id: session_id.to_string(),
+            full_output_ref: "evidence:command-output:missing:00000000".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("invalid evidence ref should fail closed");
+
+    assert_eq!(error.code, "RUNTIME_UNAVAILABLE");
+    assert!(
+        error.message.contains("evidence ref not found"),
+        "unexpected error message: {}",
+        error.message
+    );
+}
+
+#[tokio::test]
 async fn page_conversation_worktree_with_runtime_state_rejects_malformed_conversation_id_before_runtime(
 ) {
     let workspace = unique_workspace("worktree-malformed-conversation-id");
