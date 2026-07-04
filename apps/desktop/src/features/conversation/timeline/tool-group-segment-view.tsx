@@ -1,5 +1,9 @@
 import { useUiStore } from '@/shared/state/ui-store'
-import type { ConversationEventRef, ToolGroupSegment } from '@/shared/tauri/commands'
+import type {
+  ConversationEventRef,
+  ResolvePermissionRequest,
+  ToolGroupSegment,
+} from '@/shared/tauri/commands'
 import { ToolAttemptRow } from './tool-attempt-row'
 import { ToolEvidenceSummary } from './tool-evidence-summary'
 
@@ -13,12 +17,7 @@ export function ToolGroupSegmentView({
 }: {
   conversationId: string
   onOpenDetails?: (eventRef: ConversationEventRef) => void
-  onPermissionResolve?: (request: {
-    conversationId: string
-    requestId: string
-    decision: 'approve' | 'deny'
-    confirmationText?: string
-  }) => void
+  onPermissionResolve?: (request: ResolvePermissionRequest) => void
   runId: string
   segment: ToolGroupSegment
   turnId: string

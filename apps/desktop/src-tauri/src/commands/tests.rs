@@ -18,10 +18,11 @@ mod tests {
     use crate::commands::stores::ensure_plugin_package_dir_name;
     use crate::commands::validation::ensure_mcp_server_transport;
     use harness_contracts::{
-        ManifestOriginRef, PermissionActorSource, PermissionRequestedEvent,
-        PluginCapabilitiesSummary, PluginFailedEvent, PluginLifecycleStateDiscriminant,
-        PluginLoadedEvent, PluginProductState, PluginRejectedEvent, PluginSourceKind,
-        RejectionReason, TeamId, TrustLevel,
+        ActionPlanHash, DecisionLifetime, DecisionMatcherKind, DecisionMatcherSummary,
+        ManifestOriginRef, PermissionActorSource, PermissionDecisionOption, PermissionOptionId,
+        PermissionRequestedEvent, PluginCapabilitiesSummary, PluginFailedEvent,
+        PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginProductState,
+        PluginRejectedEvent, PluginSourceKind, RejectionReason, TeamId, TrustLevel,
     };
 
     struct EmptyRedactor;

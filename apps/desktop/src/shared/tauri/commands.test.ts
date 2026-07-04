@@ -1795,6 +1795,7 @@ describe('CommandClient', () => {
         {
           conversationId: 'conversation-001',
           decision: 'approve',
+          optionId: '01HZ0000000000000000000002',
           requestId: '01HZ0000000000000000000001',
         },
         client,
@@ -1847,6 +1848,7 @@ describe('CommandClient', () => {
     expect(invoke).toHaveBeenCalledWith('resolve_permission', {
       conversationId: 'conversation-001',
       decision: 'approve',
+      optionId: '01HZ0000000000000000000002',
       requestId: '01HZ0000000000000000000001',
     })
     expect(invoke).not.toHaveBeenCalledWith('execute', expect.anything())
@@ -1866,6 +1868,7 @@ describe('CommandClient', () => {
           confirmationText: 'DELETE',
           conversationId: 'conversation-001',
           decision: 'approve',
+          optionId: '01HZ0000000000000000000002',
           requestId: '01HZ0000000000000000000001',
         },
         client,
@@ -1879,6 +1882,7 @@ describe('CommandClient', () => {
       confirmationText: 'DELETE',
       conversationId: 'conversation-001',
       decision: 'approve',
+      optionId: '01HZ0000000000000000000002',
       requestId: '01HZ0000000000000000000001',
     })
   })
@@ -1893,6 +1897,7 @@ describe('CommandClient', () => {
           confirmationText: '',
           conversationId: 'conversation-001',
           decision: 'approve',
+          optionId: '01HZ0000000000000000000002',
           requestId: '01HZ0000000000000000000001',
         },
         client,
@@ -2158,6 +2163,7 @@ describe('CommandClient', () => {
         {
           conversationId: 'conversation-001',
           decision: 'allow',
+          optionId: '01HZ0000000000000000000002',
           requestId: '01HZ0000000000000000000001',
         } as unknown as Parameters<typeof resolvePermission>[0],
         client,
@@ -2168,6 +2174,7 @@ describe('CommandClient', () => {
         {
           conversationId: 'conversation-001',
           decision: 'approve',
+          optionId: '01HZ0000000000000000000002',
           requestId: ' ',
         },
         client,
@@ -2178,8 +2185,19 @@ describe('CommandClient', () => {
         {
           conversationId: 'conversation-001',
           decision: 'approve',
+          optionId: '01HZ0000000000000000000002',
           requestId: '01hz0000000000000000000001',
         },
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+    await expect(
+      resolvePermission(
+        {
+          conversationId: 'conversation-001',
+          decision: 'approve',
+          requestId: '01HZ0000000000000000000001',
+        } as unknown as Parameters<typeof resolvePermission>[0],
         client,
       ),
     ).rejects.toThrow(TauriCommandPayloadError)
@@ -2790,6 +2808,7 @@ describe('CommandClient', () => {
         {
           conversationId: 'conversation-001',
           decision: 'deny',
+          optionId: '01HZ0000000000000000000002',
           requestId: '01HZ0000000000000000000001',
         },
         client,

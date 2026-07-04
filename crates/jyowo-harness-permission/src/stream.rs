@@ -5,15 +5,15 @@ use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 use harness_contracts::{
-    Decision, InteractivityLevel, PermissionAwaitingHeartbeatEvent, PermissionError,
-    PermissionMode, RequestId,
+    Decision, InteractivityLevel, PermissionAwaitingHeartbeatEvent, PermissionDecisionOption,
+    PermissionError, PermissionMode, PermissionOptionId, RequestId, SessionId, TenantId,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::{
-    DecisionPersistence, NoopDecisionPersistence, PermissionBroker, PermissionContext,
-    PermissionRequest, PersistedDecision,
+    default_permission_decision_options, DecisionPersistence, NoopDecisionPersistence,
+    PermissionBroker, PermissionContext, PermissionRequest, PersistedDecision,
 };
 use parking_lot::Mutex;
 
@@ -47,6 +47,7 @@ struct PendingResolution {
     request: PermissionRequest,
     context: PermissionContext,
     confirmation_expected: Option<String>,
+    decision_options: Vec<PermissionDecisionOption>,
     enqueued_at: Instant,
     last_heartbeat_at: Instant,
     timeout_at: Instant,
@@ -69,6 +70,7 @@ pub struct PendingPermissionRequest {
     pub request: PermissionRequest,
     pub context: PermissionContext,
     pub confirmation_expected: Option<String>,
+    pub decision_options: Vec<PermissionDecisionOption>,
 }
 
 impl Default for StreamBrokerConfig {
@@ -173,15 +175,68 @@ impl ResolverHandle {
                 request: pending.request.clone(),
                 context: pending.context.clone(),
                 confirmation_expected: pending.confirmation_expected.clone(),
+                decision_options: pending.decision_options.clone(),
             })
             .collect()
     }
 
-    pub async fn resolve(
+    pub async fn resolve_option_for(
         &self,
         request_id: RequestId,
-        decision: Decision,
-    ) -> Result<(), PermissionError> {
+        tenant_id: TenantId,
+        session_id: SessionId,
+        option_id: PermissionOptionId,
+        submitted_decision: Decision,
+        confirmation_text: Option<&str>,
+    ) -> Result<Decision, PermissionError> {
+        let decision = {
+            let Some(pending) = self.pending.get(&request_id) else {
+                return Err(PermissionError::Message(format!(
+                    "permission request `{request_id}` is not pending"
+                )));
+            };
+            if pending.request.tenant_id != tenant_id || pending.request.session_id != session_id {
+                return Err(PermissionError::Message(format!(
+                    "permission request `{request_id}` is not pending for this scope"
+                )));
+            }
+            let Some(option) = pending
+                .decision_options
+                .iter()
+                .find(|option| option.option_id == option_id)
+            else {
+                return Err(PermissionError::Message(format!(
+                    "permission option `{option_id}` is not pending for request `{request_id}`"
+                )));
+            };
+
+            if !same_decision_kind(&submitted_decision, &option.decision) {
+                return Err(PermissionError::Message(
+                    "submitted permission decision does not match option".to_owned(),
+                ));
+            }
+
+            if option.requires_confirmation {
+                let Some(expected) = pending.confirmation_expected.as_deref() else {
+                    return Err(PermissionError::Message(
+                        "confirmation text is required for this permission".to_owned(),
+                    ));
+                };
+                let Some(actual) = confirmation_text else {
+                    return Err(PermissionError::Message(
+                        "confirmation text is required for this permission".to_owned(),
+                    ));
+                };
+                if actual != expected {
+                    return Err(PermissionError::Message(
+                        "confirmation text does not match the required value".to_owned(),
+                    ));
+                }
+            }
+
+            option.decision.clone()
+        };
+
         let Some((_request_id, pending)) = self.pending.remove(&request_id) else {
             return Err(PermissionError::Message(format!(
                 "permission request `{request_id}` is not pending"
@@ -189,11 +244,12 @@ impl ResolverHandle {
         };
 
         pending.observe_metadata();
-        pending.sender.send(decision).map_err(|_| {
+        pending.sender.send(decision.clone()).map_err(|_| {
             PermissionError::Message(format!(
                 "permission request `{request_id}` receiver is closed"
             ))
-        })
+        })?;
+        Ok(decision)
     }
 
     pub async fn cancel(
@@ -237,6 +293,11 @@ impl PermissionBroker for StreamBasedBroker {
 
         let request_id = request.request_id;
         let (timeout, default_on_timeout) = self.timeout_for(&ctx);
+        let decision_options = if request.decision_options.is_empty() {
+            default_permission_decision_options(&request)
+        } else {
+            request.decision_options.clone()
+        };
         let (sender, receiver) = oneshot::channel();
         let now = Instant::now();
         self.pending.insert(
@@ -246,6 +307,7 @@ impl PermissionBroker for StreamBasedBroker {
                 request: request.clone(),
                 context: ctx.clone(),
                 confirmation_expected: request.confirmation_expected.clone(),
+                decision_options,
                 enqueued_at: now,
                 last_heartbeat_at: now,
                 timeout_at: now + timeout,
@@ -330,4 +392,17 @@ fn spawn_sweeper(
             }
         }
     }))
+}
+
+fn same_decision_kind(submitted: &Decision, option: &Decision) -> bool {
+    matches!(
+        (submitted, option),
+        (
+            Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent,
+            Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent
+        ) | (
+            Decision::DenyOnce | Decision::DenyPermanent,
+            Decision::DenyOnce | Decision::DenyPermanent
+        )
+    )
 }

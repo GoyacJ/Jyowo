@@ -1,6 +1,9 @@
 import { useTranslation } from 'react-i18next'
 
-import type { AgentActivitySegment as AgentActivitySegmentType } from '@/shared/tauri/commands'
+import type {
+  AgentActivitySegment as AgentActivitySegmentType,
+  ResolvePermissionRequest,
+} from '@/shared/tauri/commands'
 import { Button } from '@/shared/ui/button'
 
 import { DecisionPanel } from './evidence/DecisionPanel'
@@ -12,12 +15,7 @@ export function AgentActivitySegmentView({
   segment,
 }: {
   conversationId: string
-  onPermissionResolve?: (request: {
-    conversationId: string
-    requestId: string
-    decision: 'approve' | 'deny'
-    confirmationText?: string
-  }) => void
+  onPermissionResolve?: (request: ResolvePermissionRequest) => void
   parentRunId?: string
   segment: AgentActivitySegmentType
   turnId: string

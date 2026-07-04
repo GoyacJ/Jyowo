@@ -118,6 +118,8 @@ async fn permission_bridge_attributes_subagent_source_on_forward_and_resolve() {
                 subject: subject.clone(),
                 severity: Severity::High,
                 scope_hint: DecisionScope::Any,
+                action_plan_hash: harness_contracts::ActionPlanHash::default(),
+                decision_options: Vec::new(),
                 confirmation_expected: None,
                 created_at: harness_contracts::now(),
             },

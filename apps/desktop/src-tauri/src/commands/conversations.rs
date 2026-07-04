@@ -943,6 +943,8 @@ pub fn resolve_permission_payload(
     let _session_id = parse_session_id(&request.conversation_id)?;
     ensure_non_empty("requestId", &request.request_id)?;
     let _request_id = parse_request_id(&request.request_id)?;
+    ensure_non_empty("optionId", &request.option_id)?;
+    let _option_id = parse_permission_option_id(&request.option_id)?;
 
     Err(runtime_unavailable(
         "Permission decisions require the runtime PermissionBroker.",
@@ -958,7 +960,8 @@ pub async fn resolve_permission_with_runtime_state(
 
     let session_id = parse_session_id(&request.conversation_id)?;
     let request_id = parse_request_id(&request.request_id)?;
-    let decision = to_harness_decision(request.decision);
+    let option_id = parse_permission_option_id(&request.option_id)?;
+    let submitted_decision = submitted_permission_decision(request.decision);
     let Some(resolver) = state.permission_resolver.as_ref() else {
         return Err(runtime_unavailable(
             "Permission decisions require the runtime PermissionBroker.",
@@ -977,30 +980,20 @@ pub async fn resolve_permission_with_runtime_state(
         ));
     }
 
-    // Validate confirmation text when the backend requires it.
-    if matches!(
-        decision,
-        Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent
-    ) {
-        if let Some(expected) = &pending.confirmation_expected {
-            let Some(ref confirmation_text) = request.confirmation_text else {
-                return Err(invalid_payload(
-                    "confirmation text is required for this permission".to_owned(),
-                ));
-            };
-            if confirmation_text != expected {
-                return Err(invalid_payload(
-                    "confirmation text does not match the required value".to_owned(),
-                ));
-            }
-        }
-    }
-
-    resolver.resolve_permission(request_id, decision).await?;
+    let resolved_decision = resolver
+        .resolve_permission_option(
+            request_id,
+            pending.request.tenant_id,
+            pending.request.session_id,
+            option_id,
+            submitted_decision,
+            request.confirmation_text.as_deref(),
+        )
+        .await?;
     let _ = crate::agent_supervisor::wake_agent_supervisor(state.workspace_root()).await;
 
     Ok(ResolvePermissionResponse {
-        decision: request.decision,
+        decision: permission_decision_from_resolved(resolved_decision)?,
         request_id: request.request_id,
         status: "resolved",
     })
@@ -1834,6 +1827,24 @@ pub(crate) fn parse_request_id(value: &str) -> Result<RequestId, CommandErrorPay
     Ok(request_id)
 }
 
+pub(crate) fn parse_permission_option_id(
+    value: &str,
+) -> Result<PermissionOptionId, CommandErrorPayload> {
+    let option_id = PermissionOptionId::parse(value).map_err(|error| {
+        invalid_payload(format!(
+            "optionId must be a valid permission option id: {error}"
+        ))
+    })?;
+
+    if option_id.to_string() != value {
+        return Err(invalid_payload(
+            "optionId must be a canonical permission option id".to_owned(),
+        ));
+    }
+
+    Ok(option_id)
+}
+
 pub(crate) fn parse_session_id(value: &str) -> Result<SessionId, CommandErrorPayload> {
     let session_id = SessionId::parse(value).map_err(|error| {
         invalid_payload(format!(
@@ -1883,10 +1894,27 @@ pub(crate) fn is_uuid_v4_like(value: &str) -> bool {
         .all(|(_, byte)| byte.is_ascii_hexdigit())
 }
 
-pub(crate) fn to_harness_decision(decision: PermissionDecision) -> Decision {
+fn submitted_permission_decision(decision: PermissionDecision) -> Decision {
     match decision {
         PermissionDecision::Approve => Decision::AllowOnce,
         PermissionDecision::Deny => Decision::DenyOnce,
+    }
+}
+
+fn permission_decision_from_resolved(
+    decision: Decision,
+) -> Result<PermissionDecision, CommandErrorPayload> {
+    match decision {
+        Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent => {
+            Ok(PermissionDecision::Approve)
+        }
+        Decision::DenyOnce | Decision::DenyPermanent => Ok(PermissionDecision::Deny),
+        Decision::Escalate => Err(runtime_operation_failed(
+            "resolved permission option cannot be represented as approve or deny".to_owned(),
+        )),
+        _ => Err(runtime_operation_failed(
+            "resolved permission option uses an unsupported decision".to_owned(),
+        )),
     }
 }
 
@@ -2002,6 +2030,10 @@ pub(crate) fn permission_requested_run_event(
             actor_source: permission_actor_source_payload(&event.actor_source, redactor),
             action_plan_hash: event.action_plan_hash.to_string(),
             auto_resolved: event.auto_resolved,
+            decision_options: permission_decision_options_run_event_payload(
+                &event.presented_options,
+                redactor,
+            ),
             decision_scope: decision_scope_display(&event.scope_hint, redactor),
             effective_mode: permission_mode_payload(event.effective_mode),
             exposure: subject.exposure,
@@ -2022,6 +2054,63 @@ pub(crate) fn permission_requested_run_event(
         timestamp: event.at.to_rfc3339(),
         event_type: "permission.requested",
         visibility: "public",
+    }
+}
+
+fn permission_decision_options_run_event_payload(
+    options: &[harness_contracts::PermissionDecisionOption],
+    redactor: &dyn Redactor,
+) -> Vec<Value> {
+    options
+        .iter()
+        .filter_map(|option| {
+            let decision = match option.decision {
+                Decision::AllowOnce | Decision::AllowSession | Decision::AllowPermanent => {
+                    "approve"
+                }
+                Decision::DenyOnce | Decision::DenyPermanent => "deny",
+                Decision::Escalate => return None,
+                _ => return None,
+            };
+
+            Some(json!({
+                "id": option.option_id.to_string(),
+                "decision": decision,
+                "label": public_text_display(option.label.clone(), redactor),
+                "lifetime": decision_lifetime_run_event_payload(option.lifetime),
+                "matcher": {
+                    "kind": decision_matcher_kind_run_event_payload(option.matcher_summary.kind),
+                    "label": public_text_display(option.matcher_summary.label.clone(), redactor),
+                },
+                "requiresConfirmation": option.requires_confirmation,
+            }))
+        })
+        .collect()
+}
+
+fn decision_lifetime_run_event_payload(
+    lifetime: harness_contracts::DecisionLifetime,
+) -> &'static str {
+    match lifetime {
+        harness_contracts::DecisionLifetime::Once => "once",
+        harness_contracts::DecisionLifetime::Run => "run",
+        harness_contracts::DecisionLifetime::Session => "session",
+        harness_contracts::DecisionLifetime::Persisted => "persisted",
+    }
+}
+
+fn decision_matcher_kind_run_event_payload(
+    kind: harness_contracts::DecisionMatcherKind,
+) -> &'static str {
+    match kind {
+        harness_contracts::DecisionMatcherKind::ExactCommand => "exactCommand",
+        harness_contracts::DecisionMatcherKind::ExactArgs => "exactArgs",
+        harness_contracts::DecisionMatcherKind::ToolName => "toolName",
+        harness_contracts::DecisionMatcherKind::Category => "category",
+        harness_contracts::DecisionMatcherKind::PathPrefix => "pathPrefix",
+        harness_contracts::DecisionMatcherKind::GlobPattern => "globPattern",
+        harness_contracts::DecisionMatcherKind::ExecuteCodeScript => "executeCodeScript",
+        harness_contracts::DecisionMatcherKind::Any => "any",
     }
 }
 

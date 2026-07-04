@@ -159,6 +159,7 @@ async fn list_activity_with_runtime_state_redacts_unsafe_artifact_media_mime_typ
             &[
                 Event::RunStarted(test_run_started_event(session_id, run_id)),
                 Event::ArtifactCreated(ArtifactCreatedEvent {
+                    revision_id: ArtifactRevisionId::new(),
                     artifact_id: "artifact-image".to_owned(),
                     at: now(),
                     blob_ref: Some(harness_contracts::BlobRef {
@@ -228,6 +229,7 @@ async fn list_activity_with_runtime_state_does_not_project_secret_like_artifact_
             &[
                 Event::RunStarted(test_run_started_event(session_id, run_id)),
                 Event::ArtifactCreated(ArtifactCreatedEvent {
+                    revision_id: ArtifactRevisionId::new(),
                     artifact_id: "artifact-video".to_owned(),
                     at: now(),
                     blob_ref: Some(harness_contracts::BlobRef {
@@ -916,6 +918,7 @@ async fn list_activity_with_runtime_state_redacts_pending_permission_display_tex
         ResolvePermissionRequest {
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
+            option_id: deny_permission_option_id(&pending),
             request_id: request_id.to_string(),
             confirmation_text: None,
         },

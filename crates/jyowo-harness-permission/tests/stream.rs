@@ -5,11 +5,12 @@ use std::time::Duration;
 use chrono::Utc;
 use harness_contracts::{
     Decision, DecisionScope, FallbackPolicy, InteractivityLevel, PermissionError, PermissionMode,
-    PermissionSubject, RequestId, SessionId, Severity, TenantId, TimeoutPolicy, ToolUseId,
+    PermissionOptionId, PermissionSubject, RequestId, SessionId, Severity, TenantId, TimeoutPolicy,
+    ToolUseId,
 };
 use harness_permission::{
-    CancelReason, PermissionBroker, PermissionContext, PermissionRequest, StreamBasedBroker,
-    StreamBrokerConfig,
+    default_permission_decision_options, CancelReason, PermissionBroker, PermissionContext,
+    PermissionRequest, ResolverHandle, StreamBasedBroker, StreamBrokerConfig,
 };
 
 #[test]
@@ -36,12 +37,13 @@ async fn stream_broker_sends_request_and_returns_resolved_decision() {
     let emitted = receiver.recv().await.unwrap();
     assert_eq!(emitted.request_id, request_id);
 
+    let option_id = pending_option_id_for_decision(&resolver, request_id, Decision::AllowOnce);
     resolver
-        .resolve(request_id, Decision::AllowSession)
+        .resolve_option(request_id, option_id, Decision::AllowOnce, None)
         .await
         .unwrap();
 
-    assert_eq!(decide.await.unwrap(), Decision::AllowSession);
+    assert_eq!(decide.await.unwrap(), Decision::AllowOnce);
 }
 
 #[tokio::test]
@@ -64,11 +66,250 @@ async fn stream_broker_preserves_confirmation_expected_on_pending_request() {
     assert_eq!(pending[0].request.request_id, request_id);
     assert_eq!(pending[0].confirmation_expected.as_deref(), Some("DELETE"));
 
+    let option_id = pending_option_id_for_decision(&resolver, request_id, Decision::DenyOnce);
     resolver
-        .resolve(request_id, Decision::DenyOnce)
+        .resolve_option(request_id, option_id, Decision::DenyOnce, None)
         .await
         .unwrap();
     assert_eq!(decide.await.unwrap(), Decision::DenyOnce);
+}
+
+#[tokio::test]
+async fn stream_broker_resolves_backend_authored_approve_option() {
+    let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    });
+    let request = permission_request();
+    let request_id = request.request_id;
+
+    let decide =
+        tokio::spawn(async move { broker.decide(request, permission_context(None)).await });
+    receiver.recv().await.unwrap();
+    let pending = resolver.pending_permission_requests();
+    let approve = pending[0]
+        .decision_options
+        .iter()
+        .find(|option| matches!(option.decision, Decision::AllowOnce))
+        .unwrap();
+
+    let resolved = resolver
+        .resolve_option(request_id, approve.option_id, Decision::AllowOnce, None)
+        .await
+        .unwrap();
+
+    assert_eq!(resolved, Decision::AllowOnce);
+    assert_eq!(decide.await.unwrap(), Decision::AllowOnce);
+}
+
+#[tokio::test]
+async fn stream_broker_resolves_backend_authored_deny_option() {
+    let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    });
+    let request = permission_request();
+    let request_id = request.request_id;
+
+    let decide =
+        tokio::spawn(async move { broker.decide(request, permission_context(None)).await });
+    receiver.recv().await.unwrap();
+    let pending = resolver.pending_permission_requests();
+    let deny = pending[0]
+        .decision_options
+        .iter()
+        .find(|option| matches!(option.decision, Decision::DenyOnce))
+        .unwrap();
+
+    let resolved = resolver
+        .resolve_option(request_id, deny.option_id, Decision::DenyOnce, None)
+        .await
+        .unwrap();
+
+    assert_eq!(resolved, Decision::DenyOnce);
+    assert_eq!(decide.await.unwrap(), Decision::DenyOnce);
+}
+
+#[tokio::test]
+async fn stream_broker_rejects_invalid_option_without_removing_pending_request() {
+    let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    });
+    let request = permission_request();
+    let request_id = request.request_id;
+
+    let decide =
+        tokio::spawn(async move { broker.decide(request, permission_context(None)).await });
+    receiver.recv().await.unwrap();
+
+    let error = resolver
+        .resolve_option(
+            request_id,
+            harness_contracts::PermissionOptionId::new(),
+            Decision::AllowOnce,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, PermissionError::Message(_)));
+    assert_eq!(resolver.pending_permission_requests().len(), 1);
+
+    let deny = resolver.pending_permission_requests()[0].decision_options[1].clone();
+    resolver
+        .resolve_option(request_id, deny.option_id, Decision::DenyOnce, None)
+        .await
+        .unwrap();
+    assert_eq!(decide.await.unwrap(), Decision::DenyOnce);
+}
+
+#[test]
+fn default_permission_options_do_not_derive_option_id_from_request_id() {
+    let request = permission_request();
+    let options = default_permission_decision_options(&request);
+
+    assert_eq!(options.len(), 2);
+    assert_ne!(
+        options[0].option_id,
+        derived_permission_option_id_for(request.request_id, 1)
+    );
+    assert_ne!(
+        options[1].option_id,
+        derived_permission_option_id_for(request.request_id, 2)
+    );
+    assert!(options
+        .iter()
+        .all(|option| option.scope == request.scope_hint));
+    assert!(options.iter().all(|option| option.fingerprint.is_some()));
+}
+
+#[tokio::test]
+async fn stream_broker_rejects_scope_mismatch_without_removing_pending_request() {
+    let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    });
+    let request = permission_request();
+    let request_id = request.request_id;
+    let tenant_id = request.tenant_id;
+    let session_id = request.session_id;
+
+    let decide =
+        tokio::spawn(async move { broker.decide(request, permission_context(None)).await });
+    receiver.recv().await.unwrap();
+    let approve = resolver.pending_permission_requests()[0].decision_options[0].clone();
+
+    let error = resolver
+        .resolve_option_for(
+            request_id,
+            TenantId::new(),
+            session_id,
+            approve.option_id,
+            Decision::AllowOnce,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, PermissionError::Message(_)));
+    assert_eq!(resolver.pending_permission_requests().len(), 1);
+
+    let error = resolver
+        .resolve_option_for(
+            request_id,
+            tenant_id,
+            SessionId::new(),
+            approve.option_id,
+            Decision::AllowOnce,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, PermissionError::Message(_)));
+    assert_eq!(resolver.pending_permission_requests().len(), 1);
+
+    resolver
+        .resolve_option_for(
+            request_id,
+            tenant_id,
+            session_id,
+            approve.option_id,
+            Decision::AllowOnce,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(decide.await.unwrap(), Decision::AllowOnce);
+}
+
+#[tokio::test]
+async fn stream_broker_rejects_submitted_decision_kind_conflict_without_removing_pending_request() {
+    let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    });
+    let request = permission_request();
+    let request_id = request.request_id;
+
+    let decide =
+        tokio::spawn(async move { broker.decide(request, permission_context(None)).await });
+    receiver.recv().await.unwrap();
+    let approve = resolver.pending_permission_requests()[0].decision_options[0].clone();
+
+    let error = resolver
+        .resolve_option(request_id, approve.option_id, Decision::DenyOnce, None)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, PermissionError::Message(_)));
+    assert_eq!(resolver.pending_permission_requests().len(), 1);
+
+    resolver
+        .resolve_option(request_id, approve.option_id, Decision::AllowOnce, None)
+        .await
+        .unwrap();
+    assert_eq!(decide.await.unwrap(), Decision::AllowOnce);
+}
+
+#[tokio::test]
+async fn stream_broker_rejects_missing_confirmation_without_removing_pending_request() {
+    let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    });
+    let mut request = permission_request();
+    request.confirmation_expected = Some("DELETE".to_owned());
+    let request_id = request.request_id;
+
+    let decide =
+        tokio::spawn(async move { broker.decide(request, permission_context(None)).await });
+    receiver.recv().await.unwrap();
+    let approve = resolver.pending_permission_requests()[0].decision_options[0].clone();
+
+    let error = resolver
+        .resolve_option(request_id, approve.option_id, Decision::AllowOnce, None)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, PermissionError::Message(_)));
+    assert_eq!(resolver.pending_permission_requests().len(), 1);
+
+    resolver
+        .resolve_option(
+            request_id,
+            approve.option_id,
+            Decision::AllowOnce,
+            Some("DELETE"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(decide.await.unwrap(), Decision::AllowOnce);
 }
 
 #[tokio::test]
@@ -80,7 +321,12 @@ async fn stream_broker_rejects_unknown_resolution() {
     });
 
     let err = resolver
-        .resolve(RequestId::new(), Decision::AllowOnce)
+        .resolve_option(
+            RequestId::new(),
+            harness_contracts::PermissionOptionId::new(),
+            Decision::AllowOnce,
+            None,
+        )
         .await
         .unwrap_err();
 
@@ -108,8 +354,9 @@ async fn stream_broker_keeps_high_and_critical_requests_pending_until_explicit_d
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].request_id, high_request_id);
 
+    let option_id = pending_option_id_for_decision(&resolver, high_request_id, Decision::DenyOnce);
     resolver
-        .resolve(high_request_id, Decision::DenyOnce)
+        .resolve_option(high_request_id, option_id, Decision::DenyOnce, None)
         .await
         .unwrap();
     assert_eq!(high_decide.await.unwrap(), Decision::DenyOnce);
@@ -128,8 +375,10 @@ async fn stream_broker_keeps_high_and_critical_requests_pending_until_explicit_d
     assert_eq!(emitted_critical.request_id, critical_request_id);
     assert_eq!(emitted_critical.severity, Severity::Critical);
 
+    let option_id =
+        pending_option_id_for_decision(&resolver, critical_request_id, Decision::AllowOnce);
     resolver
-        .resolve(critical_request_id, Decision::AllowOnce)
+        .resolve_option(critical_request_id, option_id, Decision::AllowOnce, None)
         .await
         .unwrap();
     assert_eq!(critical_decide.await.unwrap(), Decision::AllowOnce);
@@ -174,7 +423,14 @@ async fn stream_broker_emits_heartbeat_and_sweeps_timed_out_pending() {
     assert_eq!(heartbeat.request_id, request_id);
     assert_eq!(decide.await.unwrap(), Decision::DenyOnce);
     assert!(matches!(
-        resolver.resolve(request_id, Decision::AllowOnce).await,
+        resolver
+            .resolve_option(
+                request_id,
+                harness_contracts::PermissionOptionId::new(),
+                Decision::AllowOnce,
+                None,
+            )
+            .await,
         Err(PermissionError::Message(_))
     ));
 }
@@ -251,9 +507,79 @@ async fn stream_broker_cancel_cleans_pending_and_unblocks_decide() {
 
     assert_eq!(decide.await.unwrap(), Decision::DenyOnce);
     assert!(matches!(
-        resolver.resolve(request_id, Decision::AllowOnce).await,
+        resolver
+            .resolve_option(
+                request_id,
+                harness_contracts::PermissionOptionId::new(),
+                Decision::AllowOnce,
+                None,
+            )
+            .await,
         Err(PermissionError::Message(_))
     ));
+}
+
+fn pending_option_id_for_decision(
+    resolver: &ResolverHandle,
+    request_id: RequestId,
+    decision: Decision,
+) -> harness_contracts::PermissionOptionId {
+    resolver
+        .pending_permission_requests()
+        .into_iter()
+        .find(|pending| pending.request.request_id == request_id)
+        .expect("pending request should exist")
+        .decision_options
+        .into_iter()
+        .find(|option| option.decision == decision)
+        .expect("pending option should exist")
+        .option_id
+}
+
+trait ResolverHandleTestExt {
+    async fn resolve_option(
+        &self,
+        request_id: RequestId,
+        option_id: PermissionOptionId,
+        submitted_decision: Decision,
+        confirmation_text: Option<&str>,
+    ) -> Result<Decision, PermissionError>;
+}
+
+impl ResolverHandleTestExt for ResolverHandle {
+    async fn resolve_option(
+        &self,
+        request_id: RequestId,
+        option_id: PermissionOptionId,
+        submitted_decision: Decision,
+        confirmation_text: Option<&str>,
+    ) -> Result<Decision, PermissionError> {
+        let pending = self
+            .pending_permission_requests()
+            .into_iter()
+            .find(|pending| pending.request.request_id == request_id);
+        let (tenant_id, session_id) = pending
+            .map(|pending| (pending.request.tenant_id, pending.request.session_id))
+            .unwrap_or_else(|| (TenantId::new(), SessionId::new()));
+        self.resolve_option_for(
+            request_id,
+            tenant_id,
+            session_id,
+            option_id,
+            submitted_decision,
+            confirmation_text,
+        )
+        .await
+    }
+}
+
+fn derived_permission_option_id_for(
+    request_id: RequestId,
+    discriminator: u8,
+) -> PermissionOptionId {
+    let mut bytes = request_id.as_bytes();
+    bytes[15] ^= discriminator;
+    PermissionOptionId::from_u128(u128::from_be_bytes(bytes))
 }
 
 fn permission_request() -> PermissionRequest {
@@ -277,6 +603,8 @@ fn permission_request_with_severity(severity: Severity) -> PermissionRequest {
         },
         severity,
         scope_hint: DecisionScope::ToolName("shell".to_owned()),
+        action_plan_hash: harness_contracts::ActionPlanHash::default(),
+        decision_options: Vec::new(),
         confirmation_expected: None,
         created_at: Utc::now(),
     }

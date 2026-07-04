@@ -12,7 +12,8 @@ use harness_contracts::{
     ConversationAttachmentReference, ConversationCursor, ConversationEventRef,
     ConversationTimelineEvent, ConversationTurn, ConversationTurnUserMessage,
     ConversationWorktreePage, DataExposure, DataExposureSecretRisk, DecisionConfirmation,
-    DecisionOperation, DecisionPolicy, DecisionRequestState, DecisionRequestStatus, DecisionTarget,
+    DecisionKind, DecisionLifetime, DecisionMatcherKind, DecisionMatcherSummary, DecisionOperation,
+    DecisionOption, DecisionPolicy, DecisionRequestState, DecisionRequestStatus, DecisionTarget,
     DecisionTargetKind, ErrorSegment, EvidenceRedactionState, NoticeSegment, ProcessSegment,
     ProcessSegmentStatus, ProcessStep, ProcessStepDetail, ProcessStepKind, ProcessStepStatus,
     ReviewRequestSegment, RiskLevel, TextSegment, ToolAttempt, ToolAttemptOrigin,
@@ -782,7 +783,7 @@ impl ProjectionState<'_> {
                     rule: None,
                     sandbox: None,
                 },
-                decision_options: vec![],
+                decision_options: permission_decision_options(&event.payload),
                 evidence_refs: vec![],
                 data_exposure: DataExposure {
                     sends_workspace_data: false,
@@ -2521,6 +2522,66 @@ fn string_field(value: &Value, field: &str) -> Option<String> {
 
 fn bool_field(value: &Value, field: &str) -> Option<bool> {
     value.get(field).and_then(Value::as_bool)
+}
+
+fn permission_decision_options(value: &Value) -> Vec<DecisionOption> {
+    value
+        .get("decisionOptions")
+        .and_then(Value::as_array)
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(permission_decision_option)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn permission_decision_option(value: &Value) -> Option<DecisionOption> {
+    let matcher = value.get("matcher")?;
+    Some(DecisionOption {
+        id: string_field(value, "id")?,
+        decision: permission_decision_kind(value)?,
+        label: string_field(value, "label")?,
+        lifetime: permission_decision_lifetime(value)?,
+        matcher: DecisionMatcherSummary {
+            kind: permission_decision_matcher_kind(matcher)?,
+            label: string_field(matcher, "label")?,
+        },
+        requires_confirmation: bool_field(value, "requiresConfirmation").unwrap_or(false),
+    })
+}
+
+fn permission_decision_kind(value: &Value) -> Option<DecisionKind> {
+    match string_field(value, "decision").as_deref() {
+        Some("approve") => Some(DecisionKind::Approve),
+        Some("deny") => Some(DecisionKind::Deny),
+        _ => None,
+    }
+}
+
+fn permission_decision_lifetime(value: &Value) -> Option<DecisionLifetime> {
+    match string_field(value, "lifetime").as_deref() {
+        Some("once") => Some(DecisionLifetime::Once),
+        Some("run") => Some(DecisionLifetime::Run),
+        Some("session") => Some(DecisionLifetime::Session),
+        Some("persisted") => Some(DecisionLifetime::Persisted),
+        _ => None,
+    }
+}
+
+fn permission_decision_matcher_kind(value: &Value) -> Option<DecisionMatcherKind> {
+    match string_field(value, "kind").as_deref() {
+        Some("exactCommand") => Some(DecisionMatcherKind::ExactCommand),
+        Some("exactArgs") => Some(DecisionMatcherKind::ExactArgs),
+        Some("toolName") => Some(DecisionMatcherKind::ToolName),
+        Some("category") => Some(DecisionMatcherKind::Category),
+        Some("pathPrefix") => Some(DecisionMatcherKind::PathPrefix),
+        Some("globPattern") => Some(DecisionMatcherKind::GlobPattern),
+        Some("executeCodeScript") => Some(DecisionMatcherKind::ExecuteCodeScript),
+        Some("any") => Some(DecisionMatcherKind::Any),
+        _ => None,
+    }
 }
 
 fn notice_code_field(value: &Value, field: &str) -> Option<AssistantNoticeCode> {

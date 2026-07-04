@@ -292,6 +292,7 @@ fn harness_mcp_backend_resolves_stream_permissions() {
                 heartbeat_interval: None,
                 max_pending: 8,
             });
+        let resolver_handle = resolver.clone();
         let harness = Harness::builder()
             .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
@@ -302,16 +303,110 @@ fn harness_mcp_backend_resolves_stream_permissions() {
             .expect("harness should build");
         let request = permission_request();
         let request_id = request.request_id;
+        let session_id = request.session_id;
+        let context = permission_context_for(&request);
         let broker = harness.permission_broker().expect("broker should exist");
-        let decision_task =
-            tokio::spawn(async move { broker.decide(request, permission_context()).await });
+        let decision_task = tokio::spawn(async move { broker.decide(request, context).await });
         receiver.recv().await.expect("request should be emitted");
+        let option_id =
+            pending_option_id_for_decision(&resolver_handle, request_id, Decision::AllowOnce);
 
         let result = harness
             .call_harness_tool(
                 &McpServerRequestContext::default(),
                 ExposedCapability::PermissionsRespond,
-                json!({"request_id": request_id.to_string(), "decision": "allow_once"}),
+                json!({
+                    "session_id": session_id.to_string(),
+                    "request_id": request_id.to_string(),
+                    "option_id": option_id,
+                    "decision": "allow_once",
+                }),
+            )
+            .await
+            .expect("permissions_respond should resolve");
+
+        assert_eq!(result, json!({"resolved": true}));
+        assert_eq!(
+            decision_task.await.expect("decision task should join"),
+            Decision::AllowOnce
+        );
+    });
+}
+
+#[test]
+fn harness_mcp_permission_response_rejects_wrong_tenant_or_session_before_resolving() {
+    tokio_runtime().block_on(async {
+        let (broker, mut receiver, resolver) =
+            harness_permission::StreamBasedBroker::new(harness_permission::StreamBrokerConfig {
+                default_timeout: Some(std::time::Duration::from_secs(5)),
+                heartbeat_interval: None,
+                max_pending: 8,
+            });
+        let resolver_handle = resolver.clone();
+        let harness = Harness::builder()
+            .with_model(TestModelProvider::default())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .with_stream_permission_broker(broker, resolver)
+            .build()
+            .await
+            .expect("harness should build");
+        let request = permission_request();
+        let request_id = request.request_id;
+        let session_id = request.session_id;
+        let context = permission_context_for(&request);
+        let broker = harness.permission_broker().expect("broker should exist");
+        let decision_task = tokio::spawn(async move { broker.decide(request, context).await });
+        receiver.recv().await.expect("request should be emitted");
+        let option_id =
+            pending_option_id_for_decision(&resolver_handle, request_id, Decision::AllowOnce);
+
+        let wrong_tenant = harness
+            .call_harness_tool(
+                &McpServerRequestContext::default().with_tenant_id(TenantId::SHARED),
+                ExposedCapability::PermissionsRespond,
+                json!({
+                    "session_id": session_id.to_string(),
+                    "request_id": request_id.to_string(),
+                    "option_id": option_id,
+                    "decision": "allow_once",
+                }),
+            )
+            .await;
+        assert!(wrong_tenant.is_err());
+        assert!(resolver_handle
+            .pending_permission_requests()
+            .iter()
+            .any(|pending| pending.request.request_id == request_id));
+
+        let wrong_session = harness
+            .call_harness_tool(
+                &McpServerRequestContext::default().with_tenant_id(TenantId::SINGLE),
+                ExposedCapability::PermissionsRespond,
+                json!({
+                    "session_id": SessionId::new().to_string(),
+                    "request_id": request_id.to_string(),
+                    "option_id": option_id,
+                    "decision": "allow_once",
+                }),
+            )
+            .await;
+        assert!(wrong_session.is_err());
+        assert!(resolver_handle
+            .pending_permission_requests()
+            .iter()
+            .any(|pending| pending.request.request_id == request_id));
+
+        let result = harness
+            .call_harness_tool(
+                &McpServerRequestContext::default().with_tenant_id(TenantId::SINGLE),
+                ExposedCapability::PermissionsRespond,
+                json!({
+                    "session_id": session_id.to_string(),
+                    "request_id": request_id.to_string(),
+                    "option_id": option_id,
+                    "decision": "allow_once",
+                }),
             )
             .await
             .expect("permissions_respond should resolve");
@@ -404,12 +499,32 @@ fn harness_mcp_permission_response_unblocks_waiting_messages_send_run() {
             .expect("permissions")
             .iter()
             .any(|permission| permission["request_id"] == pending.request_id.to_string()));
+        let option_id = listed["permissions"]
+            .as_array()
+            .expect("permissions")
+            .iter()
+            .find(|permission| permission["request_id"] == pending.request_id.to_string())
+            .and_then(|permission| {
+                permission["decision_options"]
+                    .as_array()
+                    .expect("decision options")
+                    .iter()
+                    .find(|option| option["decision"] == "allow_once")
+                    .and_then(|option| option["option_id"].as_str())
+            })
+            .expect("allow option should be listed")
+            .to_owned();
 
         let resolved = harness
             .call_harness_tool(
                 &context,
                 ExposedCapability::PermissionsRespond,
-                json!({"request_id": pending.request_id.to_string(), "decision": "allow_once"}),
+                json!({
+                    "session_id": session_id.to_string(),
+                    "request_id": pending.request_id.to_string(),
+                    "option_id": option_id,
+                    "decision": "allow_once",
+                }),
             )
             .await
             .expect("permissions_respond should resolve");
@@ -577,17 +692,39 @@ fn permission_request() -> harness_permission::PermissionRequest {
             command: "echo ok".to_owned(),
             cwd: None,
         },
+        action_plan_hash: harness_contracts::ActionPlanHash::default(),
+        decision_options: Vec::new(),
         confirmation_expected: None,
         created_at: chrono::Utc::now(),
     }
 }
 
-fn permission_context() -> harness_permission::PermissionContext {
+fn pending_option_id_for_decision(
+    resolver: &harness_permission::ResolverHandle,
+    request_id: harness_contracts::RequestId,
+    decision: Decision,
+) -> String {
+    resolver
+        .pending_permission_requests()
+        .into_iter()
+        .find(|pending| pending.request.request_id == request_id)
+        .expect("pending request should exist")
+        .decision_options
+        .into_iter()
+        .find(|option| option.decision == decision)
+        .expect("pending option should exist")
+        .option_id
+        .to_string()
+}
+
+fn permission_context_for(
+    request: &harness_permission::PermissionRequest,
+) -> harness_permission::PermissionContext {
     harness_permission::PermissionContext {
         permission_mode: harness_contracts::PermissionMode::Default,
         previous_mode: None,
-        tenant_id: TenantId::SINGLE,
-        session_id: SessionId::new(),
+        tenant_id: request.tenant_id,
+        session_id: request.session_id,
         run_id: None,
         interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
         timeout_policy: None,

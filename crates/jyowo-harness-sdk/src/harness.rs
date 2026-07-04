@@ -25,8 +25,6 @@ use harness_contracts::CacheImpact;
 use harness_contracts::MemdirFileTag;
 #[cfg(not(feature = "observability-redactor"))]
 use harness_contracts::RedactPatternKind;
-#[cfg(feature = "stream-permission")]
-use harness_contracts::RequestId;
 #[cfg(feature = "agents-team")]
 use harness_contracts::{
     AgentId, BlobMeta, BlobRetention, Recipient, TeamCreatedEvent, TeamMemberJoinedEvent,
@@ -50,6 +48,8 @@ use harness_contracts::{
     ConversationCursor, ConversationSnapshot, ConversationSummary, ConversationTimelinePage,
     ConversationTurnCursor, ConversationWorktreePage,
 };
+#[cfg(feature = "stream-permission")]
+use harness_contracts::{PermissionOptionId, RequestId};
 #[cfg(any(feature = "agents-team", feature = "agents-subagent"))]
 use harness_contracts::{
     ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,

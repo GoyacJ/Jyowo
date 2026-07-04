@@ -299,6 +299,7 @@ pub(crate) async fn append_artifact_event_for_preview(
             TenantId::SINGLE,
             session_id,
             &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                revision_id: ArtifactRevisionId::new(),
                 artifact_id: artifact_id.to_owned(),
                 at: now(),
                 blob_ref,

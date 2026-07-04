@@ -2,9 +2,9 @@ use std::collections::{BTreeSet, HashMap};
 
 use harness_contracts::{
     Decision, DecisionScope, DeferredToolsDeltaAttachment, EndReason, Event, JournalOffset,
-    Message, MessageContent, MessagePart, MessageRole, PermissionSubject, RequestId, SessionError,
-    SessionId, SnapshotId, TenantId, ToolErrorPayload, ToolName, ToolResult, ToolUseId,
-    UsageSnapshot,
+    Message, MessageContent, MessagePart, MessageRole, PermissionDecisionOption, PermissionSubject,
+    RequestId, SessionError, SessionId, SnapshotId, TenantId, ToolErrorPayload, ToolName,
+    ToolResult, ToolUseId, UsageSnapshot,
 };
 use harness_journal::EventEnvelope;
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,8 @@ pub struct PermissionRecord {
     pub subject: PermissionSubject,
     pub decision: Option<Decision>,
     pub scope: DecisionScope,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decision_options: Vec<PermissionDecisionOption>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,6 +169,7 @@ impl SessionProjection {
                         subject: event.subject,
                         decision: None,
                         scope: event.scope_hint,
+                        decision_options: event.presented_options,
                     },
                 );
             }
@@ -184,6 +187,7 @@ impl SessionProjection {
                             },
                             decision: None,
                             scope: event.scope.clone(),
+                            decision_options: Vec::new(),
                         });
                 record.decision = Some(event.decision.clone());
                 record.scope = event.scope;

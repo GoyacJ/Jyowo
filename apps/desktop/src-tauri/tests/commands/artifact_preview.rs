@@ -46,6 +46,7 @@ async fn get_artifact_media_preview_with_runtime_state_returns_owned_image_data_
             TenantId::SINGLE,
             session_id,
             &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                revision_id: ArtifactRevisionId::new(),
                 artifact_id: "artifact-image".to_owned(),
                 at: now(),
                 blob_ref: Some(blob_ref),
@@ -224,6 +225,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_cross_session_blo
             TenantId::SINGLE,
             session_id,
             &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                revision_id: ArtifactRevisionId::new(),
                 artifact_id: "artifact-image".to_owned(),
                 at: now(),
                 blob_ref: Some(blob_ref),

@@ -3,9 +3,10 @@ use std::sync::Arc;
 use futures::StreamExt;
 use harness_contracts::{
     ActionPlanHash, AssistantMessageCompletedEvent, CacheImpact, CompactOutcome, CompactTrigger,
-    CompactionAppliedEvent, DecidedBy, Decision, DecisionId, DecisionScope, DeferPolicy,
-    DeferredToolHint, EndReason, Event, EventId, MessageContent, MessageId, MessageMetadata,
-    NoopRedactor, PermissionActorSource, PermissionMode, PermissionRequestedEvent,
+    CompactionAppliedEvent, DecidedBy, Decision, DecisionId, DecisionLifetime, DecisionMatcherKind,
+    DecisionMatcherSummary, DecisionScope, DeferPolicy, DeferredToolHint, EndReason, Event,
+    EventId, MessageContent, MessageId, MessageMetadata, NoopRedactor, PermissionActorSource,
+    PermissionDecisionOption, PermissionMode, PermissionOptionId, PermissionRequestedEvent,
     PermissionResolvedEvent, PermissionReview, PermissionSubject, RequestId, RunEndedEvent, RunId,
     SandboxPolicySummary, SessionCreatedEvent, SessionEndedEvent, SessionId, Severity, StopReason,
     TenantId, ToolDeferredPoolChangedEvent, ToolPoolChangeSource, ToolProperties, ToolResult,

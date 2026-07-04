@@ -2,7 +2,11 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useUiStore } from '@/shared/state/ui-store'
-import type { ConversationEventRef, ConversationTurn } from '@/shared/tauri/commands'
+import type {
+  ConversationEventRef,
+  ConversationTurn,
+  ResolvePermissionRequest,
+} from '@/shared/tauri/commands'
 import { turnScrollAnchorKey } from './conversation-scroll-controller'
 import { ConversationTurnRow } from './conversation-turn-row'
 import { useConversationScrollAnchor } from './use-conversation-scroll-anchor'
@@ -21,12 +25,7 @@ export function ConversationTimeline({
   turns: ConversationTurn[]
   title: string
   onOpenDetails?: (eventRef: ConversationEventRef) => void
-  onPermissionResolve?: (request: {
-    conversationId: string
-    requestId: string
-    decision: 'approve' | 'deny'
-    confirmationText?: string
-  }) => void
+  onPermissionResolve?: (request: ResolvePermissionRequest) => void
   onReviewContinue?: (prompt: string) => void
 }) {
   const { t } = useTranslation('conversation')

@@ -47,13 +47,24 @@ impl StreamPermissionRuntime {
         self.resolver.pending_permission_requests()
     }
 
-    pub async fn resolve_permission(
+    pub async fn resolve_permission_option(
         &self,
         request_id: RequestId,
-        decision: Decision,
-    ) -> Result<(), HarnessError> {
+        tenant_id: TenantId,
+        session_id: SessionId,
+        option_id: PermissionOptionId,
+        submitted_decision: Decision,
+        confirmation_text: Option<&str>,
+    ) -> Result<Decision, HarnessError> {
         self.resolver
-            .resolve(request_id, decision)
+            .resolve_option_for(
+                request_id,
+                tenant_id,
+                session_id,
+                option_id,
+                submitted_decision,
+                confirmation_text,
+            )
             .await
             .map_err(HarnessError::Permission)
     }
@@ -71,22 +82,40 @@ impl Default for StreamPermissionRuntime {
 }
 
 impl Harness {
-    pub async fn resolve_permission(
+    pub async fn resolve_permission_option(
         &self,
         request_id: harness_contracts::RequestId,
-        decision: Decision,
-    ) -> Result<(), HarnessError> {
+        tenant_id: harness_contracts::TenantId,
+        session_id: harness_contracts::SessionId,
+        option_id: harness_contracts::PermissionOptionId,
+        submitted_decision: Decision,
+        confirmation_text: Option<&str>,
+    ) -> Result<Decision, HarnessError> {
         #[cfg(feature = "stream-permission")]
         {
             if let Some(resolver) = &self.inner.permission_resolver {
                 return resolver
-                    .resolve(request_id, decision)
+                    .resolve_option_for(
+                        request_id,
+                        tenant_id,
+                        session_id,
+                        option_id,
+                        submitted_decision,
+                        confirmation_text,
+                    )
                     .await
                     .map_err(HarnessError::Permission);
             }
         }
 
-        let _ = (&request_id, &decision);
+        let _ = (
+            &request_id,
+            &tenant_id,
+            &session_id,
+            &option_id,
+            &submitted_decision,
+            &confirmation_text,
+        );
         Err(HarnessError::Other(
             "permission resolver is not configured".to_owned(),
         ))

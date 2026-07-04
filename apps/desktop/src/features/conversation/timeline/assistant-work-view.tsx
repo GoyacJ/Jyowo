@@ -1,5 +1,9 @@
 import { useTranslation } from 'react-i18next'
-import type { AssistantWork, ConversationEventRef } from '@/shared/tauri/commands'
+import type {
+  AssistantWork,
+  ConversationEventRef,
+  ResolvePermissionRequest,
+} from '@/shared/tauri/commands'
 import { AgentActivitySegmentView } from '../AgentActivitySegment'
 import { ArtifactSegmentView } from './artifact-segment-view'
 import { AssistantTextSegmentView } from './assistant-text-segment-view'
@@ -21,12 +25,7 @@ export function AssistantWorkView({
   assistant: AssistantWork
   conversationId: string
   onOpenDetails?: (eventRef: ConversationEventRef) => void
-  onPermissionResolve?: (request: {
-    conversationId: string
-    requestId: string
-    decision: 'approve' | 'deny'
-    confirmationText?: string
-  }) => void
+  onPermissionResolve?: (request: ResolvePermissionRequest) => void
   onReviewContinue?: (prompt: string) => void
   turnId: string
 }) {

@@ -1,9 +1,11 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    Decision, DecisionId, DecisionScope, ExecFingerprint, FallbackPolicy, InteractivityLevel,
-    PermissionError, PermissionMode, PermissionSubject, RequestId, RuleSource, RunId, SessionId,
-    Severity, TenantId, TimeoutPolicy, ToolUseId,
+    ActionPlanHash, Decision, DecisionId, DecisionLifetime, DecisionMatcherKind,
+    DecisionMatcherSummary, DecisionScope, ExecFingerprint, FallbackPolicy, InteractivityLevel,
+    PermissionDecisionOption, PermissionError, PermissionMode, PermissionOptionId,
+    PermissionSubject, RequestId, RuleSource, RunId, SessionId, Severity, TenantId, TimeoutPolicy,
+    ToolUseId,
 };
 
 use crate::rule::OverrideDecision;
@@ -87,6 +89,57 @@ pub fn canonical_permission_fingerprint(request: &PermissionRequest) -> ExecFing
     ExecFingerprint(*hasher.finalize().as_bytes())
 }
 
+#[must_use]
+pub fn default_permission_decision_options(
+    request: &PermissionRequest,
+) -> Vec<PermissionDecisionOption> {
+    let fingerprint = Some(canonical_permission_fingerprint(request));
+    vec![
+        PermissionDecisionOption {
+            option_id: PermissionOptionId::new(),
+            decision: Decision::AllowOnce,
+            scope: request.scope_hint.clone(),
+            lifetime: DecisionLifetime::Once,
+            matcher_summary: DecisionMatcherSummary {
+                kind: matcher_kind_for_scope(&request.scope_hint),
+                label: "allow once".to_owned(),
+            },
+            label: "Allow once".to_owned(),
+            requires_confirmation: request.confirmation_expected.is_some(),
+            action_plan_hash: request.action_plan_hash.clone(),
+            fingerprint,
+        },
+        PermissionDecisionOption {
+            option_id: PermissionOptionId::new(),
+            decision: Decision::DenyOnce,
+            scope: request.scope_hint.clone(),
+            lifetime: DecisionLifetime::Once,
+            matcher_summary: DecisionMatcherSummary {
+                kind: matcher_kind_for_scope(&request.scope_hint),
+                label: "deny once".to_owned(),
+            },
+            label: "Deny once".to_owned(),
+            requires_confirmation: false,
+            action_plan_hash: request.action_plan_hash.clone(),
+            fingerprint,
+        },
+    ]
+}
+
+fn matcher_kind_for_scope(scope: &DecisionScope) -> DecisionMatcherKind {
+    match scope {
+        DecisionScope::ExactCommand { .. } => DecisionMatcherKind::ExactCommand,
+        DecisionScope::ExactArgs(_) => DecisionMatcherKind::ExactArgs,
+        DecisionScope::Any => DecisionMatcherKind::Any,
+        DecisionScope::ToolName(_) => DecisionMatcherKind::ToolName,
+        DecisionScope::Category(_) => DecisionMatcherKind::Category,
+        DecisionScope::PathPrefix(_) => DecisionMatcherKind::PathPrefix,
+        DecisionScope::GlobPattern(_) => DecisionMatcherKind::GlobPattern,
+        DecisionScope::ExecuteCodeScript { .. } => DecisionMatcherKind::ExecuteCodeScript,
+        _ => DecisionMatcherKind::Any,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PermissionRequest {
     pub request_id: RequestId,
@@ -97,6 +150,8 @@ pub struct PermissionRequest {
     pub subject: PermissionSubject,
     pub severity: Severity,
     pub scope_hint: DecisionScope,
+    pub action_plan_hash: ActionPlanHash,
+    pub decision_options: Vec<PermissionDecisionOption>,
     pub confirmation_expected: Option<String>,
     pub created_at: DateTime<Utc>,
 }

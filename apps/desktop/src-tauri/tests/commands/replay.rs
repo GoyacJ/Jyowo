@@ -150,6 +150,7 @@ async fn get_replay_timeline_with_runtime_state_reads_redacted_journal_events_wi
         ResolvePermissionRequest {
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
+            option_id: deny_permission_option_id(&pending),
             request_id: request_id.to_string(),
             confirmation_text: None,
         },

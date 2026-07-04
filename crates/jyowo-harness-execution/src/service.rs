@@ -3,16 +3,15 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use harness_contracts::{
-    ActionPlanHash, ActionResource, DecidedBy, Decision, DecisionLifetime, DecisionMatcherKind,
-    DecisionMatcherSummary, DecisionScope, Event, FallbackPolicy, HostRule, InteractivityLevel,
-    NetworkAccess, PermissionConfirmation, PermissionDecisionOption, PermissionMode,
-    PermissionOptionId, PermissionRequestedEvent, PermissionResolvedEvent, ResourceLimits, RunId,
-    SandboxPolicy, SandboxPolicyHash, SandboxPolicySummary, SandboxPreflightFailedEvent,
+    ActionPlanHash, ActionResource, DecidedBy, Decision, Event, FallbackPolicy, HostRule,
+    InteractivityLevel, NetworkAccess, PermissionConfirmation, PermissionMode,
+    PermissionRequestedEvent, PermissionResolvedEvent, ResourceLimits, RunId, SandboxPolicy,
+    SandboxPolicyHash, SandboxPolicySummary, SandboxPreflightFailedEvent,
     SandboxPreflightPassedEvent, SandboxPreflightStatus, SessionId, TenantId, ToolActionPlan,
 };
 use harness_permission::{
-    canonical_permission_fingerprint, PermissionAuthority, PermissionAuthorityDecisionSource,
-    PermissionContext, PermissionRequest,
+    canonical_permission_fingerprint, default_permission_decision_options, PermissionAuthority,
+    PermissionAuthorityDecisionSource, PermissionContext, PermissionRequest,
 };
 use harness_sandbox::{ExecSpec, SandboxBackend, SandboxCapabilities};
 use harness_tool::{AuthorizedTicketSummary, AuthorizedToolInput};
@@ -82,7 +81,7 @@ impl AuthorizationService {
         context: AuthorizationContext,
         plan: ToolActionPlan,
     ) -> Result<AuthorizationOutcome, ExecutionError> {
-        let request = PermissionRequest {
+        let mut request = PermissionRequest {
             request_id: harness_contracts::RequestId::new(),
             tenant_id: context.tenant_id,
             session_id: context.session_id,
@@ -91,10 +90,14 @@ impl AuthorizationService {
             subject: plan.subject.clone(),
             severity: plan.severity,
             scope_hint: plan.scope.clone(),
+            action_plan_hash: plan.plan_hash.clone(),
+            decision_options: Vec::new(),
             confirmation_expected: confirmation_expected(&plan.review.confirmation),
             created_at: Utc::now(),
         };
         let fingerprint = canonical_permission_fingerprint(&request);
+        let presented_options = default_permission_decision_options(&request);
+        request.decision_options = presented_options.clone();
         let permission_context = PermissionContext {
             permission_mode: context.permission_mode,
             previous_mode: None,
@@ -118,20 +121,7 @@ impl AuthorizationService {
             severity: plan.severity,
             scope_hint: plan.scope.clone(),
             fingerprint: Some(fingerprint),
-            presented_options: vec![PermissionDecisionOption {
-                option_id: PermissionOptionId::new(),
-                decision: Decision::AllowOnce,
-                scope: DecisionScope::Any,
-                lifetime: DecisionLifetime::Once,
-                matcher_summary: DecisionMatcherSummary {
-                    kind: DecisionMatcherKind::Any,
-                    label: "allow once".to_owned(),
-                },
-                label: "Allow once".to_owned(),
-                requires_confirmation: false,
-                action_plan_hash: ActionPlanHash::default(),
-                fingerprint: None,
-            }],
+            presented_options,
             interactivity: context.interactivity,
             auto_resolved: matches!(
                 context.permission_mode,

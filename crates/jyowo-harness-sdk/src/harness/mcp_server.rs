@@ -351,18 +351,40 @@ impl Harness {
 
     async fn mcp_permissions_respond(
         &self,
-        _context: &McpServerRequestContext,
+        context: &McpServerRequestContext,
         arguments: Value,
     ) -> Result<Value, McpServerError> {
         let args: PermissionsRespondArgs = mcp_args(arguments)?;
         validate_mcp_permission_decision(args.decision.clone())?;
+        let session_id = parse_session_id(&args.session_id)?;
         let request_id = parse_request_id(&args.request_id)?;
-        validate_mcp_permission_confirmation(
-            self.inner.permission_resolver.as_ref(),
-            request_id,
-            &args,
-        )?;
-        self.resolve_permission(request_id, args.decision)
+        let option_id = parse_permission_option_id(&args.option_id)?;
+        let resolver = self.inner.permission_resolver.as_ref().ok_or_else(|| {
+            McpServerError::Internal("permission resolver is not configured".to_owned())
+        })?;
+        let pending = resolver
+            .pending_permission_requests()
+            .into_iter()
+            .find(|pending| pending.request.request_id == request_id)
+            .ok_or_else(|| {
+                McpServerError::InvalidParams("permission request is not pending".to_owned())
+            })?;
+        if pending.request.tenant_id != context.tenant_id
+            || pending.request.session_id != session_id
+        {
+            return Err(McpServerError::InvalidParams(
+                "permission request is not pending for this session".to_owned(),
+            ));
+        }
+        resolver
+            .resolve_option_for(
+                request_id,
+                context.tenant_id,
+                session_id,
+                option_id,
+                args.decision,
+                args.confirmation_text.as_deref(),
+            )
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         Ok(json!({ "resolved": true }))
@@ -723,19 +745,41 @@ impl PermissionsListOpenArgs {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PermissionsRespondArgs {
+    session_id: String,
     request_id: String,
+    option_id: String,
     decision: Decision,
     #[serde(default)]
     confirmation_text: Option<String>,
 }
 
 #[cfg(feature = "mcp-server-adapter")]
+fn parse_permission_option_id(
+    value: &str,
+) -> Result<harness_contracts::PermissionOptionId, McpServerError> {
+    let option_id = harness_contracts::PermissionOptionId::parse(value).map_err(|error| {
+        McpServerError::InvalidParams(format!(
+            "option_id must be a valid permission option id: {error}"
+        ))
+    })?;
+    if option_id.to_string() != value {
+        return Err(McpServerError::InvalidParams(
+            "option_id must be a canonical permission option id".to_owned(),
+        ));
+    }
+    Ok(option_id)
+}
+
+#[cfg(feature = "mcp-server-adapter")]
 fn validate_mcp_permission_decision(decision: Decision) -> Result<(), McpServerError> {
     match decision {
-        Decision::AllowOnce | Decision::DenyOnce | Decision::Escalate => Ok(()),
+        Decision::AllowOnce | Decision::DenyOnce => Ok(()),
+        Decision::Escalate => Err(McpServerError::InvalidParams(
+            "permissions_respond requires a backend-issued allow or deny option".to_owned(),
+        )),
         Decision::AllowSession | Decision::AllowPermanent | Decision::DenyPermanent => {
             Err(McpServerError::InvalidParams(
-                "permissions_respond only accepts allow_once, deny_once, or escalate".to_owned(),
+                "permissions_respond only accepts allow_once or deny_once".to_owned(),
             ))
         }
         _ => Err(McpServerError::InvalidParams(
@@ -744,45 +788,6 @@ fn validate_mcp_permission_decision(decision: Decision) -> Result<(), McpServerE
     }
 }
 
-#[cfg(all(feature = "mcp-server-adapter", feature = "stream-permission"))]
-fn validate_mcp_permission_confirmation(
-    resolver: Option<&ResolverHandle>,
-    request_id: RequestId,
-    args: &PermissionsRespondArgs,
-) -> Result<(), McpServerError> {
-    if !matches!(args.decision, Decision::AllowOnce) {
-        return Ok(());
-    }
-    let Some(resolver) = resolver else {
-        return Ok(());
-    };
-    let Some(pending) = resolver
-        .pending_permission_requests()
-        .into_iter()
-        .find(|pending| pending.request.request_id == request_id)
-    else {
-        return Ok(());
-    };
-    if let Some(expected) = pending.confirmation_expected {
-        if args.confirmation_text.as_deref() != Some(expected.as_str()) {
-            return Err(McpServerError::InvalidParams(
-                "confirmation text does not match the required value".to_owned(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-#[cfg(all(feature = "mcp-server-adapter", not(feature = "stream-permission")))]
-fn validate_mcp_permission_confirmation(
-    _resolver: Option<&()>,
-    _request_id: RequestId,
-    _args: &PermissionsRespondArgs,
-) -> Result<(), McpServerError> {
-    Ok(())
-}
-
-#[cfg(feature = "mcp-server-adapter")]
 fn default_true() -> bool {
     true
 }
@@ -841,28 +846,31 @@ fn append_pending_stream_permissions(
 
     permissions.extend(
         resolver
-            .pending_requests()
+            .pending_permission_requests()
             .into_iter()
-            .filter(|request| request.tenant_id == tenant_id)
-            .filter(|request| {
+            .filter(|pending| pending.request.tenant_id == tenant_id)
+            .filter(|pending| {
                 session_id
-                    .map(|session_id| request.session_id == session_id)
+                    .map(|session_id| pending.request.session_id == session_id)
                     .unwrap_or(true)
             })
             .take(remaining)
-            .map(permission_request_to_record),
+            .map(permission_pending_request_to_record),
     );
 }
 
 #[cfg(all(feature = "mcp-server-adapter", feature = "stream-permission"))]
-fn permission_request_to_record(request: PermissionRequest) -> harness_session::PermissionRecord {
+fn permission_pending_request_to_record(
+    pending: PendingPermissionRequest,
+) -> harness_session::PermissionRecord {
     harness_session::PermissionRecord {
-        request_id: request.request_id,
-        tool_use_id: request.tool_use_id,
-        tool_name: request.tool_name,
-        subject: request.subject,
+        request_id: pending.request.request_id,
+        tool_use_id: pending.request.tool_use_id,
+        tool_name: pending.request.tool_name,
+        subject: pending.request.subject,
         decision: None,
-        scope: request.scope_hint,
+        scope: pending.request.scope_hint,
+        decision_options: pending.decision_options,
     }
 }
 

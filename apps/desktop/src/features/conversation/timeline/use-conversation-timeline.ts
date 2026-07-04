@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { useUiStore } from '@/shared/state/ui-store'
+import type { ResolvePermissionRequest } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 import type { ComposerSubmitPayload } from '../Composer'
 import {
@@ -219,12 +220,7 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
   })
 
   const permissionMutation = useMutation({
-    mutationFn: async (request: {
-      conversationId: string
-      requestId: string
-      decision: 'approve' | 'deny'
-      confirmationText?: string
-    }) => {
+    mutationFn: async (request: ResolvePermissionRequest) => {
       dispatch({
         type: 'permissionSubmitting',
         requestId: request.requestId,

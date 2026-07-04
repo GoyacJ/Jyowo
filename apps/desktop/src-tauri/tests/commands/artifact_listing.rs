@@ -170,6 +170,7 @@ async fn list_artifacts_with_runtime_state_projects_artifact_events() {
             TenantId::SINGLE,
             session_id,
             &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                revision_id: ArtifactRevisionId::new(),
                 artifact_id: "artifact-runtime-notes".to_owned(),
                 at: now(),
                 blob_ref: None,
@@ -231,6 +232,7 @@ async fn list_artifacts_with_runtime_state_scopes_artifacts_to_requested_convers
             TenantId::SINGLE,
             default_session_id,
             &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                revision_id: ArtifactRevisionId::new(),
                 artifact_id: "artifact-default".to_owned(),
                 at: now(),
                 blob_ref: None,
@@ -256,6 +258,7 @@ async fn list_artifacts_with_runtime_state_scopes_artifacts_to_requested_convers
             TenantId::SINGLE,
             other_session_id,
             &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                revision_id: ArtifactRevisionId::new(),
                 artifact_id: "artifact-other".to_owned(),
                 at: now(),
                 blob_ref: None,
@@ -317,6 +320,7 @@ async fn list_artifacts_with_runtime_state_ignores_mismatched_artifact_session_i
             TenantId::SINGLE,
             session_id,
             &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                revision_id: ArtifactRevisionId::new(),
                 artifact_id: "artifact-mismatched".to_owned(),
                 at: now(),
                 blob_ref: None,
@@ -364,6 +368,7 @@ async fn list_reference_candidates_with_runtime_state_scopes_artifacts_to_reques
             TenantId::SINGLE,
             default_session_id,
             &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                revision_id: ArtifactRevisionId::new(),
                 artifact_id: "artifact-default".to_owned(),
                 at: now(),
                 blob_ref: None,
@@ -389,6 +394,7 @@ async fn list_reference_candidates_with_runtime_state_scopes_artifacts_to_reques
             TenantId::SINGLE,
             other_session_id,
             &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                revision_id: ArtifactRevisionId::new(),
                 artifact_id: "artifact-other".to_owned(),
                 at: now(),
                 blob_ref: None,
@@ -469,6 +475,7 @@ async fn list_artifacts_with_runtime_state_redacts_artifact_metadata() {
             session_id,
             &[
                 Event::ArtifactCreated(ArtifactCreatedEvent {
+                    revision_id: ArtifactRevisionId::new(),
                     artifact_id: "artifact-sensitive".to_owned(),
                     at: now(),
                     blob_ref: None,
@@ -486,6 +493,7 @@ async fn list_artifacts_with_runtime_state_redacts_artifact_metadata() {
                     title: format!("Review {token} https://provider.example/artifact"),
                 }),
                 Event::ArtifactUpdated(ArtifactUpdatedEvent {
+                    revision_id: ArtifactRevisionId::new(),
                     artifact_id: "artifact-sensitive".to_owned(),
                     at: now(),
                     blob_ref: None,

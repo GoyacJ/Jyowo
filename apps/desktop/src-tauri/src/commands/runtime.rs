@@ -1406,18 +1406,29 @@ pub(crate) fn canonical_workspace_root(
 }
 
 impl PermissionResolver for StreamPermissionRuntime {
-    fn resolve_permission<'a>(
+    fn resolve_permission_option<'a>(
         &'a self,
         request_id: RequestId,
-        decision: Decision,
-    ) -> Pin<Box<dyn Future<Output = Result<(), CommandErrorPayload>> + Send + 'a>> {
+        tenant_id: TenantId,
+        session_id: SessionId,
+        option_id: PermissionOptionId,
+        submitted_decision: Decision,
+        confirmation_text: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = Result<Decision, CommandErrorPayload>> + Send + 'a>> {
         Box::pin(async move {
-            self.resolve_permission(request_id, decision)
-                .await
-                .map_err(|error| CommandErrorPayload {
-                    code: "PERMISSION_RESOLVE_FAILED",
-                    message: error.to_string(),
-                })
+            self.resolve_permission_option(
+                request_id,
+                tenant_id,
+                session_id,
+                option_id,
+                submitted_decision,
+                confirmation_text,
+            )
+            .await
+            .map_err(|error| CommandErrorPayload {
+                code: "PERMISSION_RESOLVE_FAILED",
+                message: error.to_string(),
+            })
         })
     }
 }

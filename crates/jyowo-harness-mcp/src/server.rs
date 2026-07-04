@@ -1989,15 +1989,16 @@ fn harness_tool_descriptors() -> Vec<HarnessToolSpec> {
             "permissions_respond",
             "Resolve a Harness permission request",
             object_schema(
-                &["request_id", "decision"],
+                &["session_id", "request_id", "option_id", "decision"],
                 json!({
+                    "session_id": { "type": "string" },
                     "request_id": { "type": "string" },
+                    "option_id": { "type": "string" },
                     "decision": {
                         "type": "string",
                         "enum": [
                             "allow_once",
-                            "deny_once",
-                            "escalate"
+                            "deny_once"
                         ]
                     },
                     "confirmation_text": { "type": "string" }

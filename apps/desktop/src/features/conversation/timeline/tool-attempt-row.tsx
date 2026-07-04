@@ -2,7 +2,11 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/shared/lib/utils'
 import { useUiStore } from '@/shared/state/ui-store'
-import type { ConversationEventRef, ToolAttempt } from '@/shared/tauri/commands'
+import type {
+  ConversationEventRef,
+  ResolvePermissionRequest,
+  ToolAttempt,
+} from '@/shared/tauri/commands'
 import { DecisionPanel } from '../evidence/DecisionPanel'
 
 export function ToolAttemptRow({
@@ -21,12 +25,7 @@ export function ToolAttemptRow({
   conversationId: string
   defaultDetailOpen?: boolean
   onOpenDetails?: (eventRef: ConversationEventRef) => void
-  onPermissionResolve?: (request: {
-    conversationId: string
-    requestId: string
-    decision: 'approve' | 'deny'
-    confirmationText?: string
-  }) => void
+  onPermissionResolve?: (request: ResolvePermissionRequest) => void
   runId: string
   segmentId: string
   turnId: string

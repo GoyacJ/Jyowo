@@ -28,7 +28,7 @@ async fn list_activity_with_runtime_state_hides_pending_permission_without_durab
         broker.decide(request, ctx).await
     });
 
-    wait_for_pending_permission(&state, request_id).await;
+    let pending = wait_for_pending_permission(&state, request_id).await;
 
     let payload = list_activity_with_runtime_state(
         ListActivityRequest {
@@ -46,6 +46,7 @@ async fn list_activity_with_runtime_state_hides_pending_permission_without_durab
         ResolvePermissionRequest {
             conversation_id: request_session_id.to_string(),
             decision: PermissionDecision::Deny,
+            option_id: deny_permission_option_id(&pending),
             request_id: request_id.to_string(),
             confirmation_text: None,
         },
@@ -116,6 +117,7 @@ async fn list_activity_with_runtime_state_reads_journaled_permission_requests_by
         ResolvePermissionRequest {
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
+            option_id: deny_permission_option_id(&pending),
             request_id: request_id.to_string(),
             confirmation_text: None,
         },
@@ -178,6 +180,7 @@ async fn start_run_permission_mode_override_wins_over_saved_default() {
         ResolvePermissionRequest {
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
+            option_id: deny_permission_option_id(&pending),
             request_id: pending.request.request_id.to_string(),
             confirmation_text: None,
         },
@@ -400,6 +403,7 @@ async fn list_activity_with_runtime_state_maps_artifact_lifecycle_events() {
             &[
                 Event::RunStarted(test_run_started_event(session_id, run_id)),
                 Event::ArtifactCreated(ArtifactCreatedEvent {
+                    revision_id: ArtifactRevisionId::new(),
                     artifact_id: "artifact-runtime-notes".to_owned(),
                     at: now(),
                     blob_ref: None,
@@ -417,6 +421,7 @@ async fn list_activity_with_runtime_state_maps_artifact_lifecycle_events() {
                     title: "Runtime notes https://provider.example/artifact".to_owned(),
                 }),
                 Event::ArtifactUpdated(ArtifactUpdatedEvent {
+                    revision_id: ArtifactRevisionId::new(),
                     artifact_id: "artifact-runtime-notes".to_owned(),
                     at: now(),
                     blob_ref: None,
@@ -434,6 +439,7 @@ async fn list_activity_with_runtime_state_maps_artifact_lifecycle_events() {
                     title: Some("Updated链接https://provider.example/updated".to_owned()),
                 }),
                 Event::ArtifactCreated(ArtifactCreatedEvent {
+                    revision_id: ArtifactRevisionId::new(),
                     artifact_id: "artifact-wrong-session".to_owned(),
                     at: now(),
                     blob_ref: None,

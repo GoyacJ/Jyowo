@@ -1,6 +1,10 @@
 import { memo } from 'react'
 
-import type { ConversationEventRef, ConversationTurn } from '@/shared/tauri/commands'
+import type {
+  ConversationEventRef,
+  ConversationTurn,
+  ResolvePermissionRequest,
+} from '@/shared/tauri/commands'
 import { ConversationTurnView } from './conversation-turn-view'
 
 export const ConversationTurnRow = memo(function ConversationTurnRow({
@@ -11,12 +15,7 @@ export const ConversationTurnRow = memo(function ConversationTurnRow({
 }: {
   turn: ConversationTurn
   onOpenDetails?: (eventRef: ConversationEventRef) => void
-  onPermissionResolve?: (request: {
-    conversationId: string
-    requestId: string
-    decision: 'approve' | 'deny'
-    confirmationText?: string
-  }) => void
+  onPermissionResolve?: (request: ResolvePermissionRequest) => void
   onReviewContinue?: (prompt: string) => void
 }) {
   return (

@@ -6,15 +6,16 @@ use base64::{engine::general_purpose, Engine as _};
 use futures::stream;
 use futures::StreamExt;
 use harness_contracts::{
-    AgentProfile, AgentProfileContextMode, AgentProfileMemoryScope, AgentProfileSandboxInheritance,
-    AgentProfileScope, AgentUsePolicy, AgentWorkspaceIsolationMode,
-    AssistantClarificationRequestedEvent, AssistantDeltaProducedEvent,
+    ActionPlanHash, AgentProfile, AgentProfileContextMode, AgentProfileMemoryScope,
+    AgentProfileSandboxInheritance, AgentProfileScope, AgentUsePolicy, AgentWorkspaceIsolationMode,
+    ArtifactRevisionId, AssistantClarificationRequestedEvent, AssistantDeltaProducedEvent,
     AssistantMessageCompletedEvent, AssistantNoticeEvent, AssistantReviewRequestedEvent,
     AutomationRunStatus, AutomationSchedule, AutomationSpec, AutomationWorkspaceScope,
     CapabilityRouteKind, ConfigHash, ConversationAttachmentReference, ConversationModelCapability,
-    CorrelationId, DecidedBy, EngineError, EngineFailedEvent, EventId, McpConnectionLostEvent,
-    McpConnectionLostReason, MessageContent, MessageId, MessageMetadata, MissedRunPolicy,
-    ModelModality, ModelProtocol, PermissionActorSource, PermissionRequestedEvent,
+    CorrelationId, DecidedBy, DecisionLifetime, DecisionMatcherKind, DecisionMatcherSummary,
+    EngineError, EngineFailedEvent, EventId, McpConnectionLostEvent, McpConnectionLostReason,
+    MessageContent, MessageId, MessageMetadata, MissedRunPolicy, ModelModality, ModelProtocol,
+    PermissionActorSource, PermissionDecisionOption, PermissionOptionId, PermissionRequestedEvent,
     PermissionResolvedEvent, ProviderCapabilityRoute, ProviderCapabilityRouteSettings,
     ProviderServiceAdapterAvailability, ReasoningSummaryChunk, RunModelSnapshot, RunStartedEvent,
     SandboxMode, SnapshotId, StopReason, ToolErrorPayload, ToolServiceBinding, ToolUseFailedEvent,

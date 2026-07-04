@@ -366,7 +366,7 @@ const resolvePermissionRequestSchema = z
   .object({
     conversationId: z.string().min(1),
     decision: z.enum(['approve', 'deny']),
-    optionId: z.string().min(1).optional(),
+    optionId: z.string().min(1),
     requestId: z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/),
     confirmationText: z.string().min(1).optional(),
   })

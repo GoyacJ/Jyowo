@@ -1,7 +1,11 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/shared/lib/utils'
-import type { DecisionOption, DecisionRequestState } from '@/shared/tauri/commands'
+import type {
+  DecisionOption,
+  DecisionRequestState,
+  ResolvePermissionRequest,
+} from '@/shared/tauri/commands'
 
 export function DecisionPanel({
   conversationId,
@@ -10,13 +14,7 @@ export function DecisionPanel({
 }: {
   conversationId: string
   decision: DecisionRequestState
-  onResolve?: (request: {
-    conversationId: string
-    requestId: string
-    decision: 'approve' | 'deny'
-    optionId: string
-    confirmationText?: string
-  }) => void
+  onResolve?: (request: ResolvePermissionRequest) => void
 }) {
   const { t } = useTranslation('conversation')
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null)

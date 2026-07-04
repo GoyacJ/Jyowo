@@ -16,7 +16,7 @@ use harness_model::{
 };
 use harness_permission::{
     DecisionHistory, DecisionLookup, DecisionPersistence, PermissionBroker, PermissionContext,
-    PermissionRequest, PermissionRule, PersistedDecision, RuleAction, RuleProvider,
+    PermissionRequest, PermissionRule, PersistedDecision, ResolverHandle, RuleAction, RuleProvider,
     StreamBasedBroker, StreamBrokerConfig,
 };
 use jyowo_harness_sdk::{builtin::*, prelude::*, testing::*};
@@ -316,6 +316,7 @@ fn harness_resolves_stream_permission_requests() {
             heartbeat_interval: None,
             max_pending: 8,
         });
+        let resolver_handle = resolver.clone();
 
         let harness = Harness::builder()
             .with_model(TestModelProvider::default())
@@ -328,6 +329,8 @@ fn harness_resolves_stream_permission_requests() {
 
         let request = permission_request();
         let request_id = request.request_id;
+        let tenant_id = request.tenant_id;
+        let session_id = request.session_id;
         let ctx = permission_context_for(&request);
         let broker = harness
             .permission_broker()
@@ -340,10 +343,100 @@ fn harness_resolves_stream_permission_requests() {
             .expect("permission request should be emitted");
         assert_eq!(outbound.request_id, request_id);
 
+        let option_id =
+            pending_option_id_for_decision(&resolver_handle, request_id, Decision::AllowOnce);
         harness
-            .resolve_permission(request_id, Decision::AllowOnce)
+            .resolve_permission_option(
+                request_id,
+                tenant_id,
+                session_id,
+                option_id,
+                Decision::AllowOnce,
+                None,
+            )
             .await
             .expect("permission request should resolve through facade");
+        assert_eq!(decision_task.await.unwrap(), Decision::AllowOnce);
+    });
+}
+
+#[test]
+fn harness_rejects_stream_permission_scope_mismatch_without_consuming_pending() {
+    tokio_runtime().block_on(async {
+        let workspace = unique_workspace("sdk-facade-permission-scope");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let (broker, mut receiver, resolver) = StreamBasedBroker::new(StreamBrokerConfig {
+            default_timeout: Some(Duration::from_secs(5)),
+            heartbeat_interval: None,
+            max_pending: 8,
+        });
+        let resolver_handle = resolver.clone();
+
+        let harness = Harness::builder()
+            .with_model(TestModelProvider::default())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .with_stream_permission_broker(broker, resolver)
+            .build()
+            .await
+            .expect("stream permission harness should build");
+
+        let request = permission_request();
+        let request_id = request.request_id;
+        let tenant_id = request.tenant_id;
+        let session_id = request.session_id;
+        let ctx = permission_context_for(&request);
+        let broker = harness
+            .permission_broker()
+            .expect("permission broker should be configured");
+        let decision_task = tokio::spawn(async move { broker.decide(request, ctx).await });
+
+        receiver
+            .recv()
+            .await
+            .expect("permission request should emit");
+        let option_id =
+            pending_option_id_for_decision(&resolver_handle, request_id, Decision::AllowOnce);
+
+        let error = harness
+            .resolve_permission_option(
+                request_id,
+                TenantId::new(),
+                session_id,
+                option_id,
+                Decision::AllowOnce,
+                None,
+            )
+            .await
+            .expect_err("wrong tenant should be rejected");
+        assert!(matches!(error, HarnessError::Permission(_)));
+        assert_eq!(resolver_handle.pending_permission_requests().len(), 1);
+
+        let error = harness
+            .resolve_permission_option(
+                request_id,
+                tenant_id,
+                SessionId::new(),
+                option_id,
+                Decision::AllowOnce,
+                None,
+            )
+            .await
+            .expect_err("wrong session should be rejected");
+        assert!(matches!(error, HarnessError::Permission(_)));
+        assert_eq!(resolver_handle.pending_permission_requests().len(), 1);
+
+        harness
+            .resolve_permission_option(
+                request_id,
+                tenant_id,
+                session_id,
+                option_id,
+                Decision::AllowOnce,
+                None,
+            )
+            .await
+            .expect("matching scope should resolve");
         assert_eq!(decision_task.await.unwrap(), Decision::AllowOnce);
     });
 }
@@ -360,11 +453,25 @@ fn stream_permission_runtime_does_not_backpressure_resolved_requests() {
 
         let first = permission_request_named("first");
         let first_request_id = first.request_id;
+        let first_tenant_id = first.tenant_id;
+        let first_session_id = first.session_id;
         let first_ctx = permission_context_for(&first);
         let first_task = tokio::spawn(async move { broker.decide(first, first_ctx).await });
         wait_for_pending_permission(&runtime, first_request_id).await;
+        let option_id = pending_option_id_for_decision(
+            &runtime.resolver_handle(),
+            first_request_id,
+            Decision::AllowOnce,
+        );
         runtime
-            .resolve_permission(first_request_id, Decision::AllowOnce)
+            .resolve_permission_option(
+                first_request_id,
+                first_tenant_id,
+                first_session_id,
+                option_id,
+                Decision::AllowOnce,
+                None,
+            )
             .await
             .expect("first permission should resolve");
         assert_eq!(first_task.await.unwrap(), Decision::AllowOnce);
@@ -372,11 +479,25 @@ fn stream_permission_runtime_does_not_backpressure_resolved_requests() {
         let broker = runtime.broker();
         let second = permission_request_named("second");
         let second_request_id = second.request_id;
+        let second_tenant_id = second.tenant_id;
+        let second_session_id = second.session_id;
         let second_ctx = permission_context_for(&second);
         let second_task = tokio::spawn(async move { broker.decide(second, second_ctx).await });
         wait_for_pending_permission(&runtime, second_request_id).await;
+        let option_id = pending_option_id_for_decision(
+            &runtime.resolver_handle(),
+            second_request_id,
+            Decision::DenyOnce,
+        );
         runtime
-            .resolve_permission(second_request_id, Decision::DenyOnce)
+            .resolve_permission_option(
+                second_request_id,
+                second_tenant_id,
+                second_session_id,
+                option_id,
+                Decision::DenyOnce,
+                None,
+            )
             .await
             .expect("second permission should resolve");
 
@@ -659,6 +780,8 @@ fn permission_request_named(kind: &str) -> PermissionRequest {
         },
         severity: Severity::Low,
         scope_hint: DecisionScope::ToolName("test-tool".to_owned()),
+        action_plan_hash: harness_contracts::ActionPlanHash::default(),
+        decision_options: Vec::new(),
         confirmation_expected: None,
         created_at: harness_contracts::now(),
     }
@@ -676,6 +799,23 @@ fn permission_context_for(request: &PermissionRequest) -> PermissionContext {
         fallback_policy: FallbackPolicy::AskUser,
         hook_overrides: Vec::new(),
     }
+}
+
+fn pending_option_id_for_decision(
+    resolver: &ResolverHandle,
+    request_id: RequestId,
+    decision: Decision,
+) -> harness_contracts::PermissionOptionId {
+    resolver
+        .pending_permission_requests()
+        .into_iter()
+        .find(|pending| pending.request.request_id == request_id)
+        .expect("pending request should exist")
+        .decision_options
+        .into_iter()
+        .find(|option| option.decision == decision)
+        .expect("pending option should exist")
+        .option_id
 }
 
 async fn wait_for_pending_permission(

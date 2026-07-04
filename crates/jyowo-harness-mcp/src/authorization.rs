@@ -294,6 +294,8 @@ fn mcp_action_plan(
         subject: subject.clone(),
         severity,
         scope_hint: scope.clone(),
+        action_plan_hash: harness_contracts::ActionPlanHash::default(),
+        decision_options: Vec::new(),
         confirmation_expected: None,
         created_at: Utc::now(),
     };

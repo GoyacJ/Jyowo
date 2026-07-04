@@ -1083,11 +1083,15 @@ pub struct ExportMemoryItemsResponse {
 }
 
 pub trait PermissionResolver: Send + Sync {
-    fn resolve_permission<'a>(
+    fn resolve_permission_option<'a>(
         &'a self,
         request_id: RequestId,
-        decision: Decision,
-    ) -> Pin<Box<dyn Future<Output = Result<(), CommandErrorPayload>> + Send + 'a>>;
+        tenant_id: TenantId,
+        session_id: SessionId,
+        option_id: PermissionOptionId,
+        submitted_decision: Decision,
+        confirmation_text: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = Result<Decision, CommandErrorPayload>> + Send + 'a>>;
 }
 
 pub trait ProviderSettingsStore: Send + Sync {
@@ -1479,6 +1483,7 @@ pub enum PermissionDecision {
 pub struct ResolvePermissionRequest {
     pub conversation_id: String,
     pub decision: PermissionDecision,
+    pub option_id: String,
     pub request_id: String,
     #[serde(default)]
     pub confirmation_text: Option<String>,
@@ -1624,6 +1629,7 @@ pub struct PermissionRequestedRunEventPayload {
     pub actor_source: PermissionActorSourceRunEventPayload,
     pub action_plan_hash: String,
     pub auto_resolved: bool,
+    pub decision_options: Vec<serde_json::Value>,
     pub decision_scope: String,
     pub effective_mode: &'static str,
     pub exposure: String,

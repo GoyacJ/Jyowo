@@ -405,16 +405,28 @@ async fn authorization_service_carries_type_to_confirm_into_pending_permission()
     let pending = wait_for_pending_confirmation(&resolver, request_id).await;
     assert_eq!(pending.as_deref(), Some("DELETE"));
 
+    let pending = resolver
+        .pending_permission_requests()
+        .into_iter()
+        .find(|pending| pending.request.tool_use_id == request_id)
+        .expect("permission should still be pending");
+    let request_id = pending.request.request_id;
+    let tenant_id = pending.request.tenant_id;
+    let session_id = pending.request.session_id;
+    let option_id = pending
+        .decision_options
+        .into_iter()
+        .find(|option| option.decision == Decision::DenyOnce)
+        .expect("deny option should exist")
+        .option_id;
     resolver
-        .resolve(
-            resolver
-                .pending_permission_requests()
-                .into_iter()
-                .find(|pending| pending.request.tool_use_id == request_id)
-                .expect("permission should still be pending")
-                .request
-                .request_id,
+        .resolve_option_for(
+            request_id,
+            tenant_id,
+            session_id,
+            option_id,
             Decision::DenyOnce,
+            None,
         )
         .await
         .unwrap();

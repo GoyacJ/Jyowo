@@ -1,6 +1,10 @@
 import { Copy } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import type { ConversationEventRef, ConversationTurn } from '@/shared/tauri/commands'
+import type {
+  ConversationEventRef,
+  ConversationTurn,
+  ResolvePermissionRequest,
+} from '@/shared/tauri/commands'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shared/ui/tooltip'
 import { AssistantWorkView } from './assistant-work-view'
 import { UserAttachmentStrip } from './user-attachment-strip'
@@ -13,12 +17,7 @@ export function ConversationTurnView({
 }: {
   turn: ConversationTurn
   onOpenDetails?: (eventRef: ConversationEventRef) => void
-  onPermissionResolve?: (request: {
-    conversationId: string
-    requestId: string
-    decision: 'approve' | 'deny'
-    confirmationText?: string
-  }) => void
+  onPermissionResolve?: (request: ResolvePermissionRequest) => void
   onReviewContinue?: (prompt: string) => void
 }) {
   const { i18n, t } = useTranslation('conversation')

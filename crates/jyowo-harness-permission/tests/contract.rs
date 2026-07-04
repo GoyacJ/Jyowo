@@ -456,10 +456,10 @@ async fn stream_no_state_across_calls() {
             &mut receiver,
             &resolver,
             permission_request("stream-second"),
-            Decision::DenyPermanent,
+            Decision::DenyOnce,
         )
         .await,
-        Decision::DenyPermanent
+        Decision::DenyOnce
     );
 }
 
@@ -515,7 +515,32 @@ async fn resolve_stream_request(
     let request_id = request.request_id;
     let resolved = tokio::join!(broker.decide(request, permission_context(None)), async {
         receiver.recv().await.unwrap();
-        resolver.resolve(request_id, decision).await.unwrap();
+        let option_id = resolver
+            .pending_permission_requests()
+            .into_iter()
+            .find(|pending| pending.request.request_id == request_id)
+            .expect("pending request should exist")
+            .decision_options
+            .into_iter()
+            .find(|option| option.decision == decision)
+            .expect("pending option should exist")
+            .option_id;
+        let pending = resolver
+            .pending_permission_requests()
+            .into_iter()
+            .find(|pending| pending.request.request_id == request_id)
+            .expect("pending request should exist");
+        resolver
+            .resolve_option_for(
+                request_id,
+                pending.request.tenant_id,
+                pending.request.session_id,
+                option_id,
+                decision,
+                None,
+            )
+            .await
+            .unwrap();
     });
     resolved.0
 }
@@ -696,6 +721,8 @@ fn permission_request(command: &str) -> PermissionRequest {
         },
         severity: Severity::Low,
         scope_hint: DecisionScope::ToolName("shell".to_owned()),
+        action_plan_hash: harness_contracts::ActionPlanHash::default(),
+        decision_options: Vec::new(),
         confirmation_expected: None,
         created_at: Utc::now(),
     }

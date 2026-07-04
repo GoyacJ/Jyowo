@@ -18,9 +18,9 @@ use jyowo_desktop_shell::commands::{
     SetExecutionSettingsRequest, StartRunRequest,
 };
 use jyowo_harness_sdk::ext::{
-    ContentDelta, DecisionScope, DeferPolicy, Event, EventStore, HealthStatus, InferContext,
-    ModelDescriptor, ModelError, ModelLifecycle, ModelProtocol, ModelProvider, ModelRequest,
-    ModelStream, ModelStreamEvent, OverflowAction, PermissionCheck, PermissionMode,
+    ContentDelta, Decision, DecisionScope, DeferPolicy, Event, EventStore, HealthStatus,
+    InferContext, ModelDescriptor, ModelError, ModelLifecycle, ModelProtocol, ModelProvider,
+    ModelRequest, ModelStream, ModelStreamEvent, OverflowAction, PermissionCheck, PermissionMode,
     PermissionSubject, ProviderRestriction, ReplayCursor, ResultBudget, StreamBrokerConfig,
     TenantId, Tool, ToolCapability, ToolContext, ToolDescriptor, ToolError, ToolEvent, ToolGroup,
     ToolOrigin, ToolProfile, ToolProperties, ToolRegistry, ToolResult, ToolStream, ToolUseId,
@@ -509,6 +509,7 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
         ResolvePermissionRequest {
             conversation_id: session_id.to_string(),
             decision: jyowo_desktop_shell::commands::PermissionDecision::Approve,
+            option_id: permission_option_id_for_decision(&agent_pending, Decision::AllowOnce),
             request_id: agent_pending.request.request_id.to_string(),
             confirmation_text: None,
         },
@@ -525,6 +526,7 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
         ResolvePermissionRequest {
             conversation_id: pending.request.session_id.to_string(),
             decision: jyowo_desktop_shell::commands::PermissionDecision::Deny,
+            option_id: permission_option_id_for_decision(&pending, Decision::DenyOnce),
             request_id: pending.request.request_id.to_string(),
             confirmation_text: None,
         },
@@ -786,6 +788,18 @@ async fn wait_for_pending_permission(
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+fn permission_option_id_for_decision(
+    pending: &jyowo_harness_sdk::ext::PendingPermissionRequest,
+    decision: Decision,
+) -> String {
+    pending
+        .decision_options
+        .iter()
+        .find(|option| option.decision == decision)
+        .map(|option| option.option_id.to_string())
+        .expect("pending permission should expose the requested decision option")
 }
 
 struct NeedsPermissionTool {

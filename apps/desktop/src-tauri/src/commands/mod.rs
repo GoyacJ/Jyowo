@@ -20,11 +20,11 @@ use harness_contracts::{
     ConversationCursor, ConversationMessageAuthor, ConversationTurnCursor,
     ConversationWorktreePage, DiagnosticsRawOutput, DiagnosticsRunRequest, DiagnosticsRunnerCap,
     DiagnosticsRunnerKind, ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag,
-    MissedRunPolicy, PluginCapabilitiesSummary, PluginConfigUpdate, PluginDetail, PluginId,
-    PluginInstallReport, PluginOperationResult, PluginOperationStatus, PluginSummary,
-    ProviderCapabilityRoute, ProviderCapabilityRouteOption, ProviderCapabilityRouteSettings,
-    ProviderProbeSnapshot, ProviderServiceAdapterAvailability, RejectionReason, SandboxError,
-    SandboxMode, ToolGroup, TrustLevel, UiSafeText, WorkspaceAccess,
+    MissedRunPolicy, PermissionOptionId, PluginCapabilitiesSummary, PluginConfigUpdate,
+    PluginDetail, PluginId, PluginInstallReport, PluginOperationResult, PluginOperationStatus,
+    PluginSummary, ProviderCapabilityRoute, ProviderCapabilityRouteOption,
+    ProviderCapabilityRouteSettings, ProviderProbeSnapshot, ProviderServiceAdapterAvailability,
+    RejectionReason, SandboxError, SandboxMode, ToolGroup, TrustLevel, UiSafeText, WorkspaceAccess,
 };
 use harness_model::ModelRuntimeSemantics;
 use harness_plugin::{
@@ -1604,6 +1604,7 @@ pub async fn resolve_permission(
     conversation_id: String,
     confirmation_text: Option<String>,
     decision: PermissionDecision,
+    option_id: String,
     request_id: String,
     window: tauri::Window,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
@@ -1615,6 +1616,7 @@ pub async fn resolve_permission(
             conversation_id,
             confirmation_text,
             decision,
+            option_id,
             request_id,
         },
         window_label,

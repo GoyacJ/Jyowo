@@ -70,6 +70,40 @@ async fn harness_server_lists_9_plus_1_tools() {
 }
 
 #[tokio::test]
+async fn harness_server_permissions_respond_schema_requires_backend_option_and_session() {
+    let server = HarnessMcpServer::new(Arc::new(FakeBackend::default()))
+        .build()
+        .expect("server");
+
+    let response = server
+        .handle_request(JsonRpcRequest::new(
+            json!(11),
+            "tools/list",
+            Some(json!({})),
+        ))
+        .await;
+
+    let tools = response.result.expect("result")["tools"]
+        .as_array()
+        .expect("tools")
+        .clone();
+    let tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "permissions_respond")
+        .expect("permissions_respond tool");
+    let schema = &tool["inputSchema"];
+    assert_eq!(
+        schema["required"],
+        json!(["session_id", "request_id", "option_id", "decision"])
+    );
+    assert_eq!(
+        schema["properties"]["decision"]["enum"],
+        json!(["allow_once", "deny_once"])
+    );
+    assert!(schema["properties"].get("option_id").is_some());
+}
+
+#[tokio::test]
 async fn harness_server_routes_tool_calls_to_backend_with_resolved_tenant() {
     let backend = Arc::new(FakeBackend::default());
     let mut policy = McpServerPolicy::default();
@@ -132,7 +166,12 @@ async fn harness_server_routes_each_9_plus_1_tool_over_jsonrpc() {
         ("permissions_list_open", json!({})),
         (
             "permissions_respond",
-            json!({"request_id": "01HF7YAT00TEST000000000002", "decision": "allow_once"}),
+            json!({
+                "session_id": "01HF7YAT00TEST000000000000",
+                "request_id": "01HF7YAT00TEST000000000002",
+                "option_id": "allow-once",
+                "decision": "allow_once",
+            }),
         ),
         ("channels_list", json!({})),
     ];

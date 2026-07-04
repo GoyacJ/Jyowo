@@ -455,6 +455,7 @@ async fn background_agent_manager_rejects_recovered_permission_without_live_pend
         ResolvePermissionRequest {
             conversation_id: conversation_id.to_string(),
             decision: PermissionDecision::Approve,
+            option_id: PermissionOptionId::new().to_string(),
             request_id: request_id.to_string(),
             confirmation_text: None,
         },

@@ -72,6 +72,8 @@ fn rule_provider_policy_deny_works_through_full_runtime() {
             },
             severity: Severity::Critical,
             scope_hint: DecisionScope::Any,
+            action_plan_hash: harness_contracts::ActionPlanHash::default(),
+            decision_options: Vec::new(),
             confirmation_expected: None,
             created_at: chrono::Utc::now(),
         };

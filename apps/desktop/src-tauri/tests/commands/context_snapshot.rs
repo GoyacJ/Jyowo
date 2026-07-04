@@ -197,6 +197,7 @@ async fn get_context_snapshot_with_runtime_state_exposes_pending_decisions() {
         ResolvePermissionRequest {
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
+            option_id: deny_permission_option_id(&pending),
             request_id: pending.request.request_id.to_string(),
             confirmation_text: None,
         },
@@ -238,7 +239,7 @@ async fn get_context_snapshot_with_runtime_state_redacts_pending_decision_tool_n
         let ctx = permission_context_for_request(&request, Some(run_id));
         broker.decide(request, ctx).await
     });
-    wait_for_pending_permission(&state, request_id).await;
+    let pending = wait_for_pending_permission(&state, request_id).await;
 
     let payload = get_context_snapshot_with_runtime_state(
         GetContextSnapshotRequest {
@@ -261,6 +262,7 @@ async fn get_context_snapshot_with_runtime_state_redacts_pending_decision_tool_n
         ResolvePermissionRequest {
             conversation_id: session_id.to_string(),
             decision: PermissionDecision::Deny,
+            option_id: deny_permission_option_id(&pending),
             request_id: request_id.to_string(),
             confirmation_text: None,
         },

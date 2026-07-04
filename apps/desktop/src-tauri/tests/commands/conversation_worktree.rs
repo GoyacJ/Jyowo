@@ -126,6 +126,7 @@ async fn page_conversation_worktree_with_runtime_state_returns_safe_turn_tree() 
                     at: now(),
                 }),
                 Event::ArtifactCreated(ArtifactCreatedEvent {
+                    revision_id: ArtifactRevisionId::new(),
                     artifact_id: "artifact-minimax-prompt".to_owned(),
                     at: now(),
                     blob_ref: Some(artifact_blob_ref.clone()),

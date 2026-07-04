@@ -195,6 +195,8 @@ pub(crate) fn permission_request_with_subject(subject: PermissionSubject) -> Per
         subject,
         severity: Severity::Low,
         scope_hint: DecisionScope::ToolName("shell".to_owned()),
+        action_plan_hash: harness_contracts::ActionPlanHash::default(),
+        decision_options: Vec::new(),
         confirmation_expected: None,
         created_at: now(),
     }
@@ -255,15 +257,15 @@ pub(crate) fn test_memory_record(session_id: SessionId, content: &str) -> Memory
 pub(crate) async fn wait_for_pending_permission(
     state: &DesktopRuntimeState,
     request_id: RequestId,
-) {
+) -> jyowo_harness_sdk::ext::PendingPermissionRequest {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
     loop {
-        if state
+        if let Some(pending) = state
             .pending_permission_requests()
-            .iter()
-            .any(|pending| pending.request.request_id == request_id)
+            .into_iter()
+            .find(|pending| pending.request.request_id == request_id)
         {
-            return;
+            return pending;
         }
 
         if tokio::time::Instant::now() >= deadline {
@@ -294,6 +296,30 @@ pub(crate) async fn wait_for_pending_permission_for_session(
 
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+}
+
+pub(crate) fn permission_option_id_for_decision(
+    pending: &jyowo_harness_sdk::ext::PendingPermissionRequest,
+    decision: Decision,
+) -> String {
+    pending
+        .decision_options
+        .iter()
+        .find(|option| option.decision == decision)
+        .map(|option| option.option_id.to_string())
+        .expect("pending permission should expose the requested decision option")
+}
+
+pub(crate) fn approve_permission_option_id(
+    pending: &jyowo_harness_sdk::ext::PendingPermissionRequest,
+) -> String {
+    permission_option_id_for_decision(pending, Decision::AllowOnce)
+}
+
+pub(crate) fn deny_permission_option_id(
+    pending: &jyowo_harness_sdk::ext::PendingPermissionRequest,
+) -> String {
+    permission_option_id_for_decision(pending, Decision::DenyOnce)
 }
 
 pub(crate) async fn run_with_mcp_transport_approval<T>(
@@ -338,6 +364,7 @@ where
         ResolvePermissionRequest {
             conversation_id: pending.request.session_id.to_string(),
             decision: PermissionDecision::Approve,
+            option_id: approve_permission_option_id(&pending),
             request_id: pending.request.request_id.to_string(),
             confirmation_text: None,
         },
