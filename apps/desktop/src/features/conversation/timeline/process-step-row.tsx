@@ -98,14 +98,7 @@ function ProcessStepDetailView({
         </p>
       )
     case 'command':
-      return (
-        <CommandEvidenceBlock
-          command={detail.command}
-          durationMs={detail.durationMs}
-          exitCode={detail.exitCode}
-          output={detail.output}
-        />
-      )
+      return <CommandEvidenceBlock execution={detail} />
     case 'diff':
       return (
         <div className="grid gap-2">
