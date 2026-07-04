@@ -70,7 +70,7 @@ pub struct AgentRef {
 pub struct ContentHash(pub [u8; 32]);
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-pub struct MemoryActor {
+pub struct MemoryActorContext {
     pub tenant_id: TenantId,
     pub user_id: Option<String>,
     pub team_id: Option<TeamId>,
@@ -751,4 +751,507 @@ pub enum ManifestValidationFailure {
 
 pub fn now() -> DateTime<Utc> {
     Utc::now()
+}
+
+// ── Memory Platform Type Aliases ──
+
+pub type MemoryProviderId = String;
+pub type MemoryOriginName = String;
+pub type MemoryOriginLabel = String;
+pub type MemoryPageCursor = String;
+
+// ── Memory Platform Structs ──
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<std::time::Duration>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default = "default_source_trust")]
+    pub source_trust: f64,
+}
+
+fn default_source_trust() -> f64 { 0.5 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryRecord {
+    pub id: MemoryId,
+    pub tenant_id: TenantId,
+    pub kind: MemoryKind,
+    pub visibility: MemoryVisibility,
+    pub content: String,
+    pub metadata: MemoryMetadata,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryRecordDraft {
+    pub kind: MemoryKind,
+    pub visibility: MemoryVisibility,
+    pub content: String,
+    pub metadata: MemoryMetadata,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryEvidence {
+    pub source: MemorySource,
+    pub origin: MemoryEvidenceOrigin,
+    pub content_hash: ContentHash,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<RunId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<MessageId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<ToolUseId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryCandidate {
+    pub id: MemoryCandidateId,
+    pub tenant_id: TenantId,
+    pub state: MemoryCandidateState,
+    pub proposed_record: MemoryRecordDraft,
+    pub evidence: MemoryEvidence,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryScoreBreakdown {
+    pub lexical_score: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector_score: Option<f32>,
+    pub confidence_score: f32,
+    pub recency_score: f32,
+    pub access_score: f32,
+    pub source_trust_score: f32,
+    pub explicit_selection_boost: f32,
+    pub final_score: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryProviderTrace {
+    pub provider_id: MemoryProviderId,
+    pub trust_level: MemoryProviderTrust,
+    pub readable: bool,
+    pub writable: bool,
+    pub requested_count: u32,
+    pub returned_count: u32,
+    pub timed_out: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    pub latency_ms: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryCandidateTrace {
+    pub memory_id: MemoryId,
+    pub provider_id: MemoryProviderId,
+    pub content_hash: ContentHash,
+    pub score: MemoryScoreBreakdown,
+    pub policy_decision: MemoryPolicyDecision,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryInjectedTrace {
+    pub memory_id: MemoryId,
+    pub provider_id: MemoryProviderId,
+    pub content_hash: ContentHash,
+    pub injected_chars: u32,
+    pub fence_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryDroppedTrace {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_id: Option<MemoryId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<MemoryProviderId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<ContentHash>,
+    pub reason: MemoryDropReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryRecallTrace {
+    pub trace_id: MemoryTraceId,
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub turn: u32,
+    pub query_text_hash: ContentHash,
+    pub provider_results: Vec<MemoryProviderTrace>,
+    pub candidates: Vec<MemoryCandidateTrace>,
+    pub injected: Vec<MemoryInjectedTrace>,
+    pub dropped: Vec<MemoryDroppedTrace>,
+    pub redacted_count: u32,
+    pub injected_chars: u32,
+    pub deadline_used_ms: u32,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryGlobalSettings {
+    pub use_memories: bool,
+    pub generate_memories: bool,
+    pub disable_generation_when_external_context_used: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_days: Option<u32>,
+    pub max_memory_bytes: u64,
+    pub max_recall_records_per_turn: u32,
+    pub max_recall_chars_per_turn: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryThreadSettings {
+    pub session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_memories: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generate_memories: Option<bool>,
+    pub memory_mode: MemoryThreadMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryPermissionContext {
+    pub explicit_user_instruction: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_plan_id: Option<ActionPlanId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_ticket_id: Option<AuthorizationTicketId>,
+    pub non_interactive_policy_grant: bool,
+}
+
+// ── Memory Tool Structs ──
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryToolArgs {
+    pub action: MemoryToolAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryToolRuntimeContext {
+    pub actor: MemoryActor,
+    pub permission_context: MemoryPermissionContext,
+    pub tenant_id: TenantId,
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub provider_policy: MemoryProviderSelectionPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryToolRequest {
+    pub args: MemoryToolArgs,
+    pub runtime: MemoryToolRuntimeContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemorySearchRequest {
+    pub query: String,
+    pub max_records: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<MemoryVisibility>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<MemoryPageCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryReadRequest {
+    pub memory_id: MemoryId,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryToolCreateArgs {
+    pub draft: MemoryRecordDraft,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryToolUpdateArgs {
+    pub memory_id: MemoryId,
+    pub draft: MemoryRecordDraft,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryDeleteRequest {
+    pub memory_id: MemoryId,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryListRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<MemoryVisibility>,
+    #[serde(default)]
+    pub include_expired: bool,
+    #[serde(default)]
+    pub include_deleted: bool,
+    pub limit: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<MemoryPageCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryToolProposeArgs {
+    pub draft: MemoryRecordDraft,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryToolResponse {
+    pub action: String,
+    pub state: MemoryToolState,
+    pub memory_ids: Vec<MemoryId>,
+    pub candidate_ids: Vec<MemoryCandidateId>,
+    pub records: Vec<MemoryToolRecordView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<MemoryPageCursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_plan_id: Option<ActionPlanId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denial: Option<MemoryToolDenial>,
+    pub redaction: MemoryRedactionSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<MemoryTraceId>,
+    pub takes_effect: MemoryTakesEffect,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryToolRecordView {
+    pub memory_id: MemoryId,
+    pub provider_id: MemoryProviderId,
+    pub kind: MemoryKind,
+    pub visibility: MemoryVisibility,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redacted_content: Option<String>,
+    pub content_hash: ContentHash,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<MemoryScoreBreakdown>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryToolDenial {
+    pub reason: MemoryPolicyDenyReason,
+    pub safe_message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_plan_id: Option<ActionPlanId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryRedactionSummary {
+    pub redacted_count: u32,
+    pub dropped_count: u32,
+}
+
+// ── Memory Provider Descriptor ──
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryProviderDescriptor {
+    pub provider_id: MemoryProviderId,
+    pub priority: i32,
+    pub trust_level: MemoryProviderTrust,
+    pub readable: bool,
+    pub writable: bool,
+    pub allowed_visibility: Vec<MemoryVisibilityClass>,
+    pub timeout_ms: u32,
+    pub max_records_per_recall: u32,
+    pub max_chars_per_recall: u32,
+    pub max_bytes_per_record: u64,
+}
+
+// ── IPC Contracts ──
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GetMemorySettingsRequest {
+    pub tenant_id: TenantId,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GetMemorySettingsResponse {
+    pub settings: MemoryGlobalSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateMemorySettingsRequest {
+    pub tenant_id: TenantId,
+    pub settings: MemoryGlobalSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateMemorySettingsResponse {
+    pub settings: MemoryGlobalSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GetThreadMemorySettingsRequest {
+    pub tenant_id: TenantId,
+    pub session_id: SessionId,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GetThreadMemorySettingsResponse {
+    pub settings: MemoryThreadSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateThreadMemorySettingsRequest {
+    pub tenant_id: TenantId,
+    pub settings: MemoryThreadSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateThreadMemorySettingsResponse {
+    pub settings: MemoryThreadSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ListMemoryCandidatesRequest {
+    pub tenant_id: TenantId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<MemoryCandidateState>,
+    pub limit: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<MemoryPageCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ListMemoryCandidatesResponse {
+    pub candidates: Vec<MemoryCandidateListItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<MemoryPageCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryCandidateListItem {
+    pub id: MemoryCandidateId,
+    pub state: MemoryCandidateState,
+    pub proposed_record: MemoryRecordDraft,
+    pub evidence: MemoryEvidence,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ApproveMemoryCandidateRequest {
+    pub tenant_id: TenantId,
+    pub candidate_id: MemoryCandidateId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_plan_id: Option<ActionPlanId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ApproveMemoryCandidateResponse {
+    pub candidate: MemoryCandidate,
+    pub memory_id: MemoryId,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RejectMemoryCandidateRequest {
+    pub tenant_id: TenantId,
+    pub candidate_id: MemoryCandidateId,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RejectMemoryCandidateResponse {
+    pub candidate: MemoryCandidate,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MergeMemoryCandidateRequest {
+    pub tenant_id: TenantId,
+    pub candidate_ids: Vec<MemoryCandidateId>,
+    pub merged_record: MemoryRecordDraft,
+    pub evidence: MemoryEvidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_plan_id: Option<ActionPlanId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MergeMemoryCandidateResponse {
+    pub candidate_ids: Vec<MemoryCandidateId>,
+    pub memory_id: MemoryId,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ListMemoryRecallTracesRequest {
+    pub tenant_id: TenantId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<RunId>,
+    pub limit: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<MemoryPageCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ListMemoryRecallTracesResponse {
+    pub traces: Vec<MemoryRecallTraceSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<MemoryPageCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryRecallTraceSummary {
+    pub trace_id: MemoryTraceId,
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub injected_count: u32,
+    pub dropped_count: u32,
+    pub redacted_count: u32,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GetMemoryRecallTraceRequest {
+    pub tenant_id: TenantId,
+    pub trace_id: MemoryTraceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GetMemoryRecallTraceResponse {
+    pub trace: MemoryRecallTrace,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GetModelRequestPreviewRequest {
+    pub tenant_id: TenantId,
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<MemoryTraceId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GetModelRequestPreviewResponse {
+    pub preview: MemoryModelRequestPreview,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryModelRequestPreview {
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub sections: Vec<MemoryModelRequestPreviewSection>,
+    pub redacted_count: u32,
+    pub content_hash: ContentHash,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryModelRequestPreviewSection {
+    pub source: MemorySource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<MemoryProviderId>,
+    pub memory_ids: Vec<MemoryId>,
+    pub redacted_content: String,
 }

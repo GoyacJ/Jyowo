@@ -1256,3 +1256,4 @@ Rules:
 Mapping targets include plan events, token usage, diff events, artifact events, memory events, MCP lifecycle events, model provider events, eval events, and audit events.
 
 The Rust-to-frontend adapter, event versioning policy, and replay timeline must preserve event order, visibility, and source semantics.
+**Memory Platform:** React can display memory settings, inbox, recall traces, and preview — but cannot decide memory policy, scope, or write authorization. Policy authority stays in Rust backend.

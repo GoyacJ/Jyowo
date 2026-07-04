@@ -44,6 +44,8 @@ pub struct MemoryRecalledEvent {
     pub deadline_used_ms: u32,
     pub min_similarity: f32,
     pub kinds_returned: Vec<MemoryKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<MemoryTraceId>,
     pub at: DateTime<Utc>,
 }
 
@@ -97,7 +99,7 @@ pub struct MemoryConsolidationRanEvent {
     pub hook_id: String,
     pub promoted: Vec<MemoryId>,
     pub demoted: Vec<MemoryId>,
-    pub draft_dreams_chars: u32,
+    pub inbox_candidates_created: u32,
     pub duration_ms: u32,
     pub at: DateTime<Utc>,
 }

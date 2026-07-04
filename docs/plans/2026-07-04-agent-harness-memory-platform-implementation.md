@@ -1254,7 +1254,7 @@ pub struct MemoryModelRequestPreviewSection {
 - Do not add a nonexistent design docs gate; this repository currently has `docs/design/DESIGN.md`.
 - Task 0 must run inside the isolated worktree. Dirty files in the original checkout are not evidence of plan failure and must not be reverted, stashed, staged, or committed by this plan.
 
-- [ ] Verify plan tracking and worktree entry preconditions:
+- [x] Verify plan tracking and worktree entry preconditions:
 
 ```bash
 git rev-parse --verify main
@@ -1265,7 +1265,7 @@ git status --short
 
 Expected: every command exits 0, and `git status --short` inside the isolated worktree prints no tracked modifications.
 
-- [ ] Verify mandatory reading files exist:
+- [x] Verify mandatory reading files exist:
 
 ```bash
 for file in \
@@ -1288,7 +1288,7 @@ done
 
 Expected: exits 0 with no missing file output.
 
-- [ ] Verify final pnpm gates exist:
+- [x] Verify final pnpm gates exist:
 
 ```bash
 node -e 'const pkg = require("./package.json"); for (const name of ["check:docs","check:agent-docs","check:frontend-docs","check:backend-docs","check:desktop","check:rust","audit:tests","check:test-architecture","check:agent-orchestration-no-fakes","check:agent-supervisor-sidecar","check:quick","check:frontend:fast","check:rust:fast","check"]) { if (!pkg.scripts[name]) { throw new Error(`missing script ${name}`); } }'
@@ -1296,7 +1296,7 @@ node -e 'const pkg = require("./package.json"); for (const name of ["check:docs"
 
 Expected: exits 0.
 
-- [ ] Regenerate testing inventory only if it differs:
+- [x] Regenerate testing inventory only if it differs:
 
 ```bash
 pnpm audit:tests > /tmp/jyowo-test-inventory.current
@@ -1305,7 +1305,7 @@ diff -u docs/testing/test-inventory.md /tmp/jyowo-test-inventory.current || cp /
 
 Expected: if `diff` fails, `docs/testing/test-inventory.md` is updated to the audited output.
 
-- [ ] Run baseline verification:
+- [x] Run baseline verification:
 
 ```bash
 pnpm check:testing-docs
@@ -1314,10 +1314,10 @@ pnpm check:docs
 
 Expected: every command exits 0.
 
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 0.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit if files changed:
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 0.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit if files changed: no product files changed; test inventory already in sync.
 
 ```bash
 git add docs/testing/test-inventory.md package.json
@@ -1342,20 +1342,13 @@ git diff --cached --quiet || git commit -m "chore(testing): refresh baseline doc
 - Modify: `docs/frontend/frontend-engineering.md`
 - Test: `crates/jyowo-harness-contracts/tests/memory_platform_contracts.rs`
 
-- [ ] Write contract tests for every type in "Target Contracts": ids, records, drafts, evidence origin, candidates, trace child structures, score breakdown, drop reasons, policy decisions, global/thread settings, prompt-visible tool args, runtime tool context, tool request/response, provider descriptor budgets, provider trust, visibility classes, IPC request/response payloads, and typed denial reasons.
-- [ ] Run targeted red test:
-
-```bash
-cargo test -p jyowo-harness-contracts memory_platform_contracts -- --nocapture
-```
-
-Expected: fail because the new contracts do not exist.
-
-- [ ] Add/modify contracts exactly as defined in "Target Contracts"; do not leave any referenced type undefined for later tasks.
-- [ ] Export schemas in `schema_export.rs`.
-- [ ] Update backend docs to state memory is auxiliary context, not policy or fact authority.
-- [ ] Update frontend docs to state React can display memory settings and traces but cannot decide memory policy.
-- [ ] Run targeted verification:
+- [x] Write contract tests for every type in "Target Contracts": ids, records, drafts, evidence origin, candidates, trace child structures, score breakdown, drop reasons, policy decisions, global/thread settings, prompt-visible tool args, runtime tool context, tool request/response, provider descriptor budgets, provider trust, visibility classes, IPC request/response payloads, and typed denial reasons.
+- [x] Run targeted red test: confirmed 226 errors before implementation.
+- [x] Add/modify contracts exactly as defined in "Target Contracts"; do not leave any referenced type undefined for later tasks.
+- [x] Export schemas in `schema_export.rs`.
+- [x] Update backend docs to state memory is auxiliary context, not policy or fact authority.
+- [x] Update frontend docs to state React can display memory settings and traces but cannot decide memory policy.
+- [x] Run targeted verification:
 
 ```bash
 cargo test -p jyowo-harness-contracts memory_platform_contracts -- --nocapture
@@ -1363,10 +1356,10 @@ pnpm check:backend-docs
 pnpm check:frontend-docs
 ```
 
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 1.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 1.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-contracts docs/backend docs/frontend

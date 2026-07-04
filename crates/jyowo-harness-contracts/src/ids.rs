@@ -166,6 +166,8 @@ define_scopes! {
     DeltaScope => DeltaId,
     BreakpointScope => BreakpointId,
     SteeringScope => SteeringId,
+    MemoryTraceScope => MemoryTraceId,
+    MemoryCandidateScope => MemoryCandidateId,
 }
 
 impl TenantId {

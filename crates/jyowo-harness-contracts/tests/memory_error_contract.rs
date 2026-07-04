@@ -1,5 +1,5 @@
 use harness_contracts::{
-    MemoryActor, MemoryError, MemoryId, MemoryVisibility, SessionId, TenantId, ThreatAction,
+    MemoryActorContext, MemoryError, MemoryId, MemoryVisibility, SessionId, TenantId, ThreatAction,
     ThreatCategory,
 };
 use serde_json::Value;
@@ -7,7 +7,7 @@ use serde_json::Value;
 #[test]
 fn memory_error_typed_variants_have_stable_serde_tags() {
     let session_id = SessionId::new();
-    let actor = MemoryActor {
+    let actor = MemoryActorContext {
         tenant_id: TenantId::SINGLE,
         user_id: Some("user-1".to_owned()),
         team_id: None,

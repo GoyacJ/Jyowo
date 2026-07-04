@@ -11,6 +11,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::ids::*;
+use crate::events::types::{
+    ContentHash, MemoryToolCreateArgs, MemoryToolUpdateArgs, MemoryDeleteRequest,
+    MemoryListRequest, MemorySearchRequest, MemoryReadRequest, MemoryToolProposeArgs,
+};
 
 #[non_exhaustive]
 #[derive(
@@ -484,6 +488,11 @@ pub enum MemorySource {
     UserInput,
     AgentDerived,
     SubagentDerived { child_session: SessionId },
+    ToolOutput,
+    McpToolOutput,
+    PluginOutput,
+    WebRetrieval,
+    WorkspaceFile,
     ExternalRetrieval,
     Imported,
     Consolidated { from: Vec<MemoryId> },
@@ -1000,6 +1009,198 @@ pub enum SteeringOverflow {
     DropOldest,
     DropNewest,
     BackPressure,
+}
+
+// ── Memory Platform Contracts ──
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryEvidenceOrigin {
+    UserMessage {
+        session_id: SessionId,
+        run_id: RunId,
+        message_id: MessageId,
+    },
+    AssistantMessage {
+        session_id: SessionId,
+        run_id: RunId,
+        message_id: MessageId,
+    },
+    SubagentOutput {
+        parent_session_id: SessionId,
+        child_session_id: SessionId,
+        run_id: RunId,
+        agent_id: Option<AgentId>,
+    },
+    BuiltinToolOutput {
+        tool_name: String,
+        tool_use_id: ToolUseId,
+    },
+    McpToolOutput {
+        server_id: String,
+        tool_name: String,
+        tool_use_id: ToolUseId,
+    },
+    PluginOutput {
+        plugin_id: String,
+        tool_name: Option<String>,
+        tool_use_id: Option<ToolUseId>,
+    },
+    WebRetrieval {
+        url_hash: ContentHash,
+        fetch_tool_use_id: Option<ToolUseId>,
+    },
+    WorkspaceFile {
+        workspace_id: WorkspaceId,
+        path_hash: ContentHash,
+        snapshot_id: Option<SnapshotId>,
+    },
+    Imported {
+        importer: String,
+        import_id: String,
+    },
+    Consolidated {
+        from: Vec<MemoryId>,
+    },
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryCandidateState {
+    Proposed,
+    Approved,
+    Rejected,
+    Promoted,
+    Merged,
+    Expired,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryThreadMode {
+    Off,
+    ReadOnly,
+    ReadWrite,
+    CandidateOnly,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryDropReason {
+    Expired,
+    Deleted,
+    VisibilityDenied,
+    PolicyDenied,
+    ThreatBlocked,
+    BudgetExceeded,
+    Duplicate,
+    ProviderTimeout,
+    ProviderError,
+    ScoreBelowThreshold,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryPolicyDecision {
+    Allow,
+    Deny { reason: MemoryPolicyDenyReason },
+    CandidateOnly { reason: MemoryPolicyDenyReason },
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryPolicyDenyReason {
+    GlobalUseDisabled,
+    ThreadUseDisabled,
+    GlobalGenerationDisabled,
+    ThreadGenerationDisabled,
+    ExternalContextGenerationDisabled,
+    MissingPolicy,
+    VisibilityEscalationDenied,
+    ProviderNotWritable,
+    TenantMismatch,
+    TombstoneMatched,
+    PermissionRequired,
+    ThreatBlocked,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryProviderTrust {
+    BuiltIn,
+    Workspace,
+    Team,
+    Plugin,
+    External,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryVisibilityClass {
+    Private,
+    User,
+    Team,
+    Tenant,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryActor {
+    User { user_label: Option<String> },
+    Model,
+    System,
+    Subagent { child_session_id: SessionId, agent_id: Option<AgentId> },
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryProviderSelectionPolicy {
+    PolicySelected,
+    RequireProvider { provider_id: String },
+    DenyModelSelectedProvider,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryToolAction {
+    Search(MemorySearchRequest),
+    Read(MemoryReadRequest),
+    Create(MemoryToolCreateArgs),
+    Update(MemoryToolUpdateArgs),
+    Delete(MemoryDeleteRequest),
+    List(MemoryListRequest),
+    Propose(MemoryToolProposeArgs),
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryToolState {
+    Completed,
+    CandidateCreated,
+    PermissionRequired { action_plan_id: ActionPlanId },
+    Denied { reason: MemoryPolicyDenyReason },
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryTakesEffect {
+    CurrentTurn,
+    NextTurn,
+    NextSession,
+    Never,
 }
 
 #[non_exhaustive]
