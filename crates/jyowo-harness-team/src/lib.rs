@@ -4147,7 +4147,7 @@ mod tests {
                 text: "shared".to_owned(),
                 kind_filter: None,
                 visibility_filter: MemoryVisibilityFilter::EffectiveFor(
-                    harness_contracts::MemoryActor {
+                    harness_contracts::MemoryActorContext {
                         tenant_id: TenantId::SINGLE,
                         user_id: None,
                         team_id: Some(team_id),

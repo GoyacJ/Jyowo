@@ -15,7 +15,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_contracts::{
-    EndReason, Event, MemdirFileTag, MemoryActor, MemoryError, MemoryId, MemoryKind,
+    EndReason, Event, MemdirFileTag, MemoryActorContext, MemoryError, MemoryId, MemoryKind,
     MemorySessionCtx, MemorySource, MemoryVisibility, MemoryWriteAction, SessionId,
     SessionSummaryView, TenantId, ThreatAction, ThreatCategory, UsageSnapshot,
 };
@@ -51,7 +51,7 @@ async fn consolidation_hook_runs_on_session_end_and_emits_event() {
         Event::MemoryConsolidationRan(ran)
             if ran.hook_id == "test-consolidation"
                 && ran.promoted == vec![promoted]
-                && ran.draft_dreams_chars == 11
+                && ran.inbox_candidates_created == 2
     )));
     assert!(metrics.metrics().iter().any(|metric| matches!(
         metric,
@@ -290,7 +290,7 @@ impl ConsolidationHook for TestConsolidationHook {
         Ok(ConsolidationOutcome {
             promoted: vec![self.promoted],
             demoted: Vec::new(),
-            draft_dreams: "dream draft".to_owned(),
+            inbox_candidates_created: 2,
         })
     }
 }
@@ -344,7 +344,7 @@ fn query(deadline: Duration) -> MemoryQuery {
         kind_filter: Some(MemoryKindFilter::OnlyKinds(BTreeSet::from([
             MemoryKind::UserPreference,
         ]))),
-        visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActor {
+        visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActorContext {
             tenant_id: TenantId::SINGLE,
             user_id: None,
             team_id: None,

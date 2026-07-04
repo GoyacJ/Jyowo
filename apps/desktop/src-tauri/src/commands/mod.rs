@@ -40,7 +40,7 @@ use harness_tool::{
 };
 use image::{ImageFormat, ImageReader, Limits};
 use jyowo_harness_sdk::builtin::{
-    DefaultRedactor, FileBlobStore, InMemoryMemoryProvider, JsonlEventStore, LocalLlamaProvider,
+    DefaultRedactor, FileBlobStore, JsonlEventStore, LocalLlamaProvider,
     LocalSandbox,
 };
 use jyowo_harness_sdk::ext::inventory_from_models_api_json;

@@ -183,8 +183,8 @@ impl Harness {
 }
 
 #[cfg(feature = "memory-external-slot")]
-fn memory_actor_from_options(options: &SessionOptions) -> harness_contracts::MemoryActor {
-    harness_contracts::MemoryActor {
+fn memory_actor_from_options(options: &SessionOptions) -> harness_contracts::MemoryActorContext {
+    harness_contracts::MemoryActorContext {
         tenant_id: options.tenant_id,
         user_id: options.user_id.clone(),
         team_id: options.team_id,

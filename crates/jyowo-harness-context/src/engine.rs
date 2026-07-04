@@ -7,7 +7,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 #[cfg(feature = "recall-memory")]
-use harness_contracts::MemoryActor;
+use harness_contracts::MemoryActorContext;
 #[cfg(feature = "recall-memory")]
 use harness_contracts::RunId;
 use harness_contracts::{
@@ -886,7 +886,7 @@ impl ContextEngine {
         let query = MemoryQuery {
             text: user_text.clone(),
             kind_filter: Some(MemoryKindFilter::Any),
-            visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActor {
+            visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActorContext {
                 tenant_id: session.tenant_id(),
                 user_id: session.user_id(),
                 team_id: session.team_id(),
@@ -994,7 +994,7 @@ impl ContextEngine {
         let query = MemoryQuery {
             text: hint_text.clone(),
             kind_filter: Some(MemoryKindFilter::Any),
-            visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActor {
+            visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActorContext {
                 tenant_id: session.tenant_id(),
                 user_id: session.user_id(),
                 team_id: session.team_id(),

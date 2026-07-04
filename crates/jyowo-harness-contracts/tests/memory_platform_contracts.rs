@@ -502,7 +502,7 @@ fn memory_tool_state_serde_tags() {
     assert_eq!(serde_json::to_value(MemoryToolState::CandidateCreated).unwrap(), json!("candidate_created"));
 }
 
-// ── MemoryActor (new enum definition) ──
+// ── MemoryActorContext (new enum definition) ──
 
 #[test]
 fn memory_actor_serde_tags() {

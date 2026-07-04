@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    MemoryActor, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId, TenantId,
+    MemoryActorContext, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId, TenantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +31,7 @@ pub enum MemoryKindFilter {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryVisibilityFilter {
-    EffectiveFor(MemoryActor),
+    EffectiveFor(MemoryActorContext),
     Exact(MemoryVisibility),
 }
 
@@ -63,7 +63,7 @@ pub enum MemoryListScope {
     All,
     ByKind(MemoryKind),
     ByVisibility(MemoryVisibility),
-    ForActor(MemoryActor),
+    ForActor(MemoryActorContext),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -91,7 +91,7 @@ pub fn content_preview(content: &str) -> String {
     preview
 }
 
-pub fn visibility_matches(visibility: &MemoryVisibility, actor: &MemoryActor) -> bool {
+pub fn visibility_matches(visibility: &MemoryVisibility, actor: &MemoryActorContext) -> bool {
     match visibility {
         MemoryVisibility::Private { session_id } => actor.session_id.as_ref() == Some(session_id),
         MemoryVisibility::User { user_id } => actor.user_id.as_deref() == Some(user_id),

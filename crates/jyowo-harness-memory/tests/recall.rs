@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_contracts::{
-    MemoryActor, MemoryError, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId,
+    MemoryActorContext, MemoryError, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId,
     TenantId,
 };
 use harness_memory::{
@@ -334,7 +334,7 @@ fn query(deadline: Duration, max_records: u32) -> MemoryQuery {
         kind_filter: Some(MemoryKindFilter::OnlyKinds(BTreeSet::from([
             MemoryKind::UserPreference,
         ]))),
-        visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActor {
+        visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActorContext {
             tenant_id: TenantId::SINGLE,
             user_id: Some("user-1".to_owned()),
             team_id: None,

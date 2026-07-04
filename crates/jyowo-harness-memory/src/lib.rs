@@ -14,6 +14,7 @@ pub mod external;
 #[cfg(feature = "external-slot")]
 pub mod in_memory;
 pub mod lifecycle;
+pub mod local;
 #[cfg(feature = "builtin")]
 pub mod memdir;
 #[cfg(feature = "threat-scanner")]
@@ -26,6 +27,7 @@ pub use external::*;
 #[cfg(feature = "external-slot")]
 pub use in_memory::*;
 pub use lifecycle::*;
+pub use local::*;
 #[cfg(feature = "builtin")]
 pub use memdir::*;
 #[cfg(feature = "threat-scanner")]

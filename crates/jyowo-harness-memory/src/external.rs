@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "consolidation")]
 use harness_contracts::MemoryConsolidationRanEvent;
 use harness_contracts::{
-    ContentHash, Event, MemdirFileTag, MemoryActor, MemoryError, MemoryExportedEvent, MemoryId,
+    ContentHash, Event, MemdirFileTag, MemoryActorContext, MemoryError, MemoryExportedEvent, MemoryId,
     MemorySessionCtx, MemorySource, MemoryUpsertedEvent, MemoryVisibility, MemoryWriteAction,
     MemoryWriteTarget, MessageView, RunId, SessionId, SessionSummaryView, TakesEffect,
     UserMessageView, WriteDestination,
@@ -314,7 +314,7 @@ impl MemoryManager {
 
     pub async fn list_for_actor(
         &self,
-        actor: MemoryActor,
+        actor: MemoryActorContext,
     ) -> Result<Vec<crate::MemorySummary>, MemoryError> {
         let Some(provider) = self.external.read().await.clone() else {
             return Err(MemoryError::ExternalProviderNotConfigured);
@@ -346,7 +346,7 @@ impl MemoryManager {
     pub async fn get_for_actor(
         &self,
         id: MemoryId,
-        actor: MemoryActor,
+        actor: MemoryActorContext,
     ) -> Result<MemoryRecord, MemoryError> {
         let Some(provider) = self.external.read().await.clone() else {
             return Err(MemoryError::ExternalProviderNotConfigured);
@@ -369,7 +369,7 @@ impl MemoryManager {
     pub async fn update_content_for_actor(
         &self,
         id: MemoryId,
-        actor: MemoryActor,
+        actor: MemoryActorContext,
         content: impl Into<String>,
         run_id: Option<RunId>,
     ) -> Result<MemoryRecord, MemoryError> {
@@ -383,7 +383,7 @@ impl MemoryManager {
     pub async fn forget_for_actor(
         &self,
         id: MemoryId,
-        actor: MemoryActor,
+        actor: MemoryActorContext,
         run_id: Option<RunId>,
     ) -> Result<(), MemoryError> {
         let Some(provider) = self.external.read().await.clone() else {
@@ -442,7 +442,7 @@ impl MemoryManager {
 
     pub async fn export_for_actor(
         &self,
-        actor: MemoryActor,
+        actor: MemoryActorContext,
     ) -> Result<Vec<MemoryRecord>, MemoryError> {
         let Some(provider) = self.external.read().await.clone() else {
             return Err(MemoryError::ExternalProviderNotConfigured);
@@ -574,8 +574,7 @@ impl MemoryManager {
                 hook_id: hook_id.clone(),
                 promoted: outcome.promoted.clone(),
                 demoted: outcome.demoted.clone(),
-                draft_dreams_chars: outcome.draft_dreams.chars().count().min(u32::MAX as usize)
-                    as u32,
+                inbox_candidates_created: outcome.inbox_candidates_created,
                 duration_ms,
                 at: chrono::Utc::now(),
             }))
@@ -964,7 +963,7 @@ fn memory_summary_from_record(record: &MemoryRecord) -> MemorySummary {
     }
 }
 
-fn record_visible_to_actor(record: &MemoryRecord, actor: &MemoryActor) -> bool {
+fn record_visible_to_actor(record: &MemoryRecord, actor: &MemoryActorContext) -> bool {
     record.tenant_id == actor.tenant_id && visibility_matches(&record.visibility, actor)
 }
 

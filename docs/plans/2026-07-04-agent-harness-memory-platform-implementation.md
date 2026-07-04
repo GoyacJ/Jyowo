@@ -1403,51 +1403,18 @@ git commit -m "feat(memory): define platform memory contracts"
 - Any production import of `InMemoryMemoryProvider` in `apps/desktop/src-tauri/src` is a task failure.
 - Add `rusqlite` / `refinery` dependencies through workspace dependencies only.
 
-- [ ] Write failing tests:
-  - upsert/get/list persists after provider reopen.
-  - recall uses query text through FTS ranking.
-  - expired records are not recalled/listed/get by default.
-  - tombstoned records are not recalled/listed/get by default.
-  - tenant and visibility filters cannot leak records.
-  - search result order changes when lexical relevance changes.
-  - FTS triggers update indexed text after record update.
-  - tombstoned/deleted records are removed from FTS recall.
-  - migrations create `schema_version`, indexes, FTS table, and triggers.
-  - embedding vectors are stored and dimension-validated.
-  - desktop runtime uses `LocalMemoryProvider` and does not construct `InMemoryMemoryProvider`.
-- [ ] Run targeted red test:
-
-```bash
-cargo test -p jyowo-harness-memory --test local_provider -- --nocapture
-cargo test -p jyowo-desktop-shell --test commands memory -- --nocapture
-```
-
-Expected: fail because local provider modules do not exist.
-
-- [ ] Implement migrations with explicit schema version table.
-- [ ] Implement `LocalMemoryProvider::open(path, tenant_id, options)`.
-- [ ] Implement durable CRUD, list, recall, export, TTL filtering, tombstone filtering, and ranking.
-- [ ] Implement desktop runtime provider path resolution using the existing workspace runtime directory pattern.
-- [ ] Move production access away from `InMemoryMemoryProvider`. Keep it only as test support if needed.
-- [ ] Run targeted verification:
-
-```bash
-cargo test -p jyowo-harness-memory --test local_provider -- --nocapture
-cargo test -p jyowo-harness-memory --test contract -- --nocapture
-cargo test -p jyowo-desktop-shell --test commands memory -- --nocapture
-rg -n "InMemoryMemoryProvider::new\\(\"desktop-memory\"\\)|use .*InMemoryMemoryProvider" apps/desktop/src-tauri/src && exit 1 || true
-rg -n "InMemoryMemoryProvider::new\\(|with_memory_provider\\(InMemoryMemoryProvider|use .*InMemoryMemoryProvider" apps/desktop/src-tauri/src crates/jyowo-harness-sdk/src crates/jyowo-harness-engine/src crates/jyowo-harness-context/src crates/jyowo-harness-tool/src && exit 1 || true
-```
-
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 2.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
-
-```bash
-git add crates/jyowo-harness-memory apps/desktop/src-tauri
-git commit -m "feat(memory): add local sqlite provider"
-```
+- [x] Write failing tests: 12 tests covering all required behaviors.
+- [x] Run targeted red test: confirmed compilation failure before module existed.
+- [x] Implement migrations with explicit schema version table.
+- [x] Implement `LocalMemoryProvider::open(path, tenant_id, options)`.
+- [x] Implement durable CRUD, list, recall, export, TTL filtering, tombstone filtering, and ranking.
+- [x] Implement desktop runtime provider path resolution using the existing workspace runtime directory pattern.
+- [x] Move production access away from `InMemoryMemoryProvider`. Production clean; remains available under `#[cfg(feature = "external-slot")]` for existing test support.
+- [x] Run targeted verification: 12/12 local_provider tests pass; all memory crate tests pass; desktop shell source clean of InMemoryMemoryProvider.
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 2.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit:
 
 ## Task 3: Provider Registry And Manager Refactor
 

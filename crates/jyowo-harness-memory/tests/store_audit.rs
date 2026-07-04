@@ -7,7 +7,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_contracts::{
-    Event, MemoryActor, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId, TenantId,
+    Event, MemoryActorContext, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId, TenantId,
 };
 #[cfg(feature = "threat-scanner")]
 use harness_contracts::{Severity, ThreatAction, ThreatCategory};
@@ -414,8 +414,8 @@ fn query(session_id: SessionId, text: &str) -> MemoryQuery {
     }
 }
 
-fn actor(session_id: SessionId) -> MemoryActor {
-    MemoryActor {
+fn actor(session_id: SessionId) -> MemoryActorContext {
+    MemoryActorContext {
         tenant_id: TenantId::SINGLE,
         user_id: Some("user-1".to_owned()),
         team_id: None,

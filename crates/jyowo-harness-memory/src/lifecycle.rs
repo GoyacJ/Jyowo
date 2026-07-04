@@ -93,7 +93,7 @@ pub enum MemoryRecallMetricOutcome {
 pub struct ConsolidationOutcome {
     pub promoted: Vec<MemoryId>,
     pub demoted: Vec<MemoryId>,
-    pub draft_dreams: String,
+    pub inbox_candidates_created: u32,
 }
 
 #[cfg(feature = "consolidation")]

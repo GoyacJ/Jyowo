@@ -11,7 +11,7 @@ use std::time::Duration;
 use chrono::Utc;
 #[cfg(feature = "external-slot")]
 use harness_contracts::{
-    MemoryActor, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId, TenantId,
+    MemoryActorContext, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId, TenantId,
 };
 #[cfg(feature = "external-slot")]
 use harness_memory::{
@@ -247,8 +247,8 @@ fn query(tenant_id: TenantId, session_id: SessionId, max_records: u32) -> Memory
 }
 
 #[cfg(feature = "external-slot")]
-fn actor(tenant_id: TenantId, session_id: SessionId) -> MemoryActor {
-    MemoryActor {
+fn actor(tenant_id: TenantId, session_id: SessionId) -> MemoryActorContext {
+    MemoryActorContext {
         tenant_id,
         user_id: Some("user-1".to_owned()),
         team_id: None,
