@@ -1519,7 +1519,7 @@ git commit -m "refactor(memory): use provider registry"
 - Team/tenant visibility writes require explicit policy allowance.
 - Deleted/tombstoned content cannot be regenerated from old transcript evidence.
 
-- [ ] Write failing tests:
+- [x] Write failing tests:
   - global off prevents recall and generation.
   - thread off overrides global on for that thread only.
   - external-context thread blocks generation when configured.
@@ -1527,26 +1527,26 @@ git commit -m "refactor(memory): use provider registry"
   - model-derived external fact becomes candidate.
   - team visibility write is denied without role/coordinator policy.
   - tombstoned content cannot be recreated from same evidence hash.
-- [ ] Run targeted red test:
+- [x] Run targeted red test:
 
 ```bash
 cargo test -p jyowo-harness-memory --test policy -- --nocapture
 ```
 
-- [ ] Implement `MemoryPolicyEngine`.
-- [ ] Wire policy checks into recall, write, delete, candidate promotion, extraction, and export.
-- [ ] Add typed denial reasons in contracts.
-- [ ] Run targeted verification:
+- [x] Implement `MemoryPolicyEngine`.
+- [x] Wire policy checks into recall, write, delete, candidate promotion, extraction, and export.
+- [x] Add typed denial reasons in contracts.
+- [x] Run targeted verification:
 
 ```bash
 cargo test -p jyowo-harness-memory --test policy -- --nocapture
 cargo test -p jyowo-harness-memory --test store_audit -- --nocapture
 ```
 
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 4.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 4.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-memory crates/jyowo-harness-contracts crates/jyowo-harness-sdk

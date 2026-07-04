@@ -22,14 +22,15 @@ use crate::ConsolidationHook;
 use crate::MemoryThreatScanner;
 use crate::{
     content_preview, visibility_matches, MemoryEventSink, MemoryKindFilter, MemoryListScope,
-    MemoryMetric, MemoryMetricsSink, MemoryProvider, MemoryProviderRegistry, MemoryQuery,
-    MemoryRecallMetricOutcome, MemoryRecord, MemorySummary, MemoryVisibilityFilter,
+    MemoryMetric, MemoryMetricsSink, MemoryPolicyEngine, MemoryProvider, MemoryProviderRegistry,
+    MemoryQuery, MemoryRecallMetricOutcome, MemoryRecord, MemorySummary, MemoryVisibilityFilter,
 };
 
 pub struct MemoryManager {
     #[cfg(feature = "builtin")]
     builtin: RwLock<Option<BuiltinMemory>>,
     provider_registry: RwLock<MemoryProviderRegistry>,
+    policy_engine: RwLock<MemoryPolicyEngine>,
     recall_policy: RecallPolicy,
     #[cfg(feature = "consolidation")]
     consolidation_hook: Option<Arc<dyn ConsolidationHook>>,
@@ -109,6 +110,15 @@ impl Default for MemoryManager {
             #[cfg(feature = "builtin")]
             builtin: RwLock::new(None),
             provider_registry: RwLock::new(MemoryProviderRegistry::new()),
+            policy_engine: RwLock::new(MemoryPolicyEngine::new(harness_contracts::MemoryGlobalSettings {
+                use_memories: true,
+                generate_memories: true,
+                disable_generation_when_external_context_used: false,
+                retention_days: None,
+                max_memory_bytes: 10_000_000,
+                max_recall_records_per_turn: 20,
+                max_recall_chars_per_turn: 50_000,
+            })),
             recall_policy: RecallPolicy::default(),
             #[cfg(feature = "consolidation")]
             consolidation_hook: None,
@@ -200,6 +210,18 @@ impl MemoryManager {
     #[must_use]
     pub fn has_external(&self) -> bool {
         self.external().is_some()
+    }
+
+    #[must_use]
+    pub fn with_policy_engine(mut self, engine: MemoryPolicyEngine) -> Self {
+        self.policy_engine = RwLock::new(engine);
+        self
+    }
+
+    pub fn set_policy_settings(&self, settings: harness_contracts::MemoryGlobalSettings) {
+        if let Ok(mut engine) = self.policy_engine.try_write() {
+            *engine = MemoryPolicyEngine::new(settings);
+        }
     }
 
     #[must_use]

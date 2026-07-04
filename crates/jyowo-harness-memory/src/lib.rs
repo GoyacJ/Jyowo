@@ -15,8 +15,8 @@ pub mod external;
 pub mod in_memory;
 pub mod lifecycle;
 pub mod local;
-#[cfg(feature = "builtin")]
 pub mod memdir;
+pub mod policy;
 pub mod registry;
 #[cfg(feature = "threat-scanner")]
 pub mod scanner;
@@ -31,6 +31,7 @@ pub use lifecycle::*;
 pub use local::*;
 #[cfg(feature = "builtin")]
 pub use memdir::*;
+pub use policy::*;
 pub use registry::*;
 #[cfg(feature = "threat-scanner")]
 pub use scanner::*;
