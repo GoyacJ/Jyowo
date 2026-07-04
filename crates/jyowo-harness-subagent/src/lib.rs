@@ -127,6 +127,9 @@ pub enum SubagentMemoryScope {
     Inherit,
     Empty,
     Subset { selectors: Vec<MemorySelector> },
+    ReadOnly,
+    ReadWrite,
+    CandidateOnly,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]

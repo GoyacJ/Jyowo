@@ -1951,9 +1951,9 @@ git commit -m "feat(memory): add memory management UI"
 - Coordinator or role-gated policy is required to promote child/team memory.
 - All child-derived records include source evidence.
 
-- [ ] Write failing tests for inherit, empty, subset, read-only, read-write, and candidate-only scopes.
-- [ ] Write failing tests for role-gated team promotion.
-- [ ] Run targeted red tests:
+- [x] Write failing tests for inherit, empty, subset, read-only, read-write, and candidate-only scopes.
+- [x] Write failing tests for role-gated team promotion.
+- [x] Run targeted red tests:
 
 ```bash
 cargo test -p jyowo-harness-team --test shared_memory -- --nocapture
@@ -1962,14 +1962,14 @@ cargo test -p jyowo-harness-engine --test subagent_tool_feature -- --nocapture
 cargo test -p jyowo-harness-sdk --test agents_team -- --nocapture
 ```
 
-- [ ] Integrate team shared memory with provider registry.
-- [ ] Refactor subagent memory scope into typed grants.
-- [ ] Wire child writes into policy and inbox.
-- [ ] Run targeted verification with the same commands.
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 12.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
+- [x] Integrate team shared memory with provider registry.
+- [x] Refactor subagent memory scope into typed grants.
+- [x] Wire child writes into policy and inbox.
+- [x] Run targeted verification with the same commands.
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 12.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-team crates/jyowo-harness-subagent crates/jyowo-harness-engine crates/jyowo-harness-sdk crates/jyowo-harness-contracts
