@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ConversationTurn } from '@/shared/tauri/commands'
 import { createTestCommandClient } from '@/testing/command-client'
+import { assistantWork } from '@/testing/conversation-worktree-builders'
 import { ConversationTimeline } from './conversation-timeline'
 import {
   renderTimelineWithClient,
@@ -134,7 +135,7 @@ describe('ConversationTimeline', () => {
         turns={[
           {
             ...turn(''),
-            assistant: {
+            assistant: assistantWork({
               id: 'assistant:run-001',
               runId: 'run-001',
               status: 'complete',
@@ -155,7 +156,7 @@ describe('ConversationTimeline', () => {
                   prompt: 'Which style should I use?',
                 },
               ],
-            },
+            }),
           },
         ]}
       />,

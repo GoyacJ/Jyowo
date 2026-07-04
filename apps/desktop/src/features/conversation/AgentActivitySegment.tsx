@@ -10,7 +10,6 @@ export function AgentActivitySegmentView({
   onPermissionResolve,
   parentRunId,
   segment,
-  turnId,
 }: {
   conversationId: string
   onPermissionResolve?: (request: {
@@ -70,22 +69,8 @@ export function AgentActivitySegmentView({
           <DecisionPanel
             conversationId={conversationId}
             decision={{
-              id: segment.permission.id,
-              requestId: segment.permission.requestId,
-              toolUseId: segment.agentId,
-              status: segment.permission.status,
-              operation: 'unknown',
-              target: { kind: 'unknown', label: segment.role },
-              riskLevel: 'medium',
-              reason: segment.permission.summary ?? '',
-              policy: { mode: 'default' },
-              decisionOptions: [],
-              dataExposure: {
-                sendsWorkspaceData: false,
-                sendsNetworkData: false,
-                touchesPrivatePath: false,
-                secretRisk: 'none',
-              },
+              ...segment.permission,
+              toolUseId: segment.permission.toolUseId ?? segment.agentId,
             }}
             onResolve={onPermissionResolve}
           />

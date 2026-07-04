@@ -16,12 +16,12 @@ describe('coalesceTimelineActions', () => {
     expect(
       coalesceTimelineActions([
         { type: 'worktreeRefreshRequested', immediate: false },
-        { type: 'markGap' },
+        { type: 'markGap', afterCursor: null },
         { type: 'worktreeRefreshRequested', immediate: true },
       ]),
     ).toEqual([
       { type: 'worktreeRefreshRequested', immediate: false },
-      { type: 'markGap' },
+      { type: 'markGap', afterCursor: null },
       { type: 'worktreeRefreshRequested', immediate: true },
     ])
   })

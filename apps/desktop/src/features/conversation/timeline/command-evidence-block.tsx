@@ -5,8 +5,7 @@ import type { CommandExecution } from '@/shared/tauri/commands'
 
 export function CommandEvidenceBlock({ execution }: { execution: CommandExecution }) {
   const { t } = useTranslation('conversation')
-  const output =
-    execution.redactionState === 'withheld' ? null : (execution.stdoutPreview ?? null)
+  const output = execution.redactionState === 'withheld' ? null : (execution.stdoutPreview ?? null)
 
   const handleCopy = async () => {
     const lines = [`$ ${execution.command}`]
@@ -40,7 +39,10 @@ export function CommandEvidenceBlock({ execution }: { execution: CommandExecutio
         $ {execution.command}
       </div>
       {output ? (
-        <pre className="max-h-[260px] overflow-auto px-3 py-2 font-mono text-xs leading-5">
+        <pre
+          className="max-h-[260px] overflow-auto px-3 py-2 font-mono text-xs leading-5"
+          data-testid="command-output-scroll-region"
+        >
           <code>{output}</code>
         </pre>
       ) : execution.redactionState === 'withheld' ? (

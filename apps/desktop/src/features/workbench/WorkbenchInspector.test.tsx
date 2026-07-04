@@ -1,8 +1,8 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { WorkbenchInspector } from './WorkbenchInspector'
-import { uiStore } from '@/shared/state/ui-store'
 import type { UiState } from '@/shared/state/ui-store'
+import { uiStore } from '@/shared/state/ui-store'
+import { WorkbenchInspector } from './WorkbenchInspector'
 
 function setupStore(overrides?: Partial<UiState>) {
   uiStore.setState({

@@ -2,13 +2,12 @@ import { Copy, FileText } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/shared/lib/utils'
-import { useCommandClient } from '@/shared/tauri/react'
 import type { ChangeSetFile } from '@/shared/tauri/commands'
+import { useCommandClient } from '@/shared/tauri/react'
 
 export function DiffPane({
   conversationId,
   files,
-  onChangeSetClick,
 }: {
   conversationId: string
   files: ChangeSetFile[]
@@ -28,9 +27,7 @@ export function DiffPane({
           <button
             className={cn(
               'rounded px-2 py-1 font-mono text-xs transition-colors hover:bg-muted',
-              index === selectedFileIndex
-                ? 'bg-muted text-foreground'
-                : 'text-muted-foreground',
+              index === selectedFileIndex ? 'bg-muted text-foreground' : 'text-muted-foreground',
             )}
             key={file.path}
             onClick={() => setSelectedFileIndex(index)}
@@ -144,11 +141,7 @@ function FetchFullPatchButton({
   }
 
   if (patch) {
-    return (
-      <span className="px-2 text-muted-foreground text-xs">
-        {t('diff.fullPatchCopied')}
-      </span>
-    )
+    return <span className="px-2 text-muted-foreground text-xs">{t('diff.fullPatchCopied')}</span>
   }
 
   return (

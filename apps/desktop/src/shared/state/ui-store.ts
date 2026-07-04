@@ -47,7 +47,7 @@ export function createUiStore() {
     locale: DEFAULT_APP_LOCALE,
     sidebarCollapsed: false,
     contextPanelCollapsed: true,
-    inspectorOpen: true,
+    inspectorOpen: false,
     workbenchSelection: null,
     timelineScrollRequest: null,
     clearActiveRun: (conversationId) =>

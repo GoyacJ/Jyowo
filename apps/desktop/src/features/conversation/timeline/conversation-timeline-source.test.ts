@@ -222,9 +222,9 @@ describe('createConversationTimelineSource', () => {
 
     expect(actions).toEqual([
       { type: 'worktreeRefreshRequested', immediate: true },
-      { type: 'markGap' },
+      { type: 'markGap', afterCursor: cursor() },
       { type: 'worktreeRefreshRequested', immediate: true },
-      { type: 'markGap' },
+      { type: 'markGap', afterCursor: cursor() },
     ])
   })
 
@@ -245,7 +245,7 @@ describe('createConversationTimelineSource', () => {
     )
 
     expect(actions).toEqual([
-      { type: 'markGap' },
+      { type: 'markGap', afterCursor: null },
       { type: 'worktreeRefreshRequested', immediate: true },
     ])
   })

@@ -1,4 +1,4 @@
-import { FilePenLine, AlertTriangle } from 'lucide-react'
+import { AlertTriangle, FilePenLine } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { ChangeSet, ChangeSetFile } from '@/shared/tauri/commands'
 
@@ -24,20 +24,12 @@ export function ChangeSetSummary({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate font-medium text-sm">{changeSet.summary}</span>
-          <span className="shrink-0 font-mono text-success text-xs">
-            +{totals.added}
-          </span>
-          <span className="shrink-0 font-mono text-destructive text-xs">
-            -{totals.removed}
-          </span>
-          {hasRiskFlags ? (
-            <AlertTriangle className="size-3 shrink-0 text-yellow-500" />
-          ) : null}
+          <span className="shrink-0 font-mono text-success text-xs">+{totals.added}</span>
+          <span className="shrink-0 font-mono text-destructive text-xs">-{totals.removed}</span>
+          {hasRiskFlags ? <AlertTriangle className="size-3 shrink-0 text-yellow-500" /> : null}
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-muted-foreground text-xs">
-          <span>
-            {t('diff.fileCount', { count: changeSet.files.length })}
-          </span>
+          <span>{t('diff.fileCount', { count: changeSet.files.length })}</span>
           {totals.addedCount > 0 ? (
             <span>{t('diff.filesAdded', { count: totals.addedCount })}</span>
           ) : null}

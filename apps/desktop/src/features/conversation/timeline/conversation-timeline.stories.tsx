@@ -10,6 +10,12 @@ import {
   codexLargeDiffTurns,
   codexStyleEvidenceTurns,
 } from '@/testing/conversation-evidence-fixtures'
+import {
+  artifactRevision,
+  assistantWork,
+  commandDetail,
+  permissionState,
+} from '@/testing/conversation-worktree-builders'
 import { ConversationTimeline } from './conversation-timeline'
 
 const meta = {
@@ -51,7 +57,7 @@ type Story = StoryObj<typeof meta>
 function storyTurn(
   id: string,
   body: string,
-  assistant: NonNullable<ConversationTurn['assistant']>,
+  assistant: Parameters<typeof assistantWork>[0],
 ): ConversationTurn {
   return {
     id: `turn:${id}`,
@@ -63,7 +69,7 @@ function storyTurn(
       body,
       timestamp: '2026-06-17T00:00:00.000Z',
     },
-    assistant,
+    assistant: assistantWork(assistant),
   }
 }
 
@@ -77,7 +83,7 @@ const baseTurn: ConversationTurn = {
     body: 'Build the app shell and show the verification result.',
     timestamp: '2026-06-17T00:00:00.000Z',
   },
-  assistant: {
+  assistant: assistantWork({
     id: 'assistant:run-001',
     runId: 'run-001',
     status: 'running',
@@ -103,13 +109,12 @@ const baseTurn: ConversationTurn = {
             kind: 'command',
             status: 'failed',
             title: '运行验证',
-            detail: {
-              type: 'command',
+            detail: commandDetail({
               command: 'pnpm check:desktop',
-              output: 'lint failed',
+              stdoutPreview: 'lint failed',
               exitCode: 1,
               durationMs: 1300,
-            },
+            }),
           },
         ],
       },
@@ -146,13 +151,13 @@ const baseTurn: ConversationTurn = {
             toolUseId: 'tool-003',
             toolName: 'install_dependencies',
             status: 'waitingPermission',
-            permission: {
+            permission: permissionState({
               id: 'permission:01HZ0000000000000000000001',
               requestId: '01HZ0000000000000000000001',
               toolUseId: 'tool-003',
               status: 'pending',
-              summary: 'Install dependencies',
-            },
+              reason: 'Install dependencies',
+            }),
           },
         ],
       },
@@ -162,7 +167,15 @@ const baseTurn: ConversationTurn = {
         order: 3,
         artifactId: 'artifact-001',
         title: 'Verification notes',
-        summary: 'Generated implementation notes.',
+        revision: artifactRevision({
+          artifactId: 'artifact-001',
+          revisionId: 'revision-artifact-001',
+          kind: 'document',
+          sourceRunId: 'run-001',
+          title: 'Verification notes',
+          summary: 'Generated implementation notes.',
+          contentRef: 'evidence-artifact-001',
+        }),
       },
       {
         kind: 'reviewRequest',
@@ -173,7 +186,7 @@ const baseTurn: ConversationTurn = {
         body: 'Confirm before applying.',
       },
     ],
-  },
+  }),
 }
 
 export const Empty: Story = {}
@@ -323,12 +336,13 @@ export const ToolApprovedCompleted: Story = {
                 toolUseId: 'tool-approved',
                 toolName: 'read_file',
                 status: 'completed',
-                permission: {
+                permission: permissionState({
                   id: 'permission:approved',
                   requestId: 'permission-approved',
                   toolUseId: 'tool-approved',
                   status: 'approved',
-                },
+                  reason: 'Read package metadata',
+                }),
               },
             ],
           },
@@ -379,12 +393,13 @@ export const MultipleToolAttempts: Story = {
                 toolUseId: 'tool-multiple-3',
                 toolName: 'cargo test',
                 status: 'waitingPermission',
-                permission: {
+                permission: permissionState({
                   id: 'permission:multiple-3',
                   requestId: 'permission-multiple-3',
                   toolUseId: 'tool-multiple-3',
                   status: 'pending',
-                },
+                  reason: 'Run cargo tests',
+                }),
               },
             ],
           },
@@ -431,11 +446,11 @@ export const WithheldThinking: Story = {
         status: 'running',
         segments: [
           {
-            kind: 'thinking',
-            id: 'segment:thinking:withheld',
+            kind: 'process',
+            id: 'segment:process:withheld',
             order: 0,
             status: 'withheld',
-            summary: { text: '思考内容已折叠' },
+            summary: '思考内容已折叠',
           },
         ],
       }),
@@ -598,7 +613,7 @@ export const RunFailed: Story = {
     turns: [
       {
         ...baseTurn,
-        assistant: {
+        assistant: assistantWork({
           id: 'assistant:run-001',
           runId: 'run-001',
           status: 'failed',
@@ -610,7 +625,7 @@ export const RunFailed: Story = {
               body: 'Runtime unavailable',
             },
           ],
-        },
+        }),
       },
     ],
   },
@@ -630,7 +645,7 @@ export const LongConversation: Story = {
           messageId: `user-message-extra-${index}`,
           body: `Continue with follow-up step ${index + 1}.`,
         },
-        assistant: {
+        assistant: assistantWork({
           id: `assistant:run-extra-${index}`,
           runId: `run-extra-${index}`,
           status: 'complete' as const,
@@ -643,7 +658,7 @@ export const LongConversation: Story = {
               body: `Completed follow-up step ${index + 1}.`,
             },
           ],
-        },
+        }),
       })),
     ],
   },
@@ -692,13 +707,13 @@ function collapsedHistoryTurn(): ConversationTurn {
             kind: 'command',
             status: 'complete',
             title: '已运行历史命令',
-            detail: {
-              type: 'command',
+            detail: commandDetail({
               command: 'rg "timeline" apps/desktop/src',
-              output: 'apps/desktop/src/features/conversation/timeline/conversation-timeline.tsx',
+              stdoutPreview:
+                'apps/desktop/src/features/conversation/timeline/conversation-timeline.tsx',
               exitCode: 0,
               durationMs: 180,
-            },
+            }),
           },
           {
             id: 'process-step:collapsed-test-failed',
@@ -706,13 +721,12 @@ function collapsedHistoryTurn(): ConversationTurn {
             kind: 'command',
             status: 'failed',
             title: '测试失败',
-            detail: {
-              type: 'command',
+            detail: commandDetail({
               command: 'pnpm -C apps/desktop test',
-              output: '1 failed',
+              stdoutPreview: '1 failed',
               exitCode: 1,
               durationMs: 2100,
-            },
+            }),
           },
         ],
       },
@@ -739,13 +753,12 @@ function completedRunWithFailedStepTurn(): ConversationTurn {
             kind: 'command',
             status: 'complete',
             title: '类型检查通过',
-            detail: {
-              type: 'command',
+            detail: commandDetail({
               command: 'pnpm -C apps/desktop typecheck',
-              output: 'passed',
+              stdoutPreview: 'passed',
               exitCode: 0,
               durationMs: 1500,
-            },
+            }),
           },
           {
             id: 'process-step:failed-storybook',
@@ -753,13 +766,12 @@ function completedRunWithFailedStepTurn(): ConversationTurn {
             kind: 'command',
             status: 'failed',
             title: 'Storybook 构建失败',
-            detail: {
-              type: 'command',
+            detail: commandDetail({
               command: 'pnpm -C apps/desktop build-storybook',
-              output: 'Missing i18n key: timeline.processGroup.history',
+              stdoutPreview: 'Missing i18n key: timeline.processGroup.history',
               exitCode: 1,
               durationMs: 6400,
-            },
+            }),
           },
           {
             id: 'process-step:completed-summary',

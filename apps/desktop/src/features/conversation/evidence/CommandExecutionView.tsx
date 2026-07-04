@@ -2,13 +2,12 @@ import { Copy } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/shared/lib/utils'
-import { useCommandClient } from '@/shared/tauri/react'
 import type { CommandExecution } from '@/shared/tauri/commands'
+import { useCommandClient } from '@/shared/tauri/react'
 
 export function CommandExecutionView({
   command,
   conversationId,
-  onOpenInspector,
 }: {
   command: CommandExecution
   conversationId: string
@@ -18,8 +17,6 @@ export function CommandExecutionView({
   const commandClient = useCommandClient()
   const [fetchingFull, setFetchingFull] = useState(false)
   const [fullOutput, setFullOutput] = useState<string | null>(null)
-  const canFetchFull =
-    Boolean(command.fullOutputRef) && command.redactionState !== 'withheld'
 
   const handleCopyCommand = () => {
     void navigator.clipboard?.writeText(command.command)
@@ -68,14 +65,17 @@ export function CommandExecutionView({
           ) : null}
         </div>
         <div className="flex gap-1">
-          <CopyButton label={t('timeline.commandEvidence.copyCommand')} onClick={handleCopyCommand} />
+          <CopyButton
+            label={t('timeline.commandEvidence.copyCommand')}
+            onClick={handleCopyCommand}
+          />
           {output ? (
             <CopyButton
               label={t('timeline.commandEvidence.copyOutput')}
               onClick={handleCopyVisible}
             />
           ) : null}
-          {command.fullOutputRef ? (
+          {command.fullOutputRef && command.redactionState !== 'withheld' ? (
             <button
               className="rounded px-2 py-0.5 text-white/60 text-xs hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-ring"
               disabled={fetchingFull}
@@ -99,12 +99,8 @@ export function CommandExecutionView({
 
       {/* Metadata bar */}
       <div className="flex min-h-7 flex-wrap items-center gap-x-3 gap-y-1 border-white/10 border-b px-3 py-1 text-xs">
-        {command.cwd ? (
-          <span className="text-white/55">{command.cwd}</span>
-        ) : null}
-        {command.shell ? (
-          <span className="text-white/55">shell: {command.shell}</span>
-        ) : null}
+        {command.cwd ? <span className="text-white/55">{command.cwd}</span> : null}
+        {command.shell ? <span className="text-white/55">shell: {command.shell}</span> : null}
         {command.durationMs ? (
           <span className="text-white/55">
             {t('timeline.commandEvidence.duration', { duration: command.durationMs })}
@@ -116,9 +112,7 @@ export function CommandExecutionView({
           </span>
         ) : null}
         {command.truncated ? (
-          <span className="text-yellow-400/80">
-            {t('timeline.commandEvidence.truncated')}
-          </span>
+          <span className="text-yellow-400/80">{t('timeline.commandEvidence.truncated')}</span>
         ) : null}
       </div>
 

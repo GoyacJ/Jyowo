@@ -1,4 +1,10 @@
 import type { ConversationTurn } from '@/shared/tauri/commands'
+import {
+  assistantWork,
+  changeSetFile,
+  commandDetail,
+  diffDetail,
+} from '@/testing/conversation-worktree-builders'
 
 type AttachmentReference = NonNullable<ConversationTurn['user']['attachments']>[number]
 
@@ -39,7 +45,7 @@ export const codexStyleEvidenceTurns: ConversationTurn[] = [
       ],
       timestamp: '2026-06-28T00:00:00.000Z',
     },
-    assistant: {
+    assistant: assistantWork({
       id: 'assistant:run-codex-evidence',
       runId: 'run-codex-evidence',
       status: 'complete',
@@ -76,10 +82,11 @@ export const codexStyleEvidenceTurns: ConversationTurn[] = [
               kind: 'diff',
               status: 'complete',
               title: 'SkillsPage.test.tsx +61 -2',
-              detail: {
-                type: 'diff',
+              detail: diffDetail({
+                id: 'change-set-skills-page',
+                summary: 'SkillsPage.test.tsx +61 -2',
                 files: [
-                  {
+                  changeSetFile({
                     path: 'SkillsPage.test.tsx',
                     addedLines: 61,
                     removedLines: 2,
@@ -96,9 +103,9 @@ export const codexStyleEvidenceTurns: ConversationTurn[] = [
                       '   })',
                       ' })',
                     ].join('\n'),
-                  },
+                  }),
                 ],
-              },
+              }),
             },
             {
               id: 'process-step:command-failed',
@@ -106,13 +113,13 @@ export const codexStyleEvidenceTurns: ConversationTurn[] = [
               kind: 'command',
               status: 'failed',
               title: '已运行命令，已持续 12s',
-              detail: {
-                type: 'command',
+              detail: commandDetail({
                 command: 'pnpm -C apps/desktop test -- SkillsPage',
-                output: 'FAIL src/features/skills/SkillsPage.test.tsx\nExpected element not found.',
+                stdoutPreview:
+                  'FAIL src/features/skills/SkillsPage.test.tsx\nExpected element not found.',
                 exitCode: 1,
                 durationMs: 12000,
-              },
+              }),
             },
             {
               id: 'process-step:command-complete',
@@ -120,13 +127,12 @@ export const codexStyleEvidenceTurns: ConversationTurn[] = [
               kind: 'command',
               status: 'complete',
               title: '已运行 1 条历史命令',
-              detail: {
-                type: 'command',
+              detail: commandDetail({
                 command: 'rg "SkillsPage" apps/desktop/src',
-                output: 'apps/desktop/src/features/skills/SkillsPage.tsx',
+                stdoutPreview: 'apps/desktop/src/features/skills/SkillsPage.tsx',
                 exitCode: 0,
                 durationMs: 320,
-              },
+              }),
             },
           ],
         },
@@ -167,7 +173,7 @@ export const codexStyleEvidenceTurns: ConversationTurn[] = [
           body: '红测和失败证据已经保留，下一步修复实现。',
         },
       ],
-    },
+    }),
   },
 ]
 
@@ -216,17 +222,18 @@ export const codexLargeDiffTurns: ConversationTurn[] = [
                   ...step,
                   id: 'process-step:large-diff',
                   title: 'ConversationTimeline.test.tsx +140 -12',
-                  detail: {
-                    type: 'diff' as const,
+                  detail: diffDetail({
+                    id: 'change-set-large-diff',
+                    summary: 'ConversationTimeline.test.tsx +140 -12',
                     files: [
-                      {
+                      changeSetFile({
                         path: 'apps/desktop/src/features/conversation/timeline/ConversationTimeline.test.tsx',
                         addedLines: 140,
                         removedLines: 12,
                         preview: largeDiffPreview(),
-                      },
+                      }),
                     ],
-                  },
+                  }),
                 }
               }),
             }

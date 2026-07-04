@@ -294,7 +294,7 @@ function conversationTimelineReducer(
     case 'permissionSubmitFailed':
       return patchPermission(state, action.requestId, {
         status: 'failed',
-        reason: action.errorMessage,
+        reason: uiSafeCanvasText(action.errorMessage),
       })
     case 'markGap':
       return {

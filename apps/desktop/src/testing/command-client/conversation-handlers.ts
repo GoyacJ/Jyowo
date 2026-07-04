@@ -1,12 +1,15 @@
 import type {
   CreateConversationResponse,
   DeleteConversationResponse,
+  GetArtifactRevisionContentResponse,
+  GetConversationCommandOutputResponse,
+  GetConversationDiffPatchResponse,
   ResolvePermissionResponse,
   StartRunResponse,
   UnsubscribeConversationEventsResponse,
 } from '@/shared/tauri/commands'
 
-import { wait } from './base'
+import { resolveResponseOverride, wait } from './base'
 import {
   emitFixtureConversationBatch,
   emptyWorktreePage,
@@ -21,7 +24,10 @@ import type { TestCommandClientState, TestCommandHandlers } from './state'
 type ConversationCommandKeys =
   | 'createConversation'
   | 'deleteConversation'
+  | 'getArtifactRevisionContent'
   | 'getConversation'
+  | 'getConversationCommandOutput'
+  | 'getConversationDiffPatch'
   | 'listenConversationEventBatches'
   | 'listActivity'
   | 'listConversations'
@@ -81,6 +87,50 @@ export function createConversationCommandHandlers(
         state.options.conversation ??
         state.conversationDetailsById.get(conversationId) ??
         fixtureConversation
+      )
+    },
+    async getConversationCommandOutput(request) {
+      await wait(state.options.delayMs)
+      return resolveResponseOverride(
+        state.options.conversationCommandOutput,
+        {
+          output: 'fixture command output',
+          contentType: 'text/plain; charset=utf-8',
+          byteLength: 22,
+          truncated: false,
+          redactionState: 'clean',
+        } satisfies GetConversationCommandOutputResponse,
+        request,
+      )
+    },
+    async getConversationDiffPatch(request) {
+      await wait(state.options.delayMs)
+      return resolveResponseOverride(
+        state.options.conversationDiffPatch,
+        {
+          patch: 'diff --git a/file.ts b/file.ts\n+fixture patch\n',
+          contentType: 'text/x-diff; charset=utf-8',
+          byteLength: 44,
+          truncated: false,
+          redactionState: 'clean',
+        } satisfies GetConversationDiffPatchResponse,
+        request,
+      )
+    },
+    async getArtifactRevisionContent(request) {
+      await wait(state.options.delayMs)
+      return resolveResponseOverride(
+        state.options.artifactRevisionContent,
+        {
+          content: 'fixture artifact content',
+          contentType: 'text/plain; charset=utf-8',
+          byteLength: 24,
+          truncated: false,
+          redactionState: 'clean',
+          artifactId: 'artifact-fixture',
+          revisionId: 'revision-fixture',
+        } satisfies GetArtifactRevisionContentResponse,
+        request,
       )
     },
     async listenConversationEventBatches(onBatch) {

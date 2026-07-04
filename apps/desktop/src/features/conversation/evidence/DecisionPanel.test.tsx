@@ -1,11 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { DecisionPanel } from './DecisionPanel'
 import type { DecisionRequestState } from '@/shared/tauri/commands'
+import { DecisionPanel } from './DecisionPanel'
 
-function makeDecision(
-  overrides?: Partial<DecisionRequestState>,
-): DecisionRequestState {
+function makeDecision(overrides?: Partial<DecisionRequestState>): DecisionRequestState {
   return {
     id: 'perm-1',
     requestId: 'req-1',
@@ -77,18 +75,12 @@ describe('DecisionPanel', () => {
   it('calls onResolve with selected optionId on approve', () => {
     const onResolve = vi.fn()
     const decision = makeDecision()
-    render(
-      <DecisionPanel
-        conversationId="conv-1"
-        decision={decision}
-        onResolve={onResolve}
-      />,
-    )
+    render(<DecisionPanel conversationId="conv-1" decision={decision} onResolve={onResolve} />)
 
     // Select first option
     fireEvent.click(screen.getByText(/Allow this command once/))
     // Click approve
-    fireEvent.click(screen.getByRole('button', { name: /approve/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
 
     expect(onResolve).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -116,11 +108,8 @@ describe('DecisionPanel', () => {
     })
     render(<DecisionPanel conversationId="conv-1" decision={decision} />)
     // Select an option first
-    const buttons = screen.getAllByRole('button')
-    const approveButton = buttons.find((b) =>
-      b.textContent?.toLowerCase().includes('approve'),
-    )
-    expect(approveButton?.hasAttribute('disabled')).toBe(true)
+    const approveButton = screen.getByRole('button', { name: 'Approve' })
+    expect(approveButton.hasAttribute('disabled')).toBe(true)
   })
 
   it('uses aria-live for state changes', () => {

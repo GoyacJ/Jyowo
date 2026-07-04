@@ -81,6 +81,7 @@ describe('AppShell', () => {
     act(() => {
       uiStore.getState().setSidebarCollapsed(false)
       uiStore.getState().setContextPanelCollapsed(true)
+      uiStore.getState().setInspectorOpen(false)
       uiStore.getState().clearActiveRun()
       uiStore.getState().clearTimelineScrollRequest()
     })
@@ -115,7 +116,7 @@ describe('AppShell', () => {
     expect(within(workspaceNavigation).queryByText('Models')).not.toBeInTheDocument()
     expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'View all activity' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'More actions' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Open inspector' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Share' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Hide context panel' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Show context panel' })).toBeInTheDocument()

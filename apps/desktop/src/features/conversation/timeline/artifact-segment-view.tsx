@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { ExternalLink } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { useUiStore } from '@/shared/state/ui-store'
 import type { ArtifactSegment } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
-import { useUiStore } from '@/shared/state/ui-store'
 
 export function ArtifactSegmentView({
   conversationId,

@@ -271,7 +271,13 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
       pageCursor: page.pageCursor ?? null,
       hasMoreBefore: page.hasMoreBefore,
     })
-  }, [renderedConversationId, displayState.hasMoreBefore, displayState.pages, commandClient, dispatch])
+  }, [
+    renderedConversationId,
+    displayState.hasMoreBefore,
+    displayState.pages,
+    commandClient,
+    dispatch,
+  ])
 
   const loadLater = useCallback(async () => {
     if (!renderedConversationId || !displayState.hasMoreAfter) return
@@ -289,7 +295,13 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
       eventCursor: page.eventCursor ?? null,
       hasMoreAfter: page.hasMoreAfter,
     })
-  }, [renderedConversationId, displayState.hasMoreAfter, displayState.pages, commandClient, dispatch])
+  }, [
+    renderedConversationId,
+    displayState.hasMoreAfter,
+    displayState.pages,
+    commandClient,
+    dispatch,
+  ])
 
   const retryGap = useCallback(() => {
     dispatch({ type: 'retryGap' })

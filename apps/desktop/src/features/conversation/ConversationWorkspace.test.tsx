@@ -23,6 +23,11 @@ import {
   createRejectedTestCommandClient,
   createTestCommandClient,
 } from '@/testing/command-client'
+import {
+  artifactRevision,
+  assistantWork,
+  permissionState,
+} from '@/testing/conversation-worktree-builders'
 
 import { ConversationWorkspace } from './ConversationWorkspace'
 
@@ -215,7 +220,7 @@ describe('ConversationWorkspace', () => {
                 body: 'Delegate review',
                 timestamp,
               },
-              assistant: {
+              assistant: assistantWork({
                 id: 'assistant:run-agent-activity',
                 runId: 'run-agent-activity',
                 status: 'complete',
@@ -232,7 +237,7 @@ describe('ConversationWorkspace', () => {
                     resultSummary: 'No blocking issues found.',
                   },
                 ],
-              },
+              }),
             },
           ],
           pageCursor: { turnId: 'turn:user-agent-activity', position: 0 },
@@ -465,13 +470,15 @@ describe('ConversationWorkspace', () => {
 
     renderConversationWorkspace(trackedClient)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Allow once/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
 
     await waitFor(() =>
       expect(resolvePermission).toHaveBeenCalledWith({
         conversationId: 'conversation-001',
         requestId: '01HZ0000000000000000000002',
         decision: 'approve',
+        optionId: 'option-allow-once',
       }),
     )
   })
@@ -871,7 +878,7 @@ function turn(status: 'running' | 'complete'): ConversationTurn {
       body: 'Finish the run',
       timestamp,
     },
-    assistant: {
+    assistant: assistantWork({
       id: 'assistant:run-001',
       runId: 'run-001',
       status,
@@ -887,7 +894,7 @@ function turn(status: 'running' | 'complete'): ConversationTurn {
                 body: 'Finished.',
               },
             ],
-    },
+    }),
   }
 }
 
@@ -902,17 +909,17 @@ function minimaxTurn(): ConversationTurn {
       body: '帮我生成一张海报图',
       timestamp,
     },
-    assistant: {
+    assistant: assistantWork({
       id: 'assistant:run-minimax',
       runId: 'run-minimax',
       status: 'complete',
       segments: [
         {
-          kind: 'thinking',
-          id: 'segment:thinking:run-minimax',
+          kind: 'process',
+          id: 'segment:process:run-minimax',
           order: 0,
           status: 'running',
-          summary: { text: '正在检查可用的图像工具' },
+          summary: '正在检查可用的图像工具',
         },
         {
           kind: 'toolGroup',
@@ -925,12 +932,13 @@ function minimaxTurn(): ConversationTurn {
               toolUseId: 'tool-minimax',
               toolName: 'MiniMaxTextToImage',
               status: 'failed',
-              permission: {
+              permission: permissionState({
                 id: 'permission:permission-minimax',
                 requestId: 'permission-minimax',
                 toolUseId: 'tool-minimax',
                 status: 'approved',
-              },
+                reason: 'Approved image generation attempt',
+              }),
               failureSummary: '工具执行失败。可在详情中查看。',
             },
           ],
@@ -942,6 +950,15 @@ function minimaxTurn(): ConversationTurn {
           artifactId: 'artifact-minimax',
           title: '海报生成提示词',
           summary: '可复用的图像生成提示词已准备好。',
+          revision: artifactRevision({
+            artifactId: 'artifact-minimax',
+            revisionId: 'revision-minimax-prompt',
+            kind: 'document',
+            sourceRunId: 'run-minimax',
+            title: '海报生成提示词',
+            summary: '可复用的图像生成提示词已准备好。',
+            contentRef: 'evidence-artifact-minimax-prompt',
+          }),
         },
         {
           kind: 'text',
@@ -951,6 +968,6 @@ function minimaxTurn(): ConversationTurn {
           body: '图像工具失败后，我保留了可复用的提示词和下一步建议。',
         },
       ],
-    },
+    }),
   }
 }

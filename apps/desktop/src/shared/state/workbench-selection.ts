@@ -1,6 +1,6 @@
 import type { ConversationEventRef } from '@/shared/tauri/commands'
 
-export type EvidenceRefId = string
+type EvidenceRefId = string
 
 export type WorkbenchSelection =
   | { kind: 'context' }
@@ -19,5 +19,3 @@ export type WorkbenchSelection =
       artifactId: string
       revisionId?: string
     }
-
-export type InspectorPane = WorkbenchSelection['kind']

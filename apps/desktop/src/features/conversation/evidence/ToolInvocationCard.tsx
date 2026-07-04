@@ -12,9 +12,7 @@ export function ToolInvocationCard({
 }) {
   const { t } = useTranslation('conversation')
   const statusLabel = t(`timeline.toolStatus.${attempt.status}`)
-  const originLabel = attempt.origin
-    ? t(`timeline.toolOrigin.${attempt.origin}`)
-    : null
+  const originLabel = attempt.origin ? t(`timeline.toolOrigin.${attempt.origin}`) : null
 
   return (
     <button
@@ -40,9 +38,7 @@ export function ToolInvocationCard({
             {t('timeline.durationMs', { ms: attempt.durationMs })}
           </span>
         ) : null}
-        {attempt.outputSummary ? (
-          <span className="truncate">{attempt.outputSummary}</span>
-        ) : null}
+        {attempt.outputSummary ? <span className="truncate">{attempt.outputSummary}</span> : null}
         {attempt.failurePhase ? (
           <span className="text-destructive">
             {t(`timeline.failurePhase.${attempt.failurePhase}`)}
@@ -53,10 +49,7 @@ export function ToolInvocationCard({
       {attempt.affectedTargets && attempt.affectedTargets.length > 0 ? (
         <div className="mt-1.5 flex flex-wrap gap-1">
           {attempt.affectedTargets.slice(0, 3).map((target) => (
-            <span
-              key={target}
-              className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs"
-            >
+            <span key={target} className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
               {target}
             </span>
           ))}
@@ -71,13 +64,7 @@ export function ToolInvocationCard({
   )
 }
 
-function ToolStatusBadge({
-  status,
-  label,
-}: {
-  status: ToolAttempt['status']
-  label: string
-}) {
+function ToolStatusBadge({ status, label }: { status: ToolAttempt['status']; label: string }) {
   const colors: Record<string, string> = {
     queued: 'bg-muted text-muted-foreground',
     waitingPermission: 'bg-yellow-100 text-yellow-800',

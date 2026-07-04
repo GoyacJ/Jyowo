@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { DecisionRequestState, DecisionOption } from '@/shared/tauri/commands'
 import { cn } from '@/shared/lib/utils'
+import type { DecisionOption, DecisionRequestState } from '@/shared/tauri/commands'
 
 export function DecisionPanel({
   conversationId,
@@ -21,8 +21,7 @@ export function DecisionPanel({
   const { t } = useTranslation('conversation')
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null)
   const [confirmationText, setConfirmationText] = useState('')
-  const canResolve =
-    decision.status === 'pending' || decision.status === 'failed'
+  const canResolve = decision.status === 'pending' || decision.status === 'failed'
   const isSubmitting = decision.status === 'submitting'
 
   const riskLabel = t(`timeline.riskLevel.${decision.riskLevel}`)
@@ -33,6 +32,7 @@ export function DecisionPanel({
       aria-live="polite"
       className="grid gap-3 rounded-md bg-muted px-3 py-3 text-sm"
       data-permission-request-id={decision.requestId}
+      role="status"
     >
       {/* Header: operation + target + risk */}
       <div className="flex flex-wrap items-center gap-2">
@@ -41,15 +41,13 @@ export function DecisionPanel({
         </span>
         <span className="font-medium">{decision.target.label}</span>
         {decision.target.secondaryLabel ? (
-          <span className="text-muted-foreground text-xs">
-            {decision.target.secondaryLabel}
-          </span>
+          <span className="text-muted-foreground text-xs">{decision.target.secondaryLabel}</span>
         ) : null}
         <RiskBadge level={decision.riskLevel} label={riskLabel} />
       </div>
 
       {/* Reason */}
-      {decision.reason ? (
+      {canResolve && decision.reason ? (
         <p className="text-muted-foreground text-xs">{decision.reason}</p>
       ) : null}
 
@@ -102,12 +100,11 @@ export function DecisionPanel({
       {canResolve ? (
         <div className="flex gap-2">
           <button
+            aria-label={t('timeline.deny')}
             className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-background focus-visible:ring-2 focus-visible:ring-ring"
             disabled={isSubmitting}
             onClick={() => {
-              const denyOption = decision.decisionOptions.find(
-                (o) => o.decision === 'deny',
-              )
+              const denyOption = decision.decisionOptions.find((o) => o.decision === 'deny')
               onResolve?.({
                 conversationId,
                 requestId: decision.requestId,
@@ -120,6 +117,7 @@ export function DecisionPanel({
             {t('timeline.deny')}
           </button>
           <button
+            aria-label={t('timeline.approve')}
             className="rounded-md bg-primary px-3 py-1.5 text-primary-foreground text-xs focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
             disabled={
               isSubmitting ||
@@ -147,8 +145,8 @@ export function DecisionPanel({
             {selectedOptionId
               ? t('timeline.approveWithOption', {
                   label:
-                    decision.decisionOptions.find((o) => o.id === selectedOptionId)
-                      ?.label ?? t('timeline.approve'),
+                    decision.decisionOptions.find((o) => o.id === selectedOptionId)?.label ??
+                    t('timeline.approve'),
                 })
               : t('timeline.approve')}
           </button>
@@ -175,10 +173,7 @@ function DecisionOptionButton({
   onSelect: (id: string) => void
 }) {
   const { t } = useTranslation('conversation')
-  const decisionLabel =
-    option.decision === 'approve'
-      ? t('timeline.approve')
-      : t('timeline.deny')
+  const decisionLabel = option.decision === 'approve' ? t('timeline.approve') : t('timeline.deny')
   const lifetimeLabel = t(`timeline.lifetime.${option.lifetime}`)
 
   return (
@@ -186,9 +181,7 @@ function DecisionOptionButton({
       aria-pressed={selected}
       className={cn(
         'rounded-md border px-3 py-2 text-left text-xs transition-colors focus-visible:ring-2 focus-visible:ring-ring',
-        selected
-          ? 'border-primary bg-primary/10'
-          : 'border-border hover:bg-background',
+        selected ? 'border-primary bg-primary/10' : 'border-border hover:bg-background',
       )}
       onClick={() => onSelect(option.id)}
       type="button"
@@ -212,19 +205,13 @@ function RiskBadge({ level, label }: { level: string; label: string }) {
     critical: 'bg-red-100 text-red-800',
   }
   return (
-    <span
-      className={cn('rounded px-1.5 py-0.5 font-medium text-xs', colors[level] ?? 'bg-muted')}
-    >
+    <span className={cn('rounded px-1.5 py-0.5 font-medium text-xs', colors[level] ?? 'bg-muted')}>
       {label}
     </span>
   )
 }
 
-function DataExposureInfo({
-  exposure,
-}: {
-  exposure: DecisionRequestState['dataExposure']
-}) {
+function DataExposureInfo({ exposure }: { exposure: DecisionRequestState['dataExposure'] }) {
   const { t } = useTranslation('conversation')
   const flags: string[] = []
   if (exposure.sendsWorkspaceData) flags.push(t('timeline.exposure.workspaceData'))

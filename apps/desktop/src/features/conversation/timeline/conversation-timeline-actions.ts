@@ -1,5 +1,9 @@
+import type {
+  ConversationCursor,
+  ConversationTurn,
+  ConversationTurnCursor,
+} from '@/shared/tauri/commands'
 import type { ComposerSubmitPayload } from '../Composer'
-import type { ConversationTurn, ConversationTurnCursor, ConversationCursor } from '@/shared/tauri/commands'
 
 export type ConversationTimelineAction =
   | {

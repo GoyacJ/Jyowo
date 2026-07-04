@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import { appI18n } from '@/shared/i18n/i18n'
 import type { AgentActivitySegment } from '@/shared/tauri/commands'
+import { permissionState } from '@/testing/conversation-worktree-builders'
 
 import { AgentActivitySegmentView } from './AgentActivitySegment'
 
@@ -102,12 +103,12 @@ describe('AgentActivitySegmentView', () => {
         segment={{
           ...baseSegment,
           status: 'waitingPermission',
-          permission: {
+          permission: permissionState({
             id: 'permission:req-1',
             requestId: 'req-1',
             status: 'pending',
-            summary: 'Needs approval to continue.',
-          },
+            reason: 'Needs approval to continue.',
+          }),
         }}
         turnId="turn-1"
       />,
@@ -130,12 +131,12 @@ describe('AgentActivitySegmentView', () => {
           agentId: 'bg-agent-1',
           role: 'Background worker',
           status: 'waitingPermission',
-          permission: {
+          permission: permissionState({
             id: 'permission:req-1',
             requestId: 'req-1',
             status: 'pending',
-            summary: 'Needs approval to continue.',
-          },
+            reason: 'Needs approval to continue.',
+          }),
         }}
         turnId="turn-1"
       />,

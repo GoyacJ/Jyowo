@@ -23,7 +23,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
   const setContextPanelCollapsed = useUiStore((state) => state.setContextPanelCollapsed)
   const requestTimelineScroll = useUiStore((state) => state.requestTimelineScroll)
-  const setWorkbenchSelection = useUiStore((state) => state.setWorkbenchSelection)
   const currentPath = useRouterState({
     select: (state) => state.location.pathname,
   })
@@ -42,7 +41,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         ? { conversationId: selectedConversationId }
         : {}
   const contextSnapshot = useContextSnapshot(contextRequest, { enabled: contextVisible })
-  const workbenchSelection = useUiStore((state) => state.workbenchSelection)
   const sidebarWidth = sidebarCollapsed || compactSidebar ? '48px' : '248px'
   const showInspector = inspectorOpen
   const showContext = contextVisible
@@ -94,25 +92,14 @@ export function AppShell({ children }: { children: ReactNode }) {
               <CommandIcon className="size-4" />
             </Button>
             <Button
-              aria-label={
-                inspectorOpen
-                  ? t('actions.closeInspector')
-                  : t('actions.openInspector')
-              }
+              aria-label={inspectorOpen ? t('actions.closeInspector') : t('actions.openInspector')}
               className="size-8"
-              onClick={() => {
-                if (inspectorOpen) {
-                  setWorkbenchSelection(null)
-                }
-                setInspectorOpen(!inspectorOpen)
-              }}
+              onClick={() => setInspectorOpen(!inspectorOpen)}
               size="icon"
               type="button"
               variant="outline"
             >
-              <PanelRightOpen
-                className={`size-4 ${inspectorOpen ? 'rotate-180' : ''}`}
-              />
+              <PanelRightOpen className={`size-4 ${inspectorOpen ? 'rotate-180' : ''}`} />
             </Button>
           </header>
           <main className="min-h-0 min-w-0 overflow-hidden px-6 pb-6 xl:px-8">{children}</main>

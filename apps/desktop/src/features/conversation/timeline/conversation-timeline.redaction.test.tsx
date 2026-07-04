@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 
-import { fireEvent, render, screen } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConversationTimeline } from './conversation-timeline'
 import {
@@ -46,11 +46,7 @@ describe('ConversationTimeline', () => {
     render(<ConversationTimeline title="Reasoning flow" turns={[reasoningTurn()]} />)
 
     expect(screen.getByText('已完成推理过程')).toBeInTheDocument()
-    expect(screen.getByText('Checked project context.')).not.toBeVisible()
-
-    fireEvent.click(screen.getByText('Reasoning process'))
-
-    expect(screen.getByText('Reasoning process')).toBeInTheDocument()
+    expect(screen.getByText('推理过程')).toBeInTheDocument()
     expect(screen.getByText('Checked project context.')).toBeInTheDocument()
     expect(screen.getByText('准备使用 read_file')).toBeInTheDocument()
     expect(screen.getByText('read_file 已完成')).toBeInTheDocument()

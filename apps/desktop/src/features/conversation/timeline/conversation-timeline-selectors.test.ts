@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ConversationTurn } from '@/shared/tauri/commands'
+import { assistantWork, permissionState } from '@/testing/conversation-worktree-builders'
 import {
   selectComposerMode,
   selectPendingPermissions,
@@ -11,45 +12,32 @@ import { createConversationTimelineState } from './conversation-timeline-store'
 
 describe('conversation timeline selectors', () => {
   it('returns projected turns as the timeline model', () => {
-    const state = {
-      ...createConversationTimelineState('conversation-001'),
-      turns: [turn({ id: 'turn:user-001' })],
-    }
+    const state = stateWithTurns([turn({ id: 'turn:user-001' })])
 
-    expect(selectTurns(state)).toEqual(state.turns)
-    expect(selectTurnGroups(state.turns)).toEqual([
-      { turnId: 'turn:user-001', turns: [state.turns[0]] },
+    expect(selectTurns(state)).toEqual(state.pages[0].turns)
+    expect(selectTurnGroups(state.pages[0].turns)).toEqual([
+      { turnId: 'turn:user-001', turns: [state.pages[0].turns[0]] },
     ])
   })
 
   it('derives composer mode from assistant work status and nested request segments', () => {
-    expect(
-      selectComposerMode({
-        ...createConversationTimelineState('conversation-001'),
-        turns: [turn({ assistantStatus: 'running' })],
-      }),
-    ).toEqual({ kind: 'running-disabled', canCancel: true })
+    expect(selectComposerMode(stateWithTurns([turn({ assistantStatus: 'running' })]))).toEqual({
+      kind: 'running-disabled',
+      canCancel: true,
+    })
 
     expect(
-      selectComposerMode({
-        ...createConversationTimelineState('conversation-001'),
-        turns: [turn({ segmentKind: 'clarificationRequest' })],
-      }),
+      selectComposerMode(stateWithTurns([turn({ segmentKind: 'clarificationRequest' })])),
     ).toEqual({ kind: 'clarification-reply', segmentId: 'segment:clarification:request-001' })
 
-    expect(
-      selectComposerMode({
-        ...createConversationTimelineState('conversation-001'),
-        turns: [turn({ assistantStatus: 'failed' })],
-      }),
-    ).toEqual({ kind: 'retry', turnId: 'turn:user-001' })
+    expect(selectComposerMode(stateWithTurns([turn({ assistantStatus: 'failed' })]))).toEqual({
+      kind: 'retry',
+      turnId: 'turn:user-001',
+    })
   })
 
   it('selects pending permissions nested under tool attempts', () => {
-    const state = {
-      ...createConversationTimelineState('conversation-001'),
-      turns: [turn({ toolPermissionStatus: 'pending' })],
-    }
+    const state = stateWithTurns([turn({ toolPermissionStatus: 'pending' })])
 
     expect(selectPendingPermissions(state)).toEqual([
       expect.objectContaining({
@@ -62,10 +50,9 @@ describe('conversation timeline selectors', () => {
   })
 
   it('selects pending permissions nested under agent activity segments', () => {
-    const state = {
-      ...createConversationTimelineState('conversation-001'),
-      turns: [turn({ segmentKind: 'agentActivity', agentActivityPermissionStatus: 'pending' })],
-    }
+    const state = stateWithTurns([
+      turn({ segmentKind: 'agentActivity', agentActivityPermissionStatus: 'pending' }),
+    ])
 
     expect(selectPendingPermissions(state)).toEqual([
       expect.objectContaining({
@@ -82,6 +69,13 @@ describe('conversation timeline selectors', () => {
     ])
   })
 })
+
+function stateWithTurns(turns: ConversationTurn[]) {
+  return {
+    ...createConversationTimelineState('conversation-001'),
+    pages: [{ cursor: null, turns }],
+  }
+}
 
 function turn(input: {
   agentActivityPermissionStatus?: 'pending' | 'approved'
@@ -100,7 +94,7 @@ function turn(input: {
       body: 'Prompt',
       timestamp: '2026-06-17T00:00:00.000Z',
     },
-    assistant: {
+    assistant: assistantWork({
       id: 'assistant:run-001',
       runId: 'run-001',
       status: input.assistantStatus ?? 'complete',
@@ -126,11 +120,12 @@ function turn(input: {
                   role: 'Reviewer',
                   taskSummary: 'Review recent changes',
                   status: 'waitingPermission',
-                  permission: {
+                  permission: permissionState({
                     id: 'permission:request-agent-001',
                     requestId: 'request-agent-001',
                     status: input.agentActivityPermissionStatus ?? 'approved',
-                  },
+                    reason: 'Review recent changes',
+                  }),
                 },
               ]
             : [
@@ -145,16 +140,17 @@ function turn(input: {
                       toolUseId: 'tool-use-001',
                       toolName: 'read_file',
                       status: 'waitingPermission',
-                      permission: {
+                      permission: permissionState({
                         id: 'permission:request-001',
                         requestId: 'request-001',
                         toolUseId: 'tool-use-001',
                         status: input.toolPermissionStatus ?? 'approved',
-                      },
+                        reason: 'Read workspace file',
+                      }),
                     },
                   ],
                 },
               ],
-    },
+    }),
   }
 }

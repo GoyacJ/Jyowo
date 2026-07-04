@@ -34,6 +34,11 @@ export function ToolAttemptRow({
   const { t } = useTranslation('conversation')
   const eventRef = attempt.eventRefs?.[0]
   const executionStatus = t(`timeline.toolStatus.${attempt.status}`)
+  const permissionStatus = attempt.permission
+    ? t('timeline.permissionStatus', {
+        status: t(`timeline.permissionStatusLabel.${attempt.permission.status}`),
+      })
+    : null
   const disclosureId = `tool-attempt:${conversationId}:${runId}:${turnId}:${segmentId}:${attempt.id}`
   const storedOpen = useUiStore((state) => state.evidenceDisclosureOpen[disclosureId])
   const setDisclosureOpen = useUiStore((state) => state.setEvidenceDisclosureOpen)
@@ -62,11 +67,19 @@ export function ToolAttemptRow({
             ) : (
               <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
             )}
-            <ToolAttemptTitle executionStatus={executionStatus} toolName={attempt.toolName} />
+            <ToolAttemptTitle
+              executionStatus={executionStatus}
+              permissionStatus={permissionStatus}
+              toolName={attempt.toolName}
+            />
           </button>
         ) : (
           <div className={cn('flex min-w-0 items-center gap-1.5', hasDetails ? 'pl-5' : null)}>
-            <ToolAttemptTitle executionStatus={executionStatus} toolName={attempt.toolName} />
+            <ToolAttemptTitle
+              executionStatus={executionStatus}
+              permissionStatus={permissionStatus}
+              toolName={attempt.toolName}
+            />
           </div>
         )}
         {eventRef ? (
@@ -101,9 +114,11 @@ export function ToolAttemptRow({
 
 function ToolAttemptTitle({
   executionStatus,
+  permissionStatus,
   toolName,
 }: {
   executionStatus: string
+  permissionStatus: string | null
   toolName: string
 }) {
   const { t } = useTranslation('conversation')
@@ -114,6 +129,9 @@ function ToolAttemptTitle({
       <span className="text-muted-foreground text-xs">
         {t('timeline.executionStatus', { status: executionStatus })}
       </span>
+      {permissionStatus ? (
+        <span className="text-muted-foreground text-xs">{permissionStatus}</span>
+      ) : null}
     </span>
   )
 }

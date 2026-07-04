@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
-import { WorkbenchInspector } from './WorkbenchInspector'
 import { uiStore } from '@/shared/state/ui-store'
 import type { WorkbenchSelection } from '@/shared/state/workbench-selection'
+import { WorkbenchInspector } from './WorkbenchInspector'
 
 function WithSelection({ selection }: { selection: WorkbenchSelection | null }) {
   useEffect(() => {
@@ -28,9 +28,7 @@ export const Context = {
 
 export const Decision = {
   render: () => (
-    <WithSelection
-      selection={{ kind: 'decision', conversationId: 'conv-1', requestId: 'req-1' }}
-    />
+    <WithSelection selection={{ kind: 'decision', conversationId: 'conv-1', requestId: 'req-1' }} />
   ),
 }
 
@@ -46,9 +44,7 @@ export const Command = {
 
 export const Diff = {
   render: () => (
-    <WithSelection
-      selection={{ kind: 'diff', conversationId: 'conv-1', changeSetId: 'cs-1' }}
-    />
+    <WithSelection selection={{ kind: 'diff', conversationId: 'conv-1', changeSetId: 'cs-1' }} />
   ),
 }
 

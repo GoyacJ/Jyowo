@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { assistantWork, permissionState } from '@/testing/conversation-worktree-builders'
 import type { ConversationTimelineAction } from './conversation-timeline-actions'
 import { selectTurns } from './conversation-timeline-selectors'
 import {
@@ -41,34 +42,32 @@ describe('conversationTimelineStore', () => {
     root = conversationTimelineRootReducerFromAction(root, {
       conversationId: 'conversation-a',
       action: {
-        type: 'hydrateWorktree',
-        page: {
-          turns: [
-            {
-              id: 'turn:user-message-001',
-              conversationId: 'conversation-a',
-              position: 0,
-              user: {
-                id: 'user:user-message-001',
-                messageId: 'user-message-001',
-                clientMessageId: 'client-a',
-                body: 'A',
-                timestamp,
-              },
-              assistant: {
-                id: 'assistant:run-001',
-                runId: 'run-001',
-                status: 'complete',
-                segments: [],
-              },
+        type: 'hydrateInitialPage',
+        turns: [
+          {
+            id: 'turn:user-message-001',
+            conversationId: 'conversation-a',
+            position: 0,
+            user: {
+              id: 'user:user-message-001',
+              messageId: 'user-message-001',
+              clientMessageId: 'client-a',
+              body: 'A',
+              timestamp,
             },
-          ],
-          pageCursor: { turnId: 'turn:user-message-001', position: 0 },
-          eventCursor: cursor(),
-          hasMoreBefore: false,
-          hasMoreAfter: false,
-          gap: false,
-        },
+            assistant: assistantWork({
+              id: 'assistant:run-001',
+              runId: 'run-001',
+              status: 'complete',
+              segments: [],
+            }),
+          },
+        ],
+        pageCursor: { turnId: 'turn:user-message-001', position: 0 },
+        eventCursor: cursor(),
+        hasMoreBefore: false,
+        hasMoreAfter: false,
+        gap: false,
       },
     })
 
@@ -98,33 +97,31 @@ describe('conversationTimelineStore', () => {
     root = conversationTimelineRootReducerFromAction(root, {
       conversationId: 'conversation-a',
       action: {
-        type: 'hydrateWorktree',
-        page: {
-          turns: [
-            {
-              id: 'turn:user-message-001',
-              conversationId: 'conversation-a',
-              position: 0,
-              user: {
-                id: 'user:user-message-001',
-                messageId: 'user-message-001',
-                body: 'A',
-                timestamp,
-              },
-              assistant: {
-                id: 'assistant:run-001',
-                runId: 'run-001',
-                status: 'complete',
-                segments: [],
-              },
+        type: 'hydrateInitialPage',
+        turns: [
+          {
+            id: 'turn:user-message-001',
+            conversationId: 'conversation-a',
+            position: 0,
+            user: {
+              id: 'user:user-message-001',
+              messageId: 'user-message-001',
+              body: 'A',
+              timestamp,
             },
-          ],
-          pageCursor: { turnId: 'turn:user-message-001', position: 0 },
-          eventCursor: cursor(),
-          hasMoreBefore: false,
-          hasMoreAfter: false,
-          gap: false,
-        },
+            assistant: assistantWork({
+              id: 'assistant:run-001',
+              runId: 'run-001',
+              status: 'complete',
+              segments: [],
+            }),
+          },
+        ],
+        pageCursor: { turnId: 'turn:user-message-001', position: 0 },
+        eventCursor: cursor(),
+        hasMoreBefore: false,
+        hasMoreAfter: false,
+        gap: false,
       },
     })
 
@@ -214,55 +211,54 @@ describe('conversationTimelineStore', () => {
     root = conversationTimelineRootReducerFromAction(root, {
       conversationId: 'conversation-a',
       action: {
-        type: 'hydrateWorktree',
-        page: {
-          turns: [
-            {
-              id: 'turn:user-message-001',
-              conversationId: 'conversation-a',
-              position: 0,
-              user: {
-                id: 'user:user-message-001',
-                messageId: 'user-message-001',
-                clientMessageId: 'client-a',
-                body: 'A',
-                timestamp,
-              },
-              assistant: {
-                id: 'assistant:run-001',
-                runId: 'run-001',
-                status: 'running',
-                segments: [
-                  {
-                    kind: 'toolGroup',
-                    id: 'segment:tool-group:001',
-                    order: 0,
-                    attempts: [
-                      {
-                        id: 'tool-attempt-001',
-                        order: 0,
-                        toolUseId: 'tool-use-001',
-                        toolName: 'bash',
-                        status: 'waitingPermission',
-                        permission: {
-                          id: 'permission-001',
-                          requestId: 'permission-request-001',
-                          toolUseId: 'tool-use-001',
-                          status: 'pending',
-                        },
-                      },
-                    ],
-                  },
-                ],
-              },
+        type: 'hydrateInitialPage',
+        turns: [
+          {
+            id: 'turn:user-message-001',
+            conversationId: 'conversation-a',
+            position: 0,
+            user: {
+              id: 'user:user-message-001',
+              messageId: 'user-message-001',
+              clientMessageId: 'client-a',
+              body: 'A',
+              timestamp,
             },
-          ],
-          pageCursor: { turnId: 'turn:user-message-001', position: 0 },
-          eventCursor: cursor(),
-          hasMoreBefore: false,
-          hasMoreAfter: false,
-          gap: false,
-        },
+            assistant: assistantWork({
+              id: 'assistant:run-001',
+              runId: 'run-001',
+              status: 'running',
+              segments: [
+                {
+                  kind: 'toolGroup',
+                  id: 'segment:tool-group:001',
+                  order: 0,
+                  attempts: [
+                    {
+                      id: 'tool-attempt-001',
+                      order: 0,
+                      toolUseId: 'tool-use-001',
+                      toolName: 'bash',
+                      status: 'waitingPermission',
+                      permission: permissionState({
+                        id: 'permission-001',
+                        requestId: 'permission-request-001',
+                        toolUseId: 'tool-use-001',
+                        status: 'pending',
+                        reason: 'Run shell command',
+                      }),
+                    },
+                  ],
+                },
+              ],
+            }),
+          },
+        ],
+        pageCursor: { turnId: 'turn:user-message-001', position: 0 },
+        eventCursor: cursor(),
+        hasMoreBefore: false,
+        hasMoreAfter: false,
+        gap: false,
       },
     })
     root = conversationTimelineRootReducerFromAction(root, {
@@ -282,7 +278,7 @@ describe('conversationTimelineStore', () => {
     }
 
     expect(segment.attempts[0].permission?.status).toBe('failed')
-    expect(segment.attempts[0].permission?.summary).toBe('[REDACTED]')
+    expect(segment.attempts[0].permission?.reason).toBe('[REDACTED]')
   })
 
   it('tracks raw event stream refresh requests without storing raw events', () => {

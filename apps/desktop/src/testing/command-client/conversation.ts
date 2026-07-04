@@ -5,19 +5,18 @@ import type {
   ListActivityResponse,
   ListConversationsResponse,
   PageConversationWorktreeResponse,
-  RunModelSnapshot,
   SubscribeConversationEventsResponse,
 } from '@/shared/tauri/commands'
+import {
+  artifactRevision,
+  assistantWork,
+  fixtureRunModelSnapshot,
+  permissionState,
+} from '@/testing/conversation-worktree-builders'
 
 import { timestamp } from './base'
 
-export const fixtureRunModelSnapshot: RunModelSnapshot = {
-  modelConfigId: 'provider-config-001',
-  providerId: 'openai',
-  modelId: 'gpt-4.1',
-  displayName: 'GPT-4.1',
-  protocol: 'responses',
-}
+export { fixtureRunModelSnapshot } from '@/testing/conversation-worktree-builders'
 
 export const fixtureListConversations: ListConversationsResponse = {
   conversations: [
@@ -104,7 +103,7 @@ export const fixtureConversationWorktreePage: PageConversationWorktreeResponse =
         body: 'Restore the product shell',
         timestamp: '2026-06-17T02:21:00.000Z',
       },
-      assistant: {
+      assistant: assistantWork({
         id: 'assistant:run-001',
         runId: 'run-001',
         model: fixtureRunModelSnapshot,
@@ -157,13 +156,13 @@ export const fixtureConversationWorktreePage: PageConversationWorktreeResponse =
                 toolUseId: 'tool-fixture-read',
                 toolName: 'read_file',
                 status: 'completed',
-                permission: {
+                permission: permissionState({
                   id: 'permission:01HZ0000000000000000000001',
                   requestId: '01HZ0000000000000000000001',
                   toolUseId: 'tool-fixture-read',
                   status: 'approved',
-                  summary: 'Approved once',
-                },
+                  reason: 'Approved once',
+                }),
               },
               {
                 id: 'tool:tool-fixture-verify',
@@ -171,18 +170,18 @@ export const fixtureConversationWorktreePage: PageConversationWorktreeResponse =
                 toolUseId: 'tool-fixture-verify',
                 toolName: 'local_verification',
                 status: 'waitingPermission',
-                permission: {
+                permission: permissionState({
                   id: 'permission:01HZ0000000000000000000002',
                   requestId: '01HZ0000000000000000000002',
                   toolUseId: 'tool-fixture-verify',
                   status: 'pending',
-                  summary: 'Awaiting approval',
-                },
+                  reason: 'Awaiting approval',
+                }),
               },
             ],
           },
         ],
-      },
+      }),
     },
     {
       id: 'turn:message-003',
@@ -194,7 +193,7 @@ export const fixtureConversationWorktreePage: PageConversationWorktreeResponse =
         body: 'Run the checks',
         timestamp: '2026-06-17T02:22:00.000Z',
       },
-      assistant: {
+      assistant: assistantWork({
         id: 'assistant:run-002',
         runId: 'run-002',
         model: fixtureRunModelSnapshot,
@@ -223,7 +222,7 @@ export const fixtureConversationWorktreePage: PageConversationWorktreeResponse =
             body: 'The checks need follow-up.',
           },
         ],
-      },
+      }),
     },
   ],
   pageCursor: {
@@ -267,7 +266,7 @@ export function worktreePageForFixtureRun(
       body: prompt,
       timestamp,
     },
-    assistant: {
+    assistant: assistantWork({
       id: 'assistant:run-001',
       runId: 'run-001',
       model: fixtureRunModelSnapshot,
@@ -320,14 +319,14 @@ export function worktreePageForFixtureRun(
               toolUseId: 'tool-fixture-verify',
               toolName: 'Run local verification',
               status: status === 'running' ? 'waitingPermission' : 'completed',
-              permission: {
+              permission: permissionState({
                 id: 'permission:01HZ0000000000000000000001',
                 requestId: '01HZ0000000000000000000001',
                 toolUseId: 'tool-fixture-verify',
                 status: status === 'running' ? 'pending' : 'approved',
-                summary:
+                reason:
                   status === 'running' ? 'Awaiting approval' : 'Approved for this verification run',
-              },
+              }),
             },
           ],
         },
@@ -337,6 +336,14 @@ export function worktreePageForFixtureRun(
           order: 2,
           artifactId: 'artifact-desktop-foundation',
           title: 'Desktop foundation created',
+          revision: artifactRevision({
+            artifactId: 'artifact-desktop-foundation',
+            revisionId: 'revision-desktop-foundation-001',
+            kind: 'code',
+            sourceRunId: 'run-001',
+            title: 'Desktop foundation created',
+            contentRef: 'evidence-artifact-desktop-foundation',
+          }),
         },
         {
           kind: 'text',
@@ -346,7 +353,7 @@ export function worktreePageForFixtureRun(
           body: 'The setup is ready for review.',
         },
       ],
-    },
+    }),
   }
 
   return {
@@ -377,7 +384,7 @@ export const agentOrchestrationProjectedWorktreePage: PageConversationWorktreeRe
         body: 'Delegate implementation',
         timestamp,
       },
-      assistant: {
+      assistant: assistantWork({
         id: 'assistant:run-agent-orchestration',
         runId: 'run-agent-orchestration',
         model: fixtureRunModelSnapshot,
@@ -430,7 +437,7 @@ export const agentOrchestrationProjectedWorktreePage: PageConversationWorktreeRe
             },
           },
         ],
-      },
+      }),
     },
   ],
   pageCursor: {

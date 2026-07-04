@@ -11,12 +11,7 @@ type ComposerEditorProps = {
 const minHeight = 64
 const maxHeight = 160
 
-export function ComposerEditor({
-  disabled,
-  value,
-  onChange,
-  onSubmit,
-}: ComposerEditorProps) {
+export function ComposerEditor({ disabled, value, onChange, onSubmit }: ComposerEditorProps) {
   const { t } = useTranslation('conversation')
   const ref = useRef<HTMLTextAreaElement>(null)
 

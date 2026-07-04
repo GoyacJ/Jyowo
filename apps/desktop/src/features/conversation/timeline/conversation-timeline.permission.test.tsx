@@ -4,9 +4,9 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { appI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
+import { DecisionPanel } from '../evidence/DecisionPanel'
 import { ConversationTimeline } from './conversation-timeline'
 import { resetTimelineTestState, toolEvidenceTurn, turn } from './conversation-timeline-test-utils'
-import { DecisionPanel } from '../evidence/DecisionPanel'
 
 describe('ConversationTimeline', () => {
   afterEach(() => {
@@ -21,7 +21,7 @@ describe('ConversationTimeline', () => {
     if (toolGroup?.kind === 'toolGroup' && toolGroup.attempts[0].permission) {
       toolGroup.attempts[0].permission = {
         ...toolGroup.attempts[0].permission,
-        summary: '需要批准后才能继续。',
+        reason: '需要批准后才能继续。',
       }
     }
 
@@ -58,9 +58,21 @@ describe('ConversationTimeline', () => {
           reason: 'Destructive operation',
           policy: { mode: 'default' },
           decisionOptions: [
-            { id: 'opt-1', decision: 'approve', label: 'Approve once', lifetime: 'once', matcher: { kind: 'exactCommand', label: 'rm' }, requiresConfirmation: false },
+            {
+              id: 'opt-1',
+              decision: 'approve',
+              label: 'Approve once',
+              lifetime: 'once',
+              matcher: { kind: 'exactCommand', label: 'rm' },
+              requiresConfirmation: false,
+            },
           ],
-          dataExposure: { sendsWorkspaceData: false, sendsNetworkData: false, touchesPrivatePath: true, secretRisk: 'none' },
+          dataExposure: {
+            sendsWorkspaceData: false,
+            sendsNetworkData: false,
+            touchesPrivatePath: true,
+            secretRisk: 'none',
+          },
           confirmation: { expectedText: 'DELETE', label: 'Type DELETE to confirm' },
         }}
         onResolve={onResolve}
@@ -71,8 +83,8 @@ describe('ConversationTimeline', () => {
       target: { value: 'DELETE' },
     })
     // Select the option first, then approve
-    fireEvent.click(screen.getByText('Approve once'))
-    fireEvent.click(screen.getByRole('button', { name: /approve/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Approve once/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
 
     expect(onResolve).toHaveBeenCalledWith({
       conversationId: 'conversation-001',

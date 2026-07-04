@@ -1,6 +1,5 @@
 import { X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { DecisionPanel } from '@/features/conversation/evidence/DecisionPanel'
 import { useUiStore } from '@/shared/state/ui-store'
 import type { WorkbenchSelection } from '@/shared/state/workbench-selection'
 import { Button } from '@/shared/ui/button'
@@ -78,7 +77,6 @@ export function WorkbenchInspector() {
   const selection = useUiStore((state) => state.workbenchSelection)
   const inspectorOpen = useUiStore((state) => state.inspectorOpen)
   const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
-  const setWorkbenchSelection = useUiStore((state) => state.setWorkbenchSelection)
 
   if (!inspectorOpen) {
     return null
@@ -97,10 +95,7 @@ export function WorkbenchInspector() {
         <Button
           aria-label={t('actions.closeInspector')}
           className="size-7"
-          onClick={() => {
-            setWorkbenchSelection(null)
-            setInspectorOpen(false)
-          }}
+          onClick={() => setInspectorOpen(false)}
           size="icon"
           type="button"
           variant="ghost"

@@ -1,5 +1,5 @@
-import { DecisionPanel } from './DecisionPanel'
 import type { DecisionRequestState } from '@/shared/tauri/commands'
+import { DecisionPanel } from './DecisionPanel'
 
 function makeDecision(overrides?: Partial<DecisionRequestState>): DecisionRequestState {
   return {
@@ -12,18 +12,72 @@ function makeDecision(overrides?: Partial<DecisionRequestState>): DecisionReques
     reason: 'Shell command requires approval',
     policy: { mode: 'default' },
     decisionOptions: [
-      { id: 'opt-1', decision: 'approve', label: 'Allow once', lifetime: 'once', matcher: { kind: 'exactCommand', label: 'cargo test' }, requiresConfirmation: false },
-      { id: 'opt-2', decision: 'approve', label: 'Allow all shell', lifetime: 'session', matcher: { kind: 'toolName', label: 'shell' }, requiresConfirmation: false },
+      {
+        id: 'opt-1',
+        decision: 'approve',
+        label: 'Allow once',
+        lifetime: 'once',
+        matcher: { kind: 'exactCommand', label: 'cargo test' },
+        requiresConfirmation: false,
+      },
+      {
+        id: 'opt-2',
+        decision: 'approve',
+        label: 'Allow all shell',
+        lifetime: 'session',
+        matcher: { kind: 'toolName', label: 'shell' },
+        requiresConfirmation: false,
+      },
     ],
-    dataExposure: { sendsWorkspaceData: false, sendsNetworkData: false, touchesPrivatePath: false, secretRisk: 'none' },
+    dataExposure: {
+      sendsWorkspaceData: false,
+      sendsNetworkData: false,
+      touchesPrivatePath: false,
+      secretRisk: 'none',
+    },
     ...overrides,
   }
 }
 
 export default { component: DecisionPanel, title: 'Features/Evidence/DecisionPanel' }
 
-export const LowRisk = { render: () => <DecisionPanel conversationId="conv-1" decision={makeDecision({ riskLevel: 'low' })} /> }
-export const HighRisk = { render: () => <DecisionPanel conversationId="conv-1" decision={makeDecision({ riskLevel: 'high', confirmation: { expectedText: 'I understand', label: 'Type to confirm' } })} /> }
-export const Critical = { render: () => <DecisionPanel conversationId="conv-1" decision={makeDecision({ riskLevel: 'critical', reason: 'This action deletes files permanently' })} /> }
-export const Submitting = { render: () => <DecisionPanel conversationId="conv-1" decision={makeDecision({ status: 'submitting' })} /> }
-export const Failed = { render: () => <DecisionPanel conversationId="conv-1" decision={makeDecision({ status: 'failed', reason: 'Network timeout during submission' })} /> }
+export const LowRisk = {
+  render: () => (
+    <DecisionPanel conversationId="conv-1" decision={makeDecision({ riskLevel: 'low' })} />
+  ),
+}
+export const HighRisk = {
+  render: () => (
+    <DecisionPanel
+      conversationId="conv-1"
+      decision={makeDecision({
+        riskLevel: 'high',
+        confirmation: { expectedText: 'I understand', label: 'Type to confirm' },
+      })}
+    />
+  ),
+}
+export const Critical = {
+  render: () => (
+    <DecisionPanel
+      conversationId="conv-1"
+      decision={makeDecision({
+        riskLevel: 'critical',
+        reason: 'This action deletes files permanently',
+      })}
+    />
+  ),
+}
+export const Submitting = {
+  render: () => (
+    <DecisionPanel conversationId="conv-1" decision={makeDecision({ status: 'submitting' })} />
+  ),
+}
+export const Failed = {
+  render: () => (
+    <DecisionPanel
+      conversationId="conv-1"
+      decision={makeDecision({ status: 'failed', reason: 'Network timeout during submission' })}
+    />
+  ),
+}

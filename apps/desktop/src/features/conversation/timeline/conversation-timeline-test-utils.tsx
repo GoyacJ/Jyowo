@@ -1,11 +1,21 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, render } from '@testing-library/react'
 import type { ReactNode } from 'react'
+
 import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient, ConversationTurn, RunModelSnapshot } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
+import {
+  artifactRevision,
+  assistantWork,
+  changeSetFile,
+  commandDetail,
+  diffDetail,
+  permissionState,
+} from '@/testing/conversation-worktree-builders'
 
 export const timestamp = '2026-06-17T00:00:00.000Z'
+
 const openAiRunModelSnapshot: RunModelSnapshot = {
   modelConfigId: 'provider-config-001',
   providerId: 'openai',
@@ -13,6 +23,7 @@ const openAiRunModelSnapshot: RunModelSnapshot = {
   displayName: 'GPT-4.1',
   protocol: 'responses',
 }
+
 const minimaxRunModelSnapshot: RunModelSnapshot = {
   ...openAiRunModelSnapshot,
   modelConfigId: 'minimax-config',
@@ -60,18 +71,18 @@ export function turn(
       body: 'Prompt',
       timestamp,
     },
-    assistant: {
+    assistant: assistantWork({
       id: `assistant:run-${suffix}`,
       runId: `run-${suffix}`,
       model: openAiRunModelSnapshot,
       status: 'running',
       segments: [
         {
-          kind: 'thinking',
-          id: `segment:thinking:run-${suffix}`,
+          kind: 'process',
+          id: `segment:process:run-${suffix}`,
           order: 0,
           status: 'withheld',
-          summary: { text: '思考内容已折叠' },
+          summary: '思考内容已折叠',
         },
         {
           kind: 'toolGroup',
@@ -84,12 +95,12 @@ export function turn(
               toolUseId: `tool-use-${suffix}`,
               toolName: 'read_file',
               status: 'failed',
-              permission: {
+              permission: permissionState({
                 id: `permission:${permissionRequestId}`,
                 requestId: permissionRequestId,
                 toolUseId: `tool-use-${suffix}`,
                 status: 'approved',
-              },
+              }),
               failureSummary: '工具执行失败。可在详情中查看。',
               eventRefs: [
                 {
@@ -111,44 +122,44 @@ export function turn(
           body: finalBody,
         },
       ],
-    },
+    }),
   }
 }
 
 export function reasoningTurn(): ConversationTurn {
   return {
     ...turn('Final answer', 'reasoning'),
-    assistant: {
+    assistant: assistantWork({
       id: 'assistant:run-reasoning',
       runId: 'run-reasoning',
       status: 'complete',
       segments: [
         {
-          kind: 'thinking',
-          id: 'segment:thinking:run-reasoning',
+          kind: 'process',
+          id: 'segment:process:run-reasoning',
           order: 0,
           status: 'complete',
-          summary: { text: '已完成推理过程' },
+          summary: '已完成推理过程',
           steps: [
             {
-              id: 'thinking-step:run-reasoning:summary',
+              id: 'process-step:run-reasoning:summary',
               order: 0,
-              kind: 'reasoningSummary',
+              kind: 'reasoning',
               status: 'complete',
               title: '推理过程',
               body: 'Checked project context.',
             },
             {
-              id: 'thinking-step:run-reasoning:tool-plan:tool-1',
+              id: 'process-step:run-reasoning:tool-plan',
               order: 1,
-              kind: 'toolPlanning',
+              kind: 'tool',
               status: 'complete',
               title: '准备使用 read_file',
             },
             {
-              id: 'thinking-step:run-reasoning:tool-result:tool-1',
+              id: 'process-step:run-reasoning:tool-result',
               order: 2,
-              kind: 'toolResult',
+              kind: 'tool',
               status: 'complete',
               title: 'read_file 已完成',
             },
@@ -162,7 +173,7 @@ export function reasoningTurn(): ConversationTurn {
           body: 'Final answer',
         },
       ],
-    },
+    }),
   }
 }
 
@@ -177,18 +188,18 @@ export function minimaxTurn(): ConversationTurn {
       body: '帮我生成一张海报图',
       timestamp,
     },
-    assistant: {
+    assistant: assistantWork({
       id: 'assistant:run-minimax',
       runId: 'run-minimax',
       model: minimaxRunModelSnapshot,
       status: 'complete',
       segments: [
         {
-          kind: 'thinking',
-          id: 'segment:thinking:run-minimax',
+          kind: 'process',
+          id: 'segment:process:run-minimax',
           order: 0,
           status: 'running',
-          summary: { text: '正在检查可用的图像工具' },
+          summary: '正在检查可用的图像工具',
         },
         {
           kind: 'toolGroup',
@@ -201,12 +212,12 @@ export function minimaxTurn(): ConversationTurn {
               toolUseId: 'tool-minimax',
               toolName: 'MiniMaxTextToImage',
               status: 'failed',
-              permission: {
+              permission: permissionState({
                 id: 'permission:permission-minimax',
                 requestId: 'permission-minimax',
                 toolUseId: 'tool-minimax',
                 status: 'approved',
-              },
+              }),
               failureSummary: '工具执行失败。可在详情中查看。',
             },
           ],
@@ -218,6 +229,15 @@ export function minimaxTurn(): ConversationTurn {
           artifactId: 'artifact-minimax',
           title: '海报生成提示词',
           summary: '可复用的图像生成提示词已准备好。',
+          revision: artifactRevision({
+            artifactId: 'artifact-minimax',
+            revisionId: 'revision-minimax-001',
+            kind: 'document',
+            sourceRunId: 'run-minimax',
+            title: '海报生成提示词',
+            summary: '可复用的图像生成提示词已准备好。',
+            contentRef: 'evidence-artifact-minimax',
+          }),
         },
         {
           kind: 'text',
@@ -227,7 +247,7 @@ export function minimaxTurn(): ConversationTurn {
           body: '图像工具失败后，我保留了可复用的提示词和下一步建议。',
         },
       ],
-    },
+    }),
   }
 }
 
@@ -248,7 +268,7 @@ export function toolEvidenceTurn({
       body: '检查工具执行过程',
       timestamp,
     },
-    assistant: {
+    assistant: assistantWork({
       id: 'assistant:run-tool-evidence',
       runId,
       status: 'running',
@@ -264,12 +284,12 @@ export function toolEvidenceTurn({
               toolUseId: 'tool-read-file',
               toolName: 'read_file',
               status: 'completed',
-              permission: {
+              permission: permissionState({
                 id: 'permission:read-file',
                 requestId: 'permission-read-file',
                 toolUseId: 'tool-read-file',
                 status: 'approved',
-              },
+              }),
             },
             {
               id: 'tool:list-files',
@@ -299,17 +319,17 @@ export function toolEvidenceTurn({
               toolUseId: 'tool-write-file',
               toolName: 'write_file',
               status: 'waitingPermission',
-              permission: {
+              permission: permissionState({
                 id: 'permission:write-file',
                 requestId: 'permission-write-file',
                 toolUseId: 'tool-write-file',
                 status: 'pending',
-              },
+              }),
             },
           ],
         },
       ],
-    },
+    }),
   }
 }
 
@@ -324,7 +344,7 @@ export function processHistoryTurn(): ConversationTurn {
       body: '整理执行历史',
       timestamp,
     },
-    assistant: {
+    assistant: assistantWork({
       id: 'assistant:run-process-history',
       runId: 'run-process-history',
       status: 'complete',
@@ -366,13 +386,13 @@ export function processHistoryTurn(): ConversationTurn {
               kind: 'command',
               status: 'complete',
               title: '已运行历史命令',
-              detail: {
-                type: 'command',
+              detail: commandDetail({
                 command: 'rg "timeline" apps/desktop/src',
-                output: 'apps/desktop/src/features/conversation/timeline/conversation-timeline.tsx',
+                stdoutPreview:
+                  'apps/desktop/src/features/conversation/timeline/conversation-timeline.tsx',
                 exitCode: 0,
                 durationMs: 180,
-              },
+              }),
             },
             {
               id: 'process-step:test-failed',
@@ -380,13 +400,12 @@ export function processHistoryTurn(): ConversationTurn {
               kind: 'command',
               status: 'failed',
               title: '测试失败',
-              detail: {
-                type: 'command',
+              detail: commandDetail({
                 command: 'pnpm -C apps/desktop test',
-                output: '1 failed',
+                stdoutPreview: '1 failed',
                 exitCode: 1,
                 durationMs: 2100,
-              },
+              }),
             },
             {
               id: 'process-step:lint-non-zero',
@@ -394,18 +413,17 @@ export function processHistoryTurn(): ConversationTurn {
               kind: 'command',
               status: 'complete',
               title: 'lint 退出码非零',
-              detail: {
-                type: 'command',
+              detail: commandDetail({
                 command: 'pnpm -C apps/desktop lint',
-                output: 'lint errors',
+                stdoutPreview: 'lint errors',
                 exitCode: 2,
                 durationMs: 900,
-              },
+              }),
             },
           ],
         },
       ],
-    },
+    }),
   }
 }
 
@@ -420,7 +438,7 @@ export function imageProcessTurn(): ConversationTurn {
       body: '生成一张草鱼图片',
       timestamp,
     },
-    assistant: {
+    assistant: assistantWork({
       id: 'assistant:run-image',
       runId: 'run-image',
       status: 'complete',
@@ -458,13 +476,12 @@ export function imageProcessTurn(): ConversationTurn {
               kind: 'command',
               status: 'complete',
               title: '运行检查',
-              detail: {
-                type: 'command',
+              detail: commandDetail({
                 command: 'pnpm check:desktop',
-                output: 'passed',
+                stdoutPreview: 'passed',
                 exitCode: 0,
                 durationMs: 1200,
-              },
+              }),
             },
             {
               id: 'process-step:diff',
@@ -472,17 +489,18 @@ export function imageProcessTurn(): ConversationTurn {
               kind: 'diff',
               status: 'complete',
               title: '更新图片展示',
-              detail: {
-                type: 'diff',
+              detail: diffDetail({
+                id: 'change-set-image',
+                summary: '更新图片展示',
                 files: [
-                  {
+                  changeSetFile({
                     path: 'apps/desktop/src/features/conversation/timeline/artifact-segment-view.tsx',
                     addedLines: 1,
                     removedLines: 0,
                     preview: '+ render process preview',
-                  },
+                  }),
                 ],
-              },
+              }),
             },
             {
               id: 'process-step:artifact',
@@ -503,13 +521,6 @@ export function imageProcessTurn(): ConversationTurn {
           ],
         },
         {
-          kind: 'text',
-          id: 'segment:text:assistant-final-image',
-          order: 2,
-          messageId: 'assistant-final-image',
-          body: '图片已生成。',
-        },
-        {
           kind: 'artifact',
           id: 'segment:artifact:artifact-image-001',
           order: 1,
@@ -519,13 +530,30 @@ export function imageProcessTurn(): ConversationTurn {
           source: 'tool',
           title: 'Generated image',
           summary: 'Image artifact ready',
-          media: {
+          revision: artifactRevision({
+            artifactId: 'artifact-image-001',
+            revisionId: 'revision-image-001',
             kind: 'image',
-            mimeType: 'image/png',
-            sizeBytes: 68,
-          },
+            sourceRunId: 'run-image',
+            title: 'Generated image',
+            summary: 'Image artifact ready',
+            previewRef: 'evidence-preview-image-001',
+            contentRef: 'evidence-content-image-001',
+            media: {
+              kind: 'image',
+              mimeType: 'image/png',
+              sizeBytes: 68,
+            },
+          }),
+        },
+        {
+          kind: 'text',
+          id: 'segment:text:assistant-final-image',
+          order: 2,
+          messageId: 'assistant-final-image',
+          body: '图片已生成。',
         },
       ],
-    },
+    }),
   }
 }

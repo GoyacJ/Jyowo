@@ -1,5 +1,6 @@
 import type {
   AppInfo,
+  CommandClient,
   CreateAttachmentFromPathResponse,
   DeleteAutomationResponse,
   ExportMemoryItemsResponse,
@@ -96,15 +97,43 @@ export function wait(delayMs: number | undefined) {
   })
 }
 
+type TestCommandResponseOverride<TMethod> = TMethod extends (
+  ...args: infer Args
+) => Promise<infer Response>
+  ? Response | ((...args: Args) => Promise<Response> | Response)
+  : never
+
+function isResponseOverrideHandler<Args extends unknown[], Response>(
+  override: Response | ((...args: Args) => Promise<Response> | Response) | undefined,
+): override is (...args: Args) => Promise<Response> | Response {
+  return typeof override === 'function'
+}
+
+export async function resolveResponseOverride<Args extends unknown[], Response>(
+  override: Response | ((...args: Args) => Promise<Response> | Response) | undefined,
+  fallback: Response,
+  ...args: Args
+): Promise<Response> {
+  const response = isResponseOverrideHandler(override)
+    ? await override(...args)
+    : (override ?? fallback)
+  return cloneResponse(response)
+}
+
 export interface TestCommandClientOptions {
   appInfo?: AppInfo
   attachmentFromPath?: CreateAttachmentFromPathResponse
   contextSnapshot?: GetContextSnapshotResponse
   conversation?: GetConversationResponse
+  conversationCommandOutput?: TestCommandResponseOverride<
+    CommandClient['getConversationCommandOutput']
+  >
+  conversationDiffPatch?: TestCommandResponseOverride<CommandClient['getConversationDiffPatch']>
   conversations?: ListConversationsResponse
   executionSettings?: GetExecutionSettingsResponse
   healthcheck?: HarnessHealthcheck
   artifacts?: ListArtifactsResponse
+  artifactRevisionContent?: TestCommandResponseOverride<CommandClient['getArtifactRevisionContent']>
   automations?: ListAutomationsResponse
   automationRuns?: ListAutomationRunsResponse
   automationRunNow?: RunAutomationNowResponse

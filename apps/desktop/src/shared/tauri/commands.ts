@@ -626,14 +626,7 @@ const decisionRequestStateSchema = z
   })
   .strict()
 
-const toolAttemptOriginSchema = z.enum([
-  'builtin',
-  'mcp',
-  'plugin',
-  'app',
-  'provider',
-  'unknown',
-])
+const toolAttemptOriginSchema = z.enum(['builtin', 'mcp', 'plugin', 'app', 'provider', 'unknown'])
 
 const toolFailurePhaseSchema = z.enum([
   'validation',
@@ -982,15 +975,7 @@ const agentActivityStatusSchema = z.enum([
   'stalled',
   'redacted',
 ])
-const agentActivityPermissionStateSchema = z
-  .object({
-    id: z.string().min(1),
-    requestId: z.string().min(1),
-    status: z.enum(['pending', 'submitting', 'approved', 'denied', 'failed']),
-    summary: conversationDisplayTextSchema.optional(),
-    eventRefs: z.array(conversationEventRefSchema).optional(),
-  })
-  .strict()
+const agentActivityPermissionStateSchema = decisionRequestStateSchema
 
 const modelProtocolSchema = z.enum([
   'chat_completions',
@@ -3189,17 +3174,15 @@ export type SwitchProjectResponse = z.infer<typeof switchProjectResponseSchema>
 export type DeleteProjectResponse = z.infer<typeof deleteProjectResponseSchema>
 export type CreateConversationResponse = z.infer<typeof createConversationResponseSchema>
 export type GetConversationResponse = z.infer<typeof getConversationResponseSchema>
-export type GetConversationCommandOutputRequest = z.infer<
-  typeof getConversationCommandOutputRequestSchema
->
+type GetConversationCommandOutputRequest = z.infer<typeof getConversationCommandOutputRequestSchema>
 export type GetConversationCommandOutputResponse = z.infer<
   typeof getConversationCommandOutputResponseSchema
 >
-export type GetConversationDiffPatchRequest = z.infer<typeof getConversationDiffPatchRequestSchema>
-export type GetConversationDiffPatchResponse = z.infer<typeof getConversationDiffPatchResponseSchema>
-export type GetArtifactRevisionContentRequest = z.infer<
-  typeof getArtifactRevisionContentRequestSchema
+type GetConversationDiffPatchRequest = z.infer<typeof getConversationDiffPatchRequestSchema>
+export type GetConversationDiffPatchResponse = z.infer<
+  typeof getConversationDiffPatchResponseSchema
 >
+type GetArtifactRevisionContentRequest = z.infer<typeof getArtifactRevisionContentRequestSchema>
 export type GetArtifactRevisionContentResponse = z.infer<
   typeof getArtifactRevisionContentResponseSchema
 >
@@ -3241,36 +3224,16 @@ export type PageConversationTimelineResponse = z.infer<
 export type ConversationEventRef = z.infer<typeof conversationEventRefSchema>
 export type ConversationTurnCursor = z.infer<typeof conversationTurnCursorSchema>
 export type TextSegment = z.infer<typeof textSegmentSchema>
-export type DecisionMatcherKind = z.infer<typeof decisionMatcherKindSchema>
-export type DecisionMatcherSummary = z.infer<typeof decisionMatcherSummarySchema>
-export type DecisionLifetime = z.infer<typeof decisionLifetimeSchema>
 export type DecisionOption = z.infer<typeof decisionOptionSchema>
-export type DecisionOperation = z.infer<typeof decisionOperationSchema>
-export type DecisionTargetKind = z.infer<typeof decisionTargetKindSchema>
-export type DecisionTarget = z.infer<typeof decisionTargetSchema>
-export type RiskLevel = z.infer<typeof riskLevelSchema>
-export type DecisionPolicy = z.infer<typeof decisionPolicySchema>
-export type DataExposureSecretRisk = z.infer<typeof dataExposureSecretRiskSchema>
-export type DataExposure = z.infer<typeof dataExposureSchema>
-export type DecisionConfirmation = z.infer<typeof decisionConfirmationSchema>
-export type DecisionRequestStatus = z.infer<typeof decisionRequestStatusSchema>
 export type DecisionRequestState = z.infer<typeof decisionRequestStateSchema>
-export type ToolAttemptOrigin = z.infer<typeof toolAttemptOriginSchema>
-export type ToolFailurePhase = z.infer<typeof toolFailurePhaseSchema>
 export type CommandExecution = z.infer<typeof commandExecutionSchema>
 export type ToolAttempt = z.infer<typeof toolAttemptSchema>
 export type ToolGroupSegment = z.infer<typeof toolGroupSegmentSchema>
 export type AgentActivitySegment = z.infer<typeof agentActivitySegmentSchema>
 export type ProcessSegment = z.infer<typeof processSegmentSchema>
 export type ProcessStep = z.infer<typeof processStepSchema>
-export type ArtifactRevisionKind = z.infer<typeof artifactRevisionKindSchema>
-export type ArtifactRevisionStatus = z.infer<typeof artifactRevisionStatusSchema>
 export type ArtifactRevisionSummary = z.infer<typeof artifactRevisionSummarySchema>
 export type ArtifactSegment = z.infer<typeof artifactSegmentSchema>
-export type EvidenceRefId = z.infer<typeof evidenceRefIdSchema>
-export type EvidenceRedactionState = z.infer<typeof evidenceRedactionStateSchema>
-export type ChangeSetFileStatus = z.infer<typeof changeSetFileStatusSchema>
-export type ChangeSetRiskFlag = z.infer<typeof changeSetRiskFlagSchema>
 export type ChangeSetFile = z.infer<typeof changeSetFileSchema>
 export type ChangeSet = z.infer<typeof changeSetSchema>
 export type ReviewRequestSegment = z.infer<typeof reviewRequestSegmentSchema>
@@ -4444,27 +4407,6 @@ export function resolvePermission(
   client: CommandClient = tauriCommandClient,
 ): Promise<ResolvePermissionResponse> {
   return client.resolvePermission(request)
-}
-
-export function getConversationCommandOutput(
-  request: GetConversationCommandOutputRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<GetConversationCommandOutputResponse> {
-  return client.getConversationCommandOutput(request)
-}
-
-export function getConversationDiffPatch(
-  request: GetConversationDiffPatchRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<GetConversationDiffPatchResponse> {
-  return client.getConversationDiffPatch(request)
-}
-
-export function getArtifactRevisionContent(
-  request: GetArtifactRevisionContentRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<GetArtifactRevisionContentResponse> {
-  return client.getArtifactRevisionContent(request)
 }
 
 export function runEvalCase(
