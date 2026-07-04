@@ -230,8 +230,69 @@ Conversation worktree paging rules:
 - `eventCursor` reports the latest replayed journal event, not the latest event
   referenced by the selected turn page.
 - thinking summaries must be status-derived, explicitly safe, or withheld.
+  Raw thinking is projected as `ProcessStep` with `UiVisibility::UserSafe` or
+  `UiVisibility::Withheld`. It must never serialize `kind: "thinking"`.
 - tool failure summaries must be user-safe and must not expose raw payloads,
   private paths, or withheld placeholders.
+
+## Evidence Ref Store
+
+`crates/jyowo-harness-journal/src/evidence.rs` owns the `EvidenceRefStore` — a
+durable, conversation-scoped registry for large evidence content.
+
+- `EvidenceRefId` is an opaque id minted only by Rust.
+- The registry stores `kind`, `conversation_id`, `run_id`, source event refs,
+  content type, byte length, content hash, redaction state, redaction provenance,
+  and retention for each ref.
+- Evidence refs are retained with their owning conversation. Conversation
+  deletion makes refs unreadable.
+- Write order is blob-or-journal-source first, then registry row. If registry
+  write fails after blob write, the orphan blob is deleted before returning
+  the error.
+- Read order is registry row first, then source validation: conversation
+  ownership, kind, redaction state, and content hash.
+- Full command output, full diff patches, and artifact content are fetched by
+  opaque ref through dedicated Tauri commands:
+  `get_conversation_command_output(conversation_id, full_output_ref)`,
+  `get_conversation_diff_patch(conversation_id, full_patch_ref)`,
+  `get_artifact_revision_content(conversation_id, content_ref)`.
+- Each fetch command validates conversation ownership, ref kind, redaction state,
+  and retention before returning bytes.
+- React must never construct, mutate, or authorize an evidence ref.
+- The projector includes only `EvidenceRefSummary` or opaque `EvidenceRefId`
+  values in `ConversationTurn`. Full content is never embedded.
+
+## Permission Decision Options
+
+Permission decisions are backend-authored with opaque option ids:
+
+- `PermissionRequestedEvent.presented_options` is `Vec<PermissionDecisionOption>`,
+  not bare `Decision` values.
+- Each `PermissionDecisionOption` carries `option_id`, `decision`, `scope`,
+  `lifetime`, `matcher_summary`, `label`, `requires_confirmation`,
+  `action_plan_hash`, and optional `fingerprint`.
+- The option id is minted by Rust when the pending request is created. It binds
+  to the request id, action plan hash, scope, decision, and fingerprint.
+- React submits only `requestId`, `decision`, backend-issued `optionId`, and
+  optional `confirmationText`. React never submits matcher internals, policy
+  fields, sandbox state, risk level, or data exposure as authority.
+- Rust resolves `(conversation_id, request_id, option_id)` against the
+  still-pending backend-authored decision option. Missing, stale, mismatched,
+  or already-resolved options fail closed.
+
+## Artifact Revision Workspace
+
+Artifacts are versioned workspace entities:
+
+- `ArtifactCreatedEvent` and `ArtifactUpdatedEvent` carry a required
+  `revision_id: ArtifactRevisionId`.
+- The projector emits `ArtifactRevisionSummary` with `artifact_id`, `revision_id`,
+  `kind`, `status`, `source_run_id`, `title`, `summary`, `preview_ref`,
+  `content_ref`, and optional `media`.
+- Artifact content bytes are fetched through
+  `get_artifact_revision_content(conversationId, contentRef)`.
+- HTML and code previews are sandboxed. Updates create revisions instead of
+  mutating user-visible history.
 
 ## Failure Defaults
 

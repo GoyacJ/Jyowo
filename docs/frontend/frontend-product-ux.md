@@ -62,18 +62,33 @@ Replay
 The UI must make the first path dominant and keep the second path available as
 details.
 
-`ConversationCanvas` renders `ConversationTurn[]`. Each turn contains the user
-message and one optional `AssistantWork` tree. `AssistantWork` owns thinking
-summaries, assistant text, tool attempts, permissions, artifacts, review
-requests, clarification requests, notices, errors, and final answers.
+`ConversationCanvas` renders `ConversationTurn[]` from the paged workbench
+projection. Each turn contains the user message and one optional `AssistantWork`
+tree. `AssistantWork` owns process segments, assistant text, tool attempts with
+typed decision requests, artifact revision summaries, review requests,
+clarification requests, notices, errors, and agent activity. Raw thinking is
+projected as `ProcessStep` with `UiVisibility` (user-safe or withheld); it never
+enters the frontend as raw chain-of-thought.
 
 Raw `RunEvent` data belongs to Activity, Details, Replay, and Raw JSON. It must
 not become the product model for the main conversation canvas.
 
-Conversation canvas renders assistant work as narrative text plus execution evidence
-blocks. Evidence blocks include status rows, diff blocks, command blocks, tool rows,
-permission panels, artifact previews, historical attachment chips, and compaction
-notices. Raw events remain in Activity, Details, Replay, and Raw JSON.
+The right side becomes a workbench inspector with panes for Context, Decision,
+Evidence, Diff, Artifact, and Terminal. Timeline cards select evidence; they do
+not embed full workflow actions. Large command output, full diff patches, and
+artifact content are fetched by opaque evidence refs (`EvidenceRefId`), never
+embedded inline in `ConversationTurn`.
+
+The workbench layout is:
+
+```text
+Left: project and conversation navigation
+Center: conversation timeline
+Right: inspector pane for Context | Decision | Evidence | Diff | Artifact | Terminal
+Bottom: composer
+Top: workspace, branch/worktree, run state, model, permission mode, command palette
+Activity rail: compact event stream and run status
+```
 
 ## Core Principles
 

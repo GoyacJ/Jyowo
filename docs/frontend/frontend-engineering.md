@@ -176,6 +176,46 @@ features -> app
 
 Feature-to-feature imports should be avoided. If a feature needs another feature's data, create a shared model or explicit integration boundary.
 
+## Workbench State Boundaries
+
+The workbench selection state lives in `shared/state/workbench-selection.ts`:
+
+```ts
+type WorkbenchSelection =
+  | { kind: 'context' }
+  | { kind: 'decision'; conversationId: string; requestId: string }
+  | { kind: 'tool'; conversationId: string; toolUseId: string }
+  | { kind: 'command'; conversationId: string; fullOutputRef?: string; eventRef?: ConversationEventRef }
+  | { kind: 'diff'; conversationId: string; changeSetId: string }
+  | { kind: 'artifact'; conversationId: string; artifactId: string; revisionId?: string }
+```
+
+Rules:
+- `shared/state/ui-store.ts` stores `workbenchSelection: WorkbenchSelection | null` and `setWorkbenchSelection`. It may import from `shared/state/workbench-selection.ts` but MUST NOT import from `features/workbench`.
+- `features/workbench/workbench-state.ts` provides feature hooks (`useWorkbenchSelection`, `useSelectEvidence`, `useCloseInspector`) that read from the shared ui-store.
+- React stores only UI selection and draft state. Policy decisions stay in Rust.
+- Full output, full patch, and artifact content are fetched by opaque `EvidenceRefId` via `getConversationCommandOutput`, `getConversationDiffPatch`, and `getArtifactRevisionContent` commands. No raw `RunEvent` drives the main canvas.
+- Secrets and private paths are redacted before frontend state; React never sees raw tool input, command output, or chain-of-thought.
+
+## Paged Timeline State
+
+The conversation timeline uses a page-aware state model:
+
+```ts
+type ConversationTimelineState = {
+  pages: Array<{ cursor: ConversationTurnCursor | null; turns: ConversationTurn[] }>
+  loadedRange: { first?: ConversationTurnCursor; last?: ConversationTurnCursor }
+  hasMoreBefore: boolean
+  hasMoreAfter: boolean
+  gapMarkers: Array<{ id: string; afterCursor: ConversationCursor | null }>
+  optimisticTurnsByClientMessageId: Record<string, ConversationTurn>
+  ...
+}
+```
+
+Actions include `hydrateInitialPage`, `prependPage`, `appendPage`, `markGap`, `retryGap`.
+Optimistic turns reconcile by `clientMessageId` across pages. The `useConversationTimeline` hook exposes `loadEarlier`, `loadLater`, and `retryGap`.
+
 ## Component Architecture
 
 Component layers:
