@@ -1,6 +1,6 @@
-import type { ToolAttempt, ToolPermissionState } from '@/shared/tauri/commands'
+import type { DecisionRequestState, ToolAttempt } from '@/shared/tauri/commands'
 
-export type PendingToolPermission = ToolPermissionState & {
+export type PendingToolPermission = DecisionRequestState & {
   conversationId: string
   toolAttempt: ToolAttempt
   turnId: string
