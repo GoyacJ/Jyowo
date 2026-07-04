@@ -103,6 +103,7 @@ mod error;
 mod evals;
 mod mcp;
 mod memory;
+mod memory_settings;
 mod model_settings;
 mod plugins;
 mod projects;

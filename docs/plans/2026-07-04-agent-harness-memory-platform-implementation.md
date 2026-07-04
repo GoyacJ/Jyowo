@@ -1851,9 +1851,9 @@ git commit -m "feat(memory): add extraction and consolidation"
 - Rust rejects invalid limits and unavailable states.
 - Frontend Zod schemas match Rust contract exactly.
 
-- [ ] Write failing IPC tests for global and thread settings.
-- [ ] Write failing SDK tests for settings affecting recall/generation.
-- [ ] Run targeted red tests:
+- [x] Write failing IPC tests for global and thread settings.
+- [x] Write failing SDK tests for settings affecting recall/generation.
+- [x] Run targeted red tests:
 
 ```bash
 cargo test -p jyowo-desktop-shell --test commands memory -- --nocapture
@@ -1861,14 +1861,14 @@ cargo test -p jyowo-harness-sdk runtime_assembly_memory -- --nocapture
 pnpm --dir apps/desktop test src/shared/tauri/commands.test.ts
 ```
 
-- [ ] Implement settings commands and persistence.
-- [ ] Wire settings into `MemoryPolicyEngine`.
-- [ ] Update Zod schemas and command client.
-- [ ] Run targeted verification with the same commands.
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 10.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
+- [x] Implement settings commands and persistence.
+- [x] Wire settings into `MemoryPolicyEngine`.
+- [x] Update Zod schemas and command client.
+- [x] Run targeted verification with the same commands.
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 10.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit:
 
 ```bash
 git add apps/desktop crates/jyowo-harness-sdk crates/jyowo-harness-contracts
