@@ -584,8 +584,6 @@ impl MemoryStore for PreCompressProvider {
 #[cfg(feature = "recall-memory")]
 #[async_trait]
 impl MemoryLifecycle for PreCompressProvider {
-
-impl harness_memory::MemoryProvider for PreCompressProvider {}
     async fn on_pre_compress(
         &self,
         _messages: &[harness_contracts::MessageView<'_>],
@@ -593,6 +591,9 @@ impl harness_memory::MemoryProvider for PreCompressProvider {}
         Ok(Some(self.facts.clone()))
     }
 }
+
+#[cfg(feature = "recall-memory")]
+impl harness_memory::MemoryProvider for PreCompressProvider {}
 
 impl RecordingAuxProvider {
     fn with_responses(responses: Vec<Result<String, ModelError>>) -> Self {

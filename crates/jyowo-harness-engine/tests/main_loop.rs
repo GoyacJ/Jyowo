@@ -1855,6 +1855,7 @@ impl MemoryStore for StaticMemoryProvider {
 #[cfg(feature = "recall-memory")]
 impl MemoryLifecycle for StaticMemoryProvider {}
 
+#[cfg(feature = "recall-memory")]
 impl harness_memory::MemoryProvider for StaticMemoryProvider {}
 
 #[cfg(feature = "recall-memory")]

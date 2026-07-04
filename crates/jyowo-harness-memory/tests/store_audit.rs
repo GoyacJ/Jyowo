@@ -7,7 +7,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_contracts::{
-    Event, MemoryActorContext, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId, TenantId,
+    Event, MemoryActorContext, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId,
+    TenantId,
 };
 #[cfg(feature = "threat-scanner")]
 use harness_contracts::{Severity, ThreatAction, ThreatCategory};
@@ -128,7 +129,7 @@ async fn memory_manager_delete_and_export_emit_audit_events_without_raw_content(
 
     assert_eq!(exported.len(), 1);
     assert_eq!(exported[0].id, record.id);
-    assert_eq!(exported[0].content, "secret export fact");
+    assert_eq!(exported[0].content_preview, "[redacted memory content]");
     assert!(sink.events.lock().iter().any(|event| {
         matches!(event, Event::MemoryExported(exported)
             if exported.provider_id == "test"
@@ -236,7 +237,7 @@ async fn memory_manager_browser_read_paths_scan_and_redact_visible_content() {
     assert_eq!(detail.metadata.redacted_segments, 1);
 
     let exported = manager.export_for_actor(actor(session_id)).await.unwrap();
-    assert_eq!(exported[0].content, "token [REDACTED:credential]");
+    assert_eq!(exported[0].content_preview, "[redacted memory content]");
     assert_eq!(exported[0].metadata.redacted_segments, 1);
 }
 

@@ -827,6 +827,28 @@ list_memory_items(): {
   items: MemoryItemSummary[]
 }
 
+get_memory_settings(request: {}): {
+  settings: MemoryGlobalSettings
+}
+
+update_memory_settings(request: {
+  settings: MemoryGlobalSettings
+}): {
+  settings: MemoryGlobalSettings
+}
+
+get_thread_memory_settings(request: {
+  sessionId: string
+}): {
+  settings: MemoryThreadSettings
+}
+
+update_thread_memory_settings(request: {
+  settings: MemoryThreadSettings
+}): {
+  settings: MemoryThreadSettings
+}
+
 get_memory_item(id: string): {
   item: MemoryItem
 }
@@ -994,12 +1016,14 @@ version
 routes
 ```
 
-Memory IPC payloads must be Zod validated in `shared/tauri`, loaded through
-TanStack Query, and rendered with sanitized error text. Components must not
-render backend error bodies or raw audit event payloads. Memory export writes a
-JSON file under `.jyowo/runtime/exports` and returns only the relative `path`,
-`itemCount`, `format`, and `exportedAt`; export content must not be stored in
-frontend state or rendered into the DOM.
+Memory IPC payloads, including settings, thread settings, inbox candidates,
+recall traces, previews, and item edit/delete/export commands, must be Zod
+validated in `shared/tauri`, loaded through TanStack Query, and rendered with
+sanitized error text. Components must not render backend error bodies or raw
+audit event payloads. Memory export writes a JSON file under
+`.jyowo/runtime/exports` and returns only the relative `path`, `itemCount`,
+`format`, and `exportedAt`; export content must not be stored in frontend state
+or rendered into the DOM.
 
 Skill IPC payloads must be Zod validated in `shared/tauri`, loaded through
 TanStack Query, and rendered with sanitized error text. `list_skills` loads

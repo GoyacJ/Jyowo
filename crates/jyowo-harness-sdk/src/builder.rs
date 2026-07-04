@@ -39,7 +39,7 @@ pub(crate) struct BuilderExtras {
     pub(crate) permission_resolver: Option<ResolverHandle>,
     pub(crate) tool_registry: Option<ToolRegistry>,
     pub(crate) hook_registry: Option<HookRegistry>,
-    pub(crate) memory_provider: Option<Arc<dyn MemoryProvider>>,
+    pub(crate) memory_providers: Vec<Arc<dyn MemoryProvider>>,
     #[cfg(feature = "memory-consolidation")]
     pub(crate) consolidation_hook: Option<Arc<dyn ConsolidationHook>>,
     #[cfg(feature = "memory-builtin")]
@@ -247,7 +247,7 @@ impl<M, S, SB> HarnessBuilder<M, S, SB> {
 
     #[must_use]
     pub fn with_memory_provider_arc(mut self, provider: Arc<dyn MemoryProvider>) -> Self {
-        self.extras.memory_provider = Some(provider);
+        self.extras.memory_providers.push(provider);
         self
     }
 

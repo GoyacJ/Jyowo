@@ -14,17 +14,26 @@ use chrono::{DateTime, NaiveDate, Utc};
 use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
 use harness_contracts::{
     validate_agent_profile, validate_provider_capability_route, AgentCapabilityUnavailableReason,
-    AgentProfile, AgentProfileScope, AgentUsePolicy, AutomationRunRecord, AutomationRunStatus,
-    AutomationSpec, AutomationWorkspaceScope, BackgroundAgentStarterCap, BackgroundAgentState,
+    AgentProfile, AgentProfileScope, AgentUsePolicy, ApproveMemoryCandidateRequest,
+    ApproveMemoryCandidateResponse, AutomationRunRecord, AutomationRunStatus, AutomationSpec,
+    AutomationWorkspaceScope, BackgroundAgentStarterCap, BackgroundAgentState,
     BackgroundAgentToolStartRequest, BackgroundAgentToolStartResponse, CapabilityRouteKind,
     ConversationCursor, ConversationMessageAuthor, ConversationTurnCursor,
     ConversationWorktreePage, DiagnosticsRawOutput, DiagnosticsRunRequest, DiagnosticsRunnerCap,
-    DiagnosticsRunnerKind, ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag,
-    MissedRunPolicy, PluginCapabilitiesSummary, PluginConfigUpdate, PluginDetail, PluginId,
-    PluginInstallReport, PluginOperationResult, PluginOperationStatus, PluginSummary,
-    ProviderCapabilityRoute, ProviderCapabilityRouteOption, ProviderCapabilityRouteSettings,
-    ProviderProbeSnapshot, ProviderServiceAdapterAvailability, RejectionReason, SandboxError,
-    SandboxMode, ToolGroup, TrustLevel, UiSafeText, WorkspaceAccess,
+    DiagnosticsRunnerKind, GetMemoryRecallTraceRequest, GetMemoryRecallTraceResponse,
+    GetMemorySettingsRequest, GetMemorySettingsResponse, GetModelRequestPreviewRequest,
+    GetModelRequestPreviewResponse, GetThreadMemorySettingsRequest,
+    GetThreadMemorySettingsResponse, ListMemoryCandidatesRequest, ListMemoryCandidatesResponse,
+    ListMemoryRecallTracesRequest, ListMemoryRecallTracesResponse,
+    ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag, MergeMemoryCandidateRequest,
+    MergeMemoryCandidateResponse, MissedRunPolicy, PluginCapabilitiesSummary, PluginConfigUpdate,
+    PluginDetail, PluginId, PluginInstallReport, PluginOperationResult, PluginOperationStatus,
+    PluginSummary, ProviderCapabilityRoute, ProviderCapabilityRouteOption,
+    ProviderCapabilityRouteSettings, ProviderProbeSnapshot, ProviderServiceAdapterAvailability,
+    RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RejectionReason, SandboxError,
+    SandboxMode, ToolGroup, TrustLevel, UiSafeText, UpdateMemorySettingsRequest,
+    UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
+    UpdateThreadMemorySettingsResponse, WorkspaceAccess,
 };
 use harness_model::ModelRuntimeSemantics;
 use harness_plugin::{
@@ -40,8 +49,7 @@ use harness_tool::{
 };
 use image::{ImageFormat, ImageReader, Limits};
 use jyowo_harness_sdk::builtin::{
-    DefaultRedactor, FileBlobStore, JsonlEventStore, LocalLlamaProvider,
-    LocalSandbox,
+    DefaultRedactor, FileBlobStore, JsonlEventStore, LocalLlamaProvider, LocalSandbox,
 };
 use jyowo_harness_sdk::ext::inventory_from_models_api_json;
 use jyowo_harness_sdk::ext::{
@@ -264,9 +272,16 @@ pub use mcp::{
     unsubscribe_mcp_diagnostics_with_runtime_state,
 };
 pub use memory::{
-    delete_memory_item_with_runtime_state, export_memory_items_with_runtime_state,
-    get_memory_item_with_runtime_state, list_memory_items_with_runtime_state,
-    update_memory_item_with_runtime_state,
+    approve_memory_candidate_with_runtime_state, delete_memory_item_with_runtime_state,
+    export_memory_items_with_runtime_state, get_memory_item_with_runtime_state,
+    get_memory_recall_trace_with_runtime_state, get_model_request_preview_with_runtime_state,
+    list_memory_candidates_with_runtime_state, list_memory_items_with_runtime_state,
+    list_memory_recall_traces_with_runtime_state, merge_memory_candidate_with_runtime_state,
+    reject_memory_candidate_with_runtime_state, update_memory_item_with_runtime_state,
+};
+pub use memory_settings::{
+    get_memory_settings_with_runtime_state, get_thread_memory_settings_with_runtime_state,
+    update_memory_settings_with_runtime_state, update_thread_memory_settings_with_runtime_state,
 };
 pub use model_settings::{
     collect_persisted_usage_events, get_model_usage_summary_with_runtime_state,
@@ -1354,24 +1369,37 @@ pub async fn get_memory_item(
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn update_memory_item(
+    action_plan_id: Option<String>,
     content: String,
     id: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<UpdateMemoryItemResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     let _memory_guard = runtime_state.memory_lock.lock().await;
-    update_memory_item_with_runtime_state(UpdateMemoryItemRequest { content, id }, &*runtime_state)
-        .await
+    update_memory_item_with_runtime_state(
+        UpdateMemoryItemRequest {
+            action_plan_id,
+            content,
+            id,
+        },
+        &*runtime_state,
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn delete_memory_item(
+    action_plan_id: Option<String>,
     id: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<DeleteMemoryItemResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     let _memory_guard = runtime_state.memory_lock.lock().await;
-    delete_memory_item_with_runtime_state(DeleteMemoryItemRequest { id }, &*runtime_state).await
+    delete_memory_item_with_runtime_state(
+        DeleteMemoryItemRequest { action_plan_id, id },
+        &*runtime_state,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1381,6 +1409,110 @@ pub async fn export_memory_items(
     let runtime_state = runtime_handle.read().await;
     let _memory_guard = runtime_state.memory_lock.lock().await;
     export_memory_items_with_runtime_state(&*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_memory_settings(
+    request: GetMemorySettingsRequest,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetMemorySettingsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_memory_settings_with_runtime_state(request, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn update_memory_settings(
+    request: UpdateMemorySettingsRequest,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<UpdateMemorySettingsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let _memory_guard = runtime_state.memory_lock.lock().await;
+    update_memory_settings_with_runtime_state(request, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_thread_memory_settings(
+    request: GetThreadMemorySettingsRequest,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetThreadMemorySettingsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_thread_memory_settings_with_runtime_state(request, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn update_thread_memory_settings(
+    request: UpdateThreadMemorySettingsRequest,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<UpdateThreadMemorySettingsResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let _memory_guard = runtime_state.memory_lock.lock().await;
+    update_thread_memory_settings_with_runtime_state(request, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_memory_candidates(
+    request: ListMemoryCandidatesRequest,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListMemoryCandidatesResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    list_memory_candidates_with_runtime_state(request, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn approve_memory_candidate(
+    request: ApproveMemoryCandidateRequest,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ApproveMemoryCandidateResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let _memory_guard = runtime_state.memory_lock.lock().await;
+    approve_memory_candidate_with_runtime_state(request, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn reject_memory_candidate(
+    request: RejectMemoryCandidateRequest,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<RejectMemoryCandidateResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let _memory_guard = runtime_state.memory_lock.lock().await;
+    reject_memory_candidate_with_runtime_state(request, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn merge_memory_candidate(
+    request: MergeMemoryCandidateRequest,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<MergeMemoryCandidateResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    let _memory_guard = runtime_state.memory_lock.lock().await;
+    merge_memory_candidate_with_runtime_state(request, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_memory_recall_traces(
+    request: ListMemoryRecallTracesRequest,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListMemoryRecallTracesResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    list_memory_recall_traces_with_runtime_state(request, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_memory_recall_trace(
+    request: GetMemoryRecallTraceRequest,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetMemoryRecallTraceResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_memory_recall_trace_with_runtime_state(request, &*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_model_request_preview(
+    request: GetModelRequestPreviewRequest,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetModelRequestPreviewResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_model_request_preview_with_runtime_state(request, &*runtime_state).await
 }
 
 #[tauri::command]

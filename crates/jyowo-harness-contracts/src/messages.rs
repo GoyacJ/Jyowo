@@ -23,9 +23,18 @@ pub struct TurnInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConversationContextReference {
-    WorkspaceFile { path: String, label: String },
-    Artifact { id: String, label: String },
-    Conversation { id: String, label: String },
+    WorkspaceFile {
+        path: String,
+        label: String,
+    },
+    Artifact {
+        id: String,
+        label: String,
+    },
+    Conversation {
+        id: String,
+        label: String,
+    },
     Memory {
         id: String,
         label: String,
@@ -33,9 +42,18 @@ pub enum ConversationContextReference {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resolved_content: Option<String>,
     },
-    Skill { id: String, label: String },
-    Tool { id: String, label: String },
-    McpServer { id: String, label: String },
+    Skill {
+        id: String,
+        label: String,
+    },
+    Tool {
+        id: String,
+        label: String,
+    },
+    McpServer {
+        id: String,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

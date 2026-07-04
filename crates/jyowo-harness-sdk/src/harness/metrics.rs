@@ -223,7 +223,6 @@ fn memdir_file(file: MemdirFileTag) -> &'static str {
     match file {
         MemdirFileTag::Memory => "memory",
         MemdirFileTag::User => "user",
-        MemdirFileTag::Dreams => "dreams",
         _ => "unknown",
     }
 }

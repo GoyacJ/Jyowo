@@ -13,7 +13,9 @@ use harness_contracts::{MemoryError, MemoryId, MemoryKind, MemoryVisibility, Ten
 use rusqlite::Connection;
 use tokio::sync::Mutex;
 
-use crate::local::embedding::MemoryEmbeddingProvider;
+use crate::local::embedding::{
+    cosine_similarity, deserialize_vector_le, serialize_vector_le, MemoryEmbeddingProvider,
+};
 use crate::local::migrations;
 use crate::local::ranking::{self, RankScore};
 use crate::local::schema;
@@ -55,10 +57,7 @@ impl LocalMemoryProvider {
     ///
     /// Runs refinery migrations on open. If the database file does not exist,
     /// it will be created.
-    pub fn open(
-        db_path: &str,
-        tenant_id: TenantId,
-    ) -> Result<Self, MemoryError> {
+    pub fn open(db_path: &str, tenant_id: TenantId) -> Result<Self, MemoryError> {
         Self::open_with_options(db_path, tenant_id, LocalMemoryOptions::default())
     }
 
@@ -70,20 +69,17 @@ impl LocalMemoryProvider {
     ) -> Result<Self, MemoryError> {
         // Ensure parent directory exists
         if let Some(parent) = Path::new(db_path).parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                MemoryError::Message(format!("failed to create db directory: {e}"))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| MemoryError::Message(format!("failed to create db directory: {e}")))?;
         }
 
-        let mut conn = Connection::open(db_path).map_err(|e| {
-            MemoryError::Message(format!("failed to open sqlite database: {e}"))
-        })?;
+        let conn = Connection::open(db_path)
+            .map_err(|e| MemoryError::Message(format!("failed to open sqlite database: {e}")))?;
 
         // Apply PRAGMAs
         for pragma in schema::CONNECTION_PRAGMAS {
-            conn.execute_batch(pragma).map_err(|e| {
-                MemoryError::Message(format!("failed to set pragma: {e}"))
-            })?;
+            conn.execute_batch(pragma)
+                .map_err(|e| MemoryError::Message(format!("failed to set pragma: {e}")))?;
         }
 
         // Run migrations
@@ -105,6 +101,13 @@ impl MemoryStore for LocalMemoryProvider {
     }
 
     async fn recall(&self, query: MemoryQuery) -> Result<Vec<MemoryRecord>, MemoryError> {
+        if query.tenant_id != self.tenant_id {
+            return Err(MemoryError::Message(format!(
+                "tenant mismatch: provider={} query={}",
+                self.tenant_id, query.tenant_id
+            )));
+        }
+
         let conn = self.conn.lock().await;
         let now = Utc::now();
 
@@ -126,17 +129,27 @@ impl MemoryStore for LocalMemoryProvider {
             records = schema::TABLE_MEMORY_RECORDS,
         );
 
-        let mut stmt = conn.prepare(&sql).map_err(|e| {
-            MemoryError::Message(format!("recall prepare failed: {e}"))
-        })?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| MemoryError::Message(format!("recall prepare failed: {e}")))?;
+
+        let recall_limit = query
+            .max_records
+            .min(self.options.max_records_per_recall)
+            .max(1);
+        let query_embedding = self
+            .options
+            .embedding_provider
+            .as_ref()
+            .and_then(|provider| provider.embed(&query.text));
 
         let rows: Vec<(MemoryRecordRow, f64)> = stmt
             .query_map(
                 rusqlite::params![
                     fts_query,
-                    query.tenant_id.to_string(),
+                    self.tenant_id.to_string(),
                     now.to_rfc3339(),
-                    query.max_records as i64,
+                    recall_limit as i64,
                 ],
                 |row| {
                     let record = row_to_record(row)?;
@@ -152,16 +165,27 @@ impl MemoryStore for LocalMemoryProvider {
         let mut results: Vec<MemoryRecord> = rows
             .into_iter()
             .filter(|(row, _)| visibility_filter_matches_record(row, &query.visibility_filter))
-            .filter(|(row, _)| query
-                .min_similarity
-                .le(&0.0) // FTS already filters; min_similarity is a post-filter
-                || true)
             .map(|(row, rank)| {
                 let mut record = row_to_memory_record(&row);
                 let lexical = ranking::normalize_fts_rank(rank);
-                record.metadata.recall_score = lexical;
+                let vector_score = query_embedding.as_deref().and_then(|query_vector| {
+                    embedding_score_for_record(&conn, &row.id, query_vector)
+                });
+                let mut score = RankScore {
+                    lexical_score: lexical,
+                    vector_score,
+                    confidence_score: record.metadata.confidence,
+                    recency_score: ranking::recency_score(record.updated_at, now),
+                    access_score: ranking::access_score(record.metadata.access_count),
+                    source_trust_score: source_trust_score(&record.metadata.source),
+                    explicit_selection_boost: 0.0,
+                    final_score: 0.0,
+                };
+                score.final_score = ranking::compute_final_score(&score);
+                record.metadata.recall_score = score.final_score;
                 record
             })
+            .filter(|record| record.metadata.recall_score >= query.min_similarity)
             .collect();
 
         // Update access counters for returned records
@@ -205,10 +229,23 @@ impl MemoryStore for LocalMemoryProvider {
     }
 
     async fn upsert(&self, record: MemoryRecord) -> Result<MemoryId, MemoryError> {
+        if record.tenant_id != self.tenant_id {
+            return Err(MemoryError::Message(format!(
+                "tenant mismatch: provider={} record={}",
+                self.tenant_id, record.tenant_id
+            )));
+        }
+
         let conn = self.conn.lock().await;
         let id = record.id;
         let now = Utc::now().to_rfc3339();
         let content_hash = blake3::hash(record.content.as_bytes()).to_hex().to_string();
+        let embedding = self.options.embedding_provider.as_ref().map(|provider| {
+            provider
+                .embed(&record.content)
+                .filter(|vector| vector.len() == provider.dimension())
+                .map(|vector| (provider.model_id().to_owned(), vector))
+        });
         let metadata_json =
             serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".to_owned());
         let evidence_json = "{}";
@@ -224,8 +261,7 @@ impl MemoryStore for LocalMemoryProvider {
 
         // Compute expires_at from TTL
         let expires_at = record.metadata.ttl.map(|ttl| {
-            (record.created_at + chrono::Duration::from_std(ttl).unwrap_or_default())
-                .to_rfc3339()
+            (record.created_at + chrono::Duration::from_std(ttl).unwrap_or_default()).to_rfc3339()
         });
 
         conn.execute(
@@ -264,6 +300,9 @@ impl MemoryStore for LocalMemoryProvider {
             ],
         )
         .map_err(|e| MemoryError::Message(format!("upsert failed: {e}")))?;
+
+        upsert_embedding(&conn, id, embedding)
+            .map_err(|e| MemoryError::Message(format!("upsert embedding failed: {e}")))?;
 
         // Insert new FTS entry
         let _ = conn.execute(
@@ -339,10 +378,9 @@ impl MemoryStore for LocalMemoryProvider {
         let rows: Vec<MemoryRecordRow> = conn
             .prepare(&base_sql)
             .map_err(|e| MemoryError::Message(format!("list prepare failed: {e}")))?
-            .query_map(
-                rusqlite::params![self.tenant_id.to_string(), now],
-                |row| row_to_record(row),
-            )
+            .query_map(rusqlite::params![self.tenant_id.to_string(), now], |row| {
+                row_to_record(row)
+            })
             .map_err(|e| MemoryError::Message(format!("list query failed: {e}")))?
             .filter_map(|r| r.ok())
             .collect();
@@ -373,16 +411,16 @@ struct MemoryRecordRow {
     visibility: String,
     content: String,
     metadata_json: String,
-    content_hash: String,
+    _content_hash: String,
     source_kind: String,
-    evidence_json: String,
+    _evidence_json: String,
     confidence: f64,
     access_count: i64,
     last_accessed_at: Option<String>,
     created_at: String,
     updated_at: String,
-    expires_at: Option<String>,
-    deleted_at: Option<String>,
+    _expires_at: Option<String>,
+    _deleted_at: Option<String>,
 }
 
 fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<MemoryRecordRow> {
@@ -393,22 +431,22 @@ fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<MemoryRecordRow> {
         visibility: row.get(3)?,
         content: row.get(4)?,
         metadata_json: row.get(5)?,
-        content_hash: row.get(6)?,
+        _content_hash: row.get(6)?,
         source_kind: row.get(7)?,
-        evidence_json: row.get(8)?,
+        _evidence_json: row.get(8)?,
         confidence: row.get(9)?,
         access_count: row.get(10)?,
         last_accessed_at: row.get(11)?,
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
-        expires_at: row.get(14)?,
-        deleted_at: row.get(15)?,
+        _expires_at: row.get(14)?,
+        _deleted_at: row.get(15)?,
     })
 }
 
 fn row_to_memory_record(row: &MemoryRecordRow) -> MemoryRecord {
-    let metadata: MemoryMetadata = serde_json::from_str(&row.metadata_json).unwrap_or_else(|_| {
-        MemoryMetadata {
+    let metadata: MemoryMetadata =
+        serde_json::from_str(&row.metadata_json).unwrap_or_else(|_| MemoryMetadata {
             tags: vec![],
             source: str_to_source(&row.source_kind),
             confidence: row.confidence as f32,
@@ -421,8 +459,7 @@ fn row_to_memory_record(row: &MemoryRecordRow) -> MemoryRecord {
             recall_score: 0.0,
             ttl: None,
             redacted_segments: 0,
-        }
-    });
+        });
 
     MemoryRecord {
         id: MemoryId::parse(&row.id).unwrap_or_else(|_| MemoryId::new()),
@@ -431,15 +468,96 @@ fn row_to_memory_record(row: &MemoryRecordRow) -> MemoryRecord {
         visibility: str_to_visibility(&row.visibility),
         content: row.content.clone(),
         metadata,
-        created_at: row
-            .created_at
-            .parse()
-            .unwrap_or_else(|_| Utc::now()),
-        updated_at: row
-            .updated_at
-            .parse()
-            .unwrap_or_else(|_| Utc::now()),
+        created_at: row.created_at.parse().unwrap_or_else(|_| Utc::now()),
+        updated_at: row.updated_at.parse().unwrap_or_else(|_| Utc::now()),
     }
+}
+
+fn upsert_embedding(
+    conn: &Connection,
+    memory_id: MemoryId,
+    embedding: Option<Option<(String, Vec<f32>)>>,
+) -> Result<(), rusqlite::Error> {
+    let now = Utc::now().to_rfc3339();
+    match embedding {
+        Some(Some((model_id, vector))) => conn.execute(
+            &format!(
+                "INSERT INTO {} (memory_id, embedding_state, dimension, vector_le_f32, model_id, updated_at, error_kind)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)
+                 ON CONFLICT(memory_id) DO UPDATE SET
+                   embedding_state = excluded.embedding_state,
+                   dimension = excluded.dimension,
+                   vector_le_f32 = excluded.vector_le_f32,
+                   model_id = excluded.model_id,
+                   updated_at = excluded.updated_at,
+                   error_kind = NULL",
+                schema::TABLE_MEMORY_EMBEDDINGS,
+            ),
+            rusqlite::params![
+                memory_id.to_string(),
+                schema::EMBEDDING_STATE_READY,
+                vector.len() as i64,
+                serialize_vector_le(&vector),
+                model_id,
+                now,
+            ],
+        ),
+        Some(None) => conn.execute(
+            &format!(
+                "INSERT INTO {} (memory_id, embedding_state, dimension, vector_le_f32, model_id, updated_at, error_kind)
+                 VALUES (?1, ?2, NULL, NULL, NULL, ?3, ?4)
+                 ON CONFLICT(memory_id) DO UPDATE SET
+                   embedding_state = excluded.embedding_state,
+                   dimension = NULL,
+                   vector_le_f32 = NULL,
+                   model_id = NULL,
+                   updated_at = excluded.updated_at,
+                   error_kind = excluded.error_kind",
+                schema::TABLE_MEMORY_EMBEDDINGS,
+            ),
+            rusqlite::params![
+                memory_id.to_string(),
+                schema::EMBEDDING_STATE_FAILED,
+                now,
+                "embedding_unavailable",
+            ],
+        ),
+        None => conn.execute(
+            &format!(
+                "INSERT INTO {} (memory_id, embedding_state, dimension, vector_le_f32, model_id, updated_at, error_kind)
+                 VALUES (?1, ?2, NULL, NULL, NULL, ?3, NULL)
+                 ON CONFLICT(memory_id) DO UPDATE SET
+                   embedding_state = excluded.embedding_state,
+                   dimension = NULL,
+                   vector_le_f32 = NULL,
+                   model_id = NULL,
+                   updated_at = excluded.updated_at,
+                   error_kind = NULL",
+                schema::TABLE_MEMORY_EMBEDDINGS,
+            ),
+            rusqlite::params![memory_id.to_string(), schema::EMBEDDING_STATE_DISABLED, now],
+        ),
+    }?;
+    Ok(())
+}
+
+fn embedding_score_for_record(
+    conn: &Connection,
+    memory_id: &str,
+    query_vector: &[f32],
+) -> Option<f32> {
+    let vector_bytes = conn
+        .query_row(
+            &format!(
+                "SELECT vector_le_f32 FROM {} WHERE memory_id = ?1 AND embedding_state = ?2",
+                schema::TABLE_MEMORY_EMBEDDINGS,
+            ),
+            rusqlite::params![memory_id, schema::EMBEDDING_STATE_READY],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .ok()?;
+    let record_vector = deserialize_vector_le(&vector_bytes)?;
+    cosine_similarity(query_vector, &record_vector)
 }
 
 // ── String conversion helpers ──
@@ -492,6 +610,23 @@ fn source_to_str(s: &harness_contracts::MemorySource) -> &str {
     }
 }
 
+fn source_trust_score(source: &harness_contracts::MemorySource) -> f32 {
+    match source {
+        harness_contracts::MemorySource::UserInput => 0.9,
+        harness_contracts::MemorySource::Imported => 0.5,
+        harness_contracts::MemorySource::AgentDerived => 0.6,
+        harness_contracts::MemorySource::Consolidated { .. } => 0.7,
+        harness_contracts::MemorySource::WorkspaceFile => 0.75,
+        harness_contracts::MemorySource::ToolOutput
+        | harness_contracts::MemorySource::McpToolOutput
+        | harness_contracts::MemorySource::PluginOutput => 0.55,
+        harness_contracts::MemorySource::WebRetrieval
+        | harness_contracts::MemorySource::ExternalRetrieval => 0.45,
+        harness_contracts::MemorySource::SubagentDerived { .. } => 0.5,
+        _ => 0.5,
+    }
+}
+
 fn str_to_source(s: &str) -> harness_contracts::MemorySource {
     match s {
         "user_input" => harness_contracts::MemorySource::UserInput,
@@ -506,9 +641,7 @@ fn str_to_source(s: &str) -> harness_contracts::MemorySource {
         "workspace_file" => harness_contracts::MemorySource::WorkspaceFile,
         "external_retrieval" => harness_contracts::MemorySource::ExternalRetrieval,
         "imported" => harness_contracts::MemorySource::Imported,
-        "consolidated" => harness_contracts::MemorySource::Consolidated {
-            from: vec![],
-        },
+        "consolidated" => harness_contracts::MemorySource::Consolidated { from: vec![] },
         _ => harness_contracts::MemorySource::UserInput,
     }
 }
@@ -534,8 +667,7 @@ fn visibility_filter_matches_record(
     let visibility: MemoryVisibility = str_to_visibility(&row.visibility);
     match filter {
         MemoryVisibilityFilter::EffectiveFor(actor) => {
-            let tenant: TenantId =
-                TenantId::parse(&row.tenant_id).unwrap_or(TenantId::SINGLE);
+            let tenant: TenantId = TenantId::parse(&row.tenant_id).unwrap_or(TenantId::SINGLE);
             if actor.tenant_id != tenant {
                 return false;
             }
@@ -551,8 +683,7 @@ fn list_scope_filter(record: &MemoryRecord, scope: &MemoryListScope) -> Option<M
         MemoryListScope::ByKind(kind) => &record.kind == kind,
         MemoryListScope::ByVisibility(visibility) => &record.visibility == visibility,
         MemoryListScope::ForActor(actor) => {
-            record.tenant_id == actor.tenant_id
-                && visibility_matches(&record.visibility, actor)
+            record.tenant_id == actor.tenant_id && visibility_matches(&record.visibility, actor)
         }
     };
     if matches {

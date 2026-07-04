@@ -40,21 +40,24 @@ impl MemoryProviderRegistry {
 
     /// Iterate over all registered provider descriptors.
     pub fn providers(&self) -> impl Iterator<Item = MemoryProviderDescriptor> + '_ {
-        self.providers
-            .values()
-            .map(|p| p.descriptor())
+        self.providers.values().map(|p| p.descriptor())
     }
 
     /// Get a provider's descriptor by ID.
     pub fn descriptor(&self, provider_id: &str) -> Option<MemoryProviderDescriptor> {
-        self.providers
-            .get(provider_id)
-            .map(|p| p.descriptor())
+        self.providers.get(provider_id).map(|p| p.descriptor())
     }
 
     /// Get a reference to a provider by ID.
     pub fn get(&self, provider_id: &str) -> Option<Arc<dyn MemoryProvider>> {
         self.providers.get(provider_id).cloned()
+    }
+
+    /// All provider arcs, sorted by priority (highest first).
+    pub fn provider_arcs_sorted(&self) -> Vec<Arc<dyn MemoryProvider>> {
+        let mut providers: Vec<_> = self.providers.values().cloned().collect();
+        providers.sort_by_key(|p| -p.descriptor().priority);
+        providers
     }
 
     /// All readable providers, sorted by priority (highest first).
@@ -67,6 +70,18 @@ impl MemoryProviderRegistry {
             .collect();
         descriptors.sort_by_key(|d| -d.priority);
         descriptors
+    }
+
+    /// All readable provider arcs, sorted by priority (highest first).
+    pub fn readable_provider_arcs_sorted(&self) -> Vec<Arc<dyn MemoryProvider>> {
+        let mut providers: Vec<_> = self
+            .providers
+            .values()
+            .filter(|p| p.descriptor().readable)
+            .cloned()
+            .collect();
+        providers.sort_by_key(|p| -p.descriptor().priority);
+        providers
     }
 
     /// All writable providers.

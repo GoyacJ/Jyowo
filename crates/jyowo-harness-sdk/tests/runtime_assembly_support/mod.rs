@@ -505,8 +505,6 @@ impl MemoryStore for InitializingMemoryProvider {
 
 #[async_trait]
 impl MemoryLifecycle for InitializingMemoryProvider {
-
-impl harness_memory::MemoryProvider for InitializingMemoryProvider {}
     async fn initialize(&self, ctx: &MemorySessionCtx<'_>) -> Result<(), MemoryError> {
         assert_eq!(ctx.tenant_id, TenantId::SINGLE);
         assert!(ctx.session_id != SessionId::from_u128(0));
@@ -516,6 +514,8 @@ impl harness_memory::MemoryProvider for InitializingMemoryProvider {}
         Ok(())
     }
 }
+
+impl harness_memory::MemoryProvider for InitializingMemoryProvider {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EndedMemorySnapshot {
@@ -563,8 +563,6 @@ impl MemoryStore for EndingMemoryProvider {
 
 #[async_trait]
 impl MemoryLifecycle for EndingMemoryProvider {
-
-impl harness_memory::MemoryProvider for EndingMemoryProvider {}
     async fn on_session_end(
         &self,
         ctx: &MemorySessionCtx<'_>,
@@ -585,6 +583,8 @@ impl harness_memory::MemoryProvider for EndingMemoryProvider {}
         Ok(())
     }
 }
+
+impl harness_memory::MemoryProvider for EndingMemoryProvider {}
 
 #[cfg(feature = "memory-consolidation")]
 pub struct RecordingConsolidationHook {
@@ -618,7 +618,7 @@ impl ConsolidationHook for RecordingConsolidationHook {
         Ok(ConsolidationOutcome {
             promoted: vec![self.promoted],
             demoted: Vec::new(),
-            draft_dreams: "sdk dream".to_owned(),
+            inbox_candidates_created: 1,
         })
     }
 }
@@ -1175,3 +1175,5 @@ impl harness_memory::MemoryStore for SdkPluginMemoryProvider {
 }
 
 impl harness_memory::MemoryLifecycle for SdkPluginMemoryProvider {}
+
+impl harness_memory::MemoryProvider for SdkPluginMemoryProvider {}

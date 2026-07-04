@@ -3,11 +3,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use harness_contracts::{MemoryError, MemoryId, MemoryProviderTrust, MemoryVisibilityClass, TenantId};
+use harness_contracts::{
+    MemoryError, MemoryId, MemoryProviderTrust, MemoryVisibilityClass, TenantId,
+};
 use harness_memory::{
     MemoryLifecycle, MemoryListScope, MemoryProvider, MemoryProviderDescriptor,
-    MemoryProviderRegistry,
-    MemoryQuery, MemoryRecord, MemoryStore, MemorySummary,
+    MemoryProviderRegistry, MemoryQuery, MemoryRecord, MemoryStore, MemorySummary,
 };
 
 fn make_dummy_provider(id: &str, priority: i32) -> DummyProvider {
@@ -106,7 +107,6 @@ impl MemoryProvider for DummyProvider {
     }
 }
 
-
 // ── Registry tests ──
 
 #[test]
@@ -118,7 +118,10 @@ fn registry_register_and_list_providers() {
     registry.register(p1).expect("register local");
     registry.register(p2).expect("register plugin");
 
-    let ids: Vec<String> = registry.providers().map(|d| d.provider_id.clone()).collect();
+    let ids: Vec<String> = registry
+        .providers()
+        .map(|d| d.provider_id.clone())
+        .collect();
     assert!(ids.contains(&"local".to_owned()));
     assert!(ids.contains(&"plugin-x".to_owned()));
 }

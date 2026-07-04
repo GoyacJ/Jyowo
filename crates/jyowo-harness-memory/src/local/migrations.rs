@@ -4,16 +4,20 @@
 
 use rusqlite::Connection;
 
-/// Embedded migration: (version, description, SQL).
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    description: "initial schema",
-    sql: include_str!("migrations/V1__initial_schema.sql"),
-}];
+/// Embedded migration: (version, SQL).
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: include_str!("migrations/V1__initial_schema.sql"),
+    },
+    Migration {
+        version: 2,
+        sql: include_str!("migrations/V2__durable_memory_platform_stores.sql"),
+    },
+];
 
 struct Migration {
     version: i64,
-    description: &'static str,
     sql: &'static str,
 }
 

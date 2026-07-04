@@ -3,7 +3,7 @@
 //! Tests that every type defined in "Target Contracts" is present and has stable serde tags.
 
 use harness_contracts::*;
-use serde_json::{json, Value};
+use serde_json::json;
 
 fn make_meta() -> MemoryMetadata {
     MemoryMetadata {
@@ -13,12 +13,24 @@ fn make_meta() -> MemoryMetadata {
     }
 }
 
-fn new_session_id() -> SessionId { SessionId::new() }
-fn new_run_id() -> RunId { RunId::new() }
-fn new_message_id() -> MessageId { MessageId::new() }
-fn new_tool_use_id() -> ToolUseId { ToolUseId::new() }
-fn new_memory_id() -> MemoryId { MemoryId::new() }
-fn new_tenant_id() -> TenantId { TenantId::SINGLE }
+fn new_session_id() -> SessionId {
+    SessionId::new()
+}
+fn new_run_id() -> RunId {
+    RunId::new()
+}
+fn new_message_id() -> MessageId {
+    MessageId::new()
+}
+fn new_tool_use_id() -> ToolUseId {
+    ToolUseId::new()
+}
+fn new_memory_id() -> MemoryId {
+    MemoryId::new()
+}
+fn new_tenant_id() -> TenantId {
+    TenantId::SINGLE
+}
 
 // ── MemorySource ──
 
@@ -27,7 +39,9 @@ fn memory_source_variants_roundtrip() {
     let variants: Vec<MemorySource> = vec![
         MemorySource::UserInput,
         MemorySource::AgentDerived,
-        MemorySource::SubagentDerived { child_session: new_session_id() },
+        MemorySource::SubagentDerived {
+            child_session: new_session_id(),
+        },
         MemorySource::ToolOutput,
         MemorySource::McpToolOutput,
         MemorySource::PluginOutput,
@@ -35,7 +49,9 @@ fn memory_source_variants_roundtrip() {
         MemorySource::WorkspaceFile,
         MemorySource::ExternalRetrieval,
         MemorySource::Imported,
-        MemorySource::Consolidated { from: vec![new_memory_id()] },
+        MemorySource::Consolidated {
+            from: vec![new_memory_id()],
+        },
     ];
     for v in &variants {
         let json = serde_json::to_value(v).expect("serialize MemorySource");
@@ -55,15 +71,49 @@ fn memory_evidence_origin_roundtrip() {
     let mem_id = new_memory_id();
 
     let variants: Vec<MemoryEvidenceOrigin> = vec![
-        MemoryEvidenceOrigin::UserMessage { session_id: sid, run_id: rid, message_id: mid },
-        MemoryEvidenceOrigin::AssistantMessage { session_id: sid, run_id: rid, message_id: mid },
-        MemoryEvidenceOrigin::SubagentOutput { parent_session_id: sid, child_session_id: sid, run_id: rid, agent_id: None },
-        MemoryEvidenceOrigin::BuiltinToolOutput { tool_name: "memory".to_owned(), tool_use_id: tool_id },
-        MemoryEvidenceOrigin::McpToolOutput { server_id: "srv".to_owned(), tool_name: "mem".to_owned(), tool_use_id: tool_id },
-        MemoryEvidenceOrigin::PluginOutput { plugin_id: "p".to_owned(), tool_name: Some("t".to_owned()), tool_use_id: Some(tool_id) },
-        MemoryEvidenceOrigin::WebRetrieval { url_hash: ContentHash([1u8; 32]), fetch_tool_use_id: Some(tool_id) },
-        MemoryEvidenceOrigin::WorkspaceFile { workspace_id: WorkspaceId::new(), path_hash: ContentHash([2u8; 32]), snapshot_id: None },
-        MemoryEvidenceOrigin::Imported { importer: "dreams-migration".to_owned(), import_id: "import-1".to_owned() },
+        MemoryEvidenceOrigin::UserMessage {
+            session_id: sid,
+            run_id: rid,
+            message_id: mid,
+        },
+        MemoryEvidenceOrigin::AssistantMessage {
+            session_id: sid,
+            run_id: rid,
+            message_id: mid,
+        },
+        MemoryEvidenceOrigin::SubagentOutput {
+            parent_session_id: sid,
+            child_session_id: sid,
+            run_id: rid,
+            agent_id: None,
+        },
+        MemoryEvidenceOrigin::BuiltinToolOutput {
+            tool_name: "memory".to_owned(),
+            tool_use_id: tool_id,
+        },
+        MemoryEvidenceOrigin::McpToolOutput {
+            server_id: "srv".to_owned(),
+            tool_name: "mem".to_owned(),
+            tool_use_id: tool_id,
+        },
+        MemoryEvidenceOrigin::PluginOutput {
+            plugin_id: "p".to_owned(),
+            tool_name: Some("t".to_owned()),
+            tool_use_id: Some(tool_id),
+        },
+        MemoryEvidenceOrigin::WebRetrieval {
+            url_hash: ContentHash([1u8; 32]),
+            fetch_tool_use_id: Some(tool_id),
+        },
+        MemoryEvidenceOrigin::WorkspaceFile {
+            workspace_id: WorkspaceId::new(),
+            path_hash: ContentHash([2u8; 32]),
+            snapshot_id: None,
+        },
+        MemoryEvidenceOrigin::Imported {
+            importer: "dreams-migration".to_owned(),
+            import_id: "import-1".to_owned(),
+        },
         MemoryEvidenceOrigin::Consolidated { from: vec![mem_id] },
     ];
     for v in &variants {
@@ -81,7 +131,9 @@ fn memory_record_roundtrip() {
         id: new_memory_id(),
         tenant_id: new_tenant_id(),
         kind: MemoryKind::ProjectFact,
-        visibility: MemoryVisibility::User { user_id: "u1".to_owned() },
+        visibility: MemoryVisibility::User {
+            user_id: "u1".to_owned(),
+        },
         content: "test content".to_owned(),
         metadata: make_meta(),
         created_at: chrono::Utc::now(),
@@ -99,7 +151,9 @@ fn memory_record_roundtrip() {
 fn memory_record_draft_roundtrip() {
     let draft = MemoryRecordDraft {
         kind: MemoryKind::Feedback,
-        visibility: MemoryVisibility::Private { session_id: new_session_id() },
+        visibility: MemoryVisibility::Private {
+            session_id: new_session_id(),
+        },
         content: "draft content".to_owned(),
         metadata: make_meta(),
         expires_at: None,
@@ -172,38 +226,98 @@ fn memory_candidate_roundtrip() {
 
 #[test]
 fn memory_candidate_state_serde_tags() {
-    assert_eq!(serde_json::to_value(MemoryCandidateState::Proposed).unwrap(), json!("proposed"));
-    assert_eq!(serde_json::to_value(MemoryCandidateState::Approved).unwrap(), json!("approved"));
-    assert_eq!(serde_json::to_value(MemoryCandidateState::Rejected).unwrap(), json!("rejected"));
-    assert_eq!(serde_json::to_value(MemoryCandidateState::Promoted).unwrap(), json!("promoted"));
-    assert_eq!(serde_json::to_value(MemoryCandidateState::Merged).unwrap(), json!("merged"));
-    assert_eq!(serde_json::to_value(MemoryCandidateState::Expired).unwrap(), json!("expired"));
+    assert_eq!(
+        serde_json::to_value(MemoryCandidateState::Proposed).unwrap(),
+        json!("proposed")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryCandidateState::Approved).unwrap(),
+        json!("approved")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryCandidateState::Rejected).unwrap(),
+        json!("rejected")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryCandidateState::Promoted).unwrap(),
+        json!("promoted")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryCandidateState::Merged).unwrap(),
+        json!("merged")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryCandidateState::Expired).unwrap(),
+        json!("expired")
+    );
 }
 
 // ── MemoryThreadMode ──
 
 #[test]
 fn memory_thread_mode_serde_tags() {
-    assert_eq!(serde_json::to_value(MemoryThreadMode::Off).unwrap(), json!("off"));
-    assert_eq!(serde_json::to_value(MemoryThreadMode::ReadOnly).unwrap(), json!("read_only"));
-    assert_eq!(serde_json::to_value(MemoryThreadMode::ReadWrite).unwrap(), json!("read_write"));
-    assert_eq!(serde_json::to_value(MemoryThreadMode::CandidateOnly).unwrap(), json!("candidate_only"));
+    assert_eq!(
+        serde_json::to_value(MemoryThreadMode::Off).unwrap(),
+        json!("off")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryThreadMode::ReadOnly).unwrap(),
+        json!("read_only")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryThreadMode::ReadWrite).unwrap(),
+        json!("read_write")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryThreadMode::CandidateOnly).unwrap(),
+        json!("candidate_only")
+    );
 }
 
 // ── MemoryDropReason ──
 
 #[test]
 fn memory_drop_reason_serde_tags() {
-    assert_eq!(serde_json::to_value(MemoryDropReason::Expired).unwrap(), json!("expired"));
-    assert_eq!(serde_json::to_value(MemoryDropReason::Deleted).unwrap(), json!("deleted"));
-    assert_eq!(serde_json::to_value(MemoryDropReason::VisibilityDenied).unwrap(), json!("visibility_denied"));
-    assert_eq!(serde_json::to_value(MemoryDropReason::PolicyDenied).unwrap(), json!("policy_denied"));
-    assert_eq!(serde_json::to_value(MemoryDropReason::ThreatBlocked).unwrap(), json!("threat_blocked"));
-    assert_eq!(serde_json::to_value(MemoryDropReason::BudgetExceeded).unwrap(), json!("budget_exceeded"));
-    assert_eq!(serde_json::to_value(MemoryDropReason::Duplicate).unwrap(), json!("duplicate"));
-    assert_eq!(serde_json::to_value(MemoryDropReason::ProviderTimeout).unwrap(), json!("provider_timeout"));
-    assert_eq!(serde_json::to_value(MemoryDropReason::ProviderError).unwrap(), json!("provider_error"));
-    assert_eq!(serde_json::to_value(MemoryDropReason::ScoreBelowThreshold).unwrap(), json!("score_below_threshold"));
+    assert_eq!(
+        serde_json::to_value(MemoryDropReason::Expired).unwrap(),
+        json!("expired")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryDropReason::Deleted).unwrap(),
+        json!("deleted")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryDropReason::VisibilityDenied).unwrap(),
+        json!("visibility_denied")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryDropReason::PolicyDenied).unwrap(),
+        json!("policy_denied")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryDropReason::ThreatBlocked).unwrap(),
+        json!("threat_blocked")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryDropReason::BudgetExceeded).unwrap(),
+        json!("budget_exceeded")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryDropReason::Duplicate).unwrap(),
+        json!("duplicate")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryDropReason::ProviderTimeout).unwrap(),
+        json!("provider_timeout")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryDropReason::ProviderError).unwrap(),
+        json!("provider_error")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryDropReason::ScoreBelowThreshold).unwrap(),
+        json!("score_below_threshold")
+    );
 }
 
 // ── MemoryPolicyDecision ──
@@ -211,8 +325,12 @@ fn memory_drop_reason_serde_tags() {
 #[test]
 fn memory_policy_decision_roundtrip() {
     let allow = MemoryPolicyDecision::Allow;
-    let deny = MemoryPolicyDecision::Deny { reason: MemoryPolicyDenyReason::GlobalUseDisabled };
-    let cand = MemoryPolicyDecision::CandidateOnly { reason: MemoryPolicyDenyReason::ExternalContextGenerationDisabled };
+    let deny = MemoryPolicyDecision::Deny {
+        reason: MemoryPolicyDenyReason::GlobalUseDisabled,
+    };
+    let cand = MemoryPolicyDecision::CandidateOnly {
+        reason: MemoryPolicyDenyReason::ExternalContextGenerationDisabled,
+    };
 
     for v in [allow, deny, cand] {
         let json = serde_json::to_value(&v).expect("serialize");
@@ -226,17 +344,44 @@ fn memory_policy_decision_roundtrip() {
 #[test]
 fn memory_policy_deny_reason_serde_tags() {
     let reasons = [
-        ("global_use_disabled", MemoryPolicyDenyReason::GlobalUseDisabled),
-        ("thread_use_disabled", MemoryPolicyDenyReason::ThreadUseDisabled),
-        ("global_generation_disabled", MemoryPolicyDenyReason::GlobalGenerationDisabled),
-        ("thread_generation_disabled", MemoryPolicyDenyReason::ThreadGenerationDisabled),
-        ("external_context_generation_disabled", MemoryPolicyDenyReason::ExternalContextGenerationDisabled),
+        (
+            "global_use_disabled",
+            MemoryPolicyDenyReason::GlobalUseDisabled,
+        ),
+        (
+            "thread_use_disabled",
+            MemoryPolicyDenyReason::ThreadUseDisabled,
+        ),
+        (
+            "global_generation_disabled",
+            MemoryPolicyDenyReason::GlobalGenerationDisabled,
+        ),
+        (
+            "thread_generation_disabled",
+            MemoryPolicyDenyReason::ThreadGenerationDisabled,
+        ),
+        (
+            "external_context_generation_disabled",
+            MemoryPolicyDenyReason::ExternalContextGenerationDisabled,
+        ),
         ("missing_policy", MemoryPolicyDenyReason::MissingPolicy),
-        ("visibility_escalation_denied", MemoryPolicyDenyReason::VisibilityEscalationDenied),
-        ("provider_not_writable", MemoryPolicyDenyReason::ProviderNotWritable),
+        (
+            "visibility_escalation_denied",
+            MemoryPolicyDenyReason::VisibilityEscalationDenied,
+        ),
+        (
+            "provider_not_writable",
+            MemoryPolicyDenyReason::ProviderNotWritable,
+        ),
         ("tenant_mismatch", MemoryPolicyDenyReason::TenantMismatch),
-        ("tombstone_matched", MemoryPolicyDenyReason::TombstoneMatched),
-        ("permission_required", MemoryPolicyDenyReason::PermissionRequired),
+        (
+            "tombstone_matched",
+            MemoryPolicyDenyReason::TombstoneMatched,
+        ),
+        (
+            "permission_required",
+            MemoryPolicyDenyReason::PermissionRequired,
+        ),
         ("threat_blocked", MemoryPolicyDenyReason::ThreatBlocked),
     ];
     for (expected_tag, reason) in &reasons {
@@ -259,7 +404,10 @@ fn memory_global_settings_roundtrip() {
     };
     let json = serde_json::to_value(&settings).expect("serialize");
     let back: MemoryGlobalSettings = serde_json::from_value(json).expect("deserialize");
-    assert_eq!(settings.max_recall_records_per_turn, back.max_recall_records_per_turn);
+    assert_eq!(
+        settings.max_recall_records_per_turn,
+        back.max_recall_records_per_turn
+    );
 }
 
 #[test]
@@ -283,7 +431,9 @@ fn memory_tool_args_roundtrip() {
         action: MemoryToolAction::Search(MemorySearchRequest {
             query: "test query".to_owned(),
             max_records: 10,
-            visibility: Some(MemoryVisibility::User { user_id: "u1".to_owned() }),
+            visibility: Some(MemoryVisibility::User {
+                user_id: "u1".to_owned(),
+            }),
             cursor: None,
         }),
     };
@@ -298,10 +448,23 @@ fn memory_tool_args_roundtrip() {
 #[test]
 fn memory_tool_request_fields() {
     let request = MemoryToolRequest {
-        args: MemoryToolArgs { action: MemoryToolAction::List(MemoryListRequest { visibility: None, include_expired: false, include_deleted: false, limit: 10, cursor: None }) },
+        args: MemoryToolArgs {
+            action: MemoryToolAction::List(MemoryListRequest {
+                visibility: None,
+                include_expired: false,
+                include_deleted: false,
+                limit: 10,
+                cursor: None,
+            }),
+        },
         runtime: MemoryToolRuntimeContext {
             actor: MemoryActor::User { user_label: None },
-            permission_context: MemoryPermissionContext { explicit_user_instruction: false, action_plan_id: None, authorization_ticket_id: None, non_interactive_policy_grant: false },
+            permission_context: MemoryPermissionContext {
+                explicit_user_instruction: false,
+                action_plan_id: None,
+                authorization_ticket_id: None,
+                non_interactive_policy_grant: false,
+            },
             tenant_id: new_tenant_id(),
             session_id: new_session_id(),
             run_id: new_run_id(),
@@ -320,20 +483,43 @@ fn memory_tool_all_actions_roundtrip() {
     let mem_id = new_memory_id();
     let draft = MemoryRecordDraft {
         kind: MemoryKind::UserPreference,
-        visibility: MemoryVisibility::User { user_id: "u".to_owned() },
+        visibility: MemoryVisibility::User {
+            user_id: "u".to_owned(),
+        },
         content: "test".to_owned(),
         metadata: make_meta(),
         expires_at: None,
     };
 
     let actions: Vec<MemoryToolAction> = vec![
-        MemoryToolAction::Search(MemorySearchRequest { query: "q".to_owned(), max_records: 5, visibility: None, cursor: None }),
+        MemoryToolAction::Search(MemorySearchRequest {
+            query: "q".to_owned(),
+            max_records: 5,
+            visibility: None,
+            cursor: None,
+        }),
         MemoryToolAction::Read(MemoryReadRequest { memory_id: mem_id }),
-        MemoryToolAction::Create(MemoryToolCreateArgs { draft: draft.clone() }),
-        MemoryToolAction::Update(MemoryToolUpdateArgs { memory_id: mem_id, draft: draft.clone() }),
-        MemoryToolAction::Delete(MemoryDeleteRequest { memory_id: mem_id, reason: "cleanup".to_owned() }),
-        MemoryToolAction::List(MemoryListRequest { visibility: None, include_expired: false, include_deleted: false, limit: 10, cursor: None }),
-        MemoryToolAction::Propose(MemoryToolProposeArgs { draft: draft.clone() }),
+        MemoryToolAction::Create(MemoryToolCreateArgs {
+            draft: draft.clone(),
+        }),
+        MemoryToolAction::Update(MemoryToolUpdateArgs {
+            memory_id: mem_id,
+            draft: draft.clone(),
+        }),
+        MemoryToolAction::Delete(MemoryDeleteRequest {
+            memory_id: mem_id,
+            reason: "cleanup".to_owned(),
+        }),
+        MemoryToolAction::List(MemoryListRequest {
+            visibility: None,
+            include_expired: false,
+            include_deleted: false,
+            limit: 10,
+            cursor: None,
+        }),
+        MemoryToolAction::Propose(MemoryToolProposeArgs {
+            draft: draft.clone(),
+        }),
     ];
     for action in &actions {
         let json = serde_json::to_value(action).expect("serialize action");
@@ -353,9 +539,12 @@ fn memory_tool_response_roundtrip() {
         candidate_ids: vec![],
         records: vec![],
         next_cursor: None,
-        action_plan_id: None,
+        action_plan_id: Some(ActionPlanId::new()),
         denial: None,
-        redaction: MemoryRedactionSummary { redacted_count: 0, dropped_count: 0 },
+        redaction: MemoryRedactionSummary {
+            redacted_count: 0,
+            dropped_count: 0,
+        },
         trace_id: None,
         takes_effect: MemoryTakesEffect::CurrentTurn,
     };
@@ -389,6 +578,7 @@ fn memory_score_breakdown_roundtrip() {
 fn memory_recall_trace_no_raw_content() {
     let trace = MemoryRecallTrace {
         trace_id: MemoryTraceId::new(),
+        tenant_id: new_tenant_id(),
         session_id: new_session_id(),
         run_id: new_run_id(),
         turn: 1,
@@ -408,7 +598,16 @@ fn memory_recall_trace_no_raw_content() {
             memory_id: new_memory_id(),
             provider_id: "local".to_owned(),
             content_hash: ContentHash([6u8; 32]),
-            score: MemoryScoreBreakdown { lexical_score: 1.0, vector_score: None, confidence_score: 1.0, recency_score: 1.0, access_score: 0.0, source_trust_score: 1.0, explicit_selection_boost: 0.0, final_score: 0.9 },
+            score: MemoryScoreBreakdown {
+                lexical_score: 1.0,
+                vector_score: None,
+                confidence_score: 1.0,
+                recency_score: 1.0,
+                access_score: 0.0,
+                source_trust_score: 1.0,
+                explicit_selection_boost: 0.0,
+                final_score: 0.9,
+            },
             policy_decision: MemoryPolicyDecision::Allow,
         }],
         injected: vec![MemoryInjectedTrace {
@@ -467,49 +666,102 @@ fn memory_provider_descriptor_roundtrip() {
 
 #[test]
 fn memory_provider_trust_serde_tags() {
-    assert_eq!(serde_json::to_value(MemoryProviderTrust::BuiltIn).unwrap(), json!("built_in"));
-    assert_eq!(serde_json::to_value(MemoryProviderTrust::Workspace).unwrap(), json!("workspace"));
-    assert_eq!(serde_json::to_value(MemoryProviderTrust::Team).unwrap(), json!("team"));
-    assert_eq!(serde_json::to_value(MemoryProviderTrust::Plugin).unwrap(), json!("plugin"));
-    assert_eq!(serde_json::to_value(MemoryProviderTrust::External).unwrap(), json!("external"));
+    assert_eq!(
+        serde_json::to_value(MemoryProviderTrust::BuiltIn).unwrap(),
+        json!("built_in")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryProviderTrust::Workspace).unwrap(),
+        json!("workspace")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryProviderTrust::Team).unwrap(),
+        json!("team")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryProviderTrust::Plugin).unwrap(),
+        json!("plugin")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryProviderTrust::External).unwrap(),
+        json!("external")
+    );
 }
 
 // ── MemoryVisibilityClass ──
 
 #[test]
 fn memory_visibility_class_serde_tags() {
-    assert_eq!(serde_json::to_value(MemoryVisibilityClass::Private).unwrap(), json!("private"));
-    assert_eq!(serde_json::to_value(MemoryVisibilityClass::User).unwrap(), json!("user"));
-    assert_eq!(serde_json::to_value(MemoryVisibilityClass::Team).unwrap(), json!("team"));
-    assert_eq!(serde_json::to_value(MemoryVisibilityClass::Tenant).unwrap(), json!("tenant"));
+    assert_eq!(
+        serde_json::to_value(MemoryVisibilityClass::Private).unwrap(),
+        json!("private")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryVisibilityClass::User).unwrap(),
+        json!("user")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryVisibilityClass::Team).unwrap(),
+        json!("team")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryVisibilityClass::Tenant).unwrap(),
+        json!("tenant")
+    );
 }
 
 // ── MemoryTakesEffect ──
 
 #[test]
 fn memory_takes_effect_serde_tags() {
-    assert_eq!(serde_json::to_value(MemoryTakesEffect::CurrentTurn).unwrap(), json!("current_turn"));
-    assert_eq!(serde_json::to_value(MemoryTakesEffect::NextTurn).unwrap(), json!("next_turn"));
-    assert_eq!(serde_json::to_value(MemoryTakesEffect::NextSession).unwrap(), json!("next_session"));
-    assert_eq!(serde_json::to_value(MemoryTakesEffect::Never).unwrap(), json!("never"));
+    assert_eq!(
+        serde_json::to_value(MemoryTakesEffect::CurrentTurn).unwrap(),
+        json!("current_turn")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryTakesEffect::NextTurn).unwrap(),
+        json!("next_turn")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryTakesEffect::NextSession).unwrap(),
+        json!("next_session")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryTakesEffect::Never).unwrap(),
+        json!("never")
+    );
 }
 
 // ── MemoryToolState ──
 
 #[test]
 fn memory_tool_state_serde_tags() {
-    assert_eq!(serde_json::to_value(MemoryToolState::Completed).unwrap(), json!("completed"));
-    assert_eq!(serde_json::to_value(MemoryToolState::CandidateCreated).unwrap(), json!("candidate_created"));
+    assert_eq!(
+        serde_json::to_value(MemoryToolState::Completed).unwrap(),
+        json!("completed")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryToolState::CandidateCreated).unwrap(),
+        json!("candidate_created")
+    );
 }
 
 // ── MemoryActorContext (new enum definition) ──
 
 #[test]
 fn memory_actor_serde_tags() {
-    let sid = new_session_id();
-    assert_eq!(serde_json::to_value(MemoryActor::User { user_label: None }).unwrap(), json!({"user": {"user_label": null}}));
-    assert_eq!(serde_json::to_value(MemoryActor::Model).unwrap(), json!("model"));
-    assert_eq!(serde_json::to_value(MemoryActor::System).unwrap(), json!("system"));
+    assert_eq!(
+        serde_json::to_value(MemoryActor::User { user_label: None }).unwrap(),
+        json!({"user": {"user_label": null}})
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryActor::Model).unwrap(),
+        json!("model")
+    );
+    assert_eq!(
+        serde_json::to_value(MemoryActor::System).unwrap(),
+        json!("system")
+    );
 }
 
 // ── MemoryProviderSelectionPolicy ──
@@ -521,7 +773,10 @@ fn memory_provider_selection_policy_roundtrip() {
         json!("policy_selected")
     );
     assert_eq!(
-        serde_json::to_value(MemoryProviderSelectionPolicy::RequireProvider { provider_id: "local".to_owned() }).unwrap(),
+        serde_json::to_value(MemoryProviderSelectionPolicy::RequireProvider {
+            provider_id: "local".to_owned()
+        })
+        .unwrap(),
         json!({"require_provider": {"provider_id": "local"}})
     );
     assert_eq!(
@@ -535,16 +790,21 @@ fn memory_provider_selection_policy_roundtrip() {
 #[test]
 fn ipc_memory_settings_contracts_roundtrip() {
     // GetMemorySettings
-    let req = GetMemorySettingsRequest { tenant_id: new_tenant_id() };
+    let req = GetMemorySettingsRequest {
+        tenant_id: new_tenant_id(),
+    };
     let json = serde_json::to_value(&req).unwrap();
     let _: GetMemorySettingsRequest = serde_json::from_value(json).unwrap();
 
     let resp = GetMemorySettingsResponse {
         settings: MemoryGlobalSettings {
-            use_memories: true, generate_memories: true,
+            use_memories: true,
+            generate_memories: true,
             disable_generation_when_external_context_used: false,
-            retention_days: None, max_memory_bytes: 1024 * 1024,
-            max_recall_records_per_turn: 10, max_recall_chars_per_turn: 10000,
+            retention_days: None,
+            max_memory_bytes: 1024 * 1024,
+            max_recall_records_per_turn: 10,
+            max_recall_chars_per_turn: 10000,
         },
     };
     let json = serde_json::to_value(&resp).unwrap();
@@ -556,7 +816,12 @@ fn ipc_thread_memory_settings_contracts_roundtrip() {
     let sid = new_session_id();
     let req = UpdateThreadMemorySettingsRequest {
         tenant_id: new_tenant_id(),
-        settings: MemoryThreadSettings { session_id: sid, use_memories: Some(true), generate_memories: None, memory_mode: MemoryThreadMode::ReadWrite },
+        settings: MemoryThreadSettings {
+            session_id: sid,
+            use_memories: Some(true),
+            generate_memories: None,
+            memory_mode: MemoryThreadMode::ReadWrite,
+        },
     };
     let json = serde_json::to_value(&req).unwrap();
     let _: UpdateThreadMemorySettingsRequest = serde_json::from_value(json).unwrap();
@@ -578,20 +843,32 @@ fn ipc_memory_candidates_contracts_roundtrip() {
         id: MemoryCandidateId::new(),
         state: MemoryCandidateState::Proposed,
         proposed_record: MemoryRecordDraft {
-            kind: MemoryKind::ProjectFact, visibility: MemoryVisibility::Tenant,
-            content: "test".to_owned(), metadata: make_meta(), expires_at: None,
+            kind: MemoryKind::ProjectFact,
+            visibility: MemoryVisibility::Tenant,
+            content: "test".to_owned(),
+            metadata: make_meta(),
+            expires_at: None,
         },
         evidence: MemoryEvidence {
             source: MemorySource::AgentDerived,
             origin: MemoryEvidenceOrigin::AssistantMessage {
-                session_id: new_session_id(), run_id: new_run_id(), message_id: new_message_id(),
+                session_id: new_session_id(),
+                run_id: new_run_id(),
+                message_id: new_message_id(),
             },
-            content_hash: ContentHash([9u8; 32]), session_id: None, run_id: None, message_id: None, tool_use_id: None,
+            content_hash: ContentHash([9u8; 32]),
+            session_id: None,
+            run_id: None,
+            message_id: None,
+            tool_use_id: None,
         },
         created_at: chrono::Utc::now(),
         expires_at: None,
     };
-    let resp = ListMemoryCandidatesResponse { candidates: vec![item], next_cursor: None };
+    let resp = ListMemoryCandidatesResponse {
+        candidates: vec![item],
+        next_cursor: None,
+    };
     let json = serde_json::to_value(&resp).unwrap();
     let _: ListMemoryCandidatesResponse = serde_json::from_value(json).unwrap();
 }
@@ -599,49 +876,95 @@ fn ipc_memory_candidates_contracts_roundtrip() {
 #[test]
 fn ipc_approve_reject_merge_contracts_roundtrip() {
     let approve = ApproveMemoryCandidateRequest {
-        tenant_id: new_tenant_id(), candidate_id: MemoryCandidateId::new(), action_plan_id: None,
+        tenant_id: new_tenant_id(),
+        candidate_id: MemoryCandidateId::new(),
+        action_plan_id: Some(ActionPlanId::new()),
     };
-    let _: ApproveMemoryCandidateRequest = serde_json::from_value(serde_json::to_value(&approve).unwrap()).unwrap();
+    let _: ApproveMemoryCandidateRequest =
+        serde_json::from_value(serde_json::to_value(&approve).unwrap()).unwrap();
+    let approve_without_action_plan = ApproveMemoryCandidateRequest {
+        action_plan_id: None,
+        ..approve
+    };
+    let approve_json = serde_json::to_value(&approve_without_action_plan).unwrap();
+    assert!(approve_json.get("action_plan_id").is_none());
+    let _: ApproveMemoryCandidateRequest = serde_json::from_value(approve_json).unwrap();
 
     let reject = RejectMemoryCandidateRequest {
-        tenant_id: new_tenant_id(), candidate_id: MemoryCandidateId::new(), reason: "outdated".to_owned(),
+        tenant_id: new_tenant_id(),
+        candidate_id: MemoryCandidateId::new(),
+        reason: "outdated".to_owned(),
     };
-    let _: RejectMemoryCandidateRequest = serde_json::from_value(serde_json::to_value(&reject).unwrap()).unwrap();
+    let _: RejectMemoryCandidateRequest =
+        serde_json::from_value(serde_json::to_value(&reject).unwrap()).unwrap();
 
     let merge = MergeMemoryCandidateRequest {
         tenant_id: new_tenant_id(),
         candidate_ids: vec![MemoryCandidateId::new(), MemoryCandidateId::new()],
         merged_record: MemoryRecordDraft {
-            kind: MemoryKind::ProjectFact, visibility: MemoryVisibility::Tenant,
-            content: "merged".to_owned(), metadata: make_meta(), expires_at: None,
+            kind: MemoryKind::ProjectFact,
+            visibility: MemoryVisibility::Tenant,
+            content: "merged".to_owned(),
+            metadata: make_meta(),
+            expires_at: None,
         },
         evidence: MemoryEvidence {
-            source: MemorySource::Consolidated { from: vec![new_memory_id()] },
-            origin: MemoryEvidenceOrigin::Consolidated { from: vec![new_memory_id()] },
-            content_hash: ContentHash([10u8; 32]), session_id: None, run_id: None, message_id: None, tool_use_id: None,
+            source: MemorySource::Consolidated {
+                from: vec![new_memory_id()],
+            },
+            origin: MemoryEvidenceOrigin::Consolidated {
+                from: vec![new_memory_id()],
+            },
+            content_hash: ContentHash([10u8; 32]),
+            session_id: None,
+            run_id: None,
+            message_id: None,
+            tool_use_id: None,
         },
         action_plan_id: None,
     };
-    let _: MergeMemoryCandidateRequest = serde_json::from_value(serde_json::to_value(&merge).unwrap()).unwrap();
+    let merge_json = serde_json::to_value(&merge).unwrap();
+    assert!(merge_json.get("action_plan_id").is_none());
+    let _: MergeMemoryCandidateRequest = serde_json::from_value(merge_json).unwrap();
 }
 
 #[test]
 fn ipc_recall_traces_contracts_roundtrip() {
+    let tenant_id = new_tenant_id();
     let req = ListMemoryRecallTracesRequest {
-        tenant_id: new_tenant_id(), session_id: None, run_id: None, limit: 10, cursor: None,
+        tenant_id,
+        session_id: None,
+        run_id: None,
+        limit: 10,
+        cursor: None,
     };
-    let _: ListMemoryRecallTracesRequest = serde_json::from_value(serde_json::to_value(&req).unwrap()).unwrap();
+    let _: ListMemoryRecallTracesRequest =
+        serde_json::from_value(serde_json::to_value(&req).unwrap()).unwrap();
 
     let summary = MemoryRecallTraceSummary {
-        trace_id: MemoryTraceId::new(), session_id: new_session_id(), run_id: new_run_id(),
-        injected_count: 3, dropped_count: 1, redacted_count: 0, at: chrono::Utc::now(),
+        trace_id: MemoryTraceId::new(),
+        tenant_id,
+        session_id: new_session_id(),
+        run_id: new_run_id(),
+        injected_count: 3,
+        dropped_count: 1,
+        redacted_count: 0,
+        at: chrono::Utc::now(),
     };
-    let resp = ListMemoryRecallTracesResponse { traces: vec![summary], next_cursor: None };
-    let _: ListMemoryRecallTracesResponse = serde_json::from_value(serde_json::to_value(&resp).unwrap()).unwrap();
+    let resp = ListMemoryRecallTracesResponse {
+        traces: vec![summary],
+        next_cursor: None,
+    };
+    let _: ListMemoryRecallTracesResponse =
+        serde_json::from_value(serde_json::to_value(&resp).unwrap()).unwrap();
 
     let get_resp = GetMemoryRecallTraceResponse {
         trace: MemoryRecallTrace {
-            trace_id: MemoryTraceId::new(), session_id: new_session_id(), run_id: new_run_id(), turn: 1,
+            trace_id: MemoryTraceId::new(),
+            tenant_id,
+            session_id: new_session_id(),
+            run_id: new_run_id(),
+            turn: 1,
             query_text_hash: ContentHash([11u8; 32]),
             provider_results: vec![],
             candidates: vec![],
@@ -653,18 +976,24 @@ fn ipc_recall_traces_contracts_roundtrip() {
             at: chrono::Utc::now(),
         },
     };
-    let _: GetMemoryRecallTraceResponse = serde_json::from_value(serde_json::to_value(&get_resp).unwrap()).unwrap();
+    let _: GetMemoryRecallTraceResponse =
+        serde_json::from_value(serde_json::to_value(&get_resp).unwrap()).unwrap();
 }
 
 #[test]
 fn ipc_model_request_preview_contracts_roundtrip() {
     let req = GetModelRequestPreviewRequest {
-        tenant_id: new_tenant_id(), session_id: new_session_id(), run_id: new_run_id(), trace_id: None,
+        tenant_id: new_tenant_id(),
+        session_id: new_session_id(),
+        run_id: new_run_id(),
+        trace_id: None,
     };
-    let _: GetModelRequestPreviewRequest = serde_json::from_value(serde_json::to_value(&req).unwrap()).unwrap();
+    let _: GetModelRequestPreviewRequest =
+        serde_json::from_value(serde_json::to_value(&req).unwrap()).unwrap();
 
     let preview = MemoryModelRequestPreview {
-        session_id: new_session_id(), run_id: new_run_id(),
+        session_id: new_session_id(),
+        run_id: new_run_id(),
         sections: vec![MemoryModelRequestPreviewSection {
             source: MemorySource::UserInput,
             provider_id: Some("local".to_owned()),
@@ -675,7 +1004,8 @@ fn ipc_model_request_preview_contracts_roundtrip() {
         content_hash: ContentHash([12u8; 32]),
     };
     let resp = GetModelRequestPreviewResponse { preview };
-    let _: GetModelRequestPreviewResponse = serde_json::from_value(serde_json::to_value(&resp).unwrap()).unwrap();
+    let _: GetModelRequestPreviewResponse =
+        serde_json::from_value(serde_json::to_value(&resp).unwrap()).unwrap();
 }
 
 // ── MemoryMetadata ──

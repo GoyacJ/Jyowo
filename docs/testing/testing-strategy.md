@@ -147,6 +147,8 @@ pnpm check:rust:fast       # contracts + desktop-shell tests
 pnpm check:quick           # fast policy + docs + frontend + rust
 pnpm check:agent-orchestration-no-fakes
 pnpm check:agent-supervisor-sidecar
+node --test scripts/memory-architecture-policy.test.mjs
+node scripts/memory-architecture-policy.mjs
 pnpm check:test-architecture  # naming and size enforcement
 pnpm audit:tests           # regenerate test inventory
 ```
@@ -168,6 +170,7 @@ release version consistency
 release workflow policy
 Tauri updater policy
 docs validation (agent, frontend, backend, testing)
+memory architecture policy
 test architecture enforcement
 desktop typecheck, lint, test, build, Knip
 Rust format check, workspace check, workspace tests

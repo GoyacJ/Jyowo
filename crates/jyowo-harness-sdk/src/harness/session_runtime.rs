@@ -523,6 +523,8 @@ impl Harness {
                 Arc::new(context.clone()),
             );
         }
+        #[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
+        self.install_memory_tool_runtime_for_session(options, &mut cap_registry);
         let model_profile = ToolPoolModelProfile {
             provider: harness_contracts::ModelProvider(model_snapshot.provider_id.clone()),
             max_context_tokens: (model_snapshot.context_window > 0)

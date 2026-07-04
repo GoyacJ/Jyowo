@@ -37,9 +37,9 @@ use harness_contracts::{
     ContextPatchSinkCap, ConversationAttachmentReference, ConversationContextReference,
     ConversationTurnInput, Decision, Event, EventId, HarnessError, HookEventKind,
     InteractivityLevel, JournalOffset, ManifestOriginRef, ManifestValidationFailedEvent,
-    McpServerId, Message, MessageContent, MessageId, MessagePart, MessageRole, ModelModality,
-    ModelProtocol, PermissionError, PermissionMode, PluginCapabilitiesSummary, PluginFailedEvent,
-    PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginRejectedEvent,
+    McpServerId, MemoryId, Message, MessageContent, MessageId, MessagePart, MessageRole,
+    ModelModality, ModelProtocol, PermissionError, PermissionMode, PluginCapabilitiesSummary,
+    PluginFailedEvent, PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginRejectedEvent,
     ProviderCapabilityRouteSettings, RedactPatternSet, RedactRules, RedactScope, Redactor,
     RejectionReason, RunId, RunModelSnapshot, RunScopedProcessRegistryCap, SessionError, SessionId,
     TenantId, ToolCapability, ToolProfile, ToolSearchMode, TrustLevel, TurnInput,
@@ -217,7 +217,7 @@ struct HarnessInner {
     authorization_service: Arc<harness_execution::AuthorizationService>,
     tool_registry: ToolRegistry,
     hook_registry: HookRegistry,
-    memory_provider: Option<Arc<dyn MemoryProvider>>,
+    memory_providers: Vec<Arc<dyn MemoryProvider>>,
     #[cfg(feature = "memory-consolidation")]
     consolidation_hook: Option<Arc<dyn ConsolidationHook>>,
     #[cfg(feature = "memory-builtin")]
@@ -452,7 +452,7 @@ impl Harness {
                 authorization_service,
                 tool_registry,
                 hook_registry,
-                memory_provider: extras.memory_provider.take(),
+                memory_providers: extras.memory_providers,
                 #[cfg(feature = "memory-consolidation")]
                 consolidation_hook: extras.consolidation_hook.take(),
                 #[cfg(feature = "memory-builtin")]

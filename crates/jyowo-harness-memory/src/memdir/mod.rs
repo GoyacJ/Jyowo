@@ -390,7 +390,6 @@ impl BuiltinMemory {
 fn kind_for_file(file: MemdirFile) -> MemoryKind {
     match file {
         MemdirFile::User => MemoryKind::UserPreference,
-        MemdirFile::Dreams => MemoryKind::Custom("dream".to_owned()),
         _ => MemoryKind::ProjectFact,
     }
 }

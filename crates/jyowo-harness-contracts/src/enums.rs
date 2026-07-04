@@ -10,11 +10,11 @@ use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-use crate::ids::*;
 use crate::events::types::{
-    ContentHash, MemoryToolCreateArgs, MemoryToolUpdateArgs, MemoryDeleteRequest,
-    MemoryListRequest, MemorySearchRequest, MemoryReadRequest, MemoryToolProposeArgs,
+    ContentHash, MemoryDeleteRequest, MemoryListRequest, MemoryReadRequest, MemorySearchRequest,
+    MemoryToolCreateArgs, MemoryToolProposeArgs, MemoryToolUpdateArgs,
 };
+use crate::ids::*;
 
 #[non_exhaustive]
 #[derive(
@@ -1155,10 +1155,15 @@ pub enum MemoryVisibilityClass {
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryActor {
-    User { user_label: Option<String> },
+    User {
+        user_label: Option<String>,
+    },
     Model,
     System,
-    Subagent { child_session_id: SessionId, agent_id: Option<AgentId> },
+    Subagent {
+        child_session_id: SessionId,
+        agent_id: Option<AgentId>,
+    },
 }
 
 #[non_exhaustive]

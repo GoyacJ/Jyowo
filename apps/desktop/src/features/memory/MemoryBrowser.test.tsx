@@ -212,7 +212,11 @@ describe('MemoryBrowser', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm memory deletion' }))
 
-    await waitFor(() => expect(deleteMemoryItem).toHaveBeenCalledWith('01HZ0000000000000000000001'))
+    await waitFor(() =>
+      expect(deleteMemoryItem).toHaveBeenCalledWith({
+        id: '01HZ0000000000000000000001',
+      }),
+    )
   })
 
   it('exports visible memory items through the backend', async () => {

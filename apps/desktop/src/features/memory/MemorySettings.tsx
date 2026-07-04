@@ -4,9 +4,10 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
+  DEFAULT_MEMORY_TENANT_ID,
   getMemorySettings,
-  updateMemorySettings,
   type UpdateMemorySettingsRequest,
+  updateMemorySettings,
 } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
@@ -31,8 +32,7 @@ export function MemorySettings() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: (req: UpdateMemorySettingsRequest) =>
-      updateMemorySettings(req, commandClient),
+    mutationFn: (req: UpdateMemorySettingsRequest) => updateMemorySettings(req, commandClient),
     onSuccess: () => {
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
@@ -52,11 +52,14 @@ export function MemorySettings() {
     return <div className="p-4 text-muted-foreground">{t('noSettings')}</div>
   }
 
-  const handleToggle = (key: keyof typeof settings, value: boolean) => {
+  const handleToggle = (
+    key: 'disable_generation_when_external_context_used' | 'generate_memories' | 'use_memories',
+    value: boolean,
+  ) => {
     updateMutation.mutate({
-      tenantId: settingsQuery.data!.settings as any,
+      tenantId: DEFAULT_MEMORY_TENANT_ID,
       settings: { ...settings, [key]: value },
-    } as any)
+    })
   }
 
   return (
@@ -83,9 +86,7 @@ export function MemorySettings() {
             />
           </div>
           <div className="flex items-center justify-between">
-            <Label htmlFor="disable-ext-context">
-              {t('disableGenerationWithExternalContext')}
-            </Label>
+            <Label htmlFor="disable-ext-context">{t('disableGenerationWithExternalContext')}</Label>
             <Switch
               id="disable-ext-context"
               checked={settings.disable_generation_when_external_context_used}
@@ -122,26 +123,19 @@ export function MemorySettings() {
           </div>
           <div className="space-y-2">
             <Label htmlFor="max-bytes">{t('maxMemoryBytes')}</Label>
-            <Input
-              id="max-bytes"
-              type="number"
-              value={settings.max_memory_bytes}
-              disabled
-            />
+            <Input id="max-bytes" type="number" value={settings.max_memory_bytes} disabled />
           </div>
         </CardContent>
       </Card>
 
-      {saved && (
-        <div className="text-sm text-green-600">{t('settingsSaved')}</div>
-      )}
+      {saved && <div className="text-sm text-green-600">{t('settingsSaved')}</div>}
 
       <Button
         onClick={() =>
           updateMutation.mutate({
-            tenantId: undefined as any,
+            tenantId: DEFAULT_MEMORY_TENANT_ID,
             settings,
-          } as any)
+          })
         }
         disabled={updateMutation.isPending}
         className="w-full"

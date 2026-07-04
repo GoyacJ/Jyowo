@@ -3,8 +3,6 @@
 //! Resolves `ConversationContextReference::Memory` ids into actual
 //! fenced memory content before model request assembly.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use harness_contracts::{MemoryError, MemoryId};
 

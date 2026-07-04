@@ -509,8 +509,6 @@ impl MemoryStore for LifecycleOrderProvider {
 
 #[async_trait]
 impl MemoryLifecycle for LifecycleOrderProvider {
-
-impl harness_memory::MemoryProvider for LifecycleOrderProvider {}
     async fn on_turn_start(
         &self,
         turn: u32,
@@ -523,6 +521,8 @@ impl harness_memory::MemoryProvider for LifecycleOrderProvider {}
         Ok(())
     }
 }
+
+impl harness_memory::MemoryProvider for LifecycleOrderProvider {}
 
 struct TestSession {
     system: Option<String>,

@@ -26,6 +26,7 @@ function MemoryPage() {
         {tabs.map((t) => (
           <button
             key={t.id}
+            type="button"
             onClick={() => setTab(t.id)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
               tab === t.id

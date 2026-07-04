@@ -1,8 +1,7 @@
 //! Tests for the memory candidate inbox.
 
-use chrono::Utc;
 use harness_contracts::*;
-use harness_memory::inbox::{InboxStore, MemoryInbox};
+use harness_memory::inbox::MemoryInbox;
 
 fn make_draft(content: &str) -> MemoryRecordDraft {
     MemoryRecordDraft {
@@ -43,6 +42,27 @@ fn inbox_starts_empty() {
 }
 
 #[test]
+fn sqlite_inbox_persists_candidates_after_reopen() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("memory.sqlite3");
+
+    let candidate_id = {
+        let inbox = MemoryInbox::open(db_path.to_str().unwrap(), TenantId::SINGLE).unwrap();
+        inbox
+            .propose(make_draft("durable candidate"), make_evidence())
+            .unwrap()
+            .id
+    };
+
+    let reopened = MemoryInbox::open(db_path.to_str().unwrap(), TenantId::SINGLE).unwrap();
+    let candidates = reopened.list(None).unwrap();
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id, candidate_id);
+    assert_eq!(candidates[0].proposed_record.content, "durable candidate");
+}
+
+#[test]
 fn propose_adds_candidate_in_proposed_state() {
     let inbox = MemoryInbox::new(TenantId::SINGLE);
     let candidate = inbox
@@ -61,6 +81,22 @@ fn approve_promotes_candidate_to_approved_state() {
 
     let approved = inbox.approve(candidate.id).unwrap();
     assert_eq!(approved.state, MemoryCandidateState::Approved);
+}
+
+#[test]
+fn merge_marks_candidate_as_merged() {
+    let inbox = MemoryInbox::new(TenantId::SINGLE);
+    let candidate = inbox
+        .propose(make_draft("merge me"), make_evidence())
+        .unwrap();
+
+    let merged = inbox.merge(candidate.id).unwrap();
+
+    assert_eq!(merged.state, MemoryCandidateState::Merged);
+    assert_eq!(
+        inbox.list(Some(MemoryCandidateState::Merged)).unwrap()[0].id,
+        candidate.id
+    );
 }
 
 #[test]

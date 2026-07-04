@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use chrono::Utc;
 use harness_contracts::{
-    MemoryActorContext, MemoryError, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId,
-    TenantId,
+    MemoryActorContext, MemoryError, MemoryId, MemoryKind, MemorySource, MemoryVisibility,
+    SessionId, TenantId,
 };
 use harness_memory::{
     InMemoryMemoryProvider, MemoryKindFilter, MemoryListScope, MemoryManager, MemoryMetadata,
@@ -16,7 +16,7 @@ use harness_memory::{
 use tokio::sync::Barrier;
 
 #[test]
-fn memory_manager_accepts_only_one_external_provider() {
+fn memory_manager_registers_multiple_providers_through_registry() {
     let manager = MemoryManager::new();
 
     assert!(!manager.has_external());
@@ -25,13 +25,20 @@ fn memory_manager_accepts_only_one_external_provider() {
         .unwrap();
 
     assert!(manager.has_external());
-    let ext_id = manager.external().unwrap().provider_id().to_owned();
-    assert!(ext_id == "first" || ext_id == "second");
 
-    // Registry allows multiple providers with different IDs
     manager
         .register_provider(Arc::new(InMemoryMemoryProvider::new("second")))
         .unwrap();
+    let registry = manager.provider_registry().expect("registry");
+    let ids = registry
+        .providers()
+        .map(|provider| provider.provider_id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        ids,
+        BTreeSet::from(["first".to_owned(), "second".to_owned()])
+    );
+
     // Duplicate ID is rejected
     let error = manager
         .register_provider(Arc::new(InMemoryMemoryProvider::new("first")))

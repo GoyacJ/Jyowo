@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Trash2, X } from 'lucide-react'
+import { Check, X } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
-  listMemoryCandidates,
   approveMemoryCandidate,
+  DEFAULT_MEMORY_TENANT_ID,
+  listMemoryCandidates,
   rejectMemoryCandidate,
-  type ListMemoryCandidatesRequest,
 } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
@@ -25,12 +25,13 @@ export function MemoryInbox() {
 
   const inboxQuery = useQuery({
     queryKey: inboxQueryKeys.all,
-    queryFn: () => listMemoryCandidates({ limit: 50 }, commandClient),
+    queryFn: () =>
+      listMemoryCandidates({ limit: 50, tenantId: DEFAULT_MEMORY_TENANT_ID }, commandClient),
   })
 
   const approveMutation = useMutation({
     mutationFn: (candidateId: string) =>
-      approveMemoryCandidate({ candidateId } as any, commandClient),
+      approveMemoryCandidate({ candidateId, tenantId: DEFAULT_MEMORY_TENANT_ID }, commandClient),
     onSuccess: () => {
       setMessage(t('candidateApproved'))
       queryClient.invalidateQueries({ queryKey: inboxQueryKeys.all })
@@ -40,7 +41,11 @@ export function MemoryInbox() {
   const rejectMutation = useMutation({
     mutationFn: (candidateId: string) =>
       rejectMemoryCandidate(
-        { candidateId, reason: 'rejected by user' } as any,
+        {
+          candidateId,
+          reason: 'rejected by user',
+          tenantId: DEFAULT_MEMORY_TENANT_ID,
+        },
         commandClient,
       ),
     onSuccess: () => {
@@ -64,16 +69,12 @@ export function MemoryInbox() {
 
   return (
     <div className="space-y-4 p-4">
-      {message && (
-        <div className="rounded bg-green-50 p-2 text-sm text-green-700">
-          {message}
-        </div>
-      )}
+      {message && <div className="rounded bg-green-50 p-2 text-sm text-green-700">{message}</div>}
       {candidates.map((candidate) => (
         <Card key={candidate.id}>
           <CardHeader>
             <CardTitle className="text-sm">
-              {candidate.proposed_record.kind} · {candidate.state}
+              {formatMemoryKind(candidate.proposed_record.kind)} · {candidate.state}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -109,4 +110,8 @@ export function MemoryInbox() {
       ))}
     </div>
   )
+}
+
+function formatMemoryKind(kind: string | { custom: string }) {
+  return typeof kind === 'string' ? kind : kind.custom
 }

@@ -119,13 +119,10 @@ fn render_context_reference(reference: &ConversationContextReference) -> String 
             resolved_content,
         } => {
             if let Some(content) = resolved_content {
-                // Hydrated content is fenced as untrusted context
-                format!(
-                    "[memory-reference id={id}]\n{content}\n[/memory-reference id={id}]"
-                )
+                format!("[memory-reference id={id}]\n{content}\n[/memory-reference id={id}]")
             } else {
                 format!(
-                    "- memory reference: {} ({})",
+                    "- unresolved memory reference: {} ({})",
                     sanitize_context_line(label),
                     sanitize_context_line(id)
                 )
@@ -170,6 +167,42 @@ fn sanitize_context_line(value: &str) -> String {
 }
 
 impl Harness {
+    async fn hydrate_memory_references(
+        &self,
+        mut input: ConversationTurnInput,
+        options: &SessionOptions,
+    ) -> Result<ConversationTurnInput, HarnessError> {
+        let redactor = self.hook_redactor();
+        let redact_rules = RedactRules {
+            scope: RedactScope::All,
+            ..RedactRules::default()
+        };
+
+        for reference in &mut input.context_references {
+            let ConversationContextReference::Memory {
+                id,
+                resolved_content,
+                ..
+            } = reference
+            else {
+                continue;
+            };
+            *resolved_content = None;
+
+            #[cfg(feature = "memory-provider-registry")]
+            {
+                let Ok(memory_id) = MemoryId::parse(id) else {
+                    continue;
+                };
+                if let Ok(record) = self.get_memory_item(options.clone(), memory_id).await {
+                    *resolved_content = Some(redactor.redact(&record.content, &redact_rules));
+                }
+            }
+        }
+
+        Ok(input)
+    }
+
     pub async fn open_or_create_conversation_session(
         &self,
         options: SessionOptions,
@@ -348,8 +381,11 @@ impl Harness {
             .clone()
             .unwrap_or_else(|| self.inner.options.model_id.clone());
         let model_snapshot = snapshot_for_supported_model(self.inner.model.as_ref(), &model_id)?;
+        let input = self
+            .hydrate_memory_references(request.input, &options)
+            .await?;
         let parts = conversation_turn_parts(
-            &request.input,
+            &input,
             &model_snapshot.conversation_capability.input_modalities,
         );
         let session = self
@@ -358,8 +394,8 @@ impl Harness {
         session
             .run_turn_parts_with_client_message_id_attachments_permission_mode_and_actor_source(
                 parts,
-                request.input.client_message_id.clone(),
-                request.input.attachments.clone(),
+                input.client_message_id.clone(),
+                input.attachments.clone(),
                 Some(run_options.permission_mode),
                 request
                     .permission_actor_source

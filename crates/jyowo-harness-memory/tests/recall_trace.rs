@@ -3,6 +3,8 @@
 use chrono::Utc;
 use harness_contracts::*;
 use harness_memory::recall_trace::{MemoryRecallTraceBuilder, MemoryRecallTraceCollector};
+#[cfg(feature = "provider-registry")]
+use harness_memory::MemoryManager;
 
 fn make_score() -> MemoryScoreBreakdown {
     MemoryScoreBreakdown {
@@ -27,6 +29,7 @@ fn trace_contains_candidate_ids_and_scores_but_not_raw_content() {
 
     let trace = MemoryRecallTrace {
         trace_id,
+        tenant_id: TenantId::SINGLE,
         session_id: sid,
         run_id: rid,
         turn: 1,
@@ -83,6 +86,7 @@ fn trace_contains_candidate_ids_and_scores_but_not_raw_content() {
 fn budget_dropped_records_appear_with_drop_reason() {
     let trace = MemoryRecallTrace {
         trace_id: MemoryTraceId::new(),
+        tenant_id: TenantId::SINGLE,
         session_id: SessionId::new(),
         run_id: RunId::new(),
         turn: 1,
@@ -133,32 +137,39 @@ fn budget_dropped_records_appear_with_drop_reason() {
 
 #[test]
 fn trace_builder_produces_valid_trace() {
+    let tenant = TenantId::SHARED;
     let sid = SessionId::new();
     let rid = RunId::new();
-    let trace = MemoryRecallTraceBuilder::new(sid, rid, 2, ContentHash([4u8; 32]))
-        .add_provider_result(MemoryProviderTrace {
-            provider_id: "local".to_owned(),
-            trust_level: MemoryProviderTrust::BuiltIn,
-            readable: true,
-            writable: true,
-            requested_count: 5,
-            returned_count: 3,
-            timed_out: false,
-            error_kind: None,
-            latency_ms: 15,
-        })
-        .add_candidate(MemoryCandidateTrace {
-            memory_id: MemoryId::new(),
-            provider_id: "local".to_owned(),
-            content_hash: ContentHash([5u8; 32]),
-            score: make_score(),
-            policy_decision: MemoryPolicyDecision::Allow,
-        })
-        .add_dropped(MemoryDropReason::ScoreBelowThreshold, Some(MemoryId::new()), Some("local"))
-        .set_redacted(1)
-        .set_injected_chars(200)
-        .set_deadline_ms(100)
-        .build();
+    let trace =
+        MemoryRecallTraceBuilder::new_for_tenant(tenant, sid, rid, 2, ContentHash([4u8; 32]))
+            .add_provider_result(MemoryProviderTrace {
+                provider_id: "local".to_owned(),
+                trust_level: MemoryProviderTrust::BuiltIn,
+                readable: true,
+                writable: true,
+                requested_count: 5,
+                returned_count: 3,
+                timed_out: false,
+                error_kind: None,
+                latency_ms: 15,
+            })
+            .add_candidate(MemoryCandidateTrace {
+                memory_id: MemoryId::new(),
+                provider_id: "local".to_owned(),
+                content_hash: ContentHash([5u8; 32]),
+                score: make_score(),
+                policy_decision: MemoryPolicyDecision::Allow,
+            })
+            .add_dropped(
+                MemoryDropReason::ScoreBelowThreshold,
+                Some(MemoryId::new()),
+                Some("local"),
+            )
+            .set_redacted(1)
+            .set_injected_chars(200)
+            .set_deadline_ms(100)
+            .build();
+    assert_eq!(trace.tenant_id, tenant);
     assert_eq!(trace.turn, 2);
     assert_eq!(trace.provider_results.len(), 1);
     assert_eq!(trace.candidates.len(), 1);
@@ -171,6 +182,7 @@ fn trace_builder_produces_valid_trace() {
 #[test]
 fn trace_collector_accumulates_traces() {
     let collector = MemoryRecallTraceCollector::new();
+    let tenant = TenantId::SINGLE;
     let sid = SessionId::new();
     let rid = RunId::new();
 
@@ -181,9 +193,102 @@ fn trace_collector_accumulates_traces() {
     collector.add(builder2.build());
 
     assert_eq!(collector.len(), 2);
-    assert_eq!(collector.for_session(sid).len(), 2);
-    assert_eq!(
-        collector.for_session(SessionId::new()).len(),
-        0
+    assert_eq!(collector.for_session(tenant, sid).len(), 2);
+    assert_eq!(collector.for_session(tenant, SessionId::new()).len(), 0);
+    assert_eq!(collector.for_session(TenantId::SHARED, sid).len(), 0);
+    assert_eq!(collector.for_run(tenant, sid, rid).len(), 2);
+}
+
+#[test]
+fn sqlite_trace_collector_persists_traces_after_reopen() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("memory.sqlite3");
+    let sid = SessionId::new();
+    let rid = RunId::new();
+    let trace_id = {
+        let collector = MemoryRecallTraceCollector::open(db_path.to_str().unwrap()).unwrap();
+        let trace = MemoryRecallTraceBuilder::new(sid, rid, 1, ContentHash([8u8; 32])).build();
+        let trace_id = trace.trace_id;
+        collector.add(trace);
+        trace_id
+    };
+
+    let reopened = MemoryRecallTraceCollector::open(db_path.to_str().unwrap()).unwrap();
+    let trace = reopened
+        .get(TenantId::SINGLE, trace_id)
+        .expect("trace persisted");
+
+    assert_eq!(trace.tenant_id, TenantId::SINGLE);
+    assert_eq!(trace.session_id, sid);
+    assert_eq!(trace.run_id, rid);
+    assert!(reopened.get(TenantId::SHARED, trace_id).is_none());
+}
+
+#[test]
+fn trace_summaries_are_scoped_by_tenant() {
+    let collector = MemoryRecallTraceCollector::new();
+    let session = SessionId::new();
+    let run = RunId::new();
+
+    collector.add(
+        MemoryRecallTraceBuilder::new_for_tenant(
+            TenantId::SINGLE,
+            session,
+            run,
+            1,
+            ContentHash([9u8; 32]),
+        )
+        .build(),
     );
+    collector.add(
+        MemoryRecallTraceBuilder::new_for_tenant(
+            TenantId::SHARED,
+            session,
+            run,
+            1,
+            ContentHash([10u8; 32]),
+        )
+        .build(),
+    );
+
+    let single = collector.list_summaries(TenantId::SINGLE, Some(session), Some(run));
+    let shared = collector.list_summaries(TenantId::SHARED, Some(session), Some(run));
+
+    assert_eq!(single.len(), 1);
+    assert_eq!(shared.len(), 1);
+    assert_eq!(single[0].tenant_id, TenantId::SINGLE);
+    assert_eq!(shared[0].tenant_id, TenantId::SHARED);
+}
+
+#[test]
+#[cfg(feature = "provider-registry")]
+fn memory_manager_can_use_durable_trace_collector() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("memory.sqlite3");
+    let trace_id = MemoryTraceId::new();
+
+    {
+        let manager = MemoryManager::new()
+            .with_durable_trace_collector(db_path.to_str().unwrap())
+            .expect("durable trace collector");
+        manager.trace_collector().add(MemoryRecallTrace {
+            trace_id,
+            tenant_id: TenantId::SINGLE,
+            session_id: SessionId::new(),
+            run_id: RunId::new(),
+            turn: 1,
+            query_text_hash: ContentHash([12u8; 32]),
+            provider_results: vec![],
+            candidates: vec![],
+            injected: vec![],
+            dropped: vec![],
+            redacted_count: 0,
+            injected_chars: 0,
+            deadline_used_ms: 0,
+            at: Utc::now(),
+        });
+    }
+
+    let reopened = MemoryRecallTraceCollector::open(db_path.to_str().unwrap()).unwrap();
+    assert!(reopened.get(TenantId::SINGLE, trace_id).is_some());
 }

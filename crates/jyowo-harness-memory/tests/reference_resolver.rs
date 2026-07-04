@@ -1,9 +1,7 @@
 //! Tests for memory reference hydration.
 
 use harness_contracts::{MemoryError, MemoryId};
-use harness_memory::reference::{
-    fence_memory_content, ContextReferenceResolver, FnMemoryResolver,
-};
+use harness_memory::reference::{fence_memory_content, ContextReferenceResolver, FnMemoryResolver};
 
 #[tokio::test]
 async fn resolver_hydrates_content_on_success() {

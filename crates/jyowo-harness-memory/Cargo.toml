@@ -17,6 +17,7 @@ workspace = true
 default = ["builtin", "threat-scanner"]
 builtin = ["dep:fastrand", "dep:fs2", "dep:sha2"]
 provider-registry = []
+testing = ["provider-registry"]
 threat-scanner = ["dep:regex", "dep:toml"]
 consolidation = []
 

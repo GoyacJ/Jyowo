@@ -6,8 +6,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BudgetKind, BudgetMetric, HookOutcomeDiscriminant, InconsistentReason, MemoryActorContext, MemoryId,
-    MemoryVisibility, TenantId, ThreatAction, ThreatCategory, ToolCapability,
+    BudgetKind, BudgetMetric, HookOutcomeDiscriminant, InconsistentReason, MemoryActorContext,
+    MemoryId, MemoryVisibility, TenantId, ThreatAction, ThreatCategory, ToolCapability,
 };
 
 pub type Result<T, E = HarnessError> = std::result::Result<T, E>;

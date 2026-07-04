@@ -122,6 +122,7 @@ steering-queue = [
 ]
 testing = [
   "in-memory-store",
+  "jyowo-harness-memory/testing",
   "memory-consolidation",
   "memory-provider-registry",
   "noop-sandbox",

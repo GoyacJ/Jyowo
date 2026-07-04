@@ -5,15 +5,11 @@
 //! Creates candidates via the inbox, not direct long-term records.
 
 use chrono::Utc;
-use harness_contracts::{
-    MemoryEvidence, MemoryEvidenceOrigin, MemoryGlobalSettings, MemoryPolicyDecision,
-    MemoryPolicyDenyReason, MemoryRecordDraft, MemorySource, RunId, SessionId, TenantId,
-};
+use harness_contracts::{MemoryPolicyDecision, RunId, SessionId, TenantId};
 
 use crate::extraction::job::{
     ExtractionJob, ExtractionJobConfig, ExtractionJobKind, ExtractionJobQueue, ExtractionJobState,
 };
-use crate::extraction::schema::ExtractionOutput;
 use crate::inbox::MemoryInbox;
 use crate::policy::MemoryPolicyEngine;
 
@@ -56,7 +52,7 @@ pub struct ExtractionWorker {
     queue: ExtractionJobQueue,
     config: ExtractionWorkerConfig,
     policy_engine: MemoryPolicyEngine,
-    inbox: MemoryInbox,
+    _inbox: MemoryInbox,
 }
 
 impl ExtractionWorker {
@@ -67,11 +63,31 @@ impl ExtractionWorker {
         inbox: MemoryInbox,
     ) -> Self {
         let queue = ExtractionJobQueue::new(config.job_config.clone());
+        Self::with_queue(config, policy_engine, inbox, queue)
+    }
+
+    pub fn open(
+        db_path: &str,
+        config: ExtractionWorkerConfig,
+        policy_engine: MemoryPolicyEngine,
+        inbox: MemoryInbox,
+    ) -> Result<Self, String> {
+        let queue = ExtractionJobQueue::open(db_path, config.job_config.clone())?;
+        Ok(Self::with_queue(config, policy_engine, inbox, queue))
+    }
+
+    #[must_use]
+    pub fn with_queue(
+        config: ExtractionWorkerConfig,
+        policy_engine: MemoryPolicyEngine,
+        inbox: MemoryInbox,
+        queue: ExtractionJobQueue,
+    ) -> Self {
         Self {
             queue,
             config,
             policy_engine,
-            inbox,
+            _inbox: inbox,
         }
     }
 
@@ -150,56 +166,11 @@ impl ExtractionWorker {
             }
         }
 
-        // Process the job: parse model output into ExtractionOutput
-        // In a real implementation, this would call the extraction model.
-        // For now, we simulate with empty output.
-        let output = ExtractionOutput {
-            candidates: vec![],
-            consolidations: vec![],
-            summary: None,
-        };
-
-        // Create inbox candidates from extraction output
-        let mut created = 0;
-        for candidate in output.candidates.iter().take(self.config.max_candidates_per_run) {
-            let draft = MemoryRecordDraft {
-                kind: candidate.kind.clone().into(),
-                visibility: match candidate.visibility {
-                    crate::extraction::schema::ExtractionVisibility::User => {
-                        harness_contracts::MemoryVisibility::User {
-                            user_id: "extracted".to_owned(),
-                        }
-                    }
-                    crate::extraction::schema::ExtractionVisibility::Tenant => {
-                        harness_contracts::MemoryVisibility::Tenant
-                    }
-                },
-                content: candidate.content.clone(),
-                metadata: harness_contracts::MemoryMetadata {
-                    ttl: None,
-                    tags: vec!["extracted".to_owned()],
-                    source_trust: f64::from(candidate.confidence),
-                },
-                expires_at: None,
-            };
-            let evidence = MemoryEvidence {
-                source: MemorySource::AgentDerived,
-                origin: MemoryEvidenceOrigin::Consolidated { from: vec![] },
-                content_hash: harness_contracts::ContentHash([0u8; 32]),
-                session_id: Some(job.session_id),
-                run_id: Some(job.run_id),
-                message_id: None,
-                tool_use_id: None,
-            };
-            let _ = self.inbox.propose(draft, evidence)?;
-            created += 1;
-        }
-
-        self.queue.complete(&job.job_id)?;
+        self.queue.block(&job.job_id, "extractor unavailable")?;
 
         Ok(Some(ExtractionRunOutcome {
-            candidates_created: created,
-            skipped_reason: None,
+            candidates_created: 0,
+            skipped_reason: Some("extractor unavailable".to_owned()),
         }))
     }
 }

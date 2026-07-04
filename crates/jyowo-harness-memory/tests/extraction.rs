@@ -3,8 +3,8 @@
 use chrono::{Duration, Utc};
 use harness_contracts::*;
 use harness_memory::extraction::{
-    ExtractionJob, ExtractionJobConfig, ExtractionJobKind, ExtractionJobQueue,
-    ExtractionJobState, ExtractionWorker, ExtractionWorkerConfig,
+    ExtractionJob, ExtractionJobConfig, ExtractionJobKind, ExtractionJobQueue, ExtractionJobState,
+    ExtractionWorker, ExtractionWorkerConfig,
 };
 use harness_memory::inbox::MemoryInbox;
 use harness_memory::policy::MemoryPolicyEngine;
@@ -66,6 +66,80 @@ fn job_queue_enqueue_and_lease() {
     assert_eq!(leased.job_id, "job-1");
     assert_eq!(leased.state, ExtractionJobState::Leased);
     assert_eq!(leased.attempt_count, 1);
+}
+
+#[test]
+fn sqlite_job_queue_persists_jobs_after_reopen() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("memory.sqlite3");
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+
+    {
+        let queue =
+            ExtractionJobQueue::open(db_path.to_str().unwrap(), ExtractionJobConfig::default())
+                .unwrap();
+        queue
+            .enqueue(ExtractionJob {
+                job_id: "durable-job".to_owned(),
+                tenant_id: TenantId::SINGLE,
+                session_id,
+                run_id,
+                evidence_hash: [9u8; 32],
+                job_kind: ExtractionJobKind::MemoryExtraction,
+                state: ExtractionJobState::Queued,
+                attempt_count: 0,
+                lease_owner: None,
+                lease_expires_at: None,
+                next_attempt_at: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+    }
+
+    let reopened =
+        ExtractionJobQueue::open(db_path.to_str().unwrap(), ExtractionJobConfig::default())
+            .unwrap();
+    let leased = reopened.lease_next("worker-1").unwrap().unwrap();
+
+    assert_eq!(leased.job_id, "durable-job");
+    assert_eq!(leased.session_id, session_id);
+    assert_eq!(leased.run_id, run_id);
+}
+
+#[test]
+fn worker_open_uses_durable_queue_after_reopen() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("memory.sqlite3");
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+
+    {
+        let worker = ExtractionWorker::open(
+            db_path.to_str().unwrap(),
+            make_config(),
+            make_policy(),
+            MemoryInbox::new(TenantId::SINGLE),
+        )
+        .expect("open worker");
+        worker
+            .enqueue_session(TenantId::SINGLE, session_id, run_id, [11u8; 32])
+            .expect("enqueue");
+    }
+
+    let reopened = ExtractionWorker::open(
+        db_path.to_str().unwrap(),
+        make_config(),
+        make_policy(),
+        MemoryInbox::new(TenantId::SINGLE),
+    )
+    .expect("reopen worker");
+
+    let leased = reopened.queue().lease_next("worker-1").unwrap().unwrap();
+
+    assert_eq!(leased.session_id, session_id);
+    assert_eq!(leased.run_id, run_id);
 }
 
 #[test]
@@ -215,8 +289,26 @@ fn worker_skips_active_session() {
 #[test]
 fn worker_skips_when_no_jobs() {
     let worker = make_worker();
-    let result = worker
-        .poll_and_process("w1", true, 999, false)
-        .unwrap();
+    let result = worker.poll_and_process("w1", true, 999, false).unwrap();
     assert!(result.is_none());
+}
+
+#[test]
+fn worker_blocks_job_when_no_extractor_is_configured() {
+    let worker = make_worker();
+    worker
+        .enqueue_session(TenantId::SINGLE, SessionId::new(), RunId::new(), [7u8; 32])
+        .unwrap();
+
+    let outcome = worker
+        .poll_and_process("w1", true, 999, false)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(outcome.candidates_created, 0);
+    assert_eq!(
+        outcome.skipped_reason.as_deref(),
+        Some("extractor unavailable")
+    );
+    assert!(worker.queue().lease_next("w1").unwrap().is_none());
 }

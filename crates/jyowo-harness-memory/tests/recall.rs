@@ -10,12 +10,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_contracts::{
-    MemoryActorContext, MemoryError, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId,
-    TenantId,
+    MemoryActorContext, MemoryError, MemoryId, MemoryKind, MemoryProviderTrust, MemorySource,
+    MemoryVisibility, MemoryVisibilityClass, SessionId, TenantId,
 };
 use harness_memory::{
     FailMode, MemoryKindFilter, MemoryLifecycle, MemoryListScope, MemoryManager, MemoryMetadata,
-    MemoryQuery, MemoryRecord, MemoryStore, MemorySummary, MemoryVisibilityFilter, RecallPolicy,
+    MemoryProviderDescriptor, MemoryQuery, MemoryRecord, MemoryStore, MemorySummary,
+    MemoryVisibilityFilter, RecallPolicy,
 };
 
 #[cfg(feature = "threat-scanner")]
@@ -24,8 +25,11 @@ use harness_contracts::{Severity, ThreatAction, ThreatCategory};
 use harness_memory::{MemoryThreatScanner, ThreatPattern};
 
 struct CountingProvider {
+    id: &'static str,
     calls: AtomicUsize,
     upserts: AtomicUsize,
+    readable: bool,
+    writable: bool,
     delay: Duration,
     result: Result<Vec<MemoryRecord>, MemoryError>,
 }
@@ -33,17 +37,30 @@ struct CountingProvider {
 impl CountingProvider {
     fn ok(records: Vec<MemoryRecord>) -> Self {
         Self {
+            id: "counting",
             calls: AtomicUsize::new(0),
             upserts: AtomicUsize::new(0),
+            readable: true,
+            writable: true,
             delay: Duration::ZERO,
             result: Ok(records),
         }
     }
 
+    fn ok_with_id(id: &'static str, records: Vec<MemoryRecord>) -> Self {
+        Self {
+            id,
+            ..Self::ok(records)
+        }
+    }
+
     fn error(message: &str) -> Self {
         Self {
+            id: "counting",
             calls: AtomicUsize::new(0),
             upserts: AtomicUsize::new(0),
+            readable: true,
+            writable: true,
             delay: Duration::ZERO,
             result: Err(MemoryError::Message(message.to_owned())),
         }
@@ -51,8 +68,11 @@ impl CountingProvider {
 
     fn delayed(delay: Duration, records: Vec<MemoryRecord>) -> Self {
         Self {
+            id: "counting",
             calls: AtomicUsize::new(0),
             upserts: AtomicUsize::new(0),
+            readable: true,
+            writable: true,
             delay,
             result: Ok(records),
         }
@@ -65,12 +85,17 @@ impl CountingProvider {
     fn upserts(&self) -> usize {
         self.upserts.load(Ordering::SeqCst)
     }
+
+    fn read_only(mut self) -> Self {
+        self.writable = false;
+        self
+    }
 }
 
 #[async_trait]
 impl MemoryStore for CountingProvider {
-    fn provider_id(&self) -> &'static str {
-        "counting"
+    fn provider_id(&self) -> &str {
+        self.id
     }
 
     async fn recall(&self, _: MemoryQuery) -> Result<Vec<MemoryRecord>, MemoryError> {
@@ -97,10 +122,43 @@ impl MemoryStore for CountingProvider {
 
 impl MemoryLifecycle for CountingProvider {}
 
-impl harness_memory::MemoryProvider for CountingProvider {}
+impl harness_memory::MemoryProvider for CountingProvider {
+    fn descriptor(&self) -> MemoryProviderDescriptor {
+        MemoryProviderDescriptor {
+            provider_id: self.id.to_owned(),
+            priority: 0,
+            trust_level: MemoryProviderTrust::BuiltIn,
+            readable: self.readable,
+            writable: self.writable,
+            allowed_visibility: vec![
+                MemoryVisibilityClass::Private,
+                MemoryVisibilityClass::User,
+                MemoryVisibilityClass::Tenant,
+            ],
+            timeout_ms: 5000,
+            max_records_per_recall: 50,
+            max_chars_per_recall: 100_000,
+            max_bytes_per_record: 1024 * 1024,
+        }
+    }
+}
 
 #[tokio::test]
-async fn recall_without_external_provider_returns_empty() {
+async fn recall_outcome_without_readable_provider_is_degraded() {
+    let manager = MemoryManager::new();
+
+    let outcome = manager
+        .recall_outcome(query(Duration::from_millis(200), 8))
+        .await;
+
+    assert!(matches!(
+        outcome,
+        harness_memory::MemoryRecallOutcome::Degraded(MemoryError::ExternalProviderNotConfigured)
+    ));
+}
+
+#[tokio::test]
+async fn fail_open_recall_without_readable_provider_returns_empty() {
     let manager = MemoryManager::new();
 
     assert!(manager
@@ -126,7 +184,9 @@ async fn zero_deadline_bypasses_provider() {
 async fn default_fail_safe_skips_provider_errors_and_timeouts() {
     let error_manager = MemoryManager::new();
     let error_provider = Arc::new(CountingProvider::error("provider unavailable"));
-    error_manager.register_provider(error_provider.clone()).unwrap();
+    error_manager
+        .register_provider(error_provider.clone())
+        .unwrap();
 
     assert!(error_manager
         .recall(query(Duration::from_millis(200), 8))
@@ -150,6 +210,48 @@ async fn default_fail_safe_skips_provider_errors_and_timeouts() {
         .unwrap()
         .is_empty());
     assert_eq!(timeout_provider.calls(), 1);
+}
+
+#[tokio::test]
+async fn recall_fans_out_to_all_readable_providers() {
+    let manager = MemoryManager::new();
+    let left = Arc::new(CountingProvider::ok_with_id("left", vec![record("left")]));
+    let right = Arc::new(CountingProvider::ok_with_id("right", vec![record("right")]));
+    manager.register_provider(left.clone()).unwrap();
+    manager.register_provider(right.clone()).unwrap();
+
+    let recalled = manager
+        .recall(query(Duration::from_millis(200), 8))
+        .await
+        .unwrap();
+
+    assert_eq!(left.calls(), 1);
+    assert_eq!(right.calls(), 1);
+    let mut contents = recalled
+        .iter()
+        .map(|record| record.content.as_str())
+        .collect::<Vec<_>>();
+    contents.sort_unstable();
+    assert_eq!(contents, vec!["left", "right"]);
+}
+
+#[tokio::test]
+async fn upsert_writes_to_every_writable_provider_and_skips_read_only() {
+    let manager = MemoryManager::new();
+    let writable_a = Arc::new(CountingProvider::ok_with_id("writable-a", Vec::new()));
+    let read_only = Arc::new(CountingProvider::ok_with_id("read-only", Vec::new()).read_only());
+    let writable_b = Arc::new(CountingProvider::ok_with_id("writable-b", Vec::new()));
+    let record = record("write me");
+
+    manager.register_provider(writable_a.clone()).unwrap();
+    manager.register_provider(read_only.clone()).unwrap();
+    manager.register_provider(writable_b.clone()).unwrap();
+
+    manager.upsert(record.clone(), None).await.unwrap();
+
+    assert_eq!(writable_a.upserts(), 1);
+    assert_eq!(read_only.upserts(), 0);
+    assert_eq!(writable_b.upserts(), 1);
 }
 
 #[tokio::test]

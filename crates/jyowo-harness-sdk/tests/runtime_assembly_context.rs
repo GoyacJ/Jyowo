@@ -688,6 +688,73 @@ fn conversation_turn_input_renders_references_and_attachments_context_block() {
 }
 
 #[test]
+fn conversation_turn_hydrates_memory_references_before_model_request() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-memory-reference-hydration");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("answer".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ]],
+        ));
+        let memory_provider = Arc::new(InMemoryMemoryProvider::new("test-memory"));
+        let record = memory_record(session_id, "Stored memory content from runtime.");
+        memory_provider
+            .upsert(record.clone())
+            .await
+            .expect("memory fixture should write");
+        let harness = Harness::builder()
+            .with_model_arc(model.clone())
+            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_sandbox(NoopSandbox::new())
+            .with_memory_provider_arc(memory_provider)
+            .build()
+            .await
+            .expect("harness should build");
+
+        harness
+            .open_or_create_conversation_session(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+            )
+            .await
+            .expect("session should open");
+        harness
+            .submit_conversation_turn(conversation_turn_request(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+                ConversationTurnInput {
+                    client_message_id: None,
+                    prompt: "use this memory".to_owned(),
+                    context_references: vec![ConversationContextReference::Memory {
+                        id: record.id.to_string(),
+                        label: "Runtime memory".to_owned(),
+                        resolved_content: Some(
+                            "frontend supplied content must be ignored".to_owned(),
+                        ),
+                    }],
+                    attachments: Vec::new(),
+                },
+                None,
+                None,
+                None,
+            ))
+            .await
+            .expect("turn should run");
+
+        let requests = model.requests().await;
+        let text = request_text(&requests[0]);
+        assert!(text.contains("[memory-reference id="));
+        assert!(text.contains("Stored memory content from runtime."));
+        assert!(!text.contains("frontend supplied content must be ignored"));
+    });
+}
+
+#[test]
 fn sdk_installs_default_context_pipeline() {
     tokio_runtime().block_on(async {
         let workspace = unique_workspace("sdk-default-context-pipeline");

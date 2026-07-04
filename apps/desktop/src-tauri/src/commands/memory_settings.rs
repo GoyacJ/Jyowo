@@ -1,112 +1,104 @@
-//! Tauri IPC commands for memory settings.
+//! Tauri IPC helpers for memory settings.
 //!
-//! Exposes global and per-thread memory settings with Rust-owned validation.
+//! Settings are persisted in the workspace memory SQLite database. Rust owns
+//! validation and storage; frontend callers only receive serde contract shapes.
 
 use harness_contracts::{
     GetMemorySettingsRequest, GetMemorySettingsResponse, GetThreadMemorySettingsRequest,
-    GetThreadMemorySettingsResponse, MemoryGlobalSettings, MemoryThreadMode, MemoryThreadSettings,
-    UpdateMemorySettingsRequest, UpdateMemorySettingsResponse,
-    UpdateThreadMemorySettingsRequest, UpdateThreadMemorySettingsResponse,
+    GetThreadMemorySettingsResponse, MemoryGlobalSettings, MemoryThreadSettings,
+    UpdateMemorySettingsRequest, UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
+    UpdateThreadMemorySettingsResponse,
 };
-use super::CommandErrorPayload;
 
-/// In-memory store for memory settings (backed by filesystem in production).
-static GLOBAL_SETTINGS: std::sync::RwLock<Option<MemoryGlobalSettings>> =
-    std::sync::RwLock::new(None);
+use super::error::{invalid_payload, memory_operation_failed, runtime_unavailable};
+use super::{CommandErrorPayload, DesktopRuntimeState};
 
-fn default_settings() -> MemoryGlobalSettings {
-    MemoryGlobalSettings {
-        use_memories: true,
-        generate_memories: true,
-        disable_generation_when_external_context_used: false,
-        retention_days: None,
-        max_memory_bytes: 10_000_000,
-        max_recall_records_per_turn: 20,
-        max_recall_chars_per_turn: 50_000,
-    }
-}
-
-fn ensure_global_settings() -> MemoryGlobalSettings {
-    let settings = GLOBAL_SETTINGS.read().unwrap();
-    settings.clone().unwrap_or_else(default_settings)
-}
-
-/// Get global memory settings.
-#[tauri::command]
-pub async fn get_memory_settings(
+pub async fn get_memory_settings_with_runtime_state(
     request: GetMemorySettingsRequest,
+    state: &DesktopRuntimeState,
 ) -> Result<GetMemorySettingsResponse, CommandErrorPayload> {
-    let _ = request;
-    let settings = ensure_global_settings();
-    Ok(GetMemorySettingsResponse { settings })
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Loading memory settings requires the runtime memory facade.",
+        ));
+    };
+    let options = state.conversation_session_options(state.default_conversation_id);
+    harness
+        .get_memory_settings(options, request)
+        .await
+        .map_err(|_| memory_operation_failed("Memory settings could not be loaded."))
 }
 
-/// Update global memory settings.
-#[tauri::command]
-pub async fn update_memory_settings(
+pub async fn update_memory_settings_with_runtime_state(
     request: UpdateMemorySettingsRequest,
+    state: &DesktopRuntimeState,
 ) -> Result<UpdateMemorySettingsResponse, CommandErrorPayload> {
-    // Validate settings
     validate_global_settings(&request.settings)?;
-
-    let mut guard = GLOBAL_SETTINGS.write().unwrap();
-    *guard = Some(request.settings.clone());
-    Ok(UpdateMemorySettingsResponse {
-        settings: request.settings,
-    })
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Saving memory settings requires the runtime memory facade.",
+        ));
+    };
+    let options = state.conversation_session_options(state.default_conversation_id);
+    harness
+        .update_memory_settings(options, request)
+        .await
+        .map_err(|_| memory_operation_failed("Memory settings could not be saved."))
 }
 
-/// Get per-thread memory settings.
-#[tauri::command]
-pub async fn get_thread_memory_settings(
+pub async fn get_thread_memory_settings_with_runtime_state(
     request: GetThreadMemorySettingsRequest,
+    state: &DesktopRuntimeState,
 ) -> Result<GetThreadMemorySettingsResponse, CommandErrorPayload> {
-    let _ = request;
-    Ok(GetThreadMemorySettingsResponse {
-        settings: MemoryThreadSettings {
-            session_id: request.session_id,
-            use_memories: None,
-            generate_memories: None,
-            memory_mode: MemoryThreadMode::ReadWrite,
-        },
-    })
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Loading thread memory settings requires the runtime memory facade.",
+        ));
+    };
+    let options = state.conversation_session_options(state.default_conversation_id);
+    harness
+        .get_thread_memory_settings(options, request)
+        .await
+        .map_err(|_| memory_operation_failed("Memory settings could not be loaded."))
 }
 
-/// Update per-thread memory settings.
-#[tauri::command]
-pub async fn update_thread_memory_settings(
+pub async fn update_thread_memory_settings_with_runtime_state(
     request: UpdateThreadMemorySettingsRequest,
+    state: &DesktopRuntimeState,
 ) -> Result<UpdateThreadMemorySettingsResponse, CommandErrorPayload> {
     validate_thread_settings(&request.settings)?;
-    Ok(UpdateThreadMemorySettingsResponse {
-        settings: request.settings,
-    })
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Saving thread memory settings requires the runtime memory facade.",
+        ));
+    };
+    let options = state.conversation_session_options(state.default_conversation_id);
+    harness
+        .update_thread_memory_settings(options, request)
+        .await
+        .map_err(|_| memory_operation_failed("Memory settings could not be saved."))
 }
 
 fn validate_global_settings(settings: &MemoryGlobalSettings) -> Result<(), CommandErrorPayload> {
     if settings.max_recall_records_per_turn == 0 {
-        return Err(CommandErrorPayload::new(
-            "invalid_settings",
-            "max_recall_records_per_turn must be greater than 0",
+        return Err(invalid_payload(
+            "max_recall_records_per_turn must be greater than 0".to_owned(),
         ));
     }
     if settings.max_recall_chars_per_turn == 0 {
-        return Err(CommandErrorPayload::new(
-            "invalid_settings",
-            "max_recall_chars_per_turn must be greater than 0",
+        return Err(invalid_payload(
+            "max_recall_chars_per_turn must be greater than 0".to_owned(),
         ));
     }
     if settings.max_memory_bytes == 0 {
-        return Err(CommandErrorPayload::new(
-            "invalid_settings",
-            "max_memory_bytes must be greater than 0",
+        return Err(invalid_payload(
+            "max_memory_bytes must be greater than 0".to_owned(),
         ));
     }
     Ok(())
 }
 
 fn validate_thread_settings(settings: &MemoryThreadSettings) -> Result<(), CommandErrorPayload> {
-    // Thread settings are always valid if they parse
     let _ = settings;
     Ok(())
 }

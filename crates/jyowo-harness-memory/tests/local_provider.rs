@@ -6,7 +6,7 @@
 use chrono::Utc;
 use harness_contracts::*;
 use harness_memory::local::LocalMemoryProvider;
-use harness_memory::{MemoryLifecycle, MemoryListScope, MemoryQuery, MemoryStore, MemoryVisibilityFilter};
+use harness_memory::{MemoryListScope, MemoryQuery, MemoryStore, MemoryVisibilityFilter};
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -64,8 +64,8 @@ async fn upsert_get_list_persists_after_reopen() {
 
     // First open
     {
-        let provider = LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE)
-            .expect("open");
+        let provider =
+            LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE).expect("open");
         provider.upsert(record.clone()).await.expect("upsert");
         let got = provider.get(record.id).await.expect("get");
         assert_eq!(got.content, "hello world");
@@ -73,14 +73,11 @@ async fn upsert_get_list_persists_after_reopen() {
 
     // Reopen — data should persist
     {
-        let provider = LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE)
-            .expect("reopen");
+        let provider =
+            LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE).expect("reopen");
         let got = provider.get(record.id).await.expect("get after reopen");
         assert_eq!(got.content, "hello world");
-        let list = provider
-            .list(MemoryListScope::All)
-            .await
-            .expect("list");
+        let list = provider.list(MemoryListScope::All).await.expect("list");
         assert!(list.iter().any(|s| s.id == record.id));
     }
 }
@@ -99,26 +96,55 @@ async fn forget_removes_record() {
 
 #[tokio::test]
 async fn tenant_isolation_prevents_leakage() {
-    let (_dir, provider) = make_provider();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
     let t1 = TenantId::SINGLE;
     let t2 = TenantId::SHARED;
+    let provider_t1 =
+        LocalMemoryProvider::open(db_path.to_str().unwrap(), t1).expect("open t1 provider");
+    let provider_t2 =
+        LocalMemoryProvider::open(db_path.to_str().unwrap(), t2).expect("open t2 provider");
 
     let r1 = make_record(MemoryId::new(), t1, "tenant-1 data");
     let r2 = make_record(MemoryId::new(), t2, "tenant-2 data");
 
-    provider.upsert(r1.clone()).await.expect("upsert t1");
-    provider.upsert(r2.clone()).await.expect("upsert t2");
+    provider_t1.upsert(r1.clone()).await.expect("upsert t1");
+    provider_t2.upsert(r2.clone()).await.expect("upsert t2");
 
     // Query as t1 — must not see t2 records
     let query = make_query(t1, "data");
-    let results = provider.recall(query).await.expect("recall t1");
+    let results = provider_t1.recall(query).await.expect("recall t1");
     assert!(results.iter().any(|r| r.id == r1.id));
     assert!(!results.iter().any(|r| r.id == r2.id));
 
     // List as t1
-    let list = provider.list(MemoryListScope::All).await.expect("list t1");
+    let list = provider_t1
+        .list(MemoryListScope::All)
+        .await
+        .expect("list t1");
     assert!(list.iter().any(|s| s.id == r1.id));
     assert!(!list.iter().any(|s| s.id == r2.id));
+}
+
+#[tokio::test]
+async fn provider_rejects_cross_tenant_recall_and_upsert() {
+    let (_dir, provider) = make_provider();
+    let other_record = make_record(MemoryId::new(), TenantId::SHARED, "shared tenant memory");
+
+    assert!(provider.upsert(other_record).await.is_err());
+
+    let query = MemoryQuery {
+        text: "memory".to_owned(),
+        kind_filter: None,
+        visibility_filter: MemoryVisibilityFilter::Exact(MemoryVisibility::Tenant),
+        max_records: 10,
+        min_similarity: 0.0,
+        tenant_id: TenantId::SHARED,
+        session_id: None,
+        deadline: None,
+    };
+
+    assert!(provider.recall(query).await.is_err());
 }
 
 // ── TTL enforcement ──
@@ -145,9 +171,17 @@ async fn expired_records_not_returned() {
 #[tokio::test]
 async fn recall_uses_fts_ranking() {
     let (_dir, provider) = make_provider();
-    let r1 = make_record(MemoryId::new(), TenantId::SINGLE, "rust programming language");
+    let r1 = make_record(
+        MemoryId::new(),
+        TenantId::SINGLE,
+        "rust programming language",
+    );
     let r2 = make_record(MemoryId::new(), TenantId::SINGLE, "python for data science");
-    let r3 = make_record(MemoryId::new(), TenantId::SINGLE, "rust async tokio runtime");
+    let r3 = make_record(
+        MemoryId::new(),
+        TenantId::SINGLE,
+        "rust async tokio runtime",
+    );
 
     provider.upsert(r1.clone()).await.expect("upsert r1");
     provider.upsert(r2.clone()).await.expect("upsert r2");
@@ -164,9 +198,7 @@ async fn recall_uses_fts_ranking() {
         .filter(|(_, r)| r.content.contains("rust"))
         .map(|(i, _)| i)
         .collect();
-    let python_pos: Option<usize> = results
-        .iter()
-        .position(|r| r.content.contains("python"));
+    let python_pos: Option<usize> = results.iter().position(|r| r.content.contains("python"));
     // rust records should rank before python
     if let Some(pp) = python_pos {
         assert!(
@@ -180,7 +212,11 @@ async fn recall_uses_fts_ranking() {
 async fn search_order_changes_with_query() {
     let (_dir, provider) = make_provider();
     let r1 = make_record(MemoryId::new(), TenantId::SINGLE, "rust async programming");
-    let r2 = make_record(MemoryId::new(), TenantId::SINGLE, "python async programming");
+    let r2 = make_record(
+        MemoryId::new(),
+        TenantId::SINGLE,
+        "python async programming",
+    );
 
     provider.upsert(r1.clone()).await.expect("upsert r1");
     provider.upsert(r2.clone()).await.expect("upsert r2");
@@ -198,6 +234,23 @@ async fn search_order_changes_with_query() {
         .await
         .expect("recall python");
     assert_eq!(results_python[0].content, "python async programming");
+}
+
+#[tokio::test]
+async fn recall_filters_records_below_min_similarity() {
+    let (_dir, provider) = make_provider();
+    let record = make_record(MemoryId::new(), TenantId::SINGLE, "rust async programming");
+    provider.upsert(record.clone()).await.expect("upsert");
+
+    let mut query = make_query(TenantId::SINGLE, "rust");
+    query.min_similarity = 0.99;
+
+    let results = provider.recall(query).await.expect("recall");
+
+    assert!(
+        results.is_empty(),
+        "lexical-only score must not bypass a high min_similarity threshold"
+    );
 }
 
 // ── FTS trigger: update → FTS reindexed ──
@@ -218,7 +271,10 @@ async fn fts_triggers_update_indexed_text_after_update() {
     // Update content
     record.content = "updated content".to_owned();
     record.updated_at = Utc::now();
-    provider.upsert(record.clone()).await.expect("upsert update");
+    provider
+        .upsert(record.clone())
+        .await
+        .expect("upsert update");
 
     // "original" should no longer match
     let results_old = provider
@@ -269,8 +325,8 @@ async fn migrations_create_schema_version_and_tables() {
     let db_path = dir.path().join("test.sqlite3");
 
     // Opening should trigger migrations
-    let provider = LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE)
-        .expect("open");
+    let provider =
+        LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE).expect("open");
     let _ = provider; // hold reference to keep DB alive
 
     // Verify the schema_version table exists
@@ -313,8 +369,6 @@ async fn embedding_vectors_stored_and_dimension_validated() {
     let record = make_record(MemoryId::new(), TenantId::SINGLE, "embed me");
     provider.upsert(record.clone()).await.expect("upsert");
 
-    // Store an embedding
-    let vector: Vec<f32> = vec![0.1, 0.2, 0.3];
     // This test verifies embedding storage API exists and dimension checks work
     // The actual embedding API depends on the provider's implementation
 
@@ -349,44 +403,57 @@ async fn visibility_filter_prevents_unauthorized_access() {
         updated_at: Utc::now(),
     };
 
-    provider.upsert(private.clone()).await.expect("upsert private");
+    provider
+        .upsert(private.clone())
+        .await
+        .expect("upsert private");
 
     // Query with correct session → should return
     let query = MemoryQuery {
         text: "private".to_owned(),
         kind_filter: None,
-        visibility_filter: MemoryVisibilityFilter::EffectiveFor(harness_contracts::MemoryActorContext {
-            tenant_id: TenantId::SINGLE,
-            user_id: None,
-            team_id: None,
-            session_id: Some(sid),
-        }),
+        visibility_filter: MemoryVisibilityFilter::EffectiveFor(
+            harness_contracts::MemoryActorContext {
+                tenant_id: TenantId::SINGLE,
+                user_id: None,
+                team_id: None,
+                session_id: Some(sid),
+            },
+        ),
         max_records: 10,
         min_similarity: 0.0,
         tenant_id: TenantId::SINGLE,
         session_id: Some(sid),
         deadline: None,
     };
-    let results = provider.recall(query).await.expect("recall with correct session");
+    let results = provider
+        .recall(query)
+        .await
+        .expect("recall with correct session");
     assert!(results.iter().any(|r| r.id == private.id));
 
     // Query with wrong session → should not return
     let wrong_query = MemoryQuery {
         text: "private".to_owned(),
         kind_filter: None,
-        visibility_filter: MemoryVisibilityFilter::EffectiveFor(harness_contracts::MemoryActorContext {
-            tenant_id: TenantId::SINGLE,
-            user_id: None,
-            team_id: None,
-            session_id: Some(SessionId::new()),
-        }),
+        visibility_filter: MemoryVisibilityFilter::EffectiveFor(
+            harness_contracts::MemoryActorContext {
+                tenant_id: TenantId::SINGLE,
+                user_id: None,
+                team_id: None,
+                session_id: Some(SessionId::new()),
+            },
+        ),
         max_records: 10,
         min_similarity: 0.0,
         tenant_id: TenantId::SINGLE,
         session_id: None,
         deadline: None,
     };
-    let results = provider.recall(wrong_query).await.expect("recall with wrong session");
+    let results = provider
+        .recall(wrong_query)
+        .await
+        .expect("recall with wrong session");
     assert!(!results.iter().any(|r| r.id == private.id));
 }
 

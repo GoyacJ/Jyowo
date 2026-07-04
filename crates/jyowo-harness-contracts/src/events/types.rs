@@ -130,7 +130,6 @@ pub enum WriteDestination {
 pub enum MemdirFileTag {
     Memory,
     User,
-    Dreams,
 }
 
 #[non_exhaustive]
@@ -772,7 +771,9 @@ pub struct MemoryMetadata {
     pub source_trust: f64,
 }
 
-fn default_source_trust() -> f64 { 0.5 }
+fn default_source_trust() -> f64 {
+    0.5
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryRecord {
@@ -885,6 +886,7 @@ pub struct MemoryDroppedTrace {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryRecallTrace {
     pub trace_id: MemoryTraceId,
+    pub tenant_id: TenantId,
     pub session_id: SessionId,
     pub run_id: RunId,
     pub turn: u32,
@@ -1205,6 +1207,7 @@ pub struct ListMemoryRecallTracesResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryRecallTraceSummary {
     pub trace_id: MemoryTraceId,
+    pub tenant_id: TenantId,
     pub session_id: SessionId,
     pub run_id: RunId,
     pub injected_count: u32,

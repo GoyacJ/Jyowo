@@ -948,6 +948,7 @@ impl ContextEngine {
                                 as u32,
                             min_similarity: recall_policy.min_similarity,
                             kinds_returned,
+                            trace_id: None,
                             at: harness_contracts::now(),
                         },
                     )],
@@ -1038,6 +1039,7 @@ impl ContextEngine {
                         deadline_used_ms: 200,
                         min_similarity: recall_policy.min_similarity,
                         kinds_returned,
+                        trace_id: None,
                         at: harness_contracts::now(),
                     }),
                 )

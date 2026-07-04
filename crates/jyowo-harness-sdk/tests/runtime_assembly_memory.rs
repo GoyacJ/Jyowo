@@ -581,18 +581,20 @@ fn default_session_records_external_memory_metrics_to_observer() {
             .any(|span| span.name == "memory.external.configured"));
         let recall = spans
             .iter()
-            .find(|span| span.name == "memory.recall")
-            .expect("recall metric should be recorded");
-        assert_eq!(
-            string_attr(&recall.attrs, "provider_id"),
-            Some("memory-observer")
-        );
+            .find(|span| {
+                span.name == "memory.recall"
+                    && string_attr(&span.attrs, "provider_id") == Some("memory-observer")
+            })
+            .expect("external provider recall metric should be recorded");
         assert_eq!(string_attr(&recall.attrs, "outcome"), Some("recalled"));
         assert_eq!(int_attr(&recall.attrs, "returned_count"), Some(1));
         let hit_rate = spans
             .iter()
-            .find(|span| span.name == "memory.recall.hit_rate")
-            .expect("recall hit-rate metric should be recorded");
+            .find(|span| {
+                span.name == "memory.recall.hit_rate"
+                    && string_attr(&span.attrs, "provider_id") == Some("memory-observer")
+            })
+            .expect("external provider recall hit-rate metric should be recorded");
         assert_eq!(bool_attr(&hit_rate.attrs, "hit"), Some(true));
     });
 }

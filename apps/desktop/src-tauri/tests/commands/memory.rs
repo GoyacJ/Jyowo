@@ -34,6 +34,7 @@ async fn memory_commands_list_inspect_update_delete_and_export_visible_items() {
 
     let updated = update_memory_item_with_runtime_state(
         UpdateMemoryItemRequest {
+            action_plan_id: Some(harness_contracts::ActionPlanId::new().to_string()),
             content: "Prefers terse Chinese responses".to_owned(),
             id: visible.id.to_string(),
         },
@@ -51,10 +52,14 @@ async fn memory_commands_list_inspect_update_delete_and_export_visible_items() {
     assert!(exported.path.starts_with(".jyowo/runtime/exports/memory-"));
     let export_content = std::fs::read_to_string(state.workspace_root().join(&exported.path))
         .expect("memory export file should be readable");
-    assert!(export_content.contains("Prefers terse Chinese responses"));
+    assert!(export_content.contains("contentPreview"));
+    assert!(export_content.contains("[redacted memory content]"));
+    assert!(!export_content.contains("\"content\""));
+    assert!(!export_content.contains("Prefers terse Chinese responses"));
 
     let deleted = delete_memory_item_with_runtime_state(
         DeleteMemoryItemRequest {
+            action_plan_id: Some(harness_contracts::ActionPlanId::new().to_string()),
             id: visible.id.to_string(),
         },
         &state,

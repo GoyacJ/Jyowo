@@ -280,7 +280,6 @@ fn lock_path_for(memory: &BuiltinMemory, file: MemdirFile) -> PathBuf {
 fn file_name(file: MemdirFile) -> &'static str {
     match file {
         MemdirFile::User => "USER.md",
-        MemdirFile::Dreams => "DREAMS.md",
         _ => "MEMORY.md",
     }
 }
@@ -288,7 +287,6 @@ fn file_name(file: MemdirFile) -> &'static str {
 fn file_stem(file: MemdirFile) -> &'static str {
     match file {
         MemdirFile::User => "USER",
-        MemdirFile::Dreams => "DREAMS",
         _ => "MEMORY",
     }
 }

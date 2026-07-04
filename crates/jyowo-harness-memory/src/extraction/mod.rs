@@ -8,6 +8,12 @@ pub mod job;
 pub mod schema;
 pub mod worker;
 
-pub use job::{ExtractionJob, ExtractionJobConfig, ExtractionJobKind, ExtractionJobQueue, ExtractionJobState, JobId};
-pub use schema::{ExtractedCandidate, ExtractedConsolidation, ExtractionMemoryKind, ExtractionOutput, ExtractionVisibility};
+pub use job::{
+    ExtractionJob, ExtractionJobConfig, ExtractionJobKind, ExtractionJobQueue, ExtractionJobState,
+    JobId,
+};
+pub use schema::{
+    ExtractedCandidate, ExtractedConsolidation, ExtractionMemoryKind, ExtractionOutput,
+    ExtractionVisibility,
+};
 pub use worker::{ExtractionRunOutcome, ExtractionWorker, ExtractionWorkerConfig};

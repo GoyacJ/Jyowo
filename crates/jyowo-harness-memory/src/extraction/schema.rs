@@ -3,8 +3,7 @@
 //! The extraction model produces structured output that must parse into
 //! this schema. Unparsable output is a retryable failure.
 
-use chrono::{DateTime, Utc};
-use harness_contracts::{MemoryId, MemoryKind, MemoryVisibility};
+use harness_contracts::{MemoryId, MemoryKind};
 use serde::{Deserialize, Serialize};
 
 /// Model output from an extraction run.

@@ -6,7 +6,7 @@
 
 use harness_contracts::{
     ContentHash, GetModelRequestPreviewResponse, MemoryId, MemoryModelRequestPreview,
-    MemoryModelRequestPreviewSection, MemoryRecallTraceSummary, MemorySource, RunId, SessionId,
+    MemoryModelRequestPreviewSection, MemorySource, RunId, SessionId,
 };
 
 /// Build a redacted preview of the model request's memory sections.

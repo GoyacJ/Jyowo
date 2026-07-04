@@ -18,7 +18,7 @@
     "check:release-workflow": "node --test scripts/release-workflow-policy.test.mjs",
     "check:tauri-updater": "node --test scripts/tauri-updater-policy.test.mjs",
     "check:frontend-docs": "node scripts/check-frontend-docs.mjs",
-    "check:backend-docs": "node --test scripts/backend-docs-policy.test.mjs && node scripts/check-backend-docs.mjs",
+    "check:backend-docs": "node --test scripts/backend-docs-policy.test.mjs && node --test scripts/memory-architecture-policy.test.mjs && node scripts/memory-architecture-policy.mjs && node scripts/check-backend-docs.mjs",
     "check:agent-orchestration-no-fakes": "node --test scripts/check-agent-orchestration-no-fakes.test.mjs && node scripts/check-agent-orchestration-no-fakes.mjs",
     "check:testing-docs": "node scripts/check-testing-docs.mjs",
     "check:test-architecture": "node --test scripts/test-architecture-policy.test.mjs && node scripts/check-test-architecture.mjs",

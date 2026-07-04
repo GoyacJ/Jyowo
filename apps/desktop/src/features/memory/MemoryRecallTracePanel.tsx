@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 
-import { listMemoryRecallTraces } from '@/shared/tauri/commands'
+import { DEFAULT_MEMORY_TENANT_ID, listMemoryRecallTraces } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
 
@@ -15,7 +15,8 @@ export function MemoryRecallTracePanel() {
 
   const tracesQuery = useQuery({
     queryKey: traceQueryKeys.all,
-    queryFn: () => listMemoryRecallTraces({ limit: 30 }, commandClient),
+    queryFn: () =>
+      listMemoryRecallTraces({ limit: 30, tenantId: DEFAULT_MEMORY_TENANT_ID }, commandClient),
   })
 
   if (tracesQuery.isLoading) {
@@ -28,9 +29,7 @@ export function MemoryRecallTracePanel() {
   const traces = tracesQuery.data?.traces ?? []
 
   if (traces.length === 0) {
-    return (
-      <div className="p-4 text-muted-foreground">{t('noTracesYet')}</div>
-    )
+    return <div className="p-4 text-muted-foreground">{t('noTracesYet')}</div>
   }
 
   return (
@@ -38,9 +37,7 @@ export function MemoryRecallTracePanel() {
       {traces.map((trace) => (
         <Card key={trace.trace_id}>
           <CardHeader>
-            <CardTitle className="text-xs font-mono">
-              {trace.trace_id.slice(0, 12)}...
-            </CardTitle>
+            <CardTitle className="text-xs font-mono">{trace.trace_id.slice(0, 12)}...</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">

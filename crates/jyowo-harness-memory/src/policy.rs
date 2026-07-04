@@ -6,9 +6,9 @@
 //! `MemoryPolicyDecision` outcomes.
 
 use harness_contracts::{
-    MemoryActor, MemoryEvidence, MemoryEvidenceOrigin, MemoryGlobalSettings, MemoryPermissionContext,
-    MemoryPolicyDecision, MemoryPolicyDenyReason, MemorySource, MemoryThreadMode,
-    MemoryThreadSettings, MemoryVisibility, SessionId,
+    MemoryActor, MemoryEvidence, MemoryEvidenceOrigin, MemoryGlobalSettings,
+    MemoryPermissionContext, MemoryPolicyDecision, MemoryPolicyDenyReason, MemorySource,
+    MemoryThreadMode, MemoryThreadSettings, MemoryVisibility,
 };
 
 /// Central policy engine for memory operations.
@@ -77,6 +77,7 @@ impl MemoryPolicyEngine {
         thread: &MemoryThreadSettings,
         actor: &MemoryActor,
         evidence: &MemoryEvidence,
+        permission: &MemoryPermissionContext,
         target_visibility: &MemoryVisibility,
     ) -> MemoryPolicyDecision {
         // 1. Global generation off
@@ -109,7 +110,10 @@ impl MemoryPolicyEngine {
         }
 
         // 4. External context gate
-        if self.global_settings.disable_generation_when_external_context_used {
+        if self
+            .global_settings
+            .disable_generation_when_external_context_used
+        {
             if is_external_context_source(&evidence.source)
                 || is_external_context_origin(&evidence.origin)
             {
@@ -138,14 +142,14 @@ impl MemoryPolicyEngine {
             target_visibility,
             MemoryVisibility::Team { .. } | MemoryVisibility::Tenant
         ) {
-            // Model actors cannot write team/tenant memory without explicit policy
-            if matches!(actor, MemoryActor::Model) {
+            // Model actors cannot write team/tenant memory without explicit policy.
+            if matches!(actor, MemoryActor::Model) && !has_memory_write_grant(permission) {
                 return MemoryPolicyDecision::Deny {
                     reason: MemoryPolicyDenyReason::VisibilityEscalationDenied,
                 };
             }
-            // User actors need explicit instruction for team writes
-            if matches!(actor, MemoryActor::User { .. }) {
+            // User actors need explicit instruction for team writes.
+            if matches!(actor, MemoryActor::User { .. }) && !has_memory_write_grant(permission) {
                 return MemoryPolicyDecision::Deny {
                     reason: MemoryPolicyDenyReason::PermissionRequired,
                 };
@@ -153,7 +157,7 @@ impl MemoryPolicyEngine {
         }
 
         // 7. Model-derived / external content → candidate by default
-        if !is_trusted_source(&evidence.source) {
+        if !is_trusted_source(&evidence.source) && !has_memory_write_grant(permission) {
             return MemoryPolicyDecision::CandidateOnly {
                 reason: MemoryPolicyDenyReason::MissingPolicy,
             };
@@ -161,11 +165,11 @@ impl MemoryPolicyEngine {
 
         // 8. Subagent-derived → candidate by default
         if matches!(actor, MemoryActor::Subagent { .. })
-            || matches!(
-                evidence.source,
-                MemorySource::SubagentDerived { .. }
-            )
+            || matches!(evidence.source, MemorySource::SubagentDerived { .. })
         {
+            if has_memory_write_grant(permission) {
+                return MemoryPolicyDecision::Allow;
+            }
             return MemoryPolicyDecision::CandidateOnly {
                 reason: MemoryPolicyDenyReason::PermissionRequired,
             };
@@ -178,6 +182,9 @@ impl MemoryPolicyEngine {
                 | MemoryEvidenceOrigin::McpToolOutput { .. }
                 | MemoryEvidenceOrigin::PluginOutput { .. }
         ) {
+            if has_memory_write_grant(permission) {
+                return MemoryPolicyDecision::Allow;
+            }
             return MemoryPolicyDecision::CandidateOnly {
                 reason: MemoryPolicyDenyReason::MissingPolicy,
             };
@@ -205,7 +212,9 @@ impl MemoryPolicyEngine {
         }
 
         if has_external_context
-            && self.global_settings.disable_generation_when_external_context_used
+            && self
+                .global_settings
+                .disable_generation_when_external_context_used
         {
             return MemoryPolicyDecision::Deny {
                 reason: MemoryPolicyDenyReason::ExternalContextGenerationDisabled,
@@ -220,6 +229,7 @@ impl MemoryPolicyEngine {
         &self,
         thread: &MemoryThreadSettings,
         _actor: &MemoryActor,
+        permission: &MemoryPermissionContext,
     ) -> MemoryPolicyDecision {
         if !self.global_settings.use_memories {
             return MemoryPolicyDecision::Deny {
@@ -228,12 +238,20 @@ impl MemoryPolicyEngine {
         }
 
         match thread.memory_mode {
-            MemoryThreadMode::Off | MemoryThreadMode::ReadOnly | MemoryThreadMode::CandidateOnly => {
+            MemoryThreadMode::Off
+            | MemoryThreadMode::ReadOnly
+            | MemoryThreadMode::CandidateOnly => {
                 return MemoryPolicyDecision::Deny {
                     reason: MemoryPolicyDenyReason::ThreadUseDisabled,
                 };
             }
             _ => {}
+        }
+
+        if !has_memory_write_grant(permission) {
+            return MemoryPolicyDecision::Deny {
+                reason: MemoryPolicyDenyReason::PermissionRequired,
+            };
         }
 
         MemoryPolicyDecision::Allow
@@ -251,6 +269,12 @@ fn is_external_context_source(source: &MemorySource) -> bool {
     )
 }
 
+fn has_memory_write_grant(permission: &MemoryPermissionContext) -> bool {
+    permission.explicit_user_instruction
+        || permission.authorization_ticket_id.is_some()
+        || permission.non_interactive_policy_grant
+}
+
 /// Check if the evidence origin indicates externally-retrieved content.
 fn is_external_context_origin(origin: &MemoryEvidenceOrigin) -> bool {
     matches!(
@@ -265,9 +289,7 @@ fn is_external_context_origin(origin: &MemoryEvidenceOrigin) -> bool {
 fn is_trusted_source(source: &MemorySource) -> bool {
     matches!(
         source,
-        MemorySource::UserInput
-            | MemorySource::WorkspaceFile
-            | MemorySource::Imported
+        MemorySource::UserInput | MemorySource::WorkspaceFile | MemorySource::Imported
     )
 }
 

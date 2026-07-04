@@ -1,13 +1,15 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "consolidation")]
 use harness_contracts::MemoryConsolidationRanEvent;
 use harness_contracts::{
-    ContentHash, Event, MemdirFileTag, MemoryActorContext, MemoryError, MemoryExportedEvent, MemoryId,
-    MemorySessionCtx, MemorySource, MemoryUpsertedEvent, MemoryVisibility, MemoryWriteAction,
-    MemoryWriteTarget, MessageView, RunId, SessionId, SessionSummaryView, TakesEffect,
-    UserMessageView, WriteDestination,
+    ContentHash, Event, MemdirFileTag, MemoryActor, MemoryActorContext, MemoryError,
+    MemoryEvidence, MemoryExportedEvent, MemoryId, MemoryPermissionContext, MemoryPolicyDecision,
+    MemorySessionCtx, MemorySource, MemoryThreadSettings, MemoryUpsertedEvent, MemoryVisibility,
+    MemoryWriteAction, MemoryWriteTarget, MessageView, RunId, SessionId, SessionSummaryView,
+    TakesEffect, UserMessageView, WriteDestination,
 };
 #[cfg(feature = "threat-scanner")]
 use harness_contracts::{MemoryThreatDetectedEvent, ThreatAction, ThreatDirection};
@@ -23,8 +25,8 @@ use crate::MemoryThreatScanner;
 use crate::{
     content_preview, visibility_matches, MemoryEventSink, MemoryKindFilter, MemoryListScope,
     MemoryMetric, MemoryMetricsSink, MemoryPolicyEngine, MemoryProvider, MemoryProviderRegistry,
-    MemoryQuery, MemoryRecallMetricOutcome, MemoryRecallTraceBuilder,
-    MemoryRecallTraceCollector, MemoryRecord, MemorySummary, MemoryVisibilityFilter,
+    MemoryQuery, MemoryRecallMetricOutcome, MemoryRecallTraceCollector, MemoryRecord,
+    MemorySummary, MemoryVisibilityFilter,
 };
 
 pub struct MemoryManager {
@@ -41,6 +43,14 @@ pub struct MemoryManager {
     #[cfg(feature = "threat-scanner")]
     threat_scanner: Option<Arc<MemoryThreatScanner>>,
     trace_collector: Arc<MemoryRecallTraceCollector>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MemoryOperationPolicy {
+    pub thread: MemoryThreadSettings,
+    pub actor: MemoryActor,
+    pub permission: MemoryPermissionContext,
+    pub evidence: MemoryEvidence,
 }
 
 type RecallResult = MemoryRecallOutcome;
@@ -112,15 +122,17 @@ impl Default for MemoryManager {
             #[cfg(feature = "builtin")]
             builtin: RwLock::new(None),
             provider_registry: RwLock::new(MemoryProviderRegistry::new()),
-            policy_engine: RwLock::new(MemoryPolicyEngine::new(harness_contracts::MemoryGlobalSettings {
-                use_memories: true,
-                generate_memories: true,
-                disable_generation_when_external_context_used: false,
-                retention_days: None,
-                max_memory_bytes: 10_000_000,
-                max_recall_records_per_turn: 20,
-                max_recall_chars_per_turn: 50_000,
-            })),
+            policy_engine: RwLock::new(MemoryPolicyEngine::new(
+                harness_contracts::MemoryGlobalSettings {
+                    use_memories: true,
+                    generate_memories: true,
+                    disable_generation_when_external_context_used: false,
+                    retention_days: None,
+                    max_memory_bytes: 10_000_000,
+                    max_recall_records_per_turn: 20,
+                    max_recall_chars_per_turn: 50_000,
+                },
+            )),
             recall_policy: RecallPolicy::default(),
             #[cfg(feature = "consolidation")]
             consolidation_hook: None,
@@ -150,16 +162,10 @@ impl MemoryManager {
     }
 
     pub fn provider_registry(&self) -> Option<MemoryProviderRegistry> {
-        self.provider_registry.try_read().ok().map(|guard| guard.clone())
-    }
-
-    /// Returns a single external provider (first writable one), for compatibility
-    /// with existing APIs that expect a single provider.
-    pub fn external(&self) -> Option<Arc<dyn MemoryProvider>> {
         self.provider_registry
             .try_read()
             .ok()
-            .and_then(|reg| reg.writable_providers_sorted().into_iter().next())
+            .map(|guard| guard.clone())
     }
 
     #[cfg(feature = "builtin")]
@@ -191,9 +197,19 @@ impl MemoryManager {
     }
 
     pub fn provider_id(&self) -> Option<String> {
-        self.external()
-            .as_ref()
-            .map(|provider| provider.provider_id().to_owned())
+        let mut ids = self
+            .provider_registry
+            .try_read()
+            .ok()?
+            .providers()
+            .map(|provider| provider.provider_id)
+            .collect::<Vec<_>>();
+        ids.sort();
+        match ids.len() {
+            0 => None,
+            1 => ids.pop(),
+            _ => Some(ids.join(",")),
+        }
     }
 
     #[must_use]
@@ -212,12 +228,29 @@ impl MemoryManager {
 
     #[must_use]
     pub fn has_external(&self) -> bool {
-        self.external().is_some()
+        self.provider_registry
+            .try_read()
+            .map(|registry| !registry.is_empty())
+            .unwrap_or(false)
     }
 
     #[must_use]
     pub fn trace_collector(&self) -> Arc<MemoryRecallTraceCollector> {
         Arc::clone(&self.trace_collector)
+    }
+
+    #[must_use]
+    pub fn with_trace_collector(mut self, trace_collector: MemoryRecallTraceCollector) -> Self {
+        self.trace_collector = Arc::new(trace_collector);
+        self
+    }
+
+    pub fn with_durable_trace_collector(mut self, db_path: &str) -> Result<Self, MemoryError> {
+        self.trace_collector = Arc::new(
+            MemoryRecallTraceCollector::open(db_path)
+                .map_err(|e| MemoryError::Message(format!("open recall trace collector: {e}")))?,
+        );
+        Ok(self)
     }
 
     #[must_use]
@@ -280,14 +313,55 @@ impl MemoryManager {
         self.records_from_outcome(self.recall_outcome(query).await)
     }
 
+    pub async fn recall_with_policy(
+        &self,
+        query: MemoryQuery,
+        thread: &MemoryThreadSettings,
+        actor: &MemoryActor,
+    ) -> Result<Vec<MemoryRecord>, MemoryError> {
+        let decision = self
+            .policy_engine
+            .read()
+            .await
+            .evaluate_recall(thread, actor);
+        if !matches!(decision, MemoryPolicyDecision::Allow) {
+            self.record_metric(MemoryMetric::Recall {
+                provider_id: None,
+                outcome: MemoryRecallMetricOutcome::Skipped,
+                duration_ms: 0,
+                returned_count: 0,
+            });
+            return Ok(Vec::new());
+        }
+        self.recall(query).await
+    }
+
+    pub async fn upsert_with_policy(
+        &self,
+        record: MemoryRecord,
+        run_id: Option<RunId>,
+        policy: &MemoryOperationPolicy,
+    ) -> Result<harness_contracts::MemoryId, MemoryError> {
+        let decision = self.policy_engine.read().await.evaluate_write(
+            &policy.thread,
+            &policy.actor,
+            &policy.evidence,
+            &policy.permission,
+            &record.visibility,
+        );
+        ensure_direct_memory_policy_allows(decision)?;
+        self.upsert(record, run_id).await
+    }
+
     pub async fn upsert(
         &self,
         mut record: MemoryRecord,
         run_id: Option<RunId>,
     ) -> Result<harness_contracts::MemoryId, MemoryError> {
-        let Some(provider) = self.external() else {
+        let providers = self.writable_providers()?;
+        if providers.is_empty() {
             return Err(MemoryError::ExternalProviderNotConfigured);
-        };
+        }
         let now = chrono::Utc::now();
         record.updated_at = now;
         let session_id = record
@@ -295,81 +369,97 @@ impl MemoryManager {
             .session_id()
             .or_else(|| source_session_id(&record.metadata.source))
             .unwrap_or_else(SessionId::new);
-        #[cfg(feature = "threat-scanner")]
-        self.scan_record_before_write(
-            &mut record,
-            session_id,
-            run_id,
-            Some(provider.provider_id().to_owned()),
-        )
-        .await?;
-        let content_hash = content_hash(&record.content);
-        let bytes_written = record.content.len() as u64;
-        let target = MemoryWriteTarget {
-            kind: record.kind.clone(),
-            visibility: record.visibility.clone(),
-            destination: WriteDestination::External {
-                provider_id: provider.provider_id().to_owned(),
-            },
-        };
         let metric_kind = record.kind.clone();
         let metric_visibility = record.visibility.clone();
-        let id = provider.upsert(record.clone()).await?;
-        provider
-            .on_memory_write(MemoryWriteAction::Upsert, &target, content_hash.clone())
-            .await?;
-        if let Some(sink) = &self.event_sink {
-            sink.emit(Event::MemoryUpserted(MemoryUpsertedEvent {
-                session_id: record
-                    .visibility
-                    .session_id()
-                    .or_else(|| source_session_id(&record.metadata.source))
-                    .unwrap_or(session_id),
+        let mut written_id = None;
+
+        for provider in providers {
+            let provider_id = provider.provider_id().to_owned();
+            let mut provider_record = record.clone();
+            #[cfg(feature = "threat-scanner")]
+            self.scan_record_before_write(
+                &mut provider_record,
+                session_id,
                 run_id,
-                memory_id: id,
-                kind: record.kind.clone(),
-                visibility: record.visibility.clone(),
-                action: MemoryWriteAction::Upsert,
-                provider_id: provider.provider_id().to_owned(),
-                source: record.metadata.source.clone(),
-                content_hash,
-                bytes_written,
-                takes_effect: TakesEffect::CurrentSession,
-                at: now,
-            }))
-            .await;
+                Some(provider_id.clone()),
+            )
+            .await?;
+            let content_hash = content_hash(&provider_record.content);
+            let bytes_written = provider_record.content.len() as u64;
+            let target = MemoryWriteTarget {
+                kind: provider_record.kind.clone(),
+                visibility: provider_record.visibility.clone(),
+                destination: WriteDestination::External {
+                    provider_id: provider_id.clone(),
+                },
+            };
+            let id = provider.upsert(provider_record.clone()).await?;
+            provider
+                .on_memory_write(MemoryWriteAction::Upsert, &target, content_hash.clone())
+                .await?;
+            if written_id.is_none() {
+                written_id = Some(id);
+            }
+            if let Some(sink) = &self.event_sink {
+                sink.emit(Event::MemoryUpserted(MemoryUpsertedEvent {
+                    session_id: provider_record
+                        .visibility
+                        .session_id()
+                        .or_else(|| source_session_id(&provider_record.metadata.source))
+                        .unwrap_or(session_id),
+                    run_id,
+                    memory_id: id,
+                    kind: provider_record.kind.clone(),
+                    visibility: provider_record.visibility.clone(),
+                    action: MemoryWriteAction::Upsert,
+                    provider_id,
+                    source: provider_record.metadata.source.clone(),
+                    content_hash: content_hash.clone(),
+                    bytes_written,
+                    takes_effect: TakesEffect::CurrentSession,
+                    at: now,
+                }))
+                .await;
+            }
         }
         self.record_metric(MemoryMetric::Upsert {
             kind: metric_kind,
             visibility: metric_visibility,
         });
-        Ok(id)
+        written_id.ok_or(MemoryError::ExternalProviderNotConfigured)
     }
 
     pub async fn list_for_actor(
         &self,
         actor: MemoryActorContext,
     ) -> Result<Vec<crate::MemorySummary>, MemoryError> {
-        let Some(provider) = self.external() else {
+        let providers = self.readable_providers()?;
+        if providers.is_empty() {
             return Err(MemoryError::ExternalProviderNotConfigured);
-        };
+        }
 
-        let summaries = provider
-            .list(MemoryListScope::ForActor(actor.clone()))
-            .await?;
-        let mut visible = Vec::with_capacity(summaries.len());
-        for summary in summaries {
-            let record = provider.get(summary.id).await?;
-            if record_visible_to_actor(&record, &actor) {
-                let scanned = self
-                    .scan_records(
-                        vec![record],
-                        provider.provider_id().to_owned(),
-                        actor.session_id,
-                    )
-                    .await;
-                if let Some(record) = scanned.into_iter().next() {
-                    visible.push(memory_summary_from_record(&record));
+        let mut visible = Vec::new();
+        let mut seen = HashSet::new();
+        for provider in providers {
+            let summaries = provider
+                .list(MemoryListScope::ForActor(actor.clone()))
+                .await?;
+            for summary in summaries {
+                if !seen.insert(summary.id) {
+                    continue;
+                }
+                let record = provider.get(summary.id).await?;
+                if record_visible_to_actor(&record, &actor) {
+                    let scanned = self
+                        .scan_records(
+                            vec![record],
+                            provider.provider_id().to_owned(),
+                            actor.session_id,
+                        )
+                        .await;
+                    if let Some(record) = scanned.into_iter().next() {
+                        visible.push(memory_summary_from_record(&record));
+                    }
                 }
             }
         }
@@ -382,22 +472,34 @@ impl MemoryManager {
         id: MemoryId,
         actor: MemoryActorContext,
     ) -> Result<MemoryRecord, MemoryError> {
-        let Some(provider) = self.external() else {
+        let providers = self.readable_providers()?;
+        if providers.is_empty() {
             return Err(MemoryError::ExternalProviderNotConfigured);
-        };
-        let record = provider.get(id).await?;
-        if !record_visible_to_actor(&record, &actor) {
-            return Err(MemoryError::NotFound(id));
         }
 
-        let records = self
-            .scan_records(
-                vec![record],
-                provider.provider_id().to_owned(),
-                actor.session_id,
-            )
-            .await;
-        records.into_iter().next().ok_or(MemoryError::NotFound(id))
+        for provider in providers {
+            let record = match provider.get(id).await {
+                Ok(record) => record,
+                Err(MemoryError::NotFound(_)) => continue,
+                Err(error) => return Err(error),
+            };
+            if !record_visible_to_actor(&record, &actor) {
+                continue;
+            }
+
+            let records = self
+                .scan_records(
+                    vec![record],
+                    provider.provider_id().to_owned(),
+                    actor.session_id,
+                )
+                .await;
+            if let Some(record) = records.into_iter().next() {
+                return Ok(record);
+            }
+        }
+
+        Err(MemoryError::NotFound(id))
     }
 
     pub async fn update_content_for_actor(
@@ -414,86 +516,147 @@ impl MemoryManager {
         self.get_for_actor(id, actor).await
     }
 
+    pub async fn update_content_for_actor_with_policy(
+        &self,
+        id: MemoryId,
+        actor: MemoryActorContext,
+        content: impl Into<String>,
+        run_id: Option<RunId>,
+        policy: &MemoryOperationPolicy,
+    ) -> Result<MemoryRecord, MemoryError> {
+        let mut record = self.get_for_actor(id, actor.clone()).await?;
+        record.content = content.into();
+        record.updated_at = chrono::Utc::now();
+        self.upsert_with_policy(record, run_id, policy).await?;
+        self.get_for_actor(id, actor).await
+    }
+
     pub async fn forget_for_actor(
         &self,
         id: MemoryId,
         actor: MemoryActorContext,
         run_id: Option<RunId>,
     ) -> Result<(), MemoryError> {
-        let Some(provider) = self.external() else {
+        let providers = self.writable_providers()?;
+        if providers.is_empty() {
             return Err(MemoryError::ExternalProviderNotConfigured);
-        };
-        let record = provider.get(id).await?;
-        if !record_visible_to_actor(&record, &actor) {
-            return Err(MemoryError::NotFound(id));
         }
+
+        let mut found_record = None;
+        for provider in &providers {
+            let Ok(record) = provider.get(id).await else {
+                continue;
+            };
+            if record_visible_to_actor(&record, &actor) {
+                found_record = Some(record);
+                break;
+            }
+        }
+        let Some(record) = found_record else {
+            return Err(MemoryError::NotFound(id));
+        };
 
         let now = chrono::Utc::now();
         let content_hash = content_hash(&record.content);
-        let target = MemoryWriteTarget {
-            kind: record.kind.clone(),
-            visibility: record.visibility.clone(),
-            destination: WriteDestination::External {
-                provider_id: provider.provider_id().to_owned(),
-            },
-        };
         let Some(sink) = &self.event_sink else {
             return Err(MemoryError::Provider {
                 provider: "audit".to_owned(),
                 source_message: "required audit sink is not configured".to_owned(),
             });
         };
-        provider.forget(id).await?;
-        if let Err(error) = sink
-            .emit_required(Event::MemoryUpserted(MemoryUpsertedEvent {
-                session_id: actor
-                    .session_id
-                    .or_else(|| record.visibility.session_id())
-                    .or_else(|| source_session_id(&record.metadata.source))
-                    .unwrap_or_else(SessionId::new),
-                run_id,
-                memory_id: id,
+        for provider in providers {
+            let provider_id = provider.provider_id().to_owned();
+            let target = MemoryWriteTarget {
                 kind: record.kind.clone(),
                 visibility: record.visibility.clone(),
-                action: MemoryWriteAction::Forget,
-                provider_id: provider.provider_id().to_owned(),
-                source: record.metadata.source.clone(),
-                content_hash: content_hash.clone(),
-                bytes_written: 0,
-                takes_effect: TakesEffect::CurrentSession,
-                at: now,
-            }))
-            .await
-        {
-            let _ = provider.upsert(record).await;
-            return Err(error);
+                destination: WriteDestination::External {
+                    provider_id: provider_id.clone(),
+                },
+            };
+            match provider.forget(id).await {
+                Ok(()) | Err(MemoryError::NotFound(_)) => {}
+                Err(error) => return Err(error),
+            }
+            if let Err(error) = sink
+                .emit_required(Event::MemoryUpserted(MemoryUpsertedEvent {
+                    session_id: actor
+                        .session_id
+                        .or_else(|| record.visibility.session_id())
+                        .or_else(|| source_session_id(&record.metadata.source))
+                        .unwrap_or_else(SessionId::new),
+                    run_id,
+                    memory_id: id,
+                    kind: record.kind.clone(),
+                    visibility: record.visibility.clone(),
+                    action: MemoryWriteAction::Forget,
+                    provider_id,
+                    source: record.metadata.source.clone(),
+                    content_hash: content_hash.clone(),
+                    bytes_written: 0,
+                    takes_effect: TakesEffect::CurrentSession,
+                    at: now,
+                }))
+                .await
+            {
+                let _ = provider.upsert(record).await;
+                return Err(error);
+            }
+            provider
+                .on_memory_write(MemoryWriteAction::Forget, &target, content_hash.clone())
+                .await?;
         }
-        provider
-            .on_memory_write(MemoryWriteAction::Forget, &target, content_hash.clone())
-            .await?;
         Ok(())
+    }
+
+    pub async fn forget_for_actor_with_policy(
+        &self,
+        id: MemoryId,
+        actor: MemoryActorContext,
+        run_id: Option<RunId>,
+        policy: &MemoryOperationPolicy,
+    ) -> Result<(), MemoryError> {
+        let decision = self.policy_engine.read().await.evaluate_delete(
+            &policy.thread,
+            &policy.actor,
+            &policy.permission,
+        );
+        ensure_direct_memory_policy_allows(decision)?;
+        self.forget_for_actor(id, actor, run_id).await
     }
 
     pub async fn export_for_actor(
         &self,
         actor: MemoryActorContext,
-    ) -> Result<Vec<MemoryRecord>, MemoryError> {
-        let Some(provider) = self.external() else {
+    ) -> Result<Vec<MemorySummary>, MemoryError> {
+        let providers = self.readable_providers()?;
+        if providers.is_empty() {
             return Err(MemoryError::ExternalProviderNotConfigured);
-        };
-        let summaries = provider
-            .list(MemoryListScope::ForActor(actor.clone()))
-            .await?;
-        let mut records = Vec::with_capacity(summaries.len());
-        for summary in summaries {
-            let record = provider.get(summary.id).await?;
-            if record_visible_to_actor(&record, &actor) {
-                records.push(record);
-            }
         }
-        let records = self
-            .scan_records(records, provider.provider_id().to_owned(), actor.session_id)
-            .await;
+        let mut records = Vec::new();
+        let mut seen = HashSet::new();
+        for provider in providers {
+            let summaries = provider
+                .list(MemoryListScope::ForActor(actor.clone()))
+                .await?;
+            let mut provider_records = Vec::new();
+            for summary in summaries {
+                if !seen.insert(summary.id) {
+                    continue;
+                }
+                let record = provider.get(summary.id).await?;
+                if record_visible_to_actor(&record, &actor) {
+                    provider_records.push(record);
+                }
+            }
+            records.extend(
+                self.scan_records(
+                    provider_records,
+                    provider.provider_id().to_owned(),
+                    actor.session_id,
+                )
+                .await,
+            );
+        }
         let Some(sink) = &self.event_sink else {
             return Err(MemoryError::Provider {
                 provider: "audit".to_owned(),
@@ -503,7 +666,7 @@ impl MemoryManager {
         sink.emit_required(Event::MemoryExported(MemoryExportedEvent {
             session_id: actor.session_id.unwrap_or_else(SessionId::new),
             tenant_id: actor.tenant_id,
-            provider_id: provider.provider_id().to_owned(),
+            provider_id: self.provider_id().unwrap_or_else(|| "registry".to_owned()),
             item_count: records.len().min(u32::MAX as usize) as u32,
             content_hashes: records
                 .iter()
@@ -517,11 +680,14 @@ impl MemoryManager {
         }))
         .await?;
 
-        Ok(records)
+        Ok(records
+            .iter()
+            .map(redacted_memory_summary_from_record)
+            .collect())
     }
 
     pub async fn initialize_session(&self, ctx: &MemorySessionCtx<'_>) -> Result<(), MemoryError> {
-        if let Some(provider) = self.external() {
+        for provider in self.all_providers()? {
             provider.initialize(ctx).await?;
         }
         Ok(())
@@ -532,7 +698,7 @@ impl MemoryManager {
         turn: u32,
         message: &UserMessageView<'_>,
     ) -> Result<(), MemoryError> {
-        if let Some(provider) = self.external() {
+        for provider in self.all_providers()? {
             provider.on_turn_start(turn, message).await?;
         }
         Ok(())
@@ -542,8 +708,10 @@ impl MemoryManager {
         &self,
         messages: &[MessageView<'_>],
     ) -> Result<Option<String>, MemoryError> {
-        if let Some(provider) = self.external() {
-            return provider.on_pre_compress(messages).await;
+        for provider in self.all_providers()? {
+            if let Some(content) = provider.on_pre_compress(messages).await? {
+                return Ok(Some(content));
+            }
         }
         Ok(None)
     }
@@ -554,9 +722,9 @@ impl MemoryManager {
         target: &MemoryWriteTarget,
         content_hash: ContentHash,
     ) -> Result<(), MemoryError> {
-        if let Some(provider) = self.external() {
+        for provider in self.all_providers()? {
             provider
-                .on_memory_write(action, target, content_hash)
+                .on_memory_write(action.clone(), target, content_hash.clone())
                 .await?;
         }
         Ok(())
@@ -568,7 +736,7 @@ impl MemoryManager {
         result: &str,
         child_session: SessionId,
     ) -> Result<(), MemoryError> {
-        if let Some(provider) = self.external() {
+        for provider in self.all_providers()? {
             provider.on_delegation(task, result, child_session).await?;
         }
         Ok(())
@@ -579,7 +747,7 @@ impl MemoryManager {
         ctx: &MemorySessionCtx<'_>,
         summary: &SessionSummaryView<'_>,
     ) -> Result<(), MemoryError> {
-        if let Some(provider) = self.external() {
+        for provider in self.all_providers()? {
             provider.on_session_end(ctx, summary).await?;
             provider.shutdown().await?;
         }
@@ -647,12 +815,19 @@ impl MemoryManager {
             return outcome;
         }
 
-        let Some(provider) = self.external() else {
-            let outcome = MemoryRecallOutcome::Skipped;
+        let providers = match self.readable_providers() {
+            Ok(providers) => providers,
+            Err(error) => {
+                let outcome = MemoryRecallOutcome::Degraded(error);
+                self.record_recall_metric(None, &outcome, started);
+                return outcome;
+            }
+        };
+        if providers.is_empty() {
+            let outcome = MemoryRecallOutcome::Degraded(MemoryError::ExternalProviderNotConfigured);
             self.record_recall_metric(None, &outcome, started);
             return outcome;
-        };
-        let provider_id = provider.provider_id().to_owned();
+        }
 
         let mut provider_query = query.clone();
         provider_query.max_records = provider_query
@@ -662,35 +837,66 @@ impl MemoryManager {
             .min_similarity
             .max(self.recall_policy.min_similarity);
 
-        let recalled = match timeout(deadline, provider.recall(provider_query)).await {
-            Ok(Ok(records)) => records,
-            Ok(Err(error)) => {
-                let outcome = MemoryRecallOutcome::Degraded(error);
-                self.record_recall_metric(Some(&provider_id), &outcome, started);
-                return outcome;
-            }
-            Err(_) => {
-                let outcome = MemoryRecallOutcome::Degraded(MemoryError::RecallDeadlineExceeded {
-                    provider: provider_id.clone(),
-                });
-                self.record_recall_metric(Some(&provider_id), &outcome, started);
-                return outcome;
-            }
-        };
+        let mut collected = Vec::new();
+        let mut last_error = None;
+        for provider in providers {
+            let provider_id = provider.provider_id().to_owned();
+            let recall_result = if tokio::runtime::Handle::try_current().is_ok() {
+                match timeout(deadline, provider.recall(provider_query.clone())).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        let error = MemoryError::RecallDeadlineExceeded {
+                            provider: provider_id.clone(),
+                        };
+                        last_error = Some((provider_id.clone(), error.clone()));
+                        let outcome = MemoryRecallOutcome::Degraded(error);
+                        self.record_recall_metric(Some(&provider_id), &outcome, started);
+                        continue;
+                    }
+                }
+            } else {
+                provider.recall(provider_query.clone()).await
+            };
+            let recalled = match recall_result {
+                Ok(records) => records,
+                Err(error) => {
+                    last_error = Some((provider_id.clone(), error));
+                    let outcome = MemoryRecallOutcome::Degraded(
+                        last_error.as_ref().expect("error just set").1.clone(),
+                    );
+                    self.record_recall_metric(Some(&provider_id), &outcome, started);
+                    continue;
+                }
+            };
 
-        let records = recalled
+            let records = recalled
+                .into_iter()
+                .filter(|record| record_matches_query(record, &query))
+                .take(self.recall_policy.max_records_per_turn as usize)
+                .collect::<Vec<_>>();
+            let records = self
+                .scan_records(records, provider_id.clone(), query.session_id)
+                .await;
+            let provider_outcome = MemoryRecallOutcome::Recalled(records.clone());
+            self.record_recall_metric(Some(&provider_id), &provider_outcome, started);
+            collected.extend(records);
+        }
+
+        if collected.is_empty() {
+            if let Some((_, error)) = last_error {
+                return MemoryRecallOutcome::Degraded(error);
+            }
+        }
+
+        let records = dedupe_records(collected)
             .into_iter()
-            .filter(|record| record_matches_query(record, &query))
             .take(self.recall_policy.max_records_per_turn as usize)
             .collect::<Vec<_>>();
-        let records = self
-            .scan_records(records, provider_id.clone(), query.session_id)
-            .await;
         let outcome = MemoryRecallOutcome::Recalled(apply_char_budget(
             records,
             self.recall_policy.max_chars_per_turn,
         ));
-        self.record_recall_metric(Some(&provider_id), &outcome, started);
+        self.record_recall_metric(None, &outcome, started);
         outcome
     }
 
@@ -768,6 +974,30 @@ impl MemoryManager {
             FailMode::Skip => Ok(Vec::new()),
             FailMode::Surface => Err(error),
         }
+    }
+
+    fn all_providers(&self) -> Result<Vec<Arc<dyn MemoryProvider>>, MemoryError> {
+        Ok(self
+            .provider_registry
+            .try_read()
+            .map_err(|_| MemoryError::Message("provider registry lock busy".to_owned()))?
+            .provider_arcs_sorted())
+    }
+
+    fn readable_providers(&self) -> Result<Vec<Arc<dyn MemoryProvider>>, MemoryError> {
+        Ok(self
+            .provider_registry
+            .try_read()
+            .map_err(|_| MemoryError::Message("provider registry lock busy".to_owned()))?
+            .readable_provider_arcs_sorted())
+    }
+
+    fn writable_providers(&self) -> Result<Vec<Arc<dyn MemoryProvider>>, MemoryError> {
+        Ok(self
+            .provider_registry
+            .try_read()
+            .map_err(|_| MemoryError::Message("provider registry lock busy".to_owned()))?
+            .writable_providers_sorted())
     }
 
     #[cfg(feature = "threat-scanner")]
@@ -997,12 +1227,47 @@ fn memory_summary_from_record(record: &MemoryRecord) -> MemorySummary {
     }
 }
 
+fn redacted_memory_summary_from_record(record: &MemoryRecord) -> MemorySummary {
+    let mut summary = memory_summary_from_record(record);
+    summary.content_preview = "[redacted memory content]".to_owned();
+    summary
+}
+
 fn record_visible_to_actor(record: &MemoryRecord, actor: &MemoryActorContext) -> bool {
     record.tenant_id == actor.tenant_id && visibility_matches(&record.visibility, actor)
 }
 
 fn content_hash(content: &str) -> ContentHash {
     ContentHash(*blake3::hash(content.as_bytes()).as_bytes())
+}
+
+fn ensure_direct_memory_policy_allows(decision: MemoryPolicyDecision) -> Result<(), MemoryError> {
+    match decision {
+        MemoryPolicyDecision::Allow => Ok(()),
+        MemoryPolicyDecision::Deny { reason } | MemoryPolicyDecision::CandidateOnly { reason } => {
+            Err(MemoryError::Message(format!(
+                "memory write denied by policy: {reason:?}"
+            )))
+        }
+        _ => Err(MemoryError::Message(
+            "memory write denied by policy".to_owned(),
+        )),
+    }
+}
+
+fn dedupe_records(records: Vec<MemoryRecord>) -> Vec<MemoryRecord> {
+    let mut seen_ids = HashSet::new();
+    let mut seen_content = HashSet::new();
+    let mut deduped = Vec::with_capacity(records.len());
+
+    for record in records {
+        let hash = content_hash(&record.content);
+        if seen_ids.insert(record.id) && seen_content.insert(hash) {
+            deduped.push(record);
+        }
+    }
+
+    deduped
 }
 
 async fn wait_for_recall_result(

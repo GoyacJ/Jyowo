@@ -1013,12 +1013,16 @@ pub struct GetMemoryItemRequest {
 pub struct UpdateMemoryItemRequest {
     pub id: String,
     pub content: String,
+    #[serde(default)]
+    pub action_plan_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DeleteMemoryItemRequest {
     pub id: String,
+    #[serde(default)]
+    pub action_plan_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

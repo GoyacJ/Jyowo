@@ -14,6 +14,8 @@ mod glob;
 mod grep;
 #[cfg(feature = "builtin-toolset")]
 mod list_dir;
+#[cfg(feature = "builtin-toolset")]
+mod memory;
 #[cfg(feature = "minimax-tools")]
 mod minimax;
 #[cfg(feature = "builtin-toolset")]
@@ -29,8 +31,6 @@ mod send_message;
 mod skills;
 #[cfg(feature = "builtin-toolset")]
 mod task_stop;
-#[cfg(feature = "builtin-toolset")]
-mod memory;
 #[cfg(feature = "builtin-toolset")]
 mod todo;
 #[cfg(feature = "builtin-toolset")]
@@ -58,6 +58,11 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 #[cfg(feature = "builtin-toolset")]
 pub use list_dir::ListDirTool;
+#[cfg(feature = "builtin-toolset")]
+pub use memory::{
+    memory_tool_runtime_capability, MemoryTool, MemoryToolRuntimeCap, MemoryToolRuntimeRequest,
+    MEMORY_TOOL_RUNTIME_CAPABILITY,
+};
 #[cfg(feature = "minimax-tools")]
 pub use minimax::{
     MiniMaxAnthropicCountTokensTool, MiniMaxAnthropicMessagesTool,
@@ -85,8 +90,6 @@ pub use send_message::SendMessageTool;
 pub use skills::{SkillsInvokeTool, SkillsListTool, SkillsViewTool};
 #[cfg(feature = "builtin-toolset")]
 pub use task_stop::TaskStopTool;
-#[cfg(feature = "builtin-toolset")]
-pub use memory::MemoryTool;
 #[cfg(feature = "builtin-toolset")]
 pub use todo::TodoTool;
 #[cfg(feature = "builtin-toolset")]

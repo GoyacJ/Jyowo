@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
+  type DeleteMemoryItemRequest,
   exportMemoryItems,
   getMemoryItem,
   listMemoryItems,
@@ -48,7 +49,7 @@ export function MemoryBrowser() {
     },
   })
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => commandClient.deleteMemoryItem(id),
+    mutationFn: (request: DeleteMemoryItemRequest) => commandClient.deleteMemoryItem(request),
     onSuccess: async (response) => {
       setDeleteCandidateId(null)
       if (selectedId === response.id) {
@@ -96,7 +97,7 @@ export function MemoryBrowser() {
       return
     }
 
-    await deleteMutation.mutateAsync(deleteCandidateId)
+    await deleteMutation.mutateAsync({ id: deleteCandidateId })
   }
 
   return (
