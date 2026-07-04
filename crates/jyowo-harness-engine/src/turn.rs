@@ -7,17 +7,18 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use harness_context::{ContextSessionView, TokenBudget};
 use harness_contracts::{
-    ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, AssistantMessageCompletedEvent, BlobRef,
-    BudgetKind, CausationId, ContextPatchLifecycle, ContextPatchRequest, ContextPatchSinkCap,
-    ContextPatchSource, ConversationAttachmentReference, CorrelationId, DenyReason, EndReason,
-    Event, EventId, FallbackPolicy, HookContextPatchEvent, HookEventKind, HookFailedEvent,
-    HookOutcomeInconsistentEvent, HookOutcomeSummary, HookReturnedUnsupportedEvent,
-    HookRewroteInputEvent, HookTriggeredEvent, Message, MessageContent, MessageId, MessageMetadata,
-    MessagePart, MessageRole, ModelError, ModelRef, PermissionMode, PricingSnapshotId, RedactRules,
-    Redactor, RequestId, RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionId,
-    TeamId, TenantId, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolResultPart,
-    ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId,
-    ToolUseRequestedEvent, TrustLevel, TurnInput, UsageAccumulatedEvent, UsageSnapshot,
+    ArtifactCreatedEvent, ArtifactRevisionId, ArtifactSource, ArtifactStatus,
+    AssistantMessageCompletedEvent, BlobRef, BudgetKind, CausationId, ContextPatchLifecycle,
+    ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource, ConversationAttachmentReference,
+    CorrelationId, DenyReason, EndReason, Event, EventId, FallbackPolicy, HookContextPatchEvent,
+    HookEventKind, HookFailedEvent, HookOutcomeInconsistentEvent, HookOutcomeSummary,
+    HookReturnedUnsupportedEvent, HookRewroteInputEvent, HookTriggeredEvent, Message,
+    MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, ModelError, ModelRef,
+    PermissionMode, PricingSnapshotId, RedactRules, Redactor, RequestId, RunEndedEvent, RunId,
+    RunModelSnapshot, RunStartedEvent, SessionId, TeamId, TenantId, ToolDescriptor, ToolError,
+    ToolErrorPayload, ToolResult, ToolResultPart, ToolUseCompletedEvent, ToolUseDeniedEvent,
+    ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, TrustLevel, TurnInput,
+    UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_execution::{AuthorizationContext, ExecutionError};
 use harness_hook::{
@@ -2363,6 +2364,7 @@ fn tool_result_events(
             })];
             if let Some(artifact) = artifact_from_tool_result(tool_result) {
                 events.push(Event::ArtifactCreated(ArtifactCreatedEvent {
+                    revision_id: ArtifactRevisionId::new(),
                     session_id,
                     run_id,
                     artifact_id: format!("artifact:{}", result.tool_use_id),

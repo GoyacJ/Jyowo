@@ -5,14 +5,18 @@ use std::collections::{HashMap, HashSet};
 use harness_contracts::{
     AgentActivityKind, AgentActivityPermissionState, AgentActivitySegment, AgentActivityStatus,
     AgentTeamActivityDetails, AgentTeamMemberActivity, AgentTeamTaskActivity, ArtifactMediaKind,
-    ArtifactMediaPreview, ArtifactSegment, ArtifactSource, ArtifactStatus, AssistantNoticeCode,
-    AssistantSegment, AssistantWork, AssistantWorkModelSnapshot, AssistantWorkStatus, BlobId,
-    BlobRef, ClarificationRequestSegment, ConversationAttachmentReference, ConversationCursor,
-    ConversationEventRef, ConversationTimelineEvent, ConversationTurn, ConversationTurnUserMessage,
-    ConversationWorktreePage, ErrorSegment, NoticeSegment, ProcessDiffFile, ProcessSegment,
+    ArtifactMediaPreview, ArtifactRevisionKind, ArtifactRevisionStatus, ArtifactRevisionSummary,
+    ArtifactSegment, ArtifactSource, ArtifactStatus, AssistantNoticeCode, AssistantSegment,
+    AssistantWork, AssistantWorkModelSnapshot, AssistantWorkStatus, BlobId, BlobRef, ChangeSet,
+    ChangeSetFile, ChangeSetFileStatus, ClarificationRequestSegment, CommandExecution,
+    ConversationAttachmentReference, ConversationCursor, ConversationEventRef,
+    ConversationTimelineEvent, ConversationTurn, ConversationTurnUserMessage,
+    ConversationWorktreePage, DataExposure, DataExposureSecretRisk, DecisionConfirmation,
+    DecisionOperation, DecisionPolicy, DecisionRequestState, DecisionRequestStatus, DecisionTarget,
+    DecisionTargetKind, ErrorSegment, EvidenceRedactionState, NoticeSegment, ProcessSegment,
     ProcessSegmentStatus, ProcessStep, ProcessStepDetail, ProcessStepKind, ProcessStepStatus,
-    ReviewRequestSegment, TextSegment, ThinkingSegmentStatus, ThinkingSummary, ToolAttempt,
-    ToolAttemptStatus, ToolGroupSegment, ToolPermissionState, ToolPermissionStatus, UiSafeText,
+    ReviewRequestSegment, RiskLevel, TextSegment, ToolAttempt, ToolAttemptOrigin,
+    ToolAttemptStatus, ToolGroupSegment, UiSafeText, UiVisibility,
 };
 use serde_json::Value;
 
@@ -333,15 +337,32 @@ impl ProjectionState<'_> {
         event: &ConversationTimelineEvent,
         event_ref: ConversationEventRef,
     ) {
-        let status = thinking_status_from_event(event);
-        let summary = process_summary_from_thinking(status, safe_summary_field(&event.payload));
+        let visibility = if event.visibility == "withheld" {
+            UiVisibility::Withheld
+        } else {
+            UiVisibility::UserSafe
+        };
+        let summary = safe_summary_field(&event.payload);
         let safe_summary_delta = safe_summary_delta_field(&event.payload);
-        self.ensure_process_segment(
-            event,
-            event_ref.clone(),
-            process_status_from_thinking(status),
-            summary,
-        );
+        let status = match (
+            visibility,
+            string_field(&event.payload, "status").as_deref(),
+        ) {
+            (UiVisibility::Withheld, _) | (_, Some("withheld")) => ProcessSegmentStatus::Withheld,
+            (_, Some("complete" | "completed")) => ProcessSegmentStatus::Complete,
+            _ => ProcessSegmentStatus::Running,
+        };
+        let process_summary = if let Some(ref text) = summary {
+            text.clone()
+        } else {
+            ui_text(match status {
+                ProcessSegmentStatus::Running => "正在处理请求",
+                ProcessSegmentStatus::Complete => "已完成工作过程",
+                ProcessSegmentStatus::Withheld => "过程内容已折叠",
+                _ => "正在处理请求",
+            })
+        };
+        self.ensure_process_segment(event, event_ref.clone(), status, process_summary);
         if let Some(delta) = safe_summary_delta {
             self.append_reasoning_summary_delta(event, event_ref, delta);
         }
@@ -478,6 +499,7 @@ impl ProjectionState<'_> {
             title: ui_text("推理过程"),
             body: Some(delta),
             detail: None,
+            visibility: UiVisibility::UserSafe,
             event_refs: vec![event_ref],
         });
     }
@@ -507,6 +529,7 @@ impl ProjectionState<'_> {
             title: ui_text(title),
             body,
             detail,
+            visibility: UiVisibility::UserSafe,
             event_refs: vec![event_ref],
         });
     }
@@ -546,6 +569,7 @@ impl ProjectionState<'_> {
             title: ui_text(title),
             body,
             detail,
+            visibility: UiVisibility::UserSafe,
             event_refs: vec![event_ref],
         });
     }
@@ -588,6 +612,7 @@ impl ProjectionState<'_> {
                 summary: ui_text(title),
                 item_count: Some(next_count),
             }),
+            visibility: UiVisibility::UserSafe,
             event_refs: vec![event_ref],
         });
     }
@@ -623,8 +648,10 @@ impl ProjectionState<'_> {
         let Some(tool_use_id) = string_field(&event.payload, "toolUseId") else {
             return;
         };
-        let tool_name =
-            string_field(&event.payload, "toolName").unwrap_or_else(|| "Tool".to_owned());
+        let tool_name = ui_text(
+            string_field(&event.payload, "toolName").unwrap_or_else(|| "Tool".to_owned()),
+        )
+        .into_string();
         let is_agent_tool = tool_name.eq_ignore_ascii_case("agent");
         let group = self.tool_group(&event.run_id, &tool_use_id, event_ref.clone());
         if group
@@ -639,10 +666,19 @@ impl ProjectionState<'_> {
             id: format!("tool:{tool_use_id}"),
             order,
             tool_use_id: tool_use_id.clone(),
-            tool_name: ui_text(&tool_name),
+            tool_name: tool_name.clone(),
+            origin: ToolAttemptOrigin::Unknown,
             status: ToolAttemptStatus::Running,
-            permission: None,
+            arguments_preview: None,
+            output_summary: None,
+            affected_targets: vec![],
+            started_at: None,
+            ended_at: None,
+            duration_ms: None,
+            retry_of: None,
+            failure_phase: None,
             failure_summary: None,
+            permission: None,
             event_refs: vec![event_ref.clone()],
         });
         self.append_tool_process_step(
@@ -705,7 +741,7 @@ impl ProjectionState<'_> {
     fn project_permission_requested(
         &mut self,
         event: &ConversationTimelineEvent,
-        event_ref: ConversationEventRef,
+        _event_ref: ConversationEventRef,
     ) {
         let Some(request_id) = string_field(&event.payload, "requestId") else {
             return;
@@ -724,18 +760,43 @@ impl ProjectionState<'_> {
             } else {
                 ToolAttemptStatus::WaitingPermission
             };
-            attempt.permission = Some(ToolPermissionState {
+            attempt.permission = Some(DecisionRequestState {
                 id: format!("permission:{request_id}"),
                 request_id,
-                tool_use_id,
+                tool_use_id: Some(tool_use_id),
                 status: if auto_resolved {
-                    ToolPermissionStatus::Approved
+                    DecisionRequestStatus::Approved
                 } else {
-                    ToolPermissionStatus::Pending
+                    DecisionRequestStatus::Pending
                 },
-                summary: string_field(&event.payload, "reason").map(ui_text),
-                confirmation_expected: permission_confirmation_expected(&event.payload),
-                event_refs: vec![event_ref],
+                operation: DecisionOperation::Unknown,
+                target: DecisionTarget {
+                    kind: DecisionTargetKind::Unknown,
+                    label: String::new(),
+                    secondary_label: None,
+                },
+                risk_level: RiskLevel::Medium,
+                reason: string_field(&event.payload, "reason").unwrap_or_default(),
+                policy: DecisionPolicy {
+                    mode: string_field(&event.payload, "effectiveMode")
+                        .unwrap_or_else(|| "default".to_owned()),
+                    rule: None,
+                    sandbox: None,
+                },
+                decision_options: vec![],
+                evidence_refs: vec![],
+                data_exposure: DataExposure {
+                    sends_workspace_data: false,
+                    sends_network_data: false,
+                    touches_private_path: false,
+                    secret_risk: DataExposureSecretRisk::None,
+                },
+                confirmation: permission_confirmation_expected(&event.payload).map(|text| {
+                    DecisionConfirmation {
+                        expected_text: text,
+                        label: "Confirmation required".to_owned(),
+                    }
+                }),
             });
         }
     }
@@ -743,7 +804,7 @@ impl ProjectionState<'_> {
     fn project_permission_resolved(
         &mut self,
         event: &ConversationTimelineEvent,
-        event_ref: ConversationEventRef,
+        _event_ref: ConversationEventRef,
     ) {
         let Some(request_id) = string_field(&event.payload, "requestId") else {
             return;
@@ -752,10 +813,10 @@ impl ProjectionState<'_> {
             return;
         };
         let status = match string_field(&event.payload, "decision").as_deref() {
-            Some("approve" | "approved" | "allow") => ToolPermissionStatus::Approved,
-            Some("deny" | "denied") => ToolPermissionStatus::Denied,
-            Some("failed") => ToolPermissionStatus::Failed,
-            _ => ToolPermissionStatus::Denied,
+            Some("approve" | "approved" | "allow") => DecisionRequestStatus::Approved,
+            Some("deny" | "denied") => DecisionRequestStatus::Denied,
+            Some("failed") => DecisionRequestStatus::Failed,
+            _ => DecisionRequestStatus::Denied,
         };
         if let Some(attempt) = self.tool_attempt_mut(&event.run_id, &tool_use_id) {
             if matches!(attempt.status, ToolAttemptStatus::WaitingPermission) {
@@ -763,9 +824,6 @@ impl ProjectionState<'_> {
             }
             if let Some(permission) = attempt.permission.as_mut() {
                 permission.status = status;
-                permission.summary = None;
-                permission.confirmation_expected = None;
-                permission.event_refs.push(event_ref);
             }
         }
     }
@@ -824,7 +882,7 @@ impl ProjectionState<'_> {
             .or_else(|| {
                 existing_snapshot
                     .as_ref()
-                    .and_then(|artifact| artifact.media.clone())
+                    .and_then(|artifact| artifact.revision.media.clone())
             })
             .or_else(|| {
                 existing_process_snapshot
@@ -857,7 +915,7 @@ impl ProjectionState<'_> {
             existing.kind = kind.clone();
             existing.status = status;
             existing.source = source;
-            existing.media = media.clone();
+            existing.revision.media = media.clone();
             existing.event_refs.push(event_ref);
             return;
         }
@@ -871,9 +929,26 @@ impl ProjectionState<'_> {
                 kind: kind.clone(),
                 status,
                 source,
-                title: ui_text(title.unwrap_or_else(|| "Artifact".to_owned())),
-                summary,
-                media: media.clone(),
+                title: ui_text(title.clone().unwrap_or_else(|| "Artifact".to_owned())),
+                summary: summary.clone(),
+                revision: ArtifactRevisionSummary {
+                    artifact_id: artifact_id.clone(),
+                    revision_id: format!("rev:{artifact_id}"),
+                    kind: artifact_revision_kind_from_str(&kind),
+                    status: match status {
+                        ArtifactStatus::Pending => ArtifactRevisionStatus::Pending,
+                        ArtifactStatus::Running => ArtifactRevisionStatus::Running,
+                        ArtifactStatus::Failed => ArtifactRevisionStatus::Failed,
+                        ArtifactStatus::Ready => ArtifactRevisionStatus::Ready,
+                        _ => ArtifactRevisionStatus::Pending,
+                    },
+                    source_run_id: event.run_id.clone(),
+                    title: title.clone().unwrap_or_else(|| "Artifact".to_owned()),
+                    summary: summary.as_ref().map(|s| s.as_str().to_owned()),
+                    preview_ref: None,
+                    content_ref: None,
+                    media: media.clone(),
+                },
                 event_refs: vec![event_ref],
             }));
     }
@@ -1233,7 +1308,7 @@ impl ProjectionState<'_> {
         segment.permission = Some(AgentActivityPermissionState {
             id: format!("permission:{request_id}"),
             request_id,
-            status: ToolPermissionStatus::Pending,
+            status: DecisionRequestStatus::Pending,
             summary: string_field(&event.payload, "reason").map(ui_text),
             event_refs: vec![event_ref.clone()],
         });
@@ -1255,10 +1330,10 @@ impl ProjectionState<'_> {
             return;
         };
         let status = match string_field(&event.payload, "decision").as_deref() {
-            Some("approve" | "approved" | "allow") => ToolPermissionStatus::Approved,
-            Some("deny" | "denied") => ToolPermissionStatus::Denied,
-            Some("failed") => ToolPermissionStatus::Failed,
-            _ => ToolPermissionStatus::Denied,
+            Some("approve" | "approved" | "allow") => DecisionRequestStatus::Approved,
+            Some("deny" | "denied") => DecisionRequestStatus::Denied,
+            Some("failed") => DecisionRequestStatus::Failed,
+            _ => DecisionRequestStatus::Denied,
         };
         if let Some(permission) = segment.permission.as_mut() {
             permission.status = status;
@@ -1267,7 +1342,7 @@ impl ProjectionState<'_> {
         }
         segment.event_refs.push(event_ref);
         if matches!(segment.status, AgentActivityStatus::WaitingPermission)
-            && matches!(status, ToolPermissionStatus::Approved)
+            && matches!(status, DecisionRequestStatus::Approved)
         {
             segment.status = AgentActivityStatus::Running;
         }
@@ -1663,7 +1738,7 @@ impl ProjectionState<'_> {
         segment.permission = Some(AgentActivityPermissionState {
             id: format!("permission:{request_id}"),
             request_id,
-            status: ToolPermissionStatus::Pending,
+            status: DecisionRequestStatus::Pending,
             summary: string_field(&event.payload, "reason").map(ui_text),
             event_refs: vec![event_ref.clone()],
         });
@@ -1688,13 +1763,13 @@ impl ProjectionState<'_> {
             permission.event_refs.push(event_ref.clone());
         }
         segment.event_refs.push(event_ref);
-        if matches!(status, ToolPermissionStatus::Approved)
+        if matches!(status, DecisionRequestStatus::Approved)
             && matches!(segment.status, AgentActivityStatus::WaitingPermission)
         {
             segment.status = AgentActivityStatus::Running;
         } else if matches!(
             status,
-            ToolPermissionStatus::Denied | ToolPermissionStatus::Failed
+            DecisionRequestStatus::Denied | DecisionRequestStatus::Failed
         ) {
             segment.status = AgentActivityStatus::Failed;
         }
@@ -1847,6 +1922,8 @@ impl ProjectionState<'_> {
             .get_or_insert_with(|| AssistantWork {
                 id: format!("assistant:{}", event.run_id),
                 run_id: event.run_id.clone(),
+                projection_version: 1,
+                stream_version: 0,
                 model: self.run_models.get(&event.run_id).cloned(),
                 status: AssistantWorkStatus::Running,
                 segments: Vec::new(),
@@ -2014,7 +2091,7 @@ impl ProjectionState<'_> {
             matches!(
                 segment,
                 AssistantSegment::Artifact(artifact)
-                    if is_ready_image_artifact(artifact.status, artifact.media.as_ref())
+                    if is_ready_image_artifact(artifact.status, artifact.revision.media.as_ref())
             ) || matches!(
                 segment,
                 AssistantSegment::Process(process)
@@ -2101,8 +2178,8 @@ impl ProjectionState<'_> {
 }
 
 #[must_use]
-pub fn safe_tool_failure_summary(_event: &ConversationTimelineEvent) -> UiSafeText {
-    ui_text("工具执行失败。可在详情中查看。")
+pub fn safe_tool_failure_summary(_event: &ConversationTimelineEvent) -> String {
+    "工具执行失败。可在详情中查看。".to_owned()
 }
 
 fn merge_process_step_detail(
@@ -2111,28 +2188,40 @@ fn merge_process_step_detail(
 ) -> Option<ProcessStepDetail> {
     match (existing, incoming) {
         (
-            Some(ProcessStepDetail::Command {
-                command: existing_command,
-                output: existing_output,
-                exit_code: existing_exit_code,
-                duration_ms: existing_duration_ms,
-            }),
-            Some(ProcessStepDetail::Command {
-                command,
-                output,
-                exit_code,
-                duration_ms,
-            }),
-        ) => Some(ProcessStepDetail::Command {
-            command: if command.as_str() == "命令内容已隐藏" {
-                existing_command.clone()
+            Some(ProcessStepDetail::Command(existing_cmd)),
+            Some(ProcessStepDetail::Command(incoming_cmd)),
+        ) => {
+            let command = if incoming_cmd.command == "命令内容已隐藏" {
+                existing_cmd.command.clone()
             } else {
-                command
-            },
-            output: output.or_else(|| existing_output.clone()),
-            exit_code: exit_code.or(*existing_exit_code),
-            duration_ms: duration_ms.or(*existing_duration_ms),
-        }),
+                incoming_cmd.command
+            };
+            Some(ProcessStepDetail::Command(CommandExecution {
+                command,
+                cwd: incoming_cmd.cwd.or_else(|| existing_cmd.cwd.clone()),
+                shell: incoming_cmd.shell.or_else(|| existing_cmd.shell.clone()),
+                sandbox: incoming_cmd
+                    .sandbox
+                    .or_else(|| existing_cmd.sandbox.clone()),
+                approval_request_id: incoming_cmd
+                    .approval_request_id
+                    .or_else(|| existing_cmd.approval_request_id.clone()),
+                exit_code: incoming_cmd.exit_code.or(existing_cmd.exit_code),
+                duration_ms: incoming_cmd.duration_ms.or(existing_cmd.duration_ms),
+                stdout_preview: incoming_cmd
+                    .stdout_preview
+                    .or_else(|| existing_cmd.stdout_preview.clone()),
+                stderr_preview: incoming_cmd
+                    .stderr_preview
+                    .or_else(|| existing_cmd.stderr_preview.clone()),
+                full_output_ref: incoming_cmd
+                    .full_output_ref
+                    .or_else(|| existing_cmd.full_output_ref.clone()),
+                truncated: incoming_cmd.truncated,
+                redaction_state: incoming_cmd.redaction_state,
+                risk_level: incoming_cmd.risk_level,
+            }))
+        }
         (_, Some(incoming)) => Some(incoming),
         (Some(existing), None) => Some(existing.clone()),
         (None, None) => None,
@@ -2231,22 +2320,40 @@ fn diff_process_detail_from_payload(payload: &Value) -> Option<ProcessStepDetail
         .get("files")?
         .as_array()?
         .iter()
-        .filter_map(process_diff_file_from_payload)
+        .filter_map(change_set_file_from_payload)
         .collect::<Vec<_>>();
-    (!files.is_empty()).then_some(ProcessStepDetail::Diff { files })
+    if files.is_empty() {
+        return None;
+    }
+    let change_set_id = format!(
+        "changeset:{}",
+        payload
+            .get("toolUseId")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+    );
+    Some(ProcessStepDetail::Diff(ChangeSet {
+        id: change_set_id,
+        summary: format!("修改了 {} 个文件", files.len()),
+        files,
+    }))
 }
 
-fn process_diff_file_from_payload(value: &Value) -> Option<ProcessDiffFile> {
-    let path = string_field(value, "path").map(ui_text)?;
+fn change_set_file_from_payload(value: &Value) -> Option<ChangeSetFile> {
+    let path = string_field(value, "path")?;
     let added_lines = u32_field(value, "addedLines").or_else(|| u32_field(value, "added_lines"))?;
     let removed_lines =
         u32_field(value, "removedLines").or_else(|| u32_field(value, "removed_lines"))?;
-    let preview = string_field(value, "preview").map(ui_text);
-    Some(ProcessDiffFile {
+    let preview = string_field(value, "preview");
+    Some(ChangeSetFile {
         path,
+        old_path: None,
+        status: ChangeSetFileStatus::Modified,
         added_lines,
         removed_lines,
         preview,
+        full_patch_ref: None,
+        risk_flags: vec![],
     })
 }
 
@@ -2277,18 +2384,22 @@ fn process_step_detail_for_tool(
     title: &str,
 ) -> Option<ProcessStepDetail> {
     match kind {
-        ProcessStepKind::Command => Some(ProcessStepDetail::Command {
-            command: ui_text(
-                string_field(&event.payload, "command")
-                    .unwrap_or_else(|| "命令内容已隐藏".to_owned()),
-            ),
-            output: string_field(&event.payload, "outputSummary").and_then(|summary| {
-                (summary != "Output withheld from conversation timeline.")
-                    .then_some(ui_text(summary))
-            }),
+        ProcessStepKind::Command => Some(ProcessStepDetail::Command(CommandExecution {
+            command: string_field(&event.payload, "command")
+                .unwrap_or_else(|| "命令内容已隐藏".to_owned()),
+            cwd: None,
+            shell: None,
+            sandbox: None,
+            approval_request_id: None,
             exit_code: i32_field(&event.payload, "exitCode"),
             duration_ms: u64_field(&event.payload, "durationMs"),
-        }),
+            stdout_preview: string_field(&event.payload, "outputSummary"),
+            stderr_preview: None,
+            full_output_ref: None,
+            truncated: true,
+            redaction_state: EvidenceRedactionState::Clean,
+            risk_level: RiskLevel::Low,
+        })),
         ProcessStepKind::FileRead | ProcessStepKind::FileSearch | ProcessStepKind::FileEdit => {
             Some(ProcessStepDetail::Activity {
                 summary: ui_text(title),
@@ -2309,61 +2420,6 @@ fn process_step_detail_for_tool(
         | ProcessStepKind::Artifact
         | ProcessStepKind::Synthesis
         | ProcessStepKind::Withheld => None,
-    }
-}
-
-#[must_use]
-pub fn thinking_status_from_event(event: &ConversationTimelineEvent) -> ThinkingSegmentStatus {
-    if event.visibility == "withheld" {
-        return ThinkingSegmentStatus::Withheld;
-    }
-    match string_field(&event.payload, "status").as_deref() {
-        Some("complete" | "completed") => ThinkingSegmentStatus::Complete,
-        Some("withheld") => ThinkingSegmentStatus::Withheld,
-        _ => ThinkingSegmentStatus::Running,
-    }
-}
-
-#[must_use]
-pub fn safe_thinking_display(
-    status: ThinkingSegmentStatus,
-    explicit_safe_summary: Option<UiSafeText>,
-) -> ThinkingSummary {
-    if let Some(text) = explicit_safe_summary {
-        return ThinkingSummary { text };
-    }
-    let text = match status {
-        ThinkingSegmentStatus::Running => "正在处理请求",
-        ThinkingSegmentStatus::Complete => "已完成思考摘要",
-        ThinkingSegmentStatus::Withheld => "思考内容已折叠",
-    };
-    ThinkingSummary {
-        text: ui_text(text),
-    }
-}
-
-#[must_use]
-pub fn process_summary_from_thinking(
-    status: ThinkingSegmentStatus,
-    explicit_safe_summary: Option<UiSafeText>,
-) -> UiSafeText {
-    if let Some(text) = explicit_safe_summary {
-        return text;
-    }
-    let text = match status {
-        ThinkingSegmentStatus::Running => "正在处理请求",
-        ThinkingSegmentStatus::Complete => "已完成工作过程",
-        ThinkingSegmentStatus::Withheld => "过程内容已折叠",
-    };
-    ui_text(text)
-}
-
-#[must_use]
-pub fn process_status_from_thinking(status: ThinkingSegmentStatus) -> ProcessSegmentStatus {
-    match status {
-        ThinkingSegmentStatus::Running => ProcessSegmentStatus::Running,
-        ThinkingSegmentStatus::Complete => ProcessSegmentStatus::Complete,
-        ThinkingSegmentStatus::Withheld => ProcessSegmentStatus::Withheld,
     }
 }
 
@@ -2940,7 +2996,6 @@ fn renumber_segments(assistant: &mut AssistantWork) {
     for (order, segment) in assistant.segments.iter_mut().enumerate() {
         match segment {
             AssistantSegment::Process(segment) => segment.order = order as u32,
-            AssistantSegment::Thinking(segment) => segment.order = order as u32,
             AssistantSegment::Text(segment) => segment.order = order as u32,
             AssistantSegment::ToolGroup(segment) => segment.order = order as u32,
             AssistantSegment::Artifact(segment) => segment.order = order as u32,
@@ -2984,21 +3039,17 @@ fn subagent_termination_status(reason: &str) -> AgentActivityStatus {
     }
 }
 
-fn permission_status_from_decision(payload: &Value) -> ToolPermissionStatus {
+fn permission_status_from_decision(payload: &Value) -> DecisionRequestStatus {
     match string_field(payload, "decision").as_deref() {
-        Some("approve" | "approved" | "allow") => ToolPermissionStatus::Approved,
-        Some("deny" | "denied") => ToolPermissionStatus::Denied,
-        Some("failed") => ToolPermissionStatus::Failed,
-        _ => ToolPermissionStatus::Denied,
+        Some("approve" | "approved" | "allow") => DecisionRequestStatus::Approved,
+        Some("deny" | "denied") => DecisionRequestStatus::Denied,
+        Some("failed") => DecisionRequestStatus::Failed,
+        _ => DecisionRequestStatus::Denied,
     }
 }
 
-fn permission_confirmation_expected(payload: &Value) -> Option<UiSafeText> {
-    let confirmation = payload.get("review")?.get("confirmation")?;
-    if confirmation.get("type")?.as_str()? != "typeToConfirm" {
-        return None;
-    }
-    string_field(confirmation, "expected").map(ui_text)
+fn permission_confirmation_expected(value: &Value) -> Option<String> {
+    string_field(value, "confirmationExpected")
 }
 
 fn background_agent_state_status(state: &str) -> AgentActivityStatus {
@@ -3042,5 +3093,17 @@ fn team_result_summary(reason: &str) -> &'static str {
         AgentActivityStatus::Cancelled => "Team cancelled.",
         AgentActivityStatus::Failed => "Team failed.",
         _ => "Team stopped.",
+    }
+}
+
+fn artifact_revision_kind_from_str(kind: &str) -> ArtifactRevisionKind {
+    match kind {
+        "code" => ArtifactRevisionKind::Code,
+        "document" => ArtifactRevisionKind::Document,
+        "image" => ArtifactRevisionKind::Image,
+        "html" => ArtifactRevisionKind::Html,
+        "data" => ArtifactRevisionKind::Data,
+        "media" => ArtifactRevisionKind::Media,
+        _ => ArtifactRevisionKind::File,
     }
 }

@@ -1937,7 +1937,20 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
                 severity: Severity::High,
                 scope_hint: DecisionScope::Any,
                 fingerprint: None,
-                presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+                presented_options: vec![PermissionDecisionOption {
+                    option_id: PermissionOptionId::new(),
+                    decision: Decision::AllowOnce,
+                    scope: DecisionScope::Any,
+                    lifetime: DecisionLifetime::Once,
+                    matcher_summary: DecisionMatcherSummary {
+                        kind: DecisionMatcherKind::Any,
+                        label: "allow once".to_owned(),
+                    },
+                    label: "Allow once".to_owned(),
+                    requires_confirmation: false,
+                    action_plan_hash: ActionPlanHash::default(),
+                    fingerprint: None,
+                }],
                 interactivity: InteractivityLevel::FullyInteractive,
                 auto_resolved: false,
                 actor_source: PermissionActorSource::TeamMember {
@@ -2199,7 +2212,20 @@ async fn sqlite_conversation_read_model_projects_new_permission_actor_sources() 
                 severity: Severity::Medium,
                 scope_hint: DecisionScope::ToolName("write_file".to_owned()),
                 fingerprint: None,
-                presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+                presented_options: vec![PermissionDecisionOption {
+                    option_id: PermissionOptionId::new(),
+                    decision: Decision::AllowOnce,
+                    scope: DecisionScope::Any,
+                    lifetime: DecisionLifetime::Once,
+                    matcher_summary: DecisionMatcherSummary {
+                        kind: DecisionMatcherKind::Any,
+                        label: "allow once".to_owned(),
+                    },
+                    label: "Allow once".to_owned(),
+                    requires_confirmation: false,
+                    action_plan_hash: ActionPlanHash::default(),
+                    fingerprint: None,
+                }],
                 interactivity: InteractivityLevel::DeferredInteractive,
                 auto_resolved: true,
                 actor_source: PermissionActorSource::Automation {
@@ -2234,7 +2260,20 @@ async fn sqlite_conversation_read_model_projects_new_permission_actor_sources() 
                 severity: Severity::Low,
                 scope_hint: DecisionScope::ToolName("mcp.resource.read".to_owned()),
                 fingerprint: None,
-                presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+                presented_options: vec![PermissionDecisionOption {
+                    option_id: PermissionOptionId::new(),
+                    decision: Decision::AllowOnce,
+                    scope: DecisionScope::Any,
+                    lifetime: DecisionLifetime::Once,
+                    matcher_summary: DecisionMatcherSummary {
+                        kind: DecisionMatcherKind::Any,
+                        label: "allow once".to_owned(),
+                    },
+                    label: "Allow once".to_owned(),
+                    requires_confirmation: false,
+                    action_plan_hash: ActionPlanHash::default(),
+                    fingerprint: None,
+                }],
                 interactivity: InteractivityLevel::FullyInteractive,
                 auto_resolved: false,
                 actor_source: PermissionActorSource::McpServer {
@@ -2751,7 +2790,7 @@ async fn read_model_projects_background_lifecycle_events_into_worktree_activity(
     );
     let permission = segment.permission.as_ref().expect("permission tracked");
     assert_eq!(permission.request_id, permission_request_id.to_string());
-    assert_eq!(permission.status, ToolPermissionStatus::Approved);
+    assert_eq!(permission.status, DecisionRequestStatus::Approved);
 }
 
 #[tokio::test]

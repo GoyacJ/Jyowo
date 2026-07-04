@@ -345,9 +345,12 @@ fn projects_one_user_prompt_and_tool_loop_into_one_assistant_work_tree() {
     assert_eq!(group.attempts[0].status, ToolAttemptStatus::Failed);
     assert_eq!(
         group.attempts[0].permission.as_ref().unwrap().status,
-        ToolPermissionStatus::Approved
+        DecisionRequestStatus::Approved
     );
-    assert_eq!(group.attempts[0].permission.as_ref().unwrap().summary, None);
+    assert_eq!(
+        group.attempts[0].permission.as_ref().unwrap().reason.as_str(),
+        "The runtime requires approval before continuing."
+    );
     assert_eq!(
         group.attempts[0].failure_summary.as_ref().unwrap().as_str(),
         "工具执行失败。可在详情中查看。"
@@ -381,11 +384,8 @@ fn pending_permission_preserves_request_summary() {
         .expect("tool group exists");
     let permission = group.attempts[0].permission.as_ref().unwrap();
 
-    assert_eq!(permission.status, ToolPermissionStatus::Pending);
-    assert_eq!(
-        permission.summary.as_ref().map(|summary| summary.as_str()),
-        Some("需要批准后才能继续。")
-    );
+    assert_eq!(permission.status, DecisionRequestStatus::Pending);
+    assert_eq!(permission.reason.as_str(), "需要批准后才能继续。");
 }
 
 #[test]
@@ -668,10 +668,14 @@ fn safe_summary_delta_projects_into_process_reasoning_step() {
         process.steps[0].body.as_ref().unwrap().as_str(),
         "Checked project context."
     );
-    assert!(assistant
-        .segments
-        .iter()
-        .all(|segment| !matches!(segment, AssistantSegment::Thinking(_))));
+    assert_eq!(
+        assistant
+            .segments
+            .iter()
+            .filter(|s| matches!(s, AssistantSegment::Process(_)))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -958,7 +962,7 @@ fn permission_request_without_tool_use_id_binds_to_unique_tool() {
     assert_eq!(attempt.status, ToolAttemptStatus::Running);
     assert_eq!(
         attempt.permission.as_ref().unwrap().status,
-        ToolPermissionStatus::Approved
+        DecisionRequestStatus::Approved
     );
 }
 
@@ -1676,7 +1680,7 @@ fn completed_tool_attempt_stays_projected_when_permission_resolves_late() {
     assert_eq!(group.attempts[0].status, ToolAttemptStatus::Completed);
     assert_eq!(
         group.attempts[0].permission.as_ref().unwrap().status,
-        ToolPermissionStatus::Approved
+        DecisionRequestStatus::Approved
     );
 
     let process = assistant
@@ -1771,21 +1775,13 @@ fn command_tool_projects_command_process_detail() {
     assert_eq!(step.kind, ProcessStepKind::Command);
     assert_eq!(step.status, ProcessStepStatus::Complete);
     assert_eq!(step.title.as_str(), "命令已完成");
-    let Some(ProcessStepDetail::Command {
-        command,
-        output,
-        exit_code,
-        ..
-    }) = step.detail.as_ref()
+    let Some(ProcessStepDetail::Command(cmd)) = step.detail.as_ref()
     else {
         panic!("command detail should be projected");
     };
-    assert_eq!(command.as_str(), "pnpm check:desktop");
-    assert_eq!(
-        output.as_ref().map(|value| value.as_str()),
-        Some("desktop checks passed")
-    );
-    assert_eq!(*exit_code, Some(0));
+    assert_eq!(cmd.command.as_str(), "pnpm check:desktop");
+    assert_eq!(cmd.stdout_preview.as_deref(), Some("desktop checks passed"));
+    assert_eq!(cmd.exit_code, Some(0));
 }
 
 #[test]
@@ -1916,16 +1912,16 @@ fn file_edit_with_safe_diff_projects_diff_step() {
         .iter()
         .find(|step| step.kind == ProcessStepKind::Diff)
         .expect("diff step exists");
-    let Some(ProcessStepDetail::Diff { files }) = &diff.detail else {
+    let Some(ProcessStepDetail::Diff(change_set)) = &diff.detail else {
         panic!("diff step should include diff detail");
     };
-    assert_eq!(files.len(), 1);
+    assert_eq!(change_set.files.len(), 1);
     assert_eq!(
-        files[0].path.as_str(),
+        change_set.files[0].path.as_str(),
         "apps/desktop/src/features/conversation/timeline/process-panel.tsx"
     );
-    assert_eq!(files[0].added_lines, 2);
-    assert_eq!(files[0].removed_lines, 1);
+    assert_eq!(change_set.files[0].added_lines, 2);
+    assert_eq!(change_set.files[0].removed_lines, 1);
 }
 
 #[test]
@@ -2058,7 +2054,7 @@ fn artifact_media_preview_does_not_project_secret_like_mime_token() {
         .iter()
         .find_map(artifact_segment)
         .expect("video artifact remains a metadata segment");
-    let media = artifact.media.as_ref().expect("media should project");
+    let media = artifact.revision.media.as_ref().expect("media should project");
 
     assert_eq!(media.kind, ArtifactMediaKind::Video);
     assert_eq!(media.mime_type, "video/mp4");
@@ -2098,7 +2094,7 @@ fn artifact_media_preview_preserves_allowlisted_file_mime_type() {
         .iter()
         .find_map(artifact_segment)
         .expect("file artifact remains a metadata segment");
-    let media = artifact.media.as_ref().expect("media should project");
+    let media = artifact.revision.media.as_ref().expect("media should project");
 
     assert_eq!(media.kind, ArtifactMediaKind::File);
     assert_eq!(media.mime_type, "text/plain");
@@ -2826,5 +2822,5 @@ fn background_lifecycle_events_update_agent_activity_segment() {
     assert_eq!(segment.event_refs.len(), 6);
     let permission = segment.permission.as_ref().expect("permission tracked");
     assert_eq!(permission.request_id, "permission-request-1");
-    assert_eq!(permission.status, ToolPermissionStatus::Approved);
+    assert_eq!(permission.status, DecisionRequestStatus::Approved);
 }

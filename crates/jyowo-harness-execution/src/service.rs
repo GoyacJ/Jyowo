@@ -3,10 +3,11 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use harness_contracts::{
-    ActionPlanHash, ActionResource, DecidedBy, Decision, Event, FallbackPolicy, HostRule,
-    InteractivityLevel, NetworkAccess, PermissionConfirmation, PermissionMode,
-    PermissionRequestedEvent, PermissionResolvedEvent, ResourceLimits, RunId, SandboxPolicy,
-    SandboxPolicyHash, SandboxPolicySummary, SandboxPreflightFailedEvent,
+    ActionPlanHash, ActionResource, DecidedBy, Decision, DecisionLifetime, DecisionMatcherKind,
+    DecisionMatcherSummary, DecisionScope, Event, FallbackPolicy, HostRule, InteractivityLevel,
+    NetworkAccess, PermissionConfirmation, PermissionDecisionOption, PermissionMode,
+    PermissionOptionId, PermissionRequestedEvent, PermissionResolvedEvent, ResourceLimits, RunId,
+    SandboxPolicy, SandboxPolicyHash, SandboxPolicySummary, SandboxPreflightFailedEvent,
     SandboxPreflightPassedEvent, SandboxPreflightStatus, SessionId, TenantId, ToolActionPlan,
 };
 use harness_permission::{
@@ -117,7 +118,20 @@ impl AuthorizationService {
             severity: plan.severity,
             scope_hint: plan.scope.clone(),
             fingerprint: Some(fingerprint),
-            presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+            presented_options: vec![PermissionDecisionOption {
+                option_id: PermissionOptionId::new(),
+                decision: Decision::AllowOnce,
+                scope: DecisionScope::Any,
+                lifetime: DecisionLifetime::Once,
+                matcher_summary: DecisionMatcherSummary {
+                    kind: DecisionMatcherKind::Any,
+                    label: "allow once".to_owned(),
+                },
+                label: "Allow once".to_owned(),
+                requires_confirmation: false,
+                action_plan_hash: ActionPlanHash::default(),
+                fingerprint: None,
+            }],
             interactivity: context.interactivity,
             auto_resolved: matches!(
                 context.permission_mode,

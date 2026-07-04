@@ -295,7 +295,20 @@ async fn support_bundle_agent_redaction_exports_child_agent_summaries_without_in
                         "NeedsPermission".to_owned(),
                     ),
                     fingerprint: None,
-                    presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+                    presented_options: vec![PermissionDecisionOption {
+                        option_id: PermissionOptionId::new(),
+                        decision: Decision::AllowOnce,
+                        scope: DecisionScope::Any,
+                        lifetime: DecisionLifetime::Once,
+                        matcher_summary: DecisionMatcherSummary {
+                            kind: DecisionMatcherKind::Any,
+                            label: "allow once".to_owned(),
+                        },
+                        label: "Allow once".to_owned(),
+                        requires_confirmation: false,
+                        action_plan_hash: ActionPlanHash::default(),
+                        fingerprint: None,
+                    }],
                     interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
                     auto_resolved: false,
                     actor_source: PermissionActorSource::TeamMember {
