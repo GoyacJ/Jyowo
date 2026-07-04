@@ -31,10 +31,9 @@ use super::validation::*;
 use super::*;
 use harness_contracts::{
     BackgroundAgentId, ConversationAttachmentReference, ConversationContextReference,
-    EvidenceRefKind, ManifestOriginRef, McpServerScope, PermissionActorSource,
-    PermissionConfirmation, PermissionMode, PermissionReview, SandboxMode, SandboxPolicySummary,
-    SandboxScope, SubagentId, SubagentStatus, SubagentTerminationReason, TeamId,
-    TeamTerminationReason, TopologyKind,
+    ManifestOriginRef, McpServerScope, PermissionActorSource, PermissionConfirmation,
+    PermissionMode, PermissionReview, SandboxMode, SandboxPolicySummary, SandboxScope, SubagentId,
+    SubagentStatus, SubagentTerminationReason, TeamId, TeamTerminationReason, TopologyKind,
 };
 
 pub async fn list_conversations_with_runtime_state(
@@ -3841,10 +3840,8 @@ pub(crate) fn redacted_display(value: String, redactor: &dyn Redactor) -> String
 
 // ── Evidence fetch handlers ──
 //
-// These commands validate conversation ownership and delegate evidence reads
-// to the SDK evidence ref store. If the store is not yet available the
-// commands fail closed with a clean error. The frontend can handle this
-// gracefully for progressive UI rollout.
+// These commands validate conversation ownership and delegate typed evidence
+// reads to the SDK facade.
 
 pub async fn get_conversation_command_output_with_runtime_state(
     request: GetConversationCommandOutputRequest,
@@ -3858,16 +3855,11 @@ pub async fn get_conversation_command_output_with_runtime_state(
         return Err(runtime_unavailable("harness not available"));
     };
 
-    let evidence = harness
-        .evidence_ref_store()
-        .map_err(|_| runtime_unavailable("evidence store not available"))?;
-
-    let result = evidence
-        .read_evidence(
+    let result = harness
+        .read_command_output_evidence(
             TenantId::SINGLE,
             &request.conversation_id,
             &harness_contracts::EvidenceRefId::new(&request.full_output_ref),
-            EvidenceRefKind::CommandOutput,
         )
         .await
         .map_err(|e| runtime_unavailable(&format!("Evidence read failed: {e}")))?;
@@ -3893,16 +3885,11 @@ pub async fn get_conversation_diff_patch_with_runtime_state(
         return Err(runtime_unavailable("harness not available"));
     };
 
-    let evidence = harness
-        .evidence_ref_store()
-        .map_err(|_| runtime_unavailable("evidence store not available"))?;
-
-    let result = evidence
-        .read_evidence(
+    let result = harness
+        .read_diff_patch_evidence(
             TenantId::SINGLE,
             &request.conversation_id,
             &harness_contracts::EvidenceRefId::new(&request.full_patch_ref),
-            EvidenceRefKind::DiffPatch,
         )
         .await
         .map_err(|e| runtime_unavailable(&format!("Evidence read failed: {e}")))?;
@@ -3928,16 +3915,11 @@ pub async fn get_artifact_revision_content_with_runtime_state(
         return Err(runtime_unavailable("harness not available"));
     };
 
-    let evidence = harness
-        .evidence_ref_store()
-        .map_err(|_| runtime_unavailable("evidence store not available"))?;
-
-    let result = evidence
-        .read_evidence(
+    let result = harness
+        .read_artifact_revision_content(
             TenantId::SINGLE,
             &request.conversation_id,
             &harness_contracts::EvidenceRefId::new(&request.content_ref),
-            EvidenceRefKind::ArtifactContent,
         )
         .await
         .map_err(|e| runtime_unavailable(&format!("Evidence read failed: {e}")))?;

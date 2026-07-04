@@ -262,6 +262,12 @@ impl Harness {
                     HarnessError::Internal("provider continuation pruning failed".to_owned())
                 })?;
         }
+        if let Some(store) = &self.inner.evidence_ref_store {
+            store
+                .delete_for_conversation(options.tenant_id, &options.session_id.to_string())
+                .await
+                .map_err(HarnessError::Journal)?;
+        }
 
         #[cfg_attr(not(feature = "sqlite-store"), allow(unused_mut))]
         let mut deleted = self

@@ -719,10 +719,27 @@ pub(crate) async fn build_desktop_harness(
         path: skill_store.enabled_dir(),
         source_kind: DirectorySourceKind::Workspace,
     });
-    let blob_store = FileBlobStore::open(
-        workspace_root.join(".jyowo").join("runtime").join("blobs"),
-    )
-    .map_err(|error| runtime_init_failed(format!("blob store initialization failed: {error}")))?;
+    let blob_store: Arc<dyn harness_contracts::BlobStore> = Arc::new(
+        FileBlobStore::open(workspace_root.join(".jyowo").join("runtime").join("blobs")).map_err(
+            |error| runtime_init_failed(format!("blob store initialization failed: {error}")),
+        )?,
+    );
+    let evidence_registry = Arc::new(
+        jyowo_harness_sdk::SqliteEvidenceRefRegistry::open(
+            workspace_root
+                .join(".jyowo")
+                .join("runtime")
+                .join("evidence.sqlite"),
+        )
+        .await
+        .map_err(|error| {
+            runtime_init_failed(format!("evidence registry initialization failed: {error}"))
+        })?,
+    );
+    let evidence_ref_store = Arc::new(jyowo_harness_sdk::EvidenceRefStore::new(
+        evidence_registry,
+        Arc::clone(&blob_store),
+    ));
     let provider_credential_resolver: Arc<dyn ProviderCredentialResolverCap> =
         Arc::new(DesktopProviderCredentialResolver::new(
             Arc::new(conversation_metadata_store),
@@ -804,7 +821,8 @@ pub(crate) async fn build_desktop_harness(
         )
         .with_store_arc(event_store)
         .with_sandbox_arc(sandbox)
-        .with_blob_store(blob_store)
+        .with_blob_store_arc(blob_store)
+        .with_evidence_ref_store_arc(evidence_ref_store)
         .with_provider_continuation_store_arc(provider_continuation_store)
         .with_capability(
             ToolCapability::ProviderCredentialResolver,

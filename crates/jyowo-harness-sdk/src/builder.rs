@@ -7,7 +7,7 @@ use harness_contracts::{
     BlobStore, CapabilityRegistry, HarnessError, ProviderCapabilityRouteSettings, ToolCapability,
 };
 use harness_hook::HookRegistry;
-use harness_journal::EventStore;
+use harness_journal::{EventStore, EvidenceRefStore};
 use harness_mcp::{ElicitationHandler, StreamElicitationHandler};
 #[cfg(feature = "memory-consolidation")]
 use harness_memory::ConsolidationHook;
@@ -45,6 +45,7 @@ pub(crate) struct BuilderExtras {
     #[cfg(feature = "memory-builtin")]
     pub(crate) builtin_memory: Option<BuiltinMemoryConfig>,
     pub(crate) blob_store: Option<Arc<dyn BlobStore>>,
+    pub(crate) evidence_ref_store: Option<Arc<EvidenceRefStore>>,
     pub(crate) skill_loader: Option<SkillLoader>,
     pub(crate) skill_config_snapshot: Option<SkillConfigSnapshot>,
     pub(crate) mcp_config: Option<McpConfig>,
@@ -292,6 +293,12 @@ impl<M, S, SB> HarnessBuilder<M, S, SB> {
     #[must_use]
     pub fn with_blob_store_arc(mut self, store: Arc<dyn BlobStore>) -> Self {
         self.extras.blob_store = Some(store);
+        self
+    }
+
+    #[must_use]
+    pub fn with_evidence_ref_store_arc(mut self, store: Arc<EvidenceRefStore>) -> Self {
+        self.extras.evidence_ref_store = Some(store);
         self
     }
 

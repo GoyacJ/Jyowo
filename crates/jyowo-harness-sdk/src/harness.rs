@@ -33,15 +33,15 @@ use harness_contracts::{
 use harness_contracts::{
     BlobReaderCapAdapter, BlobStore, BlobWriterCapAdapter, CapabilityRegistry, ContextPatchRequest,
     ContextPatchSinkCap, ConversationAttachmentReference, ConversationContextReference,
-    ConversationTurnInput, Decision, Event, EventId, HarnessError, HookEventKind,
-    InteractivityLevel, JournalOffset, ManifestOriginRef, ManifestValidationFailedEvent,
-    McpServerId, Message, MessageContent, MessageId, MessagePart, MessageRole, ModelModality,
-    ModelProtocol, PermissionError, PermissionMode, PluginCapabilitiesSummary, PluginFailedEvent,
-    PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginRejectedEvent,
-    ProviderCapabilityRouteSettings, RedactPatternSet, RedactRules, RedactScope, Redactor,
-    RejectionReason, RunId, RunModelSnapshot, RunScopedProcessRegistryCap, SessionError, SessionId,
-    TenantId, ToolCapability, ToolProfile, ToolSearchMode, TrustLevel, TurnInput,
-    RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
+    ConversationTurnInput, Decision, Event, EventId, EvidenceRefId, EvidenceRefKind, HarnessError,
+    HookEventKind, InteractivityLevel, JournalOffset, ManifestOriginRef,
+    ManifestValidationFailedEvent, McpServerId, Message, MessageContent, MessageId, MessagePart,
+    MessageRole, ModelModality, ModelProtocol, PermissionError, PermissionMode,
+    PluginCapabilitiesSummary, PluginFailedEvent, PluginLifecycleStateDiscriminant,
+    PluginLoadedEvent, PluginRejectedEvent, ProviderCapabilityRouteSettings, RedactPatternSet,
+    RedactRules, RedactScope, Redactor, RejectionReason, RunId, RunModelSnapshot,
+    RunScopedProcessRegistryCap, SessionError, SessionId, TenantId, ToolCapability, ToolProfile,
+    ToolSearchMode, TrustLevel, TurnInput, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
 #[cfg(feature = "sqlite-store")]
 use harness_contracts::{
@@ -282,19 +282,75 @@ impl Harness {
         HarnessBuilder::new()
     }
 
-    /// Returns the evidence ref store for reading large command output,
-    /// diff patches, and artifact content by ref.
-    ///
-    /// Returns an error when the store is not yet wired (e.g., before
-    /// SQLite persistence integration is complete).
-    pub fn evidence_ref_store(
-        &self,
-    ) -> Result<Arc<harness_journal::EvidenceRefStore>, HarnessError> {
+    fn evidence_ref_store(&self) -> Result<Arc<harness_journal::EvidenceRefStore>, HarnessError> {
         self.inner.evidence_ref_store.clone().ok_or_else(|| {
             HarnessError::Journal(harness_contracts::JournalError::Message(
                 "evidence ref store not available".to_owned(),
             ))
         })
+    }
+
+    pub async fn read_command_output_evidence(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+        ref_id: &EvidenceRefId,
+    ) -> Result<harness_journal::EvidenceReadResult, HarnessError> {
+        self.read_typed_evidence(
+            tenant,
+            conversation_id,
+            ref_id,
+            EvidenceRefKind::CommandOutput,
+        )
+        .await
+    }
+
+    pub async fn read_diff_patch_evidence(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+        ref_id: &EvidenceRefId,
+    ) -> Result<harness_journal::EvidenceReadResult, HarnessError> {
+        self.read_typed_evidence(tenant, conversation_id, ref_id, EvidenceRefKind::DiffPatch)
+            .await
+    }
+
+    pub async fn read_artifact_revision_content(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+        ref_id: &EvidenceRefId,
+    ) -> Result<harness_journal::EvidenceReadResult, HarnessError> {
+        self.read_typed_evidence(
+            tenant,
+            conversation_id,
+            ref_id,
+            EvidenceRefKind::ArtifactContent,
+        )
+        .await
+    }
+
+    pub async fn list_live_evidence_blob_roots(
+        &self,
+        tenant: TenantId,
+    ) -> Result<Vec<harness_contracts::BlobRef>, HarnessError> {
+        self.evidence_ref_store()?
+            .list_live_blob_roots(tenant)
+            .await
+            .map_err(HarnessError::Journal)
+    }
+
+    async fn read_typed_evidence(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+        ref_id: &EvidenceRefId,
+        kind: EvidenceRefKind,
+    ) -> Result<harness_journal::EvidenceReadResult, HarnessError> {
+        self.evidence_ref_store()?
+            .read_evidence(tenant, conversation_id, ref_id, kind)
+            .await
+            .map_err(HarnessError::Journal)
     }
 
     pub(crate) async fn from_builder(
@@ -473,7 +529,7 @@ impl Harness {
                 #[cfg(feature = "memory-builtin")]
                 builtin_memory: extras.builtin_memory.take(),
                 blob_store: extras.blob_store.take(),
-                evidence_ref_store: None,
+                evidence_ref_store: extras.evidence_ref_store.take(),
                 skill_loader: extras.skill_loader.take(),
                 skill_config_snapshot: extras.skill_config_snapshot.take().unwrap_or_default(),
                 skill_registry,

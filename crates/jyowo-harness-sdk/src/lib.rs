@@ -57,9 +57,11 @@ pub use harness_agent_runtime::{
     BackgroundAgentManager, BackgroundAgentRecord, BackgroundAgentStartRequest,
     BackgroundAgentTransitionError,
 };
+#[cfg(feature = "sqlite-store")]
+pub use harness_journal::SqliteEvidenceRefRegistry;
 pub use harness_journal::{
     AuditFilter, AuditOrder, AuditPage, AuditQuery, AuditRecord, AuditScope,
-    ConversationTurnPageDirection,
+    ConversationTurnPageDirection, EvidenceRefStore,
 };
 pub use harness_session::{BootstrapFileSpec, Workspace, WorkspaceBootstrap, WorkspaceSpec};
 pub use harness_skill::{parse_skill_markdown, SkillSource};
