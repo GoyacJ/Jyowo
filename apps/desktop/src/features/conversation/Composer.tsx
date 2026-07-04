@@ -1,5 +1,5 @@
 import { Check, ChevronDown, Paperclip, Send, Shield, X } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/shared/lib/utils'
@@ -21,6 +21,9 @@ import {
 } from '@/shared/ui/dropdown-menu'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/ui/popover'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shared/ui/tooltip'
+import { ComposerEditor } from './composer/ComposerEditor'
+import type { ComposerDraft } from './composer/composer-draft-store'
+import { clearDraft, getDraft, getEmptyDraft, saveDraft } from './composer/composer-draft-store'
 
 export type ComposerSubmitPayload = Omit<StartRunRequest, 'conversationId'>
 export type ComposerMode =
@@ -32,13 +35,8 @@ export type ComposerMode =
   | { kind: 'retry' }
   | { kind: 'continue' }
 
-type ComposerDraft = {
-  attachments: AttachmentReference[]
-  contextReferences: ContextReference[]
-  text: string
-}
-
 type ComposerProps = {
+  conversationId?: string
   onSubmit: (draft: ComposerSubmitPayload) => Promise<void> | void
   mode?: ComposerMode
   pending?: boolean
@@ -62,12 +60,6 @@ type ComposerProps = {
 
 const attachmentInputModalities: AttachmentInputModality[] = ['image', 'video', 'file']
 
-const emptyDraft: ComposerDraft = {
-  attachments: [],
-  contextReferences: [],
-  text: '',
-}
-
 const emptyReferenceCandidates: ListReferenceCandidatesResponse = {
   artifacts: [],
   conversations: [],
@@ -79,6 +71,7 @@ const emptyReferenceCandidates: ListReferenceCandidatesResponse = {
 }
 
 export function Composer({
+  conversationId,
   onSubmit,
   mode,
   pending = false,
@@ -100,7 +93,14 @@ export function Composer({
   onPermissionModeChange,
 }: ComposerProps) {
   const { t } = useTranslation(['common', 'conversation'])
-  const [draft, setDraft] = useState<ComposerDraft>(emptyDraft)
+  const [draft, setDraft] = useState<ComposerDraft>(() =>
+    conversationId ? getDraft(conversationId) : getEmptyDraft(),
+  )
+  useEffect(() => {
+    if (conversationId) {
+      saveDraft(conversationId, draft)
+    }
+  }, [conversationId, draft])
   const [composerError, setComposerError] = useState<string | null>(null)
   const [localPermissionMode, setLocalPermissionMode] = useState<PermissionMode>('default')
   const selectedPermissionMode = permissionMode ?? localPermissionMode
@@ -133,7 +133,8 @@ export function Composer({
 
     try {
       await onSubmit(payload)
-      setDraft(emptyDraft)
+      setDraft(getEmptyDraft())
+      if (conversationId) clearDraft(conversationId)
       setComposerError(null)
     } catch {
       // The parent owns the submitted error message. Keeping draft state is the important part here.
@@ -195,7 +196,10 @@ export function Composer({
       }}
     >
       {visibleError ? (
-        <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <div
+          className="mb-3 flex items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+          role="alert"
+        >
           <span>{visibleError}</span>
           {onRetry && errorMessage ? (
             <button
@@ -210,25 +214,17 @@ export function Composer({
         </div>
       ) : null}
 
-      <textarea
-        className="h-8 w-full resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
+      <ComposerEditor
         disabled={isDisabled}
-        onChange={(event) =>
+        onChange={(text) =>
           setDraft((currentDraft) => ({
             ...currentDraft,
-            text: event.target.value,
+            text,
           }))
         }
-        onKeyDown={(event) => {
-          if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
-            return
-          }
-
-          event.preventDefault()
+        onSubmit={() => {
           void submitDraft()
         }}
-        placeholder={t('conversation:composer.placeholder')}
-        rows={1}
         value={draft.text}
       />
 
