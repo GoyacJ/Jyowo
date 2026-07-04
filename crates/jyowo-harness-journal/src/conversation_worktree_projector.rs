@@ -212,6 +212,7 @@ async fn enrich_event_with_evidence(
                         "fullOutputRef",
                         Value::String(String::from(ref_id)),
                     );
+                    set_object_field(&mut event.payload, "truncated", Value::Bool(true));
                 }
             }
             enrich_diff_evidence(conversation_id, tenant_id, evidence_store, event).await?;
@@ -1046,51 +1047,29 @@ impl ProjectionState<'_> {
         self.request_tools
             .insert(request_id.clone(), tool_use_id.clone());
         let auto_resolved = bool_field(&event.payload, "autoResolved").unwrap_or(false);
+        let permission = permission_request_state_from_payload(
+            request_id.clone(),
+            tool_use_id.clone(),
+            &event.payload,
+            auto_resolved,
+        );
+        let permission_risk_level = permission.risk_level;
+        let permission_sandbox = permission.policy.sandbox.clone();
         if let Some(attempt) = self.tool_attempt_mut(&event.run_id, &tool_use_id) {
             attempt.status = if auto_resolved {
                 ToolAttemptStatus::Running
             } else {
                 ToolAttemptStatus::WaitingPermission
             };
-            attempt.permission = Some(DecisionRequestState {
-                id: format!("permission:{request_id}"),
-                request_id,
-                tool_use_id: Some(tool_use_id),
-                status: if auto_resolved {
-                    DecisionRequestStatus::Approved
-                } else {
-                    DecisionRequestStatus::Pending
-                },
-                operation: DecisionOperation::Unknown,
-                target: DecisionTarget {
-                    kind: DecisionTargetKind::Unknown,
-                    label: String::new(),
-                    secondary_label: None,
-                },
-                risk_level: RiskLevel::Medium,
-                reason: string_field(&event.payload, "reason").unwrap_or_default(),
-                policy: DecisionPolicy {
-                    mode: string_field(&event.payload, "effectiveMode")
-                        .unwrap_or_else(|| "default".to_owned()),
-                    rule: None,
-                    sandbox: None,
-                },
-                decision_options: permission_decision_options(&event.payload),
-                evidence_refs: vec![],
-                data_exposure: DataExposure {
-                    sends_workspace_data: false,
-                    sends_network_data: false,
-                    touches_private_path: false,
-                    secret_risk: DataExposureSecretRisk::None,
-                },
-                confirmation: permission_confirmation_expected(&event.payload).map(|text| {
-                    DecisionConfirmation {
-                        expected_text: text,
-                        label: "Confirmation required".to_owned(),
-                    }
-                }),
-            });
+            attempt.permission = Some(permission);
         }
+        self.apply_permission_metadata_to_command_step(
+            &event.run_id,
+            &tool_use_id,
+            &request_id,
+            permission_risk_level,
+            permission_sandbox,
+        );
     }
 
     fn project_permission_resolved(
@@ -2473,6 +2452,43 @@ impl ProjectionState<'_> {
         }
         Some(tool_use_id.clone())
     }
+
+    fn apply_permission_metadata_to_command_step(
+        &mut self,
+        run_id: &str,
+        tool_use_id: &str,
+        request_id: &str,
+        risk_level: RiskLevel,
+        sandbox: Option<String>,
+    ) {
+        let Some(index) = self.run_turns.get(run_id).copied() else {
+            return;
+        };
+        let Some(assistant) = self.turns[index].assistant.as_mut() else {
+            return;
+        };
+        let step_id = format!(
+            "process-step:{run_id}:{}:{tool_use_id}",
+            process_step_kind_id(ProcessStepKind::Command)
+        );
+        for segment in &mut assistant.segments {
+            let AssistantSegment::Process(process) = segment else {
+                continue;
+            };
+            let Some(step) = process.steps.iter_mut().find(|step| step.id == step_id) else {
+                continue;
+            };
+            let Some(ProcessStepDetail::Command(command)) = step.detail.as_mut() else {
+                return;
+            };
+            command.approval_request_id = Some(request_id.to_owned());
+            command.risk_level = max_risk_level(command.risk_level, risk_level);
+            if command.sandbox.is_none() {
+                command.sandbox = sandbox;
+            }
+            return;
+        }
+    }
 }
 
 #[must_use]
@@ -2496,14 +2512,13 @@ fn merge_process_step_detail(
             };
             Some(ProcessStepDetail::Command(CommandExecution {
                 command,
-                cwd: incoming_cmd.cwd.or_else(|| existing_cmd.cwd.clone()),
-                shell: incoming_cmd.shell.or_else(|| existing_cmd.shell.clone()),
-                sandbox: incoming_cmd
-                    .sandbox
-                    .or_else(|| existing_cmd.sandbox.clone()),
-                approval_request_id: incoming_cmd
+                cwd: existing_cmd.cwd.clone().or(incoming_cmd.cwd),
+                shell: existing_cmd.shell.clone().or(incoming_cmd.shell),
+                sandbox: existing_cmd.sandbox.clone().or(incoming_cmd.sandbox),
+                approval_request_id: existing_cmd
                     .approval_request_id
-                    .or_else(|| existing_cmd.approval_request_id.clone()),
+                    .clone()
+                    .or(incoming_cmd.approval_request_id),
                 exit_code: incoming_cmd.exit_code.or(existing_cmd.exit_code),
                 duration_ms: incoming_cmd.duration_ms.or(existing_cmd.duration_ms),
                 stdout_preview: incoming_cmd
@@ -2515,14 +2530,489 @@ fn merge_process_step_detail(
                 full_output_ref: incoming_cmd
                     .full_output_ref
                     .or_else(|| existing_cmd.full_output_ref.clone()),
-                truncated: incoming_cmd.truncated,
+                truncated: existing_cmd.truncated || incoming_cmd.truncated,
                 redaction_state: incoming_cmd.redaction_state,
-                risk_level: incoming_cmd.risk_level,
+                risk_level: max_risk_level(existing_cmd.risk_level, incoming_cmd.risk_level),
             }))
         }
         (_, Some(incoming)) => Some(incoming),
         (Some(existing), None) => Some(existing.clone()),
         (None, None) => None,
+    }
+}
+
+fn permission_request_state_from_payload(
+    request_id: String,
+    tool_use_id: String,
+    payload: &Value,
+    auto_resolved: bool,
+) -> DecisionRequestState {
+    let policy = DecisionPolicy {
+        mode: string_field(payload, "effectiveMode")
+            .or_else(|| string_field(payload, "effective_mode"))
+            .unwrap_or_else(|| "default".to_owned()),
+        rule: payload
+            .get("review")
+            .and_then(|review| string_field(review, "summary"))
+            .filter(|summary| !summary.trim().is_empty()),
+        sandbox: sandbox_policy_summary(payload),
+    };
+    DecisionRequestState {
+        id: format!("permission:{request_id}"),
+        request_id,
+        tool_use_id: Some(tool_use_id),
+        status: if auto_resolved {
+            DecisionRequestStatus::Approved
+        } else {
+            DecisionRequestStatus::Pending
+        },
+        operation: permission_operation_from_payload(payload),
+        target: permission_target_from_payload(payload),
+        risk_level: risk_level_from_payload(payload),
+        reason: string_field(payload, "reason").unwrap_or_default(),
+        policy,
+        decision_options: permission_decision_options(payload),
+        evidence_refs: vec![],
+        data_exposure: permission_data_exposure_from_payload(payload),
+        confirmation: permission_confirmation_expected(payload).map(|text| DecisionConfirmation {
+            expected_text: text,
+            label: "Confirmation required".to_owned(),
+        }),
+    }
+}
+
+fn permission_operation_from_payload(payload: &Value) -> DecisionOperation {
+    if let Some(operation) = string_field(payload, "operation") {
+        let projected = operation_from_label(&operation);
+        if projected != DecisionOperation::Unknown {
+            return projected;
+        }
+        if let Some(target) = string_field(payload, "target") {
+            let projected = operation_from_label(&target);
+            if projected != DecisionOperation::Unknown {
+                return projected;
+            }
+        }
+    }
+    let Some(subject) = payload.get("subject") else {
+        return DecisionOperation::Unknown;
+    };
+    match subject_type(subject).as_deref() {
+        Some("file_write" | "file_delete") => DecisionOperation::Write,
+        Some("command_exec" | "dangerous_command") => DecisionOperation::Execute,
+        Some("network_access") => DecisionOperation::Network,
+        Some("mcp_tool_call") => DecisionOperation::Mcp,
+        Some("tool_invocation") => permission_operation_from_tool_subject(subject),
+        Some("custom") => string_field(subject_body(subject), "kind")
+            .map(|kind| operation_from_label(&kind))
+            .unwrap_or(DecisionOperation::Unknown),
+        _ => DecisionOperation::Unknown,
+    }
+}
+
+fn permission_operation_from_tool_subject(subject: &Value) -> DecisionOperation {
+    let label = string_field(subject_body(subject), "tool").unwrap_or_default();
+    operation_from_label(&label)
+}
+
+fn operation_from_label(label: &str) -> DecisionOperation {
+    let normalized = label.to_ascii_lowercase();
+    if normalized.contains("read") || normalized.contains("list") || normalized.contains("grep") {
+        DecisionOperation::Read
+    } else if normalized.contains("write")
+        || normalized.contains("edit")
+        || normalized.contains("patch")
+        || normalized.contains("delete")
+    {
+        DecisionOperation::Write
+    } else if normalized.contains("bash")
+        || normalized.contains("shell")
+        || normalized.contains("command")
+        || normalized.contains("execute")
+    {
+        DecisionOperation::Execute
+    } else if normalized.contains("network") || normalized.contains("http") {
+        DecisionOperation::Network
+    } else if normalized.contains("mcp") {
+        DecisionOperation::Mcp
+    } else if normalized.contains("artifact") {
+        DecisionOperation::Artifact
+    } else if normalized.contains("git") {
+        DecisionOperation::Git
+    } else {
+        DecisionOperation::Unknown
+    }
+}
+
+fn permission_target_from_payload(payload: &Value) -> DecisionTarget {
+    if let Some(subject) = payload.get("subject") {
+        if let Some(target) = permission_target_from_subject(subject) {
+            return target;
+        }
+    }
+    if let Some(label) = string_field(payload, "target") {
+        let operation_kind = string_field(payload, "operation")
+            .map(|operation| target_kind_from_operation_label(&operation))
+            .unwrap_or(DecisionTargetKind::Unknown);
+        return DecisionTarget {
+            kind: if operation_kind == DecisionTargetKind::Unknown {
+                target_kind_from_label(&label)
+            } else {
+                operation_kind
+            },
+            label,
+            secondary_label: None,
+        };
+    }
+    if let Some(scope_hint) = payload
+        .get("scopeHint")
+        .or_else(|| payload.get("scope_hint"))
+        .and_then(permission_target_from_scope_hint)
+    {
+        return scope_hint;
+    }
+    DecisionTarget {
+        kind: DecisionTargetKind::Unknown,
+        label: String::new(),
+        secondary_label: None,
+    }
+}
+
+fn permission_target_from_subject(subject: &Value) -> Option<DecisionTarget> {
+    let subject_type = subject_type(subject)?;
+    let subject = subject_body(subject);
+    match subject_type.as_str() {
+        "file_write" | "file_delete" => string_field(subject, "path").map(|path| DecisionTarget {
+            kind: DecisionTargetKind::File,
+            label: path,
+            secondary_label: None,
+        }),
+        "command_exec" => command_text_from_payload(subject).map(|command| DecisionTarget {
+            kind: DecisionTargetKind::Command,
+            label: command,
+            secondary_label: command_cwd_from_payload(subject),
+        }),
+        "dangerous_command" => command_text_from_payload(subject).map(|command| DecisionTarget {
+            kind: DecisionTargetKind::Command,
+            label: command,
+            secondary_label: string_field(subject, "patternId")
+                .or_else(|| string_field(subject, "pattern_id")),
+        }),
+        "network_access" => string_field(subject, "host").map(|host| {
+            let label = u64_field(subject, "port")
+                .map(|port| format!("{host}:{port}"))
+                .unwrap_or(host);
+            DecisionTarget {
+                kind: DecisionTargetKind::Url,
+                label,
+                secondary_label: None,
+            }
+        }),
+        "mcp_tool_call" => {
+            let server = string_field(subject, "server")?;
+            let tool = string_field(subject, "tool")?;
+            Some(DecisionTarget {
+                kind: DecisionTargetKind::McpTool,
+                label: format!("{server}/{tool}"),
+                secondary_label: None,
+            })
+        }
+        "tool_invocation" => string_field(subject, "tool").map(|tool| DecisionTarget {
+            kind: target_kind_from_label(&tool),
+            label: tool,
+            secondary_label: None,
+        }),
+        "custom" => string_field(subject, "kind").map(|kind| DecisionTarget {
+            kind: target_kind_from_label(&kind),
+            label: kind,
+            secondary_label: None,
+        }),
+        _ => None,
+    }
+}
+
+fn permission_target_from_scope_hint(scope_hint: &Value) -> Option<DecisionTarget> {
+    if let Some(path) =
+        string_field(scope_hint, "path_prefix").or_else(|| string_field(scope_hint, "pathPrefix"))
+    {
+        return Some(DecisionTarget {
+            kind: DecisionTargetKind::Directory,
+            label: path,
+            secondary_label: None,
+        });
+    }
+    if let Some(command) = scope_hint
+        .get("exact_command")
+        .or_else(|| scope_hint.get("exactCommand"))
+        .and_then(command_text_from_payload)
+    {
+        return Some(DecisionTarget {
+            kind: DecisionTargetKind::Command,
+            label: command,
+            secondary_label: scope_hint
+                .get("exact_command")
+                .or_else(|| scope_hint.get("exactCommand"))
+                .and_then(command_cwd_from_payload),
+        });
+    }
+    string_field(scope_hint, "tool_name")
+        .or_else(|| string_field(scope_hint, "toolName"))
+        .map(|tool| DecisionTarget {
+            kind: target_kind_from_label(&tool),
+            label: tool,
+            secondary_label: None,
+        })
+}
+
+fn target_kind_from_label(label: &str) -> DecisionTargetKind {
+    match operation_from_label(label) {
+        DecisionOperation::Read | DecisionOperation::Write => DecisionTargetKind::File,
+        DecisionOperation::Execute => DecisionTargetKind::Command,
+        DecisionOperation::Network => DecisionTargetKind::Url,
+        DecisionOperation::Mcp => DecisionTargetKind::McpTool,
+        DecisionOperation::Artifact => DecisionTargetKind::Artifact,
+        DecisionOperation::Git => DecisionTargetKind::GitRef,
+        DecisionOperation::Unknown => DecisionTargetKind::Unknown,
+    }
+}
+
+fn target_kind_from_operation_label(label: &str) -> DecisionTargetKind {
+    let normalized = label.to_ascii_lowercase();
+    if normalized.contains("file") || normalized.contains("write") || normalized.contains("delete")
+    {
+        DecisionTargetKind::File
+    } else if normalized.contains("command") || normalized.contains("execute") {
+        DecisionTargetKind::Command
+    } else if normalized.contains("network") || normalized.contains("url") {
+        DecisionTargetKind::Url
+    } else if normalized.contains("mcp") {
+        DecisionTargetKind::McpTool
+    } else if normalized.contains("artifact") {
+        DecisionTargetKind::Artifact
+    } else if normalized.contains("git") {
+        DecisionTargetKind::GitRef
+    } else if normalized.contains("workspace") {
+        DecisionTargetKind::Workspace
+    } else {
+        DecisionTargetKind::Unknown
+    }
+}
+
+fn permission_data_exposure_from_payload(payload: &Value) -> DataExposure {
+    let subject = payload.get("subject");
+    let subject_kind = subject.and_then(subject_type);
+    let operation = string_field(payload, "operation").unwrap_or_default();
+    let exposure = string_field(payload, "exposure").unwrap_or_default();
+    let path_like_values = subject
+        .into_iter()
+        .flat_map(|subject| {
+            let subject = subject_body(subject);
+            ["path", "cwd"]
+                .into_iter()
+                .filter_map(|field| string_field(subject, field))
+        })
+        .chain(string_field(payload, "target"))
+        .collect::<Vec<_>>();
+    DataExposure {
+        sends_workspace_data: matches!(
+            subject_kind.as_deref(),
+            Some("file_write" | "file_delete" | "command_exec" | "tool_invocation")
+        ) || exposure.to_ascii_lowercase().contains("workspace")
+            || matches!(
+                permission_operation_from_payload(payload),
+                DecisionOperation::Read | DecisionOperation::Write | DecisionOperation::Execute
+            ),
+        sends_network_data: matches!(
+            subject_kind.as_deref(),
+            Some("network_access" | "mcp_tool_call")
+        ) || operation.to_ascii_lowercase().contains("network")
+            || exposure.to_ascii_lowercase().contains("network")
+            || exposure.to_ascii_lowercase().contains("mcp"),
+        touches_private_path: path_like_values
+            .iter()
+            .any(|value| looks_like_private_path(value)),
+        secret_risk: if payload
+            .get("review")
+            .and_then(|review| bool_field(review, "redacted"))
+            .unwrap_or(false)
+        {
+            DataExposureSecretRisk::Redacted
+        } else {
+            DataExposureSecretRisk::None
+        },
+    }
+}
+
+fn subject_type(subject: &Value) -> Option<String> {
+    string_field(subject, "type")
+        .or_else(|| string_field(subject, "kind"))
+        .or_else(|| {
+            subject.as_object().and_then(|object| {
+                object
+                    .keys()
+                    .find(|key| is_permission_subject_variant(key.as_str()))
+                    .cloned()
+            })
+        })
+}
+
+fn subject_body<'a>(subject: &'a Value) -> &'a Value {
+    subject_type(subject)
+        .and_then(|kind| subject.get(kind))
+        .unwrap_or(subject)
+}
+
+fn is_permission_subject_variant(value: &str) -> bool {
+    matches!(
+        value,
+        "tool_invocation"
+            | "command_exec"
+            | "file_write"
+            | "file_delete"
+            | "network_access"
+            | "dangerous_command"
+            | "mcp_tool_call"
+            | "custom"
+    )
+}
+
+fn looks_like_private_path(value: &str) -> bool {
+    value.starts_with("/Users/")
+        || value.starts_with("~/")
+        || value.contains("/.ssh/")
+        || value.contains("/.config/")
+        || value.contains("/Library/Application Support/")
+}
+
+fn risk_level_from_payload(payload: &Value) -> RiskLevel {
+    string_field(payload, "riskLevel")
+        .or_else(|| string_field(payload, "risk_level"))
+        .or_else(|| string_field(payload, "severity"))
+        .or_else(|| {
+            payload
+                .get("subject")
+                .and_then(|subject| string_field(subject_body(subject), "severity"))
+        })
+        .map(|value| risk_level_from_str(&value))
+        .unwrap_or(RiskLevel::Low)
+}
+
+fn risk_level_from_str(value: &str) -> RiskLevel {
+    match value {
+        "critical" => RiskLevel::Critical,
+        "high" => RiskLevel::High,
+        "medium" => RiskLevel::Medium,
+        "low" | "info" => RiskLevel::Low,
+        _ => RiskLevel::Low,
+    }
+}
+
+fn max_risk_level(left: RiskLevel, right: RiskLevel) -> RiskLevel {
+    if risk_rank(right) > risk_rank(left) {
+        right
+    } else {
+        left
+    }
+}
+
+fn risk_rank(value: RiskLevel) -> u8 {
+    match value {
+        RiskLevel::Low => 0,
+        RiskLevel::Medium => 1,
+        RiskLevel::High => 2,
+        RiskLevel::Critical => 3,
+    }
+}
+
+fn command_text_from_payload(payload: &Value) -> Option<String> {
+    string_field(payload, "command").or_else(|| {
+        payload
+            .get("subject")
+            .and_then(|subject| command_text_from_payload(subject_body(subject)))
+    })
+}
+
+fn command_cwd_from_payload(payload: &Value) -> Option<String> {
+    string_field(payload, "cwd")
+        .or_else(|| string_field(payload, "workingDirectory"))
+        .or_else(|| string_field(payload, "working_directory"))
+        .or_else(|| {
+            payload
+                .get("subject")
+                .and_then(|subject| command_cwd_from_payload(subject_body(subject)))
+        })
+}
+
+fn command_shell_from_payload(payload: &Value) -> Option<String> {
+    string_field(payload, "shell").or_else(|| {
+        payload
+            .get("input")
+            .and_then(|input| string_field(input, "shell"))
+    })
+}
+
+fn command_output_is_truncated(payload: &Value) -> bool {
+    if bool_field(payload, "truncated")
+        .or_else(|| bool_field(payload, "stdoutTruncated"))
+        .or_else(|| bool_field(payload, "stderrTruncated"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if string_field(payload, "fullOutputRef")
+        .or_else(|| string_field(payload, "full_output_ref"))
+        .is_some()
+    {
+        return true;
+    }
+    let full_bytes = ["outputBytes", "stdoutBytes", "stderrBytes", "contentBytes"]
+        .into_iter()
+        .filter_map(|field| u64_field(payload, field))
+        .max();
+    let preview_bytes = ["returnedBytes", "previewBytes", "limitBytes"]
+        .into_iter()
+        .filter_map(|field| u64_field(payload, field))
+        .max();
+    matches!((full_bytes, preview_bytes), (Some(full), Some(preview)) if full > preview)
+}
+
+fn sandbox_policy_summary(payload: &Value) -> Option<String> {
+    if let Some(sandbox) = string_field(payload, "sandbox") {
+        return Some(sandbox);
+    }
+    let policy = payload
+        .get("sandboxPolicy")
+        .or_else(|| payload.get("sandbox_policy"))?;
+    let mode = policy.get("mode").and_then(value_label)?;
+    let scope = policy
+        .get("scope")
+        .and_then(value_label)
+        .unwrap_or_else(|| "unknown_scope".to_owned());
+    let network = policy
+        .get("network")
+        .and_then(value_label)
+        .unwrap_or_else(|| "unknown".to_owned());
+    Some(format!("{mode} / {scope} / network:{network}"))
+}
+
+fn value_label(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Bool(value) => Some(value.to_string()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Array(items) => Some(
+            items
+                .iter()
+                .filter_map(value_label)
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+        Value::Object(object) if object.len() == 1 => {
+            let (key, value) = object.iter().next()?;
+            value_label(value).map(|value| format!("{key}:{value}"))
+        }
+        Value::Object(_) => serde_json::to_string(value).ok(),
+        Value::Null => None,
     }
 }
 
@@ -2683,20 +3173,22 @@ fn process_step_detail_for_tool(
 ) -> Option<ProcessStepDetail> {
     match kind {
         ProcessStepKind::Command => Some(ProcessStepDetail::Command(CommandExecution {
-            command: string_field(&event.payload, "command")
+            command: command_text_from_payload(&event.payload)
                 .unwrap_or_else(|| "命令内容已隐藏".to_owned()),
-            cwd: None,
-            shell: None,
-            sandbox: None,
-            approval_request_id: None,
+            cwd: command_cwd_from_payload(&event.payload),
+            shell: command_shell_from_payload(&event.payload),
+            sandbox: sandbox_policy_summary(&event.payload),
+            approval_request_id: string_field(&event.payload, "approvalRequestId")
+                .or_else(|| string_field(&event.payload, "approval_request_id")),
             exit_code: i32_field(&event.payload, "exitCode"),
             duration_ms: u64_field(&event.payload, "durationMs"),
-            stdout_preview: string_field(&event.payload, "outputSummary"),
-            stderr_preview: None,
+            stdout_preview: string_field(&event.payload, "stdoutPreview")
+                .or_else(|| string_field(&event.payload, "outputSummary")),
+            stderr_preview: string_field(&event.payload, "stderrPreview"),
             full_output_ref: string_field(&event.payload, "fullOutputRef").map(EvidenceRefId::new),
-            truncated: true,
+            truncated: command_output_is_truncated(&event.payload),
             redaction_state: redaction_state_from_event(event),
-            risk_level: RiskLevel::Low,
+            risk_level: risk_level_from_payload(&event.payload),
         })),
         ProcessStepKind::FileRead | ProcessStepKind::FileSearch | ProcessStepKind::FileEdit => {
             Some(ProcessStepDetail::Activity {

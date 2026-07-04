@@ -383,6 +383,24 @@ fn pending_permission_preserves_request_summary() {
                 "requestId": "request-a",
                 "toolUseId": "tool-a",
                 "reason": "需要批准后才能继续。",
+                "operation": "Write file",
+                "target": "/Users/goya/Repo/Git/Jyowo/apps/desktop/src/App.tsx",
+                "exposure": "Can write a file in the workspace.",
+                "severity": "high",
+                "decisionScope": "this workspace path scope",
+                "effectiveMode": "ask",
+                "sandboxPolicy": {
+                    "mode": "workspace_write",
+                    "scope": "workspace_only",
+                    "network": "none",
+                    "resourceLimits": {}
+                },
+                "review": {
+                    "summary": "写入前端文件",
+                    "details": [],
+                    "confirmation": "APPROVE",
+                    "redacted": true
+                }
             }),
         ),
     ];
@@ -398,6 +416,25 @@ fn pending_permission_preserves_request_summary() {
 
     assert_eq!(permission.status, DecisionRequestStatus::Pending);
     assert_eq!(permission.reason.as_str(), "需要批准后才能继续。");
+    assert_eq!(permission.operation, DecisionOperation::Write);
+    assert_eq!(permission.target.kind, DecisionTargetKind::File);
+    assert_eq!(
+        permission.target.label.as_str(),
+        "/Users/goya/Repo/Git/Jyowo/apps/desktop/src/App.tsx"
+    );
+    assert_eq!(permission.risk_level, RiskLevel::High);
+    assert_eq!(permission.policy.mode.as_str(), "ask");
+    assert_eq!(permission.policy.rule.as_deref(), Some("写入前端文件"));
+    assert_eq!(
+        permission.policy.sandbox.as_deref(),
+        Some("workspace_write / workspace_only / network:none")
+    );
+    assert!(permission.data_exposure.sends_workspace_data);
+    assert!(permission.data_exposure.touches_private_path);
+    assert_eq!(
+        permission.data_exposure.secret_risk,
+        DataExposureSecretRisk::Redacted
+    );
 }
 
 #[test]
@@ -1757,6 +1794,15 @@ fn command_tool_projects_command_process_detail() {
                 "toolUseId": "tool-1",
                 "toolName": "Bash",
                 "command": "pnpm check:desktop",
+                "cwd": "/Users/goya/Repo/Git/Jyowo",
+                "shell": "zsh",
+                "sandboxPolicy": {
+                    "mode": "workspace_write",
+                    "scope": "workspace_only",
+                    "network": "none",
+                    "resourceLimits": {}
+                },
+                "riskLevel": "medium",
                 "argumentsSummary": "Input withheld from conversation timeline."
             }),
         ),
@@ -1791,8 +1837,110 @@ fn command_tool_projects_command_process_detail() {
         panic!("command detail should be projected");
     };
     assert_eq!(cmd.command.as_str(), "pnpm check:desktop");
+    assert_eq!(cmd.cwd.as_deref(), Some("/Users/goya/Repo/Git/Jyowo"));
+    assert_eq!(cmd.shell.as_deref(), Some("zsh"));
+    assert_eq!(
+        cmd.sandbox.as_deref(),
+        Some("workspace_write / workspace_only / network:none")
+    );
     assert_eq!(cmd.stdout_preview.as_deref(), Some("desktop checks passed"));
     assert_eq!(cmd.exit_code, Some(0));
+    assert!(!cmd.truncated);
+    assert_eq!(cmd.risk_level, RiskLevel::Medium);
+}
+
+#[test]
+fn command_tool_carries_permission_metadata_and_truncation_state() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "run tests"),
+        event(
+            2,
+            "event-tool-requested",
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "Bash",
+                "command": "pnpm check:rust",
+                "cwd": "/Users/goya/Repo/Git/Jyowo",
+                "shell": "zsh",
+                "argumentsSummary": "Input withheld from conversation timeline."
+            }),
+        ),
+        event(
+            3,
+            "event-permission-requested",
+            "run-1",
+            "permission.requested",
+            json!({
+                "requestId": "request-1",
+                "toolUseId": "tool-1",
+                "reason": "命令需要批准。",
+                "subject": {
+                    "command_exec": {
+                        "command": "pnpm check:rust",
+                        "argv": ["pnpm", "check:rust"],
+                        "cwd": "/Users/goya/Repo/Git/Jyowo",
+                        "fingerprint": "fingerprint-1"
+                    }
+                },
+                "severity": "high",
+                "effectiveMode": "ask",
+                "sandboxPolicy": {
+                    "mode": "workspace_write",
+                    "scope": "workspace_only",
+                    "network": "none",
+                    "resourceLimits": {}
+                },
+                "review": {
+                    "summary": "运行 Rust 门禁",
+                    "details": [],
+                    "confirmation": null,
+                    "redacted": false
+                }
+            }),
+        ),
+        event(
+            4,
+            "event-tool-completed",
+            "run-1",
+            "tool.completed",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "Bash",
+                "cwd": "/tmp",
+                "shell": "fish",
+                "approvalRequestId": "request-from-completed",
+                "sandbox": "none",
+                "durationMs": 100,
+                "exitCode": 0,
+                "outputSummary": "rust checks passed",
+                "fullOutputRef": "evidence-ref-1"
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+    let process = assistant
+        .segments
+        .iter()
+        .find_map(process_segment)
+        .expect("process exists");
+    let step = process.steps.first().expect("process step exists");
+
+    let Some(ProcessStepDetail::Command(cmd)) = step.detail.as_ref() else {
+        panic!("command detail should be projected");
+    };
+    assert_eq!(cmd.cwd.as_deref(), Some("/Users/goya/Repo/Git/Jyowo"));
+    assert_eq!(cmd.shell.as_deref(), Some("zsh"));
+    assert_eq!(cmd.approval_request_id.as_deref(), Some("request-1"));
+    assert_eq!(cmd.risk_level, RiskLevel::High);
+    assert_eq!(
+        cmd.sandbox.as_deref(),
+        Some("workspace_write / workspace_only / network:none")
+    );
+    assert!(cmd.truncated);
 }
 
 #[test]

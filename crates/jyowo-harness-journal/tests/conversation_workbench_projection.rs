@@ -62,6 +62,26 @@ fn evidence_store() -> Arc<EvidenceRefStore> {
     ))
 }
 
+fn projected_command_detail(events: Vec<ConversationTimelineEvent>) -> CommandExecution {
+    let projection = project_conversation_worktree_snapshot("conv-1", events);
+    let page = worktree_projection_page(projection, false);
+    let assistant = page.turns[0].assistant.as_ref().unwrap();
+    assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::Process(process) => process.steps.iter().find_map(|step| {
+                if let Some(ProcessStepDetail::Command(command)) = &step.detail {
+                    Some(command.clone())
+                } else {
+                    None
+                }
+            }),
+            _ => None,
+        })
+        .expect("command detail")
+}
+
 // ── Permission projection tests ──
 
 #[test]
@@ -92,7 +112,16 @@ fn permission_requested_projects_to_decision_request_state() {
                 "requestId": "req-1",
                 "toolUseId": "tool-1",
                 "reason": "Shell command requires approval",
-                "effectiveMode": "default"
+                "effectiveMode": "default",
+                "operation": "Use tool",
+                "target": "Bash",
+                "exposure": "Can invoke a runtime tool.",
+                "sandboxPolicy": {
+                    "mode": { "osLevel": "none" },
+                    "scope": "workspace_only",
+                    "network": "none",
+                    "resourceLimits": {}
+                }
             }),
         ),
     ];
@@ -120,6 +149,13 @@ fn permission_requested_projects_to_decision_request_state() {
     assert_eq!(decision.request_id, "req-1");
     assert_eq!(decision.status, DecisionRequestStatus::Pending);
     assert_eq!(decision.reason, "Shell command requires approval");
+    assert_eq!(decision.operation, DecisionOperation::Execute);
+    assert_eq!(decision.target.kind, DecisionTargetKind::Command);
+    assert_eq!(decision.target.label, "Bash");
+    assert_eq!(
+        decision.policy.sandbox.as_deref(),
+        Some("osLevel:none / workspace_only / network:none")
+    );
 }
 
 // ── Command projection tests ──
@@ -183,11 +219,86 @@ fn command_completion_projects_to_command_execution() {
             assert_eq!(cmd.exit_code, Some(0));
             assert_eq!(cmd.duration_ms, Some(1200));
             assert_eq!(cmd.stdout_preview.as_deref(), Some("test result: ok"));
-            assert!(cmd.truncated);
+            assert!(!cmd.truncated);
             assert_eq!(cmd.redaction_state, EvidenceRedactionState::Clean);
         }
         _ => panic!("expected command detail"),
     }
+}
+
+#[test]
+fn command_completion_projects_explicit_truncation_state() {
+    let cursor = event_cursor();
+    let command = projected_command_detail(vec![
+        make_event(cursor, "run-1", "run.started", run_started_payload("run-1")),
+        make_event(
+            cursor,
+            "run-1",
+            "user.message.appended",
+            user_message_payload("run tests"),
+        ),
+        make_event(
+            cursor,
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "bash"
+            }),
+        ),
+        make_event(
+            cursor,
+            "run-1",
+            "tool.completed",
+            json!({
+                "toolUseId": "tool-1",
+                "command": "cargo test",
+                "exitCode": 0,
+                "outputSummary": "test result: ok",
+                "stdoutTruncated": true
+            }),
+        ),
+    ]);
+
+    assert!(command.truncated);
+}
+
+#[test]
+fn command_completion_projects_byte_count_truncation_state() {
+    let cursor = event_cursor();
+    let command = projected_command_detail(vec![
+        make_event(cursor, "run-1", "run.started", run_started_payload("run-1")),
+        make_event(
+            cursor,
+            "run-1",
+            "user.message.appended",
+            user_message_payload("run tests"),
+        ),
+        make_event(
+            cursor,
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "bash"
+            }),
+        ),
+        make_event(
+            cursor,
+            "run-1",
+            "tool.completed",
+            json!({
+                "toolUseId": "tool-1",
+                "command": "cargo test",
+                "exitCode": 0,
+                "outputSummary": "test result: ok",
+                "stdoutBytes": 4096,
+                "previewBytes": 1024
+            }),
+        ),
+    ]);
+
+    assert!(command.truncated);
 }
 
 #[tokio::test]
@@ -255,6 +366,7 @@ async fn command_completion_projects_full_output_ref_without_inline_output() {
         .expect("command detail");
 
     assert_eq!(command.stdout_preview.as_deref(), Some("test result: ok"));
+    assert!(command.truncated);
     assert_ne!(
         command.stdout_preview.as_deref(),
         Some("full stdout\nline 2")
