@@ -166,6 +166,8 @@ define_scopes! {
     DeltaScope => DeltaId,
     BreakpointScope => BreakpointId,
     SteeringScope => SteeringId,
+    ArtifactRevisionScope => ArtifactRevisionId,
+    PermissionOptionScope => PermissionOptionId,
 }
 
 impl TenantId {

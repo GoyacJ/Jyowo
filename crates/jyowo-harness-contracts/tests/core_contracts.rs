@@ -158,7 +158,20 @@ fn permission_requested_serializes_auto_resolved_and_defaults_legacy_events() {
         severity: Severity::High,
         scope_hint: DecisionScope::ToolName("shell".to_owned()),
         fingerprint: None,
-        presented_options: vec![Decision::AllowOnce, Decision::DenyOnce],
+        presented_options: vec![PermissionDecisionOption {
+            option_id: PermissionOptionId::new(),
+            decision: Decision::AllowOnce,
+            scope: DecisionScope::ToolName("shell".to_owned()),
+            lifetime: DecisionLifetime::Once,
+            matcher_summary: DecisionMatcherSummary {
+                kind: DecisionMatcherKind::ExactCommand,
+                label: "cargo test".to_owned(),
+            },
+            label: "Allow this command once".to_owned(),
+            requires_confirmation: false,
+            action_plan_hash: ActionPlanHash::default(),
+            fingerprint: None,
+        }],
         interactivity: InteractivityLevel::FullyInteractive,
         auto_resolved: true,
         actor_source: PermissionActorSource::ParentRun,
@@ -425,14 +438,43 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
         event_id: "event-1".to_owned(),
         cursor: event_cursor,
     };
-    let permission = ToolPermissionState {
+    let decision = DecisionRequestState {
         id: "permission:request-1".to_owned(),
         request_id: "request-1".to_owned(),
-        tool_use_id: "tool-use-1".to_owned(),
-        status: ToolPermissionStatus::Approved,
-        summary: Some(UiSafeText::from_trusted_redacted("Approved once")),
-        confirmation_expected: None,
-        event_refs: vec![event_ref.clone()],
+        tool_use_id: Some("tool-use-1".to_owned()),
+        status: DecisionRequestStatus::Approved,
+        operation: DecisionOperation::Execute,
+        target: DecisionTarget {
+            kind: DecisionTargetKind::Command,
+            label: "MiniMaxTextToImage".to_owned(),
+            secondary_label: None,
+        },
+        risk_level: RiskLevel::Medium,
+        reason: "Tool needs approval".to_owned(),
+        policy: DecisionPolicy {
+            mode: "default".to_owned(),
+            rule: None,
+            sandbox: None,
+        },
+        decision_options: vec![DecisionOption {
+            id: "opt-1".to_owned(),
+            decision: DecisionKind::Approve,
+            label: "Allow once".to_owned(),
+            lifetime: DecisionLifetime::Once,
+            matcher: DecisionMatcherSummary {
+                kind: DecisionMatcherKind::ExactCommand,
+                label: "MiniMaxTextToImage".to_owned(),
+            },
+            requires_confirmation: false,
+        }],
+        evidence_refs: vec![],
+        data_exposure: DataExposure {
+            sends_workspace_data: false,
+            sends_network_data: true,
+            touches_private_path: false,
+            secret_risk: DataExposureSecretRisk::None,
+        },
+        confirmation: None,
     };
     let page = ConversationWorktreePage {
         turns: vec![ConversationTurn {
@@ -457,6 +499,8 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
             assistant: Some(AssistantWork {
                 id: "assistant:run-1".to_owned(),
                 run_id: "run-1".to_owned(),
+                projection_version: 1,
+                stream_version: 0,
                 model: Some(AssistantWorkModelSnapshot::from(&test_run_model_snapshot())),
                 status: AssistantWorkStatus::Running,
                 segments: vec![
@@ -464,18 +508,19 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                         id: "segment:process:run-1".to_owned(),
                         order: 0,
                         status: ProcessSegmentStatus::Running,
-                        summary: UiSafeText::from_trusted_redacted("正在处理请求"),
+                        summary: UiSafeText::from_trusted_redacted("Processing request"),
                         steps: vec![
                             ProcessStep {
                                 id: "process-step:run-1:reasoning".to_owned(),
                                 order: 0,
                                 kind: ProcessStepKind::Reasoning,
                                 status: ProcessStepStatus::Running,
-                                title: UiSafeText::from_trusted_redacted("分析请求"),
+                                title: UiSafeText::from_trusted_redacted("Analyze request"),
                                 body: Some(UiSafeText::from_trusted_redacted(
-                                    "确认需要生成图片并展示结果。",
+                                    "Need to generate an image.",
                                 )),
                                 detail: None,
+                                visibility: UiVisibility::UserSafe,
                                 event_refs: vec![event_ref.clone()],
                             },
                             ProcessStep {
@@ -483,7 +528,7 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                                 order: 1,
                                 kind: ProcessStepKind::Artifact,
                                 status: ProcessStepStatus::Complete,
-                                title: UiSafeText::from_trusted_redacted("生成的图片"),
+                                title: UiSafeText::from_trusted_redacted("Generated image"),
                                 body: None,
                                 detail: Some(ProcessStepDetail::Artifact {
                                     artifact_id: "artifact-1".to_owned(),
@@ -493,72 +538,73 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                                         size_bytes: 128,
                                     },
                                 }),
+                                visibility: UiVisibility::UserSafe,
                                 event_refs: vec![event_ref.clone()],
                             },
                         ],
                         event_refs: vec![event_ref.clone()],
                     }),
-                    AssistantSegment::Thinking(ThinkingSegment {
-                        id: "segment:thinking:run-1".to_owned(),
-                        order: 1,
-                        status: ThinkingSegmentStatus::Running,
-                        summary: ThinkingSummary {
-                            text: UiSafeText::from_trusted_redacted("Checking available tools"),
-                        },
-                        steps: vec![ThinkingStep {
-                            id: "thinking-step:run-1:summary".to_owned(),
-                            order: 0,
-                            kind: ThinkingStepKind::ReasoningSummary,
-                            status: ThinkingStepStatus::Running,
-                            title: UiSafeText::from_trusted_redacted("推理过程"),
-                            body: Some(UiSafeText::from_trusted_redacted(
-                                "Checking available tools",
-                            )),
-                            event_refs: vec![event_ref.clone()],
-                        }],
-                        event_refs: vec![event_ref.clone()],
-                    }),
                     AssistantSegment::Text(TextSegment {
                         id: "segment:text:assistant-message-1".to_owned(),
-                        order: 2,
+                        order: 1,
                         message_id: "assistant-message-1".to_owned(),
                         body: UiSafeText::from_trusted_redacted("I can help with that."),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::ToolGroup(ToolGroupSegment {
                         id: "segment:tools:tool-use-1".to_owned(),
-                        order: 3,
+                        order: 2,
                         attempts: vec![ToolAttempt {
                             id: "tool:tool-use-1".to_owned(),
                             order: 0,
                             tool_use_id: "tool-use-1".to_owned(),
-                            tool_name: UiSafeText::from_trusted_redacted("MiniMaxTextToImage"),
+                            tool_name: "MiniMaxTextToImage".to_owned(),
+                            origin: ToolAttemptOrigin::Builtin,
                             status: ToolAttemptStatus::Completed,
-                            permission: Some(permission),
+                            arguments_preview: None,
+                            output_summary: Some("Image generated".to_owned()),
+                            affected_targets: vec![],
+                            started_at: None,
+                            ended_at: None,
+                            duration_ms: Some(1500),
+                            retry_of: None,
+                            failure_phase: None,
                             failure_summary: None,
+                            permission: Some(decision),
                             event_refs: vec![event_ref.clone()],
                         }],
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::Artifact(ArtifactSegment {
                         id: "segment:artifact:artifact-1".to_owned(),
-                        order: 4,
+                        order: 3,
                         artifact_id: "artifact-1".to_owned(),
                         kind: "image".to_owned(),
                         status: ArtifactStatus::Ready,
                         source: ArtifactSource::Tool,
                         title: UiSafeText::from_trusted_redacted("Generated image"),
                         summary: Some(UiSafeText::from_trusted_redacted("Image artifact ready")),
-                        media: Some(ArtifactMediaPreview {
-                            kind: ArtifactMediaKind::Image,
-                            mime_type: "image/png".to_owned(),
-                            size_bytes: 128,
-                        }),
+                        revision: ArtifactRevisionSummary {
+                            artifact_id: "artifact-1".to_owned(),
+                            revision_id: "rev-1".to_owned(),
+                            kind: ArtifactRevisionKind::Image,
+                            status: ArtifactRevisionStatus::Ready,
+                            source_run_id: "run-1".to_owned(),
+                            title: "Generated image".to_owned(),
+                            summary: Some("Image artifact ready".to_owned()),
+                            preview_ref: None,
+                            content_ref: None,
+                            media: Some(ArtifactMediaPreview {
+                                kind: ArtifactMediaKind::Image,
+                                mime_type: "image/png".to_owned(),
+                                size_bytes: 128,
+                            }),
+                        },
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::ReviewRequest(ReviewRequestSegment {
                         id: "segment:review:review-1".to_owned(),
-                        order: 5,
+                        order: 4,
                         request_id: "review-1".to_owned(),
                         title: UiSafeText::from_trusted_redacted("Review changes"),
                         body: Some(UiSafeText::from_trusted_redacted(
@@ -568,27 +614,27 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                     }),
                     AssistantSegment::ClarificationRequest(ClarificationRequestSegment {
                         id: "segment:clarification:clarification-1".to_owned(),
-                        order: 6,
+                        order: 5,
                         request_id: "clarification-1".to_owned(),
                         prompt: UiSafeText::from_trusted_redacted("Which style should I use?"),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::Notice(NoticeSegment {
                         id: "segment:notice:event-1".to_owned(),
-                        order: 7,
+                        order: 6,
                         body: UiSafeText::from_trusted_redacted("Tool output was summarized."),
                         code: Some(AssistantNoticeCode::ContextCompacted),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::Error(ErrorSegment {
                         id: "segment:error:event-2".to_owned(),
-                        order: 8,
+                        order: 7,
                         body: UiSafeText::from_trusted_redacted("Tool execution failed."),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::AgentActivity(AgentActivitySegment {
                         id: "segment:agent:subagent-1".to_owned(),
-                        order: 9,
+                        order: 8,
                         activity_kind: AgentActivityKind::Subagent,
                         agent_id: "subagent-1".to_owned(),
                         role: UiSafeText::from_trusted_redacted("Reviewer"),
@@ -630,6 +676,7 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
     );
     assert_eq!(value["turns"][0]["assistant"]["id"], "assistant:run-1");
     assert_eq!(value["turns"][0]["assistant"]["status"], "running");
+    assert_eq!(value["turns"][0]["assistant"]["projectionVersion"], 1);
     assert_eq!(
         value["turns"][0]["assistant"]["segments"][0]["kind"],
         "process"
@@ -639,49 +686,33 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
         "reasoning"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][0]["steps"][1]["detail"]["type"],
-        "artifact"
-    );
-    assert_eq!(
-        value["turns"][0]["assistant"]["segments"][0]["steps"][1]["detail"]["media"]["kind"],
-        "image"
+        value["turns"][0]["assistant"]["segments"][0]["steps"][0]["visibility"],
+        "userSafe"
     );
     assert_eq!(
         value["turns"][0]["assistant"]["segments"][1]["kind"],
-        "thinking"
-    );
-    assert_eq!(value["turns"][0]["assistant"]["segments"][0]["order"], 0);
-    assert_eq!(
-        value["turns"][0]["assistant"]["segments"][1]["status"],
-        "running"
+        "text"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][1]["steps"][0]["kind"],
-        "reasoningSummary"
-    );
-    assert_eq!(
-        value["turns"][0]["assistant"]["segments"][1]["steps"][0]["body"],
-        "Checking available tools"
-    );
-    assert_eq!(
-        value["turns"][0]["assistant"]["segments"][3]["kind"],
+        value["turns"][0]["assistant"]["segments"][2]["kind"],
         "toolGroup"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][3]["attempts"][0]["permission"]["requestId"],
+        value["turns"][0]["assistant"]["segments"][2]["attempts"][0]["permission"]["requestId"],
         "request-1"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][3]["attempts"][0]["permission"]["toolUseId"],
-        "tool-use-1"
+        value["turns"][0]["assistant"]["segments"][2]["attempts"][0]["permission"]
+            ["decisionOptions"][0]["id"],
+        "opt-1"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][4]["kind"],
+        value["turns"][0]["assistant"]["segments"][3]["kind"],
         "artifact"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][4]["media"]["mimeType"],
-        "image/png"
+        value["turns"][0]["assistant"]["segments"][3]["revision"]["revisionId"],
+        "rev-1"
     );
     assert_eq!(value["pageCursor"]["turnId"], "turn:user-message-1");
     assert_eq!(value["eventCursor"]["conversationSequence"], 42);
@@ -704,30 +735,30 @@ fn conversation_worktree_fixture_uses_stable_wire_shape() {
     );
     assert_eq!(
         value["turns"][0]["assistant"]["segments"][1]["kind"],
-        "thinking"
+        "text"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][3]["kind"],
+        value["turns"][0]["assistant"]["segments"][2]["kind"],
         "toolGroup"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][4]["kind"],
+        value["turns"][0]["assistant"]["segments"][3]["kind"],
         "artifact"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][5]["kind"],
+        value["turns"][0]["assistant"]["segments"][4]["kind"],
         "reviewRequest"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][6]["kind"],
+        value["turns"][0]["assistant"]["segments"][5]["kind"],
         "clarificationRequest"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][7]["kind"],
+        value["turns"][0]["assistant"]["segments"][6]["kind"],
         "notice"
     );
     assert_eq!(
-        value["turns"][0]["assistant"]["segments"][8]["kind"],
+        value["turns"][0]["assistant"]["segments"][7]["kind"],
         "error"
     );
     assert_eq!(value["pageCursor"]["turnId"], "turn:user-message-1");
@@ -737,60 +768,37 @@ fn conversation_worktree_fixture_uses_stable_wire_shape() {
 }
 
 #[test]
-fn thinking_worktree_segment_supports_all_public_statuses() {
-    for (status, expected) in [
-        (ThinkingSegmentStatus::Running, "running"),
-        (ThinkingSegmentStatus::Complete, "complete"),
-        (ThinkingSegmentStatus::Withheld, "withheld"),
-    ] {
-        let value = serde_json::to_value(status).unwrap();
-        assert_eq!(value, expected);
-    }
-}
-
-#[test]
-fn thinking_step_contracts_use_stable_wire_shape() {
-    let step = ThinkingStep {
-        id: "thinking-step:run-1:summary".to_owned(),
-        order: 0,
-        kind: ThinkingStepKind::ReasoningSummary,
-        status: ThinkingStepStatus::Complete,
-        title: UiSafeText::from_trusted_redacted("推理过程"),
-        body: Some(UiSafeText::from_trusted_redacted("Checked context.")),
-        event_refs: Vec::new(),
-    };
-
-    let value = serde_json::to_value(step).unwrap();
-
-    assert_eq!(value["kind"], "reasoningSummary");
-    assert_eq!(value["status"], "complete");
-    assert_eq!(value["title"], "推理过程");
-    assert_eq!(value["body"], "Checked context.");
-    assert!(value.get("eventRefs").is_none());
-}
-
-#[test]
 fn process_segment_contracts_use_stable_wire_shape() {
     let step = ProcessStep {
         id: "process-step:run-1:command".to_owned(),
         order: 0,
         kind: ProcessStepKind::Command,
         status: ProcessStepStatus::Complete,
-        title: UiSafeText::from_trusted_redacted("运行测试"),
-        body: Some(UiSafeText::from_trusted_redacted("cargo test 通过")),
-        detail: Some(ProcessStepDetail::Command {
-            command: UiSafeText::from_trusted_redacted("cargo test"),
-            output: Some(UiSafeText::from_trusted_redacted("test result: ok")),
+        title: UiSafeText::from_trusted_redacted("Run tests"),
+        body: Some(UiSafeText::from_trusted_redacted("cargo test passed")),
+        detail: Some(ProcessStepDetail::Command(CommandExecution {
+            command: "cargo test".to_owned(),
+            cwd: None,
+            shell: None,
+            sandbox: None,
+            approval_request_id: None,
             exit_code: Some(0),
             duration_ms: Some(1200),
-        }),
+            stdout_preview: Some("test result: ok".to_owned()),
+            stderr_preview: None,
+            full_output_ref: None,
+            truncated: true,
+            redaction_state: EvidenceRedactionState::Clean,
+            risk_level: RiskLevel::Low,
+        })),
+        visibility: UiVisibility::UserSafe,
         event_refs: Vec::new(),
     };
     let segment = ProcessSegment {
         id: "segment:process:run-1".to_owned(),
         order: 0,
         status: ProcessSegmentStatus::Complete,
-        summary: UiSafeText::from_trusted_redacted("已完成工作过程"),
+        summary: UiSafeText::from_trusted_redacted("Process completed"),
         steps: vec![step],
         event_refs: Vec::new(),
     };
@@ -799,11 +807,12 @@ fn process_segment_contracts_use_stable_wire_shape() {
 
     assert_eq!(value["kind"], "process");
     assert_eq!(value["status"], "complete");
-    assert_eq!(value["summary"], "已完成工作过程");
+    assert_eq!(value["summary"], "Process completed");
     assert_eq!(value["steps"][0]["kind"], "command");
     assert_eq!(value["steps"][0]["detail"]["type"], "command");
     assert_eq!(value["steps"][0]["detail"]["command"], "cargo test");
     assert_eq!(value["steps"][0]["detail"]["exitCode"], 0);
+    assert_eq!(value["steps"][0]["visibility"], "userSafe");
     assert!(value["steps"][0].get("eventRefs").is_none());
 }
 
@@ -821,7 +830,7 @@ fn agent_activity_segment_roundtrips_with_camel_case_tags() {
         permission: Some(AgentActivityPermissionState {
             id: "permission:req-1".to_owned(),
             request_id: "req-1".to_owned(),
-            status: ToolPermissionStatus::Pending,
+            status: DecisionRequestStatus::Pending,
             summary: Some(UiSafeText::from_trusted_redacted(
                 "Needs approval to continue.",
             )),
@@ -863,17 +872,27 @@ fn conversation_worktree_schema_is_exported() {
         "process_step_kind",
         "process_step_status",
         "process_step_detail",
+        "ui_visibility",
         "artifact_media_preview",
         "artifact_media_kind",
-        "thinking_segment",
-        "thinking_summary",
-        "thinking_step",
-        "thinking_step_kind",
-        "thinking_step_status",
         "text_segment",
         "tool_group_segment",
         "tool_attempt",
-        "tool_permission_state",
+        "tool_attempt_status",
+        "tool_attempt_origin",
+        "tool_failure_phase",
+        "decision_request_state",
+        "decision_option",
+        "decision_lifetime",
+        "decision_matcher_summary",
+        "command_execution",
+        "change_set",
+        "change_set_file",
+        "artifact_revision_summary",
+        "evidence_ref_id",
+        "evidence_ref_kind",
+        "evidence_redaction_state",
+        "evidence_ref_summary",
         "artifact_segment",
         "review_request_segment",
         "clarification_request_segment",

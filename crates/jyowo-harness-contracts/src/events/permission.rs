@@ -16,7 +16,7 @@ pub struct PermissionRequestedEvent {
     pub severity: Severity,
     pub scope_hint: DecisionScope,
     pub fingerprint: Option<ExecFingerprint>,
-    pub presented_options: Vec<Decision>,
+    pub presented_options: Vec<PermissionDecisionOption>,
     pub interactivity: InteractivityLevel,
     #[serde(default)]
     pub auto_resolved: bool,
@@ -144,4 +144,25 @@ pub struct CredentialPoolSharedAcrossTenantsEvent {
     pub provider_id: String,
     pub credential_key_hash: [u8; 32],
     pub at: DateTime<Utc>,
+}
+
+/// Backend-authored permission decision option presented to the UI.
+///
+/// The `option_id` is minted by Rust when the pending request is created.
+/// React never constructs, hashes, indexes, or guesses an option id.
+/// The option id binds to the request id, action plan hash, scope, decision,
+/// and fingerprint. It is stable only for that pending request and invalid
+/// after timeout, resolution, restart without pending state, or request mismatch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PermissionDecisionOption {
+    pub option_id: PermissionOptionId,
+    pub decision: Decision,
+    pub scope: DecisionScope,
+    pub lifetime: DecisionLifetime,
+    pub matcher_summary: DecisionMatcherSummary,
+    pub label: String,
+    pub requires_confirmation: bool,
+    pub action_plan_hash: ActionPlanHash,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<ExecFingerprint>,
 }

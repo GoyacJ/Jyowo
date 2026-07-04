@@ -7,6 +7,7 @@ pub type ArtifactId = String;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactCreatedEvent {
+    pub revision_id: ArtifactRevisionId,
     pub session_id: SessionId,
     pub run_id: RunId,
     pub artifact_id: ArtifactId,
@@ -24,6 +25,7 @@ pub struct ArtifactCreatedEvent {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactUpdatedEvent {
+    pub revision_id: ArtifactRevisionId,
     pub session_id: SessionId,
     pub run_id: RunId,
     pub artifact_id: ArtifactId,

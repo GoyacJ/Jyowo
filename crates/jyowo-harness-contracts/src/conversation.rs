@@ -184,6 +184,9 @@ pub struct ConversationTurnUserMessage {
 pub struct AssistantWork {
     pub id: String,
     pub run_id: String,
+    pub projection_version: u64,
+    #[serde(default)]
+    pub stream_version: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<AssistantWorkModelSnapshot>,
     pub status: AssistantWorkStatus,
@@ -228,7 +231,6 @@ pub enum AssistantWorkStatus {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AssistantSegment {
     Process(ProcessSegment),
-    Thinking(ThinkingSegment),
     Text(TextSegment),
     ToolGroup(ToolGroupSegment),
     Artifact(ArtifactSegment),
@@ -266,7 +268,7 @@ pub enum AgentActivityStatus {
 pub struct AgentActivityPermissionState {
     pub id: String,
     pub request_id: String,
-    pub status: ToolPermissionStatus,
+    pub status: DecisionRequestStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<UiSafeText>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -349,6 +351,19 @@ pub enum ProcessSegmentStatus {
     Withheld,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum UiVisibility {
+    UserSafe,
+    Withheld,
+}
+
+impl Default for UiVisibility {
+    fn default() -> Self {
+        Self::UserSafe
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessStep {
@@ -361,6 +376,8 @@ pub struct ProcessStep {
     pub body: Option<UiSafeText>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<ProcessStepDetail>,
+    #[serde(default)]
+    pub visibility: UiVisibility,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_refs: Vec<ConversationEventRef>,
 }
@@ -398,22 +415,8 @@ pub enum ProcessStepDetail {
         #[serde(rename = "itemCount", default, skip_serializing_if = "Option::is_none")]
         item_count: Option<u32>,
     },
-    Command {
-        command: UiSafeText,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        output: Option<UiSafeText>,
-        #[serde(rename = "exitCode", default, skip_serializing_if = "Option::is_none")]
-        exit_code: Option<i32>,
-        #[serde(
-            rename = "durationMs",
-            default,
-            skip_serializing_if = "Option::is_none"
-        )]
-        duration_ms: Option<u64>,
-    },
-    Diff {
-        files: Vec<ProcessDiffFile>,
-    },
+    Command(CommandExecution),
+    Diff(ChangeSet),
     Tool {
         #[serde(rename = "toolName")]
         tool_name: UiSafeText,
@@ -435,77 +438,6 @@ pub enum ProcessStepDetail {
         artifact_id: String,
         media: ArtifactMediaPreview,
     },
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ProcessDiffFile {
-    pub path: UiSafeText,
-    pub added_lines: u32,
-    pub removed_lines: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preview: Option<UiSafeText>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ThinkingSegment {
-    pub id: String,
-    pub order: u32,
-    pub status: ThinkingSegmentStatus,
-    pub summary: ThinkingSummary,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub steps: Vec<ThinkingStep>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub event_refs: Vec<ConversationEventRef>,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum ThinkingSegmentStatus {
-    Running,
-    Complete,
-    Withheld,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ThinkingSummary {
-    pub text: UiSafeText,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ThinkingStep {
-    pub id: String,
-    pub order: u32,
-    pub kind: ThinkingStepKind,
-    pub status: ThinkingStepStatus,
-    pub title: UiSafeText,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub body: Option<UiSafeText>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub event_refs: Vec<ConversationEventRef>,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum ThinkingStepKind {
-    Status,
-    ReasoningSummary,
-    ToolPlanning,
-    ToolResult,
-    Synthesis,
-    Withheld,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum ThinkingStepStatus {
-    Running,
-    Complete,
-    Failed,
-    Withheld,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -535,12 +467,30 @@ pub struct ToolAttempt {
     pub id: String,
     pub order: u32,
     pub tool_use_id: String,
-    pub tool_name: UiSafeText,
+    pub tool_name: String,
+    #[serde(default)]
+    pub origin: ToolAttemptOrigin,
     pub status: ToolAttemptStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission: Option<ToolPermissionState>,
+    pub arguments_preview: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure_summary: Option<UiSafeText>,
+    pub output_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub affected_targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_of: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_phase: Option<ToolFailurePhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<DecisionRequestState>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_refs: Vec<ConversationEventRef>,
 }
@@ -556,29 +506,190 @@ pub enum ToolAttemptStatus {
     Denied,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct ToolPermissionState {
-    pub id: String,
-    pub request_id: String,
-    pub tool_use_id: String,
-    pub status: ToolPermissionStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary: Option<UiSafeText>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confirmation_expected: Option<UiSafeText>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub event_refs: Vec<ConversationEventRef>,
+pub enum ToolAttemptOrigin {
+    Builtin,
+    Mcp,
+    Plugin,
+    App,
+    Provider,
+    Unknown,
+}
+
+impl Default for ToolAttemptOrigin {
+    fn default() -> Self {
+        Self::Unknown
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub enum ToolPermissionStatus {
+pub enum ToolFailurePhase {
+    Validation,
+    Permission,
+    Execution,
+    Transport,
+    Projection,
+}
+
+// ── Decision types ──
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum DecisionKind {
+    Approve,
+    Deny,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum DecisionLifetime {
+    Once,
+    Run,
+    Session,
+    Persisted,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum DecisionMatcherKind {
+    ExactCommand,
+    ExactArgs,
+    ToolName,
+    Category,
+    PathPrefix,
+    GlobPattern,
+    ExecuteCodeScript,
+    Any,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionMatcherSummary {
+    pub kind: DecisionMatcherKind,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionOption {
+    pub id: String,
+    pub decision: DecisionKind,
+    pub label: String,
+    pub lifetime: DecisionLifetime,
+    pub matcher: DecisionMatcherSummary,
+    pub requires_confirmation: bool,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum DecisionOperation {
+    Read,
+    Write,
+    Execute,
+    Network,
+    Mcp,
+    Artifact,
+    Git,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionTarget {
+    pub kind: DecisionTargetKind,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_label: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum DecisionTargetKind {
+    File,
+    Directory,
+    Command,
+    Url,
+    McpTool,
+    Artifact,
+    GitRef,
+    Workspace,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum RiskLevel {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionPolicy {
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum DataExposureSecretRisk {
+    None,
+    Redacted,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DataExposure {
+    pub sends_workspace_data: bool,
+    pub sends_network_data: bool,
+    pub touches_private_path: bool,
+    pub secret_risk: DataExposureSecretRisk,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionConfirmation {
+    pub expected_text: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum DecisionRequestStatus {
     Pending,
     Submitting,
     Approved,
     Denied,
     Failed,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionRequestState {
+    pub id: String,
+    pub request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+    pub status: DecisionRequestStatus,
+    pub operation: DecisionOperation,
+    pub target: DecisionTarget,
+    pub risk_level: RiskLevel,
+    pub reason: String,
+    pub policy: DecisionPolicy,
+    pub decision_options: Vec<DecisionOption>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<ConversationEventRef>,
+    pub data_exposure: DataExposure,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation: Option<DecisionConfirmation>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -596,8 +707,7 @@ pub struct ArtifactSegment {
     pub title: UiSafeText,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<UiSafeText>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub media: Option<ArtifactMediaPreview>,
+    pub revision: ArtifactRevisionSummary,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_refs: Vec<ConversationEventRef>,
 }
@@ -617,6 +727,187 @@ pub enum ArtifactMediaKind {
     Video,
     Audio,
     File,
+}
+
+// ── CommandExecution ──
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandExecution {
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_output_ref: Option<EvidenceRefId>,
+    pub truncated: bool,
+    pub redaction_state: EvidenceRedactionState,
+    pub risk_level: RiskLevel,
+}
+
+// ── ChangeSet ──
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeSet {
+    pub id: String,
+    pub summary: String,
+    pub files: Vec<ChangeSetFile>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeSetFile {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+    pub status: ChangeSetFileStatus,
+    pub added_lines: u32,
+    pub removed_lines: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_patch_ref: Option<EvidenceRefId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub risk_flags: Vec<ChangeSetRiskFlag>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ChangeSetFileStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ChangeSetRiskFlag {
+    Delete,
+    Chmod,
+    Binary,
+    Large,
+    Generated,
+}
+
+// ── ArtifactRevisionSummary ──
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ArtifactRevisionKind {
+    Code,
+    Document,
+    Image,
+    Html,
+    Data,
+    Media,
+    File,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ArtifactRevisionStatus {
+    Pending,
+    Running,
+    Ready,
+    Failed,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactRevisionSummary {
+    pub artifact_id: String,
+    pub revision_id: String,
+    pub kind: ArtifactRevisionKind,
+    pub status: ArtifactRevisionStatus,
+    pub source_run_id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_ref: Option<EvidenceRefId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<ArtifactMediaPreview>,
+}
+
+// ── Evidence ref types ──
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct EvidenceRefId(String);
+
+impl EvidenceRefId {
+    #[must_use]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Display for EvidenceRefId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<EvidenceRefId> for String {
+    fn from(value: EvidenceRefId) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum EvidenceRefKind {
+    CommandOutput,
+    DiffPatch,
+    ArtifactContent,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum EvidenceRedactionState {
+    Clean,
+    Redacted,
+    Withheld,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidenceRefSummary {
+    pub id: EvidenceRefId,
+    pub kind: EvidenceRefKind,
+    pub content_type: String,
+    pub byte_length: u64,
+    pub truncated: bool,
+    pub redaction_state: EvidenceRedactionState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_event_refs: Vec<ConversationEventRef>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

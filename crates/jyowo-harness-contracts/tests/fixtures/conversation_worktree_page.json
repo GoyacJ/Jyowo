@@ -18,40 +18,7 @@
             "blob_ref": {
               "id": "01HZ0000000000000000000010",
               "size": 128,
-              "content_hash": [
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7,
-                7
-              ],
+              "content_hash": [7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7],
               "content_type": "image/png"
             }
           }
@@ -70,6 +37,7 @@
       "assistant": {
         "id": "assistant:run-1",
         "runId": "run-1",
+        "projectionVersion": 1,
         "status": "running",
         "segments": [
           {
@@ -77,15 +45,16 @@
             "id": "segment:process:run-1",
             "order": 0,
             "status": "running",
-            "summary": "正在处理请求",
+            "summary": "Processing request",
             "steps": [
               {
                 "id": "process-step:run-1:reasoning",
                 "order": 0,
                 "kind": "reasoning",
                 "status": "running",
-                "title": "分析请求",
-                "body": "确认需要生成图片并展示结果。",
+                "title": "Analyze request",
+                "body": "Need to generate image and display result.",
+                "visibility": "userSafe",
                 "eventRefs": [
                   {
                     "eventId": "event-thinking-1",
@@ -97,11 +66,70 @@
                 ]
               },
               {
-                "id": "process-step:run-1:artifact",
+                "id": "process-step:run-1:command",
                 "order": 1,
+                "kind": "command",
+                "status": "complete",
+                "title": "Run command",
+                "detail": {
+                  "type": "command",
+                  "command": "cargo test",
+                  "cwd": "/workspace",
+                  "exitCode": 0,
+                  "durationMs": 1200,
+                  "stdoutPreview": "test result: ok",
+                  "truncated": true,
+                  "redactionState": "clean",
+                  "riskLevel": "low"
+                },
+                "visibility": "userSafe",
+                "eventRefs": [
+                  {
+                    "eventId": "event-command-1",
+                    "cursor": {
+                      "eventId": "01HZ0000000000000000000003",
+                      "conversationSequence": 44
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "process-step:run-1:diff",
+                "order": 2,
+                "kind": "diff",
+                "status": "complete",
+                "title": "View changes",
+                "detail": {
+                  "type": "diff",
+                  "id": "changeset-1",
+                  "summary": "Modified src/main.rs",
+                  "files": [
+                    {
+                      "path": "src/main.rs",
+                      "status": "modified",
+                      "addedLines": 5,
+                      "removedLines": 2,
+                      "preview": "+ fn main() {"
+                    }
+                  ]
+                },
+                "visibility": "userSafe",
+                "eventRefs": [
+                  {
+                    "eventId": "event-diff-1",
+                    "cursor": {
+                      "eventId": "01HZ0000000000000000000004",
+                      "conversationSequence": 45
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "process-step:run-1:artifact",
+                "order": 3,
                 "kind": "artifact",
                 "status": "complete",
-                "title": "生成的图片",
+                "title": "Generated image",
                 "detail": {
                   "type": "artifact",
                   "artifactId": "artifact-1",
@@ -111,6 +139,7 @@
                     "sizeBytes": 128
                   }
                 },
+                "visibility": "userSafe",
                 "eventRefs": [
                   {
                     "eventId": "event-artifact-1",
@@ -124,44 +153,7 @@
             ],
             "eventRefs": [
               {
-                "eventId": "event-thinking-1",
-                "cursor": {
-                  "eventId": "01HZ0000000000000000000002",
-                  "conversationSequence": 43
-                }
-              }
-            ]
-          },
-          {
-            "kind": "thinking",
-            "id": "segment:thinking:run-1",
-            "order": 1,
-            "status": "running",
-            "summary": {
-              "text": "Checking available tools"
-            },
-            "steps": [
-              {
-                "id": "thinking-step:run-1:summary",
-                "order": 0,
-                "kind": "reasoningSummary",
-                "status": "running",
-                "title": "推理过程",
-                "body": "Checking available tools",
-                "eventRefs": [
-                  {
-                    "eventId": "event-thinking-1",
-                    "cursor": {
-                      "eventId": "01HZ0000000000000000000002",
-                      "conversationSequence": 43
-                    }
-                  }
-                ]
-              }
-            ],
-            "eventRefs": [
-              {
-                "eventId": "event-thinking-1",
+                "eventId": "event-process-1",
                 "cursor": {
                   "eventId": "01HZ0000000000000000000002",
                   "conversationSequence": 43
@@ -172,7 +164,7 @@
           {
             "kind": "text",
             "id": "segment:text:assistant-message-1",
-            "order": 2,
+            "order": 1,
             "messageId": "assistant-message-1",
             "body": "I can help with that.",
             "eventRefs": [
@@ -188,29 +180,51 @@
           {
             "kind": "toolGroup",
             "id": "segment:tools:tool-use-1",
-            "order": 3,
+            "order": 2,
             "attempts": [
               {
                 "id": "tool:tool-use-1",
                 "order": 0,
                 "toolUseId": "tool-use-1",
                 "toolName": "MiniMaxTextToImage",
+                "origin": "builtin",
                 "status": "completed",
+                "outputSummary": "Image generated successfully",
+                "durationMs": 1500,
                 "permission": {
                   "id": "permission:request-1",
                   "requestId": "request-1",
                   "toolUseId": "tool-use-1",
                   "status": "approved",
-                  "summary": "Approved once",
-                  "eventRefs": [
+                  "operation": "execute",
+                  "target": {
+                    "kind": "command",
+                    "label": "MiniMaxTextToImage"
+                  },
+                  "riskLevel": "medium",
+                  "reason": "Tool requires network access",
+                  "policy": {
+                    "mode": "default"
+                  },
+                  "decisionOptions": [
                     {
-                      "eventId": "event-permission-1",
-                      "cursor": {
-                        "eventId": "01HZ0000000000000000000004",
-                        "conversationSequence": 45
-                      }
+                      "id": "opt-01HZ0000000000000000000001",
+                      "decision": "approve",
+                      "label": "Allow this tool once",
+                      "lifetime": "once",
+                      "matcher": {
+                        "kind": "toolName",
+                        "label": "MiniMaxTextToImage"
+                      },
+                      "requiresConfirmation": false
                     }
-                  ]
+                  ],
+                  "dataExposure": {
+                    "sendsWorkspaceData": false,
+                    "sendsNetworkData": true,
+                    "touchesPrivatePath": false,
+                    "secretRisk": "none"
+                  }
                 },
                 "eventRefs": [
                   {
@@ -236,17 +250,26 @@
           {
             "kind": "artifact",
             "id": "segment:artifact:artifact-1",
-            "order": 4,
+            "order": 3,
             "artifactId": "artifact-1",
             "artifactKind": "image",
             "status": "ready",
             "source": "tool",
             "title": "Generated image",
             "summary": "Image artifact ready",
-            "media": {
+            "revision": {
+              "artifactId": "artifact-1",
+              "revisionId": "rev-01HZ0000000000000000000001",
               "kind": "image",
-              "mimeType": "image/png",
-              "sizeBytes": 128
+              "status": "ready",
+              "sourceRunId": "run-1",
+              "title": "Generated image",
+              "summary": "Image artifact ready",
+              "media": {
+                "kind": "image",
+                "mimeType": "image/png",
+                "sizeBytes": 128
+              }
             },
             "eventRefs": [
               {
@@ -261,7 +284,7 @@
           {
             "kind": "reviewRequest",
             "id": "segment:review:review-1",
-            "order": 5,
+            "order": 4,
             "requestId": "review-1",
             "title": "Review changes",
             "body": "Confirm before applying.",
@@ -278,7 +301,7 @@
           {
             "kind": "clarificationRequest",
             "id": "segment:clarification:clarification-1",
-            "order": 6,
+            "order": 5,
             "requestId": "clarification-1",
             "prompt": "Which style should I use?",
             "eventRefs": [
@@ -294,8 +317,9 @@
           {
             "kind": "notice",
             "id": "segment:notice:notice-1",
-            "order": 7,
+            "order": 6,
             "body": "Tool output was summarized.",
+            "code": "contextCompacted",
             "eventRefs": [
               {
                 "eventId": "event-notice-1",
@@ -309,7 +333,7 @@
           {
             "kind": "error",
             "id": "segment:error:event-1",
-            "order": 8,
+            "order": 7,
             "body": "Tool execution failed.",
             "eventRefs": [
               {

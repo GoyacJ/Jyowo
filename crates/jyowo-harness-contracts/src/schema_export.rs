@@ -218,19 +218,44 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "process_step_kind", ProcessStepKind);
     insert_schema!(schemas, "process_step_status", ProcessStepStatus);
     insert_schema!(schemas, "process_step_detail", ProcessStepDetail);
-    insert_schema!(schemas, "process_diff_file", ProcessDiffFile);
-    insert_schema!(schemas, "thinking_segment", ThinkingSegment);
-    insert_schema!(schemas, "thinking_segment_status", ThinkingSegmentStatus);
-    insert_schema!(schemas, "thinking_summary", ThinkingSummary);
-    insert_schema!(schemas, "thinking_step", ThinkingStep);
-    insert_schema!(schemas, "thinking_step_kind", ThinkingStepKind);
-    insert_schema!(schemas, "thinking_step_status", ThinkingStepStatus);
     insert_schema!(schemas, "text_segment", TextSegment);
     insert_schema!(schemas, "tool_group_segment", ToolGroupSegment);
     insert_schema!(schemas, "tool_attempt", ToolAttempt);
     insert_schema!(schemas, "tool_attempt_status", ToolAttemptStatus);
-    insert_schema!(schemas, "tool_permission_state", ToolPermissionState);
-    insert_schema!(schemas, "tool_permission_status", ToolPermissionStatus);
+    insert_schema!(schemas, "tool_attempt_origin", ToolAttemptOrigin);
+    insert_schema!(schemas, "tool_failure_phase", ToolFailurePhase);
+    insert_schema!(schemas, "decision_kind", DecisionKind);
+    insert_schema!(schemas, "decision_lifetime", DecisionLifetime);
+    insert_schema!(schemas, "decision_matcher_kind", DecisionMatcherKind);
+    insert_schema!(schemas, "decision_matcher_summary", DecisionMatcherSummary);
+    insert_schema!(schemas, "decision_option", DecisionOption);
+    insert_schema!(schemas, "decision_operation", DecisionOperation);
+    insert_schema!(schemas, "decision_target_kind", DecisionTargetKind);
+    insert_schema!(schemas, "decision_target", DecisionTarget);
+    insert_schema!(schemas, "risk_level", RiskLevel);
+    insert_schema!(schemas, "decision_policy", DecisionPolicy);
+    insert_schema!(schemas, "data_exposure_secret_risk", DataExposureSecretRisk);
+    insert_schema!(schemas, "data_exposure", DataExposure);
+    insert_schema!(schemas, "decision_confirmation", DecisionConfirmation);
+    insert_schema!(schemas, "decision_request_status", DecisionRequestStatus);
+    insert_schema!(schemas, "decision_request_state", DecisionRequestState);
+    insert_schema!(schemas, "command_execution", CommandExecution);
+    insert_schema!(schemas, "change_set", ChangeSet);
+    insert_schema!(schemas, "change_set_file", ChangeSetFile);
+    insert_schema!(schemas, "change_set_file_status", ChangeSetFileStatus);
+    insert_schema!(schemas, "change_set_risk_flag", ChangeSetRiskFlag);
+    insert_schema!(schemas, "artifact_revision_kind", ArtifactRevisionKind);
+    insert_schema!(schemas, "artifact_revision_status", ArtifactRevisionStatus);
+    insert_schema!(
+        schemas,
+        "artifact_revision_summary",
+        ArtifactRevisionSummary
+    );
+    insert_schema!(schemas, "evidence_ref_id", EvidenceRefId);
+    insert_schema!(schemas, "evidence_ref_kind", EvidenceRefKind);
+    insert_schema!(schemas, "evidence_redaction_state", EvidenceRedactionState);
+    insert_schema!(schemas, "evidence_ref_summary", EvidenceRefSummary);
+    insert_schema!(schemas, "ui_visibility", UiVisibility);
     insert_schema!(schemas, "artifact_segment", ArtifactSegment);
     insert_schema!(schemas, "artifact_media_preview", ArtifactMediaPreview);
     insert_schema!(schemas, "artifact_media_kind", ArtifactMediaKind);
@@ -426,6 +451,11 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     );
     insert_schema!(schemas, "permission_requested", PermissionRequestedEvent);
     insert_schema!(schemas, "permission_resolved", PermissionResolvedEvent);
+    insert_schema!(
+        schemas,
+        "permission_decision_option",
+        PermissionDecisionOption
+    );
     insert_schema!(
         schemas,
         "permission_persistence_tampered",

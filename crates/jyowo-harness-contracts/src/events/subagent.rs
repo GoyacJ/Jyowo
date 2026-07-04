@@ -78,7 +78,7 @@ pub struct SubagentPermissionForwardedEvent {
     pub subagent_id: SubagentId,
     pub original_request_id: PermissionRequestId,
     pub subject: PermissionSubject,
-    pub presented_options: Vec<Decision>,
+    pub presented_options: Vec<PermissionDecisionOption>,
     pub timeout_policy: Option<TimeoutPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team_id: Option<TeamId>,
