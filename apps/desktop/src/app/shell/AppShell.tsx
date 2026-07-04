@@ -1,10 +1,11 @@
 import { useNavigate, useRouterState } from '@tanstack/react-router'
-import { Command as CommandIcon, MoreHorizontal, PanelRightOpen } from 'lucide-react'
+import { Command as CommandIcon, PanelRightOpen } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ActivityRail } from '@/features/activity/ActivityRail'
 import { ContextPanel } from '@/features/context/ContextPanel'
 import { useContextSnapshot } from '@/features/context/use-context-snapshot'
+import { WorkbenchInspector } from '@/features/workbench/WorkbenchInspector'
 import { OPEN_COMMAND_PALETTE_EVENT } from '@/features/workspace/CommandPalette'
 import { SidebarNav } from '@/features/workspace/SidebarNav'
 import { useUiStore } from '@/shared/state/ui-store'
@@ -18,9 +19,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
   const contextPanelCollapsed = useUiStore((state) => state.contextPanelCollapsed)
   const compactSidebar = useMediaQuery('(max-width: 720px)')
+  const inspectorOpen = useUiStore((state) => state.inspectorOpen)
   const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
   const setContextPanelCollapsed = useUiStore((state) => state.setContextPanelCollapsed)
   const requestTimelineScroll = useUiStore((state) => state.requestTimelineScroll)
+  const setWorkbenchSelection = useUiStore((state) => state.setWorkbenchSelection)
   const currentPath = useRouterState({
     select: (state) => state.location.pathname,
   })
@@ -39,7 +42,10 @@ export function AppShell({ children }: { children: ReactNode }) {
         ? { conversationId: selectedConversationId }
         : {}
   const contextSnapshot = useContextSnapshot(contextRequest, { enabled: contextVisible })
+  const workbenchSelection = useUiStore((state) => state.workbenchSelection)
   const sidebarWidth = sidebarCollapsed || compactSidebar ? '48px' : '248px'
+  const showInspector = inspectorOpen
+  const showContext = contextVisible
 
   function openSettings() {
     setInspectorOpen(true)
@@ -54,9 +60,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div
         className="grid min-h-0"
         style={{
-          gridTemplateColumns: contextVisible
-            ? `${sidebarWidth} minmax(0,1fr) 320px`
-            : `${sidebarWidth} minmax(0,1fr)`,
+          gridTemplateColumns: showInspector
+            ? `${sidebarWidth} minmax(0,1fr) 360px`
+            : showContext
+              ? `${sidebarWidth} minmax(0,1fr) 320px`
+              : `${sidebarWidth} minmax(0,1fr)`,
         }}
       >
         <SidebarNav compact={compactSidebar} />
@@ -86,19 +94,32 @@ export function AppShell({ children }: { children: ReactNode }) {
               <CommandIcon className="size-4" />
             </Button>
             <Button
-              aria-label={t('actions.moreActions')}
-              className="size-8 text-muted-foreground"
-              disabled
+              aria-label={
+                inspectorOpen
+                  ? t('actions.closeInspector')
+                  : t('actions.openInspector')
+              }
+              className="size-8"
+              onClick={() => {
+                if (inspectorOpen) {
+                  setWorkbenchSelection(null)
+                }
+                setInspectorOpen(!inspectorOpen)
+              }}
               size="icon"
               type="button"
-              variant="ghost"
+              variant="outline"
             >
-              <MoreHorizontal className="size-4" />
+              <PanelRightOpen
+                className={`size-4 ${inspectorOpen ? 'rotate-180' : ''}`}
+              />
             </Button>
           </header>
           <main className="min-h-0 min-w-0 overflow-hidden px-6 pb-6 xl:px-8">{children}</main>
         </div>
-        {contextVisible ? (
+        {showInspector ? (
+          <WorkbenchInspector />
+        ) : showContext ? (
           <ContextPanel
             context={contextSnapshot.context}
             errorMessage={

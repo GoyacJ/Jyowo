@@ -2,6 +2,7 @@ import { useStore } from 'zustand'
 import { createStore } from 'zustand/vanilla'
 
 import { type AppLocale, DEFAULT_APP_LOCALE } from '@/shared/i18n/locales'
+import type { WorkbenchSelection } from '@/shared/state/workbench-selection'
 
 type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -20,6 +21,7 @@ export interface UiState {
   sidebarCollapsed: boolean
   contextPanelCollapsed: boolean
   inspectorOpen: boolean
+  workbenchSelection: WorkbenchSelection | null
   timelineScrollRequest: TimelineScrollRequest | null
   clearActiveRun: (conversationId?: string) => void
   resetEvidenceDisclosure: () => void
@@ -30,6 +32,7 @@ export interface UiState {
   setSidebarCollapsed: (sidebarCollapsed: boolean) => void
   setContextPanelCollapsed: (contextPanelCollapsed: boolean) => void
   setInspectorOpen: (inspectorOpen: boolean) => void
+  setWorkbenchSelection: (selection: WorkbenchSelection | null) => void
   requestTimelineScroll: (anchorId: string) => void
   clearTimelineScrollRequest: () => void
 }
@@ -45,6 +48,7 @@ export function createUiStore() {
     sidebarCollapsed: false,
     contextPanelCollapsed: true,
     inspectorOpen: true,
+    workbenchSelection: null,
     timelineScrollRequest: null,
     clearActiveRun: (conversationId) =>
       set((state) => {
@@ -88,6 +92,7 @@ export function createUiStore() {
     setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
     setContextPanelCollapsed: (contextPanelCollapsed) => set({ contextPanelCollapsed }),
     setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
+    setWorkbenchSelection: (workbenchSelection) => set({ workbenchSelection }),
     requestTimelineScroll: (anchorId) =>
       set((state) => ({
         timelineScrollRequest: {
