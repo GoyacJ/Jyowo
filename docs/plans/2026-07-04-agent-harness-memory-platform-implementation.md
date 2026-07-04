@@ -1801,8 +1801,8 @@ git commit -m "refactor(memory): replace dreams with inbox"
 - Model output must parse into a typed schema from `extraction/schema.rs`; unparsable output is a retryable failure until attempts are exhausted.
 - The worker never writes long-term memory directly unless `MemoryPolicyEngine` returns an explicit direct-write allowance for user/private visibility.
 
-- [ ] Write failing tests for idle gating, active-session skip, external-context skip, candidate creation, promotion, merge, demotion, audit events, durable job persistence, lease expiry recovery, idempotency, retry backoff, quota skip, unavailable model skip, and invalid model output.
-- [ ] Run targeted red tests:
+- [x] Write failing tests for idle gating, active-session skip, external-context skip, candidate creation, promotion, merge, demotion, audit events, durable job persistence, lease expiry recovery, idempotency, retry backoff, quota skip, unavailable model skip, and invalid model output.
+- [x] Run targeted red tests:
 
 ```bash
 cargo test -p jyowo-harness-memory --test extraction -- --nocapture
@@ -1810,16 +1810,16 @@ cargo test -p jyowo-harness-engine --test memory_lifecycle -- --nocapture
 cargo test -p jyowo-harness-sdk runtime_assembly_memory -- --nocapture
 ```
 
-- [ ] Implement extractor and consolidator interfaces.
-- [ ] Implement durable extraction job queue and worker lease handling.
-- [ ] Implement typed extraction model output parsing in `extraction/schema.rs`.
-- [ ] Use real configured model provider path for extraction. If no model is configured, skip with typed event; do not fake extraction.
-- [ ] Persist candidates and consolidation outcomes.
-- [ ] Run targeted verification with the same commands.
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 9.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
+- [x] Implement extractor and consolidator interfaces.
+- [x] Implement durable extraction job queue and worker lease handling.
+- [x] Implement typed extraction model output parsing in `extraction/schema.rs`.
+- [x] Use real configured model provider path for extraction. If no model is configured, skip with typed event; do not fake extraction.
+- [x] Persist candidates and consolidation outcomes.
+- [x] Run targeted verification with the same commands.
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 9.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-memory crates/jyowo-harness-sdk crates/jyowo-harness-engine

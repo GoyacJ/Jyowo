@@ -9,6 +9,7 @@
 
 pub use harness_contracts::MemdirFileTag as MemdirFile;
 
+pub mod extraction;
 #[cfg(feature = "provider-registry")]
 pub mod external;
 #[cfg(feature = "provider-registry")]
@@ -26,6 +27,7 @@ pub mod scanner;
 pub mod store;
 pub mod types;
 
+pub use extraction::*;
 #[cfg(feature = "provider-registry")]
 pub use external::*;
 #[cfg(feature = "provider-registry")]
