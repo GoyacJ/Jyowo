@@ -366,6 +366,7 @@ const resolvePermissionRequestSchema = z
   .object({
     conversationId: z.string().min(1),
     decision: z.enum(['approve', 'deny']),
+    optionId: z.string().min(1).optional(),
     requestId: z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/),
     confirmationText: z.string().min(1).optional(),
   })
@@ -443,41 +444,6 @@ const conversationTurnCursorSchema = z
   })
   .strict()
 
-const thinkingStepSchema = z
-  .object({
-    id: z.string().min(1),
-    order: z.number().int().nonnegative(),
-    kind: z.enum([
-      'status',
-      'reasoningSummary',
-      'toolPlanning',
-      'toolResult',
-      'synthesis',
-      'withheld',
-    ]),
-    status: z.enum(['running', 'complete', 'failed', 'withheld']),
-    title: conversationDisplayTextSchema,
-    body: conversationDisplayTextSchema.optional(),
-    eventRefs: z.array(conversationEventRefSchema).optional(),
-  })
-  .strict()
-
-const thinkingSegmentSchema = z
-  .object({
-    kind: z.literal('thinking'),
-    id: z.string().min(1),
-    order: z.number().int().nonnegative(),
-    status: z.enum(['running', 'complete', 'withheld']),
-    summary: z
-      .object({
-        text: conversationDisplayTextSchema,
-      })
-      .strict(),
-    steps: z.array(thinkingStepSchema).optional(),
-    eventRefs: z.array(conversationEventRefSchema).optional(),
-  })
-  .strict()
-
 const textSegmentSchema = z
   .object({
     kind: z.literal('text'),
@@ -489,27 +455,157 @@ const textSegmentSchema = z
   })
   .strict()
 
-const toolPermissionStateSchema = z
+const decisionMatcherKindSchema = z.enum([
+  'exactCommand',
+  'exactArgs',
+  'toolName',
+  'category',
+  'pathPrefix',
+  'globPattern',
+  'executeCodeScript',
+  'any',
+])
+
+const decisionMatcherSummarySchema = z
+  .object({
+    kind: decisionMatcherKindSchema,
+    label: z.string(),
+  })
+  .strict()
+
+const decisionLifetimeSchema = z.enum(['once', 'run', 'session', 'persisted'])
+
+const decisionOptionSchema = z
+  .object({
+    id: z.string().min(1),
+    decision: z.enum(['approve', 'deny']),
+    label: z.string(),
+    lifetime: decisionLifetimeSchema,
+    matcher: decisionMatcherSummarySchema,
+    requiresConfirmation: z.boolean(),
+  })
+  .strict()
+
+const decisionOperationSchema = z.enum([
+  'read',
+  'write',
+  'execute',
+  'network',
+  'mcp',
+  'artifact',
+  'git',
+  'unknown',
+])
+
+const decisionTargetKindSchema = z.enum([
+  'file',
+  'directory',
+  'command',
+  'url',
+  'mcpTool',
+  'artifact',
+  'gitRef',
+  'workspace',
+  'unknown',
+])
+
+const decisionTargetSchema = z
+  .object({
+    kind: decisionTargetKindSchema,
+    label: z.string(),
+    secondaryLabel: z.string().optional(),
+  })
+  .strict()
+
+const riskLevelSchema = z.enum(['low', 'medium', 'high', 'critical'])
+
+const decisionPolicySchema = z
+  .object({
+    mode: z.string(),
+    rule: z.string().optional(),
+    sandbox: z.string().optional(),
+  })
+  .strict()
+
+const dataExposureSecretRiskSchema = z.enum(['none', 'redacted', 'blocked'])
+
+const dataExposureSchema = z
+  .object({
+    sendsWorkspaceData: z.boolean(),
+    sendsNetworkData: z.boolean(),
+    touchesPrivatePath: z.boolean(),
+    secretRisk: dataExposureSecretRiskSchema,
+  })
+  .strict()
+
+const decisionConfirmationSchema = z
+  .object({
+    expectedText: z.string(),
+    label: z.string(),
+  })
+  .strict()
+
+const decisionRequestStatusSchema = z.enum([
+  'pending',
+  'submitting',
+  'approved',
+  'denied',
+  'failed',
+])
+
+const decisionRequestStateSchema = z
   .object({
     id: z.string().min(1),
     requestId: z.string().min(1),
-    toolUseId: z.string().min(1),
-    status: z.enum(['pending', 'submitting', 'approved', 'denied', 'failed']),
-    summary: conversationDisplayTextSchema.optional(),
-    confirmationExpected: conversationDisplayTextSchema.optional(),
-    eventRefs: z.array(conversationEventRefSchema).optional(),
+    toolUseId: z.string().min(1).optional(),
+    status: decisionRequestStatusSchema,
+    operation: decisionOperationSchema,
+    target: decisionTargetSchema,
+    riskLevel: riskLevelSchema,
+    reason: z.string(),
+    policy: decisionPolicySchema,
+    decisionOptions: z.array(decisionOptionSchema),
+    evidenceRefs: z.array(conversationEventRefSchema).optional(),
+    dataExposure: dataExposureSchema,
+    confirmation: decisionConfirmationSchema.optional(),
   })
   .strict()
+
+const toolAttemptOriginSchema = z.enum([
+  'builtin',
+  'mcp',
+  'plugin',
+  'app',
+  'provider',
+  'unknown',
+])
+
+const toolFailurePhaseSchema = z.enum([
+  'validation',
+  'permission',
+  'execution',
+  'transport',
+  'projection',
+])
 
 const toolAttemptSchema = z
   .object({
     id: z.string().min(1),
     order: z.number().int().nonnegative(),
     toolUseId: z.string().min(1),
-    toolName: conversationDisplayTextSchema,
+    toolName: z.string(),
+    origin: toolAttemptOriginSchema.optional(),
     status: z.enum(['queued', 'waitingPermission', 'running', 'completed', 'failed', 'denied']),
-    permission: toolPermissionStateSchema.optional(),
-    failureSummary: conversationDisplayTextSchema.optional(),
+    argumentsPreview: z.string().optional(),
+    outputSummary: z.string().optional(),
+    affectedTargets: z.array(z.string()).optional(),
+    startedAt: z.string().optional(),
+    endedAt: z.string().optional(),
+    durationMs: z.number().int().nonnegative().optional(),
+    retryOf: z.string().optional(),
+    failurePhase: toolFailurePhaseSchema.optional(),
+    failureSummary: z.string().optional(),
+    permission: decisionRequestStateSchema.optional(),
     eventRefs: z.array(conversationEventRefSchema).optional(),
   })
   .strict()
@@ -596,12 +692,32 @@ const artifactMediaPreviewSchema = z
     }
   })
 
-const processDiffFileSchema = z
+const evidenceRefIdSchema = z.string().min(1)
+
+const evidenceRedactionStateSchema = z.enum(['clean', 'redacted', 'withheld'])
+
+const changeSetFileStatusSchema = z.enum(['added', 'modified', 'deleted', 'renamed'])
+
+const changeSetRiskFlagSchema = z.enum(['delete', 'chmod', 'binary', 'large', 'generated'])
+
+const changeSetFileSchema = z
   .object({
-    path: conversationDisplayTextSchema,
+    path: z.string(),
+    oldPath: z.string().optional(),
+    status: changeSetFileStatusSchema,
     addedLines: z.number().int().nonnegative(),
     removedLines: z.number().int().nonnegative(),
-    preview: conversationDisplayTextSchema.optional(),
+    preview: z.string().optional(),
+    fullPatchRef: evidenceRefIdSchema.optional(),
+    riskFlags: z.array(changeSetRiskFlagSchema).optional(),
+  })
+  .strict()
+
+const changeSetSchema = z
+  .object({
+    id: z.string().min(1),
+    summary: z.string(),
+    files: z.array(changeSetFileSchema),
   })
   .strict()
 
@@ -616,16 +732,27 @@ const processStepDetailSchema = z.discriminatedUnion('type', [
   z
     .object({
       type: z.literal('command'),
-      command: conversationDisplayTextSchema,
-      output: conversationDisplayTextSchema.optional(),
+      command: z.string(),
+      cwd: z.string().optional(),
+      shell: z.string().optional(),
+      sandbox: z.string().optional(),
+      approvalRequestId: z.string().optional(),
       exitCode: z.number().int().optional(),
       durationMs: z.number().int().nonnegative().optional(),
+      stdoutPreview: z.string().optional(),
+      stderrPreview: z.string().optional(),
+      fullOutputRef: evidenceRefIdSchema.optional(),
+      truncated: z.boolean(),
+      redactionState: evidenceRedactionStateSchema,
+      riskLevel: riskLevelSchema,
     })
     .strict(),
   z
     .object({
       type: z.literal('diff'),
-      files: z.array(processDiffFileSchema),
+      id: z.string().min(1),
+      summary: z.string(),
+      files: z.array(changeSetFileSchema),
     })
     .strict(),
   z
@@ -666,6 +793,7 @@ const processStepSchema = z
     title: conversationDisplayTextSchema,
     body: conversationDisplayTextSchema.optional(),
     detail: processStepDetailSchema.optional(),
+    visibility: z.enum(['userSafe', 'withheld']).optional(),
     eventRefs: z.array(conversationEventRefSchema).optional(),
   })
   .strict()
@@ -682,6 +810,33 @@ const processSegmentSchema = z
   })
   .strict()
 
+const artifactRevisionKindSchema = z.enum([
+  'code',
+  'document',
+  'image',
+  'html',
+  'data',
+  'media',
+  'file',
+])
+
+const artifactRevisionStatusSchema = z.enum(['pending', 'running', 'ready', 'failed'])
+
+const artifactRevisionSummarySchema = z
+  .object({
+    artifactId: z.string().min(1),
+    revisionId: z.string().min(1),
+    kind: artifactRevisionKindSchema,
+    status: artifactRevisionStatusSchema,
+    sourceRunId: z.string().min(1),
+    title: z.string(),
+    summary: z.string().optional(),
+    previewRef: z.string().optional(),
+    contentRef: evidenceRefIdSchema.optional(),
+    media: artifactMediaPreviewSchema.optional(),
+  })
+  .strict()
+
 const artifactSegmentSchema = z
   .object({
     kind: z.literal('artifact'),
@@ -693,7 +848,7 @@ const artifactSegmentSchema = z
     source: artifactSourceSchema.optional(),
     title: conversationDisplayTextSchema,
     summary: conversationDisplayTextSchema.optional(),
-    media: artifactMediaPreviewSchema.optional(),
+    revision: artifactRevisionSummarySchema,
     eventRefs: z.array(conversationEventRefSchema).optional(),
   })
   .strict()
@@ -844,7 +999,6 @@ const agentActivitySegmentSchema = z
 
 const assistantSegmentSchema = z.discriminatedUnion('kind', [
   processSegmentSchema,
-  thinkingSegmentSchema,
   textSegmentSchema,
   toolGroupSegmentSchema,
   artifactSegmentSchema,
@@ -859,6 +1013,8 @@ const assistantWorkSchema = z
   .object({
     id: z.string().min(1),
     runId: z.string().min(1),
+    projectionVersion: z.number().int().positive(),
+    streamVersion: z.number().int().nonnegative().optional(),
     model: runModelSnapshotSchema.optional(),
     status: z.enum(['running', 'complete', 'failed', 'cancelled']),
     segments: z.array(assistantSegmentSchema),
@@ -2997,15 +3153,38 @@ export type PageConversationTimelineResponse = z.infer<
 >
 export type ConversationEventRef = z.infer<typeof conversationEventRefSchema>
 export type ConversationTurnCursor = z.infer<typeof conversationTurnCursorSchema>
-export type ThinkingSegment = z.infer<typeof thinkingSegmentSchema>
 export type TextSegment = z.infer<typeof textSegmentSchema>
-export type ToolPermissionState = z.infer<typeof toolPermissionStateSchema>
+export type DecisionMatcherKind = z.infer<typeof decisionMatcherKindSchema>
+export type DecisionMatcherSummary = z.infer<typeof decisionMatcherSummarySchema>
+export type DecisionLifetime = z.infer<typeof decisionLifetimeSchema>
+export type DecisionOption = z.infer<typeof decisionOptionSchema>
+export type DecisionOperation = z.infer<typeof decisionOperationSchema>
+export type DecisionTargetKind = z.infer<typeof decisionTargetKindSchema>
+export type DecisionTarget = z.infer<typeof decisionTargetSchema>
+export type RiskLevel = z.infer<typeof riskLevelSchema>
+export type DecisionPolicy = z.infer<typeof decisionPolicySchema>
+export type DataExposureSecretRisk = z.infer<typeof dataExposureSecretRiskSchema>
+export type DataExposure = z.infer<typeof dataExposureSchema>
+export type DecisionConfirmation = z.infer<typeof decisionConfirmationSchema>
+export type DecisionRequestStatus = z.infer<typeof decisionRequestStatusSchema>
+export type DecisionRequestState = z.infer<typeof decisionRequestStateSchema>
+export type ToolAttemptOrigin = z.infer<typeof toolAttemptOriginSchema>
+export type ToolFailurePhase = z.infer<typeof toolFailurePhaseSchema>
 export type ToolAttempt = z.infer<typeof toolAttemptSchema>
 export type ToolGroupSegment = z.infer<typeof toolGroupSegmentSchema>
 export type AgentActivitySegment = z.infer<typeof agentActivitySegmentSchema>
 export type ProcessSegment = z.infer<typeof processSegmentSchema>
 export type ProcessStep = z.infer<typeof processStepSchema>
+export type ArtifactRevisionKind = z.infer<typeof artifactRevisionKindSchema>
+export type ArtifactRevisionStatus = z.infer<typeof artifactRevisionStatusSchema>
+export type ArtifactRevisionSummary = z.infer<typeof artifactRevisionSummarySchema>
 export type ArtifactSegment = z.infer<typeof artifactSegmentSchema>
+export type EvidenceRefId = z.infer<typeof evidenceRefIdSchema>
+export type EvidenceRedactionState = z.infer<typeof evidenceRedactionStateSchema>
+export type ChangeSetFileStatus = z.infer<typeof changeSetFileStatusSchema>
+export type ChangeSetRiskFlag = z.infer<typeof changeSetRiskFlagSchema>
+export type ChangeSetFile = z.infer<typeof changeSetFileSchema>
+export type ChangeSet = z.infer<typeof changeSetSchema>
 export type ReviewRequestSegment = z.infer<typeof reviewRequestSegmentSchema>
 export type ClarificationRequestSegment = z.infer<typeof clarificationRequestSegmentSchema>
 export type NoticeSegment = z.infer<typeof noticeSegmentSchema>

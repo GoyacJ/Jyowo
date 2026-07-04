@@ -40,19 +40,20 @@ function validWorktreePage(): PageConversationWorktreeResponse {
         assistant: {
           id: 'assistant:run-001',
           runId: 'run-001',
+          projectionVersion: 1,
           status: 'running',
           segments: [
             {
-              kind: 'thinking',
-              id: 'segment:thinking:run-001',
+              kind: 'process',
+              id: 'segment:process:run-001',
               order: 0,
               status: 'withheld',
-              summary: { text: '思考内容已折叠' },
+              summary: '思考内容已折叠',
               steps: [
                 {
-                  id: 'thinking-step:run-001:summary',
+                  id: 'process-step:run-001:reasoning',
                   order: 0,
-                  kind: 'reasoningSummary',
+                  kind: 'reasoning',
                   status: 'complete',
                   title: '推理过程',
                   body: 'Checked project context.',
@@ -85,8 +86,28 @@ function validWorktreePage(): PageConversationWorktreeResponse {
                     requestId: 'request-001',
                     toolUseId: 'tool-use-001',
                     status: 'approved',
-                    summary: 'Approved once',
-                    eventRefs: [{ eventId: 'event-004', cursor: cursor('', 4) }],
+                    operation: 'read',
+                    target: { kind: 'file', label: 'test.ts' },
+                    riskLevel: 'low',
+                    reason: 'Approved once',
+                    policy: { mode: 'default' },
+                    decisionOptions: [
+                      {
+                        id: 'opt-1',
+                        decision: 'approve',
+                        label: 'Approve',
+                        lifetime: 'once',
+                        matcher: { kind: 'any', label: 'match all' },
+                        requiresConfirmation: false,
+                      },
+                    ],
+                    dataExposure: {
+                      sendsWorkspaceData: false,
+                      sendsNetworkData: false,
+                      touchesPrivatePath: false,
+                      secretRisk: 'none',
+                    },
+                    evidenceRefs: [{ eventId: 'event-004', cursor: cursor('', 4) }],
                   },
                   failureSummary: '工具执行失败。可在详情中查看。',
                   eventRefs: [{ eventId: 'event-005', cursor: cursor('', 5) }],
@@ -844,11 +865,11 @@ describe('CommandClient', () => {
             id: 'assistant:run-001',
             segments: [
               {
-                kind: 'thinking',
-                id: 'segment:thinking:run-001',
+                kind: 'process',
+                id: 'segment:process:run-001',
                 steps: [
                   {
-                    kind: 'reasoningSummary',
+                    kind: 'reasoning',
                     body: 'Checked project context.',
                   },
                 ],
@@ -957,9 +978,12 @@ describe('CommandClient', () => {
             detail: {
               type: 'command',
               command: 'pnpm check:desktop',
-              output: 'passed',
+              stdoutPreview: 'passed',
               exitCode: 0,
               durationMs: 1234,
+              truncated: false,
+              redactionState: 'clean',
+              riskLevel: 'low',
             },
           },
           {
@@ -991,10 +1015,18 @@ describe('CommandClient', () => {
         source: 'tool',
         title: 'Generated image',
         summary: 'Image artifact ready',
-        media: {
+        revision: {
+          artifactId: 'artifact-image-001',
+          revisionId: 'rev-img-1',
           kind: 'image',
-          mimeType: 'image/png',
-          sizeBytes: 128,
+          status: 'ready',
+          sourceRunId: 'run-001',
+          title: 'Generated image',
+          media: {
+            kind: 'image',
+            mimeType: 'image/png',
+            sizeBytes: 128,
+          },
         },
       },
       {
@@ -1048,7 +1080,7 @@ describe('CommandClient', () => {
                 artifactKind: 'image',
                 status: 'ready',
                 source: 'tool',
-                media: { kind: 'image', mimeType: 'image/png', sizeBytes: 128 },
+                revision: { media: { kind: 'image', mimeType: 'image/png', sizeBytes: 128 } },
               },
               { kind: 'text', body: '图片已生成。' },
             ],
@@ -1071,7 +1103,6 @@ describe('CommandClient', () => {
           assistant: {
             segments: [
               { kind: 'process' },
-              { kind: 'thinking' },
               { kind: 'text' },
               { kind: 'toolGroup' },
               {
@@ -1079,7 +1110,7 @@ describe('CommandClient', () => {
                 artifactKind: 'image',
                 status: 'ready',
                 source: 'tool',
-                media: { kind: 'image', mimeType: 'image/png', sizeBytes: 128 },
+                revision: { media: { kind: 'image', mimeType: 'image/png', sizeBytes: 128 } },
               },
               { kind: 'reviewRequest' },
               { kind: 'clarificationRequest' },
@@ -1414,10 +1445,18 @@ describe('CommandClient', () => {
       status: 'ready',
       source: 'tool',
       title: 'Generated file',
-      media: {
+      revision: {
+        artifactId: 'artifact-file',
+        revisionId: 'rev-file-1',
         kind: 'file',
-        mimeType: 'text/plain',
-        sizeBytes: 12,
+        status: 'ready',
+        sourceRunId: 'run-001',
+        title: 'Generated file',
+        media: {
+          kind: 'file',
+          mimeType: 'text/plain',
+          sizeBytes: 12,
+        },
       },
     } as (typeof assistant.segments)[number])
 
