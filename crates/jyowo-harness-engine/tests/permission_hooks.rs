@@ -3,7 +3,7 @@ include!("hook_pipeline.rs");
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test]
-async fn hook_permission_override_emits_hook_provenance() {
+async fn hook_permission_override_is_audited_but_authority_decides() {
     let harness = TestHarness::new(
         vec![
             tool_call_events("Echo", json!({ "value": "hook allow" })),
@@ -31,7 +31,7 @@ async fn hook_permission_override_emits_hook_provenance() {
 }
 
 #[tokio::test]
-async fn hook_permission_deny_beats_broker_allow() {
+async fn hook_permission_deny_does_not_replace_authority_allow() {
     let harness = TestHarness::new(
         vec![
             tool_call_events("Echo", json!({ "value": "hook deny" })),
@@ -62,7 +62,7 @@ async fn hook_permission_deny_beats_broker_allow() {
 }
 
 #[tokio::test]
-async fn bypass_permission_mode_keeps_hook_deny_request_pending_for_audit() {
+async fn bypass_permission_mode_audits_hook_deny_without_replacing_authority_allow() {
     let harness = TestHarness::new(
         vec![
             tool_call_events("Echo", json!({ "value": "bypass hook deny" })),
@@ -96,7 +96,7 @@ async fn bypass_permission_mode_keeps_hook_deny_request_pending_for_audit() {
 }
 
 #[tokio::test]
-async fn broker_deny_beats_hook_allow_in_bypass_permission_mode() {
+async fn authority_deny_beats_hook_allow_in_bypass_permission_mode() {
     let harness = TestHarness::new(
         vec![
             tool_call_events("Echo", json!({ "value": "policy deny" })),
@@ -250,7 +250,7 @@ async fn hard_policy_deny_beats_hook_allow_in_default_permission_mode() {
 }
 
 #[tokio::test]
-async fn bypass_permission_mode_allows_broker_escalation_without_hook_override() {
+async fn bypass_permission_mode_allows_authority_escalation_without_hook_override() {
     let harness = TestHarness::new(
         vec![
             tool_call_events("Echo", json!({ "value": "escalate" })),
@@ -332,7 +332,7 @@ async fn bypass_permission_mode_normalizes_hook_escalation_to_allow() {
 }
 
 #[tokio::test]
-async fn conflicting_hook_permission_overrides_emit_conflict_and_deny_wins() {
+async fn conflicting_hook_permission_overrides_are_audited_but_authority_decides() {
     let harness = TestHarness::new(
         vec![
             tool_call_events("Echo", json!({ "value": "conflict" })),

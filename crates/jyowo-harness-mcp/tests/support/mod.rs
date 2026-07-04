@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use harness_contracts::{
@@ -37,8 +37,31 @@ pub fn mcp_authorization_context_allowing_tool(tool_name: &str) -> McpAuthorizat
     }))
 }
 
+#[allow(dead_code)]
+pub fn mcp_authorization_context_allowing_tool_with_sink(
+    tool_name: &str,
+    event_sink: Arc<dyn AuthorizationEventSink>,
+) -> McpAuthorizationContext {
+    mcp_authorization_context_with_broker_and_sink(
+        Arc::new(AllowListedPermissionBroker {
+            tool_name: tool_name.to_owned(),
+        }),
+        event_sink,
+    )
+}
+
 fn mcp_authorization_context_with_broker(
     permission_broker: Arc<dyn PermissionBroker>,
+) -> McpAuthorizationContext {
+    mcp_authorization_context_with_broker_and_sink(
+        permission_broker,
+        Arc::new(NoopAuthorizationEventSink),
+    )
+}
+
+fn mcp_authorization_context_with_broker_and_sink(
+    permission_broker: Arc<dyn PermissionBroker>,
+    event_sink: Arc<dyn AuthorizationEventSink>,
 ) -> McpAuthorizationContext {
     let authority = Arc::new(
         PermissionAuthority::builder()
@@ -50,7 +73,7 @@ fn mcp_authorization_context_with_broker(
     let service = Arc::new(AuthorizationService::new(
         authority,
         Arc::new(AllowTransportPreflightSandbox),
-        Arc::new(NoopAuthorizationEventSink),
+        event_sink,
         Arc::new(TicketLedger::default()),
     ));
     let session_id = SessionId::from_u128(1);
@@ -106,6 +129,32 @@ impl PermissionBroker for AllowListedPermissionBroker {
         &self,
         _decision: PersistedDecision,
     ) -> Result<(), harness_contracts::PermissionError> {
+        Ok(())
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Default)]
+pub struct RecordingAuthorizationEventSink {
+    events: Mutex<Vec<Event>>,
+}
+
+#[allow(dead_code)]
+impl RecordingAuthorizationEventSink {
+    pub fn events(&self) -> Vec<Event> {
+        self.events.lock().expect("events lock").clone()
+    }
+}
+
+#[async_trait]
+impl AuthorizationEventSink for RecordingAuthorizationEventSink {
+    async fn emit_batch(
+        &self,
+        _tenant_id: TenantId,
+        _session_id: SessionId,
+        events: Vec<Event>,
+    ) -> Result<(), ExecutionError> {
+        self.events.lock().expect("events lock").extend(events);
         Ok(())
     }
 }

@@ -599,26 +599,6 @@ impl SamplingJsonRpcHandler {
             Ok(request) => request,
             Err(error) => return JsonRpcResponse::failure(request.id, error),
         };
-        if sampling_request.run_id.is_none() {
-            let prompt_cache_namespace = self.policy.cache.namespace(&sampling_request);
-            self.record_sampling(McpMetricOutcome::Denied);
-            emit_sampling_event(
-                &sampling_request,
-                &prompt_cache_namespace,
-                SamplingOutcome::Denied {
-                    reason: SamplingDenyReason::PolicyDenied,
-                },
-                Arc::clone(&self.event_sink),
-            );
-            return JsonRpcResponse::failure(
-                request.id,
-                JsonRpcError {
-                    code: MCP_SAMPLING_DENIED_CODE,
-                    message: "sampling requires an authoritative run context".to_owned(),
-                    data: Some(json!({ "server_id": self.server_id.0 })),
-                },
-            );
-        }
 
         match self.policy.evaluate(
             sampling_request,
@@ -635,6 +615,13 @@ impl SamplingJsonRpcHandler {
                 effective_timeout,
                 prompt_cache_namespace,
             } => {
+                if sampling_request.run_id.is_none() {
+                    return self.missing_run_context_response(
+                        request.id,
+                        &sampling_request,
+                        &prompt_cache_namespace,
+                    );
+                }
                 let Some(authorization_context) = &self.authorization_context else {
                     self.record_sampling(McpMetricOutcome::Deferred);
                     return JsonRpcResponse::failure(
@@ -691,6 +678,13 @@ impl SamplingJsonRpcHandler {
                 effective_timeout,
                 prompt_cache_namespace,
             } => {
+                if sampling_request.run_id.is_none() {
+                    return self.missing_run_context_response(
+                        request.id,
+                        &sampling_request,
+                        &prompt_cache_namespace,
+                    );
+                }
                 let Some(authorization_context) = &self.authorization_context else {
                     self.record_sampling(McpMetricOutcome::Denied);
                     return JsonRpcResponse::failure(
@@ -741,6 +735,31 @@ impl SamplingJsonRpcHandler {
                 }
             }
         }
+    }
+
+    fn missing_run_context_response(
+        &self,
+        jsonrpc_id: Value,
+        request: &SamplingRequest,
+        prompt_cache_namespace: &str,
+    ) -> JsonRpcResponse {
+        self.record_sampling(McpMetricOutcome::Denied);
+        emit_sampling_event(
+            request,
+            prompt_cache_namespace,
+            SamplingOutcome::Denied {
+                reason: SamplingDenyReason::PolicyDenied,
+            },
+            Arc::clone(&self.event_sink),
+        );
+        JsonRpcResponse::failure(
+            jsonrpc_id,
+            JsonRpcError {
+                code: MCP_SAMPLING_DENIED_CODE,
+                message: "sampling requires an authoritative run context".to_owned(),
+                data: Some(json!({ "server_id": self.server_id.0 })),
+            },
+        )
     }
 
     async fn invoke_provider(

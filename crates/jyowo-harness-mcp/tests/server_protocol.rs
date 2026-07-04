@@ -925,6 +925,51 @@ async fn server_adapter_authorizes_tool_calls_from_authorization_context() {
 }
 
 #[tokio::test]
+async fn server_adapter_authorization_uses_tool_context_identity() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .with_tool(Box::new(SchemaTool))
+        .build()
+        .expect("registry");
+    let authorization_events = Arc::new(support::RecordingAuthorizationEventSink::default());
+    let event_sink: Arc<dyn harness_execution::AuthorizationEventSink> =
+        authorization_events.clone();
+    let mut context = tool_context();
+    context.session_id = SessionId::from_u128(10);
+    context.run_id = RunId::from_u128(11);
+    let server = McpServerAdapter::builder(registry)
+        .with_tool_context_factory(StaticToolContextFactory::new(context))
+        .with_authorization_context(support::mcp_authorization_context_allowing_tool_with_sink(
+            "schema_tool",
+            event_sink,
+        ))
+        .build()
+        .expect("server adapter");
+
+    let response = server
+        .handle_request(JsonRpcRequest::new(
+            json!(128),
+            "tools/call",
+            Some(json!({
+                "name": "schema_tool",
+                "arguments": { "message": "authorized" }
+            })),
+        ))
+        .await;
+
+    let result = expect_result(response);
+    assert_eq!(result["content"][0]["text"], "ok");
+    assert!(authorization_events.events().iter().any(|event| {
+        matches!(
+            event,
+            harness_contracts::Event::PermissionRequested(permission)
+                if permission.session_id == SessionId::from_u128(10)
+                    && permission.run_id == RunId::from_u128(11)
+        )
+    }));
+}
+
+#[tokio::test]
 async fn server_adapter_denies_tool_calls_from_authorization_context_without_execution() {
     let executed = Arc::new(Mutex::new(false));
     let registry = ToolRegistry::builder()

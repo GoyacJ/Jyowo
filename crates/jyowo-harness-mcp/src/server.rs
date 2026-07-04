@@ -19,7 +19,7 @@ use harness_contracts::{
     MessagePart, Severity, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolResult,
     ToolResultPart, ToolUseId,
 };
-use harness_execution::ExecutionError;
+use harness_execution::{AuthorizationContext, ExecutionError};
 use harness_tool::{AuthorizedToolInput, ToolContext, ToolEvent, ToolRegistry};
 #[cfg(feature = "oauth")]
 use jsonwebtoken::{
@@ -706,15 +706,20 @@ impl ToolCallAuthorizer for AuthorizationContextToolCallAuthorizer {
         &self,
         raw_input: Value,
         action_plan: ToolActionPlan,
-        _context: &ToolContext,
+        context: &ToolContext,
     ) -> Result<AuthorizedToolInput, ToolError> {
+        let authorization_context = AuthorizationContext {
+            tenant_id: context.tenant_id,
+            session_id: context.session_id,
+            run_id: context.run_id,
+            permission_mode: self.authorization_context.permission_mode,
+            interactivity: self.authorization_context.interactivity,
+            fallback_policy: self.authorization_context.fallback_policy,
+            workspace_root: context.workspace_root.clone(),
+        };
         self.authorization_context
             .authorization_service
-            .authorize_tool_input(
-                self.authorization_context.authorization_context(),
-                action_plan,
-                raw_input,
-            )
+            .authorize_tool_input(authorization_context, action_plan, raw_input)
             .await
             .map_err(mcp_authorization_error_to_tool_error)
     }
