@@ -30,6 +30,8 @@ mod skills;
 #[cfg(feature = "builtin-toolset")]
 mod task_stop;
 #[cfg(feature = "builtin-toolset")]
+mod memory;
+#[cfg(feature = "builtin-toolset")]
 mod todo;
 #[cfg(feature = "builtin-toolset")]
 mod web_fetch;
@@ -83,6 +85,8 @@ pub use send_message::SendMessageTool;
 pub use skills::{SkillsInvokeTool, SkillsListTool, SkillsViewTool};
 #[cfg(feature = "builtin-toolset")]
 pub use task_stop::TaskStopTool;
+#[cfg(feature = "builtin-toolset")]
+pub use memory::MemoryTool;
 #[cfg(feature = "builtin-toolset")]
 pub use todo::TodoTool;
 #[cfg(feature = "builtin-toolset")]

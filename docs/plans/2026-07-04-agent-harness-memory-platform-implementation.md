@@ -1687,10 +1687,10 @@ git commit -m "feat(memory): hydrate references and preview context"
 - Tool result returns structured ids, state, redacted record views, denial detail, and takes-effect metadata. It does not echo full secret-bearing content.
 - `TodoTool` remains run-scoped and is not marketed as long-term memory.
 
-- [ ] Write failing tool tests for every action.
-- [ ] Write failing engine test that a model memory tool call mutates real local memory only after authorization.
-- [ ] Write failing test that delete writes tombstone and blocks recall.
-- [ ] Run targeted red tests:
+- [x] Write failing tool tests for every action.
+- [x] Write failing engine test that a model memory tool call mutates real local memory only after authorization.
+- [x] Write failing test that delete writes tombstone and blocks recall.
+- [x] Run targeted red tests:
 
 ```bash
 cargo test -p jyowo-harness-tool --test memory_tool -- --nocapture
@@ -1698,14 +1698,14 @@ cargo test -p jyowo-harness-engine --test main_loop memory -- --nocapture
 cargo test -p jyowo-harness-sdk runtime_assembly_tools -- --nocapture
 ```
 
-- [ ] Implement memory tool descriptors, model-argument validation, runtime context injection, action planning, and authorized execution.
-- [ ] Wire memory capabilities into tool context.
-- [ ] Update prompt-visible tool descriptors so the model sees exact actions and trust boundary.
-- [ ] Run targeted verification with the same commands.
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 7.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
+- [x] Implement memory tool descriptors, model-argument validation, runtime context injection, action planning, and authorized execution.
+- [x] Wire memory capabilities into tool context.
+- [x] Update prompt-visible tool descriptors so the model sees exact actions and trust boundary.
+- [x] Run targeted verification with the same commands.
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 7.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-tool crates/jyowo-harness-engine crates/jyowo-harness-sdk crates/jyowo-harness-contracts
