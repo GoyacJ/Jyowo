@@ -17,6 +17,7 @@ pub mod lifecycle;
 pub mod local;
 pub mod memdir;
 pub mod policy;
+pub mod recall_trace;
 pub mod registry;
 #[cfg(feature = "threat-scanner")]
 pub mod scanner;
@@ -32,6 +33,7 @@ pub use local::*;
 #[cfg(feature = "builtin")]
 pub use memdir::*;
 pub use policy::*;
+pub use recall_trace::*;
 pub use registry::*;
 #[cfg(feature = "threat-scanner")]
 pub use scanner::*;

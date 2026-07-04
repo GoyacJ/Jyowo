@@ -23,7 +23,8 @@ use crate::MemoryThreatScanner;
 use crate::{
     content_preview, visibility_matches, MemoryEventSink, MemoryKindFilter, MemoryListScope,
     MemoryMetric, MemoryMetricsSink, MemoryPolicyEngine, MemoryProvider, MemoryProviderRegistry,
-    MemoryQuery, MemoryRecallMetricOutcome, MemoryRecord, MemorySummary, MemoryVisibilityFilter,
+    MemoryQuery, MemoryRecallMetricOutcome, MemoryRecallTraceBuilder,
+    MemoryRecallTraceCollector, MemoryRecord, MemorySummary, MemoryVisibilityFilter,
 };
 
 pub struct MemoryManager {
@@ -39,6 +40,7 @@ pub struct MemoryManager {
     metrics_sink: Option<Arc<dyn MemoryMetricsSink>>,
     #[cfg(feature = "threat-scanner")]
     threat_scanner: Option<Arc<MemoryThreatScanner>>,
+    trace_collector: Arc<MemoryRecallTraceCollector>,
 }
 
 type RecallResult = MemoryRecallOutcome;
@@ -127,6 +129,7 @@ impl Default for MemoryManager {
             metrics_sink: None,
             #[cfg(feature = "threat-scanner")]
             threat_scanner: None,
+            trace_collector: Arc::new(MemoryRecallTraceCollector::new()),
         }
     }
 }
@@ -210,6 +213,11 @@ impl MemoryManager {
     #[must_use]
     pub fn has_external(&self) -> bool {
         self.external().is_some()
+    }
+
+    #[must_use]
+    pub fn trace_collector(&self) -> Arc<MemoryRecallTraceCollector> {
+        Arc::clone(&self.trace_collector)
     }
 
     #[must_use]

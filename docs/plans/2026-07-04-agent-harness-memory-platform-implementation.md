@@ -1580,10 +1580,10 @@ git commit -m "feat(memory): add policy engine"
 - `MemoryRecalledEvent` links to trace id.
 - IPC can list and fetch traces by session/turn.
 
-- [ ] Write failing tests that assert trace contains candidate ids and score components but not raw content.
-- [ ] Write failing tests that budget-dropped and threat-blocked records appear as dropped reasons.
-- [ ] Write failing IPC/Zod tests for trace commands.
-- [ ] Run targeted red tests:
+- [x] Write failing tests that assert trace contains candidate ids and score components but not raw content.
+- [x] Write failing tests that budget-dropped and threat-blocked records appear as dropped reasons.
+- [x] Write failing IPC/Zod tests for trace commands.
+- [x] Run targeted red tests:
 
 ```bash
 cargo test -p jyowo-harness-memory --test recall_trace -- --nocapture
@@ -1591,13 +1591,13 @@ cargo test -p jyowo-harness-context --test memory_recall -- --nocapture
 pnpm --dir apps/desktop test src/shared/tauri/commands.test.ts
 ```
 
-- [ ] Implement trace structures, storage through event/journal-compatible payloads, and IPC.
-- [ ] Update context engine to attach trace ids to memory recall patches.
-- [ ] Run targeted verification with the same commands.
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 5.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
+- [x] Implement trace structures, storage through event/journal-compatible payloads, and IPC.
+- [x] Update context engine to attach trace ids to memory recall patches.
+- [x] Run targeted verification with the same commands.
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 5.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit:
 
 ```bash
 git add crates apps/desktop
