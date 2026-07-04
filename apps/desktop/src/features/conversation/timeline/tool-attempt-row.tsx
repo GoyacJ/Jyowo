@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { cn } from '@/shared/lib/utils'
 import { useUiStore } from '@/shared/state/ui-store'
 import type { ConversationEventRef, ToolAttempt } from '@/shared/tauri/commands'
-import { PermissionInlinePanel } from './permission-inline-panel'
+import { DecisionPanel } from '../evidence/DecisionPanel'
 
 export function ToolAttemptRow({
   attempt,
@@ -82,11 +82,10 @@ export function ToolAttemptRow({
       {open && hasDetails ? (
         <div className="grid gap-2 pl-5">
           {attempt.permission ? (
-            <PermissionInlinePanel
+            <DecisionPanel
               conversationId={conversationId}
+              decision={attempt.permission}
               onResolve={onPermissionResolve}
-              permission={attempt.permission}
-              turnId={turnId}
             />
           ) : null}
           {attempt.failureSummary ? (

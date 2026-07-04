@@ -1,6 +1,6 @@
 import { X } from 'lucide-react'
-import { type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
+import { DecisionPanel } from '@/features/conversation/evidence/DecisionPanel'
 import { useUiStore } from '@/shared/state/ui-store'
 import type { WorkbenchSelection } from '@/shared/state/workbench-selection'
 import { Button } from '@/shared/ui/button'
