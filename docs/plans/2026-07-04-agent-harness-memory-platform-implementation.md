@@ -1632,11 +1632,11 @@ git commit -m "feat(memory): add recall traces"
 - Model request preview is generated in Rust and redacted.
 - Preview shows section metadata, memory ids, trace ids, provider ids, tool names, and token estimate; it does not expose full raw system prompt.
 
-- [ ] Write failing SDK test proving memory reference content appears in the model request and label-only text is removed.
-- [ ] Write failing SDK test proving unauthorized/expired memory reference blocks run start.
-- [ ] Write failing IPC/Zod tests for `get_model_request_preview`.
-- [ ] Write failing frontend test showing `Context Sources` and `Model Request Preview` are distinct.
-- [ ] Run targeted red tests:
+- [x] Write failing SDK test proving memory reference content appears in the model request and label-only text is removed.
+- [x] Write failing SDK test proving unauthorized/expired memory reference blocks run start.
+- [x] Write failing IPC/Zod tests for `get_model_request_preview`.
+- [x] Write failing frontend test showing `Context Sources` and `Model Request Preview` are distinct.
+- [x] Run targeted red tests:
 
 ```bash
 cargo test -p jyowo-harness-sdk runtime_assembly_context -- --nocapture
@@ -1645,14 +1645,14 @@ pnpm --dir apps/desktop test src/shared/tauri/commands.test.ts
 pnpm --dir apps/desktop test src/features/context/ContextPanel.test.tsx
 ```
 
-- [ ] Implement reference resolver and preview facade.
-- [ ] Remove label-only memory rendering path.
-- [ ] Wire preview command through Tauri and frontend.
-- [ ] Run targeted verification with the same commands.
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 6.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
+- [x] Implement reference resolver and preview facade.
+- [x] Remove label-only memory rendering path.
+- [x] Wire preview command through Tauri and frontend.
+- [x] Run targeted verification with the same commands.
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 6.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit:
 
 ```bash
 git add crates apps/desktop

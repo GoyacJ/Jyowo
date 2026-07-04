@@ -154,6 +154,7 @@ mod limits;
 #[cfg(feature = "mcp-server-adapter")]
 mod mcp_server;
 mod memory;
+mod memory_preview;
 mod metrics;
 mod permissions;
 mod plugins;

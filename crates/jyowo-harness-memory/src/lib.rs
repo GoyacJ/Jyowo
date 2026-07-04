@@ -18,6 +18,7 @@ pub mod local;
 pub mod memdir;
 pub mod policy;
 pub mod recall_trace;
+pub mod reference;
 pub mod registry;
 #[cfg(feature = "threat-scanner")]
 pub mod scanner;

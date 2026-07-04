@@ -113,12 +113,23 @@ fn render_context_reference(reference: &ConversationContextReference) -> String 
                 sanitize_context_line(id)
             )
         }
-        ConversationContextReference::Memory { id, label } => {
-            format!(
-                "- memory: {} ({})",
-                sanitize_context_line(label),
-                sanitize_context_line(id)
-            )
+        ConversationContextReference::Memory {
+            id,
+            label,
+            resolved_content,
+        } => {
+            if let Some(content) = resolved_content {
+                // Hydrated content is fenced as untrusted context
+                format!(
+                    "[memory-reference id={id}]\n{content}\n[/memory-reference id={id}]"
+                )
+            } else {
+                format!(
+                    "- memory reference: {} ({})",
+                    sanitize_context_line(label),
+                    sanitize_context_line(id)
+                )
+            }
         }
         ConversationContextReference::Skill { id, label } => {
             format!(
