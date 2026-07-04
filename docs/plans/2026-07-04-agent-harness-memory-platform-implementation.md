@@ -1737,13 +1737,13 @@ git commit -m "feat(memory): add controlled memory tool"
 - Existing `DREAMS.md` is migrated to inbox candidates with source `Imported`.
 - No unapproved inbox candidate enters prompt or recall.
 
-- [ ] Write failing tests:
+- [x] Write failing tests:
   - system prompt renders only bounded indexes.
   - topic file content is not included unless explicitly hydrated.
   - `DREAMS.md` content migrates into inbox candidate records.
   - unapproved candidate is not recalled.
   - approved candidate can be promoted to local memory.
-- [ ] Run targeted red tests:
+- [x] Run targeted red tests:
 
 ```bash
 cargo test -p jyowo-harness-memory --test memdir -- --nocapture
@@ -1751,14 +1751,14 @@ cargo test -p jyowo-harness-memory --test inbox -- --nocapture
 cargo test -p jyowo-harness-sdk runtime_assembly_memory -- --nocapture
 ```
 
-- [ ] Implement memdir index/topic layout.
-- [ ] Remove runtime use of `DREAMS.md`.
-- [ ] Implement migration and candidate inbox.
-- [ ] Run targeted verification with the same commands.
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 8.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
+- [x] Implement memdir index/topic layout.
+- [x] Remove runtime use of `DREAMS.md`.
+- [x] Implement migration and candidate inbox.
+- [x] Run targeted verification with the same commands.
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 8.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-memory crates/jyowo-harness-sdk

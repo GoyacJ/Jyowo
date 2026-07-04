@@ -13,6 +13,7 @@ pub use harness_contracts::MemdirFileTag as MemdirFile;
 pub mod external;
 #[cfg(feature = "provider-registry")]
 pub mod in_memory;
+pub mod inbox;
 pub mod lifecycle;
 pub mod local;
 pub mod memdir;
@@ -29,6 +30,7 @@ pub mod types;
 pub use external::*;
 #[cfg(feature = "provider-registry")]
 pub use in_memory::*;
+pub use inbox::*;
 pub use lifecycle::*;
 pub use local::*;
 #[cfg(feature = "builtin")]
