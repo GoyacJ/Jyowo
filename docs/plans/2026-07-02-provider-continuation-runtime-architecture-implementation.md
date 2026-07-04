@@ -66,7 +66,6 @@ docs/frontend/agent-harness-frontend-development-guidelines.md
 docs/frontend/frontend-product-ux.md
 docs/frontend/frontend-engineering.md
 docs/frontend/frontend-quality.md
-docs/design2/antigravity_2_0_design_system_specification.md
 docs/backend/agent-harness-backend-development-guidelines.md
 docs/backend/backend-runtime.md
 docs/backend/backend-engineering.md

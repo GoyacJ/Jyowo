@@ -15,7 +15,6 @@ const requiredReferences = [
   'docs/backend/backend-runtime.md',
   'docs/backend/backend-engineering.md',
   'docs/backend/backend-quality.md',
-  'docs/design2/antigravity_2_0_design_system_specification.md',
 ]
 
 const requiredCommands = [
@@ -24,7 +23,6 @@ const requiredCommands = [
   'pnpm check:agent-docs',
   'pnpm check:frontend-docs',
   'pnpm check:backend-docs',
-  'pnpm check:design2-docs',
   'pnpm check:testing-docs',
   'pnpm check:test-architecture',
   'pnpm check:agent-orchestration-no-fakes',

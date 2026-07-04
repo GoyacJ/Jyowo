@@ -70,7 +70,6 @@ Every task must follow this exact order.
      - `docs/frontend/frontend-product-ux.md`
      - `docs/frontend/frontend-engineering.md`
      - `docs/frontend/frontend-quality.md`
-     - `docs/design2/antigravity_2_0_design_system_specification.md`
    - Read every file listed by the task before editing it.
 
 3. **Write Failing Tests First**
