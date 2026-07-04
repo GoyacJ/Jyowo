@@ -4091,6 +4091,8 @@ impl MemoryStore for SharedMemory {
 
 impl MemoryLifecycle for SharedMemory {}
 
+impl harness_memory::MemoryProvider for SharedMemory {}
+
 fn memory_record_visible(record: &MemoryRecord, filter: &MemoryVisibilityFilter) -> bool {
     match filter {
         MemoryVisibilityFilter::Exact(visibility) => &record.visibility == visibility,

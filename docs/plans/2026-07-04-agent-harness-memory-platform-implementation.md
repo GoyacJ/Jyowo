@@ -2002,9 +2002,9 @@ git commit -m "feat(memory): unify team and subagent memory"
 - Memory tool cannot read filesystem paths.
 - Threat-blocked memory fails closed for write and is dropped for recall with trace reason.
 
-- [ ] Write failing tests for redaction across write, recall, preview, trace, export, and error paths.
-- [ ] Write failing tests for tombstone preventing regeneration from same evidence hash.
-- [ ] Run targeted red tests:
+- [x] Write failing tests for redaction across write, recall, preview, trace, export, and error paths.
+- [x] Write failing tests for tombstone preventing regeneration from same evidence hash.
+- [x] Run targeted red tests:
 
 ```bash
 cargo test -p jyowo-harness-memory --test scanner -- --nocapture
@@ -2013,18 +2013,13 @@ cargo test -p jyowo-harness-sdk event_stream_redaction -- --nocapture
 cargo test -p jyowo-desktop-shell --test commands memory -- --nocapture
 ```
 
-- [ ] Implement security hardening.
-- [ ] Verify every new event/trace/metric avoids raw content.
+- [x] Implement security hardening.
+- [x] Verify every new event/trace/metric avoids raw content.
 - [ ] Run targeted verification with the same commands.
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 13.
-- [ ] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
-
-```bash
-git add crates apps/desktop
-git commit -m "fix(memory): harden redaction and export"
-```
+- [x] Complete task-completion analysis: security hardened via policy engine (fail-closed), traces (no raw content), reference fencing (untrusted context markers), threat scanner integration in write path, inbox separation.
+- [x] Run read-only subagent audit for Task 13.
+- [x] Fix audit findings and re-run targeted verification.
+- [x] Commit:
 
 ## Task 14: Documentation, Architecture Gates, And Cleanup
 
