@@ -1492,6 +1492,61 @@ pub struct ResolvePermissionResponse {
     pub status: &'static str,
 }
 
+// ── Evidence fetch commands ──
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetConversationCommandOutputRequest {
+    pub conversation_id: String,
+    pub full_output_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetConversationCommandOutputResponse {
+    pub output: String,
+    pub content_type: String,
+    pub byte_length: u64,
+    pub truncated: bool,
+    pub redaction_state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetConversationDiffPatchRequest {
+    pub conversation_id: String,
+    pub full_patch_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetConversationDiffPatchResponse {
+    pub patch: String,
+    pub content_type: String,
+    pub byte_length: u64,
+    pub truncated: bool,
+    pub redaction_state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetArtifactRevisionContentRequest {
+    pub conversation_id: String,
+    pub content_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetArtifactRevisionContentResponse {
+    pub content: String,
+    pub content_type: String,
+    pub byte_length: u64,
+    pub truncated: bool,
+    pub redaction_state: String,
+    pub artifact_id: Option<String>,
+    pub revision_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListActivityRequest {

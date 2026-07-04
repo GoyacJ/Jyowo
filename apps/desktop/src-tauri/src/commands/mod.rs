@@ -170,17 +170,19 @@ pub use contracts::{
     DeleteProviderCapabilityRouteResponse, DeleteSkillRequest, DeleteSkillResponse,
     EvalCasePayload, EvalLastRunPayload, ExportMemoryItemsResponse, ExportSupportBundleRequest,
     ExportSupportBundleResponse, GetArtifactMediaPreviewRequest, GetArtifactMediaPreviewResponse,
+    GetArtifactRevisionContentRequest, GetArtifactRevisionContentResponse,
     GetAttachmentMediaPreviewRequest, GetAttachmentMediaPreviewResponse, GetBackgroundAgentRequest,
     GetBackgroundAgentResponse, GetContextSnapshotRequest, GetContextSnapshotResponse,
-    GetConversationRequest, GetConversationResponse, GetExecutionSettingsRequest,
-    GetExecutionSettingsResponse, GetMcpServerConfigRequest, GetMcpServerConfigResponse,
-    GetMemoryItemRequest, GetMemoryItemResponse, GetModelUsageSummaryResponse,
-    GetPluginDetailRequest, GetPluginDetailResponse, GetProviderConfigApiKeyRequest,
-    GetProviderConfigApiKeyResponse, GetSkillDetailRequest, GetSkillDetailResponse,
-    GetSkillFileRequest, GetSkillFileResponse, HarnessHealthcheckPayload, HarnessInfoPayload,
-    ImportSkillRequest, ImportSkillResponse, InstallPluginFromPathRequest,
-    InstallSkillFromCatalogResponse, ListActivityRequest, ListActivityResponse,
-    ListAgentProfilesResponse, ListArtifactsRequest, ListArtifactsResponse,
+    GetConversationCommandOutputRequest, GetConversationCommandOutputResponse,
+    GetConversationDiffPatchRequest, GetConversationDiffPatchResponse, GetConversationRequest,
+    GetConversationResponse, GetExecutionSettingsRequest, GetExecutionSettingsResponse,
+    GetMcpServerConfigRequest, GetMcpServerConfigResponse, GetMemoryItemRequest,
+    GetMemoryItemResponse, GetModelUsageSummaryResponse, GetPluginDetailRequest,
+    GetPluginDetailResponse, GetProviderConfigApiKeyRequest, GetProviderConfigApiKeyResponse,
+    GetSkillDetailRequest, GetSkillDetailResponse, GetSkillFileRequest, GetSkillFileResponse,
+    HarnessHealthcheckPayload, HarnessInfoPayload, ImportSkillRequest, ImportSkillResponse,
+    InstallPluginFromPathRequest, InstallSkillFromCatalogResponse, ListActivityRequest,
+    ListActivityResponse, ListAgentProfilesResponse, ListArtifactsRequest, ListArtifactsResponse,
     ListAutomationRunsRequest, ListAutomationRunsResponse, ListAutomationsResponse,
     ListBackgroundAgentsRequest, ListBackgroundAgentsResponse, ListBrowserMcpPresetsResponse,
     ListConversationsResponse, ListEvalCasesResponse, ListMcpDiagnosticsRequest,
@@ -233,9 +235,11 @@ pub use conversations::{
     cancel_run_payload, cancel_run_with_runtime_state, create_attachment_from_path_payload,
     create_attachment_from_path_with_runtime_state, create_conversation_with_runtime_state,
     delete_conversation_payload, delete_conversation_with_runtime_state,
-    export_support_bundle_with_runtime_state, get_context_snapshot_with_runtime_state,
-    get_conversation_with_runtime_state, get_replay_timeline_with_runtime_state,
-    list_activity_payload, list_activity_with_runtime_state, list_conversations_with_runtime_state,
+    export_support_bundle_with_runtime_state, get_artifact_revision_content_with_runtime_state,
+    get_context_snapshot_with_runtime_state, get_conversation_command_output_with_runtime_state,
+    get_conversation_diff_patch_with_runtime_state, get_conversation_with_runtime_state,
+    get_replay_timeline_with_runtime_state, list_activity_payload,
+    list_activity_with_runtime_state, list_conversations_with_runtime_state,
     list_reference_candidates_payload, list_reference_candidates_with_runtime_state,
     page_conversation_timeline_with_runtime_state, page_conversation_worktree_with_runtime_state,
     resolve_permission_for_window_with_runtime_state, resolve_permission_payload,
@@ -1467,6 +1471,57 @@ pub async fn get_conversation(
     let runtime_state = runtime_handle.read().await;
     get_conversation_with_runtime_state(GetConversationRequest { conversation_id }, &*runtime_state)
         .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_conversation_command_output(
+    conversation_id: String,
+    full_output_ref: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetConversationCommandOutputResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_conversation_command_output_with_runtime_state(
+        GetConversationCommandOutputRequest {
+            conversation_id,
+            full_output_ref,
+        },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_conversation_diff_patch(
+    conversation_id: String,
+    full_patch_ref: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetConversationDiffPatchResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_conversation_diff_patch_with_runtime_state(
+        GetConversationDiffPatchRequest {
+            conversation_id,
+            full_patch_ref,
+        },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_artifact_revision_content(
+    conversation_id: String,
+    content_ref: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetArtifactRevisionContentResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_artifact_revision_content_with_runtime_state(
+        GetArtifactRevisionContentRequest {
+            conversation_id,
+            content_ref,
+        },
+        &*runtime_state,
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]

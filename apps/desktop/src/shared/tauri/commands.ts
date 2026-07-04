@@ -380,6 +380,61 @@ const resolvePermissionResponseSchema = z
   })
   .strict()
 
+// ── Evidence fetch schemas ──
+
+const getConversationCommandOutputRequestSchema = z
+  .object({
+    conversationId: z.string().min(1),
+    fullOutputRef: z.string().min(1),
+  })
+  .strict()
+
+const getConversationCommandOutputResponseSchema = z
+  .object({
+    output: z.string(),
+    contentType: z.string(),
+    byteLength: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    redactionState: z.string(),
+  })
+  .strict()
+
+const getConversationDiffPatchRequestSchema = z
+  .object({
+    conversationId: z.string().min(1),
+    fullPatchRef: z.string().min(1),
+  })
+  .strict()
+
+const getConversationDiffPatchResponseSchema = z
+  .object({
+    patch: z.string(),
+    contentType: z.string(),
+    byteLength: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    redactionState: z.string(),
+  })
+  .strict()
+
+const getArtifactRevisionContentRequestSchema = z
+  .object({
+    conversationId: z.string().min(1),
+    contentRef: z.string().min(1),
+  })
+  .strict()
+
+const getArtifactRevisionContentResponseSchema = z
+  .object({
+    content: z.string(),
+    contentType: z.string(),
+    byteLength: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    redactionState: z.string(),
+    artifactId: z.string().optional(),
+    revisionId: z.string().optional(),
+  })
+  .strict()
+
 const listActivityRequestSchema = z
   .object({
     conversationId: z.string().min(1),
@@ -3116,6 +3171,20 @@ export type SwitchProjectResponse = z.infer<typeof switchProjectResponseSchema>
 export type DeleteProjectResponse = z.infer<typeof deleteProjectResponseSchema>
 export type CreateConversationResponse = z.infer<typeof createConversationResponseSchema>
 export type GetConversationResponse = z.infer<typeof getConversationResponseSchema>
+export type GetConversationCommandOutputRequest = z.infer<
+  typeof getConversationCommandOutputRequestSchema
+>
+export type GetConversationCommandOutputResponse = z.infer<
+  typeof getConversationCommandOutputResponseSchema
+>
+export type GetConversationDiffPatchRequest = z.infer<typeof getConversationDiffPatchRequestSchema>
+export type GetConversationDiffPatchResponse = z.infer<typeof getConversationDiffPatchResponseSchema>
+export type GetArtifactRevisionContentRequest = z.infer<
+  typeof getArtifactRevisionContentRequestSchema
+>
+export type GetArtifactRevisionContentResponse = z.infer<
+  typeof getArtifactRevisionContentResponseSchema
+>
 export type DeleteConversationResponse = z.infer<typeof deleteConversationResponseSchema>
 export type ContextReference = z.infer<typeof contextReferenceSchema>
 export type AttachmentReference = z.infer<typeof attachmentReferenceSchema>
@@ -3468,6 +3537,15 @@ export interface CommandClient {
   listSkillCatalogSources: () => Promise<ListSkillCatalogSourcesResponse>
   listSkills: () => Promise<ListSkillsResponse>
   resolvePermission: (request: ResolvePermissionRequest) => Promise<ResolvePermissionResponse>
+  getConversationCommandOutput: (
+    request: GetConversationCommandOutputRequest,
+  ) => Promise<GetConversationCommandOutputResponse>
+  getConversationDiffPatch: (
+    request: GetConversationDiffPatchRequest,
+  ) => Promise<GetConversationDiffPatchResponse>
+  getArtifactRevisionContent: (
+    request: GetArtifactRevisionContentRequest,
+  ) => Promise<GetArtifactRevisionContentResponse>
   reloadPlugin: (pluginId: string) => Promise<PluginOperationResult>
   requestProviderConfigApiKeyReveal: (
     configId: string,
@@ -3965,6 +4043,33 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, resolvePermissionRequestSchema, request)
       return parsePayload(command, resolvePermissionResponseSchema, await invoke(command, args))
     },
+    async getConversationCommandOutput(request) {
+      const command = 'get_conversation_command_output'
+      const args = parseArgs(command, getConversationCommandOutputRequestSchema, request)
+      return parsePayload(
+        command,
+        getConversationCommandOutputResponseSchema,
+        await invoke(command, args),
+      )
+    },
+    async getConversationDiffPatch(request) {
+      const command = 'get_conversation_diff_patch'
+      const args = parseArgs(command, getConversationDiffPatchRequestSchema, request)
+      return parsePayload(
+        command,
+        getConversationDiffPatchResponseSchema,
+        await invoke(command, args),
+      )
+    },
+    async getArtifactRevisionContent(request) {
+      const command = 'get_artifact_revision_content'
+      const args = parseArgs(command, getArtifactRevisionContentRequestSchema, request)
+      return parsePayload(
+        command,
+        getArtifactRevisionContentResponseSchema,
+        await invoke(command, args),
+      )
+    },
     async reloadPlugin(pluginId) {
       const command = 'reload_plugin'
       const args = parseArgs(command, pluginIdRequestSchema, { pluginId })
@@ -4320,6 +4425,27 @@ export function resolvePermission(
   client: CommandClient = tauriCommandClient,
 ): Promise<ResolvePermissionResponse> {
   return client.resolvePermission(request)
+}
+
+export function getConversationCommandOutput(
+  request: GetConversationCommandOutputRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<GetConversationCommandOutputResponse> {
+  return client.getConversationCommandOutput(request)
+}
+
+export function getConversationDiffPatch(
+  request: GetConversationDiffPatchRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<GetConversationDiffPatchResponse> {
+  return client.getConversationDiffPatch(request)
+}
+
+export function getArtifactRevisionContent(
+  request: GetArtifactRevisionContentRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<GetArtifactRevisionContentResponse> {
+  return client.getArtifactRevisionContent(request)
 }
 
 export function runEvalCase(

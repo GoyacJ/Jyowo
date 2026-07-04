@@ -222,6 +222,7 @@ struct HarnessInner {
     #[cfg(feature = "memory-builtin")]
     builtin_memory: Option<BuiltinMemoryConfig>,
     blob_store: Option<Arc<dyn BlobStore>>,
+    evidence_ref_store: Option<Arc<harness_journal::EvidenceRefStore>>,
     skill_loader: Option<SkillLoader>,
     skill_config_snapshot: SkillConfigSnapshot,
     skill_registry: SkillRegistry,
@@ -279,6 +280,21 @@ impl Harness {
     #[must_use]
     pub fn builder() -> HarnessBuilder<Unset, Unset, Unset> {
         HarnessBuilder::new()
+    }
+
+    /// Returns the evidence ref store for reading large command output,
+    /// diff patches, and artifact content by ref.
+    ///
+    /// Returns an error when the store is not yet wired (e.g., before
+    /// SQLite persistence integration is complete).
+    pub fn evidence_ref_store(
+        &self,
+    ) -> Result<Arc<harness_journal::EvidenceRefStore>, HarnessError> {
+        self.inner.evidence_ref_store.clone().ok_or_else(|| {
+            HarnessError::Journal(harness_contracts::JournalError::Message(
+                "evidence ref store not available".to_owned(),
+            ))
+        })
     }
 
     pub(crate) async fn from_builder(
@@ -457,6 +473,7 @@ impl Harness {
                 #[cfg(feature = "memory-builtin")]
                 builtin_memory: extras.builtin_memory.take(),
                 blob_store: extras.blob_store.take(),
+                evidence_ref_store: None,
                 skill_loader: extras.skill_loader.take(),
                 skill_config_snapshot: extras.skill_config_snapshot.take().unwrap_or_default(),
                 skill_registry,
