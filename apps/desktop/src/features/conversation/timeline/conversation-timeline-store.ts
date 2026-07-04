@@ -28,14 +28,23 @@ const optimisticSecretPatterns = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}\b/,
 ]
 
+type TimelinePage = {
+  cursor: ConversationTurnCursor | null
+  turns: ConversationTurn[]
+}
+
 export type ConversationTimelineState = {
   conversationId: string
-  turns: ConversationTurn[]
-  pageCursor: ConversationTurnCursor | null
-  eventCursor: ConversationCursor | null
+  pages: TimelinePage[]
+  loadedRange: {
+    first?: ConversationTurnCursor
+    last?: ConversationTurnCursor
+  }
   hasMoreBefore: boolean
   hasMoreAfter: boolean
-  gap: boolean
+  gapMarkers: Array<{ id: string; afterCursor: ConversationCursor | null }>
+  eventCursor: ConversationCursor | null
+  optimisticTurnsByClientMessageId: Record<string, ConversationTurn>
   activeRunIds: string[]
   refreshRequests: number
   immediateRefreshRequests: number
@@ -52,16 +61,30 @@ export function createConversationTimelineRoot(): ConversationTimelineRoot {
 export function createConversationTimelineState(conversationId: string): ConversationTimelineState {
   return {
     conversationId,
-    turns: [],
-    pageCursor: null,
-    eventCursor: null,
+    pages: [],
+    loadedRange: {},
     hasMoreBefore: false,
     hasMoreAfter: false,
-    gap: false,
+    gapMarkers: [],
+    eventCursor: null,
+    optimisticTurnsByClientMessageId: {},
     activeRunIds: [],
     refreshRequests: 0,
     immediateRefreshRequests: 0,
   }
+}
+
+export function getAllTurns(state: ConversationTimelineState): ConversationTurn[] {
+  const projected = state.pages.flatMap((page) => page.turns)
+  const optimistic = Object.values(state.optimisticTurnsByClientMessageId).filter(
+    (turn) =>
+      !projected.some(
+        (p) =>
+          (turn.user.clientMessageId && p.user.clientMessageId === turn.user.clientMessageId) ||
+          (turn.assistant?.runId && p.assistant?.runId === turn.assistant.runId),
+      ),
+  )
+  return [...projected, ...optimistic]
 }
 
 export function getConversationTimelineState(
@@ -100,26 +123,77 @@ function conversationTimelineReducer(
   action: ConversationTimelineAction,
 ): ConversationTimelineState {
   switch (action.type) {
-    case 'hydrateWorktree':
+    case 'hydrateInitialPage': {
+      const reconciled = reconcileOptimisticTurns(
+        action.turns,
+        Object.values(state.optimisticTurnsByClientMessageId),
+      )
       return {
         ...state,
-        turns: reconcileOptimisticTurns(action.page.turns, state.turns),
-        pageCursor: action.page.pageCursor ?? null,
-        eventCursor: action.page.eventCursor ?? null,
-        hasMoreBefore: action.page.hasMoreBefore,
-        hasMoreAfter: action.page.hasMoreAfter,
-        gap: action.page.gap,
-        activeRunIds: activeRunIds(action.page.turns),
+        pages: [{ cursor: action.pageCursor, turns: reconciled }],
+        loadedRange: {
+          first: action.pageCursor ?? undefined,
+          last: action.pageCursor ?? undefined,
+        },
+        hasMoreBefore: action.hasMoreBefore,
+        hasMoreAfter: action.hasMoreAfter,
+        eventCursor: action.eventCursor,
+        gapMarkers: action.gap
+          ? [...state.gapMarkers, { id: `gap:${Date.now()}`, afterCursor: action.eventCursor }]
+          : state.gapMarkers,
+        activeRunIds: activeRunIds(reconciled),
+        optimisticTurnsByClientMessageId: filterOptimisticAfterReconcile(
+          state.optimisticTurnsByClientMessageId,
+          reconciled,
+        ),
       }
+    }
+    case 'prependPage': {
+      if (action.turns.length === 0) {
+        return { ...state, hasMoreBefore: action.hasMoreBefore }
+      }
+      const existingTurnIds = new Set(state.pages.flatMap((p) => p.turns.map((t) => t.id)))
+      const newTurns = action.turns.filter((t) => !existingTurnIds.has(t.id))
+      return {
+        ...state,
+        pages: [{ cursor: action.pageCursor, turns: newTurns }, ...state.pages],
+        loadedRange: {
+          ...state.loadedRange,
+          first: action.pageCursor ?? state.loadedRange.first,
+        },
+        hasMoreBefore: action.hasMoreBefore,
+      }
+    }
+    case 'appendPage': {
+      if (action.turns.length === 0) {
+        return {
+          ...state,
+          hasMoreAfter: action.hasMoreAfter,
+          eventCursor: action.eventCursor ?? state.eventCursor,
+        }
+      }
+      const existingTurnIds = new Set(state.pages.flatMap((p) => p.turns.map((t) => t.id)))
+      const newTurns = action.turns.filter((t) => !existingTurnIds.has(t.id))
+      return {
+        ...state,
+        pages: [...state.pages, { cursor: action.pageCursor, turns: newTurns }],
+        loadedRange: {
+          ...state.loadedRange,
+          last: action.pageCursor ?? state.loadedRange.last,
+        },
+        hasMoreAfter: action.hasMoreAfter,
+        eventCursor: action.eventCursor ?? state.eventCursor,
+      }
+    }
     case 'localSubmit':
       return {
         ...state,
-        turns: [
-          ...state.turns,
-          {
+        optimisticTurnsByClientMessageId: {
+          ...state.optimisticTurnsByClientMessageId,
+          [action.clientMessageId]: {
             id: `turn:local:${action.clientMessageId}`,
             conversationId: state.conversationId,
-            position: nextOptimisticPosition(state.turns),
+            position: nextOptimisticPosition(state),
             user: {
               id: `user:local:${action.clientMessageId}`,
               messageId: `local:${action.clientMessageId}`,
@@ -128,59 +202,115 @@ function conversationTimelineReducer(
               timestamp: action.at,
             },
           },
-        ],
+        },
       }
     case 'commandAccepted':
       return {
         ...state,
-        turns: state.turns.map((turn) =>
-          turn.user.clientMessageId === action.clientMessageId
-            ? {
-                ...turn,
-                assistant: {
-                  id: `assistant:${action.runId}`,
-                  runId: action.runId,
-                  status: 'running',
-                  segments: [],
-                },
-              }
-            : turn,
+        optimisticTurnsByClientMessageId: mapOptimisticTurn(
+          state.optimisticTurnsByClientMessageId,
+          action.clientMessageId,
+          (turn) => ({
+            ...turn,
+            assistant: {
+              id: `assistant:${action.runId}`,
+              runId: action.runId,
+              projectionVersion: 1,
+              status: 'running' as const,
+              segments: [],
+            },
+          }),
         ),
+        pages: state.pages.map((page) => ({
+          ...page,
+          turns: page.turns.map((turn) =>
+            turn.user.clientMessageId === action.clientMessageId
+              ? {
+                  ...turn,
+                  assistant: {
+                    id: `assistant:${action.runId}`,
+                    runId: action.runId,
+                    projectionVersion: 1,
+                    status: 'running' as const,
+                    segments: [],
+                  },
+                }
+              : turn,
+          ),
+        })),
         activeRunIds: addUnique(state.activeRunIds, action.runId),
       }
     case 'commandFailed':
       return {
         ...state,
-        turns: state.turns.map((turn) =>
-          turn.user.clientMessageId === action.clientMessageId
-            ? {
-                ...turn,
-                assistant: {
-                  id: `assistant:local-failed:${action.clientMessageId}`,
-                  runId: `local-failed:${action.clientMessageId}`,
-                  status: 'failed',
-                  segments: [
-                    {
-                      kind: 'error',
-                      id: `segment:error:local:${action.clientMessageId}`,
-                      order: 0,
-                      body: uiSafeCanvasText(action.errorMessage),
-                    },
-                  ],
+        optimisticTurnsByClientMessageId: mapOptimisticTurn(
+          state.optimisticTurnsByClientMessageId,
+          action.clientMessageId,
+          (turn) => ({
+            ...turn,
+            assistant: {
+              id: `assistant:local-failed:${action.clientMessageId}`,
+              runId: `local-failed:${action.clientMessageId}`,
+              projectionVersion: 1,
+              status: 'failed' as const,
+              segments: [
+                {
+                  kind: 'error' as const,
+                  id: `segment:error:local:${action.clientMessageId}`,
+                  order: 0,
+                  body: uiSafeCanvasText(action.errorMessage),
                 },
-              }
-            : turn,
+              ],
+            },
+          }),
         ),
+        pages: state.pages.map((page) => ({
+          ...page,
+          turns: page.turns.map((turn) =>
+            turn.user.clientMessageId === action.clientMessageId
+              ? {
+                  ...turn,
+                  assistant: {
+                    id: `assistant:local-failed:${action.clientMessageId}`,
+                    runId: `local-failed:${action.clientMessageId}`,
+                    projectionVersion: 1,
+                    status: 'failed' as const,
+                    segments: [
+                      {
+                        kind: 'error' as const,
+                        id: `segment:error:local:${action.clientMessageId}`,
+                        order: 0,
+                        body: uiSafeCanvasText(action.errorMessage),
+                      },
+                    ],
+                  },
+                }
+              : turn,
+          ),
+        })),
       }
     case 'permissionSubmitting':
       return patchPermission(state, action.requestId, { status: 'submitting' })
     case 'permissionSubmitFailed':
       return patchPermission(state, action.requestId, {
         status: 'failed',
-        summary: uiSafeCanvasText(action.errorMessage),
+        reason: action.errorMessage,
       })
     case 'markGap':
-      return { ...state, gap: true }
+      return {
+        ...state,
+        gapMarkers: [
+          ...state.gapMarkers,
+          { id: `gap:${Date.now()}`, afterCursor: action.afterCursor },
+        ],
+      }
+    case 'retryGap':
+      return {
+        ...state,
+        gapMarkers: [],
+        refreshRequests: state.refreshRequests + 1,
+        immediateRefreshRequests: state.immediateRefreshRequests + 1,
+      }
     case 'worktreeRefreshRequested':
       return {
         ...state,
@@ -189,6 +319,8 @@ function conversationTimelineReducer(
       }
   }
 }
+
+// ── Helpers ──
 
 function uiSafeCanvasText(value: string) {
   if (containsOptimisticSecret(value) || containsPrivateAbsolutePath(value)) {
@@ -207,8 +339,8 @@ function containsPrivateAbsolutePath(value: string) {
 
 function reconcileOptimisticTurns(
   projectedTurns: ConversationTurn[],
-  currentTurns: ConversationTurn[],
-) {
+  optimisticTurns: ConversationTurn[],
+): ConversationTurn[] {
   const projectedClientMessageIds = new Set(
     projectedTurns.flatMap((turn) =>
       turn.user.clientMessageId ? [turn.user.clientMessageId] : [],
@@ -217,25 +349,49 @@ function reconcileOptimisticTurns(
   const projectedRunIds = new Set(
     projectedTurns.flatMap((turn) => (turn.assistant?.runId ? [turn.assistant.runId] : [])),
   )
-  const optimistic = currentTurns.filter(
+  const remaining = optimisticTurns.filter(
     (turn) =>
-      turn.id.startsWith('turn:local:') &&
-      !isProjectedOptimisticTurn(turn, projectedClientMessageIds, projectedRunIds),
+      !(
+        (turn.user.clientMessageId && projectedClientMessageIds.has(turn.user.clientMessageId)) ||
+        (turn.assistant?.runId && projectedRunIds.has(turn.assistant.runId))
+      ),
   )
-
-  return [...projectedTurns, ...optimistic]
+  return [...projectedTurns, ...remaining]
 }
 
-function isProjectedOptimisticTurn(
-  turn: ConversationTurn,
-  projectedClientMessageIds: Set<string>,
-  projectedRunIds: Set<string>,
-) {
-  if (turn.user.clientMessageId && projectedClientMessageIds.has(turn.user.clientMessageId)) {
-    return true
+function filterOptimisticAfterReconcile(
+  optimistic: Record<string, ConversationTurn>,
+  projectedTurns: ConversationTurn[],
+): Record<string, ConversationTurn> {
+  const projectedIds = new Set(
+    projectedTurns.flatMap((turn) =>
+      turn.user.clientMessageId ? [turn.user.clientMessageId] : [],
+    ),
+  )
+  const projectedRunIds = new Set(
+    projectedTurns.flatMap((turn) => (turn.assistant?.runId ? [turn.assistant.runId] : [])),
+  )
+  const filtered: Record<string, ConversationTurn> = {}
+  for (const [key, turn] of Object.entries(optimistic)) {
+    if (
+      (turn.user.clientMessageId && projectedIds.has(turn.user.clientMessageId)) ||
+      (turn.assistant?.runId && projectedRunIds.has(turn.assistant.runId))
+    ) {
+      continue
+    }
+    filtered[key] = turn
   }
+  return filtered
+}
 
-  return Boolean(turn.assistant?.runId && projectedRunIds.has(turn.assistant.runId))
+function mapOptimisticTurn(
+  optimistic: Record<string, ConversationTurn>,
+  clientMessageId: string,
+  fn: (turn: ConversationTurn) => ConversationTurn,
+): Record<string, ConversationTurn> {
+  const existing = optimistic[clientMessageId]
+  if (!existing) return optimistic
+  return { ...optimistic, [clientMessageId]: fn(existing) }
 }
 
 function activeRunIds(turns: ConversationTurn[]) {
@@ -244,8 +400,17 @@ function activeRunIds(turns: ConversationTurn[]) {
   )
 }
 
-function nextOptimisticPosition(turns: ConversationTurn[]) {
-  return turns.reduce((max, turn) => Math.max(max, turn.position), -1) + 1
+function nextOptimisticPosition(state: ConversationTimelineState) {
+  let max = 0
+  for (const page of state.pages) {
+    for (const turn of page.turns) {
+      if (turn.position > max) max = turn.position
+    }
+  }
+  for (const turn of Object.values(state.optimisticTurnsByClientMessageId)) {
+    if (turn.position > max) max = turn.position
+  }
+  return max + 1
 }
 
 function addUnique(values: string[], value: string) {
@@ -255,35 +420,48 @@ function addUnique(values: string[], value: string) {
 function patchPermission(
   state: ConversationTimelineState,
   requestId: string,
-  patch: { status: 'submitting' | 'failed'; summary?: string },
+  patch: { status: 'submitting' | 'failed'; reason?: string },
 ): ConversationTimelineState {
+  const patchPage = (page: TimelinePage): TimelinePage => ({
+    ...page,
+    turns: page.turns.map(patchTurn),
+  })
+
+  const patchTurn = (turn: ConversationTurn): ConversationTurn => ({
+    ...turn,
+    assistant: turn.assistant
+      ? {
+          ...turn.assistant,
+          segments: turn.assistant.segments.map((segment) =>
+            segment.kind === 'toolGroup'
+              ? {
+                  ...segment,
+                  attempts: segment.attempts.map((attempt) =>
+                    attempt.permission?.requestId === requestId
+                      ? {
+                          ...attempt,
+                          permission: {
+                            ...attempt.permission,
+                            ...patch,
+                          },
+                        }
+                      : attempt,
+                  ),
+                }
+              : segment,
+          ),
+        }
+      : undefined,
+  })
+
   return {
     ...state,
-    turns: state.turns.map((turn) => ({
-      ...turn,
-      assistant: turn.assistant
-        ? {
-            ...turn.assistant,
-            segments: turn.assistant.segments.map((segment) =>
-              segment.kind === 'toolGroup'
-                ? {
-                    ...segment,
-                    attempts: segment.attempts.map((attempt) =>
-                      attempt.permission?.requestId === requestId
-                        ? {
-                            ...attempt,
-                            permission: {
-                              ...attempt.permission,
-                              ...patch,
-                            },
-                          }
-                        : attempt,
-                    ),
-                  }
-                : segment,
-            ),
-          }
-        : undefined,
-    })),
+    pages: state.pages.map(patchPage),
+    optimisticTurnsByClientMessageId: Object.fromEntries(
+      Object.entries(state.optimisticTurnsByClientMessageId).map(([key, turn]) => [
+        key,
+        patchTurn(turn),
+      ]),
+    ),
   }
 }

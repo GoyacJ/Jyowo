@@ -38,10 +38,10 @@ export function createConversationTimelineSource(
           immediate: subscription.replayEvents.length > 0 || subscription.gap,
         })
         if (subscription.gap) {
-          dispatch({ type: 'markGap' })
+          dispatch({ type: 'markGap', afterCursor: subscription.cursor ?? null })
         }
       } catch {
-        dispatch({ type: 'markGap' })
+        dispatch({ type: 'markGap', afterCursor: null })
         dispatch({ type: 'worktreeRefreshRequested', immediate: true })
       }
 
@@ -77,7 +77,7 @@ function dispatchBatch(
     immediate: batch.gap || batch.events.some(isTerminalProjectionSignal),
   })
   if (batch.gap) {
-    dispatch({ type: 'markGap' })
+    dispatch({ type: 'markGap', afterCursor: batch.cursor ?? null })
   }
 }
 

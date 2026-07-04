@@ -1,5 +1,6 @@
 import type { AssistantSegment, ConversationTurn, ToolAttempt } from '@/shared/tauri/commands'
 import type { ConversationTimelineState } from './conversation-timeline-store'
+import { getAllTurns } from './conversation-timeline-store'
 import type { PendingToolPermission } from './pending-tool-permission'
 
 export type ComposerMode =
@@ -12,28 +13,29 @@ export type ComposerMode =
   | { kind: 'continue' }
 
 export function selectTurns(state: ConversationTimelineState): ConversationTurn[] {
-  return state.turns
+  return getAllTurns(state)
 }
 
 export function selectComposerMode(state: ConversationTimelineState): ComposerMode {
-  if (state.turns.some((turn) => turn.assistant?.status === 'running')) {
+  const turns = getAllTurns(state)
+  if (turns.some((turn) => turn.assistant?.status === 'running')) {
     return { kind: 'running-disabled', canCancel: true }
   }
 
   const pendingClarification = findLastSegment(
-    state.turns,
+    turns,
     (segment) => segment.kind === 'clarificationRequest',
   )
   if (pendingClarification?.kind === 'clarificationRequest') {
     return { kind: 'clarification-reply', segmentId: pendingClarification.id }
   }
 
-  const pendingReview = findLastSegment(state.turns, (segment) => segment.kind === 'reviewRequest')
+  const pendingReview = findLastSegment(turns, (segment) => segment.kind === 'reviewRequest')
   if (pendingReview?.kind === 'reviewRequest') {
     return { kind: 'review-comment', segmentId: pendingReview.id }
   }
 
-  const failedTurn = [...state.turns].reverse().find((turn) => turn.assistant?.status === 'failed')
+  const failedTurn = [...turns].reverse().find((turn) => turn.assistant?.status === 'failed')
   if (failedTurn) {
     return { kind: 'retry', turnId: failedTurn.id }
   }
@@ -45,8 +47,9 @@ export function selectPendingPermissions(
   state: ConversationTimelineState,
 ): PendingToolPermission[] {
   const pending: PendingToolPermission[] = []
+  const turns = getAllTurns(state)
 
-  for (const turn of state.turns) {
+  for (const turn of turns) {
     for (const attempt of toolAttempts(turn)) {
       const permission = attempt.permission
       if (!permission || (permission.status !== 'pending' && permission.status !== 'submitting')) {
@@ -93,7 +96,7 @@ export function selectPendingPermissions(
 }
 
 export function selectShouldPollFallback(state: ConversationTimelineState): boolean {
-  return state.gap
+  return state.gapMarkers.length > 0
 }
 
 export type TurnGroup = {

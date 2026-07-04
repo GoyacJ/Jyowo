@@ -87,12 +87,13 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
       return
     }
     dispatch({
-      type: 'hydrateWorktree',
-      page: {
-        ...worktreeQuery.data,
-        pageCursor: worktreeQuery.data.pageCursor ?? null,
-        eventCursor: worktreeQuery.data.eventCursor ?? null,
-      },
+      type: 'hydrateInitialPage',
+      turns: worktreeQuery.data.turns,
+      pageCursor: worktreeQuery.data.pageCursor ?? null,
+      eventCursor: worktreeQuery.data.eventCursor ?? null,
+      hasMoreBefore: worktreeQuery.data.hasMoreBefore,
+      hasMoreAfter: worktreeQuery.data.hasMoreAfter,
+      gap: worktreeQuery.data.gap,
     })
   }, [dispatch, worktreeQuery.data])
 
@@ -255,6 +256,46 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     },
   })
 
+  const loadEarlier = useCallback(async () => {
+    if (!renderedConversationId || !displayState.hasMoreBefore) return
+    const firstPage = displayState.pages[0]
+    const page = await commandClient.pageConversationWorktree({
+      conversationId: renderedConversationId,
+      direction: 'before',
+      pageCursor: firstPage?.cursor ?? undefined,
+      limit: 50,
+    })
+    dispatch({
+      type: 'prependPage',
+      turns: page.turns,
+      pageCursor: page.pageCursor ?? null,
+      hasMoreBefore: page.hasMoreBefore,
+    })
+  }, [renderedConversationId, displayState.hasMoreBefore, displayState.pages, commandClient, dispatch])
+
+  const loadLater = useCallback(async () => {
+    if (!renderedConversationId || !displayState.hasMoreAfter) return
+    const lastPage = displayState.pages[displayState.pages.length - 1]
+    const page = await commandClient.pageConversationWorktree({
+      conversationId: renderedConversationId,
+      direction: 'after',
+      pageCursor: lastPage?.cursor ?? undefined,
+      limit: 50,
+    })
+    dispatch({
+      type: 'appendPage',
+      turns: page.turns,
+      pageCursor: page.pageCursor ?? null,
+      eventCursor: page.eventCursor ?? null,
+      hasMoreAfter: page.hasMoreAfter,
+    })
+  }, [renderedConversationId, displayState.hasMoreAfter, displayState.pages, commandClient, dispatch])
+
+  const retryGap = useCallback(() => {
+    dispatch({ type: 'retryGap' })
+    void queryClient.invalidateQueries({ queryKey: worktreeQueryKey })
+  }, [dispatch, queryClient, worktreeQueryKey])
+
   return {
     turns: selectTurns(displayState),
     composerMode: submitMutation.isPending
@@ -270,6 +311,10 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     isSubmitting: submitMutation.isPending,
     pendingToolPermissions: selectPendingPermissions(displayState),
     shouldPollFallback: selectShouldPollFallback(displayState),
+    loadEarlier,
+    loadLater,
+    retryGap,
+    gapMarkers: displayState.gapMarkers,
     cancelActiveRun: cancelMutation.mutateAsync,
     cancelError: cancelMutation.error,
     submitError: submitMutation.error,
