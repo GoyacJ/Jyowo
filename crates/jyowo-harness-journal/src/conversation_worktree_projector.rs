@@ -648,10 +648,9 @@ impl ProjectionState<'_> {
         let Some(tool_use_id) = string_field(&event.payload, "toolUseId") else {
             return;
         };
-        let tool_name = ui_text(
-            string_field(&event.payload, "toolName").unwrap_or_else(|| "Tool".to_owned()),
-        )
-        .into_string();
+        let tool_name =
+            ui_text(string_field(&event.payload, "toolName").unwrap_or_else(|| "Tool".to_owned()))
+                .into_string();
         let is_agent_tool = tool_name.eq_ignore_ascii_case("agent");
         let group = self.tool_group(&event.run_id, &tool_use_id, event_ref.clone());
         if group

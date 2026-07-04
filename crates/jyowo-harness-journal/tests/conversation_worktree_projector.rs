@@ -348,7 +348,12 @@ fn projects_one_user_prompt_and_tool_loop_into_one_assistant_work_tree() {
         DecisionRequestStatus::Approved
     );
     assert_eq!(
-        group.attempts[0].permission.as_ref().unwrap().reason.as_str(),
+        group.attempts[0]
+            .permission
+            .as_ref()
+            .unwrap()
+            .reason
+            .as_str(),
         "The runtime requires approval before continuing."
     );
     assert_eq!(
@@ -1775,8 +1780,7 @@ fn command_tool_projects_command_process_detail() {
     assert_eq!(step.kind, ProcessStepKind::Command);
     assert_eq!(step.status, ProcessStepStatus::Complete);
     assert_eq!(step.title.as_str(), "命令已完成");
-    let Some(ProcessStepDetail::Command(cmd)) = step.detail.as_ref()
-    else {
+    let Some(ProcessStepDetail::Command(cmd)) = step.detail.as_ref() else {
         panic!("command detail should be projected");
     };
     assert_eq!(cmd.command.as_str(), "pnpm check:desktop");
@@ -2054,7 +2058,11 @@ fn artifact_media_preview_does_not_project_secret_like_mime_token() {
         .iter()
         .find_map(artifact_segment)
         .expect("video artifact remains a metadata segment");
-    let media = artifact.revision.media.as_ref().expect("media should project");
+    let media = artifact
+        .revision
+        .media
+        .as_ref()
+        .expect("media should project");
 
     assert_eq!(media.kind, ArtifactMediaKind::Video);
     assert_eq!(media.mime_type, "video/mp4");
@@ -2094,7 +2102,11 @@ fn artifact_media_preview_preserves_allowlisted_file_mime_type() {
         .iter()
         .find_map(artifact_segment)
         .expect("file artifact remains a metadata segment");
-    let media = artifact.revision.media.as_ref().expect("media should project");
+    let media = artifact
+        .revision
+        .media
+        .as_ref()
+        .expect("media should project");
 
     assert_eq!(media.kind, ArtifactMediaKind::File);
     assert_eq!(media.mime_type, "text/plain");
