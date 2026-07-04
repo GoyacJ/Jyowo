@@ -249,6 +249,42 @@ The canonical projection rules:
 The canonical evidence types:
 
 ```ts
+type EvidenceRefId = string
+
+type EvidenceRefSummary = {
+  id: EvidenceRefId
+  kind: 'commandOutput' | 'diffPatch' | 'artifactContent'
+  contentType: string
+  byteLength: number
+  truncated: boolean
+  redactionState: 'clean' | 'redacted' | 'withheld'
+  sourceEventRefs: ConversationEventRef[]
+}
+
+type DecisionLifetime = 'once' | 'run' | 'session' | 'persisted'
+
+type DecisionMatcherSummary = {
+  kind:
+    | 'exactCommand'
+    | 'exactArgs'
+    | 'toolName'
+    | 'category'
+    | 'pathPrefix'
+    | 'globPattern'
+    | 'executeCodeScript'
+    | 'any'
+  label: string
+}
+
+type DecisionOption = {
+  id: string
+  decision: 'approve' | 'deny'
+  label: string
+  lifetime: DecisionLifetime
+  matcher: DecisionMatcherSummary
+  requiresConfirmation: boolean
+}
+
 type DecisionRequestState = {
   id: string
   requestId: string
@@ -267,7 +303,7 @@ type DecisionRequestState = {
     rule?: string
     sandbox?: string
   }
-  scopeOptions: Array<'once' | 'run' | 'workspace' | 'session'>
+  decisionOptions: DecisionOption[]
   evidenceRefs: ConversationEventRef[]
   dataExposure: {
     sendsWorkspaceData: boolean
@@ -311,7 +347,7 @@ type CommandExecution = {
   durationMs?: number
   stdoutPreview?: string
   stderrPreview?: string
-  fullOutputRef?: string
+  fullOutputRef?: EvidenceRefId
   truncated: boolean
   redactionState: 'clean' | 'redacted' | 'withheld'
   riskLevel: 'low' | 'medium' | 'high' | 'critical'
@@ -327,7 +363,7 @@ type ChangeSet = {
     addedLines: number
     removedLines: number
     preview?: string
-    fullPatchRef?: string
+    fullPatchRef?: EvidenceRefId
     riskFlags: Array<'delete' | 'chmod' | 'binary' | 'large' | 'generated'>
   }>
 }
@@ -341,12 +377,44 @@ type ArtifactRevisionSummary = {
   title: string
   summary?: string
   previewRef?: string
-  contentRef?: string
+  contentRef?: EvidenceRefId
   media?: ArtifactMediaPreview
 }
 ```
 
 Do not invent alternative field names during implementation. If Rust existing names differ internally, map them to this UI-facing projection.
+
+Rust serde boundary naming:
+
+- TypeScript and Zod use `fullOutputRef`, `fullPatchRef`, and `contentRef`.
+- Rust structs use `full_output_ref`, `full_patch_ref`, and `content_ref`.
+- Tauri `invoke(...)` arguments use camelCase because command handlers use `#[tauri::command(rename_all = "camelCase")]`: `fullOutputRef`, `fullPatchRef`, `contentRef`, `revisionId`, and `optionId`.
+- Rust command handler parameters and Rust request structs remain snake_case internally.
+
+Permission decision ownership:
+
+- Rust projects `decisionOptions` from backend policy state.
+- `DecisionScope` remains a backend matcher concept: exact command, exact args, tool name, category, path prefix, glob, code script, or any.
+- UI lifetime labels are display data derived by Rust, not policy rules invented by React.
+- React submits only `requestId`, `decision`, backend-issued `optionId`, and optional `confirmationText`.
+- React must never submit matcher internals, policy fields, sandbox state, risk level, or data exposure as authority.
+- `ResolvePermissionRequest` must include `option_id` at the Rust serde boundary and `optionId` at the TypeScript/Tauri boundary.
+- Rust must resolve `(conversation_id, request_id, option_id)` against the still-pending backend-authored decision option. Missing, stale, mismatched, already-resolved, or unauthorized options fail closed.
+- Rust must not map frontend `approve` directly to `Decision::AllowOnce` or `deny` directly to `Decision::DenyOnce`. The real `Decision` is derived only from the selected backend option.
+
+Evidence ref ownership:
+
+- `EvidenceRefId` is an opaque id minted only by Rust.
+- `crates/jyowo-harness-journal` owns an `EvidenceRefStore` registry that maps refs to kind, conversation id, run id, source event refs, optional artifact id/revision id, redaction state, content type, byte length, content hash, and backing blob or journal source.
+- The durable registry storage is a journal-owned read-model table, not `BlobMeta` and not an in-memory map. Implement the table in the same persistence family as `SqliteConversationReadModelStore` and expose a test-only in-memory implementation only from test support.
+- The registry row is the authority. `BlobStore` stores bytes and generic blob metadata only. Blob metadata alone must never authorize evidence reads.
+- Write order is blob-or-journal-source first, then registry row. If registry write fails after blob write, delete the newly written blob before returning the error. If cleanup fails, do not mint a ref.
+- Read order is registry row first, then source validation. Validate conversation ownership, kind, retention, source event refs, redaction provenance, byte length, and content hash before returning content.
+- The projector may include only `EvidenceRefSummary` or opaque `EvidenceRefId` values in `ConversationTurn`.
+- Full command output, full diff patch, and artifact content are read only through SDK/Tauri commands that validate conversation ownership, ref kind, visibility, redaction state, and retention before returning bytes.
+- Evidence refs are retained with their owning conversation artifacts, journal evidence, or blob records. Conversation deletion must make refs unreadable.
+- Redaction provenance is part of the registry metadata. A command must fail closed if the registry cannot prove the content was redacted or explicitly safe before exposure.
+- GC must treat registry rows as live references for blobs. Deleting or pruning a conversation deletes or invalidates all rows for that conversation before refs can be read again.
 
 ## File Map
 
@@ -361,11 +429,21 @@ Backend contracts:
 
 Backend projection and read model:
 
+- Create `crates/jyowo-harness-journal/src/evidence.rs`
+- Modify `crates/jyowo-harness-journal/src/lib.rs`
 - Modify `crates/jyowo-harness-journal/src/conversation_worktree_projector.rs`
 - Modify `crates/jyowo-harness-journal/src/conversation_read_model.rs`
+- Create `crates/jyowo-harness-journal/tests/evidence_ref_store.rs`
 - Modify `crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs`
 - Modify `crates/jyowo-harness-journal/tests/conversation_read_model.rs`
 - Create `crates/jyowo-harness-journal/tests/conversation_workbench_projection.rs`
+
+SDK facade:
+
+- Modify `crates/jyowo-harness-sdk/src/harness/read_model.rs`
+- Modify `crates/jyowo-harness-sdk/src/harness/accessors.rs`
+- Modify `crates/jyowo-harness-sdk/src/harness.rs`
+- Create `crates/jyowo-harness-sdk/tests/evidence_refs.rs`
 
 Tauri boundary:
 
@@ -375,6 +453,9 @@ Tauri boundary:
 - Modify `apps/desktop/src-tauri/src/commands/mod.rs`
 - Modify `apps/desktop/src-tauri/src/lib.rs`
 - Modify `apps/desktop/src-tauri/src/commands/tests.rs`
+- Modify `apps/desktop/src-tauri/tests/commands.rs`
+- Modify `apps/desktop/src-tauri/tests/commands/permissions.rs`
+- Create `apps/desktop/src-tauri/tests/commands/artifact_evidence.rs`
 
 Frontend shared boundary:
 
@@ -394,7 +475,14 @@ Frontend conversation and workbench:
 - Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline.tsx`
 - Modify `apps/desktop/src/features/conversation/timeline/assistant-work-view.tsx`
 - Delete `apps/desktop/src/features/conversation/timeline/thinking-panel.tsx`
-- Modify timeline tests under `apps/desktop/src/features/conversation/timeline/*.test.tsx`
+- Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline.render.test.tsx`
+- Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline.permission.test.tsx`
+- Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline.artifacts.test.tsx`
+- Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline.redaction.test.tsx`
+- Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline.large-output.test.tsx`
+- Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline-store.test.ts`
+- Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline-source.test.ts`
+- Modify `apps/desktop/src/features/conversation/timeline/use-conversation-timeline.test.tsx`
 - Create `apps/desktop/src/features/workbench/workbench-state.ts`
 - Create `apps/desktop/src/features/workbench/WorkbenchInspector.tsx`
 - Create `apps/desktop/src/features/workbench/WorkbenchInspector.test.tsx`
@@ -436,11 +524,14 @@ Frontend composer:
 
 Docs:
 
-- Modify `docs/frontend/frontend-product-ux.md` only if the implementation introduces new normative workbench language not already covered.
-- Modify `docs/backend/backend-runtime.md` only if new projection or artifact ownership rules become normative.
+- Modify `docs/frontend/frontend-product-ux.md`
+- Modify `docs/frontend/frontend-engineering.md`
+- Modify `docs/backend/backend-runtime.md`
+- Modify `docs/backend/backend-engineering.md`
+- Modify `docs/testing/testing-strategy.md` only if the implementation adds new test categories or gates
 - Do not create extra docs unless a gate requires it.
 
-## Task 1: Replace The Conversation Projection Contract
+## Task 1: Replace The Conversation Projection Contract As A Compile-Safe Vertical Slice
 
 **Files:**
 
@@ -450,26 +541,88 @@ Docs:
 - Modify `crates/jyowo-harness-contracts/tests/core_contracts.rs`
 - Create `crates/jyowo-harness-contracts/tests/conversation_workbench_contract.rs`
 - Modify `crates/jyowo-harness-contracts/tests/fixtures/conversation_worktree_page.json`
+- Modify `crates/jyowo-harness-journal/src/conversation_worktree_projector.rs`
+- Modify `crates/jyowo-harness-journal/src/conversation_read_model.rs`
+- Modify `crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs`
+- Modify `crates/jyowo-harness-journal/tests/conversation_read_model.rs`
+- Modify `apps/desktop/src-tauri/src/commands/contracts.rs`
+- Modify `apps/desktop/src-tauri/src/commands/conversations.rs`
+- Modify `apps/desktop/src-tauri/src/commands/mod.rs`
+- Modify `apps/desktop/src-tauri/tests/commands/conversation_worktree.rs`
+- Modify `apps/desktop/src-tauri/tests/commands/permissions.rs`
 - Modify `apps/desktop/src/shared/tauri/commands.ts`
 - Modify `apps/desktop/src/shared/tauri/commands.test.ts`
 
-**Design requirement:** Replace the thin timeline projection with typed workbench projection. Do not add a second legacy shape. Do not keep `AssistantSegment::Thinking`.
+**Design requirement:** Replace the thin timeline projection with typed workbench projection across the public contract, Rust projector, Tauri response path, permission command contract, and frontend Zod boundary in one compiling vertical slice. Do not add a second legacy shape. Do not keep `AssistantSegment::Thinking`. Do not defer downstream compile fixes to a later task. This task defines optional evidence ref fields but does not mint readable refs yet; Task 3 owns real ref creation after the durable registry exists.
 
 - [ ] Step 1: Run the Task Intent Check.
 - [ ] Step 2: Read required context and every file above.
 - [ ] Step 3: Add failing Rust contract tests in `conversation_workbench_contract.rs`.
 
-Required tests:
+Required Rust contract tests:
 
 ```rust
 #[test]
-fn conversation_worktree_page_contains_typed_decision_tool_command_diff_and_artifact_refs() {
+fn conversation_worktree_page_contains_typed_decision_tool_command_diff_and_artifact_shapes() {
     let page: ConversationWorktreePage =
         serde_json::from_str(include_str!("fixtures/conversation_worktree_page.json")).unwrap();
     let assistant = page.turns[0].assistant.as_ref().unwrap();
     assert!(assistant.projection_version > 0);
-    assert!(assistant.segments.iter().all(|segment| !matches!(segment, AssistantSegment::Thinking(_))));
-    assert!(format!("{page:?}").contains("DecisionRequestState"));
+
+    let decision = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::ToolGroup(group) => group
+                .attempts
+                .iter()
+                .find_map(|attempt| attempt.decision.as_ref()),
+            _ => None,
+        })
+        .expect("fixture must include a backend-authored decision request");
+    assert!(!decision.decision_options.is_empty());
+    assert!(decision.decision_options.iter().all(|option| !option.id.as_str().is_empty()));
+
+    let command = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::Process(process) => process.steps.iter().find_map(|step| {
+                match step.detail.as_ref()? {
+                    ProcessStepDetail::Command(command) => Some(command),
+                    _ => None,
+                }
+            }),
+            _ => None,
+        })
+        .expect("fixture must include command execution evidence");
+    assert!(command.truncated);
+    assert!(command.full_output_ref.is_none(), "Task 1 must not mint refs before EvidenceRefStore exists");
+
+    let change_set = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::Process(process) => process.steps.iter().find_map(|step| {
+                match step.detail.as_ref()? {
+                    ProcessStepDetail::Diff(change_set) => Some(change_set),
+                    _ => None,
+                }
+            }),
+            _ => None,
+        })
+        .expect("fixture must include changeset evidence");
+    assert!(change_set.files.iter().all(|file| file.full_patch_ref.is_none()));
+
+    let artifact = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::Artifact(artifact) => Some(&artifact.revision),
+            _ => None,
+        })
+        .expect("fixture must include an artifact revision summary");
+    assert!(!artifact.revision_id.as_str().is_empty());
 }
 
 #[test]
@@ -488,7 +641,7 @@ fn conversation_worktree_page_rejects_legacy_thinking_segment() {
 }
 ```
 
-Adjust exact constructors after reading current type names. The assertions must prove the old `thinking` segment is rejected.
+The rejection test must be JSON-deserialization-only. Do not reference `AssistantSegment::Thinking` in Rust code after removing the enum variant.
 
 - [ ] Step 4: Add failing Zod tests in `apps/desktop/src/shared/tauri/commands.test.ts`.
 
@@ -505,37 +658,73 @@ it('rejects legacy thinking segments in the conversation canvas projection', () 
 })
 ```
 
+The Zod test must also traverse the parsed typed object and assert:
+
+- at least one backend-authored decision has non-empty `decisionOptions`
+- at least one command execution exists and its `fullOutputRef` is absent in Task 1
+- at least one changeset exists and every `fullPatchRef` is absent in Task 1
+- at least one artifact revision exists and has non-empty `revisionId`
+
 - [ ] Step 5: Replace Rust projection structs.
 
 Required Rust-facing changes:
 
 - add `projection_version: u64` and `stream_version: u64` to `AssistantWork`
 - remove `AssistantSegment::Thinking`
-- replace `ToolPermissionState` with `DecisionRequestState`
+- replace `ToolPermissionState` with `DecisionRequestState`, `DecisionOption`, `DecisionLifetime`, and `DecisionMatcherSummary`
 - expand `ToolAttempt` exactly per target design
 - replace command detail fields with `CommandExecution`
 - replace diff detail with `ChangeSet`
 - expand artifact segment with `ArtifactRevisionSummary`
+- add required `revision_id` to artifact created/updated event contracts and ensure artifact projection uses it
+- add `EvidenceRefId` and `EvidenceRefSummary` contract types without adding fetch commands yet
 - add `UiVisibility` to process steps and force user-safe or withheld rendering
+- add `option_id` to `ResolvePermissionRequest`, Tauri command handler arguments, TS request schema, and TS command client request type
+- resolve permission decisions from backend-authored `(request_id, option_id)` state instead of hardcoded approve/deny to `AllowOnce`/`DenyOnce`
 
-- [ ] Step 6: Replace TypeScript Zod schemas in `commands.ts` with the same shape.
-- [ ] Step 7: Update the fixture JSON to the new shape.
-- [ ] Step 8: Run failing tests and confirm they fail before implementation, then implement until they pass.
+Artifact revision migration:
+
+- introduce a required `ArtifactRevisionId`/`revision_id` contract field; do not support both missing and present revision ids in the projector
+- when creating or updating artifacts, mint a new opaque revision id in Rust at event creation time
+- update every artifact event fixture and contract test to include real revision ids
+- if existing local dev journals must be readable, normalize them through the existing event-version migration layer before projection; the projector must only see normalized events with required `revision_id`
+- do not synthesize revision ids inside React, Tauri response mapping, or artifact UI code
+
+- [ ] Step 6: Update the Rust projector, read model, and Tauri worktree command tests in this same task.
+
+Required downstream migration:
+
+- `conversation_worktree_projector.rs` must compile against the new contract.
+- Existing projected permission data must map to backend-authored `decisionOptions`; React must not invent decision lifetime or matcher options.
+- Existing command and diff projection must populate previews and leave `fullOutputRef`, `fullPatchRef`, and `contentRef` absent until Task 3 creates a readable registry entry.
+- Existing artifact projection must emit `ArtifactRevisionSummary` with event-backed `revision_id`.
+- Existing thinking projection must become user-safe `ProcessStep` or withheld process state. It must not serialize `kind: "thinking"`.
+- `conversation_read_model.rs` must keep complete-turn paging semantics and compile with new cursor and segment shapes.
+- Tauri worktree command tests must parse the new serde shape.
+- Tauri permission command tests must prove that valid `optionId` resolves the backend-authored decision and invalid/mismatched/stale `optionId` fails closed.
+
+- [ ] Step 7: Replace TypeScript Zod schemas in `commands.ts` with the same shape.
+- [ ] Step 8: Update the fixture JSON to the new shape.
+- [ ] Step 9: Run failing tests and confirm they fail before implementation, then implement until they pass.
 
 Commands:
 
 ```bash
 cargo test -p jyowo-harness-contracts conversation_workbench --test conversation_workbench_contract
-pnpm vitest run apps/desktop/src/shared/tauri/commands.test.ts
+cargo test -p jyowo-harness-journal conversation_worktree_projector --test conversation_worktree_projector
+cargo test -p jyowo-harness-journal conversation_read_model --test conversation_read_model
+cargo test -p jyowo-desktop-shell conversation_worktree
+cargo test -p jyowo-desktop-shell permissions
+pnpm -C apps/desktop test -- src/shared/tauri/commands.test.ts
 cargo fmt --all --check
 cargo check --workspace
 pnpm check:desktop
 git diff --check
 ```
 
-- [ ] Step 9: Run Task Reality Check.
-- [ ] Step 10: Run read-only subagent audit.
-- [ ] Step 11: Commit `refactor: replace conversation projection contract`.
+- [ ] Step 10: Run Task Reality Check.
+- [ ] Step 11: Run read-only subagent audit.
+- [ ] Step 12: Commit `refactor: replace conversation projection contract`.
 
 ## Task 2: Rebuild Rust Worktree Projection
 
@@ -555,7 +744,7 @@ git diff --check
 
 Required behaviors:
 
-- `PermissionRequestedEvent` projects to `DecisionRequestState` with operation, target, risk, reason, policy, scope options, data exposure, confirmation, and evidence refs.
+- `PermissionRequestedEvent` projects to `DecisionRequestState` with operation, target, risk, reason, policy, backend-issued decision options, data exposure, confirmation, and evidence refs.
 - `ToolUseRequestedEvent` projects to `ToolAttempt.argumentsPreview` only after redaction and size limiting.
 - `ToolUseCompletedEvent` fills `outputSummary`, `durationMs`, `endedAt`, and affected targets.
 - command evidence includes command, cwd when available, sandbox, approval request id, exit code, duration, previews, truncation, redaction state, and risk.
@@ -602,11 +791,150 @@ git diff --check
 - [ ] Step 8: Run read-only subagent audit.
 - [ ] Step 9: Commit `refactor: rebuild conversation worktree projector`.
 
-## Task 3: Add Evidence Fetch Commands For Large Data
+## Task 3: Add Evidence Ref Registry And SDK Access
+
+**Files:**
+
+- Create `crates/jyowo-harness-journal/src/evidence.rs`
+- Modify `crates/jyowo-harness-journal/src/lib.rs`
+- Modify `crates/jyowo-harness-journal/src/conversation_worktree_projector.rs`
+- Modify `crates/jyowo-harness-journal/src/conversation_read_model.rs`
+- Create `crates/jyowo-harness-journal/tests/evidence_ref_store.rs`
+- Modify `crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs`
+- Modify `crates/jyowo-harness-sdk/src/harness/read_model.rs`
+- Modify `crates/jyowo-harness-sdk/src/harness/accessors.rs`
+- Modify `crates/jyowo-harness-sdk/src/harness.rs`
+- Create `crates/jyowo-harness-sdk/tests/evidence_refs.rs`
+
+**Design requirement:** Evidence refs are durable, conversation-scoped backend references. They are minted by Rust only after redaction and ownership metadata are known. React must never construct, mutate, or authorize an evidence ref.
+
+- [ ] Step 1: Run the Task Intent Check.
+- [ ] Step 2: Read required context and every file above.
+- [ ] Step 3: Add failing registry tests.
+
+Required behaviors:
+
+- ref ids are opaque and cannot be derived from path, command text, artifact id, or event id alone
+- every registry entry stores `kind`, `conversation_id`, `run_id`, source event refs, content type, byte length, content hash, retention, redaction state, redaction provenance, and source location
+- command-output refs include execution event refs and may point to a redacted blob or redacted journal payload
+- diff-patch refs include the change set id and file identity
+- artifact-content refs include `artifact_id` and `revision_id`
+- owner mismatch fails closed
+- kind mismatch fails closed
+- missing retention or missing redaction provenance fails closed
+- conversation deletion or journal/blob deletion makes the ref unreadable
+- ref lookup after process restart still succeeds for persisted refs
+- orphan blob created during failed registry write is removed before returning the error
+
+- [ ] Step 4: Implement `EvidenceRefStore`.
+
+Required Rust API shape:
+
+```rust
+pub struct EvidenceRefStore {
+    registry: Arc<dyn EvidenceRefRegistry>,
+    blob_store: Arc<dyn BlobStore>,
+    event_store: Arc<dyn EventStore>,
+}
+
+pub trait EvidenceRefRegistry: Send + Sync + 'static {
+    async fn insert(&self, tenant: TenantId, record: EvidenceRefRecord) -> Result<(), JournalError>;
+    async fn get(&self, tenant: TenantId, id: &EvidenceRefId) -> Result<Option<EvidenceRefRecord>, JournalError>;
+    async fn delete_for_conversation(&self, tenant: TenantId, conversation_id: &str) -> Result<(), JournalError>;
+    async fn list_live_blob_roots(&self, tenant: TenantId) -> Result<Vec<BlobRef>, JournalError>;
+}
+
+pub enum EvidenceRefKind {
+    CommandOutput,
+    DiffPatch,
+    ArtifactContent,
+}
+
+pub enum EvidenceRedactionState {
+    Clean,
+    Redacted,
+    Withheld,
+}
+
+pub enum EvidenceRefSource {
+    Blob { blob_ref: BlobRef },
+    JournalPayload { event_ref: ConversationEventRef, json_pointer: String },
+}
+
+pub struct EvidenceRefRecord {
+    pub id: EvidenceRefId,
+    pub kind: EvidenceRefKind,
+    pub conversation_id: String,
+    pub run_id: String,
+    pub source_event_refs: Vec<ConversationEventRef>,
+    pub artifact_id: Option<String>,
+    pub revision_id: Option<String>,
+    pub content_type: String,
+    pub byte_length: u64,
+    pub content_hash: Vec<u8>,
+    pub redaction_state: EvidenceRedactionState,
+    pub redaction_provenance: RedactionProvenance,
+    pub retention: BlobRetention,
+    pub source: EvidenceRefSource,
+}
+```
+
+Persistence design:
+
+- Store registry records in a journal-owned durable table named `evidence_refs` in the same database lifecycle as the conversation read model.
+- Do not extend `BlobMeta` to carry conversation ownership, policy, or redaction authority.
+- Do not use an in-memory map for production refs. Test-only in-memory storage may live in test support.
+- Primary key is `(tenant_id, evidence_ref_id)`.
+- Required indexes: `(tenant_id, conversation_id)`, `(tenant_id, conversation_id, kind)`, and `(tenant_id, artifact_id, revision_id)`.
+- Registry writes are idempotent for the same source hash and fail on conflicting metadata for the same ref id.
+- Blob-backed writes store bytes in `BlobStore` first, then insert the registry row. If the row insert fails, delete the just-created blob before returning an error.
+- Journal-backed refs store only source event refs and JSON pointer metadata. Reads must re-load the journal payload and re-check the hash.
+- Conversation deletion, journal prune, or artifact deletion must delete or invalidate matching registry rows before any ref can be read again.
+- GC must treat live registry blob refs as roots. A blob referenced by a registry row cannot be collected.
+
+- [ ] Step 5: Add SDK read methods that resolve evidence refs through the registry.
+
+Required:
+
+- SDK verifies conversation ownership before reading bytes
+- SDK verifies requested kind matches the command being served
+- SDK returns safe typed content, not raw `serde_json::Value`
+- SDK errors use existing safe command error mapping
+- SDK validates source hash and byte length after reading source bytes
+- SDK refuses `EvidenceRedactionState::Withheld` unless the command response shape is explicitly a withheld marker with no bytes
+
+- [ ] Step 6: Wire projector ref minting.
+
+Required:
+
+- `fullOutputRef` is present only when the registry has a readable redacted command output record
+- `fullPatchRef` is present only when the registry has a readable redacted patch record
+- `contentRef` is present only when the registry has a readable artifact revision record
+- previews remain bounded and redacted
+- no registry failure causes raw large content to be embedded in `ConversationTurn`
+
+- [ ] Step 7: Run gates.
+
+```bash
+cargo test -p jyowo-harness-journal evidence_ref_store --test evidence_ref_store
+cargo test -p jyowo-harness-journal conversation_worktree_projector --test conversation_worktree_projector
+cargo test -p jyowo-harness-sdk evidence_refs --test evidence_refs
+cargo fmt --all --check
+cargo check --workspace
+git diff --check
+```
+
+- [ ] Step 8: Run Task Reality Check.
+- [ ] Step 9: Run read-only subagent audit.
+- [ ] Step 10: Commit `refactor: add evidence ref registry`.
+
+## Task 4: Add Evidence Fetch Commands For Large Data
 
 **Files:**
 
 - Modify `crates/jyowo-harness-contracts/src/conversation.rs`
+- Modify `crates/jyowo-harness-journal/src/evidence.rs`
+- Modify `crates/jyowo-harness-sdk/src/harness/read_model.rs`
 - Modify `apps/desktop/src-tauri/src/commands/contracts.rs`
 - Modify `apps/desktop/src-tauri/src/commands/conversations.rs`
 - Modify `apps/desktop/src-tauri/src/commands/artifacts.rs`
@@ -614,7 +942,9 @@ git diff --check
 - Modify `apps/desktop/src-tauri/src/lib.rs`
 - Modify `apps/desktop/src/shared/tauri/commands.ts`
 - Modify `apps/desktop/src/shared/tauri/commands.test.ts`
-- Modify Tauri command tests in `apps/desktop/src-tauri/src/commands/tests.rs`
+- Modify `apps/desktop/src-tauri/tests/commands.rs`
+- Modify `apps/desktop/src-tauri/tests/commands/conversation_worktree.rs`
+- Create `apps/desktop/src-tauri/tests/commands/artifact_evidence.rs`
 
 **Design requirement:** Large command output, full diff patches, and artifact content are fetched by ref. They are not embedded in `ConversationTurn`.
 
@@ -623,15 +953,20 @@ git diff --check
 - [ ] Step 3: Add failing tests for three commands:
 
 ```text
-get_conversation_command_output(conversation_id, output_ref)
-get_conversation_diff_patch(conversation_id, patch_ref)
-get_artifact_revision_content(conversation_id, artifact_id, revision_id)
+get_conversation_command_output(conversation_id, full_output_ref)
+get_conversation_diff_patch(conversation_id, full_patch_ref)
+get_artifact_revision_content(conversation_id, content_ref)
 ```
 
 Required behavior:
 
 - invalid refs fail closed
 - refs must belong to the conversation
+- command output Rust request struct uses `full_output_ref`; Tauri invoke args and frontend wrapper use `fullOutputRef`
+- diff patch Rust request struct uses `full_patch_ref`; Tauri invoke args and frontend wrapper use `fullPatchRef`
+- artifact revision content Rust request struct uses `content_ref`; Tauri invoke args and frontend wrapper use `contentRef`
+- artifact content command validates the registry entry has kind `ArtifactContent` and matching conversation ownership before reading bytes
+- artifact id and revision id may be returned in the response metadata, but they must not be used as the authority for content reads
 - output is redacted before return
 - response includes `truncated`, `redactionState`, and content type
 - frontend Zod rejects oversized payloads
@@ -641,8 +976,9 @@ Required behavior:
 - [ ] Step 6: Run gates.
 
 ```bash
-cargo test -p jyowo-desktop commands
-pnpm vitest run apps/desktop/src/shared/tauri/commands.test.ts
+cargo test -p jyowo-desktop-shell commands
+cargo test -p jyowo-desktop-shell artifact_evidence
+pnpm -C apps/desktop test -- src/shared/tauri/commands.test.ts
 cargo fmt --all --check
 cargo check --workspace
 pnpm check:desktop
@@ -653,7 +989,7 @@ git diff --check
 - [ ] Step 8: Run read-only subagent audit.
 - [ ] Step 9: Commit `refactor: add evidence fetch commands`.
 
-## Task 4: Replace Timeline State With Paged Workbench State
+## Task 5: Replace Timeline State With Paged Workbench State
 
 **Files:**
 
@@ -662,7 +998,12 @@ git diff --check
 - Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline-source.ts`
 - Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline-selectors.ts`
 - Modify `apps/desktop/src/features/conversation/timeline/conversation-scroll-controller.ts`
-- Modify related tests under `apps/desktop/src/features/conversation/timeline/*.test.tsx`
+- Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline-store.test.ts`
+- Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline-source.test.ts`
+- Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline-selectors.test.ts`
+- Modify `apps/desktop/src/features/conversation/timeline/conversation-scroll-controller.test.ts`
+- Modify `apps/desktop/src/features/conversation/timeline/use-conversation-timeline.test.tsx`
+- Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline.large-output.test.tsx`
 
 **Design requirement:** State is page-aware and stream-version-aware. No optimistic turn is appended to the wrong page. No render path serializes large segments.
 
@@ -725,9 +1066,9 @@ worktreeRefreshRequested
 - [ ] Step 7: Run gates.
 
 ```bash
-pnpm vitest run apps/desktop/src/features/conversation/timeline/conversation-timeline-store.test.ts
-pnpm vitest run apps/desktop/src/features/conversation/timeline/use-conversation-timeline.test.tsx
-pnpm vitest run apps/desktop/src/features/conversation/timeline/conversation-timeline.large-output.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/timeline/conversation-timeline-store.test.ts
+pnpm -C apps/desktop test -- src/features/conversation/timeline/use-conversation-timeline.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/timeline/conversation-timeline.large-output.test.tsx
 pnpm check:desktop
 git diff --check
 ```
@@ -736,12 +1077,13 @@ git diff --check
 - [ ] Step 9: Run read-only subagent audit.
 - [ ] Step 10: Commit `refactor: replace timeline state with paged workbench state`.
 
-## Task 5: Build Workbench Shell And Inspector State
+## Task 6: Build Workbench Shell And Inspector State
 
 **Files:**
 
 - Modify `apps/desktop/src/app/shell/AppShell.tsx`
 - Modify `apps/desktop/src/app/shell/AppShell.test.tsx`
+- Create `apps/desktop/src/shared/state/workbench-selection.ts`
 - Modify `apps/desktop/src/shared/state/ui-store.ts`
 - Create `apps/desktop/src/features/workbench/workbench-state.ts`
 - Create `apps/desktop/src/features/workbench/WorkbenchInspector.tsx`
@@ -763,6 +1105,7 @@ Required tests:
 - clicking artifact summary opens `Artifact` pane
 - inspector state is conversation-scoped
 - closed inspector does not lose selected evidence
+- `shared/state/ui-store.ts` does not import from `features/workbench`
 
 - [ ] Step 4: Implement `WorkbenchSelection`.
 
@@ -773,27 +1116,30 @@ type WorkbenchSelection =
   | { kind: 'context' }
   | { kind: 'decision'; conversationId: string; requestId: string }
   | { kind: 'tool'; conversationId: string; toolUseId: string }
-  | { kind: 'command'; conversationId: string; outputRef?: string; eventRef?: ConversationEventRef }
+  | { kind: 'command'; conversationId: string; fullOutputRef?: EvidenceRefId; eventRef?: ConversationEventRef }
   | { kind: 'diff'; conversationId: string; changeSetId: string }
   | { kind: 'artifact'; conversationId: string; artifactId: string; revisionId?: string }
 ```
 
-- [ ] Step 5: Replace disabled more-actions placeholder with useful layout controls.
-- [ ] Step 6: Keep React state local to UI selection. Do not store policy decisions in UI store.
-- [ ] Step 7: Run gates.
+- [ ] Step 5: Place `WorkbenchSelection` and related literal pane types in `apps/desktop/src/shared/state/workbench-selection.ts`.
+- [ ] Step 6: Keep `shared/state/ui-store.ts` limited to shell layout and local UI selection. It may import `shared/state/workbench-selection.ts`, but it must not import `features/workbench`.
+- [ ] Step 7: Use `apps/desktop/src/features/workbench/workbench-state.ts` only for feature hooks/selectors that import shared state. Do not store backend data in Zustand.
+- [ ] Step 8: Replace disabled more-actions placeholder with useful layout controls.
+- [ ] Step 9: Keep React state local to UI selection. Do not store policy decisions in UI store.
+- [ ] Step 10: Run gates.
 
 ```bash
-pnpm vitest run apps/desktop/src/app/shell/AppShell.test.tsx
-pnpm vitest run apps/desktop/src/features/workbench/WorkbenchInspector.test.tsx
+pnpm -C apps/desktop test -- src/app/shell/AppShell.test.tsx
+pnpm -C apps/desktop test -- src/features/workbench/WorkbenchInspector.test.tsx
 pnpm check:desktop
 git diff --check
 ```
 
-- [ ] Step 8: Run Task Reality Check.
-- [ ] Step 9: Run read-only subagent audit.
-- [ ] Step 10: Commit `refactor: add workbench inspector shell`.
+- [ ] Step 11: Run Task Reality Check.
+- [ ] Step 12: Run read-only subagent audit.
+- [ ] Step 13: Commit `refactor: add workbench inspector shell`.
 
-## Task 6: Replace Permission UI With DecisionPanel
+## Task 7: Replace Permission UI With DecisionPanel
 
 **Files:**
 
@@ -803,9 +1149,11 @@ git diff --check
 - Modify `apps/desktop/src/features/conversation/timeline/tool-attempt-row.tsx`
 - Modify `apps/desktop/src/features/context/ContextPanel.tsx`
 - Modify `apps/desktop/src/features/context/ContextPanel.test.tsx`
+- Modify `apps/desktop/src/features/workbench/WorkbenchInspector.tsx`
+- Modify `apps/desktop/src/features/workbench/WorkbenchInspector.test.tsx`
 - Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline.permission.test.tsx`
 
-**Design requirement:** Permissions are user-visible decisions with operation, target, risk, reason, policy, evidence, data exposure, and scope. Buttons must name the action.
+**Design requirement:** Permissions are user-visible decisions with operation, target, risk, reason, policy, evidence, data exposure, and backend-issued decision options. Buttons must name the action. React must not own policy, matcher, or sandbox authority.
 
 - [ ] Step 1: Run the Task Intent Check.
 - [ ] Step 2: Read required context and every file above.
@@ -813,9 +1161,10 @@ git diff --check
 
 Required tests:
 
-- pending write request shows target, risk, reason, policy, data exposure, and scope options
+- pending write request shows target, risk, reason, policy, data exposure, decision lifetime labels, and matcher summaries from backend-issued options
 - high-risk request requires exact confirmation text
-- approve button text includes operation and scope
+- approve button text includes operation and backend-provided option label
+- selecting an approval option submits exactly that backend-provided `optionId`
 - deny button remains available without confirmation
 - submitted state disables duplicate actions
 - failed submission keeps request visible with retry-safe state
@@ -823,13 +1172,14 @@ Required tests:
 
 - [ ] Step 4: Implement `DecisionPanel`.
 - [ ] Step 5: Wire `ToolAttemptRow` and `WorkbenchInspector` to the same component.
-- [ ] Step 6: Ensure `resolvePermission` receives only request id, decision, selected scope, and confirmation text. React must not send policy fields.
+- [ ] Step 6: Ensure `resolvePermission` receives only request id, decision, backend-issued `optionId`, and confirmation text. React must not send policy fields, matcher internals, sandbox state, risk level, or data exposure.
 - [ ] Step 7: Run gates.
 
 ```bash
-pnpm vitest run apps/desktop/src/features/conversation/evidence/DecisionPanel.test.tsx
-pnpm vitest run apps/desktop/src/features/conversation/timeline/conversation-timeline.permission.test.tsx
-pnpm vitest run apps/desktop/src/features/context/ContextPanel.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/evidence/DecisionPanel.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/timeline/conversation-timeline.permission.test.tsx
+pnpm -C apps/desktop test -- src/features/context/ContextPanel.test.tsx
+pnpm -C apps/desktop test -- src/features/workbench/WorkbenchInspector.test.tsx
 pnpm check:desktop
 git diff --check
 ```
@@ -838,7 +1188,7 @@ git diff --check
 - [ ] Step 9: Run read-only subagent audit.
 - [ ] Step 10: Commit `refactor: replace permission UI with decision panel`.
 
-## Task 7: Implement Tool And Command Evidence Views
+## Task 8: Implement Tool And Command Evidence Views
 
 **Files:**
 
@@ -876,9 +1226,9 @@ Required tests:
 - [ ] Step 7: Run gates.
 
 ```bash
-pnpm vitest run apps/desktop/src/features/conversation/evidence/ToolInvocationCard.test.tsx
-pnpm vitest run apps/desktop/src/features/conversation/evidence/CommandExecutionView.test.tsx
-pnpm vitest run apps/desktop/src/features/conversation/timeline/conversation-timeline.render.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/evidence/ToolInvocationCard.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/evidence/CommandExecutionView.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/timeline/conversation-timeline.render.test.tsx
 pnpm check:desktop
 git diff --check
 ```
@@ -887,7 +1237,7 @@ git diff --check
 - [ ] Step 9: Run read-only subagent audit.
 - [ ] Step 10: Commit `refactor: implement tool and command evidence views`.
 
-## Task 8: Implement ChangeSet Summary And Diff Pane
+## Task 9: Implement ChangeSet Summary And Diff Pane
 
 **Files:**
 
@@ -922,9 +1272,9 @@ Required tests:
 - [ ] Step 7: Run gates.
 
 ```bash
-pnpm vitest run apps/desktop/src/features/conversation/evidence/ChangeSetSummary.test.tsx
-pnpm vitest run apps/desktop/src/features/conversation/evidence/DiffPane.test.tsx
-pnpm vitest run apps/desktop/src/features/conversation/timeline/conversation-timeline.render.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/evidence/ChangeSetSummary.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/evidence/DiffPane.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/timeline/conversation-timeline.render.test.tsx
 pnpm check:desktop
 git diff --check
 ```
@@ -933,11 +1283,10 @@ git diff --check
 - [ ] Step 9: Run read-only subagent audit.
 - [ ] Step 10: Commit `refactor: implement changeset diff pane`.
 
-## Task 9: Implement Artifact Revision Workspace
+## Task 10: Implement Artifact Revision Workspace
 
 **Files:**
 
-- Modify `crates/jyowo-harness-contracts/src/events/artifact.rs`
 - Modify `apps/desktop/src-tauri/src/commands/artifacts.rs`
 - Modify `apps/desktop/src/shared/tauri/commands.ts`
 - Modify `apps/desktop/src/features/conversation/timeline/artifact-segment-view.tsx`
@@ -955,8 +1304,7 @@ git diff --check
 
 Required tests:
 
-- artifact created event produces revision 1
-- artifact updated event produces a new revision id
+- artifact pane consumes projected `revisionId` values from `ArtifactRevisionSummary`
 - artifact pane lists revisions newest-first
 - image preview uses media preview ref
 - HTML preview uses sandboxed iframe with no same-origin privilege
@@ -964,16 +1312,16 @@ Required tests:
 - failed artifact shows error state without broken image
 - copy/download actions use backend-provided content refs
 
-- [ ] Step 4: Add artifact revision fields to event and projection contracts.
-- [ ] Step 5: Implement artifact revision lookup in Tauri command layer.
+- [ ] Step 4: Use the artifact revision contract and fetch command created in Tasks 1, 2, and 4. Do not add a second artifact history model.
+- [ ] Step 5: Implement artifact revision lookup in the Tauri command layer only for metadata gaps. Artifact content bytes must be fetched through `get_artifact_revision_content(conversationId, contentRef)`.
 - [ ] Step 6: Implement `ArtifactPane` and timeline open action.
 - [ ] Step 7: Run gates.
 
 ```bash
 cargo test -p jyowo-harness-contracts artifact --test core_contracts
-cargo test -p jyowo-desktop artifacts
-pnpm vitest run apps/desktop/src/features/artifacts/ArtifactPane.test.tsx
-pnpm vitest run apps/desktop/src/features/artifacts/ArtifactPreview.test.tsx
+cargo test -p jyowo-desktop-shell artifacts
+pnpm -C apps/desktop test -- src/features/artifacts/ArtifactPane.test.tsx
+pnpm -C apps/desktop test -- src/features/artifacts/ArtifactPreview.test.tsx
 cargo fmt --all --check
 cargo check --workspace
 pnpm check:desktop
@@ -984,7 +1332,7 @@ git diff --check
 - [ ] Step 9: Run read-only subagent audit.
 - [ ] Step 10: Commit `refactor: add artifact revision workspace`.
 
-## Task 10: Redesign Composer As A Command Input Surface
+## Task 11: Redesign Composer As A Command Input Surface
 
 **Files:**
 
@@ -1024,8 +1372,8 @@ Required tests:
 - [ ] Step 7: Run gates.
 
 ```bash
-pnpm vitest run apps/desktop/src/features/conversation/Composer.test.tsx
-pnpm vitest run apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/Composer.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/ConversationWorkspace.test.tsx
 pnpm check:desktop
 git diff --check
 ```
@@ -1034,25 +1382,34 @@ git diff --check
 - [ ] Step 9: Run read-only subagent audit.
 - [ ] Step 10: Commit `refactor: redesign composer command input`.
 
-## Task 11: Remove Legacy Timeline Components And Close Accessibility Gaps
+## Task 12: Remove Legacy Timeline Components And Close Accessibility Gaps
 
 **Files:**
 
 - Delete `apps/desktop/src/features/conversation/timeline/thinking-panel.tsx`
-- Delete replaced permission and diff components if still present
+- Confirm deleted `apps/desktop/src/features/conversation/timeline/permission-inline-panel.tsx`
 - Modify `apps/desktop/src/features/conversation/timeline/assistant-work-view.tsx`
 - Modify `apps/desktop/src/features/conversation/timeline/process-status-row.tsx`
 - Modify `apps/desktop/src/features/conversation/timeline/tool-evidence-summary.tsx`
 - Modify `apps/desktop/src/features/conversation/timeline/user-attachment-strip.tsx`
 - Modify `apps/desktop/src/features/conversation/timeline/artifact-segment-view.tsx`
 - Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline.stories.tsx`
-- Modify or create stories for new evidence/workbench components
+- Create `apps/desktop/src/features/conversation/evidence/DecisionPanel.stories.tsx`
+- Create `apps/desktop/src/features/conversation/evidence/ToolInvocationCard.stories.tsx`
+- Create `apps/desktop/src/features/conversation/evidence/CommandExecutionView.stories.tsx`
+- Create `apps/desktop/src/features/conversation/evidence/DiffPane.stories.tsx`
+- Create `apps/desktop/src/features/conversation/evidence/ChangeSetSummary.stories.tsx`
+- Modify `apps/desktop/src/features/artifacts/ArtifactPane.stories.tsx` created by Task 10
+- Modify `apps/desktop/src/features/workbench/WorkbenchInspector.stories.tsx` created by Task 6
+- Modify `apps/desktop/src/features/conversation/Composer.stories.tsx`
 
 **Design requirement:** Remove old compatibility UI. Finish focus, aria, image dimensions, and story coverage for the new surfaces.
 
 - [ ] Step 1: Run the Task Intent Check.
 - [ ] Step 2: Read required context and every file above.
-- [ ] Step 3: Add failing tests or Storybook stories for:
+- [ ] Step 3: Add or update behavior tests. Storybook does not satisfy this step.
+
+Required behavior tests:
 
 ```text
 ConversationTimeline loaded / empty / error / gap / long history / streaming
@@ -1065,45 +1422,59 @@ Composer ready / disabled / submitting / error / attachments / slash / reference
 WorkbenchInspector every pane
 ```
 
-- [ ] Step 4: Remove legacy UI paths.
-- [ ] Step 5: Add visible focus styles through existing shared button primitives or equivalent local classes.
-- [ ] Step 6: Add width/height or stable aspect ratio for images and media.
-- [ ] Step 7: Confirm semantic tokens are used. Terminal surfaces may use terminal tokens; do not hardcode arbitrary white/black outside that surface.
-- [ ] Step 8: Run gates.
+- [ ] Step 4: Add Storybook visual state matrices for the exact story files listed above.
+- [ ] Step 5: Remove legacy UI paths and assert `apps/desktop/src/features/conversation/timeline/permission-inline-panel.tsx` is absent. Do not recreate it.
+- [ ] Step 6: Add visible focus styles through existing shared button primitives or equivalent local classes.
+- [ ] Step 7: Add width/height or stable aspect ratio for images and media.
+- [ ] Step 8: Confirm semantic tokens are used. Terminal surfaces may use terminal tokens; do not hardcode arbitrary white/black outside that surface.
+- [ ] Step 9: Run gates.
 
 ```bash
-pnpm vitest run apps/desktop/src/features/conversation/timeline/conversation-timeline.render.test.tsx
-pnpm vitest run apps/desktop/src/features/conversation/timeline/conversation-timeline.artifacts.test.tsx
-pnpm vitest run apps/desktop/src/features/conversation/timeline/conversation-timeline.redaction.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/timeline/conversation-timeline.render.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/timeline/conversation-timeline.artifacts.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/timeline/conversation-timeline.redaction.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/evidence/DecisionPanel.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/evidence/ToolInvocationCard.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/evidence/CommandExecutionView.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/evidence/ChangeSetSummary.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/evidence/DiffPane.test.tsx
+pnpm -C apps/desktop test -- src/features/artifacts/ArtifactPane.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/Composer.test.tsx
+pnpm -C apps/desktop test -- src/features/workbench/WorkbenchInspector.test.tsx
 pnpm check:desktop
 pnpm check:test-architecture
 git diff --check
 ```
 
-- [ ] Step 9: Run Task Reality Check.
-- [ ] Step 10: Run read-only subagent audit.
-- [ ] Step 11: Commit `refactor: remove legacy timeline UI`.
+- [ ] Step 10: Run Task Reality Check.
+- [ ] Step 11: Run read-only subagent audit.
+- [ ] Step 12: Commit `refactor: remove legacy timeline UI`.
 
-## Task 12: Update Product And Runtime Docs If Needed
+## Task 13: Update Product And Runtime Docs
 
 **Files:**
 
-- Modify `docs/frontend/frontend-product-ux.md` only if needed
-- Modify `docs/frontend/frontend-engineering.md` only if needed
-- Modify `docs/backend/backend-runtime.md` only if needed
-- Modify `docs/testing/testing-strategy.md` only if new test categories or gates are required
+- Modify `docs/frontend/frontend-product-ux.md`
+- Modify `docs/frontend/frontend-engineering.md`
+- Modify `docs/backend/backend-runtime.md`
+- Modify `docs/backend/backend-engineering.md`
+- Modify `docs/testing/testing-strategy.md` only if implementation adds new test categories, naming rules, or gates; otherwise state in the task response that no testing-strategy change was required.
 
 **Design requirement:** Docs must match the implemented architecture. Do not create docs that describe future work. Do not write temporary plans into normative docs.
 
 - [ ] Step 1: Run the Task Intent Check.
 - [ ] Step 2: Read required context and every file above.
-- [ ] Step 3: Compare implemented architecture against existing docs.
-- [ ] Step 4: Update only normative gaps:
+- [ ] Step 3: Compare implemented architecture against existing docs and list concrete normative gaps.
+- [ ] Step 4: Update the normative docs for these implemented architecture changes:
   - workbench inspector ownership
   - typed evidence projection
+  - `EvidenceRefStore` ownership, retention, and redaction provenance
+  - evidence fetch command payload names and scope validation
+  - backend-issued permission decision options
   - artifact revision workspace
   - no raw thinking in frontend state
   - large output refs instead of embedded payloads
+  - frontend `shared` / `features` dependency boundaries for workbench state
 - [ ] Step 5: Run gates.
 
 ```bash
@@ -1118,7 +1489,7 @@ git diff --check
 - [ ] Step 7: Run read-only subagent audit.
 - [ ] Step 8: Commit `refactor: document conversation workbench architecture`.
 
-## Task 13: End-To-End Verification And Cleanup
+## Task 14: End-To-End Verification And Cleanup
 
 **Files:**
 
@@ -1131,13 +1502,22 @@ git diff --check
 - [ ] Step 2: Search for forbidden leftovers.
 
 ```bash
-rg -n "ThinkingPanel|AssistantSegment::Thinking|ToolPermissionState|permission-inline-panel|JSON.stringify\\(segment\\)|visibleLines\\.map\\(formatDiffLineForCopy\\)|h-8 w-full resize-none|legacyThinking|legacy.*conversation" apps crates
+rg -n "ThinkingPanel|AssistantSegment::Thinking|ToolPermissionState|permission-inline-panel|JSON.stringify\\(segment\\)|visibleLines\\.map\\(formatDiffLineForCopy\\)|h-8 w-full resize-none|legacyThinking|legacy.*conversation" \
+  crates \
+  apps/desktop/src/shared/tauri \
+  apps/desktop/src/features/conversation \
+  apps/desktop/src/features/workbench \
+  apps/desktop/src/features/artifacts \
+  -g '!**/*.test.ts' \
+  -g '!**/*.test.tsx' \
+  -g '!**/*.stories.tsx'
 ```
 
 Expected:
 
 - no production references to removed compatibility UI or old projection names
 - test names may mention legacy only when asserting rejection
+- `apps/desktop/src/features/activity/ToolCallCard.tsx` is intentionally outside this grep because it may contain an activity-local permission display type unrelated to the removed conversation projection contract
 
 - [ ] Step 3: Run full gates.
 
