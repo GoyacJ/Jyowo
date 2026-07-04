@@ -44,6 +44,7 @@ pub fn run() {
             commands::delete_memory_item,
             commands::delete_project,
             commands::delete_skill,
+            commands::export_conversation_evidence,
             commands::export_memory_items,
             commands::export_support_bundle,
             commands::get_context_snapshot,

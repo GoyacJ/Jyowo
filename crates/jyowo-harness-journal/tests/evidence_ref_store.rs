@@ -4,11 +4,12 @@ use harness_contracts::*;
 use harness_journal::evidence::*;
 use harness_journal::{FileBlobStore, InMemoryBlobStore, RetentionEnforcer};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::stream::BoxStream;
+use futures::{stream::BoxStream, StreamExt};
 
 fn make_record(id: &str, conversation_id: &str, kind: EvidenceRefKind) -> EvidenceRefRecord {
     EvidenceRefRecord {
@@ -254,6 +255,195 @@ async fn read_rejects_kind_mismatch() {
         .expect_err("kind mismatch is rejected");
 
     assert!(error.to_string().contains("kind mismatch"));
+}
+
+#[tokio::test]
+async fn read_window_returns_bounded_page_without_full_content() {
+    let registry = Arc::new(InMemoryEvidenceRefRegistry::new());
+    let blob_store = Arc::new(InMemoryBlobStore::default());
+    let store = EvidenceRefStore::new(registry, blob_store);
+    let bytes = b"abcdefghijklmnopqrstuvwxyz".to_vec();
+    let record = blob_record("ref-window", "conv-1", &bytes);
+
+    store
+        .store_blob_evidence(TenantId::SINGLE, record.clone(), bytes)
+        .await
+        .expect("evidence stores");
+
+    let first = store
+        .read_evidence_window(
+            TenantId::SINGLE,
+            "conv-1",
+            &record.id,
+            EvidenceRefKind::CommandOutput,
+            EvidenceReadWindow {
+                cursor: None,
+                max_bytes: 8,
+            },
+        )
+        .await
+        .expect("first page reads");
+
+    assert_eq!(first.bytes, b"abcdefgh");
+    assert_eq!(first.content_bytes, 26);
+    assert_eq!(first.returned_bytes, 8);
+    assert_eq!(first.max_bytes, 8);
+    assert!(first.truncated);
+    assert!(first.has_more);
+    assert_eq!(first.next_cursor.as_deref(), Some("8"));
+
+    let second = store
+        .read_evidence_window(
+            TenantId::SINGLE,
+            "conv-1",
+            &record.id,
+            EvidenceRefKind::CommandOutput,
+            EvidenceReadWindow {
+                cursor: first.next_cursor,
+                max_bytes: 8,
+            },
+        )
+        .await
+        .expect("second page reads");
+
+    assert_eq!(second.bytes, b"ijklmnop");
+    assert_eq!(second.returned_bytes, 8);
+    assert!(second.has_more);
+    assert_eq!(second.next_cursor.as_deref(), Some("16"));
+}
+
+#[tokio::test]
+async fn read_window_stops_blob_stream_after_requested_page() {
+    let registry = Arc::new(InMemoryEvidenceRefRegistry::new());
+    let bytes = b"abcdefghijklmnopqrstuvwxyz".to_vec();
+    let record = blob_record("ref-window-stream", "conv-1", &bytes);
+    let chunk_counter = Arc::new(AtomicUsize::new(0));
+    let blob_store = Arc::new(ChunkCountingBlobStore {
+        blob_ref: match &record.source {
+            EvidenceRefSource::Blob { blob_ref } => blob_ref.clone(),
+            EvidenceRefSource::JournalPayload { .. } => panic!("test record must be blob backed"),
+        },
+        bytes: bytes.clone(),
+        chunk_size: 4,
+        chunks_read: Arc::clone(&chunk_counter),
+    });
+    let store = EvidenceRefStore::new(registry.clone(), blob_store);
+
+    registry
+        .insert(TenantId::SINGLE, record.clone())
+        .await
+        .expect("evidence record stores");
+
+    let page = store
+        .read_evidence_window(
+            TenantId::SINGLE,
+            "conv-1",
+            &record.id,
+            EvidenceRefKind::CommandOutput,
+            EvidenceReadWindow {
+                cursor: Some("8".to_owned()),
+                max_bytes: 4,
+            },
+        )
+        .await
+        .expect("bounded page reads");
+
+    assert_eq!(page.bytes, b"ijkl");
+    assert_eq!(chunk_counter.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn file_blob_store_range_reads_only_requested_window() {
+    let root = temp_root("file-blob-range");
+    let blob_store = FileBlobStore::open(&root).expect("file blob store opens");
+    let bytes = Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz");
+    let meta = blob_meta(&bytes);
+    let blob_ref = blob_store
+        .put(TenantId::SINGLE, bytes, meta)
+        .await
+        .expect("blob stores");
+
+    let mut stream = blob_store
+        .get_range(TenantId::SINGLE, &blob_ref, 8, 4)
+        .await
+        .expect("range reads");
+    let mut page = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        page.extend_from_slice(&chunk);
+    }
+
+    assert_eq!(page, b"ijkl");
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_blob_store_range_reads_only_requested_window() {
+    let root = temp_root("sqlite-blob-range");
+    std::fs::create_dir_all(&root).expect("temp root exists");
+    let blob_store =
+        harness_journal::SqliteBlobStore::open(root.join("blobs.sqlite")).expect("sqlite opens");
+    let bytes = Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz");
+    let meta = blob_meta(&bytes);
+    let blob_ref = blob_store
+        .put(TenantId::SINGLE, bytes, meta)
+        .await
+        .expect("blob stores");
+
+    let mut stream = blob_store
+        .get_range(TenantId::SINGLE, &blob_ref, 8, 4)
+        .await
+        .expect("range reads");
+    let mut page = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        page.extend_from_slice(&chunk);
+    }
+
+    assert_eq!(page, b"ijkl");
+}
+
+#[tokio::test]
+async fn read_window_small_evidence_returns_complete_content() {
+    let registry = Arc::new(InMemoryEvidenceRefRegistry::new());
+    let blob_store = Arc::new(InMemoryBlobStore::default());
+    let store = EvidenceRefStore::new(registry, blob_store);
+    let bytes = b"short output".to_vec();
+    let record = blob_record("ref-small", "conv-1", &bytes);
+
+    store
+        .store_blob_evidence(TenantId::SINGLE, record.clone(), bytes)
+        .await
+        .expect("evidence stores");
+
+    let result = store
+        .read_evidence_window(
+            TenantId::SINGLE,
+            "conv-1",
+            &record.id,
+            EvidenceRefKind::CommandOutput,
+            EvidenceReadWindow {
+                cursor: None,
+                max_bytes: 64,
+            },
+        )
+        .await
+        .expect("small page reads");
+
+    assert_eq!(result.bytes, b"short output");
+    assert_eq!(result.content_bytes, 12);
+    assert_eq!(result.returned_bytes, 12);
+    assert!(!result.truncated);
+    assert!(!result.has_more);
+    assert_eq!(result.next_cursor, None);
+}
+
+fn blob_meta(bytes: &Bytes) -> BlobMeta {
+    BlobMeta {
+        content_type: Some("text/plain".to_owned()),
+        size: bytes.len() as u64,
+        content_hash: *blake3::hash(bytes).as_bytes(),
+        created_at: chrono::Utc::now(),
+        retention: BlobRetention::TenantScoped,
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -591,6 +781,65 @@ async fn gc_keeps_live_evidence_blobs_and_deletes_dead_blobs() {
 #[derive(Default)]
 struct DeleteFailingBlobStore {
     inner: InMemoryBlobStore,
+}
+
+struct ChunkCountingBlobStore {
+    blob_ref: BlobRef,
+    bytes: Vec<u8>,
+    chunk_size: usize,
+    chunks_read: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl BlobStore for ChunkCountingBlobStore {
+    fn store_id(&self) -> &str {
+        "chunk-counting-memory"
+    }
+
+    async fn put(
+        &self,
+        _tenant: TenantId,
+        _bytes: Bytes,
+        _meta: BlobMeta,
+    ) -> Result<BlobRef, BlobError> {
+        Ok(self.blob_ref.clone())
+    }
+
+    async fn get(
+        &self,
+        _tenant: TenantId,
+        blob: &BlobRef,
+    ) -> Result<BoxStream<'static, Bytes>, BlobError> {
+        if blob.id != self.blob_ref.id {
+            return Err(BlobError::NotFound(blob.id));
+        }
+        let chunks: Vec<Bytes> = self
+            .bytes
+            .chunks(self.chunk_size)
+            .map(Bytes::copy_from_slice)
+            .collect();
+        let counter = Arc::clone(&self.chunks_read);
+        Ok(Box::pin(futures::stream::iter(chunks).inspect(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })))
+    }
+
+    async fn head(&self, _tenant: TenantId, blob: &BlobRef) -> Result<Option<BlobMeta>, BlobError> {
+        if blob.id != self.blob_ref.id {
+            return Ok(None);
+        }
+        Ok(Some(BlobMeta {
+            content_type: self.blob_ref.content_type.clone(),
+            size: self.blob_ref.size,
+            content_hash: self.blob_ref.content_hash,
+            created_at: chrono::Utc::now(),
+            retention: BlobRetention::TenantScoped,
+        }))
+    }
+
+    async fn delete(&self, _tenant: TenantId, _blob: &BlobRef) -> Result<(), BlobError> {
+        Ok(())
+    }
 }
 
 #[async_trait]

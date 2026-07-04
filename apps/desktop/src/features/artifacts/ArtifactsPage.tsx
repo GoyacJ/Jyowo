@@ -226,6 +226,7 @@ function ArtifactPreviewLoader({
       kind={artifact.kind}
       state={contentQuery.isError ? 'error' : contentQuery.isLoading ? 'loading' : 'ready'}
       title={artifact.title}
+      truncated={contentQuery.data?.truncated}
     />
   )
 }

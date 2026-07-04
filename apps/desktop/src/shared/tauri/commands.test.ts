@@ -10,6 +10,8 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
+const validEvidenceContentHash = 'a'.repeat(64)
+
 function sharedWorktreeFixture() {
   return JSON.parse(
     readFileSync(
@@ -1301,6 +1303,275 @@ describe('CommandClient', () => {
         ),
       ).rejects.toThrow(TauriCommandPayloadError)
     }
+  })
+
+  it('rejects oversized worktree diff previews at the IPC boundary', async () => {
+    const payload = clone(validWorktreePage())
+    const assistant = payload.turns[0].assistant
+    if (!assistant) {
+      throw new Error('assistant fixture missing')
+    }
+    assistant.segments.push({
+      kind: 'process',
+      id: 'segment:process:oversized-diff-preview',
+      order: 10,
+      status: 'complete',
+      summary: 'Oversized diff preview',
+      steps: [
+        {
+          id: 'process-step:oversized-diff-preview',
+          order: 0,
+          kind: 'diff',
+          status: 'complete',
+          title: 'Review diff',
+          detail: {
+            type: 'diff',
+            id: 'change-set-oversized-preview',
+            summary: 'Oversized preview',
+            files: [
+              {
+                path: 'src/oversized.ts',
+                status: 'modified',
+                addedLines: 1,
+                removedLines: 1,
+                preview: 'x'.repeat(70_001),
+              },
+            ],
+          },
+        },
+      ],
+      eventRefs: [{ eventId: 'event-diff-oversized', cursor: cursor('', 8) }],
+    })
+
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects oversized worktree command previews at the IPC boundary', async () => {
+    const payload = clone(validWorktreePage())
+    const assistant = payload.turns[0].assistant
+    if (!assistant) {
+      throw new Error('assistant fixture missing')
+    }
+    assistant.segments.push({
+      kind: 'process',
+      id: 'segment:process:oversized-command-preview',
+      order: 10,
+      status: 'complete',
+      summary: 'Oversized command preview',
+      steps: [
+        {
+          id: 'process-step:oversized-command-preview',
+          order: 0,
+          kind: 'command',
+          status: 'complete',
+          title: 'Run command',
+          detail: {
+            type: 'command',
+            command: 'pnpm check',
+            stdoutPreview: 'x'.repeat(70_001),
+            truncated: true,
+            redactionState: 'clean',
+            riskLevel: 'low',
+          },
+        },
+      ],
+      eventRefs: [{ eventId: 'event-command-oversized', cursor: cursor('', 8) }],
+    })
+
+    await expect(
+      pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        createInvokeCommandClient(vi.fn().mockResolvedValue(payload)),
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects oversized evidence content at the IPC boundary', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        byteLength: 70_001,
+        contentHash: validEvidenceContentHash,
+        contentBytes: 70_001,
+        contentType: 'text/plain; charset=utf-8',
+        hasMore: false,
+        hashAlgorithm: 'blake3',
+        kind: 'command-output',
+        limitBytes: 65_536,
+        maxBytes: 65_536,
+        offsetBytes: 0,
+        output: 'x'.repeat(70_001),
+        redactionState: 'clean',
+        refId: 'evidence-command-output-001',
+        returnedBytes: 70_001,
+        totalBytes: 70_001,
+        truncated: false,
+      }),
+    )
+
+    await expect(
+      client.getConversationCommandOutput({
+        conversationId: 'conversation-001',
+        fullOutputRef: 'evidence-command-output-001',
+      }),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects malformed evidence content hashes at the IPC boundary', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        byteLength: 7,
+        contentHash: 'hash-command-output',
+        contentBytes: 7,
+        contentType: 'text/plain; charset=utf-8',
+        hasMore: false,
+        hashAlgorithm: 'blake3',
+        kind: 'command-output',
+        limitBytes: 65_536,
+        maxBytes: 65_536,
+        offsetBytes: 0,
+        output: 'bounded',
+        redactionState: 'clean',
+        refId: 'evidence-command-output-001',
+        returnedBytes: 7,
+        totalBytes: 7,
+        truncated: false,
+      }),
+    )
+
+    await expect(
+      client.getConversationCommandOutput({
+        conversationId: 'conversation-001',
+        fullOutputRef: 'evidence-command-output-001',
+      }),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects unsupported evidence hash algorithms at the IPC boundary', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        byteLength: 7,
+        contentHash: validEvidenceContentHash,
+        contentBytes: 7,
+        contentType: 'text/plain; charset=utf-8',
+        hasMore: false,
+        hashAlgorithm: 'sha256',
+        kind: 'command-output',
+        limitBytes: 65_536,
+        maxBytes: 65_536,
+        offsetBytes: 0,
+        output: 'bounded',
+        redactionState: 'clean',
+        refId: 'evidence-command-output-001',
+        returnedBytes: 7,
+        totalBytes: 7,
+        truncated: false,
+      }),
+    )
+
+    await expect(
+      client.getConversationCommandOutput({
+        conversationId: 'conversation-001',
+        fullOutputRef: 'evidence-command-output-001',
+      }),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects oversized diff patch content at the IPC boundary', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        byteLength: 70_001,
+        contentHash: validEvidenceContentHash,
+        contentBytes: 70_001,
+        contentType: 'text/x-diff; charset=utf-8',
+        hasMore: false,
+        hashAlgorithm: 'blake3',
+        kind: 'diff-patch',
+        limitBytes: 65_536,
+        maxBytes: 65_536,
+        offsetBytes: 0,
+        patch: 'x'.repeat(70_001),
+        redactionState: 'clean',
+        refId: 'evidence-diff-patch-001',
+        returnedBytes: 70_001,
+        totalBytes: 70_001,
+        truncated: false,
+      }),
+    )
+
+    await expect(
+      client.getConversationDiffPatch({
+        conversationId: 'conversation-001',
+        fullPatchRef: 'evidence-diff-patch-001',
+      }),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('rejects oversized artifact content at the IPC boundary', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        artifactId: 'artifact-001',
+        byteLength: 70_001,
+        content: 'x'.repeat(70_001),
+        contentHash: validEvidenceContentHash,
+        contentBytes: 70_001,
+        contentType: 'text/markdown; charset=utf-8',
+        hasMore: false,
+        hashAlgorithm: 'blake3',
+        kind: 'artifact-content',
+        limitBytes: 65_536,
+        maxBytes: 65_536,
+        offsetBytes: 0,
+        redactionState: 'clean',
+        refId: 'evidence-artifact-content-001',
+        returnedBytes: 70_001,
+        totalBytes: 70_001,
+        truncated: false,
+      }),
+    )
+
+    await expect(
+      client.getArtifactRevisionContent({
+        contentRef: 'evidence-artifact-content-001',
+        conversationId: 'conversation-001',
+      }),
+    ).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('exports evidence refs without returning evidence content through IPC', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      byteLength: 131_072,
+      contentType: 'text/plain; charset=utf-8',
+      exportedAt: '2026-06-17T02:22:00.000Z',
+      kind: 'command-output',
+      path: '.jyowo/runtime/exports/evidence-command-output-20260617T022200.000Z.txt',
+      refId: 'evidence-command-output-001',
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    const response = await client.exportConversationEvidence({
+      conversationId: 'conversation-001',
+      kind: 'command-output',
+      refId: 'evidence-command-output-001',
+    })
+
+    expect(response).toEqual({
+      byteLength: 131_072,
+      contentType: 'text/plain; charset=utf-8',
+      exportedAt: '2026-06-17T02:22:00.000Z',
+      kind: 'command-output',
+      path: '.jyowo/runtime/exports/evidence-command-output-20260617T022200.000Z.txt',
+      refId: 'evidence-command-output-001',
+    })
+    expect(invoke).toHaveBeenCalledWith('export_conversation_evidence', {
+      conversationId: 'conversation-001',
+      kind: 'command-output',
+      refId: 'evidence-command-output-001',
+    })
   })
 
   it('rejects unsafe image media metadata in conversation worktree pages', async () => {

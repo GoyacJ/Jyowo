@@ -168,7 +168,8 @@ pub use contracts::{
     DeleteMcpServerRequest, DeleteMcpServerResponse, DeleteMemoryItemRequest,
     DeleteMemoryItemResponse, DeleteProviderCapabilityRouteRequest,
     DeleteProviderCapabilityRouteResponse, DeleteSkillRequest, DeleteSkillResponse,
-    EvalCasePayload, EvalLastRunPayload, ExportMemoryItemsResponse, ExportSupportBundleRequest,
+    EvalCasePayload, EvalLastRunPayload, ExportConversationEvidenceRequest,
+    ExportConversationEvidenceResponse, ExportMemoryItemsResponse, ExportSupportBundleRequest,
     ExportSupportBundleResponse, GetArtifactMediaPreviewRequest, GetArtifactMediaPreviewResponse,
     GetArtifactRevisionContentRequest, GetArtifactRevisionContentResponse,
     GetAttachmentMediaPreviewRequest, GetAttachmentMediaPreviewResponse, GetBackgroundAgentRequest,
@@ -235,8 +236,9 @@ pub use conversations::{
     cancel_run_payload, cancel_run_with_runtime_state, create_attachment_from_path_payload,
     create_attachment_from_path_with_runtime_state, create_conversation_with_runtime_state,
     delete_conversation_payload, delete_conversation_with_runtime_state,
-    export_support_bundle_with_runtime_state, get_artifact_revision_content_with_runtime_state,
-    get_context_snapshot_with_runtime_state, get_conversation_command_output_with_runtime_state,
+    export_conversation_evidence_with_runtime_state, export_support_bundle_with_runtime_state,
+    get_artifact_revision_content_with_runtime_state, get_context_snapshot_with_runtime_state,
+    get_conversation_command_output_with_runtime_state,
     get_conversation_diff_patch_with_runtime_state, get_conversation_with_runtime_state,
     get_replay_timeline_with_runtime_state, list_activity_payload,
     list_activity_with_runtime_state, list_conversations_with_runtime_state,
@@ -1477,6 +1479,8 @@ pub async fn get_conversation(
 pub async fn get_conversation_command_output(
     conversation_id: String,
     full_output_ref: String,
+    cursor: Option<String>,
+    max_bytes: Option<u64>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetConversationCommandOutputResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
@@ -1484,6 +1488,8 @@ pub async fn get_conversation_command_output(
         GetConversationCommandOutputRequest {
             conversation_id,
             full_output_ref,
+            cursor,
+            max_bytes,
         },
         &*runtime_state,
     )
@@ -1494,6 +1500,8 @@ pub async fn get_conversation_command_output(
 pub async fn get_conversation_diff_patch(
     conversation_id: String,
     full_patch_ref: String,
+    cursor: Option<String>,
+    max_bytes: Option<u64>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetConversationDiffPatchResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
@@ -1501,6 +1509,8 @@ pub async fn get_conversation_diff_patch(
         GetConversationDiffPatchRequest {
             conversation_id,
             full_patch_ref,
+            cursor,
+            max_bytes,
         },
         &*runtime_state,
     )
@@ -1511,6 +1521,8 @@ pub async fn get_conversation_diff_patch(
 pub async fn get_artifact_revision_content(
     conversation_id: String,
     content_ref: String,
+    cursor: Option<String>,
+    max_bytes: Option<u64>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetArtifactRevisionContentResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
@@ -1518,6 +1530,27 @@ pub async fn get_artifact_revision_content(
         GetArtifactRevisionContentRequest {
             conversation_id,
             content_ref,
+            cursor,
+            max_bytes,
+        },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn export_conversation_evidence(
+    conversation_id: String,
+    kind: String,
+    ref_id: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ExportConversationEvidenceResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    export_conversation_evidence_with_runtime_state(
+        ExportConversationEvidenceRequest {
+            conversation_id,
+            kind,
+            ref_id,
         },
         &*runtime_state,
     )

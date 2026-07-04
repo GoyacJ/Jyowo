@@ -129,6 +129,9 @@ export interface TestCommandClientOptions {
     CommandClient['getConversationCommandOutput']
   >
   conversationDiffPatch?: TestCommandResponseOverride<CommandClient['getConversationDiffPatch']>
+  conversationEvidenceExport?: TestCommandResponseOverride<
+    CommandClient['exportConversationEvidence']
+  >
   conversations?: ListConversationsResponse
   executionSettings?: GetExecutionSettingsResponse
   healthcheck?: HarnessHealthcheck

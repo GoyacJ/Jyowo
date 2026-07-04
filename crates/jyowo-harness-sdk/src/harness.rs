@@ -490,6 +490,25 @@ impl Harness {
         .await
     }
 
+    pub async fn read_command_output_evidence_window(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+        ref_id: &EvidenceRefId,
+        cursor: Option<String>,
+        max_bytes: usize,
+    ) -> Result<harness_journal::EvidenceReadResult, HarnessError> {
+        self.read_typed_evidence_window(
+            tenant,
+            conversation_id,
+            ref_id,
+            EvidenceRefKind::CommandOutput,
+            cursor,
+            max_bytes,
+        )
+        .await
+    }
+
     pub async fn read_diff_patch_evidence(
         &self,
         tenant: TenantId,
@@ -498,6 +517,25 @@ impl Harness {
     ) -> Result<harness_journal::EvidenceReadResult, HarnessError> {
         self.read_typed_evidence(tenant, conversation_id, ref_id, EvidenceRefKind::DiffPatch)
             .await
+    }
+
+    pub async fn read_diff_patch_evidence_window(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+        ref_id: &EvidenceRefId,
+        cursor: Option<String>,
+        max_bytes: usize,
+    ) -> Result<harness_journal::EvidenceReadResult, HarnessError> {
+        self.read_typed_evidence_window(
+            tenant,
+            conversation_id,
+            ref_id,
+            EvidenceRefKind::DiffPatch,
+            cursor,
+            max_bytes,
+        )
+        .await
     }
 
     pub async fn read_artifact_revision_content(
@@ -511,6 +549,25 @@ impl Harness {
             conversation_id,
             ref_id,
             EvidenceRefKind::ArtifactContent,
+        )
+        .await
+    }
+
+    pub async fn read_artifact_revision_content_window(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+        ref_id: &EvidenceRefId,
+        cursor: Option<String>,
+        max_bytes: usize,
+    ) -> Result<harness_journal::EvidenceReadResult, HarnessError> {
+        self.read_typed_evidence_window(
+            tenant,
+            conversation_id,
+            ref_id,
+            EvidenceRefKind::ArtifactContent,
+            cursor,
+            max_bytes,
         )
         .await
     }
@@ -630,6 +687,27 @@ impl Harness {
     ) -> Result<harness_journal::EvidenceReadResult, HarnessError> {
         self.evidence_ref_store()?
             .read_evidence(tenant, conversation_id, ref_id, kind)
+            .await
+            .map_err(HarnessError::Journal)
+    }
+
+    async fn read_typed_evidence_window(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+        ref_id: &EvidenceRefId,
+        kind: EvidenceRefKind,
+        cursor: Option<String>,
+        max_bytes: usize,
+    ) -> Result<harness_journal::EvidenceReadResult, HarnessError> {
+        self.evidence_ref_store()?
+            .read_evidence_window(
+                tenant,
+                conversation_id,
+                ref_id,
+                kind,
+                harness_journal::EvidenceReadWindow { cursor, max_bytes },
+            )
             .await
             .map_err(HarnessError::Journal)
     }

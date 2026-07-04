@@ -123,6 +123,13 @@ pub(crate) fn write_support_bundle_file(
     path: &Path,
     content: &str,
 ) -> Result<(), CommandErrorPayload> {
+    write_support_bundle_bytes(path, content.as_bytes())
+}
+
+pub(crate) fn write_support_bundle_bytes(
+    path: &Path,
+    content: &[u8],
+) -> Result<(), CommandErrorPayload> {
     let Some(parent) = path.parent() else {
         return Err(support_bundle_operation_failed());
     };
@@ -149,7 +156,7 @@ pub(crate) fn write_support_bundle_file(
         .write(true)
         .open(&temp_path)
         .map_err(|_| support_bundle_operation_failed())?;
-    if temp_file.write_all(content.as_bytes()).is_err() {
+    if temp_file.write_all(content).is_err() {
         let _ = std::fs::remove_file(&temp_path);
         return Err(support_bundle_operation_failed());
     }

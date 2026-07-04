@@ -17,7 +17,13 @@ export function DiffPane({
   const commandClient = useCommandClient()
   const [selectedFileIndex, setSelectedFileIndex] = useState(0)
   const [copyingPatchRef, setCopyingPatchRef] = useState<string | null>(null)
+  const [patchPagesByRef, setPatchPagesByRef] = useState<
+    Record<string, { patch: string; truncated: boolean }>
+  >({})
   const selectedFile = files[selectedFileIndex]
+  const selectedPatchPage = selectedFile?.fullPatchRef
+    ? patchPagesByRef[selectedFile.fullPatchRef]
+    : undefined
   const isBinaryOrGenerated =
     selectedFile?.riskFlags?.some((f) => f === 'binary' || f === 'generated') ?? false
 
@@ -28,11 +34,12 @@ export function DiffPane({
     if (selectedFile.fullPatchRef) {
       setCopyingPatchRef(selectedFile.fullPatchRef)
       try {
-        const response = await commandClient.getConversationDiffPatch({
+        const response = await commandClient.exportConversationEvidence({
           conversationId,
-          fullPatchRef: selectedFile.fullPatchRef,
+          kind: 'diff-patch',
+          refId: selectedFile.fullPatchRef,
         })
-        await navigator.clipboard?.writeText(response.patch)
+        await navigator.clipboard?.writeText(response.path)
       } finally {
         setCopyingPatchRef(null)
       }
@@ -75,9 +82,15 @@ export function DiffPane({
             </div>
             <div className="flex gap-1">
               {selectedFile.fullPatchRef ? (
-                <FetchFullPatchButton
+                <FetchPatchPageButton
                   conversationId={conversationId}
                   fullPatchRef={selectedFile.fullPatchRef}
+                  onPageFetched={(page) => {
+                    setPatchPagesByRef((current) => ({
+                      ...current,
+                      [selectedFile.fullPatchRef as string]: page,
+                    }))
+                  }}
                 />
               ) : null}
               <CopyButton
@@ -107,13 +120,17 @@ export function DiffPane({
               <div className="flex h-full items-center justify-center p-6 text-center text-muted-foreground text-sm">
                 {t('diff.binaryOrGenerated')}
               </div>
+            ) : selectedPatchPage ? (
+              <pre className="bg-code-background p-3 font-mono text-[12px] leading-5">
+                <code>{selectedPatchPage.patch}</code>
+              </pre>
             ) : selectedFile.preview ? (
               <pre className="bg-code-background p-3 font-mono text-[12px] leading-5">
                 <code>{selectedFile.preview}</code>
               </pre>
             ) : selectedFile.fullPatchRef ? (
               <div className="flex h-full items-center justify-center p-6 text-center text-muted-foreground text-sm">
-                {t('diff.fetchFullPatchHint')}
+                {t('diff.fetchPatchPageHint')}
               </div>
             ) : (
               <div className="flex h-full items-center justify-center p-6 text-center text-muted-foreground text-sm">
@@ -131,17 +148,22 @@ export function DiffPane({
   )
 }
 
-function FetchFullPatchButton({
+function FetchPatchPageButton({
   conversationId,
   fullPatchRef,
+  onPageFetched,
 }: {
   conversationId: string
   fullPatchRef: string
+  onPageFetched: (page: { patch: string; truncated: boolean }) => void
 }) {
   const { t } = useTranslation('conversation')
   const commandClient = useCommandClient()
   const [fetching, setFetching] = useState(false)
-  const [patch, setPatch] = useState<string | null>(null)
+  const [patchState, setPatchState] = useState<{
+    loaded: boolean
+    truncated: boolean
+  } | null>(null)
 
   const handleFetch = async () => {
     setFetching(true)
@@ -150,19 +172,27 @@ function FetchFullPatchButton({
         conversationId,
         fullPatchRef,
       })
-      setPatch(response.patch)
-      if (response.patch) {
-        await navigator.clipboard?.writeText(response.patch)
-      }
+      onPageFetched({ patch: response.patch, truncated: response.truncated })
+      setPatchState({
+        loaded: Boolean(response.patch),
+        truncated: response.truncated,
+      })
     } catch {
-      setPatch(null)
+      setPatchState(null)
     } finally {
       setFetching(false)
     }
   }
 
-  if (patch) {
-    return <span className="px-2 text-muted-foreground text-xs">{t('diff.fullPatchCopied')}</span>
+  if (patchState?.truncated) {
+    return (
+      <span className="px-2 text-muted-foreground text-xs">
+        {t('diff.patchPageTruncated', 'Patch page truncated')}
+      </span>
+    )
+  }
+  if (patchState?.loaded) {
+    return <span className="px-2 text-muted-foreground text-xs">{t('diff.patchPageLoaded')}</span>
   }
 
   return (
@@ -172,7 +202,7 @@ function FetchFullPatchButton({
       onClick={handleFetch}
       type="button"
     >
-      {fetching ? t('diff.fetching') : t('diff.fetchFullPatch')}
+      {fetching ? t('diff.fetching') : t('diff.fetchPatchPage')}
     </button>
   )
 }

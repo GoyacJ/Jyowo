@@ -35,6 +35,7 @@ use harness_contracts::{
     PermissionMode, PermissionReview, SandboxMode, SandboxPolicySummary, SandboxScope, SubagentId,
     SubagentStatus, SubagentTerminationReason, TeamId, TeamTerminationReason, TopologyKind,
 };
+use std::io::Write;
 
 pub async fn list_conversations_with_runtime_state(
     state: &DesktopRuntimeState,
@@ -3843,6 +3844,23 @@ pub(crate) fn redacted_display(value: String, redactor: &dyn Redactor) -> String
 // These commands validate conversation ownership and delegate typed evidence
 // reads to the SDK facade.
 
+const DEFAULT_EVIDENCE_READ_MAX_BYTES: usize = 64 * 1024;
+const MAX_EVIDENCE_READ_BYTES: usize = 64 * 1024;
+
+fn evidence_read_window(
+    cursor: Option<String>,
+    max_bytes: Option<u64>,
+) -> Result<(Option<String>, usize), CommandErrorPayload> {
+    let requested = max_bytes
+        .unwrap_or(DEFAULT_EVIDENCE_READ_MAX_BYTES as u64)
+        .clamp(1, MAX_EVIDENCE_READ_BYTES as u64);
+    Ok((
+        cursor,
+        usize::try_from(requested)
+            .map_err(|_| invalid_payload("maxBytes is too large".to_owned()))?,
+    ))
+}
+
 pub async fn get_conversation_command_output_with_runtime_state(
     request: GetConversationCommandOutputRequest,
     state: &DesktopRuntimeState,
@@ -3855,20 +3873,36 @@ pub async fn get_conversation_command_output_with_runtime_state(
         return Err(runtime_unavailable("harness not available"));
     };
 
+    let ref_id = harness_contracts::EvidenceRefId::new(&request.full_output_ref);
+    let (cursor, max_bytes) = evidence_read_window(request.cursor, request.max_bytes)?;
     let result = harness
-        .read_command_output_evidence(
+        .read_command_output_evidence_window(
             TenantId::SINGLE,
             &request.conversation_id,
-            &harness_contracts::EvidenceRefId::new(&request.full_output_ref),
+            &ref_id,
+            cursor,
+            max_bytes,
         )
         .await
         .map_err(|e| runtime_unavailable(&format!("Evidence read failed: {e}")))?;
 
     Ok(GetConversationCommandOutputResponse {
+        ref_id: ref_id.to_string(),
+        kind: "command-output".to_owned(),
         output: String::from_utf8_lossy(&result.bytes).into_owned(),
         content_type: result.content_type,
-        byte_length: result.byte_length,
-        truncated: false,
+        byte_length: result.content_bytes,
+        content_bytes: result.content_bytes,
+        offset_bytes: result.offset_bytes,
+        limit_bytes: result.limit_bytes,
+        total_bytes: result.total_bytes,
+        returned_bytes: result.returned_bytes,
+        max_bytes: result.max_bytes,
+        truncated: result.truncated,
+        has_more: result.has_more,
+        next_cursor: result.next_cursor,
+        content_hash: result.content_hash,
+        hash_algorithm: result.hash_algorithm,
         redaction_state: format!("{:?}", result.redaction_state).to_lowercase(),
     })
 }
@@ -3885,20 +3919,36 @@ pub async fn get_conversation_diff_patch_with_runtime_state(
         return Err(runtime_unavailable("harness not available"));
     };
 
+    let ref_id = harness_contracts::EvidenceRefId::new(&request.full_patch_ref);
+    let (cursor, max_bytes) = evidence_read_window(request.cursor, request.max_bytes)?;
     let result = harness
-        .read_diff_patch_evidence(
+        .read_diff_patch_evidence_window(
             TenantId::SINGLE,
             &request.conversation_id,
-            &harness_contracts::EvidenceRefId::new(&request.full_patch_ref),
+            &ref_id,
+            cursor,
+            max_bytes,
         )
         .await
         .map_err(|e| runtime_unavailable(&format!("Evidence read failed: {e}")))?;
 
     Ok(GetConversationDiffPatchResponse {
+        ref_id: ref_id.to_string(),
+        kind: "diff-patch".to_owned(),
         patch: String::from_utf8_lossy(&result.bytes).into_owned(),
         content_type: result.content_type,
-        byte_length: result.byte_length,
-        truncated: false,
+        byte_length: result.content_bytes,
+        content_bytes: result.content_bytes,
+        offset_bytes: result.offset_bytes,
+        limit_bytes: result.limit_bytes,
+        total_bytes: result.total_bytes,
+        returned_bytes: result.returned_bytes,
+        max_bytes: result.max_bytes,
+        truncated: result.truncated,
+        has_more: result.has_more,
+        next_cursor: result.next_cursor,
+        content_hash: result.content_hash,
+        hash_algorithm: result.hash_algorithm,
         redaction_state: format!("{:?}", result.redaction_state).to_lowercase(),
     })
 }
@@ -3915,22 +3965,204 @@ pub async fn get_artifact_revision_content_with_runtime_state(
         return Err(runtime_unavailable("harness not available"));
     };
 
+    let ref_id = harness_contracts::EvidenceRefId::new(&request.content_ref);
+    let (cursor, max_bytes) = evidence_read_window(request.cursor, request.max_bytes)?;
     let result = harness
-        .read_artifact_revision_content(
+        .read_artifact_revision_content_window(
             TenantId::SINGLE,
             &request.conversation_id,
-            &harness_contracts::EvidenceRefId::new(&request.content_ref),
+            &ref_id,
+            cursor,
+            max_bytes,
         )
         .await
         .map_err(|_| runtime_unavailable("artifact content unavailable"))?;
 
     Ok(GetArtifactRevisionContentResponse {
+        ref_id: ref_id.to_string(),
+        kind: "artifact-content".to_owned(),
         content: String::from_utf8_lossy(&result.bytes).into_owned(),
         content_type: result.content_type,
-        byte_length: result.byte_length,
-        truncated: false,
+        byte_length: result.content_bytes,
+        content_bytes: result.content_bytes,
+        offset_bytes: result.offset_bytes,
+        limit_bytes: result.limit_bytes,
+        total_bytes: result.total_bytes,
+        returned_bytes: result.returned_bytes,
+        max_bytes: result.max_bytes,
+        truncated: result.truncated,
+        has_more: result.has_more,
+        next_cursor: result.next_cursor,
+        content_hash: result.content_hash,
+        hash_algorithm: result.hash_algorithm,
         redaction_state: format!("{:?}", result.redaction_state).to_lowercase(),
         artifact_id: None,
         revision_id: None,
     })
+}
+
+pub async fn export_conversation_evidence_with_runtime_state(
+    request: ExportConversationEvidenceRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ExportConversationEvidenceResponse, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
+    ensure_non_empty("refId", &request.ref_id)?;
+    ensure_conversation_exists(&request.conversation_id, state).await?;
+
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable("harness not available"));
+    };
+
+    let kind = validated_evidence_export_kind(&request.kind)?;
+    let ref_id = harness_contracts::EvidenceRefId::new(&request.ref_id);
+    let exported_at = chrono::Utc::now().to_rfc3339();
+    let relative_path = format!(
+        ".jyowo/runtime/exports/evidence-{kind}-{}.txt",
+        RunId::new()
+    );
+    let export_result = write_evidence_export_windows(
+        &state.workspace_root.join(&relative_path),
+        &harness,
+        kind,
+        &request.conversation_id,
+        &ref_id,
+    )
+    .await?;
+
+    Ok(ExportConversationEvidenceResponse {
+        ref_id: ref_id.to_string(),
+        kind: kind.to_owned(),
+        path: relative_path,
+        content_type: export_result.content_type,
+        byte_length: export_result.byte_length,
+        exported_at,
+    })
+}
+
+struct EvidenceExportWriteResult {
+    content_type: String,
+    byte_length: u64,
+}
+
+async fn write_evidence_export_windows(
+    path: &std::path::Path,
+    harness: &jyowo_harness_sdk::Harness,
+    kind: &str,
+    conversation_id: &str,
+    ref_id: &harness_contracts::EvidenceRefId,
+) -> Result<EvidenceExportWriteResult, CommandErrorPayload> {
+    let Some(parent) = path.parent() else {
+        return Err(support_bundle_operation_failed());
+    };
+    ensure_no_symlink_components(parent, "evidence export directory")
+        .map_err(|_| support_bundle_operation_failed())?;
+    std::fs::create_dir_all(parent).map_err(|_| support_bundle_operation_failed())?;
+    ensure_no_symlink_components(parent, "evidence export directory")
+        .map_err(|_| support_bundle_operation_failed())?;
+    ensure_no_symlink_components(path, "evidence export file")
+        .map_err(|_| support_bundle_operation_failed())?;
+
+    let temp_path = path.with_file_name(format!(
+        "{}.{}.tmp",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("evidence-export"),
+        RunId::new()
+    ));
+    ensure_no_symlink_components(&temp_path, "evidence export temp file")
+        .map_err(|_| support_bundle_operation_failed())?;
+
+    let mut temp_file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp_path)
+        .map_err(|_| support_bundle_operation_failed())?;
+
+    let mut cursor = None;
+    let mut content_type = None;
+    let mut byte_length = 0_u64;
+    loop {
+        let page = match kind {
+            "command-output" => {
+                harness
+                    .read_command_output_evidence_window(
+                        TenantId::SINGLE,
+                        conversation_id,
+                        ref_id,
+                        cursor,
+                        MAX_EVIDENCE_READ_BYTES,
+                    )
+                    .await
+            }
+            "diff-patch" => {
+                harness
+                    .read_diff_patch_evidence_window(
+                        TenantId::SINGLE,
+                        conversation_id,
+                        ref_id,
+                        cursor,
+                        MAX_EVIDENCE_READ_BYTES,
+                    )
+                    .await
+            }
+            "artifact-content" => {
+                harness
+                    .read_artifact_revision_content_window(
+                        TenantId::SINGLE,
+                        conversation_id,
+                        ref_id,
+                        cursor,
+                        MAX_EVIDENCE_READ_BYTES,
+                    )
+                    .await
+            }
+            _ => unreachable!("validated_evidence_export_kind must reject unknown kinds"),
+        }
+        .map_err(|e| runtime_unavailable(&format!("Evidence export failed: {e}")))?;
+
+        if content_type.is_none() {
+            content_type = Some(page.content_type.clone());
+            byte_length = page.content_bytes;
+        }
+        if temp_file.write_all(&page.bytes).is_err() {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(support_bundle_operation_failed());
+        }
+        if !page.has_more {
+            break;
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(support_bundle_operation_failed());
+        }
+    }
+
+    if temp_file.sync_all().is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(support_bundle_operation_failed());
+    }
+    drop(temp_file);
+    ensure_no_symlink_components(path, "evidence export file")
+        .map_err(|_| support_bundle_operation_failed())?;
+    std::fs::rename(&temp_path, path).map_err(|_| {
+        let _ = std::fs::remove_file(&temp_path);
+        support_bundle_operation_failed()
+    })?;
+
+    Ok(EvidenceExportWriteResult {
+        content_type: content_type.unwrap_or_else(|| "application/octet-stream".to_owned()),
+        byte_length,
+    })
+}
+
+fn validated_evidence_export_kind(kind: &str) -> Result<&'static str, CommandErrorPayload> {
+    match kind {
+        "command-output" => Ok("command-output"),
+        "diff-patch" => Ok("diff-patch"),
+        "artifact-content" => Ok("artifact-content"),
+        _ => Err(invalid_payload(
+            "evidence export kind is invalid".to_owned(),
+        )),
+    }
 }

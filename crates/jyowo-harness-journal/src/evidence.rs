@@ -318,6 +318,95 @@ impl EvidenceRefStore {
         Ok(EvidenceReadResult {
             content_type: record.content_type,
             byte_length: bytes.len() as u64,
+            content_bytes: bytes.len() as u64,
+            offset_bytes: 0,
+            limit_bytes: bytes.len() as u64,
+            total_bytes: bytes.len() as u64,
+            returned_bytes: bytes.len() as u64,
+            max_bytes: bytes.len() as u64,
+            truncated: false,
+            has_more: false,
+            next_cursor: None,
+            content_hash: hash_hex(&record.content_hash),
+            hash_algorithm: "blake3".to_owned(),
+            redaction_state: record.redaction_state,
+            bytes,
+        })
+    }
+
+    /// Read one bounded evidence content window, validating ownership, kind, and redaction.
+    pub async fn read_evidence_window(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+        ref_id: &EvidenceRefId,
+        expected_kind: EvidenceRefKind,
+        window: EvidenceReadWindow,
+    ) -> Result<EvidenceReadResult, JournalError> {
+        if window.max_bytes == 0 {
+            return Err(JournalError::Message(
+                "evidence read max_bytes must be greater than zero".to_owned(),
+            ));
+        }
+
+        let record =
+            self.registry.get(tenant, ref_id).await?.ok_or_else(|| {
+                JournalError::Message(format!("evidence ref not found: {ref_id}"))
+            })?;
+        validate_evidence_record(&record, conversation_id, expected_kind)?;
+
+        let offset = parse_evidence_cursor(window.cursor.as_deref())?;
+        if offset > record.byte_length {
+            return Err(JournalError::Message(
+                "evidence read cursor is past the end of content".to_owned(),
+            ));
+        }
+        let end = offset
+            .saturating_add(window.max_bytes as u64)
+            .min(record.byte_length);
+
+        let bytes = match &record.source {
+            EvidenceRefSource::Blob { blob_ref } => {
+                self.validate_blob_ref_metadata(tenant, &record, blob_ref)
+                    .await?;
+                let mut stream = self
+                    .blob_store
+                    .get_range(tenant, blob_ref, offset, end.saturating_sub(offset))
+                    .await
+                    .map_err(|e| JournalError::Message(format!("blob read failed: {e}")))?;
+                let mut page = Vec::with_capacity(window.max_bytes.min(8192));
+                while let Some(chunk) = stream.next().await {
+                    page.extend_from_slice(&chunk);
+                }
+                if page.len() as u64 != end.saturating_sub(offset) {
+                    return Err(JournalError::Message(
+                        "evidence content length mismatch".to_owned(),
+                    ));
+                }
+                page
+            }
+            EvidenceRefSource::JournalPayload { .. } => {
+                return Err(JournalError::Message(
+                    "journal-backed evidence reads are unavailable".to_owned(),
+                ));
+            }
+        };
+
+        let has_more = end < record.byte_length;
+        Ok(EvidenceReadResult {
+            content_type: record.content_type,
+            byte_length: bytes.len() as u64,
+            content_bytes: record.byte_length,
+            offset_bytes: offset,
+            limit_bytes: window.max_bytes as u64,
+            total_bytes: record.byte_length,
+            returned_bytes: bytes.len() as u64,
+            max_bytes: window.max_bytes as u64,
+            truncated: offset > 0 || has_more,
+            has_more,
+            next_cursor: has_more.then(|| end.to_string()),
+            content_hash: hash_hex(&record.content_hash),
+            hash_algorithm: "blake3".to_owned(),
             redaction_state: record.redaction_state,
             bytes,
         })
@@ -365,6 +454,44 @@ impl EvidenceRefStore {
     ) -> Result<Vec<BlobRef>, JournalError> {
         self.registry.list_live_blob_roots(tenant).await
     }
+
+    async fn validate_blob_ref_metadata(
+        &self,
+        tenant: TenantId,
+        record: &EvidenceRefRecord,
+        blob_ref: &BlobRef,
+    ) -> Result<(), JournalError> {
+        if blob_ref.size != record.byte_length {
+            return Err(JournalError::Message(
+                "evidence blob length metadata mismatch".to_owned(),
+            ));
+        }
+        let expected_hash = record_hash_array(record)?;
+        if blob_ref.content_hash != expected_hash {
+            return Err(JournalError::Message(
+                "evidence blob hash metadata mismatch".to_owned(),
+            ));
+        }
+        let meta = self
+            .blob_store
+            .head(tenant, blob_ref)
+            .await
+            .map_err(|e| JournalError::Message(format!("blob head failed: {e}")))?
+            .ok_or_else(|| {
+                JournalError::Message(format!("evidence blob not found: {}", blob_ref.id))
+            })?;
+        if meta.size != record.byte_length {
+            return Err(JournalError::Message(
+                "evidence blob length mismatch".to_owned(),
+            ));
+        }
+        if meta.content_hash != expected_hash {
+            return Err(JournalError::Message(
+                "evidence blob hash mismatch".to_owned(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Result of reading evidence content.
@@ -373,7 +500,25 @@ pub struct EvidenceReadResult {
     pub bytes: Vec<u8>,
     pub content_type: String,
     pub byte_length: u64,
+    pub content_bytes: u64,
+    pub offset_bytes: u64,
+    pub limit_bytes: u64,
+    pub total_bytes: u64,
+    pub returned_bytes: u64,
+    pub max_bytes: u64,
+    pub truncated: bool,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
+    pub content_hash: String,
+    pub hash_algorithm: String,
     pub redaction_state: EvidenceRedactionState,
+}
+
+/// Bounded evidence read request.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct EvidenceReadWindow {
+    pub cursor: Option<String>,
+    pub max_bytes: usize,
 }
 
 fn validate_redaction_provenance(provenance: &RedactionProvenance) -> Result<(), JournalError> {
@@ -383,6 +528,41 @@ fn validate_redaction_provenance(provenance: &RedactionProvenance) -> Result<(),
         ));
     }
     Ok(())
+}
+
+fn validate_evidence_record(
+    record: &EvidenceRefRecord,
+    conversation_id: &str,
+    expected_kind: EvidenceRefKind,
+) -> Result<(), JournalError> {
+    if record.conversation_id != conversation_id {
+        return Err(JournalError::Message(
+            "evidence ref does not belong to conversation".to_owned(),
+        ));
+    }
+
+    if record.kind != expected_kind {
+        return Err(JournalError::Message(format!(
+            "evidence ref kind mismatch: expected {expected_kind:?}, got {:?}",
+            record.kind
+        )));
+    }
+
+    if matches!(record.redaction_state, EvidenceRedactionState::Withheld) {
+        return Err(JournalError::Message(
+            "evidence content is withheld".to_owned(),
+        ));
+    }
+    validate_redaction_provenance(&record.redaction_provenance)
+}
+
+fn parse_evidence_cursor(cursor: Option<&str>) -> Result<u64, JournalError> {
+    match cursor {
+        Some(cursor) => cursor.parse::<u64>().map_err(|_| {
+            JournalError::Message("evidence read cursor must be a byte offset".to_owned())
+        }),
+        None => Ok(0),
+    }
 }
 
 fn same_stable_evidence_metadata(left: &EvidenceRefRecord, right: &EvidenceRefRecord) -> bool {
@@ -415,6 +595,15 @@ fn record_hash_array(record: &EvidenceRefRecord) -> Result<[u8; 32], JournalErro
             record.id
         ))
     })
+}
+
+fn hash_hex(bytes: &[u8]) -> String {
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    hex
 }
 
 // ── In-memory registry for tests ──

@@ -241,9 +241,16 @@ function ArtifactInspectorPane({
             title={t('inspector.artifactError', 'Artifact content failed to load')}
           />
         ) : (
-          <pre className="max-h-[520px] overflow-auto rounded-md border border-border bg-code-background p-3 whitespace-pre-wrap font-mono text-xs leading-5">
-            <code>{contentQuery.data.content}</code>
-          </pre>
+          <div className="overflow-hidden rounded-md border border-border bg-code-background">
+            <pre className="max-h-[520px] overflow-auto p-3 whitespace-pre-wrap font-mono text-xs leading-5">
+              <code>{contentQuery.data.content}</code>
+            </pre>
+            {contentQuery.data.truncated ? (
+              <div className="border-border border-t px-3 py-2 text-muted-foreground text-xs">
+                {t('inspector.artifactContentTruncated', 'Artifact content page truncated')}
+              </div>
+            ) : null}
+          </div>
         )
       ) : (
         <InspectorState

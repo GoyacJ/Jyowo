@@ -1,6 +1,7 @@
 import type {
   CreateConversationResponse,
   DeleteConversationResponse,
+  ExportConversationEvidenceResponse,
   GetArtifactRevisionContentResponse,
   GetConversationCommandOutputResponse,
   GetConversationDiffPatchResponse,
@@ -21,9 +22,12 @@ import {
 } from './conversation'
 import type { TestCommandClientState, TestCommandHandlers } from './state'
 
+const fixtureEvidenceContentHash = 'b'.repeat(64)
+
 type ConversationCommandKeys =
   | 'createConversation'
   | 'deleteConversation'
+  | 'exportConversationEvidence'
   | 'getArtifactRevisionContent'
   | 'getConversation'
   | 'getConversationCommandOutput'
@@ -94,10 +98,21 @@ export function createConversationCommandHandlers(
       return resolveResponseOverride(
         state.options.conversationCommandOutput,
         {
+          refId: request.fullOutputRef,
+          kind: 'command-output',
           output: 'fixture command output',
           contentType: 'text/plain; charset=utf-8',
           byteLength: 22,
+          contentBytes: 22,
+          offsetBytes: 0,
+          limitBytes: 65_536,
+          totalBytes: 22,
+          returnedBytes: 22,
+          maxBytes: 65_536,
           truncated: false,
+          hasMore: false,
+          contentHash: fixtureEvidenceContentHash,
+          hashAlgorithm: 'blake3',
           redactionState: 'clean',
         } satisfies GetConversationCommandOutputResponse,
         request,
@@ -108,10 +123,21 @@ export function createConversationCommandHandlers(
       return resolveResponseOverride(
         state.options.conversationDiffPatch,
         {
+          refId: request.fullPatchRef,
+          kind: 'diff-patch',
           patch: 'diff --git a/file.ts b/file.ts\n+fixture patch\n',
           contentType: 'text/x-diff; charset=utf-8',
           byteLength: 44,
+          contentBytes: 44,
+          offsetBytes: 0,
+          limitBytes: 65_536,
+          totalBytes: 44,
+          returnedBytes: 44,
+          maxBytes: 65_536,
           truncated: false,
+          hasMore: false,
+          contentHash: fixtureEvidenceContentHash,
+          hashAlgorithm: 'blake3',
           redactionState: 'clean',
         } satisfies GetConversationDiffPatchResponse,
         request,
@@ -122,14 +148,40 @@ export function createConversationCommandHandlers(
       return resolveResponseOverride(
         state.options.artifactRevisionContent,
         {
+          refId: request.contentRef,
+          kind: 'artifact-content',
           content: 'fixture artifact content',
           contentType: 'text/plain; charset=utf-8',
           byteLength: 24,
+          contentBytes: 24,
+          offsetBytes: 0,
+          limitBytes: 65_536,
+          totalBytes: 24,
+          returnedBytes: 24,
+          maxBytes: 65_536,
           truncated: false,
+          hasMore: false,
+          contentHash: fixtureEvidenceContentHash,
+          hashAlgorithm: 'blake3',
           redactionState: 'clean',
           artifactId: 'artifact-fixture',
           revisionId: 'revision-fixture',
         } satisfies GetArtifactRevisionContentResponse,
+        request,
+      )
+    },
+    async exportConversationEvidence(request) {
+      await wait(state.options.delayMs)
+      return resolveResponseOverride(
+        state.options.conversationEvidenceExport,
+        {
+          refId: request.refId,
+          kind: request.kind,
+          contentType: 'text/plain; charset=utf-8',
+          byteLength: 22,
+          exportedAt: '2026-06-17T02:22:00.000Z',
+          path: `.jyowo/runtime/exports/evidence-${request.kind}-fixture.txt`,
+        } satisfies ExportConversationEvidenceResponse,
         request,
       )
     },

@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -178,6 +179,34 @@ impl BlobStore for FileBlobStore {
         Ok(Box::pin(stream::once(async move { bytes })))
     }
 
+    async fn get_range(
+        &self,
+        tenant: TenantId,
+        blob: &BlobRef,
+        offset: u64,
+        limit: u64,
+    ) -> Result<BoxStream<'static, Bytes>, BlobError> {
+        if offset > blob.size {
+            return Err(BlobError::Backend(
+                "blob range offset exceeds blob size".to_owned(),
+            ));
+        }
+        if limit == 0 {
+            return Ok(Box::pin(stream::empty()));
+        }
+
+        let (body, _) = self.paths(tenant, blob.id);
+        let mut file = fs::File::open(body).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => BlobError::NotFound(blob.id),
+            _ => BlobError::from(error),
+        })?;
+        file.seek(SeekFrom::Start(offset))?;
+        let bytes_to_read = limit.min(blob.size.saturating_sub(offset));
+        let mut bytes = Vec::with_capacity(bytes_to_read.min(8192) as usize);
+        file.take(bytes_to_read).read_to_end(&mut bytes)?;
+        Ok(Box::pin(stream::once(async move { Bytes::from(bytes) })))
+    }
+
     async fn head(&self, tenant: TenantId, blob: &BlobRef) -> Result<Option<BlobMeta>, BlobError> {
         let (_, meta_path) = self.paths(tenant, blob.id);
         match fs::read(meta_path) {
@@ -242,6 +271,36 @@ impl BlobStore for InMemoryBlobStore {
             .await
             .get(&(tenant, blob.id))
             .map(|(_, bytes)| bytes.clone())
+            .ok_or(BlobError::NotFound(blob.id))?;
+        Ok(Box::pin(stream::once(async move { bytes })))
+    }
+
+    async fn get_range(
+        &self,
+        tenant: TenantId,
+        blob: &BlobRef,
+        offset: u64,
+        limit: u64,
+    ) -> Result<BoxStream<'static, Bytes>, BlobError> {
+        if offset > blob.size {
+            return Err(BlobError::Backend(
+                "blob range offset exceeds blob size".to_owned(),
+            ));
+        }
+        if limit == 0 {
+            return Ok(Box::pin(stream::empty()));
+        }
+
+        let bytes = self
+            .blobs
+            .lock()
+            .await
+            .get(&(tenant, blob.id))
+            .map(|(_, bytes)| {
+                let start = offset as usize;
+                let end = start.saturating_add(limit as usize).min(bytes.len());
+                bytes.slice(start..end)
+            })
             .ok_or(BlobError::NotFound(blob.id))?;
         Ok(Box::pin(stream::once(async move { bytes })))
     }
@@ -355,6 +414,44 @@ impl BlobStore for SqliteBlobStore {
         Ok(Box::pin(stream::once(async move { Bytes::from(body) })))
     }
 
+    async fn get_range(
+        &self,
+        tenant: TenantId,
+        blob: &BlobRef,
+        offset: u64,
+        limit: u64,
+    ) -> Result<BoxStream<'static, Bytes>, BlobError> {
+        if offset > blob.size {
+            return Err(BlobError::Backend(
+                "blob range offset exceeds blob size".to_owned(),
+            ));
+        }
+        if limit == 0 {
+            return Ok(Box::pin(stream::empty()));
+        }
+
+        let body: Vec<u8> = self
+            .connection
+            .lock()
+            .await
+            .query_row(
+                "SELECT substr(body, ?3 + 1, ?4)
+                 FROM blobs WHERE tenant_id = ?1 AND blob_id = ?2",
+                rusqlite::params![
+                    tenant.to_string(),
+                    blob.id.to_string(),
+                    offset as i64,
+                    limit.min(blob.size.saturating_sub(offset)) as i64
+                ],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => BlobError::NotFound(blob.id),
+                _ => blob_error(error),
+            })?;
+        Ok(Box::pin(stream::once(async move { Bytes::from(body) })))
+    }
+
     async fn head(&self, tenant: TenantId, blob: &BlobRef) -> Result<Option<BlobMeta>, BlobError> {
         let result: Result<(i64, Vec<u8>, Option<String>, String, String), rusqlite::Error> =
             self.connection.lock().await.query_row(
@@ -459,6 +556,20 @@ impl BlobStore for HybridBlobStore {
             self.sqlite.get(tenant, blob).await
         } else {
             self.file.get(tenant, blob).await
+        }
+    }
+
+    async fn get_range(
+        &self,
+        tenant: TenantId,
+        blob: &BlobRef,
+        offset: u64,
+        limit: u64,
+    ) -> Result<BoxStream<'static, Bytes>, BlobError> {
+        if self.use_sqlite(blob.size) {
+            self.sqlite.get_range(tenant, blob, offset, limit).await
+        } else {
+            self.file.get_range(tenant, blob, offset, limit).await
         }
     }
 

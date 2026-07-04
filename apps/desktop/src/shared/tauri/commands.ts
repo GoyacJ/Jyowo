@@ -90,8 +90,12 @@ function hasUnsafeDisplayReference(value: string): boolean {
   )
 }
 
+const maxConversationDisplayTextChars = 70_000
+const maxEvidencePreviewChars = 70_000
+
 const conversationDisplayTextSchema = z
   .string()
+  .max(maxConversationDisplayTextChars)
   .refine((value) => !hasObviousUnredactedSecret(value), {
     message: 'conversation message body must not contain obvious unredacted secrets',
   })
@@ -384,56 +388,123 @@ const evidenceRedactionStateSchema = z.enum(['clean', 'redacted', 'withheld'])
 
 // ── Evidence fetch schemas ──
 
+const maxEvidenceContentChars = 70_000
+const maxEvidenceReadBytes = 64 * 1024
+const evidenceContentHashSchema = z.string().regex(/^[0-9a-f]{64}$/)
+const evidenceHashAlgorithmSchema = z.literal('blake3')
+const evidenceExportKindSchema = z.enum(['artifact-content', 'command-output', 'diff-patch'])
+
 const getConversationCommandOutputRequestSchema = z
   .object({
     conversationId: z.string().min(1),
+    cursor: z.string().min(1).optional(),
     fullOutputRef: z.string().min(1),
+    maxBytes: z.number().int().positive().max(maxEvidenceReadBytes).optional(),
   })
   .strict()
 
 const getConversationCommandOutputResponseSchema = z
   .object({
-    output: z.string(),
-    contentType: z.string(),
     byteLength: z.number().int().nonnegative(),
-    truncated: z.boolean(),
+    contentHash: evidenceContentHashSchema,
+    contentBytes: z.number().int().nonnegative(),
+    contentType: z.string(),
+    hasMore: z.boolean(),
+    hashAlgorithm: evidenceHashAlgorithmSchema,
+    kind: z.literal('command-output'),
+    limitBytes: z.number().int().positive().max(maxEvidenceReadBytes),
+    maxBytes: z.number().int().positive().max(maxEvidenceReadBytes),
+    nextCursor: z.string().min(1).optional(),
+    offsetBytes: z.number().int().nonnegative(),
+    output: z.string().max(maxEvidenceContentChars),
     redactionState: evidenceRedactionStateSchema,
+    refId: z.string().min(1),
+    returnedBytes: z.number().int().nonnegative(),
+    totalBytes: z.number().int().nonnegative(),
+    truncated: z.boolean(),
   })
   .strict()
 
 const getConversationDiffPatchRequestSchema = z
   .object({
     conversationId: z.string().min(1),
+    cursor: z.string().min(1).optional(),
     fullPatchRef: z.string().min(1),
+    maxBytes: z.number().int().positive().max(maxEvidenceReadBytes).optional(),
   })
   .strict()
 
 const getConversationDiffPatchResponseSchema = z
   .object({
-    patch: z.string(),
-    contentType: z.string(),
     byteLength: z.number().int().nonnegative(),
-    truncated: z.boolean(),
+    contentHash: evidenceContentHashSchema,
+    contentBytes: z.number().int().nonnegative(),
+    contentType: z.string(),
+    hasMore: z.boolean(),
+    hashAlgorithm: evidenceHashAlgorithmSchema,
+    kind: z.literal('diff-patch'),
+    limitBytes: z.number().int().positive().max(maxEvidenceReadBytes),
+    maxBytes: z.number().int().positive().max(maxEvidenceReadBytes),
+    nextCursor: z.string().min(1).optional(),
+    offsetBytes: z.number().int().nonnegative(),
+    patch: z.string().max(maxEvidenceContentChars),
     redactionState: evidenceRedactionStateSchema,
+    refId: z.string().min(1),
+    returnedBytes: z.number().int().nonnegative(),
+    totalBytes: z.number().int().nonnegative(),
+    truncated: z.boolean(),
   })
   .strict()
 
 const getArtifactRevisionContentRequestSchema = z
   .object({
-    conversationId: z.string().min(1),
     contentRef: z.string().min(1),
+    conversationId: z.string().min(1),
+    cursor: z.string().min(1).optional(),
+    maxBytes: z.number().int().positive().max(maxEvidenceReadBytes).optional(),
   })
   .strict()
 
 const getArtifactRevisionContentResponseSchema = z
   .object({
-    content: z.string(),
-    contentType: z.string(),
-    byteLength: z.number().int().nonnegative(),
-    truncated: z.boolean(),
-    redactionState: evidenceRedactionStateSchema,
     artifactId: z.string().optional(),
+    byteLength: z.number().int().nonnegative(),
+    content: z.string().max(maxEvidenceContentChars),
+    contentHash: evidenceContentHashSchema,
+    contentBytes: z.number().int().nonnegative(),
+    contentType: z.string(),
+    hasMore: z.boolean(),
+    hashAlgorithm: evidenceHashAlgorithmSchema,
+    kind: z.literal('artifact-content'),
+    limitBytes: z.number().int().positive().max(maxEvidenceReadBytes),
+    maxBytes: z.number().int().positive().max(maxEvidenceReadBytes),
+    nextCursor: z.string().min(1).optional(),
+    offsetBytes: z.number().int().nonnegative(),
+    redactionState: evidenceRedactionStateSchema,
+    refId: z.string().min(1),
+    returnedBytes: z.number().int().nonnegative(),
     revisionId: z.string().optional(),
+    totalBytes: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+  })
+  .strict()
+
+const exportConversationEvidenceRequestSchema = z
+  .object({
+    conversationId: z.string().min(1),
+    kind: evidenceExportKindSchema,
+    refId: z.string().min(1),
+  })
+  .strict()
+
+const exportConversationEvidenceResponseSchema = z
+  .object({
+    byteLength: z.number().int().nonnegative(),
+    contentType: z.string(),
+    exportedAt: z.string().min(1),
+    kind: evidenceExportKindSchema,
+    path: z.string().min(1),
+    refId: z.string().min(1),
   })
   .strict()
 
@@ -743,6 +814,7 @@ const artifactMediaPreviewSchema = z
   })
 
 const evidenceRefIdSchema = z.string().min(1)
+const evidencePreviewTextSchema = z.string().max(maxEvidencePreviewChars)
 
 const changeSetFileStatusSchema = z.enum(['added', 'modified', 'deleted', 'renamed'])
 
@@ -755,7 +827,7 @@ const changeSetFileSchema = z
     status: changeSetFileStatusSchema,
     addedLines: z.number().int().nonnegative(),
     removedLines: z.number().int().nonnegative(),
-    preview: z.string().optional(),
+    preview: evidencePreviewTextSchema.optional(),
     fullPatchRef: evidenceRefIdSchema.optional(),
     riskFlags: z.array(changeSetRiskFlagSchema).optional(),
   })
@@ -778,8 +850,8 @@ const commandExecutionSchema = z
     approvalRequestId: z.string().optional(),
     exitCode: z.number().int().optional(),
     durationMs: z.number().int().nonnegative().optional(),
-    stdoutPreview: z.string().optional(),
-    stderrPreview: z.string().optional(),
+    stdoutPreview: evidencePreviewTextSchema.optional(),
+    stderrPreview: evidencePreviewTextSchema.optional(),
     fullOutputRef: evidenceRefIdSchema.optional(),
     truncated: z.boolean(),
     redactionState: evidenceRedactionStateSchema,
@@ -805,8 +877,8 @@ const processStepDetailSchema = z.discriminatedUnion('type', [
       approvalRequestId: z.string().optional(),
       exitCode: z.number().int().optional(),
       durationMs: z.number().int().nonnegative().optional(),
-      stdoutPreview: z.string().optional(),
-      stderrPreview: z.string().optional(),
+      stdoutPreview: evidencePreviewTextSchema.optional(),
+      stderrPreview: evidencePreviewTextSchema.optional(),
       fullOutputRef: evidenceRefIdSchema.optional(),
       truncated: z.boolean(),
       redactionState: evidenceRedactionStateSchema,
@@ -3206,6 +3278,10 @@ type GetArtifactRevisionContentRequest = z.infer<typeof getArtifactRevisionConte
 export type GetArtifactRevisionContentResponse = z.infer<
   typeof getArtifactRevisionContentResponseSchema
 >
+type ExportConversationEvidenceRequest = z.infer<typeof exportConversationEvidenceRequestSchema>
+export type ExportConversationEvidenceResponse = z.infer<
+  typeof exportConversationEvidenceResponseSchema
+>
 export type DeleteConversationResponse = z.infer<typeof deleteConversationResponseSchema>
 export type ContextReference = z.infer<typeof contextReferenceSchema>
 export type AttachmentReference = z.infer<typeof attachmentReferenceSchema>
@@ -3548,6 +3624,9 @@ export interface CommandClient {
   getArtifactRevisionContent: (
     request: GetArtifactRevisionContentRequest,
   ) => Promise<GetArtifactRevisionContentResponse>
+  exportConversationEvidence: (
+    request: ExportConversationEvidenceRequest,
+  ) => Promise<ExportConversationEvidenceResponse>
   reloadPlugin: (pluginId: string) => Promise<PluginOperationResult>
   requestProviderConfigApiKeyReveal: (
     configId: string,
@@ -4069,6 +4148,15 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       return parsePayload(
         command,
         getArtifactRevisionContentResponseSchema,
+        await invoke(command, args),
+      )
+    },
+    async exportConversationEvidence(request) {
+      const command = 'export_conversation_evidence'
+      const args = parseArgs(command, exportConversationEvidenceRequestSchema, request)
+      return parsePayload(
+        command,
+        exportConversationEvidenceResponseSchema,
         await invoke(command, args),
       )
     },

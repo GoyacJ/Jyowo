@@ -22,6 +22,8 @@ import {
 } from '@/testing/conversation-worktree-builders'
 import { WorkbenchInspector } from './WorkbenchInspector'
 
+const validEvidenceContentHash = 'd'.repeat(64)
+
 function setupStore(overrides?: Partial<UiState>) {
   uiStore.setState({
     inspectorOpen: true,
@@ -219,6 +221,53 @@ describe('WorkbenchInspector', () => {
     expect(screen.queryByText('Command execution output and details.')).not.toBeInTheDocument()
   })
 
+  it('loads command output as a bounded evidence page', async () => {
+    const getConversationCommandOutput = vi.fn().mockResolvedValue({
+      refId: 'evidence-command-inspector',
+      kind: 'command-output',
+      output: 'bounded output page',
+      contentType: 'text/plain; charset=utf-8',
+      byteLength: 131_072,
+      contentBytes: 131_072,
+      offsetBytes: 0,
+      limitBytes: 65_536,
+      totalBytes: 131_072,
+      returnedBytes: 65_536,
+      maxBytes: 65_536,
+      truncated: true,
+      hasMore: true,
+      nextCursor: '65536',
+      contentHash: validEvidenceContentHash,
+      hashAlgorithm: 'blake3',
+      redactionState: 'clean',
+    })
+    setupStore({
+      inspectorOpen: true,
+      workbenchSelection: {
+        kind: 'command',
+        conversationId: 'conversation-inspector',
+        fullOutputRef: 'evidence-command-inspector',
+      },
+    })
+    renderInspector(
+      createTestCommandClient({
+        conversationCommandOutput: getConversationCommandOutput,
+        conversationWorktreePage: worktreePage([inspectorTurn()]),
+      }),
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Load output page' }))
+
+    await waitFor(() =>
+      expect(getConversationCommandOutput).toHaveBeenCalledWith({
+        conversationId: 'conversation-inspector',
+        fullOutputRef: 'evidence-command-inspector',
+      }),
+    )
+    expect(await screen.findByText('bounded output page')).toBeInTheDocument()
+    expect(screen.getByText('Output page loaded')).toBeInTheDocument()
+  })
+
   it('renders the selected tool pane from the worktree projection', async () => {
     setupStore({
       inspectorOpen: true,
@@ -246,11 +295,79 @@ describe('WorkbenchInspector', () => {
       configurable: true,
       value: { writeText },
     })
-    const getConversationDiffPatch = vi.fn().mockResolvedValue({
-      patch: 'diff --git a/WorkbenchInspector.tsx b/WorkbenchInspector.tsx\n+full patch content\n',
-      contentType: 'text/x-diff; charset=utf-8',
+    const exportConversationEvidence = vi.fn().mockResolvedValue({
       byteLength: 82,
-      truncated: false,
+      contentType: 'text/x-diff; charset=utf-8',
+      exportedAt: '2026-06-17T02:22:00.000Z',
+      kind: 'diff-patch',
+      path: '.jyowo/runtime/exports/evidence-diff-patch-fixture.diff',
+      refId: 'evidence-diff-inspector',
+    })
+    setupStore({
+      inspectorOpen: true,
+      workbenchSelection: {
+        kind: 'diff',
+        conversationId: 'conversation-inspector',
+        changeSetId: 'change-set-inspector',
+      },
+    })
+    try {
+      renderInspector(
+        createTestCommandClient({
+          conversationEvidenceExport: exportConversationEvidence,
+          conversationWorktreePage: worktreePage([inspectorTurn()]),
+        }),
+      )
+
+      expect(await screen.findByText('Updated inspector UI')).toBeInTheDocument()
+      expect(screen.getByText('WorkbenchInspector.tsx')).toBeInTheDocument()
+      expect(screen.getByText('+ render real inspector pane')).toBeInTheDocument()
+      expect(screen.queryByText('File changes and patch details.')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+
+      await waitFor(() =>
+        expect(exportConversationEvidence).toHaveBeenCalledWith({
+          conversationId: 'conversation-inspector',
+          kind: 'diff-patch',
+          refId: 'evidence-diff-inspector',
+        }),
+      )
+      expect(writeText).toHaveBeenCalledWith(
+        '.jyowo/runtime/exports/evidence-diff-patch-fixture.diff',
+      )
+    } finally {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: originalClipboard,
+      })
+    }
+  })
+
+  it('loads diff patches as bounded evidence pages without copying truncated content', async () => {
+    const originalClipboard = navigator.clipboard
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const getConversationDiffPatch = vi.fn().mockResolvedValue({
+      patch: 'bounded patch page',
+      contentType: 'text/x-diff; charset=utf-8',
+      byteLength: 131_072,
+      contentBytes: 131_072,
+      offsetBytes: 0,
+      limitBytes: 65_536,
+      totalBytes: 131_072,
+      returnedBytes: 65_536,
+      maxBytes: 65_536,
+      truncated: true,
+      hasMore: true,
+      nextCursor: '65536',
+      kind: 'diff-patch',
+      refId: 'evidence-diff-inspector',
+      contentHash: validEvidenceContentHash,
+      hashAlgorithm: 'blake3',
       redactionState: 'clean',
     })
     setupStore({
@@ -269,12 +386,7 @@ describe('WorkbenchInspector', () => {
         }),
       )
 
-      expect(await screen.findByText('Updated inspector UI')).toBeInTheDocument()
-      expect(screen.getByText('WorkbenchInspector.tsx')).toBeInTheDocument()
-      expect(screen.getByText('+ render real inspector pane')).toBeInTheDocument()
-      expect(screen.queryByText('File changes and patch details.')).not.toBeInTheDocument()
-
-      fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Load patch page' }))
 
       await waitFor(() =>
         expect(getConversationDiffPatch).toHaveBeenCalledWith({
@@ -282,9 +394,9 @@ describe('WorkbenchInspector', () => {
           fullPatchRef: 'evidence-diff-inspector',
         }),
       )
-      expect(writeText).toHaveBeenCalledWith(
-        'diff --git a/WorkbenchInspector.tsx b/WorkbenchInspector.tsx\n+full patch content\n',
-      )
+      expect(await screen.findByText('bounded patch page')).toBeInTheDocument()
+      expect(screen.getByText('Patch page truncated')).toBeInTheDocument()
+      expect(writeText).not.toHaveBeenCalled()
     } finally {
       Object.defineProperty(navigator, 'clipboard', {
         configurable: true,
@@ -310,7 +422,18 @@ describe('WorkbenchInspector', () => {
           content: 'real artifact content',
           contentType: 'text/plain; charset=utf-8',
           byteLength: 21,
+          contentBytes: 21,
+          offsetBytes: 0,
+          limitBytes: 65_536,
+          totalBytes: 21,
+          returnedBytes: 21,
+          maxBytes: 65_536,
           truncated: false,
+          hasMore: false,
+          kind: 'artifact-content',
+          refId: 'evidence-artifact-inspector',
+          contentHash: validEvidenceContentHash,
+          hashAlgorithm: 'blake3',
           redactionState: 'clean',
           artifactId: 'artifact-inspector',
           revisionId: 'revision-inspector',
@@ -323,6 +446,47 @@ describe('WorkbenchInspector', () => {
     expect(
       screen.queryByText(/Artifact artifact-inspector revision details/),
     ).not.toBeInTheDocument()
+  })
+
+  it('marks bounded artifact content pages as truncated', async () => {
+    setupStore({
+      inspectorOpen: true,
+      workbenchSelection: {
+        kind: 'artifact',
+        conversationId: 'conversation-inspector',
+        artifactId: 'artifact-inspector',
+        revisionId: 'revision-inspector',
+      },
+    })
+    renderInspector(
+      createTestCommandClient({
+        conversationWorktreePage: worktreePage([inspectorTurn()]),
+        artifactRevisionContent: {
+          artifactId: 'artifact-inspector',
+          byteLength: 131_072,
+          content: 'bounded artifact page',
+          contentBytes: 131_072,
+          contentType: 'text/plain; charset=utf-8',
+          hasMore: true,
+          contentHash: validEvidenceContentHash,
+          hashAlgorithm: 'blake3',
+          kind: 'artifact-content',
+          limitBytes: 65_536,
+          maxBytes: 65_536,
+          nextCursor: '65536',
+          offsetBytes: 0,
+          redactionState: 'clean',
+          refId: 'evidence-artifact-inspector',
+          returnedBytes: 21,
+          revisionId: 'revision-inspector',
+          totalBytes: 131_072,
+          truncated: true,
+        },
+      }),
+    )
+
+    expect(await screen.findByText('bounded artifact page')).toBeInTheDocument()
+    expect(await screen.findByText('Artifact content page truncated')).toBeInTheDocument()
   })
 
   it('shows an error state when selected worktree data fails to load', async () => {

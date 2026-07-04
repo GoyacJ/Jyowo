@@ -14,6 +14,7 @@ import { ArtifactsPage } from './ArtifactsPage'
 const artifactPreviewProps = vi.hoisted(
   () => [] as Array<{ content?: string; imageDataUrl?: string; state: string }>,
 )
+const validEvidenceContentHash = 'c'.repeat(64)
 
 vi.mock('./ArtifactPreview', async (importOriginal) => {
   const original = await importOriginal<typeof import('./ArtifactPreview')>()
@@ -106,11 +107,22 @@ describe('ArtifactsPage', () => {
           : 'artifact-foundation-plan',
         byteLength: request.contentRef.length,
         content: `loaded:${request.contentRef}`,
+        contentHash: validEvidenceContentHash,
+        contentBytes: request.contentRef.length,
         contentType: 'text/markdown; charset=utf-8',
+        hasMore: false,
+        hashAlgorithm: 'blake3',
+        kind: 'artifact-content',
+        limitBytes: 65_536,
+        maxBytes: 65_536,
+        offsetBytes: 0,
         redactionState: 'clean',
+        refId: request.contentRef,
+        returnedBytes: request.contentRef.length,
         revisionId: request.contentRef.includes('verification')
           ? 'revision-verification'
           : 'revision-foundation',
+        totalBytes: request.contentRef.length,
         truncated: false,
       }),
     )
@@ -158,9 +170,20 @@ describe('ArtifactsPage', () => {
         artifactId: 'artifact-html',
         byteLength: 28,
         content: '<main><h1>Preview</h1></main>',
+        contentHash: validEvidenceContentHash,
+        contentBytes: 28,
         contentType: 'text/html',
+        hasMore: false,
+        hashAlgorithm: 'blake3',
+        kind: 'artifact-content',
+        limitBytes: 65_536,
+        maxBytes: 65_536,
+        offsetBytes: 0,
         redactionState: 'clean',
+        refId: 'artifact-content-html',
+        returnedBytes: 28,
         revisionId: 'revision-html',
+        totalBytes: 28,
         truncated: false,
       }),
       artifacts: {

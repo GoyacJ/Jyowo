@@ -15,8 +15,13 @@ export function CommandExecutionView({
 }) {
   const { t } = useTranslation('conversation')
   const commandClient = useCommandClient()
-  const [fetchingFull, setFetchingFull] = useState(false)
-  const [fullOutput, setFullOutput] = useState<string | null>(null)
+  const [fetchingPage, setFetchingPage] = useState(false)
+  const [fetchedOutput, setFetchedOutput] = useState<{
+    hasMore: boolean
+    nextCursor?: string
+    output: string
+    truncated: boolean
+  } | null>(null)
 
   const handleCopyCommand = () => {
     void navigator.clipboard?.writeText(command.command)
@@ -29,23 +34,28 @@ export function CommandExecutionView({
     void navigator.clipboard?.writeText(parts.join('\n'))
   }
 
-  const handleFetchFull = async () => {
+  const handleFetchPage = async () => {
     if (!command.fullOutputRef) return
-    setFetchingFull(true)
+    setFetchingPage(true)
     try {
       const response = await commandClient.getConversationCommandOutput({
         conversationId,
         fullOutputRef: command.fullOutputRef,
       })
-      setFullOutput(response.output)
+      setFetchedOutput({
+        hasMore: response.hasMore,
+        nextCursor: response.nextCursor,
+        output: response.output,
+        truncated: response.truncated,
+      })
     } catch {
-      setFullOutput(null)
+      setFetchedOutput(null)
     } finally {
-      setFetchingFull(false)
+      setFetchingPage(false)
     }
   }
 
-  const output = fullOutput ?? command.stdoutPreview ?? null
+  const output = fetchedOutput?.output ?? command.stdoutPreview ?? null
 
   return (
     <section className="overflow-hidden rounded-md border border-border bg-terminal-background text-white">
@@ -78,15 +88,15 @@ export function CommandExecutionView({
           {command.fullOutputRef && command.redactionState !== 'withheld' ? (
             <button
               className="rounded px-2 py-0.5 text-white/60 text-xs hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-ring"
-              disabled={fetchingFull}
-              onClick={handleFetchFull}
+              disabled={fetchingPage}
+              onClick={handleFetchPage}
               type="button"
             >
-              {fetchingFull
+              {fetchingPage
                 ? t('timeline.commandEvidence.fetching')
-                : fullOutput
-                  ? t('timeline.commandEvidence.fullFetched')
-                  : t('timeline.commandEvidence.fetchFull')}
+                : fetchedOutput
+                  ? t('timeline.commandEvidence.pageLoaded')
+                  : t('timeline.commandEvidence.fetchPage')}
             </button>
           ) : null}
         </div>
@@ -113,6 +123,11 @@ export function CommandExecutionView({
         ) : null}
         {command.truncated ? (
           <span className="text-yellow-400/80">{t('timeline.commandEvidence.truncated')}</span>
+        ) : null}
+        {fetchedOutput?.truncated ? (
+          <span className="text-yellow-400/80">
+            {t('timeline.commandEvidence.pageTruncated', 'Output page truncated')}
+          </span>
         ) : null}
       </div>
 

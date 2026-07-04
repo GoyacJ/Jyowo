@@ -12,6 +12,7 @@ export interface ArtifactPreviewProps {
   maxPreviewCharacters?: number
   state: ArtifactPreviewState
   title: string
+  truncated?: boolean
 }
 
 const defaultMaxPreviewCharacters = 1600
@@ -31,6 +32,7 @@ export function ArtifactPreview({
   maxPreviewCharacters = defaultMaxPreviewCharacters,
   state,
   title,
+  truncated = false,
 }: ArtifactPreviewProps) {
   const { t } = useTranslation('artifacts')
 
@@ -62,7 +64,7 @@ export function ArtifactPreview({
     )
   }
 
-  const hasLargePreview = content.length > maxPreviewCharacters
+  const hasLargePreview = truncated || content.length > maxPreviewCharacters
   const previewContent = hasLargePreview ? content.slice(0, maxPreviewCharacters) : content
   const isHtmlPreview = kind === 'html' || contentType?.split(';')[0]?.trim() === 'text/html'
   const isImagePreview = Boolean(imageDataUrl)
@@ -107,7 +109,7 @@ export function ArtifactPreview({
       {hasLargePreview ? (
         <div className="border-border border-t px-3 py-2 text-muted-foreground text-xs">
           <span className="block font-medium text-foreground">{t('largePreviewTruncated')}</span>
-          <span>{t('openFullOutput')}</span>
+          <span>{t('openOutputPage')}</span>
         </div>
       ) : null}
     </section>

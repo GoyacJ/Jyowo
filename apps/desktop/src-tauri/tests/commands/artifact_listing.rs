@@ -36,9 +36,21 @@ fn artifact_revision_content_payload_skips_missing_optional_ids() {
         jyowo_desktop_shell::commands::GetArtifactRevisionContentResponse {
             artifact_id: None,
             byte_length: 12,
+            content_bytes: 12,
+            offset_bytes: 0,
+            limit_bytes: 65_536,
+            total_bytes: 12,
             content: "artifact body".to_owned(),
             content_type: "text/plain".to_owned(),
+            has_more: false,
+            kind: "artifact-content".to_owned(),
+            max_bytes: 65_536,
+            next_cursor: None,
+            content_hash: "artifact-content-hash".to_owned(),
+            hash_algorithm: "blake3".to_owned(),
             redaction_state: "clean".to_owned(),
+            ref_id: "evidence-ref".to_owned(),
+            returned_bytes: 12,
             revision_id: None,
             truncated: false,
         },
@@ -374,7 +386,9 @@ async fn list_artifacts_with_runtime_state_projects_revision_content_refs_newest
     let newest_content = get_artifact_revision_content_with_runtime_state(
         GetArtifactRevisionContentRequest {
             conversation_id: session_id.to_string(),
+            cursor: None,
             content_ref: new_content_ref,
+            max_bytes: None,
         },
         &state,
     )
@@ -390,7 +404,9 @@ async fn list_artifacts_with_runtime_state_projects_revision_content_refs_newest
     let oldest_content = get_artifact_revision_content_with_runtime_state(
         GetArtifactRevisionContentRequest {
             conversation_id: session_id.to_string(),
+            cursor: None,
             content_ref: old_content_ref,
+            max_bytes: None,
         },
         &state,
     )
@@ -409,7 +425,9 @@ async fn get_artifact_revision_content_with_runtime_state_hides_evidence_ref_err
     let error = get_artifact_revision_content_with_runtime_state(
         GetArtifactRevisionContentRequest {
             conversation_id: session_id.to_string(),
+            cursor: None,
             content_ref: "evidence:artifact-content:missing-ref".to_owned(),
+            max_bytes: None,
         },
         &state,
     )
@@ -522,7 +540,9 @@ async fn list_artifacts_with_runtime_state_uses_sanitized_content_refs_after_wor
     let content = get_artifact_revision_content_with_runtime_state(
         GetArtifactRevisionContentRequest {
             conversation_id: session_id.to_string(),
+            cursor: None,
             content_ref: content_ref.clone(),
+            max_bytes: None,
         },
         &state,
     )

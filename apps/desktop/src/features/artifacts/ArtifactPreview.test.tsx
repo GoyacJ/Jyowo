@@ -48,7 +48,7 @@ describe('ArtifactPreview', () => {
     )
 
     expect(screen.getByText('Large preview truncated.')).toBeInTheDocument()
-    expect(screen.getByText('Open artifact to inspect the full output.')).toBeInTheDocument()
+    expect(screen.getByText('Open artifact to inspect the next output page.')).toBeInTheDocument()
     expect(screen.queryByText(largeContent)).not.toBeInTheDocument()
   })
 })

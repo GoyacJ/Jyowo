@@ -13,6 +13,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     deleteMemoryItem: () => Promise.reject(error),
     uninstallPlugin: () => Promise.reject(error),
     deleteSkill: () => Promise.reject(error),
+    exportConversationEvidence: () => Promise.reject(error),
     exportMemoryItems: () => Promise.reject(error),
     exportSupportBundle: () => Promise.reject(error),
     getArtifactRevisionContent: () => Promise.reject(error),

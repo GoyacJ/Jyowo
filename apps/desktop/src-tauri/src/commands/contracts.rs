@@ -1504,15 +1504,32 @@ pub struct ResolvePermissionResponse {
 pub struct GetConversationCommandOutputRequest {
     pub conversation_id: String,
     pub full_output_ref: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub max_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetConversationCommandOutputResponse {
+    pub ref_id: String,
+    pub kind: String,
     pub output: String,
     pub content_type: String,
     pub byte_length: u64,
+    pub content_bytes: u64,
+    pub offset_bytes: u64,
+    pub limit_bytes: u64,
+    pub total_bytes: u64,
+    pub returned_bytes: u64,
+    pub max_bytes: u64,
     pub truncated: bool,
+    pub has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub content_hash: String,
+    pub hash_algorithm: String,
     pub redaction_state: String,
 }
 
@@ -1521,15 +1538,32 @@ pub struct GetConversationCommandOutputResponse {
 pub struct GetConversationDiffPatchRequest {
     pub conversation_id: String,
     pub full_patch_ref: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub max_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetConversationDiffPatchResponse {
+    pub ref_id: String,
+    pub kind: String,
     pub patch: String,
     pub content_type: String,
     pub byte_length: u64,
+    pub content_bytes: u64,
+    pub offset_bytes: u64,
+    pub limit_bytes: u64,
+    pub total_bytes: u64,
+    pub returned_bytes: u64,
+    pub max_bytes: u64,
     pub truncated: bool,
+    pub has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub content_hash: String,
+    pub hash_algorithm: String,
     pub redaction_state: String,
 }
 
@@ -1538,20 +1572,56 @@ pub struct GetConversationDiffPatchResponse {
 pub struct GetArtifactRevisionContentRequest {
     pub conversation_id: String,
     pub content_ref: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub max_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetArtifactRevisionContentResponse {
+    pub ref_id: String,
+    pub kind: String,
     pub content: String,
     pub content_type: String,
     pub byte_length: u64,
+    pub content_bytes: u64,
+    pub offset_bytes: u64,
+    pub limit_bytes: u64,
+    pub total_bytes: u64,
+    pub returned_bytes: u64,
+    pub max_bytes: u64,
     pub truncated: bool,
+    pub has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub content_hash: String,
+    pub hash_algorithm: String,
     pub redaction_state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportConversationEvidenceRequest {
+    pub conversation_id: String,
+    pub kind: String,
+    pub ref_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportConversationEvidenceResponse {
+    pub ref_id: String,
+    pub kind: String,
+    pub path: String,
+    pub content_type: String,
+    pub byte_length: u64,
+    pub exported_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

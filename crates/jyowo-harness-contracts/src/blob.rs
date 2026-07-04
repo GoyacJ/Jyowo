@@ -4,7 +4,7 @@
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures::stream::BoxStream;
+use futures::{stream, stream::BoxStream, StreamExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -86,6 +86,41 @@ pub trait BlobStore: Send + Sync + 'static {
         tenant: TenantId,
         blob: &BlobRef,
     ) -> Result<BoxStream<'static, Bytes>, BlobError>;
+
+    async fn get_range(
+        &self,
+        tenant: TenantId,
+        blob: &BlobRef,
+        offset: u64,
+        limit: u64,
+    ) -> Result<BoxStream<'static, Bytes>, BlobError> {
+        if limit == 0 {
+            return Ok(Box::pin(stream::empty()));
+        }
+
+        let mut stream = self.get(tenant, blob).await?;
+        let mut position = 0_u64;
+        let end = offset.saturating_add(limit);
+        let mut page = Vec::with_capacity(limit.min(8192) as usize);
+        while let Some(chunk) = stream.next().await {
+            let chunk_len = chunk.len() as u64;
+            let chunk_start = position;
+            let chunk_end = position.saturating_add(chunk_len);
+
+            if chunk_end > offset && chunk_start < end {
+                let slice_start = offset.saturating_sub(chunk_start) as usize;
+                let slice_end = end.min(chunk_end).saturating_sub(chunk_start) as usize;
+                page.extend_from_slice(&chunk[slice_start..slice_end]);
+            }
+
+            position = chunk_end;
+            if position >= end {
+                break;
+            }
+        }
+
+        Ok(Box::pin(stream::once(async move { Bytes::from(page) })))
+    }
 
     async fn head(&self, tenant: TenantId, blob: &BlobRef) -> Result<Option<BlobMeta>, BlobError>;
 
