@@ -1968,6 +1968,147 @@ async fn sqlite_conversation_read_model_worktree_replays_complete_timeline_befor
 }
 
 #[tokio::test]
+async fn sqlite_conversation_inspector_finds_items_outside_first_worktree_page() {
+    let root = temp_root("inspector-outside-first-page");
+    let store = SqliteConversationReadModelStore::open(root.join("read-model.sqlite"))
+        .await
+        .expect("store opens");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let target_run = RunId::new();
+    let target_tool_use_id = ToolUseId::new();
+    let mut events = vec![
+        envelope(
+            tenant_id,
+            session_id,
+            0,
+            user_message(target_run, MessageId::new(), "run old command"),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            1,
+            Event::ToolUseRequested(ToolUseRequestedEvent {
+                run_id: target_run,
+                tool_use_id: target_tool_use_id,
+                tool_name: "Bash".to_owned(),
+                input: serde_json::json!({ "command": "pnpm check:desktop" }),
+                properties: tool_properties(),
+                causation_id: EventId::new(),
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(1),
+            }),
+        ),
+    ];
+    let completed = envelope(
+        tenant_id,
+        session_id,
+        2,
+        Event::ToolUseCompleted(ToolUseCompletedEvent {
+            tool_use_id: target_tool_use_id,
+            result: ToolResult::Structured(serde_json::json!({
+                "exit_code": 0,
+                "stdout": "desktop checks passed",
+                "stderr": ""
+            })),
+            usage: None,
+            duration_ms: 25,
+            at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(2),
+        }),
+    );
+    let completed_event_id = completed.event_id.to_string();
+    events.push(completed);
+
+    for index in 0..106_u64 {
+        let run_id = RunId::new();
+        events.push(envelope(
+            tenant_id,
+            session_id,
+            3 + index * 2,
+            user_message(run_id, MessageId::new(), &format!("newer {index}")),
+        ));
+        events.push(envelope(
+            tenant_id,
+            session_id,
+            4 + index * 2,
+            assistant_message(run_id, MessageId::new(), &format!("answer {index}")),
+        ));
+    }
+
+    store
+        .apply_envelopes(tenant_id, session_id, &events, None)
+        .await
+        .expect("projection applies");
+
+    let first_page = store
+        .page_worktree_with_evidence(
+            tenant_id,
+            session_id,
+            None,
+            ConversationTurnPageDirection::Before,
+            100,
+            evidence_store(),
+        )
+        .await
+        .expect("first worktree page loads");
+    assert!(
+        !worktree_page_contains_command(&first_page, "pnpm check:desktop"),
+        "target command is older than the latest 100-turn page"
+    );
+
+    let item = store
+        .conversation_inspector_item_with_evidence(
+            tenant_id,
+            session_id,
+            ConversationInspectorSelection::Event {
+                event_id: completed_event_id,
+            },
+            evidence_store(),
+        )
+        .await
+        .expect("inspector item loads")
+        .item;
+
+    match item {
+        ConversationInspectorItem::Command { command } => {
+            assert_eq!(command.command, "pnpm check:desktop");
+            assert_eq!(command.exit_code, Some(0));
+        }
+        other => panic!("expected command inspector item, got {other:?}"),
+    }
+
+    let missing = store
+        .conversation_inspector_item_with_evidence(
+            tenant_id,
+            session_id,
+            ConversationInspectorSelection::Event {
+                event_id: EventId::new().to_string(),
+            },
+            evidence_store(),
+        )
+        .await
+        .expect("missing inspector item loads")
+        .item;
+    assert!(matches!(missing, ConversationInspectorItem::Empty));
+}
+
+fn worktree_page_contains_command(page: &ConversationWorktreePage, expected_command: &str) -> bool {
+    page.turns.iter().any(|turn| {
+        turn.assistant.as_ref().is_some_and(|assistant| {
+            assistant.segments.iter().any(|segment| match segment {
+                AssistantSegment::Process(process) => process.steps.iter().any(|step| {
+                    matches!(
+                        step.detail.as_ref(),
+                        Some(ProcessStepDetail::Command(command))
+                            if command.command == expected_command
+                    )
+                }),
+                _ => false,
+            })
+        })
+    })
+}
+
+#[tokio::test]
 async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool_permission_and_artifact_events(
 ) {
     let root = temp_root("timeline-events");

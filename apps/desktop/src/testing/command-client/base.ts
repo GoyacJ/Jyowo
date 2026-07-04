@@ -180,6 +180,9 @@ export interface TestCommandClientOptions {
   referenceCandidates?: ListReferenceCandidatesResponse
   replayTimeline?: ReplayTimelineResponse
   conversationTimelinePage?: PageConversationTimelineResponse
+  conversationInspectorItem?: TestCommandResponseOverride<
+    CommandClient['getConversationInspectorItem']
+  >
   conversationWorktreePage?: PageConversationWorktreeResponse
   subscribeConversationEvents?: SubscribeConversationEventsResponse
   subscribeMcpDiagnostics?: SubscribeMcpDiagnosticsResponse

@@ -23,6 +23,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     getConversation: () => Promise.reject(error),
     getConversationCommandOutput: () => Promise.reject(error),
     getConversationDiffPatch: () => Promise.reject(error),
+    getConversationInspectorItem: () => Promise.reject(error),
     getArtifactMediaPreview: () => Promise.reject(error),
     getAttachmentMediaPreview: () => Promise.reject(error),
     getAppInfo: () => Promise.reject(error),

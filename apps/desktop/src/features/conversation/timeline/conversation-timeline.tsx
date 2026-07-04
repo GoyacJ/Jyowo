@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useUiStore } from '@/shared/state/ui-store'
 import type {
@@ -7,6 +7,7 @@ import type {
   ConversationTurn,
   ResolvePermissionRequest,
 } from '@/shared/tauri/commands'
+import { Button } from '@/shared/ui/button'
 import { turnScrollAnchorKey } from './conversation-scroll-controller'
 import { ConversationTurnRow } from './conversation-turn-row'
 import { useConversationScrollAnchor } from './use-conversation-scroll-anchor'
@@ -16,17 +17,33 @@ const composerReservePx = 112
 const virtualListThreshold = 24
 
 export function ConversationTimeline({
+  gapMarkers = [],
+  hasMoreAfter = false,
+  hasMoreBefore = false,
+  loadEarlier,
+  loadLater,
+  loadingEarlier = false,
+  loadingLater = false,
   onOpenDetails,
   onPermissionResolve,
   onReviewContinue,
+  retryGap,
   title,
   turns,
 }: {
+  gapMarkers?: Array<{ id: string }>
+  hasMoreAfter?: boolean
+  hasMoreBefore?: boolean
+  loadEarlier?: () => Promise<void> | void
+  loadLater?: () => Promise<void> | void
+  loadingEarlier?: boolean
+  loadingLater?: boolean
   turns: ConversationTurn[]
   title: string
   onOpenDetails?: (eventRef: ConversationEventRef) => void
   onPermissionResolve?: (request: ResolvePermissionRequest) => void
   onReviewContinue?: (prompt: string) => void
+  retryGap?: () => void
 }) {
   const { t } = useTranslation('conversation')
   const timelineTurns = turns
@@ -52,6 +69,23 @@ export function ConversationTimeline({
     getScrollElement: () => viewportRef.current,
     overscan: 6,
   })
+  const handleLoadEarlier = useCallback(async () => {
+    const viewport = viewportRef.current
+    const previousHeight = viewport?.scrollHeight ?? 0
+    const previousTop = viewport?.scrollTop ?? 0
+    await loadEarlier?.()
+    window.requestAnimationFrame(() => {
+      const nextViewport = viewportRef.current
+      if (!nextViewport) {
+        return
+      }
+      nextViewport.scrollTop = previousTop + (nextViewport.scrollHeight - previousHeight)
+    })
+  }, [loadEarlier, viewportRef])
+
+  const handleLoadLater = useCallback(async () => {
+    await loadLater?.()
+  }, [loadLater])
 
   useEffect(() => {
     if (!timelineScrollRequest) {
@@ -123,6 +157,28 @@ export function ConversationTimeline({
         <h1 className="font-semibold text-2xl tracking-normal">{title}</h1>
       </header>
       <div className="min-h-0 overflow-auto pr-1" onScroll={onScroll} ref={viewportRef}>
+        <TimelinePageControl
+          disabled={loadingEarlier || !loadEarlier}
+          label={
+            loadingEarlier
+              ? t('timeline.loadingEarlier', 'Loading earlier')
+              : t('timeline.loadEarlier', 'Load earlier')
+          }
+          onClick={handleLoadEarlier}
+          visible={hasMoreBefore}
+        />
+        {gapMarkers.map((gap) => (
+          <TimelineGapMarker
+            key={gap.id}
+            onRetry={retryGap}
+            retryLabel={t('timeline.retryGap', 'Retry')}
+            title={t('timeline.gapTitle', 'Timeline gap')}
+            description={t(
+              'timeline.gapDescription',
+              'Some conversation updates were missed. Refresh the worktree projection to continue from the latest safe state.',
+            )}
+          />
+        ))}
         {timelineTurns.length > 0 ? (
           useVirtualList ? (
             <div
@@ -178,6 +234,16 @@ export function ConversationTimeline({
             </div>
           </div>
         )}
+        <TimelinePageControl
+          disabled={loadingLater || !loadLater}
+          label={
+            loadingLater
+              ? t('timeline.loadingLater', 'Loading newer')
+              : t('timeline.loadLater', 'Load newer')
+          }
+          onClick={handleLoadLater}
+          visible={hasMoreAfter}
+        />
       </div>
       {showJumpToLatest ? (
         <button
@@ -189,6 +255,56 @@ export function ConversationTimeline({
         </button>
       ) : null}
     </section>
+  )
+}
+
+function TimelinePageControl({
+  disabled,
+  label,
+  onClick,
+  visible,
+}: {
+  disabled: boolean
+  label: string
+  onClick: () => void
+  visible: boolean
+}) {
+  if (!visible) {
+    return null
+  }
+
+  return (
+    <div className="flex justify-center py-3">
+      <Button disabled={disabled} onClick={onClick} type="button" variant="secondary">
+        {label}
+      </Button>
+    </div>
+  )
+}
+
+function TimelineGapMarker({
+  description,
+  onRetry,
+  retryLabel,
+  title,
+}: {
+  description: string
+  onRetry?: () => void
+  retryLabel: string
+  title: string
+}) {
+  return (
+    <div className="mx-auto my-3 grid max-w-xl gap-2 rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-sm">
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-medium text-warning">{title}</span>
+        {onRetry ? (
+          <Button onClick={onRetry} size="sm" type="button" variant="ghost">
+            {retryLabel}
+          </Button>
+        ) : null}
+      </div>
+      <p className="text-muted-foreground text-xs">{description}</p>
+    </div>
   )
 }
 

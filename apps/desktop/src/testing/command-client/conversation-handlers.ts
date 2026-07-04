@@ -1,10 +1,16 @@
 import type {
+  ArtifactSegment,
+  ConversationInspectorSelection,
+  ConversationTurn,
   CreateConversationResponse,
   DeleteConversationResponse,
   ExportConversationEvidenceResponse,
   GetArtifactRevisionContentResponse,
   GetConversationCommandOutputResponse,
   GetConversationDiffPatchResponse,
+  GetConversationInspectorItemResponse,
+  PageConversationWorktreeResponse,
+  ProcessStep,
   ResolvePermissionResponse,
   StartRunResponse,
   UnsubscribeConversationEventsResponse,
@@ -24,6 +30,121 @@ import type { TestCommandClientState, TestCommandHandlers } from './state'
 
 const fixtureEvidenceContentHash = 'b'.repeat(64)
 
+function inspectorItemFromWorktreePage(
+  page: PageConversationWorktreeResponse,
+  selection: ConversationInspectorSelection,
+): GetConversationInspectorItemResponse {
+  if (selection.kind === 'turn') {
+    const turn = page.turns.find((turn) => turn.id === selection.turnId)
+    return turn ? { item: { kind: 'turn', turn } } : { item: { kind: 'empty' } }
+  }
+
+  for (const turn of page.turns) {
+    const item = inspectorItemFromTurn(turn, selection)
+    if (item.item.kind !== 'empty') {
+      return item
+    }
+  }
+
+  return { item: { kind: 'empty' } }
+}
+
+function inspectorItemFromTurn(
+  turn: ConversationTurn,
+  selection: ConversationInspectorSelection,
+): GetConversationInspectorItemResponse {
+  for (const segment of turn.assistant?.segments ?? []) {
+    if (segment.kind === 'toolGroup') {
+      for (const attempt of segment.attempts) {
+        if (selection.kind === 'tool' && attempt.toolUseId === selection.toolUseId) {
+          return { item: { kind: 'tool', attempt } }
+        }
+        if (
+          selection.kind === 'decision' &&
+          attempt.permission?.requestId === selection.requestId
+        ) {
+          return { item: { kind: 'decision', decision: attempt.permission } }
+        }
+      }
+    }
+    if (segment.kind === 'process') {
+      for (const step of segment.steps ?? []) {
+        const item = inspectorItemFromProcessStep(step, selection)
+        if (item.item.kind !== 'empty') {
+          return item
+        }
+      }
+    }
+    if (segment.kind === 'artifact' && artifactSegmentMatches(selection, segment)) {
+      return { item: { kind: 'artifact', segment } }
+    }
+  }
+
+  return { item: { kind: 'empty' } }
+}
+
+function inspectorItemFromProcessStep(
+  step: ProcessStep,
+  selection: ConversationInspectorSelection,
+): GetConversationInspectorItemResponse {
+  const detail = step.detail
+  if (detail?.type === 'command' && commandMatches(selection, step)) {
+    return { item: { kind: 'command', command: detail } }
+  }
+  if (detail?.type === 'diff' && changeSetMatches(selection, detail)) {
+    return { item: { kind: 'diff', changeSet: detail } }
+  }
+  return { item: { kind: 'empty' } }
+}
+
+function commandMatches(selection: ConversationInspectorSelection, step: ProcessStep) {
+  if (step.detail?.type !== 'command') {
+    return false
+  }
+  if (selection.kind === 'command') {
+    return (
+      (selection.fullOutputRef !== undefined &&
+        step.detail.fullOutputRef === selection.fullOutputRef) ||
+      (selection.eventId !== undefined &&
+        step.eventRefs?.some((eventRef) => eventRef.eventId === selection.eventId))
+    )
+  }
+  return selection.kind === 'evidenceRef' && step.detail.fullOutputRef === selection.evidenceRefId
+}
+
+function changeSetMatches(
+  selection: ConversationInspectorSelection,
+  changeSet: Extract<ProcessStep['detail'], { type: 'diff' }>,
+) {
+  if (selection.kind === 'diff') {
+    return changeSet.id === selection.changeSetId
+  }
+  return (
+    selection.kind === 'evidenceRef' &&
+    changeSet.files.some((file) => file.fullPatchRef === selection.evidenceRefId)
+  )
+}
+
+function artifactSegmentMatches(
+  selection: ConversationInspectorSelection,
+  segment: ArtifactSegment,
+) {
+  if (selection.kind === 'artifact') {
+    return segment.artifactId === selection.artifactId
+  }
+  if (selection.kind === 'artifactRevision') {
+    return (
+      segment.revision.revisionId === selection.revisionId &&
+      (selection.artifactId === undefined || segment.artifactId === selection.artifactId)
+    )
+  }
+  return (
+    selection.kind === 'evidenceRef' &&
+    (segment.revision.contentRef === selection.evidenceRefId ||
+      segment.revision.previewRef === selection.evidenceRefId)
+  )
+}
+
 type ConversationCommandKeys =
   | 'createConversation'
   | 'deleteConversation'
@@ -32,6 +153,7 @@ type ConversationCommandKeys =
   | 'getConversation'
   | 'getConversationCommandOutput'
   | 'getConversationDiffPatch'
+  | 'getConversationInspectorItem'
   | 'listenConversationEventBatches'
   | 'listActivity'
   | 'listConversations'
@@ -239,6 +361,18 @@ export function createConversationCommandHandlers(
             : turn.position > pageCursor.position,
         ),
       }
+    },
+    async getConversationInspectorItem(request) {
+      await wait(state.options.delayMs)
+      const page =
+        state.options.conversationWorktreePage ??
+        state.worktreePagesByConversation.get(request.conversationId) ??
+        emptyWorktreePage()
+      return resolveResponseOverride(
+        state.options.conversationInspectorItem,
+        inspectorItemFromWorktreePage(page, request.selection),
+        request,
+      )
     },
     async resolvePermission(request) {
       await wait(state.options.delayMs)

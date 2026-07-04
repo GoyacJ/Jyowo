@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { useUiStore } from '@/shared/state/ui-store'
@@ -52,6 +52,8 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     undefined,
     () => createConversationTimelineRoot(),
   )
+  const [loadingEarlier, setLoadingEarlier] = useState(false)
+  const [loadingLater, setLoadingLater] = useState(false)
   const hadActiveRunRef = useRef(false)
   const refreshTimeoutRef = useRef<number | null>(null)
   const refreshTimeoutConversationRef = useRef<string | null>(null)
@@ -79,7 +81,7 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
       }
       return commandClient.pageConversationWorktree({
         conversationId: renderedConversationId,
-        direction: 'after',
+        direction: 'before',
         limit: 100,
       })
     },
@@ -257,22 +259,33 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
 
   const loadEarlier = useCallback(async () => {
     if (!renderedConversationId || !displayState.hasMoreBefore) return
-    const firstPage = displayState.pages[0]
-    const page = await commandClient.pageConversationWorktree({
-      conversationId: renderedConversationId,
-      direction: 'before',
-      pageCursor: firstPage?.cursor ?? undefined,
-      limit: 50,
-    })
-    queryClient.setQueryData<PageConversationWorktreeResponse>(worktreeQueryKey, (current) =>
-      current ? mergeWorktreePage(current, page, 'before') : page,
-    )
-    dispatch({
-      type: 'prependPage',
-      turns: page.turns,
-      pageCursor: page.pageCursor ?? null,
-      hasMoreBefore: page.hasMoreBefore,
-    })
+    setLoadingEarlier(true)
+    try {
+      const firstPage = displayState.pages[0]
+      const firstTurn = firstPage?.turns[0]
+      const page = await commandClient.pageConversationWorktree({
+        conversationId: renderedConversationId,
+        direction: 'before',
+        pageCursor: firstTurn
+          ? {
+              turnId: firstTurn.id,
+              position: firstTurn.position,
+            }
+          : (firstPage?.cursor ?? undefined),
+        limit: 50,
+      })
+      queryClient.setQueryData<PageConversationWorktreeResponse>(worktreeQueryKey, (current) =>
+        current ? mergeWorktreePage(current, page, 'before') : page,
+      )
+      dispatch({
+        type: 'prependPage',
+        turns: page.turns,
+        pageCursor: page.pageCursor ?? null,
+        hasMoreBefore: page.hasMoreBefore,
+      })
+    } finally {
+      setLoadingEarlier(false)
+    }
   }, [
     renderedConversationId,
     displayState.hasMoreBefore,
@@ -285,23 +298,34 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
 
   const loadLater = useCallback(async () => {
     if (!renderedConversationId || !displayState.hasMoreAfter) return
-    const lastPage = displayState.pages[displayState.pages.length - 1]
-    const page = await commandClient.pageConversationWorktree({
-      conversationId: renderedConversationId,
-      direction: 'after',
-      pageCursor: lastPage?.cursor ?? undefined,
-      limit: 50,
-    })
-    queryClient.setQueryData<PageConversationWorktreeResponse>(worktreeQueryKey, (current) =>
-      current ? mergeWorktreePage(current, page, 'after') : page,
-    )
-    dispatch({
-      type: 'appendPage',
-      turns: page.turns,
-      pageCursor: page.pageCursor ?? null,
-      eventCursor: page.eventCursor ?? null,
-      hasMoreAfter: page.hasMoreAfter,
-    })
+    setLoadingLater(true)
+    try {
+      const lastPage = displayState.pages[displayState.pages.length - 1]
+      const lastTurn = lastPage?.turns.at(-1)
+      const page = await commandClient.pageConversationWorktree({
+        conversationId: renderedConversationId,
+        direction: 'after',
+        pageCursor: lastTurn
+          ? {
+              turnId: lastTurn.id,
+              position: lastTurn.position,
+            }
+          : (lastPage?.cursor ?? undefined),
+        limit: 50,
+      })
+      queryClient.setQueryData<PageConversationWorktreeResponse>(worktreeQueryKey, (current) =>
+        current ? mergeWorktreePage(current, page, 'after') : page,
+      )
+      dispatch({
+        type: 'appendPage',
+        turns: page.turns,
+        pageCursor: page.pageCursor ?? null,
+        eventCursor: page.eventCursor ?? null,
+        hasMoreAfter: page.hasMoreAfter,
+      })
+    } finally {
+      setLoadingLater(false)
+    }
   }, [
     renderedConversationId,
     displayState.hasMoreAfter,
@@ -334,6 +358,10 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     shouldPollFallback: selectShouldPollFallback(displayState),
     loadEarlier,
     loadLater,
+    loadingEarlier,
+    loadingLater,
+    hasMoreBefore: displayState.hasMoreBefore,
+    hasMoreAfter: displayState.hasMoreAfter,
     retryGap,
     gapMarkers: displayState.gapMarkers,
     cancelActiveRun: cancelMutation.mutateAsync,

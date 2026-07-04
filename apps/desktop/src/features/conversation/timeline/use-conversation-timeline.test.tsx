@@ -3,7 +3,12 @@ import { act, renderHook } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { CommandClient, ConversationEventBatchPayload } from '@/shared/tauri/commands'
+import type {
+  CommandClient,
+  ConversationEventBatchPayload,
+  ConversationTurn,
+  PageConversationWorktreeResponse,
+} from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
 import { createTestCommandClient } from '@/testing/command-client'
 import { useConversationTimeline } from './use-conversation-timeline'
@@ -60,6 +65,46 @@ function liveBatch(
     cursor: cursor(sequence),
     gap: false,
     phase: 'live',
+  }
+}
+
+function worktreeTurn(position: number): ConversationTurn {
+  return {
+    id: `turn-${position}`,
+    conversationId: 'conversation-001',
+    position,
+    user: {
+      id: `user-${position}`,
+      messageId: `message-${position}`,
+      body: `turn ${position}`,
+      timestamp,
+    },
+  }
+}
+
+function worktreePage(
+  turns: ConversationTurn[],
+  {
+    hasMoreAfter = false,
+    hasMoreBefore = false,
+  }: {
+    hasMoreAfter?: boolean
+    hasMoreBefore?: boolean
+  } = {},
+): PageConversationWorktreeResponse {
+  const cursorTurn = turns[0]
+  return {
+    turns,
+    pageCursor: cursorTurn
+      ? {
+          turnId: cursorTurn.id,
+          position: cursorTurn.position,
+        }
+      : undefined,
+    eventCursor: cursor(turns.at(-1)?.position ?? 1),
+    hasMoreBefore,
+    hasMoreAfter,
+    gap: false,
   }
 }
 
@@ -142,6 +187,11 @@ describe('useConversationTimeline', () => {
       expect(listener).toBeDefined()
       expect(pageConversationWorktree).toHaveBeenCalled()
     })
+    expect(pageConversationWorktree).toHaveBeenCalledWith({
+      conversationId: 'conversation-001',
+      direction: 'before',
+      limit: 100,
+    })
 
     await flushAsync(520)
     pageConversationWorktree.mockClear()
@@ -171,5 +221,61 @@ describe('useConversationTimeline', () => {
     await flushAsync(16)
 
     await flushUntil(() => expect(pageConversationWorktree).toHaveBeenCalledTimes(1))
+  })
+
+  it('loads earlier and newer worktree pages from the current page cursor', async () => {
+    const initialPage = worktreePage([worktreeTurn(10), worktreeTurn(11)], {
+      hasMoreAfter: true,
+      hasMoreBefore: true,
+    })
+    const earlierPage = worktreePage([worktreeTurn(8), worktreeTurn(9)], {
+      hasMoreBefore: false,
+    })
+    const laterPage = worktreePage([worktreeTurn(12), worktreeTurn(13)], {
+      hasMoreAfter: false,
+    })
+    const baseClient = createTestCommandClient()
+    const pageConversationWorktree = vi.fn(
+      async (request: Parameters<CommandClient['pageConversationWorktree']>[0]) => {
+        if (!request.pageCursor) {
+          return initialPage
+        }
+        return request.direction === 'before' ? earlierPage : laterPage
+      },
+    )
+    const commandClient = {
+      ...baseClient,
+      pageConversationWorktree,
+    } satisfies CommandClient
+
+    const { result } = renderTimelineHook(commandClient)
+
+    await flushUntil(() => {
+      expect(result.current.hasMoreBefore).toBe(true)
+      expect(result.current.hasMoreAfter).toBe(true)
+    })
+    pageConversationWorktree.mockClear()
+
+    await act(async () => {
+      await result.current.loadEarlier()
+    })
+
+    expect(pageConversationWorktree).toHaveBeenCalledWith({
+      conversationId: 'conversation-001',
+      direction: 'before',
+      pageCursor: { turnId: 'turn-10', position: 10 },
+      limit: 50,
+    })
+
+    await act(async () => {
+      await result.current.loadLater()
+    })
+
+    expect(pageConversationWorktree).toHaveBeenCalledWith({
+      conversationId: 'conversation-001',
+      direction: 'after',
+      pageCursor: { turnId: 'turn-11', position: 11 },
+      limit: 50,
+    })
   })
 })

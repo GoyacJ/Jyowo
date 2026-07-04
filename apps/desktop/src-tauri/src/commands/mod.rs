@@ -17,14 +17,15 @@ use harness_contracts::{
     AgentProfile, AgentProfileScope, AgentUsePolicy, AutomationRunRecord, AutomationRunStatus,
     AutomationSpec, AutomationWorkspaceScope, BackgroundAgentStarterCap, BackgroundAgentState,
     BackgroundAgentToolStartRequest, BackgroundAgentToolStartResponse, CapabilityRouteKind,
-    ConversationCursor, ConversationMessageAuthor, ConversationTurnCursor,
-    ConversationWorktreePage, DiagnosticsRawOutput, DiagnosticsRunRequest, DiagnosticsRunnerCap,
-    DiagnosticsRunnerKind, ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag,
-    MissedRunPolicy, PermissionOptionId, PluginCapabilitiesSummary, PluginConfigUpdate,
-    PluginDetail, PluginId, PluginInstallReport, PluginOperationResult, PluginOperationStatus,
-    PluginSummary, ProviderCapabilityRoute, ProviderCapabilityRouteOption,
-    ProviderCapabilityRouteSettings, ProviderProbeSnapshot, ProviderServiceAdapterAvailability,
-    RejectionReason, SandboxError, SandboxMode, ToolGroup, TrustLevel, UiSafeText, WorkspaceAccess,
+    ConversationCursor, ConversationInspectorItemResponse, ConversationInspectorSelection,
+    ConversationMessageAuthor, ConversationTurnCursor, ConversationWorktreePage,
+    DiagnosticsRawOutput, DiagnosticsRunRequest, DiagnosticsRunnerCap, DiagnosticsRunnerKind,
+    ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag, MissedRunPolicy,
+    PermissionOptionId, PluginCapabilitiesSummary, PluginConfigUpdate, PluginDetail, PluginId,
+    PluginInstallReport, PluginOperationResult, PluginOperationStatus, PluginSummary,
+    ProviderCapabilityRoute, ProviderCapabilityRouteOption, ProviderCapabilityRouteSettings,
+    ProviderProbeSnapshot, ProviderServiceAdapterAvailability, RejectionReason, SandboxError,
+    SandboxMode, ToolGroup, TrustLevel, UiSafeText, WorkspaceAccess,
 };
 use harness_model::ModelRuntimeSemantics;
 use harness_plugin::{
@@ -175,15 +176,16 @@ pub use contracts::{
     GetAttachmentMediaPreviewRequest, GetAttachmentMediaPreviewResponse, GetBackgroundAgentRequest,
     GetBackgroundAgentResponse, GetContextSnapshotRequest, GetContextSnapshotResponse,
     GetConversationCommandOutputRequest, GetConversationCommandOutputResponse,
-    GetConversationDiffPatchRequest, GetConversationDiffPatchResponse, GetConversationRequest,
-    GetConversationResponse, GetExecutionSettingsRequest, GetExecutionSettingsResponse,
-    GetMcpServerConfigRequest, GetMcpServerConfigResponse, GetMemoryItemRequest,
-    GetMemoryItemResponse, GetModelUsageSummaryResponse, GetPluginDetailRequest,
-    GetPluginDetailResponse, GetProviderConfigApiKeyRequest, GetProviderConfigApiKeyResponse,
-    GetSkillDetailRequest, GetSkillDetailResponse, GetSkillFileRequest, GetSkillFileResponse,
-    HarnessHealthcheckPayload, HarnessInfoPayload, ImportSkillRequest, ImportSkillResponse,
-    InstallPluginFromPathRequest, InstallSkillFromCatalogResponse, ListActivityRequest,
-    ListActivityResponse, ListAgentProfilesResponse, ListArtifactsRequest, ListArtifactsResponse,
+    GetConversationDiffPatchRequest, GetConversationDiffPatchResponse,
+    GetConversationInspectorItemRequest, GetConversationRequest, GetConversationResponse,
+    GetExecutionSettingsRequest, GetExecutionSettingsResponse, GetMcpServerConfigRequest,
+    GetMcpServerConfigResponse, GetMemoryItemRequest, GetMemoryItemResponse,
+    GetModelUsageSummaryResponse, GetPluginDetailRequest, GetPluginDetailResponse,
+    GetProviderConfigApiKeyRequest, GetProviderConfigApiKeyResponse, GetSkillDetailRequest,
+    GetSkillDetailResponse, GetSkillFileRequest, GetSkillFileResponse, HarnessHealthcheckPayload,
+    HarnessInfoPayload, ImportSkillRequest, ImportSkillResponse, InstallPluginFromPathRequest,
+    InstallSkillFromCatalogResponse, ListActivityRequest, ListActivityResponse,
+    ListAgentProfilesResponse, ListArtifactsRequest, ListArtifactsResponse,
     ListAutomationRunsRequest, ListAutomationRunsResponse, ListAutomationsResponse,
     ListBackgroundAgentsRequest, ListBackgroundAgentsResponse, ListBrowserMcpPresetsResponse,
     ListConversationsResponse, ListEvalCasesResponse, ListMcpDiagnosticsRequest,
@@ -239,7 +241,8 @@ pub use conversations::{
     export_conversation_evidence_with_runtime_state, export_support_bundle_with_runtime_state,
     get_artifact_revision_content_with_runtime_state, get_context_snapshot_with_runtime_state,
     get_conversation_command_output_with_runtime_state,
-    get_conversation_diff_patch_with_runtime_state, get_conversation_with_runtime_state,
+    get_conversation_diff_patch_with_runtime_state,
+    get_conversation_inspector_item_with_runtime_state, get_conversation_with_runtime_state,
     get_replay_timeline_with_runtime_state, list_activity_payload,
     list_activity_with_runtime_state, list_conversations_with_runtime_state,
     list_reference_candidates_payload, list_reference_candidates_with_runtime_state,
@@ -1726,6 +1729,23 @@ pub async fn page_conversation_worktree(
             page_cursor,
             direction: direction.unwrap_or_else(default_worktree_direction),
             limit,
+        },
+        &*runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_conversation_inspector_item(
+    conversation_id: String,
+    selection: ConversationInspectorSelection,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ConversationInspectorItemResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_conversation_inspector_item_with_runtime_state(
+        GetConversationInspectorItemRequest {
+            conversation_id,
+            selection,
         },
         &*runtime_state,
     )

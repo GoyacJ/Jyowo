@@ -31,9 +31,10 @@ use super::validation::*;
 use super::*;
 use harness_contracts::{
     BackgroundAgentId, ConversationAttachmentReference, ConversationContextReference,
-    ManifestOriginRef, McpServerScope, PermissionActorSource, PermissionConfirmation,
-    PermissionMode, PermissionReview, SandboxMode, SandboxPolicySummary, SandboxScope, SubagentId,
-    SubagentStatus, SubagentTerminationReason, TeamId, TeamTerminationReason, TopologyKind,
+    ConversationInspectorItemResponse, ManifestOriginRef, McpServerScope, PermissionActorSource,
+    PermissionConfirmation, PermissionMode, PermissionReview, SandboxMode, SandboxPolicySummary,
+    SandboxScope, SubagentId, SubagentStatus, SubagentTerminationReason, TeamId,
+    TeamTerminationReason, TopologyKind,
 };
 use std::io::Write;
 
@@ -1179,6 +1180,34 @@ pub async fn page_conversation_worktree_with_runtime_state(
             request.direction.into(),
             request.limit.unwrap_or(50),
         )
+        .await
+        .map_err(conversation_read_error)
+}
+
+pub async fn get_conversation_inspector_item_with_runtime_state(
+    request: GetConversationInspectorItemRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ConversationInspectorItemResponse, CommandErrorPayload> {
+    ensure_non_empty("conversationId", &request.conversation_id)?;
+    let session_id = parse_session_id(&request.conversation_id)?;
+    if state
+        .deleted_conversation_ids
+        .lock()
+        .await
+        .contains(&session_id)
+    {
+        return Err(not_found(format!(
+            "conversation not found: {}",
+            request.conversation_id
+        )));
+    }
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Reading conversation inspector items requires the runtime conversation facade.",
+        ));
+    };
+    harness
+        .get_conversation_inspector_item(&request.conversation_id, request.selection)
         .await
         .map_err(conversation_read_error)
 }

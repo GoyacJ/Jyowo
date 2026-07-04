@@ -500,13 +500,13 @@ describe('WorkbenchInspector', () => {
     })
     renderInspector({
       ...createTestCommandClient(),
-      pageConversationWorktree: vi.fn().mockRejectedValue(new Error('offline')),
+      getConversationInspectorItem: vi.fn().mockRejectedValue(new Error('offline')),
     })
 
     expect(await screen.findByText('Inspector data failed to load')).toBeInTheDocument()
   })
 
-  it('resolves selected evidence from the already loaded worktree projection cache', async () => {
+  it('resolves selected evidence through the backend inspector authority', async () => {
     setupStore({
       inspectorOpen: true,
       workbenchSelection: {
@@ -516,6 +516,17 @@ describe('WorkbenchInspector', () => {
       },
     })
     const pageConversationWorktree = vi.fn().mockRejectedValue(new Error('should not refetch'))
+    const getConversationInspectorItem = vi.fn().mockResolvedValue({
+      item: {
+        kind: 'command',
+        command: commandDetail({
+          command: 'pnpm check:desktop',
+          stdoutPreview: 'desktop checks passed',
+          fullOutputRef: 'evidence-command-inspector',
+          exitCode: 0,
+        }),
+      },
+    })
     const queryClient = createInspectorQueryClient()
     queryClient.setQueryData(
       ['conversation-worktree', 'workspace-fixture', 'conversation-inspector'],
@@ -525,13 +536,39 @@ describe('WorkbenchInspector', () => {
     renderInspector(
       {
         ...createTestCommandClient(),
+        getConversationInspectorItem,
         pageConversationWorktree,
       },
       queryClient,
     )
 
     expect(await screen.findByText('$ pnpm check:desktop')).toBeInTheDocument()
+    expect(getConversationInspectorItem).toHaveBeenCalledWith({
+      conversationId: 'conversation-inspector',
+      selection: {
+        kind: 'command',
+        fullOutputRef: 'evidence-command-inspector',
+      },
+    })
     expect(pageConversationWorktree).not.toHaveBeenCalled()
+  })
+
+  it('renders a typed empty state when the backend inspector authority misses', async () => {
+    setupStore({
+      inspectorOpen: true,
+      workbenchSelection: {
+        kind: 'command',
+        conversationId: 'conversation-inspector',
+        fullOutputRef: 'missing-evidence-ref',
+      },
+    })
+    renderInspector(
+      createTestCommandClient({
+        conversationInspectorItem: { item: { kind: 'empty' } },
+      }),
+    )
+
+    expect(await screen.findByText('Selection unavailable')).toBeInTheDocument()
   })
 
   it('keeps selection when the inspector is closed', () => {

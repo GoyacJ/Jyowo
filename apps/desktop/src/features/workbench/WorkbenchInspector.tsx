@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { ChangeSetSummary } from '@/features/conversation/evidence/ChangeSetSummary'
@@ -11,24 +11,11 @@ import { useUiStore } from '@/shared/state/ui-store'
 import type { WorkbenchSelection } from '@/shared/state/workbench-selection'
 import type {
   ArtifactSegment,
-  ChangeSet,
-  CommandExecution,
-  ConversationEventRef,
-  ConversationTurn,
-  DecisionRequestState,
-  PageConversationWorktreeResponse,
-  ProcessStep,
-  ToolAttempt,
+  ConversationInspectorItem,
+  ConversationInspectorSelection,
 } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
-
-type InspectorItem =
-  | { kind: 'decision'; decision: DecisionRequestState }
-  | { kind: 'tool'; attempt: ToolAttempt }
-  | { kind: 'command'; command: CommandExecution }
-  | { kind: 'diff'; changeSet: ChangeSet }
-  | { kind: 'artifact'; segment: ArtifactSegment }
 
 type InspectorPaneRendererProps = {
   selection: WorkbenchSelection
@@ -37,20 +24,18 @@ type InspectorPaneRendererProps = {
 function InspectorPaneRenderer({ selection }: InspectorPaneRendererProps) {
   const { t } = useTranslation('conversation')
   const commandClient = useCommandClient()
-  const queryClient = useQueryClient()
   const needsProjection = selection.kind !== 'context'
   const conversationId = needsProjection ? selection.conversationId : undefined
-  const cachedItem =
-    selection.kind === 'context' ? null : findCachedInspectorItem(queryClient, selection)
+  const inspectorSelection =
+    selection.kind === 'context' ? null : inspectorSelectionFromWorkbenchSelection(selection)
 
-  const worktreeQuery = useQuery({
-    enabled: needsProjection && conversationId !== undefined && cachedItem === null,
-    queryKey: ['workbench-inspector-worktree', conversationId],
+  const inspectorQuery = useQuery({
+    enabled: needsProjection && conversationId !== undefined && inspectorSelection !== null,
+    queryKey: ['workbench-inspector-item', conversationId, inspectorSelection],
     queryFn: () =>
-      commandClient.pageConversationWorktree({
+      commandClient.getConversationInspectorItem({
         conversationId: conversationId ?? '',
-        direction: 'after',
-        limit: 100,
+        selection: inspectorSelection ?? { kind: 'turn', turnId: '' },
       }),
   })
 
@@ -63,11 +48,7 @@ function InspectorPaneRenderer({ selection }: InspectorPaneRendererProps) {
     )
   }
 
-  if (cachedItem) {
-    return <InspectorItemView conversationId={selection.conversationId} item={cachedItem} />
-  }
-
-  if (worktreeQuery.isPending) {
+  if (inspectorQuery.isPending) {
     return (
       <InspectorState
         description={t('inspector.loadingDescription', 'Fetching the selected evidence.')}
@@ -76,7 +57,7 @@ function InspectorPaneRenderer({ selection }: InspectorPaneRendererProps) {
     )
   }
 
-  if (worktreeQuery.isError) {
+  if (inspectorQuery.isError) {
     return (
       <InspectorState
         description={t('inspector.errorDescription', 'The selected evidence could not be loaded.')}
@@ -85,14 +66,14 @@ function InspectorPaneRenderer({ selection }: InspectorPaneRendererProps) {
     )
   }
 
-  const item = findInspectorItem(selection, worktreeQuery.data.turns)
+  const item = inspectorQuery.data.item
 
-  if (!item) {
+  if (item.kind === 'empty') {
     return (
       <InspectorState
         description={t(
           'inspector.notFoundDescription',
-          'The selected item is not present in the current worktree projection.',
+          'The selected item is not present in the worktree projection.',
         )}
         title={t('inspector.notFound', 'Selection unavailable')}
       />
@@ -107,11 +88,18 @@ function InspectorItemView({
   item,
 }: {
   conversationId: string
-  item: InspectorItem
+  item: Exclude<ConversationInspectorItem, { kind: 'empty' }>
 }) {
   const { t } = useTranslation('conversation')
 
   switch (item.kind) {
+    case 'turn':
+      return (
+        <InspectorState
+          description={item.turn.user.body}
+          title={t('inspector.turn', 'Conversation turn')}
+        />
+      )
     case 'decision':
       return (
         <div className="grid gap-3 p-3">
@@ -162,28 +150,6 @@ function InspectorItemView({
     case 'artifact':
       return <ArtifactInspectorPane conversationId={conversationId} segment={item.segment} />
   }
-}
-
-function findCachedInspectorItem(
-  queryClient: ReturnType<typeof useQueryClient>,
-  selection: Exclude<WorkbenchSelection, { kind: 'context' }>,
-) {
-  const cachedPages = queryClient.getQueriesData<PageConversationWorktreeResponse>({
-    queryKey: ['conversation-worktree'],
-  })
-
-  for (const [, page] of cachedPages) {
-    if (!page?.turns.some((turn) => turn.conversationId === selection.conversationId)) {
-      continue
-    }
-
-    const item = findInspectorItem(selection, page.turns)
-    if (item) {
-      return item
-    }
-  }
-
-  return null
 }
 
 function ArtifactInspectorPane({
@@ -265,111 +231,31 @@ function ArtifactInspectorPane({
   )
 }
 
-function findInspectorItem(
+function inspectorSelectionFromWorkbenchSelection(
   selection: Exclude<WorkbenchSelection, { kind: 'context' }>,
-  turns: ConversationTurn[],
-): InspectorItem | null {
-  for (const turn of turns) {
-    for (const segment of turn.assistant?.segments ?? []) {
-      switch (segment.kind) {
-        case 'toolGroup': {
-          for (const attempt of segment.attempts) {
-            if (selection.kind === 'tool' && attempt.toolUseId === selection.toolUseId) {
-              return { kind: 'tool', attempt }
-            }
-            if (
-              selection.kind === 'decision' &&
-              attempt.permission?.requestId === selection.requestId
-            ) {
-              return { kind: 'decision', decision: attempt.permission }
-            }
-          }
-          break
-        }
-        case 'process': {
-          for (const step of segment.steps ?? []) {
-            const item = findProcessStepItem(selection, step)
-            if (item) {
-              return item
-            }
-          }
-          break
-        }
-        case 'artifact':
-          if (
-            selection.kind === 'artifact' &&
-            segment.artifactId === selection.artifactId &&
-            (!selection.revisionId || segment.revision.revisionId === selection.revisionId)
-          ) {
-            return { kind: 'artifact', segment }
-          }
-          break
-        default:
-          break
+): ConversationInspectorSelection {
+  switch (selection.kind) {
+    case 'decision':
+      return { kind: 'decision', requestId: selection.requestId }
+    case 'tool':
+      return { kind: 'tool', toolUseId: selection.toolUseId }
+    case 'command':
+      return {
+        kind: 'command',
+        fullOutputRef: selection.fullOutputRef,
+        eventId: selection.eventRef?.eventId,
       }
-    }
+    case 'diff':
+      return { kind: 'diff', changeSetId: selection.changeSetId }
+    case 'artifact':
+      return selection.revisionId
+        ? {
+            kind: 'artifactRevision',
+            artifactId: selection.artifactId,
+            revisionId: selection.revisionId,
+          }
+        : { kind: 'artifact', artifactId: selection.artifactId }
   }
-
-  return null
-}
-
-function findProcessStepItem(
-  selection: Exclude<WorkbenchSelection, { kind: 'context' }>,
-  step: ProcessStep,
-): InspectorItem | null {
-  const detail = step.detail
-  if (!detail) {
-    return null
-  }
-
-  if (
-    selection.kind === 'command' &&
-    detail.type === 'command' &&
-    commandMatchesSelection(selection, step)
-  ) {
-    return { kind: 'command', command: detail }
-  }
-
-  if (selection.kind === 'diff' && detail.type === 'diff' && detail.id === selection.changeSetId) {
-    return {
-      kind: 'diff',
-      changeSet: {
-        id: detail.id,
-        summary: detail.summary,
-        files: detail.files,
-      },
-    }
-  }
-
-  return null
-}
-
-function commandMatchesSelection(
-  selection: Extract<WorkbenchSelection, { kind: 'command' }>,
-  step: ProcessStep,
-) {
-  if (step.detail?.type !== 'command') {
-    return false
-  }
-
-  if (selection.fullOutputRef) {
-    return step.detail.fullOutputRef === selection.fullOutputRef
-  }
-
-  if (selection.eventRef) {
-    const selectedEventRef = selection.eventRef
-    return step.eventRefs?.some((eventRef) => eventRefMatches(eventRef, selectedEventRef)) ?? false
-  }
-
-  return step.kind === 'command'
-}
-
-function eventRefMatches(left: ConversationEventRef, right: ConversationEventRef) {
-  return (
-    left.eventId === right.eventId ||
-    left.cursor.eventId === right.cursor.eventId ||
-    left.cursor.conversationSequence === right.cursor.conversationSequence
-  )
 }
 
 function InspectorState({ title, description }: { title: string; description: string }) {

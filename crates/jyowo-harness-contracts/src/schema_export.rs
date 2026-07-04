@@ -189,6 +189,21 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         "conversation_worktree_page",
         ConversationWorktreePage
     );
+    insert_schema!(
+        schemas,
+        "conversation_inspector_selection",
+        ConversationInspectorSelection
+    );
+    insert_schema!(
+        schemas,
+        "conversation_inspector_item",
+        ConversationInspectorItem
+    );
+    insert_schema!(
+        schemas,
+        "conversation_inspector_item_response",
+        ConversationInspectorItemResponse
+    );
     insert_schema!(schemas, "conversation_turn_cursor", ConversationTurnCursor);
     insert_schema!(schemas, "conversation_turn", ConversationTurn);
     insert_schema!(

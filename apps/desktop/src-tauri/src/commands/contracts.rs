@@ -1835,6 +1835,13 @@ pub struct PageConversationWorktreeRequest {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetConversationInspectorItemRequest {
+    pub conversation_id: String,
+    pub selection: ConversationInspectorSelection,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageConversationTimelineResponse {

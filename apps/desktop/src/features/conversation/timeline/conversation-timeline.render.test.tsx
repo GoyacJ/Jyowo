@@ -146,6 +146,86 @@ describe('ConversationTimeline', () => {
     expect(screen.getByTestId('conversation-timeline-scroll-content')).toHaveClass('pb-28')
   })
 
+  it('renders paging controls and calls the supplied loaders', () => {
+    const loadEarlier = vi.fn()
+    const loadLater = vi.fn()
+    render(
+      <ConversationTimeline
+        hasMoreAfter
+        hasMoreBefore
+        loadEarlier={loadEarlier}
+        loadLater={loadLater}
+        title="Paged conversation"
+        turns={[turn('Final answer')]}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Load newer' }))
+
+    expect(loadEarlier).toHaveBeenCalledTimes(1)
+    expect(loadLater).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the viewport anchored when earlier turns are loaded', async () => {
+    const originalRequestAnimationFrame = window.requestAnimationFrame
+    window.requestAnimationFrame = (callback) => {
+      callback(0)
+      return 0
+    }
+    let scrollHeight = 300
+    const loadEarlier = vi.fn().mockImplementation(async () => {
+      scrollHeight = 520
+    })
+
+    try {
+      render(
+        <ConversationTimeline
+          hasMoreBefore
+          loadEarlier={loadEarlier}
+          title="Paged conversation"
+          turns={[turn('Final answer')]}
+        />,
+      )
+
+      const viewport = screen
+        .getByRole('button', { name: 'Load earlier' })
+        .closest('div.min-h-0') as HTMLDivElement | null
+      if (!viewport) {
+        throw new Error('timeline viewport not found')
+      }
+      Object.defineProperty(viewport, 'scrollHeight', {
+        configurable: true,
+        get: () => scrollHeight,
+      })
+      viewport.scrollTop = 120
+
+      fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }))
+
+      await waitFor(() => expect(loadEarlier).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(viewport.scrollTop).toBe(340))
+    } finally {
+      window.requestAnimationFrame = originalRequestAnimationFrame
+    }
+  })
+
+  it('renders timeline gap markers and retries through the supplied callback', () => {
+    const retryGap = vi.fn()
+    render(
+      <ConversationTimeline
+        gapMarkers={[{ id: 'gap-001' }]}
+        retryGap={retryGap}
+        title="Gapped conversation"
+        turns={[turn('Final answer')]}
+      />,
+    )
+
+    expect(screen.getByText('Timeline gap')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(retryGap).toHaveBeenCalledTimes(1)
+  })
+
   it('renders review and clarification requests inside assistant work', () => {
     render(
       <ConversationTimeline

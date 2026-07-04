@@ -1194,6 +1194,118 @@ const pageConversationWorktreeResponseSchema = z
   })
   .strict()
 
+const conversationInspectorSelectionSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('turn'),
+      turnId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('event'),
+      eventId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('evidenceRef'),
+      evidenceRefId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('artifact'),
+      artifactId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('artifactRevision'),
+      artifactId: z.string().min(1).optional(),
+      revisionId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('decision'),
+      requestId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('tool'),
+      toolUseId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('command'),
+      fullOutputRef: z.string().min(1).optional(),
+      eventId: z.string().min(1).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('diff'),
+      changeSetId: z.string().min(1),
+    })
+    .strict(),
+])
+
+const getConversationInspectorItemRequestSchema = z
+  .object({
+    conversationId: z.string().min(1),
+    selection: conversationInspectorSelectionSchema,
+  })
+  .strict()
+
+const conversationInspectorItemSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('empty') }).strict(),
+  z
+    .object({
+      kind: z.literal('turn'),
+      turn: conversationTurnSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('decision'),
+      decision: decisionRequestStateSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('tool'),
+      attempt: toolAttemptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('command'),
+      command: commandExecutionSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('diff'),
+      changeSet: changeSetSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('artifact'),
+      segment: artifactSegmentSchema,
+    })
+    .strict(),
+])
+
+const getConversationInspectorItemResponseSchema = z
+  .object({
+    item: conversationInspectorItemSchema,
+  })
+  .strict()
+
 const subscribeConversationEventsRequestSchema = z
   .object({
     afterCursor: conversationCursorSchema.optional(),
@@ -3343,6 +3455,12 @@ type PageConversationWorktreeRequest = z.infer<typeof pageConversationWorktreeRe
 export type PageConversationWorktreeResponse = z.infer<
   typeof pageConversationWorktreeResponseSchema
 >
+export type ConversationInspectorSelection = z.infer<typeof conversationInspectorSelectionSchema>
+export type ConversationInspectorItem = z.infer<typeof conversationInspectorItemSchema>
+type GetConversationInspectorItemRequest = z.infer<typeof getConversationInspectorItemRequestSchema>
+export type GetConversationInspectorItemResponse = z.infer<
+  typeof getConversationInspectorItemResponseSchema
+>
 type SubscribeConversationEventsRequest = z.infer<typeof subscribeConversationEventsRequestSchema>
 export type SubscribeConversationEventsResponse = z.infer<
   typeof subscribeConversationEventsResponseSchema
@@ -3599,6 +3717,9 @@ export interface CommandClient {
   pageConversationWorktree: (
     request: PageConversationWorktreeRequest,
   ) => Promise<PageConversationWorktreeResponse>
+  getConversationInspectorItem: (
+    request: GetConversationInspectorItemRequest,
+  ) => Promise<GetConversationInspectorItemResponse>
   probeProviderConfig: (request: ProbeProviderConfigRequest) => Promise<ProbeProviderConfigResponse>
   refreshOfficialQuota: (
     request: RefreshOfficialQuotaRequest,
@@ -3876,6 +3997,15 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       return parsePayload(
         command,
         pageConversationWorktreeResponseSchema,
+        await invoke(command, args),
+      )
+    },
+    async getConversationInspectorItem(request) {
+      const command = 'get_conversation_inspector_item'
+      const args = parseArgs(command, getConversationInspectorItemRequestSchema, request)
+      return parsePayload(
+        command,
+        getConversationInspectorItemResponseSchema,
         await invoke(command, args),
       )
     },
@@ -5079,6 +5209,13 @@ export function pageConversationWorktree(
   client: CommandClient = tauriCommandClient,
 ): Promise<PageConversationWorktreeResponse> {
   return client.pageConversationWorktree(request)
+}
+
+export function getConversationInspectorItem(
+  request: GetConversationInspectorItemRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<GetConversationInspectorItemResponse> {
+  return client.getConversationInspectorItem(request)
 }
 
 export function getContextSnapshot(

@@ -147,6 +147,61 @@ pub struct ConversationWorktreePage {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ConversationInspectorSelection {
+    Turn {
+        turn_id: String,
+    },
+    Event {
+        event_id: String,
+    },
+    EvidenceRef {
+        evidence_ref_id: EvidenceRefId,
+    },
+    Artifact {
+        artifact_id: String,
+    },
+    ArtifactRevision {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact_id: Option<String>,
+        revision_id: String,
+    },
+    Decision {
+        request_id: String,
+    },
+    Tool {
+        tool_use_id: String,
+    },
+    Command {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        full_output_ref: Option<EvidenceRefId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event_id: Option<String>,
+    },
+    Diff {
+        change_set_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ConversationInspectorItem {
+    Empty,
+    Turn { turn: ConversationTurn },
+    Decision { decision: DecisionRequestState },
+    Tool { attempt: ToolAttempt },
+    Command { command: CommandExecution },
+    Diff { change_set: ChangeSet },
+    Artifact { segment: ArtifactSegment },
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationInspectorItemResponse {
+    pub item: ConversationInspectorItem,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationTurnCursor {
     pub turn_id: String,

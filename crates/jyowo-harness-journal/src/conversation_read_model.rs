@@ -5,15 +5,17 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    ArtifactSource, ArtifactStatus, BackgroundAgentId, BlobRef, ConversationAttachmentReference,
-    ConversationCursor, ConversationMessage, ConversationMessageAuthor, ConversationSnapshot,
-    ConversationSummary, ConversationTimelineEvent, ConversationTimelinePage,
-    ConversationTurnCursor, ConversationWorktreePage, Decision, DecisionScope, DeltaChunk, Event,
-    EventId, JournalError, MemberLeaveReason, MessageContent, MessagePart, PermissionActorSource,
-    PermissionConfirmation, PermissionMode, PermissionReview, PermissionSubject, RequestId,
+    ArtifactSource, ArtifactStatus, AssistantSegment, BackgroundAgentId, BlobRef, ChangeSet,
+    ConversationAttachmentReference, ConversationCursor, ConversationEventRef,
+    ConversationInspectorItem, ConversationInspectorItemResponse, ConversationInspectorSelection,
+    ConversationMessage, ConversationMessageAuthor, ConversationSnapshot, ConversationSummary,
+    ConversationTimelineEvent, ConversationTimelinePage, ConversationTurn, ConversationTurnCursor,
+    ConversationWorktreePage, Decision, DecisionScope, DeltaChunk, Event, EventId, JournalError,
+    MemberLeaveReason, MessageContent, MessagePart, PermissionActorSource, PermissionConfirmation,
+    PermissionMode, PermissionReview, PermissionSubject, ProcessStep, ProcessStepDetail, RequestId,
     RoutingPolicyKind, RunId, RunModelSnapshot, SandboxMode, SandboxPolicySummary, SandboxScope,
     SessionId, Severity, SubagentStatus, SubagentTerminationReason, TeamTerminationReason,
-    TenantId, ToolResult, ToolResultPart, ToolUseId, TopologyKind, UiSafeText,
+    TenantId, ToolAttempt, ToolResult, ToolResultPart, ToolUseId, TopologyKind, UiSafeText,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
@@ -488,6 +490,26 @@ impl SqliteConversationReadModelStore {
         )
         .await?;
         self.page_worktree_from_projection(projection, page_cursor, direction, limit_turns)
+    }
+
+    pub async fn conversation_inspector_item_with_evidence(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+        selection: ConversationInspectorSelection,
+        evidence_store: Arc<EvidenceRefStore>,
+    ) -> Result<ConversationInspectorItemResponse, JournalError> {
+        let events = self.load_complete_timeline(tenant_id, session_id).await?;
+        let projection = project_conversation_worktree_snapshot_with_evidence(
+            &session_id.to_string(),
+            events,
+            tenant_id,
+            evidence_store,
+        )
+        .await?;
+        Ok(ConversationInspectorItemResponse {
+            item: inspector_item_from_projection(projection, &selection),
+        })
     }
 
     fn page_worktree_from_projection(
@@ -3289,6 +3311,201 @@ fn sanitize_public_timeline_event(event: &mut ConversationTimelineEvent) {
         }
         _ => {}
     }
+}
+
+fn inspector_item_from_projection(
+    projection: ConversationWorktreeProjection,
+    selection: &ConversationInspectorSelection,
+) -> ConversationInspectorItem {
+    if let ConversationInspectorSelection::Turn { turn_id } = selection {
+        return projection
+            .turns
+            .into_iter()
+            .find(|turn| &turn.id == turn_id)
+            .map(|turn| ConversationInspectorItem::Turn { turn })
+            .unwrap_or(ConversationInspectorItem::Empty);
+    }
+
+    for turn in &projection.turns {
+        if let Some(item) = inspector_item_from_turn(turn, selection) {
+            return item;
+        }
+    }
+
+    ConversationInspectorItem::Empty
+}
+
+fn inspector_item_from_turn(
+    turn: &ConversationTurn,
+    selection: &ConversationInspectorSelection,
+) -> Option<ConversationInspectorItem> {
+    let assistant = turn.assistant.as_ref()?;
+    for segment in &assistant.segments {
+        match segment {
+            AssistantSegment::ToolGroup(group) => {
+                for attempt in &group.attempts {
+                    if let Some(item) = inspector_item_from_tool_attempt(attempt, selection) {
+                        return Some(item);
+                    }
+                }
+            }
+            AssistantSegment::Process(process) => {
+                for step in &process.steps {
+                    if let Some(item) = inspector_item_from_process_step(step, selection) {
+                        return Some(item);
+                    }
+                }
+            }
+            AssistantSegment::Artifact(segment) => {
+                if artifact_segment_matches_selection(segment, selection) {
+                    return Some(ConversationInspectorItem::Artifact {
+                        segment: segment.clone(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let ConversationInspectorSelection::Event { event_id } = selection {
+        if event_refs_match_event_id(&turn.user.event_refs, event_id)
+            || event_refs_match_event_id(&assistant.event_refs, event_id)
+        {
+            return Some(ConversationInspectorItem::Turn { turn: turn.clone() });
+        }
+    }
+
+    None
+}
+
+fn inspector_item_from_tool_attempt(
+    attempt: &ToolAttempt,
+    selection: &ConversationInspectorSelection,
+) -> Option<ConversationInspectorItem> {
+    match selection {
+        ConversationInspectorSelection::Tool { tool_use_id }
+            if &attempt.tool_use_id == tool_use_id =>
+        {
+            Some(ConversationInspectorItem::Tool {
+                attempt: attempt.clone(),
+            })
+        }
+        ConversationInspectorSelection::Decision { request_id }
+            if attempt
+                .permission
+                .as_ref()
+                .is_some_and(|permission| &permission.request_id == request_id) =>
+        {
+            Some(ConversationInspectorItem::Decision {
+                decision: attempt.permission.clone()?,
+            })
+        }
+        ConversationInspectorSelection::Event { event_id }
+            if event_refs_match_event_id(&attempt.event_refs, event_id) =>
+        {
+            Some(ConversationInspectorItem::Tool {
+                attempt: attempt.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn inspector_item_from_process_step(
+    step: &ProcessStep,
+    selection: &ConversationInspectorSelection,
+) -> Option<ConversationInspectorItem> {
+    let detail = step.detail.as_ref()?;
+    match detail {
+        ProcessStepDetail::Command(command)
+            if command_matches_selection(command, step, selection) =>
+        {
+            Some(ConversationInspectorItem::Command {
+                command: command.clone(),
+            })
+        }
+        ProcessStepDetail::Diff(change_set)
+            if change_set_matches_selection(change_set, selection) =>
+        {
+            Some(ConversationInspectorItem::Diff {
+                change_set: change_set.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn command_matches_selection(
+    command: &harness_contracts::CommandExecution,
+    step: &ProcessStep,
+    selection: &ConversationInspectorSelection,
+) -> bool {
+    match selection {
+        ConversationInspectorSelection::Command {
+            full_output_ref,
+            event_id,
+        } => {
+            full_output_ref
+                .as_ref()
+                .is_some_and(|ref_id| command.full_output_ref.as_ref() == Some(ref_id))
+                || event_id
+                    .as_ref()
+                    .is_some_and(|event_id| event_refs_match_event_id(&step.event_refs, event_id))
+        }
+        ConversationInspectorSelection::EvidenceRef { evidence_ref_id } => {
+            command.full_output_ref.as_ref() == Some(evidence_ref_id)
+        }
+        ConversationInspectorSelection::Event { event_id } => {
+            event_refs_match_event_id(&step.event_refs, event_id)
+        }
+        _ => false,
+    }
+}
+
+fn change_set_matches_selection(
+    change_set: &ChangeSet,
+    selection: &ConversationInspectorSelection,
+) -> bool {
+    match selection {
+        ConversationInspectorSelection::Diff { change_set_id } => &change_set.id == change_set_id,
+        ConversationInspectorSelection::EvidenceRef { evidence_ref_id } => change_set
+            .files
+            .iter()
+            .any(|file| file.full_patch_ref.as_ref() == Some(evidence_ref_id)),
+        _ => false,
+    }
+}
+
+fn artifact_segment_matches_selection(
+    segment: &harness_contracts::ArtifactSegment,
+    selection: &ConversationInspectorSelection,
+) -> bool {
+    match selection {
+        ConversationInspectorSelection::Artifact { artifact_id } => {
+            &segment.artifact_id == artifact_id
+        }
+        ConversationInspectorSelection::ArtifactRevision {
+            artifact_id,
+            revision_id,
+        } => {
+            artifact_id
+                .as_ref()
+                .is_none_or(|artifact_id| &segment.artifact_id == artifact_id)
+                && &segment.revision.revision_id == revision_id
+        }
+        ConversationInspectorSelection::EvidenceRef { evidence_ref_id } => {
+            segment.revision.content_ref.as_ref() == Some(evidence_ref_id)
+                || segment.revision.preview_ref.as_deref() == Some(evidence_ref_id.as_str())
+        }
+        ConversationInspectorSelection::Event { event_id } => {
+            event_refs_match_event_id(&segment.event_refs, event_id)
+        }
+        _ => false,
+    }
+}
+
+fn event_refs_match_event_id(refs: &[ConversationEventRef], event_id: &str) -> bool {
+    refs.iter().any(|event_ref| event_ref.event_id == event_id)
 }
 
 fn parse_rfc3339(value: String) -> Result<DateTime<Utc>, chrono::ParseError> {

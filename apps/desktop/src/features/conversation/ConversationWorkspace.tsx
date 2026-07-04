@@ -142,12 +142,20 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
   return (
     <section className="mx-auto grid h-full min-h-0 w-full max-w-[900px] grid-rows-[minmax(0,1fr)_auto]">
       <ConversationTimeline
+        gapMarkers={timeline.gapMarkers}
+        hasMoreAfter={timeline.hasMoreAfter}
+        hasMoreBefore={timeline.hasMoreBefore}
+        loadEarlier={timeline.loadEarlier}
+        loadLater={timeline.loadLater}
+        loadingEarlier={timeline.loadingEarlier}
+        loadingLater={timeline.loadingLater}
         turns={timeline.turns}
         title={conversationTitle}
         onPermissionResolve={(request) => {
           void timeline.resolvePermission(request)
         }}
         onReviewContinue={submitReviewContinue}
+        retryGap={timeline.retryGap}
       />
       <div className="pt-4">
         <Composer

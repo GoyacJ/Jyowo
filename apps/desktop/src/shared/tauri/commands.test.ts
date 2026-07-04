@@ -178,6 +178,7 @@ import {
   getBackgroundAgent,
   getContextSnapshot,
   getConversation,
+  getConversationInspectorItem,
   getExecutionSettings,
   getHarnessHealthcheck,
   getMcpServerConfig,
@@ -912,6 +913,103 @@ describe('CommandClient', () => {
       direction: 'after',
       limit: 20,
     })
+  })
+
+  it('models conversation inspector items through Zod validation', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      item: {
+        kind: 'command',
+        command: {
+          command: 'pnpm check:desktop',
+          exitCode: 0,
+          stdoutPreview: 'desktop passed',
+          fullOutputRef: 'evidence-command-output-001',
+          truncated: false,
+          redactionState: 'clean',
+          riskLevel: 'low',
+        },
+      },
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      getConversationInspectorItem(
+        {
+          conversationId: 'conversation-001',
+          selection: {
+            kind: 'command',
+            fullOutputRef: 'evidence-command-output-001',
+          },
+        },
+        client,
+      ),
+    ).resolves.toMatchObject({
+      item: {
+        kind: 'command',
+        command: {
+          command: 'pnpm check:desktop',
+          fullOutputRef: 'evidence-command-output-001',
+        },
+      },
+    })
+    expect(invoke).toHaveBeenCalledWith('get_conversation_inspector_item', {
+      conversationId: 'conversation-001',
+      selection: {
+        kind: 'command',
+        fullOutputRef: 'evidence-command-output-001',
+      },
+    })
+  })
+
+  it('rejects malformed conversation inspector selections and responses', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        item: {
+          kind: 'command',
+          command: {
+            command: 'pnpm check:desktop',
+            truncated: false,
+            redactionState: 'clean',
+            riskLevel: 'low',
+          },
+        },
+      }),
+    )
+
+    await expect(
+      getConversationInspectorItem(
+        {
+          conversationId: 'conversation-001',
+          selection: {
+            kind: 'command',
+            fullOutputRef: '',
+          },
+        },
+        client,
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
+
+    await expect(
+      getConversationInspectorItem(
+        {
+          conversationId: 'conversation-001',
+          selection: {
+            kind: 'command',
+            fullOutputRef: 'evidence-command-output-001',
+          },
+        },
+        createInvokeCommandClient(
+          vi.fn().mockResolvedValue({
+            item: {
+              kind: 'command',
+              command: {
+                command: 'pnpm check:desktop',
+              },
+            },
+          }),
+        ),
+      ),
+    ).rejects.toThrow(TauriCommandPayloadError)
   })
 
   it('accepts ordinary token-counting text in conversation worktree pages', async () => {

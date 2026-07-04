@@ -1,5 +1,7 @@
 #[cfg(feature = "sqlite-store")]
 use super::*;
+#[cfg(feature = "sqlite-store")]
+use harness_contracts::{ConversationInspectorItemResponse, ConversationInspectorSelection};
 
 #[cfg(feature = "sqlite-store")]
 impl Harness {
@@ -181,6 +183,29 @@ impl Harness {
                 page_cursor,
                 direction,
                 limit_turns,
+                evidence_store,
+            )
+            .await
+            .map_err(HarnessError::Journal)
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    pub async fn get_conversation_inspector_item(
+        &self,
+        conversation_id: &str,
+        selection: ConversationInspectorSelection,
+    ) -> Result<ConversationInspectorItemResponse, HarnessError> {
+        let tenant_id = self.inner.options.tenant_policy.id;
+        let session_id = parse_conversation_session_id(conversation_id)?;
+        self.catch_up_conversation_projection(tenant_id, session_id)
+            .await?;
+        let evidence_store = self.evidence_ref_store()?;
+        self.conversation_read_model()
+            .await?
+            .conversation_inspector_item_with_evidence(
+                tenant_id,
+                session_id,
+                selection,
                 evidence_store,
             )
             .await

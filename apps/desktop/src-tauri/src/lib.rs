@@ -97,6 +97,7 @@ pub fn run() {
             commands::list_projects,
             commands::switch_project,
             commands::list_skills,
+            commands::get_conversation_inspector_item,
             commands::page_conversation_timeline,
             commands::page_conversation_worktree,
             commands::pause_background_agent,
