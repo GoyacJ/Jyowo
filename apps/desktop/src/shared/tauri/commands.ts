@@ -776,6 +776,24 @@ const changeSetSchema = z
   })
   .strict()
 
+const commandExecutionSchema = z
+  .object({
+    command: z.string(),
+    cwd: z.string().optional(),
+    shell: z.string().optional(),
+    sandbox: z.string().optional(),
+    approvalRequestId: z.string().optional(),
+    exitCode: z.number().int().optional(),
+    durationMs: z.number().int().nonnegative().optional(),
+    stdoutPreview: z.string().optional(),
+    stderrPreview: z.string().optional(),
+    fullOutputRef: evidenceRefIdSchema.optional(),
+    truncated: z.boolean(),
+    redactionState: evidenceRedactionStateSchema,
+    riskLevel: riskLevelSchema,
+  })
+  .strict()
+
 const processStepDetailSchema = z.discriminatedUnion('type', [
   z
     .object({
@@ -3239,6 +3257,7 @@ export type DecisionRequestStatus = z.infer<typeof decisionRequestStatusSchema>
 export type DecisionRequestState = z.infer<typeof decisionRequestStateSchema>
 export type ToolAttemptOrigin = z.infer<typeof toolAttemptOriginSchema>
 export type ToolFailurePhase = z.infer<typeof toolFailurePhaseSchema>
+export type CommandExecution = z.infer<typeof commandExecutionSchema>
 export type ToolAttempt = z.infer<typeof toolAttemptSchema>
 export type ToolGroupSegment = z.infer<typeof toolGroupSegmentSchema>
 export type AgentActivitySegment = z.infer<typeof agentActivitySegmentSchema>
