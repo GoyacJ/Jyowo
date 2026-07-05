@@ -5,7 +5,7 @@
 | Layer | Count |
 |---|---|
 | Frontend Vitest files | 73 |
-| Frontend Vitest test cases | 651 |
+| Frontend Vitest test cases | 656 |
 | Storybook files | 19 |
 | Playwright spec files | 4 |
 | Rust test files | 332 |
@@ -31,6 +31,7 @@
 | crates/jyowo-harness-session/tests/run_turn.rs | 1198 | rust |
 | crates/jyowo-harness-journal/tests/evidence_ref_store.rs | 1195 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_support/mod.rs | 1184 | rust |
+| apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx | 1176 | frontend |
 | apps/desktop/src-tauri/tests/commands/provider_routes.rs | 1174 | rust |
 | apps/desktop/src-tauri/tests/commands/permissions.rs | 1163 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_agents.rs | 1161 | rust |
@@ -45,7 +46,6 @@
 | crates/jyowo-harness-contracts/tests/core_contracts.rs | 1074 | rust |
 | crates/jyowo-harness-sdk/tests/facade.rs | 1074 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_context.rs | 1071 | rust |
-| crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs | 1062 | rust |
 
 ## Files Over 1200 Lines (hard fail)
 
@@ -67,6 +67,7 @@
 - crates/jyowo-harness-session/tests/run_turn.rs (1198 lines)
 - crates/jyowo-harness-journal/tests/evidence_ref_store.rs (1195 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_support/mod.rs (1184 lines)
+- apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx (1176 lines)
 - apps/desktop/src-tauri/tests/commands/provider_routes.rs (1174 lines)
 - apps/desktop/src-tauri/tests/commands/permissions.rs (1163 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_agents.rs (1161 lines)
@@ -90,7 +91,6 @@
 - apps/desktop/src-tauri/tests/commands/conversations.rs (1016 lines)
 - crates/jyowo-harness-journal/tests/conversation_workbench_projection.rs (977 lines)
 - crates/jyowo-harness-team/tests/routing.rs (977 lines)
-- apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx (974 lines)
 - crates/jyowo-harness-tool/tests/registry_pool.rs (940 lines)
 - crates/jyowo-harness-sandbox/tests/local.rs (933 lines)
 - crates/jyowo-harness-engine/tests/interrupt.rs (931 lines)
@@ -122,15 +122,14 @@ None.
 
 ## createTestCommandClient Usage by File
 
-- apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx (22)
+- apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx (25)
 - apps/desktop/src/features/settings/MCPManager.test.tsx (19)
 - apps/desktop/src/features/settings/ExecutionSettings.test.tsx (15)
 - apps/desktop/src/features/skills/SkillsPage.test.tsx (15)
 - apps/desktop/src/features/workbench/WorkbenchInspector.artifacts.test.tsx (14)
 - apps/desktop/src/features/settings/PluginsManager.test.tsx (13)
-- apps/desktop/src/features/workbench/WorkbenchInspector.test.tsx (12)
+- apps/desktop/src/features/workbench/WorkbenchInspector.test.tsx (13)
 - apps/desktop/src/features/workspace/SidebarNav.test.tsx (10)
-- apps/desktop/src/app/shell/AppShell.test.tsx (9)
 - apps/desktop/src/features/artifacts/ArtifactsPage.test.tsx (9)
 - apps/desktop/src/features/background-agents/BackgroundAgentsPanel.test.tsx (8)
 - apps/desktop/src/features/conversation/timeline/conversation-timeline.artifacts.test.tsx (8)
@@ -140,6 +139,7 @@ None.
 - apps/desktop/src/features/settings/models/ModelConfigDialog.test.tsx (7)
 - apps/desktop/src/features/settings/models/ModelDetailsDrawer.test.tsx (7)
 - apps/desktop/src/shared/tauri/commands.test.ts (7)
+- apps/desktop/src/app/shell/AppShell.test.tsx (5)
 - apps/desktop/src/features/conversation/timeline/conversation-timeline.large-output.test.tsx (5)
 - apps/desktop/src/features/settings/models/ModelSettingsPage.stories.tsx (5)
 - apps/desktop/src/features/settings/models/model-settings-view-model.test.ts (5)
