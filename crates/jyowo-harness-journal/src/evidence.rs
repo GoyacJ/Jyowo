@@ -1,7 +1,7 @@
 //! Evidence ref store — durable, conversation-scoped backend references for
 //! large command output, diff patches, and artifact content.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -69,6 +69,12 @@ pub trait EvidenceRefRegistry: Send + Sync + 'static {
         &self,
         tenant: TenantId,
         conversation_id: &str,
+    ) -> Result<Vec<EvidenceRefRecord>, JournalError>;
+
+    async fn purge_deleted_conversation_refs(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
     ) -> Result<(), JournalError>;
 
     async fn list_for_conversation(
@@ -78,6 +84,14 @@ pub trait EvidenceRefRegistry: Send + Sync + 'static {
     ) -> Result<Vec<EvidenceRefRecord>, JournalError>;
 
     async fn list_live_blob_roots(&self, tenant: TenantId) -> Result<Vec<BlobRef>, JournalError>;
+}
+
+fn conversation_key(tenant: TenantId, conversation_id: &str) -> (String, String) {
+    (tenant.to_string(), conversation_id.to_owned())
+}
+
+fn deleted_conversation_error(_conversation_id: &str) -> JournalError {
+    JournalError::Message("evidence writes are closed for deleted conversation".to_owned())
 }
 
 /// Top-level evidence ref store that orchestrates the registry and blob store.
@@ -449,7 +463,7 @@ impl EvidenceRefStore {
     ) -> Result<(), JournalError> {
         let records = self
             .registry
-            .list_for_conversation(tenant, conversation_id)
+            .delete_for_conversation(tenant, conversation_id)
             .await?;
         let blob_refs: Vec<BlobRef> = records
             .into_iter()
@@ -459,16 +473,16 @@ impl EvidenceRefStore {
             })
             .collect();
 
-        self.registry
-            .delete_for_conversation(tenant, conversation_id)
-            .await?;
-
         for blob_ref in blob_refs {
             self.blob_store
                 .delete(tenant, &blob_ref)
                 .await
                 .map_err(|e| JournalError::Message(format!("blob delete failed: {e}")))?;
         }
+
+        self.registry
+            .purge_deleted_conversation_refs(tenant, conversation_id)
+            .await?;
 
         Ok(())
     }
@@ -753,7 +767,13 @@ fn validate_materialized_evidence_bytes(
 /// An in-memory evidence ref registry for testing purposes only.
 #[derive(Debug, Default)]
 pub struct InMemoryEvidenceRefRegistry {
-    records: std::sync::Mutex<Vec<EvidenceRefRecord>>,
+    state: std::sync::Mutex<InMemoryEvidenceRefRegistryState>,
+}
+
+#[derive(Debug, Default)]
+struct InMemoryEvidenceRefRegistryState {
+    records: Vec<EvidenceRefRecord>,
+    deleted_conversations: HashSet<(String, String)>,
 }
 
 impl InMemoryEvidenceRefRegistry {
@@ -767,14 +787,20 @@ impl InMemoryEvidenceRefRegistry {
 impl EvidenceRefRegistry for InMemoryEvidenceRefRegistry {
     async fn insert(
         &self,
-        _tenant: TenantId,
+        tenant: TenantId,
         record: EvidenceRefRecord,
     ) -> Result<(), JournalError> {
-        let mut records = self
-            .records
+        let mut state = self
+            .state
             .lock()
             .map_err(|e| JournalError::Message(format!("lock error: {e}")))?;
-        if let Some(existing) = records.iter().find(|r| r.id == record.id) {
+        if state
+            .deleted_conversations
+            .contains(&conversation_key(tenant, &record.conversation_id))
+        {
+            return Err(deleted_conversation_error(&record.conversation_id));
+        }
+        if let Some(existing) = state.records.iter().find(|r| r.id == record.id) {
             if compatible_evidence_ref_metadata(existing, &record) {
                 return Ok(());
             }
@@ -783,58 +809,107 @@ impl EvidenceRefRegistry for InMemoryEvidenceRefRegistry {
                 record.id
             )));
         }
-        records.push(record);
+        state.records.push(record);
         Ok(())
     }
 
     async fn get(
         &self,
-        _tenant: TenantId,
+        tenant: TenantId,
         id: &EvidenceRefId,
     ) -> Result<Option<EvidenceRefRecord>, JournalError> {
-        let records = self
-            .records
+        let state = self
+            .state
             .lock()
             .map_err(|e| JournalError::Message(format!("lock error: {e}")))?;
-        Ok(records.iter().find(|r| &r.id == id).cloned())
+        Ok(state
+            .records
+            .iter()
+            .find(|record| {
+                &record.id == id
+                    && !state
+                        .deleted_conversations
+                        .contains(&conversation_key(tenant, &record.conversation_id))
+            })
+            .cloned())
     }
 
     async fn delete_for_conversation(
         &self,
-        _tenant: TenantId,
-        conversation_id: &str,
-    ) -> Result<(), JournalError> {
-        let mut records = self
-            .records
-            .lock()
-            .map_err(|e| JournalError::Message(format!("lock error: {e}")))?;
-        records.retain(|r| r.conversation_id != conversation_id);
-        Ok(())
-    }
-
-    async fn list_for_conversation(
-        &self,
-        _tenant: TenantId,
+        tenant: TenantId,
         conversation_id: &str,
     ) -> Result<Vec<EvidenceRefRecord>, JournalError> {
-        let records = self
-            .records
+        let mut state = self
+            .state
             .lock()
             .map_err(|e| JournalError::Message(format!("lock error: {e}")))?;
-        Ok(records
+        let deleted_key = conversation_key(tenant, conversation_id);
+        state.deleted_conversations.insert(deleted_key);
+        Ok(state
+            .records
             .iter()
             .filter(|record| record.conversation_id == conversation_id)
             .cloned()
             .collect())
     }
 
-    async fn list_live_blob_roots(&self, _tenant: TenantId) -> Result<Vec<BlobRef>, JournalError> {
-        let records = self
-            .records
+    async fn purge_deleted_conversation_refs(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+    ) -> Result<(), JournalError> {
+        let mut state = self
+            .state
             .lock()
             .map_err(|e| JournalError::Message(format!("lock error: {e}")))?;
-        Ok(records
+        if !state
+            .deleted_conversations
+            .contains(&conversation_key(tenant, conversation_id))
+        {
+            return Ok(());
+        }
+        state
+            .records
+            .retain(|record| record.conversation_id != conversation_id);
+        Ok(())
+    }
+
+    async fn list_for_conversation(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
+    ) -> Result<Vec<EvidenceRefRecord>, JournalError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|e| JournalError::Message(format!("lock error: {e}")))?;
+        if state
+            .deleted_conversations
+            .contains(&conversation_key(tenant, conversation_id))
+        {
+            return Ok(Vec::new());
+        }
+        Ok(state
+            .records
             .iter()
+            .filter(|record| record.conversation_id == conversation_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn list_live_blob_roots(&self, tenant: TenantId) -> Result<Vec<BlobRef>, JournalError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|e| JournalError::Message(format!("lock error: {e}")))?;
+        Ok(state
+            .records
+            .iter()
+            .filter(|record| {
+                !state
+                    .deleted_conversations
+                    .contains(&conversation_key(tenant, &record.conversation_id))
+            })
             .filter_map(|r| match &r.source {
                 EvidenceRefSource::Blob { blob_ref } => Some(blob_ref.clone()),
                 _ => None,
@@ -889,7 +964,13 @@ impl SqliteEvidenceRefRegistry {
                  CREATE INDEX IF NOT EXISTS idx_evidence_refs_conversation_kind
                     ON evidence_refs(tenant_id, conversation_id, kind);
                  CREATE INDEX IF NOT EXISTS idx_evidence_refs_artifact_revision
-                    ON evidence_refs(tenant_id, artifact_id, revision_id);",
+                    ON evidence_refs(tenant_id, artifact_id, revision_id);
+                 CREATE TABLE IF NOT EXISTS evidence_ref_deleted_conversations (
+                    tenant_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    deleted_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, conversation_id)
+                 ) STRICT;",
             )
             .map_err(journal_sqlite_error)?;
         Ok(Self {
@@ -936,8 +1017,16 @@ impl EvidenceRefRegistry for SqliteEvidenceRefRegistry {
         record: EvidenceRefRecord,
     ) -> Result<(), JournalError> {
         validate_redaction_provenance(&record.redaction_provenance)?;
-        let connection = self.connection.lock().await;
-        if let Some(existing) = get_sqlite_record(&connection, tenant, &record.id)? {
+        let mut connection = self.connection.lock().await;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(journal_sqlite_error)?;
+        if sqlite_conversation_deleted(&transaction, tenant, &record.conversation_id)? {
+            return Err(deleted_conversation_error(&record.conversation_id));
+        }
+        if let Some(existing) =
+            get_sqlite_record_from_transaction(&transaction, tenant, &record.id)?
+        {
             if compatible_evidence_ref_metadata(&existing, &record) {
                 return Ok(());
             }
@@ -946,7 +1035,7 @@ impl EvidenceRefRegistry for SqliteEvidenceRefRegistry {
                 record.id
             )));
         }
-        connection
+        transaction
             .execute(
                 "INSERT INTO evidence_refs (
                     tenant_id, evidence_ref_id, kind, conversation_id, run_id,
@@ -977,6 +1066,7 @@ impl EvidenceRefRegistry for SqliteEvidenceRefRegistry {
                 ],
             )
             .map_err(journal_sqlite_error)?;
+        transaction.commit().map_err(journal_sqlite_error)?;
         Ok(())
     }
 
@@ -993,16 +1083,50 @@ impl EvidenceRefRegistry for SqliteEvidenceRefRegistry {
         &self,
         tenant: TenantId,
         conversation_id: &str,
+    ) -> Result<Vec<EvidenceRefRecord>, JournalError> {
+        let mut connection = self.connection.lock().await;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(journal_sqlite_error)?;
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO evidence_ref_deleted_conversations (
+                    tenant_id, conversation_id, deleted_at
+                 )
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    tenant.to_string(),
+                    conversation_id,
+                    chrono::Utc::now().to_rfc3339()
+                ],
+            )
+            .map_err(journal_sqlite_error)?;
+        let records =
+            list_sqlite_records_for_deleted_conversation(&transaction, tenant, conversation_id)?;
+        transaction.commit().map_err(journal_sqlite_error)?;
+        Ok(records)
+    }
+
+    async fn purge_deleted_conversation_refs(
+        &self,
+        tenant: TenantId,
+        conversation_id: &str,
     ) -> Result<(), JournalError> {
-        self.connection
-            .lock()
-            .await
+        let mut connection = self.connection.lock().await;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(journal_sqlite_error)?;
+        if !sqlite_conversation_deleted(&transaction, tenant, conversation_id)? {
+            return Ok(());
+        }
+        transaction
             .execute(
                 "DELETE FROM evidence_refs
                  WHERE tenant_id = ?1 AND conversation_id = ?2",
                 rusqlite::params![tenant.to_string(), conversation_id],
             )
             .map_err(journal_sqlite_error)?;
+        transaction.commit().map_err(journal_sqlite_error)?;
         Ok(())
     }
 
@@ -1014,8 +1138,13 @@ impl EvidenceRefRegistry for SqliteEvidenceRefRegistry {
         let connection = self.connection.lock().await;
         let mut statement = connection
             .prepare(
-                "SELECT * FROM evidence_refs
-                 WHERE tenant_id = ?1 AND conversation_id = ?2
+                "SELECT refs.* FROM evidence_refs AS refs
+                 WHERE refs.tenant_id = ?1 AND refs.conversation_id = ?2
+                 AND NOT EXISTS (
+                    SELECT 1 FROM evidence_ref_deleted_conversations AS deleted
+                    WHERE deleted.tenant_id = refs.tenant_id
+                    AND deleted.conversation_id = refs.conversation_id
+                 )
                  ORDER BY created_at ASC, evidence_ref_id ASC",
             )
             .map_err(journal_sqlite_error)?;
@@ -1031,7 +1160,15 @@ impl EvidenceRefRegistry for SqliteEvidenceRefRegistry {
     async fn list_live_blob_roots(&self, tenant: TenantId) -> Result<Vec<BlobRef>, JournalError> {
         let connection = self.connection.lock().await;
         let mut statement = connection
-            .prepare("SELECT * FROM evidence_refs WHERE tenant_id = ?1")
+            .prepare(
+                "SELECT refs.* FROM evidence_refs AS refs
+                 WHERE refs.tenant_id = ?1
+                 AND NOT EXISTS (
+                    SELECT 1 FROM evidence_ref_deleted_conversations AS deleted
+                    WHERE deleted.tenant_id = refs.tenant_id
+                    AND deleted.conversation_id = refs.conversation_id
+                 )",
+            )
             .map_err(journal_sqlite_error)?;
         let rows = statement
             .query_map(rusqlite::params![tenant.to_string()], Self::row_to_record)
@@ -1053,8 +1190,13 @@ fn get_sqlite_record(
     id: &EvidenceRefId,
 ) -> Result<Option<EvidenceRefRecord>, JournalError> {
     let result = connection.query_row(
-        "SELECT * FROM evidence_refs
-         WHERE tenant_id = ?1 AND evidence_ref_id = ?2",
+        "SELECT refs.* FROM evidence_refs AS refs
+         WHERE refs.tenant_id = ?1 AND refs.evidence_ref_id = ?2
+         AND NOT EXISTS (
+            SELECT 1 FROM evidence_ref_deleted_conversations AS deleted
+            WHERE deleted.tenant_id = refs.tenant_id
+            AND deleted.conversation_id = refs.conversation_id
+         )",
         rusqlite::params![tenant.to_string(), id.to_string()],
         SqliteEvidenceRefRegistry::row_to_record,
     );
@@ -1063,6 +1205,71 @@ fn get_sqlite_record(
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(error) => Err(journal_sqlite_error(error)),
     }
+}
+
+#[cfg(feature = "sqlite")]
+fn get_sqlite_record_from_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    tenant: TenantId,
+    id: &EvidenceRefId,
+) -> Result<Option<EvidenceRefRecord>, JournalError> {
+    let result = transaction.query_row(
+        "SELECT refs.* FROM evidence_refs AS refs
+         WHERE refs.tenant_id = ?1 AND refs.evidence_ref_id = ?2
+         AND NOT EXISTS (
+            SELECT 1 FROM evidence_ref_deleted_conversations AS deleted
+            WHERE deleted.tenant_id = refs.tenant_id
+            AND deleted.conversation_id = refs.conversation_id
+         )",
+        rusqlite::params![tenant.to_string(), id.to_string()],
+        SqliteEvidenceRefRegistry::row_to_record,
+    );
+    match result {
+        Ok(record) => Ok(Some(record)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(journal_sqlite_error(error)),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn list_sqlite_records_for_deleted_conversation(
+    transaction: &rusqlite::Transaction<'_>,
+    tenant: TenantId,
+    conversation_id: &str,
+) -> Result<Vec<EvidenceRefRecord>, JournalError> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT * FROM evidence_refs
+             WHERE tenant_id = ?1 AND conversation_id = ?2
+             ORDER BY created_at ASC, evidence_ref_id ASC",
+        )
+        .map_err(journal_sqlite_error)?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![tenant.to_string(), conversation_id],
+            SqliteEvidenceRefRegistry::row_to_record,
+        )
+        .map_err(journal_sqlite_error)?;
+    collect_sqlite_records(rows)
+}
+
+#[cfg(feature = "sqlite")]
+fn sqlite_conversation_deleted(
+    transaction: &rusqlite::Transaction<'_>,
+    tenant: TenantId,
+    conversation_id: &str,
+) -> Result<bool, JournalError> {
+    let deleted = transaction
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM evidence_ref_deleted_conversations
+                WHERE tenant_id = ?1 AND conversation_id = ?2
+             )",
+            rusqlite::params![tenant.to_string(), conversation_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(journal_sqlite_error)?;
+    Ok(deleted != 0)
 }
 
 #[cfg(feature = "sqlite")]

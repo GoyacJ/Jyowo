@@ -104,6 +104,11 @@ export function DiffPane({
                 />
               ) : null}
               <CopyButton
+                label={
+                  selectedFile.fullPatchRef
+                    ? t('diff.copyFullPatch', 'Copy full patch')
+                    : t('diff.copyPreview', 'Copy diff preview')
+                }
                 disabled={copyingPatchRef === selectedFile.fullPatchRef}
                 onClick={() => void copySelectedFile()}
               />
@@ -232,11 +237,19 @@ function FetchPatchPageButton({
   )
 }
 
-function CopyButton({ disabled = false, onClick }: { disabled?: boolean; onClick: () => void }) {
+function CopyButton({
+  disabled = false,
+  label,
+  onClick,
+}: {
+  disabled?: boolean
+  label: string
+  onClick: () => void
+}) {
   return (
     <button
-      aria-label="Copy"
-      className="inline-flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+      aria-label={label}
+      className="inline-flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
       disabled={disabled}
       onClick={onClick}
       type="button"
@@ -248,10 +261,10 @@ function CopyButton({ disabled = false, onClick }: { disabled?: boolean; onClick
 
 function DiffStatusBadge({ status }: { status: ChangeSetFile['status'] }) {
   const colors: Record<string, string> = {
-    added: 'bg-green-100 text-green-800',
-    modified: 'bg-yellow-100 text-yellow-800',
-    deleted: 'bg-red-100 text-red-800',
-    renamed: 'bg-blue-100 text-blue-800',
+    added: 'bg-success/10 text-success',
+    modified: 'bg-warning/10 text-warning',
+    deleted: 'bg-destructive/10 text-destructive',
+    renamed: 'bg-info/10 text-info',
   }
   return (
     <span className={cn('ml-1 rounded px-1 py-0 text-[10px]', colors[status] ?? 'bg-muted')}>

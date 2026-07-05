@@ -34,4 +34,28 @@ describe('CommandEvidenceBlock', () => {
 
     expect(await screen.findByText('Copy failed')).toBeInTheDocument()
   })
+
+  it('renders and copies stderr preview when stdout preview is absent', () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+
+    render(
+      <CommandEvidenceBlock
+        execution={commandDetail({
+          command: 'cargo test',
+          stderrPreview: 'compile error',
+          stdoutPreview: undefined,
+        })}
+      />,
+    )
+
+    expect(screen.getByText('compile error')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy output' }))
+
+    expect(writeText).toHaveBeenCalledWith('compile error')
+  })
 })

@@ -122,6 +122,62 @@ impl FileBlobStore {
     }
 }
 
+impl FileBlobStore {
+    fn put_with_id(
+        &self,
+        tenant: TenantId,
+        id: BlobId,
+        bytes: Bytes,
+        meta: BlobMeta,
+    ) -> Result<BlobRef, BlobError> {
+        let (body, meta_path) = self.paths(tenant, id);
+        if let Some(dir) = body.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let body_temp = body.with_extension("bin.tmp");
+        let meta_temp = meta_path.with_extension("json.tmp");
+
+        let result = (|| {
+            fs::write(&body_temp, &bytes)?;
+            fs::rename(&body_temp, &body)?;
+            fs::write(&meta_temp, serde_json::to_vec(&meta).map_err(blob_error)?)?;
+            fs::rename(&meta_temp, &meta_path)?;
+            Ok(BlobRef {
+                id,
+                size: meta.size,
+                content_hash: meta.content_hash,
+                content_type: meta.content_type,
+            })
+        })();
+
+        match result {
+            Ok(blob_ref) => Ok(blob_ref),
+            Err(error) => {
+                let cleanup_error =
+                    cleanup_blob_write_paths([&body_temp, &meta_temp, &body, &meta_path]);
+                if let Some(cleanup_error) = cleanup_error {
+                    return Err(BlobError::Backend(format!(
+                        "blob write failed: {error}; cleanup failed: {cleanup_error}"
+                    )));
+                }
+                Err(error)
+            }
+        }
+    }
+}
+
+fn cleanup_blob_write_paths<const N: usize>(paths: [&Path; N]) -> Option<BlobError> {
+    let mut cleanup_error = None;
+    for path in paths {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => cleanup_error = Some(BlobError::from(error)),
+        }
+    }
+    cleanup_error
+}
+
 #[async_trait]
 impl BlobStore for FileBlobStore {
     fn store_id(&self) -> &str {
@@ -145,23 +201,7 @@ impl BlobStore for FileBlobStore {
                 });
             }
         }
-        let id = BlobId::new();
-        let (body, meta_path) = self.paths(tenant, id);
-        if let Some(dir) = body.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let body_temp = body.with_extension("bin.tmp");
-        let meta_temp = meta_path.with_extension("json.tmp");
-        fs::write(&body_temp, &bytes)?;
-        fs::rename(&body_temp, &body)?;
-        fs::write(&meta_temp, serde_json::to_vec(&meta).map_err(blob_error)?)?;
-        fs::rename(&meta_temp, &meta_path)?;
-        Ok(BlobRef {
-            id,
-            size: meta.size,
-            content_hash: meta.content_hash,
-            content_type: meta.content_type,
-        })
+        self.put_with_id(tenant, BlobId::new(), bytes, meta)
     }
 
     async fn get(
@@ -317,6 +357,63 @@ impl BlobStore for InMemoryBlobStore {
     async fn delete(&self, tenant: TenantId, blob: &BlobRef) -> Result<(), BlobError> {
         self.blobs.lock().await.remove(&(tenant, blob.id));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "jyowo-file-blob-store-{name}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ))
+    }
+
+    fn blob_payload_files(root: &Path) -> Vec<PathBuf> {
+        let Ok(entries) = fs::read_dir(root) else {
+            return Vec::new();
+        };
+        let mut files = Vec::new();
+        for entry in entries {
+            let path = entry.expect("blob root entry reads").path();
+            if path.is_dir() {
+                files.extend(blob_payload_files(&path));
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.ends_with(".bin") || name.ends_with(".tmp") || name.ends_with(".meta.json") {
+                files.push(path);
+            }
+        }
+        files
+    }
+
+    #[tokio::test]
+    async fn file_blob_store_put_cleans_body_when_meta_rename_fails() {
+        let root = temp_root("meta-rename-failure");
+        let store = FileBlobStore::open(&root).expect("blob store opens");
+        let id = BlobId::new();
+        let bytes = Bytes::from_static(b"partial write must not remain");
+        let meta = BlobMeta {
+            content_type: Some("text/plain".to_owned()),
+            size: bytes.len() as u64,
+            content_hash: *blake3::hash(&bytes).as_bytes(),
+            created_at: chrono::Utc::now(),
+            retention: BlobRetention::TenantScoped,
+        };
+        let (_, meta_path) = store.paths(TenantId::SINGLE, id);
+        std::fs::create_dir_all(&meta_path).expect("blocking meta destination exists");
+
+        store
+            .put_with_id(TenantId::SINGLE, id, bytes, meta)
+            .expect_err("meta rename failure rejects write");
+
+        assert!(blob_payload_files(&root).is_empty());
     }
 }
 

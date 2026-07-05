@@ -37,4 +37,10 @@ describe('ToolInvocationCard', () => {
 
     expect(onClick).toHaveBeenCalledTimes(1)
   })
+
+  it('uses semantic status token classes instead of hardcoded product colors', () => {
+    render(<ToolInvocationCard attempt={toolAttempt({ status: 'completed' })} />)
+
+    expect(screen.getByText('completed')).toHaveClass('bg-success/10', 'text-success')
+  })
 })

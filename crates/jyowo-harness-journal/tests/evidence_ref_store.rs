@@ -3,6 +3,7 @@
 use harness_contracts::*;
 use harness_journal::evidence::*;
 use harness_journal::{FileBlobStore, InMemoryBlobStore, RetentionEnforcer};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -62,6 +63,27 @@ fn temp_root(name: &str) -> std::path::PathBuf {
     std::env::temp_dir()
         .join("jyowo-evidence-ref-tests")
         .join(unique)
+}
+
+fn blob_payload_files(root: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry.expect("blob root entry reads").path();
+        if path.is_dir() {
+            files.extend(blob_payload_files(&path));
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.ends_with(".bin") || name.ends_with(".tmp") || name.ends_with(".meta.json") {
+            files.push(path);
+        }
+    }
+    files
 }
 
 #[tokio::test]
@@ -134,10 +156,11 @@ async fn delete_for_conversation_removes_all() {
         .await
         .unwrap();
 
-    registry
+    let deleted = registry
         .delete_for_conversation(TenantId::SINGLE, "conv-1")
         .await
         .unwrap();
+    assert_eq!(deleted.len(), 2);
 
     assert!(registry
         .get(TenantId::SINGLE, &EvidenceRefId::new("ref-1"))
@@ -155,6 +178,31 @@ async fn delete_for_conversation_removes_all() {
         .await
         .unwrap()
         .is_some());
+}
+
+#[tokio::test]
+async fn delete_for_conversation_blocks_late_registry_insert() {
+    let registry = Arc::new(InMemoryEvidenceRefRegistry::new());
+
+    registry
+        .delete_for_conversation(TenantId::SINGLE, "conv-deleted")
+        .await
+        .expect("conversation evidence invalidates");
+
+    let error = registry
+        .insert(
+            TenantId::SINGLE,
+            make_record("ref-late", "conv-deleted", EvidenceRefKind::CommandOutput),
+        )
+        .await
+        .expect_err("late evidence write is rejected");
+
+    assert!(error.to_string().contains("deleted conversation"));
+    assert!(registry
+        .list_for_conversation(TenantId::SINGLE, "conv-deleted")
+        .await
+        .expect("registry lists")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -551,6 +599,109 @@ async fn file_blob_store_blob_evidence_write_is_idempotent_for_same_ref() {
     assert_eq!(records[0].id, record.id);
 }
 
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_deleted_conversation_blocks_late_insert_after_restart() {
+    let root = temp_root("sqlite-deleted-conversation");
+    let registry_path = root.join("evidence.sqlite");
+
+    let registry = harness_journal::SqliteEvidenceRefRegistry::open(&registry_path)
+        .await
+        .expect("registry opens");
+    registry
+        .delete_for_conversation(TenantId::SINGLE, "conv-deleted")
+        .await
+        .expect("conversation evidence invalidates");
+    drop(registry);
+
+    let restarted = harness_journal::SqliteEvidenceRefRegistry::open(&registry_path)
+        .await
+        .expect("registry reopens");
+    let error = restarted
+        .insert(
+            TenantId::SINGLE,
+            make_record(
+                "ref-late-sqlite",
+                "conv-deleted",
+                EvidenceRefKind::CommandOutput,
+            ),
+        )
+        .await
+        .expect_err("late evidence write is rejected after restart");
+
+    assert!(error.to_string().contains("deleted conversation"));
+    assert!(restarted
+        .list_for_conversation(TenantId::SINGLE, "conv-deleted")
+        .await
+        .expect("registry lists")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn store_blob_evidence_after_deleted_conversation_removes_orphan_blob() {
+    let root = temp_root("deleted-conversation-orphan");
+    let registry = Arc::new(InMemoryEvidenceRefRegistry::new());
+    let blob_root = root.join("blobs");
+    let blob_store = Arc::new(FileBlobStore::open(&blob_root).expect("blob store opens"));
+    let store = EvidenceRefStore::new(registry.clone(), blob_store.clone());
+    let bytes = b"late output".to_vec();
+    let record = blob_record("ref-late-blob", "conv-deleted", &bytes);
+
+    registry
+        .delete_for_conversation(TenantId::SINGLE, "conv-deleted")
+        .await
+        .expect("conversation evidence invalidates");
+
+    let error = store
+        .store_blob_evidence(TenantId::SINGLE, record, bytes)
+        .await
+        .expect_err("late blob evidence write is rejected");
+
+    assert!(error.to_string().contains("deleted conversation"));
+    assert!(blob_payload_files(&blob_root).is_empty());
+}
+
+#[tokio::test]
+async fn delete_for_conversation_deletes_all_registry_returned_blobs() {
+    let root = temp_root("delete-all-returned");
+    let blob_root = root.join("blobs");
+    let registry = Arc::new(InMemoryEvidenceRefRegistry::new());
+    let blob_store = Arc::new(FileBlobStore::open(&blob_root).expect("blob store opens"));
+    let initial_bytes = b"initial output".to_vec();
+    let initial_record = blob_record("ref-delete-initial", "conv-1", &initial_bytes);
+    let second_bytes = b"second output".to_vec();
+    let second_record = blob_record("ref-delete-second", "conv-1", &second_bytes);
+    let store = EvidenceRefStore::new(registry.clone(), blob_store.clone());
+
+    store
+        .store_blob_evidence(TenantId::SINGLE, initial_record, initial_bytes)
+        .await
+        .expect("initial evidence stores");
+    store
+        .store_blob_evidence(TenantId::SINGLE, second_record, second_bytes)
+        .await
+        .expect("second evidence stores");
+    assert_eq!(
+        blob_store
+            .inventory(TenantId::SINGLE)
+            .expect("inventory reads")
+            .len(),
+        2
+    );
+
+    store
+        .delete_for_conversation(TenantId::SINGLE, "conv-1")
+        .await
+        .expect("conversation evidence deletes");
+
+    assert!(registry
+        .list_for_conversation(TenantId::SINGLE, "conv-1")
+        .await
+        .expect("registry lists")
+        .is_empty());
+    assert!(blob_payload_files(&blob_root).is_empty());
+}
+
 #[tokio::test]
 async fn read_rejects_hash_mismatch_from_blob_store() {
     let registry = Arc::new(InMemoryEvidenceRefRegistry::new());
@@ -748,6 +899,43 @@ async fn delete_for_conversation_removes_registry_row_when_blob_delete_fails() {
 }
 
 #[tokio::test]
+async fn delete_for_conversation_can_retry_blob_delete_after_failure() {
+    let registry = Arc::new(InMemoryEvidenceRefRegistry::new());
+    let blob_store = Arc::new(FailOnceDeleteBlobStore::default());
+    let store = EvidenceRefStore::new(registry.clone(), blob_store.clone());
+    let bytes = b"retryable output".to_vec();
+    let record = blob_record("ref-delete-retry", "conv-1", &bytes);
+
+    store
+        .store_blob_evidence(TenantId::SINGLE, record.clone(), bytes)
+        .await
+        .expect("evidence stores before delete failure");
+
+    store
+        .delete_for_conversation(TenantId::SINGLE, "conv-1")
+        .await
+        .expect_err("first blob delete failure rejects conversation evidence delete");
+
+    assert!(registry
+        .get(TenantId::SINGLE, &record.id)
+        .await
+        .expect("registry reads after failed delete")
+        .is_none());
+
+    store
+        .delete_for_conversation(TenantId::SINGLE, "conv-1")
+        .await
+        .expect("retry deletes hidden blob refs and purges registry rows");
+
+    assert_eq!(blob_store.delete_attempts.load(Ordering::SeqCst), 2);
+    store
+        .delete_for_conversation(TenantId::SINGLE, "conv-1")
+        .await
+        .expect("purged delete is idempotent");
+    assert_eq!(blob_store.delete_attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn gc_keeps_live_evidence_blobs_and_deletes_dead_blobs() {
     let root = temp_root("gc");
     let registry = Arc::new(InMemoryEvidenceRefRegistry::new());
@@ -873,6 +1061,12 @@ struct DeleteFailingBlobStore {
     inner: InMemoryBlobStore,
 }
 
+#[derive(Default)]
+struct FailOnceDeleteBlobStore {
+    inner: InMemoryBlobStore,
+    delete_attempts: AtomicUsize,
+}
+
 struct ChunkCountingBlobStore {
     blob_ref: BlobRef,
     bytes: Vec<u8>,
@@ -961,5 +1155,40 @@ impl BlobStore for DeleteFailingBlobStore {
 
     async fn delete(&self, _tenant: TenantId, _blob: &BlobRef) -> Result<(), BlobError> {
         Err(BlobError::Backend("forced delete failure".to_owned()))
+    }
+}
+
+#[async_trait]
+impl BlobStore for FailOnceDeleteBlobStore {
+    fn store_id(&self) -> &str {
+        "fail-once-delete-memory"
+    }
+
+    async fn put(
+        &self,
+        tenant: TenantId,
+        bytes: Bytes,
+        meta: BlobMeta,
+    ) -> Result<BlobRef, BlobError> {
+        self.inner.put(tenant, bytes, meta).await
+    }
+
+    async fn get(
+        &self,
+        tenant: TenantId,
+        blob: &BlobRef,
+    ) -> Result<BoxStream<'static, Bytes>, BlobError> {
+        self.inner.get(tenant, blob).await
+    }
+
+    async fn head(&self, tenant: TenantId, blob: &BlobRef) -> Result<Option<BlobMeta>, BlobError> {
+        self.inner.head(tenant, blob).await
+    }
+
+    async fn delete(&self, tenant: TenantId, blob: &BlobRef) -> Result<(), BlobError> {
+        if self.delete_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(BlobError::Backend("forced first delete failure".to_owned()));
+        }
+        self.inner.delete(tenant, blob).await
     }
 }

@@ -1,3 +1,5 @@
+import '@testing-library/jest-dom/vitest'
+
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { DecisionRequestState } from '@/shared/tauri/commands'
@@ -65,11 +67,57 @@ describe('DecisionPanel', () => {
   })
 
   it('shows deny button without requiring option selection', () => {
-    const decision = makeDecision()
+    const decision = makeDecision({
+      decisionOptions: [
+        {
+          id: 'deny-1',
+          decision: 'deny',
+          label: 'Deny this command',
+          lifetime: 'once',
+          matcher: { kind: 'exactCommand', label: 'cargo test' },
+          requiresConfirmation: false,
+        },
+      ],
+    })
     render(<DecisionPanel conversationId="conv-1" decision={decision} />)
     const denyButton = screen.getByRole('button', { name: /deny/i })
     expect(denyButton).toBeDefined()
     expect(denyButton.hasAttribute('disabled')).toBe(false)
+  })
+
+  it('submits the backend-issued deny option id', () => {
+    const onResolve = vi.fn()
+    const decision = makeDecision({
+      decisionOptions: [
+        {
+          id: 'deny-1',
+          decision: 'deny',
+          label: 'Deny this command',
+          lifetime: 'once',
+          matcher: { kind: 'exactCommand', label: 'cargo test' },
+          requiresConfirmation: false,
+        },
+      ],
+    })
+    render(<DecisionPanel conversationId="conv-1" decision={decision} onResolve={onResolve} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /deny/i }))
+
+    expect(onResolve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conv-1',
+        requestId: 'req-1',
+        decision: 'deny',
+        optionId: 'deny-1',
+      }),
+    )
+  })
+
+  it('does not expose a deny action without a backend-issued deny option id', () => {
+    const decision = makeDecision()
+    render(<DecisionPanel conversationId="conv-1" decision={decision} />)
+
+    expect(screen.queryByRole('button', { name: /deny/i })).not.toBeInTheDocument()
   })
 
   it('calls onResolve with selected optionId on approve', () => {
@@ -117,5 +165,12 @@ describe('DecisionPanel', () => {
     render(<DecisionPanel conversationId="conv-1" decision={decision} />)
     const liveRegion = screen.getByRole('status')
     expect(liveRegion).toBeDefined()
+  })
+
+  it('uses semantic risk token classes instead of hardcoded product colors', () => {
+    const decision = makeDecision({ riskLevel: 'medium' })
+    render(<DecisionPanel conversationId="conv-1" decision={decision} />)
+
+    expect(screen.getByText('Medium')).toHaveClass('bg-warning/10', 'text-warning')
   })
 })

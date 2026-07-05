@@ -70,7 +70,10 @@ describe('DiffPane', () => {
       exportConversationEvidence,
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    const copyButton = screen.getByRole('button', { name: 'Copy full patch' })
+    expect(copyButton).toHaveClass('focus-visible:ring-2')
+
+    fireEvent.click(copyButton)
 
     await waitFor(() =>
       expect(getConversationDiffPatch).toHaveBeenCalledWith({
@@ -102,5 +105,11 @@ describe('DiffPane', () => {
       }),
     )
     expect(await screen.findByText('Failed to load patch page')).toBeInTheDocument()
+  })
+
+  it('uses semantic file status token classes instead of hardcoded product colors', () => {
+    renderDiffPane()
+
+    expect(screen.getByText('modified')).toHaveClass('bg-warning/10', 'text-warning')
   })
 })

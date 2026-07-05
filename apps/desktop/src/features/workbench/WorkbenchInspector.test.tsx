@@ -282,7 +282,7 @@ describe('WorkbenchInspector', () => {
       expect(screen.getByText('+ render real inspector pane')).toBeInTheDocument()
       expect(screen.queryByText('File changes and patch details.')).not.toBeInTheDocument()
 
-      fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Copy full patch' }))
 
       await waitFor(() =>
         expect(getConversationDiffPatch).toHaveBeenCalledWith({

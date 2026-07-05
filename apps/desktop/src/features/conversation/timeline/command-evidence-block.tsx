@@ -7,7 +7,11 @@ import type { CommandExecution } from '@/shared/tauri/commands'
 export function CommandEvidenceBlock({ execution }: { execution: CommandExecution }) {
   const { t } = useTranslation('conversation')
   const [copyFailed, setCopyFailed] = useState(false)
-  const output = execution.redactionState === 'withheld' ? null : (execution.stdoutPreview ?? null)
+  const previewOutput = [execution.stdoutPreview, execution.stderrPreview]
+    .filter(Boolean)
+    .join('\n')
+  const output =
+    execution.redactionState === 'withheld' || previewOutput.length === 0 ? null : previewOutput
 
   const copyText = async (text: string) => {
     try {

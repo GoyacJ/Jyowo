@@ -21,6 +21,8 @@ export function DecisionPanel({
   const [confirmationText, setConfirmationText] = useState('')
   const canResolve = decision.status === 'pending' || decision.status === 'failed'
   const isSubmitting = decision.status === 'submitting'
+  const approveOptions = decision.decisionOptions.filter((option) => option.decision === 'approve')
+  const denyOption = decision.decisionOptions.find((option) => option.decision === 'deny')
 
   const riskLabel = t(`timeline.riskLevel.${decision.riskLevel}`)
   const operationLabel = t(`timeline.operation.${decision.operation}`)
@@ -60,12 +62,12 @@ export function DecisionPanel({
       </div>
 
       {/* Decision options */}
-      {canResolve && decision.decisionOptions.length > 0 ? (
+      {canResolve && approveOptions.length > 0 ? (
         <div className="grid gap-2">
           <span className="text-muted-foreground text-xs">
             {t('timeline.selectApprovalOption')}
           </span>
-          {decision.decisionOptions.map((option) => (
+          {approveOptions.map((option) => (
             <DecisionOptionButton
               key={option.id}
               option={option}
@@ -97,23 +99,24 @@ export function DecisionPanel({
       {/* Action buttons */}
       {canResolve ? (
         <div className="flex gap-2">
-          <button
-            aria-label={t('timeline.deny')}
-            className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-background focus-visible:ring-2 focus-visible:ring-ring"
-            disabled={isSubmitting}
-            onClick={() => {
-              const denyOption = decision.decisionOptions.find((o) => o.decision === 'deny')
-              onResolve?.({
-                conversationId,
-                requestId: decision.requestId,
-                decision: 'deny',
-                optionId: denyOption?.id ?? '',
-              })
-            }}
-            type="button"
-          >
-            {t('timeline.deny')}
-          </button>
+          {denyOption ? (
+            <button
+              aria-label={t('timeline.deny')}
+              className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-background focus-visible:ring-2 focus-visible:ring-ring"
+              disabled={isSubmitting}
+              onClick={() => {
+                onResolve?.({
+                  conversationId,
+                  requestId: decision.requestId,
+                  decision: 'deny',
+                  optionId: denyOption.id,
+                })
+              }}
+              type="button"
+            >
+              {t('timeline.deny')}
+            </button>
+          ) : null}
           <button
             aria-label={t('timeline.approve')}
             className="rounded-md bg-primary px-3 py-1.5 text-primary-foreground text-xs focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
@@ -143,7 +146,7 @@ export function DecisionPanel({
             {selectedOptionId
               ? t('timeline.approveWithOption', {
                   label:
-                    decision.decisionOptions.find((o) => o.id === selectedOptionId)?.label ??
+                    approveOptions.find((option) => option.id === selectedOptionId)?.label ??
                     t('timeline.approve'),
                 })
               : t('timeline.approve')}
@@ -197,10 +200,10 @@ function DecisionOptionButton({
 
 function RiskBadge({ level, label }: { level: string; label: string }) {
   const colors: Record<string, string> = {
-    low: 'bg-green-100 text-green-800',
-    medium: 'bg-yellow-100 text-yellow-800',
-    high: 'bg-orange-100 text-orange-800',
-    critical: 'bg-red-100 text-red-800',
+    low: 'bg-success/10 text-success',
+    medium: 'bg-warning/10 text-warning',
+    high: 'bg-warning/10 text-warning',
+    critical: 'bg-destructive/10 text-destructive',
   }
   return (
     <span className={cn('rounded px-1.5 py-0.5 font-medium text-xs', colors[level] ?? 'bg-muted')}>

@@ -83,11 +83,11 @@ export function ToolInvocationCard({
 function ToolStatusBadge({ status, label }: { status: ToolAttempt['status']; label: string }) {
   const colors: Record<string, string> = {
     queued: 'bg-muted text-muted-foreground',
-    waitingPermission: 'bg-yellow-100 text-yellow-800',
-    running: 'bg-blue-100 text-blue-800',
-    completed: 'bg-green-100 text-green-800',
-    failed: 'bg-red-100 text-red-800',
-    denied: 'bg-red-100 text-red-800',
+    waitingPermission: 'bg-warning/10 text-warning',
+    running: 'bg-info/10 text-info',
+    completed: 'bg-success/10 text-success',
+    failed: 'bg-destructive/10 text-destructive',
+    denied: 'bg-destructive/10 text-destructive',
   }
   return (
     <span

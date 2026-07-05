@@ -5,11 +5,11 @@
 | Layer | Count |
 |---|---|
 | Frontend Vitest files | 73 |
-| Frontend Vitest test cases | 643 |
+| Frontend Vitest test cases | 649 |
 | Storybook files | 19 |
 | Playwright spec files | 4 |
 | Rust test files | 321 |
-| Rust `#[test]` / `#[tokio::test]` count | 2270 |
+| Rust `#[test]` / `#[tokio::test]` count | 2275 |
 | Script policy test files | 8 |
 
 ## Largest Test Files by Line Count
@@ -28,6 +28,7 @@
 | crates/jyowo-harness-team/tests/team_e2e.rs | 1388 | rust |
 | crates/jyowo-harness-plugin/tests/sources.rs | 1273 | rust |
 | crates/jyowo-harness-session/tests/run_turn.rs | 1198 | rust |
+| crates/jyowo-harness-journal/tests/evidence_ref_store.rs | 1195 | rust |
 | apps/desktop/src-tauri/tests/commands/provider_routes.rs | 1174 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_support/mod.rs | 1174 | rust |
 | crates/jyowo-harness-subagent/tests/default_runner.rs | 1171 | rust |
@@ -45,7 +46,6 @@
 | crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs | 1062 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_tools.rs | 1059 | rust |
 | crates/jyowo-harness-subagent/tests/permission_bridge.rs | 1059 | rust |
-| crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs | 1055 | rust |
 
 ## Files Over 1200 Lines (hard fail)
 
@@ -64,6 +64,7 @@
 ## Files Over 800 Lines (warning)
 
 - crates/jyowo-harness-session/tests/run_turn.rs (1198 lines)
+- crates/jyowo-harness-journal/tests/evidence_ref_store.rs (1195 lines)
 - apps/desktop/src-tauri/tests/commands/provider_routes.rs (1174 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_support/mod.rs (1174 lines)
 - crates/jyowo-harness-subagent/tests/default_runner.rs (1171 lines)
@@ -87,7 +88,6 @@
 - crates/jyowo-harness-journal/tests/conversation_workbench_projection.rs (977 lines)
 - crates/jyowo-harness-team/tests/routing.rs (977 lines)
 - apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx (974 lines)
-- crates/jyowo-harness-journal/tests/evidence_ref_store.rs (966 lines)
 - crates/jyowo-harness-tool/tests/registry_pool.rs (940 lines)
 - crates/jyowo-harness-sandbox/tests/local.rs (933 lines)
 - crates/jyowo-harness-engine/tests/interrupt.rs (931 lines)
