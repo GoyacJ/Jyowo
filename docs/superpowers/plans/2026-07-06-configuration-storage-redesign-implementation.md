@@ -123,6 +123,7 @@ Target global root:
     execution-defaults.json
     mcp-presets.json
     agent-profiles.json
+    skills.json
   skills/
     index.json
     packages/
@@ -206,7 +207,8 @@ Execution overrides                -> project config
 Run explicit execution params      -> run request only
 Global skills                      -> global skills
 Project-private skills             -> project skills
-Enabled skill selection            -> project config
+Global enabled skill selection     -> global config
+Project enabled skill selection    -> project config
 MCP presets                        -> global config
 MCP custom/enabled servers         -> project config
 Global plugin packages             -> global plugins
@@ -797,6 +799,7 @@ Tests must assert:
 ~/.jyowo/config/execution-defaults.json
 ~/.jyowo/config/mcp-presets.json
 ~/.jyowo/config/agent-profiles.json
+~/.jyowo/config/skills.json
 ```
 
 Tests must assert secret file writes use owner-only permissions on Unix.
@@ -821,6 +824,8 @@ load_mcp_presets()
 save_mcp_presets()
 load_global_agent_profiles()
 save_global_agent_profiles()
+load_global_skill_selection()
+save_global_skill_selection()
 ```
 
 Provider secret metadata returns only redacted fields and `hasSecret`.
@@ -909,6 +914,9 @@ Dispatch the required read-only subagent audit and security audit. Commit explic
 **Files:**
 
 - Modify: `apps/desktop/src-tauri/src/commands/providers.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/conversations.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/contracts.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/mod.rs`
 - Modify: `apps/desktop/src-tauri/src/commands/stores/mod.rs`
 - Modify or create project config store module
 - Modify contracts if provider settings DTOs live in `crates/jyowo-harness-contracts`
@@ -926,7 +934,7 @@ ProviderSettingsRecord.configs[*].id/displayName/providerId/modelId/protocol/bas
 ProviderSettingsRecord.configs[*].apiKey/officialQuotaApiKey -> global secret storage or keychain
 ```
 
-No-workspace conversations have no project selection layer. Their saved default model/profile selection resolves from `~/.jyowo/config/provider-selection.json` unless a run request supplies an explicit `model_config_id`.
+No-workspace conversations have no project selection layer. `StartRunRequest.model_config_id` must become optional at the IPC boundary. When omitted, Rust resolves the effective model/profile selection from `~/.jyowo/config/provider-selection.json` for no-workspace conversations and from `<workspace>/.jyowo/config/provider-selection.json` for workspace conversations. An explicit run request value always wins. Missing or invalid effective selection fails closed before conversation metadata is marked active.
 
 - [ ] **Step 2: Add failing tests for provider split**
 
@@ -940,7 +948,10 @@ project default model/profile selection persists in <workspace>/.jyowo/config/pr
 provider command list response never includes raw secret
 explicit reveal flow remains required for raw secret
 effective provider settings combine global profile + global secret availability + project selection
-no-workspace effective provider settings use global provider-selection.json when run params omit model_config_id
+start_run accepts omitted model_config_id and resolves workspace runs from project provider-selection.json
+start_run accepts omitted model_config_id and resolves no-workspace runs from global provider-selection.json
+explicit start_run model_config_id overrides saved project or global selection
+missing effective model selection fails closed before run activation
 old workspace provider-settings.json migrates deterministically into global profiles/secrets + project selection
 old workspace provider-settings.json does not seed global provider-selection.json
 two workspaces with identical profile id and identical non-secret fields reuse one migrated global profile
@@ -961,6 +972,8 @@ Target files:
 ```
 
 Global `provider-selection.json` owns no-workspace and global default model/profile selection. Project `provider-selection.json` owns project-specific default model/profile selection. Neither file stores raw keys.
+
+Update `StartRunRequest` and the Tauri `start_run` command args so `model_config_id` is optional. Resolve the effective model/profile id in Rust after parsing the conversation runtime scope and before any run activation. Frontend code may omit `modelConfigId`; it must not reimplement provider selection fallback rules.
 
 - [ ] **Step 4: Implement provider migration**
 
@@ -1126,6 +1139,8 @@ Dispatch the required read-only subagent audit and security audit. Commit explic
 **Files:**
 
 - Modify: `apps/desktop/src-tauri/src/commands/stores/skill.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/stores/mod.rs`
+- Modify or create project config store module for project skill selection
 - Modify: `apps/desktop/src-tauri/src/commands/runtime.rs`
 - Modify: `crates/jyowo-harness-skill/src/loader.rs` only if source merge behavior is insufficient
 - Modify: `crates/jyowo-harness-skill/src/sources/user.rs` only if global user source needs API adjustment
@@ -1142,10 +1157,12 @@ Tests must prove:
 ```text
 global skills store lives under ~/.jyowo/skills
 project skills store lives under <workspace>/.jyowo/skills
-enabled skill selection lives in <workspace>/.jyowo/config/skills.json
+global enabled skill selection lives in ~/.jyowo/config/skills.json
+project enabled skill selection lives in <workspace>/.jyowo/config/skills.json
 runtime loads global enabled skills and project enabled skills
 project skill id collision with global skill id is deterministic and reported
 disabled project selection prevents project loading
+disabled global selection prevents global loading
 old workspace runtime skills migrate to project-private skills by default
 old workspace runtime skills are not promoted to global skills automatically
 ```
@@ -1157,13 +1174,14 @@ Target files:
 ```text
 ~/.jyowo/skills/index.json
 ~/.jyowo/skills/packages/
+~/.jyowo/config/skills.json
 <workspace>/.jyowo/skills/packages/
 <workspace>/.jyowo/config/skills.json
 ```
 
 Do not keep `<workspace>/.jyowo/runtime/skills/` as a write target after migration.
 
-Use the migration framework from Task 4A. Global skills may only come from an existing user/global source; project runtime skills stay project-private unless there is explicit user intent outside this migration.
+Use the migration framework from Task 4A. Global skills may only come from an existing user/global source; project runtime skills stay project-private unless there is explicit user intent outside this migration. `~/.jyowo/skills/index.json` owns package metadata only. `~/.jyowo/config/skills.json` owns global enabled selection.
 
 - [ ] **Step 4: Wire runtime loading**
 
@@ -1552,6 +1570,7 @@ Tests must prove:
 
 ```text
 frontend validates new camelCase command responses with Zod
+startRunRequestSchema accepts omitted modelConfigId and preserves explicit modelConfigId when supplied
 settings screens show whether a setting is global, project, or runtime-derived
 project override UI never writes global defaults unless the command is explicitly global
 provider secret is never stored in frontend local store or React query cache except explicit reveal flow response
@@ -1562,7 +1581,7 @@ UI preferences continue to use the existing plugin-store local state and do not 
 
 - [ ] **Step 3: Update Tauri command schemas**
 
-Update `apps/desktop/src/shared/tauri/commands.ts` so command wrappers match backend payloads. Keep external payload validation in Zod.
+Update `apps/desktop/src/shared/tauri/commands.ts` so command wrappers match backend payloads. Keep external payload validation in Zod. `modelConfigId` is optional on `startRunRequestSchema`; explicit values still validate as non-empty strings.
 
 - [ ] **Step 4: Update settings UI**
 
@@ -1616,8 +1635,9 @@ no-workspace runtime root
 runtime layout object and per-conversation no-workspace cwd
 provider profile/secret ownership
 global and project model selection ownership
+start_run optional model_config_id and backend-owned effective selection resolution
 execution overlay rule
-skill/plugin global/project ownership
+skill/plugin global/project ownership and global/project enabled-selection ownership
 MCP preset/project server ownership
 automation config/run split
 agent profile global/project selection split
@@ -1636,6 +1656,7 @@ Document:
 React renders global/project/runtime scope labels from backend data
 React must not infer policy from paths
 Tauri command payloads remain Zod-validated
+startRunRequestSchema allows omitted modelConfigId because Rust resolves effective selection
 secrets stay out of frontend state except explicit reveal response
 non-sensitive UI preferences remain in `@tauri-apps/plugin-store`, not backend config
 ```
@@ -1776,12 +1797,14 @@ Provider profile definitions are global.
 Provider secrets are global and redacted from normal frontend/backend outputs.
 Global model selection exists for no-workspace/global defaults.
 Project model selection is project config.
+start_run accepts omitted model_config_id and resolves effective model selection in Rust.
 Execution settings use global defaults + project overrides + run explicit params.
 Provider routes are project config.
 Provider diagnostics and quota cache are runtime.
 Global skills exist and desktop runtime loads them.
 Project skills remain project-private.
-Enabled skill selection is project config.
+Global enabled skill selection is global config.
+Project enabled skill selection is project config.
 Global plugins exist.
 Project plugins remain project-private.
 Enabled plugin selection is project config.
