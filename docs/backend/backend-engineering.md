@@ -414,7 +414,7 @@ delete_provider_capability_route(
   provider_id: String
 ) -> Result<DeleteProviderCapabilityRouteResponse, CommandErrorPayload>
 delete_skill(id: String) -> Result<DeleteSkillResponse, CommandErrorPayload>
-export_memory_items() -> Result<ExportMemoryItemsResponse, CommandErrorPayload>
+export_memory_items(request: ExportMemoryItemsRequest) -> Result<ExportMemoryItemsResponse, CommandErrorPayload>
 export_support_bundle(
   conversation_id: Option<String>,
   run_id: Option<String>
@@ -771,14 +771,18 @@ Candidate approval and merge must be authorized by Rust policy before durable
 state changes. Delete and export operations must emit audit events that contain
 hashes and counts, not raw memory content.
 `export_memory_items` writes the JSON export under `.jyowo/runtime/exports` and
-returns only the relative path, item count, format, and timestamp over IPC; raw
-export content must not cross into frontend state.
+returns only the relative path, item count, format, flags, audit hash, and
+timestamp over IPC. Raw export requires explicit user action, Rust policy allow,
+provider raw-export support, and required audit emission. Export content must
+not cross into frontend state.
 
 The memory architecture policy gate runs in `pnpm check:backend-docs`. It fails
 production paths that return fake memory results, route runtime behavior through
-the old single external provider slot, store Memory state in production
-`Mutex<HashMap>`, keep static memory settings, bypass `min_similarity`, use
-`DREAMS.md` as runtime memory, or use frontend `as any` in Memory UI.
+the old single external provider slot, retain `external-slot` feature aliases,
+select production `InMemoryMemoryProvider`, store Memory state in production
+`Mutex<HashMap>`, keep static memory settings, bypass `min_similarity`, render
+label-only memory references, put raw content fields in memory trace contracts,
+use `DREAMS.md` as runtime memory, or use frontend `as any` in Memory UI.
 
 `list_agent_profiles`, `save_agent_profile`, and `delete_agent_profile` must go
 through the SDK agent-runtime facade and `jyowo-harness-agent-runtime` profile

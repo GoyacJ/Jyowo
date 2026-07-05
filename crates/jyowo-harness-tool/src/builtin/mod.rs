@@ -60,7 +60,8 @@ pub use grep::GrepTool;
 pub use list_dir::ListDirTool;
 #[cfg(feature = "builtin-toolset")]
 pub use memory::{
-    memory_tool_runtime_capability, MemoryTool, MemoryToolRuntimeCap, MemoryToolRuntimeRequest,
+    memory_tool_runtime_capability, MemoryTool, MemoryToolDraft, MemoryToolRuntimeAction,
+    MemoryToolRuntimeCap, MemoryToolRuntimeRequest, MemoryToolVisibility,
     MEMORY_TOOL_RUNTIME_CAPABILITY,
 };
 #[cfg(feature = "minimax-tools")]

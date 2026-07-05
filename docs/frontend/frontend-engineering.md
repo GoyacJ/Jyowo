@@ -865,11 +865,23 @@ delete_memory_item(id: string): {
   status: 'deleted'
 }
 
-export_memory_items(): {
+export_memory_items(request: {
+  explicitUserAction: boolean
+  format: 'json'
+  includeHashes: boolean
+  includeMetadata: boolean
+  includeRawContent: boolean
+  scope: 'visible'
+}): {
+  auditHash: string
   exportedAt: string
   format: 'json'
+  includeHashes: boolean
+  includeMetadata: boolean
+  includeRawContent: boolean
   itemCount: number
   path: string
+  scope: 'visible'
 }
 
 list_skills(): {
@@ -1022,8 +1034,12 @@ validated in `shared/tauri`, loaded through TanStack Query, and rendered with
 sanitized error text. Components must not render backend error bodies or raw
 audit event payloads. Memory export writes a JSON file under
 `.jyowo/runtime/exports` and returns only the relative `path`, `itemCount`,
-`format`, and `exportedAt`; export content must not be stored in frontend state
-or rendered into the DOM.
+`format`, flags, `auditHash`, and `exportedAt`; export content must not be
+stored in frontend state or rendered into the DOM. Composer may set thread
+memory mode, Memory UI may render item provider/expiry/deleted/last-access
+metadata, inbox merge controls, recall score breakdowns, and model request
+preview metadata, but Rust remains the authority for policy and payload
+assembly.
 
 Skill IPC payloads must be Zod validated in `shared/tauri`, loaded through
 TanStack Query, and rendered with sanitized error text. `list_skills` loads

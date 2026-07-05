@@ -153,6 +153,14 @@ pub mod agents_team {
                 .with_interactivity(request.engine_config.interactivity)
                 .with_budget_limits(team_member_budget_limits(&request.engine_config))
                 .with_cancellation(engine_cancellation);
+            #[cfg(feature = "memory-provider-registry")]
+            let ctx =
+                ctx.with_memory_thread_settings(Some(harness_contracts::MemoryThreadSettings {
+                    session_id: request.session_id,
+                    use_memories: None,
+                    generate_memories: None,
+                    memory_mode: request.engine_config.memory_mode,
+                }));
             let mut stream = self
                 .run_engine(&engine, session, request.input, ctx)
                 .await?;
@@ -280,9 +288,7 @@ pub mod agents_team {
             base.tool_pool()
                 .filtered(&member_tool_filter(&request.engine_config))
         };
-        let context = base
-            .context_engine()
-            .clone_with_budget(request.engine_config.token_budget);
+        let context = member_context_engine(&base, request)?;
         let mut builder = base
             .as_ref()
             .clone()
@@ -335,6 +341,32 @@ pub mod agents_team {
                 .max_cost_cents
                 .map(|cents| cents.saturating_mul(10_000)),
         })
+    }
+
+    fn member_context_engine(
+        base: &Engine,
+        request: &TeamMemberRunRequest,
+    ) -> Result<harness_context::ContextEngine, TeamError> {
+        #[cfg(feature = "memory-provider-registry")]
+        if let Some(shared_memory) = request.shared_memory.clone() {
+            if request.engine_config.memory_mode != harness_contracts::MemoryThreadMode::Off {
+                let provider: Arc<dyn harness_memory::MemoryProvider> = Arc::new(shared_memory);
+                let manager = base
+                    .context_engine()
+                    .memory_manager()
+                    .unwrap_or_else(|| Arc::new(harness_memory::MemoryManager::new()));
+                manager
+                    .register_provider(provider)
+                    .map_err(|error| TeamError::Journal(error.to_string()))?;
+                return Ok(base.context_engine().clone_with_budget_and_memory_manager(
+                    request.engine_config.token_budget,
+                    Some(manager),
+                ));
+            }
+        }
+        Ok(base
+            .context_engine()
+            .clone_with_budget(request.engine_config.token_budget))
     }
 
     fn coordinator_tool_pool(
@@ -621,6 +653,9 @@ pub mod agents_team {
             }
             TeamToolsetSelector::InheritAll | TeamToolsetSelector::Preset(_) => None,
         };
+        if matches!(config.memory_mode, harness_contracts::MemoryThreadMode::Off) {
+            denylist.insert("memory".to_owned());
+        }
         ToolPoolFilter {
             allowlist,
             denylist,
@@ -641,6 +676,31 @@ pub mod agents_team {
 
     fn team_error(error: impl std::fmt::Display) -> TeamError {
         TeamError::Journal(error.to_string())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn candidate_only_team_members_keep_memory_tool_available() {
+            let mut config = harness_team::TeamMemberEngineConfig::default();
+            config.memory_mode = harness_contracts::MemoryThreadMode::CandidateOnly;
+
+            let filter = member_tool_filter(&config);
+
+            assert!(!filter.denylist.contains("memory"));
+        }
+
+        #[test]
+        fn read_only_team_members_keep_memory_tool_available() {
+            let mut config = harness_team::TeamMemberEngineConfig::default();
+            config.memory_mode = harness_contracts::MemoryThreadMode::ReadOnly;
+
+            let filter = member_tool_filter(&config);
+
+            assert!(!filter.denylist.contains("memory"));
+        }
     }
 }
 

@@ -393,4 +393,11 @@ Service tools are exposed without an enabled capability route
 Routed service credentials fall back to the default provider profile
 Engine creates artifacts from tool-name or provider-name heuristics
 ```
-**Memory Platform:** Memory is auxiliary context below system, runtime policy, workspace instructions, and explicit user request. Memory is not a source of truth for current external facts. Memory settings and traces are displayed by frontend UI; memory policy decisions are owned by the Rust backend.
+**Memory Platform:** Memory is auxiliary context below system, runtime policy,
+workspace instructions, and explicit user request. Memory references hydrate
+through the Rust resolver and use the same untrusted-context fencing as recalled
+memory. Model request preview is built from the final redacted request assembly
+path. Memory is not a source of truth for current external facts. Memory
+settings, inbox, traces, and previews are displayed by frontend UI; memory
+policy decisions, export assembly, raw export permission, and audit emission are
+owned by the Rust backend.

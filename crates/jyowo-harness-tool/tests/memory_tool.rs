@@ -34,6 +34,10 @@ fn tool_descriptor_exposes_memory_tool_args_schema() {
     assert_eq!(desc.display_name, "Memory");
     // Tool belongs to Memory group
     assert!(matches!(desc.group, ToolGroup::Memory));
+    assert_eq!(
+        desc.input_schema,
+        serde_json::to_value(schemars::schema_for!(MemoryToolArgs)).unwrap()
+    );
 }
 
 #[test]
@@ -173,6 +177,38 @@ async fn memory_tool_fails_closed_without_runtime_capability() {
 }
 
 #[tokio::test]
+async fn memory_tool_plans_read_actions_as_policy_auto_and_writes_as_user_review() {
+    let tool = MemoryTool::default();
+    let ctx = tool_ctx(CapabilityRegistry::default());
+
+    for input in [
+        json!({ "action": "search", "query": "rust", "max_records": 2 }),
+        json!({ "action": "read", "memory_id": MEM_READ }),
+        json!({ "action": "list", "limit": 3 }),
+    ] {
+        tool.validate(&input, &ctx).await.unwrap();
+        let plan = tool.plan(&input, &ctx).await.unwrap();
+        assert_eq!(plan.severity, Severity::Info);
+    }
+
+    let draft = json!({
+        "kind": "project_fact",
+        "visibility": "tenant",
+        "content": "Memory tool uses runtime storage."
+    });
+    for input in [
+        json!({ "action": "create", "draft": draft.clone() }),
+        json!({ "action": "update", "memory_id": MEM_UPDATE, "draft": draft.clone() }),
+        json!({ "action": "delete", "memory_id": MEM_DELETE, "reason": "stale" }),
+        json!({ "action": "propose", "draft": draft }),
+    ] {
+        tool.validate(&input, &ctx).await.unwrap();
+        let plan = tool.plan(&input, &ctx).await.unwrap();
+        assert_eq!(plan.severity, Severity::Medium);
+    }
+}
+
+#[tokio::test]
 async fn memory_tool_delegates_read_actions_to_runtime() {
     let runtime = Arc::new(FakeMemoryRuntime::default());
     let ctx = tool_ctx(memory_caps(runtime.clone()));
@@ -279,6 +315,35 @@ async fn memory_tool_delegates_write_actions_to_runtime() {
 }
 
 #[tokio::test]
+async fn memory_tool_passes_context_memory_thread_settings_to_runtime() {
+    let runtime = Arc::new(FakeMemoryRuntime::default());
+    let mut ctx = tool_ctx(memory_caps(runtime.clone()));
+    ctx.memory_thread_settings = Some(MemoryThreadSettings {
+        session_id: ctx.session_id,
+        use_memories: None,
+        generate_memories: None,
+        memory_mode: MemoryThreadMode::ReadOnly,
+    });
+
+    execute_structured(
+        &MemoryTool::default(),
+        json!({
+            "action": "propose",
+            "draft": {
+                "kind": "project_fact",
+                "visibility": "tenant",
+                "content": "candidate"
+            }
+        }),
+        ctx,
+    )
+    .await;
+
+    let modes = runtime.memory_modes.lock().unwrap();
+    assert_eq!(modes.as_slice(), &[Some(MemoryThreadMode::ReadOnly)]);
+}
+
+#[tokio::test]
 async fn memory_tool_requires_update_id_and_draft_visibility() {
     let tool = MemoryTool::default();
     let ctx = tool_ctx(CapabilityRegistry::default());
@@ -318,6 +383,7 @@ async fn memory_tool_requires_update_id_and_draft_visibility() {
 #[derive(Default)]
 struct FakeMemoryRuntime {
     calls: Mutex<Vec<String>>,
+    memory_modes: Mutex<Vec<Option<MemoryThreadMode>>>,
 }
 
 #[async_trait]
@@ -333,6 +399,12 @@ impl MemoryToolRuntimeCap for FakeMemoryRuntime {
         );
         assert!(request.session_id.to_string().len() > 10);
         assert!(request.run_id.to_string().len() > 10);
+        self.memory_modes.lock().unwrap().push(
+            request
+                .memory_thread_settings
+                .as_ref()
+                .map(|settings| settings.memory_mode.clone()),
+        );
         match request.action {
             MemoryToolRuntimeAction::Search {
                 query, max_records, ..
@@ -517,6 +589,7 @@ fn tool_ctx_at(workspace_root: impl AsRef<Path>, cap_registry: CapabilityRegistr
         parent_run: None,
         model: None,
         model_config_id: None,
+        memory_thread_settings: None,
         actor_source: PermissionActorSource::ParentRun,
     }
 }

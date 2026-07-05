@@ -19,6 +19,8 @@ pub mod lifecycle;
 pub mod local;
 #[cfg(feature = "builtin")]
 pub mod memdir;
+#[path = "memdir/fence.rs"]
+mod memory_fence;
 pub mod policy;
 pub mod recall_trace;
 pub mod reference;
@@ -31,16 +33,25 @@ pub mod types;
 
 #[cfg(feature = "provider-registry")]
 pub use external::*;
-pub use extraction::*;
+pub use extraction::{
+    ExtractedCandidate, ExtractedConsolidation, ExtractedConsolidationAction, ExtractionJob,
+    ExtractionJobConfig, ExtractionJobKind, ExtractionJobQueue, ExtractionJobState,
+    ExtractionMemoryKind, ExtractionOutput, ExtractionRunOutcome, ExtractionVisibility,
+    ExtractionWorker, ExtractionWorkerConfig, HeuristicMemoryExtractor, JobId, MemoryExtractor,
+};
 #[cfg(feature = "testing")]
 pub use in_memory::*;
 pub use inbox::*;
 pub use lifecycle::*;
-pub use local::*;
+pub use local::{LocalMemoryOptions, LocalMemoryProvider, MemoryEmbeddingProvider};
 #[cfg(feature = "builtin")]
 pub use memdir::*;
+pub use memory_fence::{
+    escape_for_fence, sanitize_context, wrap_memory_context, wrap_memory_reference_context,
+};
 pub use policy::*;
 pub use recall_trace::*;
+pub use reference::*;
 pub use registry::*;
 #[cfg(feature = "threat-scanner")]
 pub use scanner::*;

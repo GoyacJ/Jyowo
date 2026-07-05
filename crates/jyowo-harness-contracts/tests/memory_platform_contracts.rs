@@ -193,6 +193,9 @@ fn memory_candidate_roundtrip() {
         id: MemoryCandidateId::new(),
         tenant_id: new_tenant_id(),
         state: MemoryCandidateState::Proposed,
+        operation: MemoryCandidateOperation::Update {
+            memory_id: new_memory_id(),
+        },
         proposed_record: MemoryRecordDraft {
             kind: MemoryKind::Reference,
             visibility: MemoryVisibility::Tenant,
@@ -220,6 +223,7 @@ fn memory_candidate_roundtrip() {
     let json = serde_json::to_value(&candidate).expect("serialize");
     let back: MemoryCandidate = serde_json::from_value(json).expect("deserialize");
     assert_eq!(candidate.state, back.state);
+    assert_eq!(candidate.operation, back.operation);
 }
 
 // ── MemoryCandidateState ──
@@ -431,13 +435,13 @@ fn memory_tool_args_roundtrip() {
         action: MemoryToolAction::Search(MemorySearchRequest {
             query: "test query".to_owned(),
             max_records: 10,
-            visibility: Some(MemoryVisibility::User {
-                user_id: "u1".to_owned(),
-            }),
+            visibility: Some(MemoryToolVisibility::User),
             cursor: None,
         }),
     };
     let json = serde_json::to_value(&args).expect("serialize");
+    assert_eq!(json["action"], "search");
+    assert_eq!(json["query"], "test query");
     let back: MemoryToolArgs = serde_json::from_value(json).expect("deserialize");
     match back.action {
         MemoryToolAction::Search(req) => assert_eq!(req.query, "test query"),
@@ -461,6 +465,7 @@ fn memory_tool_request_fields() {
             actor: MemoryActor::User { user_label: None },
             permission_context: MemoryPermissionContext {
                 explicit_user_instruction: false,
+                include_raw_content: false,
                 action_plan_id: None,
                 authorization_ticket_id: None,
                 non_interactive_policy_grant: false,
@@ -481,14 +486,11 @@ fn memory_tool_request_fields() {
 #[test]
 fn memory_tool_all_actions_roundtrip() {
     let mem_id = new_memory_id();
-    let draft = MemoryRecordDraft {
+    let draft = MemoryToolDraft {
         kind: MemoryKind::UserPreference,
-        visibility: MemoryVisibility::User {
-            user_id: "u".to_owned(),
-        },
+        visibility: MemoryToolVisibility::User,
         content: "test".to_owned(),
         metadata: make_meta(),
-        expires_at: None,
     };
 
     let actions: Vec<MemoryToolAction> = vec![
@@ -647,11 +649,17 @@ fn memory_recall_trace_no_raw_content() {
 fn memory_provider_descriptor_roundtrip() {
     let desc = MemoryProviderDescriptor {
         provider_id: "local".to_owned(),
+        provider_kind: MemoryProviderKind::Local,
         priority: 100,
         trust_level: MemoryProviderTrust::BuiltIn,
+        tenant_scope: Some(TenantId::SINGLE),
+        workspace_scope: None,
+        durability: MemoryProviderDurability::Durable,
         readable: true,
         writable: true,
         allowed_visibility: vec![MemoryVisibilityClass::Private, MemoryVisibilityClass::User],
+        supports_evidence: true,
+        supports_raw_content_export: false,
         timeout_ms: 5000,
         max_records_per_recall: 50,
         max_chars_per_recall: 100_000,
@@ -842,6 +850,7 @@ fn ipc_memory_candidates_contracts_roundtrip() {
     let item = MemoryCandidateListItem {
         id: MemoryCandidateId::new(),
         state: MemoryCandidateState::Proposed,
+        operation: MemoryCandidateOperation::Create,
         proposed_record: MemoryRecordDraft {
             kind: MemoryKind::ProjectFact,
             visibility: MemoryVisibility::Tenant,
@@ -994,13 +1003,17 @@ fn ipc_model_request_preview_contracts_roundtrip() {
     let preview = MemoryModelRequestPreview {
         session_id: new_session_id(),
         run_id: new_run_id(),
+        trace_id: Some(MemoryTraceId::new()),
         sections: vec![MemoryModelRequestPreviewSection {
             source: MemorySource::UserInput,
             provider_id: Some("local".to_owned()),
             memory_ids: vec![new_memory_id()],
             redacted_content: "redacted preview".to_owned(),
         }],
-        redacted_count: 0,
+        redacted_count: 1,
+        token_estimate: 4,
+        tool_names: vec!["memory".to_owned()],
+        policy_decisions: vec!["Allow".to_owned()],
         content_hash: ContentHash([12u8; 32]),
     };
     let resp = GetModelRequestPreviewResponse { preview };
@@ -1065,6 +1078,7 @@ fn memory_tool_record_view_fields() {
 fn memory_permission_context_roundtrip() {
     let ctx = MemoryPermissionContext {
         explicit_user_instruction: true,
+        include_raw_content: true,
         action_plan_id: Some(ActionPlanId::new()),
         authorization_ticket_id: Some(AuthorizationTicketId::new()),
         non_interactive_policy_grant: false,
@@ -1072,6 +1086,7 @@ fn memory_permission_context_roundtrip() {
     let json = serde_json::to_value(&ctx).unwrap();
     let back: MemoryPermissionContext = serde_json::from_value(json).unwrap();
     assert!(back.explicit_user_instruction);
+    assert!(back.include_raw_content);
 }
 
 // ── New ID types ──

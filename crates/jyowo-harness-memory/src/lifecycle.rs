@@ -14,8 +14,11 @@ pub trait MemoryEventSink: Send + Sync + 'static {
     async fn emit(&self, event: Event);
 
     async fn emit_required(&self, event: Event) -> Result<(), MemoryError> {
-        self.emit(event).await;
-        Ok(())
+        let _ = event;
+        Err(MemoryError::Provider {
+            provider: "audit".to_owned(),
+            source_message: "required audit sink is not implemented".to_owned(),
+        })
     }
 }
 

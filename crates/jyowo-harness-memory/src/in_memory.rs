@@ -123,10 +123,20 @@ fn list_scope_matches(record: &MemoryRecord, scope: &MemoryListScope) -> bool {
 fn summary_from_record(record: &MemoryRecord) -> MemorySummary {
     MemorySummary {
         id: record.id,
+        provider_id: Some("in-memory".to_owned()),
         kind: record.kind.clone(),
         visibility: clone_visibility(&record.visibility),
         content_preview: content_preview(&record.content),
+        content_hash: harness_contracts::ContentHash(
+            *blake3::hash(record.content.as_bytes()).as_bytes(),
+        ),
         metadata: record.metadata.clone(),
+        expires_at: record
+            .metadata
+            .ttl
+            .and_then(|ttl| chrono::Duration::from_std(ttl).ok())
+            .map(|ttl| record.created_at + ttl),
+        deleted: false,
         updated_at: record.updated_at,
     }
 }

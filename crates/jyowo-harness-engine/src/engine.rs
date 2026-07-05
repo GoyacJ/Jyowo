@@ -23,7 +23,8 @@ use harness_contracts::{
     PermissionActorSource, SubagentContextReport, TranscriptRef, UsageSnapshot,
 };
 use harness_contracts::{
-    BlobStore, CapabilityRegistry, Event, MessageId, ModelRef, RunId, ToolCapability,
+    BlobStore, CapabilityRegistry, Event, MemoryModelRequestPreview, MessageId, ModelRef, RunId,
+    ToolCapability,
 };
 #[cfg(feature = "programmatic-tool-calling")]
 use harness_contracts::{
@@ -85,6 +86,14 @@ pub trait SteeringDrain: Send + Sync + 'static {
     ) -> Result<Option<SteeringMerge>, EngineError>;
 }
 
+#[async_trait::async_trait]
+pub trait ModelRequestPreviewSink: Send + Sync + 'static {
+    async fn record_model_request_preview(
+        &self,
+        preview: MemoryModelRequestPreview,
+    ) -> Result<(), String>;
+}
+
 #[derive(Clone)]
 pub struct Engine {
     id: EngineId,
@@ -110,6 +119,7 @@ pub struct Engine {
     pub(crate) blob_store: Option<Arc<dyn BlobStore>>,
     pub(crate) tracer: Option<Arc<dyn Tracer>>,
     pub(crate) observer: Option<Arc<Observer>>,
+    pub(crate) model_request_preview_sink: Option<Arc<dyn ModelRequestPreviewSink>>,
     pub(crate) max_iterations: u32,
     pub(crate) steering_drain: Option<Arc<dyn SteeringDrain>>,
     #[cfg(feature = "subagent-tool")]
@@ -142,6 +152,7 @@ pub struct EngineBuilder {
     blob_store: Option<Arc<dyn BlobStore>>,
     tracer: Option<Arc<dyn Tracer>>,
     observer: Option<Arc<Observer>>,
+    model_request_preview_sink: Option<Arc<dyn ModelRequestPreviewSink>>,
     max_iterations: u32,
     steering_drain: Option<Arc<dyn SteeringDrain>>,
     #[cfg(feature = "subagent-tool")]
@@ -190,6 +201,7 @@ impl Engine {
             blob_store: self.blob_store,
             tracer: self.tracer,
             observer: self.observer,
+            model_request_preview_sink: self.model_request_preview_sink,
             max_iterations: self.max_iterations,
             steering_drain: self.steering_drain,
             #[cfg(feature = "subagent-tool")]
@@ -229,6 +241,7 @@ impl Default for EngineBuilder {
             blob_store: None,
             tracer: None,
             observer: None,
+            model_request_preview_sink: None,
             max_iterations: 25,
             steering_drain: None,
             #[cfg(feature = "subagent-tool")]
@@ -406,6 +419,15 @@ impl EngineBuilder {
     }
 
     #[must_use]
+    pub fn with_model_request_preview_sink(
+        mut self,
+        sink: Arc<dyn ModelRequestPreviewSink>,
+    ) -> Self {
+        self.model_request_preview_sink = Some(sink);
+        self
+    }
+
+    #[must_use]
     pub fn with_max_iterations(mut self, max_iterations: u32) -> Self {
         self.max_iterations = max_iterations.max(1);
         self
@@ -567,6 +589,7 @@ impl EngineBuilder {
             blob_store: self.blob_store,
             tracer,
             observer: self.observer,
+            model_request_preview_sink: self.model_request_preview_sink,
             max_iterations: self.max_iterations,
             steering_drain: self.steering_drain,
             #[cfg(feature = "subagent-tool")]
@@ -890,6 +913,7 @@ impl EngineEmbeddedToolDispatcher {
             parent_run: None,
             model: None,
             model_config_id: None,
+            memory_thread_settings: None,
             actor_source: harness_contracts::PermissionActorSource::ParentRun,
         };
 
@@ -1045,6 +1069,32 @@ impl harness_subagent::SubagentEngineFactory for EngineBoundSubagentFactory {
         let _cancellation_bridge =
             ChildCancellationBridge::spawn(request.cancellation.clone(), cancellation.clone());
 
+        let ctx = RunContext::new(
+            request.tenant_id,
+            request.child_session_id,
+            request.child_run_id,
+        )
+        .with_parent_run_id(Some(request.parent_run_id))
+        .with_correlation_id(request.correlation_id)
+        .with_subagent_depth(request.child_depth)
+        .with_permission_actor_source(PermissionActorSource::Subagent {
+            subagent_id: request.subagent_id,
+            parent_session_id: request.parent_session_id,
+            parent_run_id: request.parent_run_id,
+            team_id: None,
+            team_member_profile_id: None,
+        })
+        .with_permission_mode(request.spec.permission_mode)
+        .with_interactivity(interactivity_level(request.spec.interactivity.clone()))
+        .with_budget_limits(subagent_budget_limits(&request.spec))
+        .with_context_seed(request.context_seed.clone())
+        .with_cancellation(cancellation);
+        #[cfg(feature = "recall-memory")]
+        let ctx = ctx.with_memory_thread_settings(Some(subagent_memory_thread_settings(
+            request.child_session_id,
+            &request.spec.memory_scope,
+        )));
+
         let stream = child_engine
             .run(
                 SessionHandle {
@@ -1052,26 +1102,7 @@ impl harness_subagent::SubagentEngineFactory for EngineBoundSubagentFactory {
                     session_id: request.child_session_id,
                 },
                 request.input,
-                RunContext::new(
-                    request.tenant_id,
-                    request.child_session_id,
-                    request.child_run_id,
-                )
-                .with_parent_run_id(Some(request.parent_run_id))
-                .with_correlation_id(request.correlation_id)
-                .with_subagent_depth(request.child_depth)
-                .with_permission_actor_source(PermissionActorSource::Subagent {
-                    subagent_id: request.subagent_id,
-                    parent_session_id: request.parent_session_id,
-                    parent_run_id: request.parent_run_id,
-                    team_id: None,
-                    team_member_profile_id: None,
-                })
-                .with_permission_mode(request.spec.permission_mode)
-                .with_interactivity(interactivity_level(request.spec.interactivity.clone()))
-                .with_budget_limits(subagent_budget_limits(&request.spec))
-                .with_context_seed(request.context_seed.clone())
-                .with_cancellation(cancellation),
+                ctx,
             )
             .await
             .map_err(|error| harness_subagent::SubagentError::Engine(error.to_string()))?;
@@ -1517,12 +1548,45 @@ fn subagent_budget_limits(spec: &harness_subagent::SubagentSpec) -> Option<crate
     })
 }
 
+#[cfg(all(feature = "subagent-tool", feature = "recall-memory"))]
+fn subagent_memory_thread_settings(
+    session_id: harness_contracts::SessionId,
+    scope: &harness_subagent::SubagentMemoryScope,
+) -> harness_contracts::MemoryThreadSettings {
+    let memory_mode = match scope {
+        harness_subagent::SubagentMemoryScope::Empty => harness_contracts::MemoryThreadMode::Off,
+        harness_subagent::SubagentMemoryScope::ReadOnly => {
+            harness_contracts::MemoryThreadMode::ReadOnly
+        }
+        harness_subagent::SubagentMemoryScope::CandidateOnly => {
+            harness_contracts::MemoryThreadMode::CandidateOnly
+        }
+        harness_subagent::SubagentMemoryScope::Inherit
+        | harness_subagent::SubagentMemoryScope::Subset { .. }
+        | harness_subagent::SubagentMemoryScope::ReadWrite => {
+            harness_contracts::MemoryThreadMode::ReadWrite
+        }
+    };
+    harness_contracts::MemoryThreadSettings {
+        session_id,
+        use_memories: None,
+        generate_memories: None,
+        memory_mode,
+    }
+}
+
 #[cfg(feature = "subagent-tool")]
 fn child_tool_filter(tools: &ToolPool, spec: &harness_subagent::SubagentSpec) -> ToolPoolFilter {
     let mut denylist = harness_subagent::DelegationBlocklist::default()
         .tools()
         .clone();
     denylist.extend(spec.tool_blocklist.iter().cloned());
+    if matches!(
+        spec.memory_scope,
+        harness_subagent::SubagentMemoryScope::Empty
+    ) {
+        denylist.insert("memory".to_owned());
+    }
     let allowlist = match &spec.toolset {
         harness_subagent::ToolsetSelector::Custom(tools) => {
             Some(tools.iter().cloned().collect::<HashSet<_>>())
@@ -1900,7 +1964,7 @@ mod subagent_tool_tests {
         McpServerSpec, McpToolDescriptor, McpToolResult, TransportChoice,
     };
     use harness_permission::PermissionCheck;
-    use harness_subagent::{SubagentStatus, ToolsetSelector};
+    use harness_subagent::{SubagentMemoryScope, SubagentStatus, ToolsetSelector};
     use harness_tool::{
         action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
         ToolPool, ToolStream, ValidationError,
@@ -1965,6 +2029,34 @@ mod subagent_tool_tests {
 
         assert!(filtered.get("mcp__srv_a__forged").is_none());
         assert!(filtered.get("file_read").is_some());
+    }
+
+    #[test]
+    fn child_tool_filter_blocks_memory_tool_for_empty_memory_scope() {
+        let mut tools = ToolPool::default();
+        tools.append_runtime_tool(Arc::new(TestTool::new("memory", ToolOrigin::Builtin)));
+        tools.append_runtime_tool(Arc::new(TestTool::new("file_read", ToolOrigin::Builtin)));
+
+        let mut spec = harness_subagent::SubagentSpec::minimal("worker", "task");
+        spec.memory_scope = SubagentMemoryScope::Empty;
+
+        let filtered = tools.filtered(&child_tool_filter(&tools, &spec));
+
+        assert!(filtered.get("memory").is_none());
+        assert!(filtered.get("file_read").is_some());
+    }
+
+    #[test]
+    fn child_tool_filter_keeps_memory_tool_for_read_only_memory_scope() {
+        let mut tools = ToolPool::default();
+        tools.append_runtime_tool(Arc::new(TestTool::new("memory", ToolOrigin::Builtin)));
+
+        let mut spec = harness_subagent::SubagentSpec::minimal("worker", "task");
+        spec.memory_scope = SubagentMemoryScope::ReadOnly;
+
+        let filtered = tools.filtered(&child_tool_filter(&tools, &spec));
+
+        assert!(filtered.get("memory").is_some());
     }
 
     #[tokio::test]

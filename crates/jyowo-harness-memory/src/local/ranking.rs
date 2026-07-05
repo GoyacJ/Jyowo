@@ -69,31 +69,16 @@ pub fn access_score(access_count: u32) -> f32 {
 ///   + 0.02 * access_score
 /// ```
 ///
-/// Missing lexical or vector channels are omitted from the denominator so local
-/// recall does not under-score records when an optional ranking signal is absent.
+/// Missing lexical or vector channels contribute `0.0`; weights are not
+/// re-normalized.
 pub fn compute_final_score(score: &RankScore) -> f32 {
-    let mut weighted = 0.0;
-    let mut total = 0.0;
-
-    if score.lexical_score > 0.0 {
-        weighted += 0.45 * score.lexical_score;
-        total += 0.45;
-    }
-    if let Some(vector_score) = score.vector_score {
-        weighted += 0.30 * vector_score;
-        total += 0.30;
-    }
-
-    weighted += 0.10 * score.confidence_score;
-    weighted += 0.05 * score.recency_score;
-    weighted += 0.05 * score.source_trust_score;
-    weighted += 0.03 * score.explicit_selection_boost;
-    weighted += 0.02 * score.access_score;
-    total += 0.25;
-
-    if total == 0.0 {
-        return 0.0;
-    }
-
-    (weighted / total).clamp(0.0, 1.0)
+    let vector_score = score.vector_score.unwrap_or(0.0);
+    (0.45 * score.lexical_score
+        + 0.30 * vector_score
+        + 0.10 * score.confidence_score
+        + 0.05 * score.recency_score
+        + 0.05 * score.source_trust_score
+        + 0.03 * score.explicit_selection_boost
+        + 0.02 * score.access_score)
+        .clamp(0.0, 1.0)
 }

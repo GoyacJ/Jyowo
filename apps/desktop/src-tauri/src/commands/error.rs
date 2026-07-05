@@ -87,6 +87,17 @@ pub(crate) fn memory_operation_failed(message: &'static str) -> CommandErrorPayl
     }
 }
 
+pub(crate) fn memory_export_error(error: impl std::fmt::Display) -> CommandErrorPayload {
+    let message = error.to_string();
+    if message.contains("memory export requires explicit user action")
+        || message.contains("memory export scope must be visible")
+        || message.contains("memory export format must be json")
+    {
+        return invalid_payload(message);
+    }
+    memory_operation_failed("Memory export could not be prepared.")
+}
+
 pub(crate) fn support_bundle_operation_failed() -> CommandErrorPayload {
     CommandErrorPayload {
         code: "RUNTIME_OPERATION_FAILED",
@@ -100,23 +111,6 @@ pub(crate) fn support_bundle_read_error(error: CommandErrorPayload) -> CommandEr
     }
 
     support_bundle_operation_failed()
-}
-
-pub(crate) fn write_memory_export_file(
-    path: &Path,
-    content: &str,
-) -> Result<(), CommandErrorPayload> {
-    let Some(parent) = path.parent() else {
-        return Err(memory_operation_failed(
-            "Memory export could not be prepared.",
-        ));
-    };
-    ensure_no_symlink_components(parent, "memory export directory")
-        .map_err(|_| memory_operation_failed("Memory export could not be prepared."))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|_| memory_operation_failed("Memory export could not be prepared."))?;
-    std::fs::write(path, content)
-        .map_err(|_| memory_operation_failed("Memory export could not be prepared."))
 }
 
 pub(crate) fn write_support_bundle_file(

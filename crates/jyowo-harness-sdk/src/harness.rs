@@ -2,6 +2,8 @@
 use std::collections::BTreeSet;
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
+#[cfg(feature = "memory-provider-registry")]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 #[cfg(feature = "stream-permission")]
@@ -83,10 +85,12 @@ use harness_mcp::{
 };
 #[cfg(feature = "mcp-server-adapter")]
 use harness_mcp::{ExposedCapability, HarnessMcpBackend, McpServerError, McpServerRequestContext};
-#[cfg(feature = "memory-consolidation")]
-use harness_memory::ConsolidationHook;
+#[cfg(feature = "memory-provider-registry")]
+use harness_memory::MemoryExtractor;
 use harness_memory::MemoryProvider;
 use harness_model::ModelRuntimeSnapshot;
+#[cfg(feature = "memory-provider-registry")]
+use harness_model::ProviderRequestContext;
 use harness_model::{
     AuxModelProvider, ContentDelta, InferContext, InferMiddleware, ModelMetricsSink, ModelProvider,
     ModelRequest, ModelStreamEvent,
@@ -154,6 +158,7 @@ mod limits;
 #[cfg(feature = "mcp-server-adapter")]
 mod mcp_server;
 mod memory;
+#[cfg(feature = "memory-provider-registry")]
 mod memory_preview;
 mod metrics;
 mod permissions;
@@ -193,6 +198,8 @@ use self::limits::SessionLimitState;
 use self::memory::record_memory_summary_event;
 use self::metrics::{SdkMcpEventSink, SdkMcpMetricsSink};
 use self::permissions::{permission_authority_runtime, PermissionAuthorityBroker};
+#[cfg(feature = "memory-provider-registry")]
+use self::redaction::default_hook_redactor;
 use self::redaction::redact_business_event_for_display;
 use self::run_state::{ActiveConversationRun, ActiveConversationRunGuard, EngineSessionTurnRunner};
 use self::session_runtime::{sdk_session_not_found, snapshot_for_supported_model};
@@ -218,8 +225,8 @@ struct HarnessInner {
     tool_registry: ToolRegistry,
     hook_registry: HookRegistry,
     memory_providers: Vec<Arc<dyn MemoryProvider>>,
-    #[cfg(feature = "memory-consolidation")]
-    consolidation_hook: Option<Arc<dyn ConsolidationHook>>,
+    #[cfg(feature = "memory-provider-registry")]
+    _memory_extraction_runtime: Option<MemoryExtractionRuntime>,
     #[cfg(feature = "memory-builtin")]
     builtin_memory: Option<BuiltinMemoryConfig>,
     blob_store: Option<Arc<dyn BlobStore>>,
@@ -252,6 +259,264 @@ struct HarnessInner {
 struct SdkAuthorizationEventSink {
     event_store: Arc<dyn EventStore>,
     redactor: Arc<dyn Redactor>,
+}
+
+#[cfg(feature = "memory-provider-registry")]
+struct MemoryExtractionRuntime {
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(feature = "memory-provider-registry")]
+struct ModelBackedMemoryExtractor {
+    model: Arc<dyn ModelProvider>,
+    model_id: String,
+    protocol: ModelProtocol,
+    redactor: Arc<dyn Redactor>,
+}
+
+#[cfg(feature = "memory-provider-registry")]
+impl ModelBackedMemoryExtractor {
+    fn new(
+        model: Arc<dyn ModelProvider>,
+        model_id: String,
+        protocol: ModelProtocol,
+        redactor: Arc<dyn Redactor>,
+    ) -> Self {
+        Self {
+            model,
+            model_id,
+            protocol,
+            redactor,
+        }
+    }
+}
+
+#[cfg(feature = "memory-provider-registry")]
+impl MemoryExtractor for ModelBackedMemoryExtractor {
+    fn extract(
+        &self,
+        job: &harness_memory::ExtractionJob,
+    ) -> Result<harness_memory::ExtractionOutput, String> {
+        let Some(excerpt) = job
+            .source_excerpt
+            .as_deref()
+            .filter(|excerpt| !excerpt.trim().is_empty())
+        else {
+            return Ok(harness_memory::ExtractionOutput::default());
+        };
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("build extraction runtime: {error}"))?;
+        let excerpt = redact_memory_extraction_excerpt(excerpt, self.redactor.as_ref());
+        if excerpt.trim().is_empty() {
+            return Ok(harness_memory::ExtractionOutput::default());
+        }
+
+        let raw = runtime.block_on(infer_memory_extraction(
+            Arc::clone(&self.model),
+            self.model_id.clone(),
+            self.protocol,
+            job,
+            &excerpt,
+        ))?;
+        parse_extraction_output(&raw)
+    }
+}
+
+#[cfg(feature = "memory-provider-registry")]
+fn redact_memory_extraction_excerpt(excerpt: &str, redactor: &dyn Redactor) -> String {
+    let rules = memory_extraction_redact_rules();
+    let redacted = redactor.redact(excerpt, &rules);
+    default_hook_redactor().redact(&redacted, &rules)
+}
+
+#[cfg(feature = "memory-provider-registry")]
+fn memory_extraction_redact_rules() -> RedactRules {
+    RedactRules {
+        scope: RedactScope::All,
+        replacement: "[REDACTED]".to_owned(),
+        pattern_set: RedactPatternSet::Default,
+    }
+}
+
+#[cfg(feature = "memory-provider-registry")]
+async fn infer_memory_extraction(
+    model: Arc<dyn ModelProvider>,
+    model_id: String,
+    protocol: ModelProtocol,
+    job: &harness_memory::ExtractionJob,
+    excerpt: &str,
+) -> Result<String, String> {
+    let request = ModelRequest {
+        model_id,
+        messages: vec![Message {
+            id: MessageId::new(),
+            role: MessageRole::User,
+            parts: vec![MessagePart::Text(format!(
+                "Extract durable memory candidates from this completed session excerpt.\n\
+Return only JSON matching this shape:\n\
+{{\"candidates\":[{{\"kind\":\"project_fact|user_preference|reference|feedback|agent_self_note\",\"visibility\":\"tenant|user\",\"content\":\"...\",\"confidence\":0.0}}],\"consolidations\":[],\"summary\":null}}\n\
+Use only facts supported by the excerpt. Do not include secrets. If nothing should be remembered, return {{\"candidates\":[],\"consolidations\":[],\"summary\":null}}.\n\n\
+Session: {}\nRun: {}\nExcerpt:\n{}",
+                job.session_id, job.run_id, excerpt
+            ))],
+            created_at: Utc::now(),
+        }],
+        tools: None,
+        system: Some(
+            "You extract long-term memory candidates for Jyowo. Output strict JSON only."
+                .to_owned(),
+        ),
+        temperature: Some(0.0),
+        max_tokens: Some(1200),
+        stream: true,
+        cache_breakpoints: Vec::new(),
+        protocol,
+        extra: json!({ "source": "memory_extraction" }),
+        provider_context: ProviderRequestContext::default(),
+    };
+    let mut context = InferContext::for_test();
+    context.tenant_id = job.tenant_id;
+    context.session_id = Some(job.session_id);
+    context.run_id = Some(job.run_id);
+    context.suppress_usage_accounting = true;
+
+    let mut stream = model
+        .infer(request, context)
+        .await
+        .map_err(|error| format!("memory extraction infer failed: {error}"))?;
+    let mut text = String::new();
+    while let Some(event) = stream.next().await {
+        match event {
+            ModelStreamEvent::ContentBlockDelta {
+                delta: ContentDelta::Text(delta),
+                ..
+            } => text.push_str(&delta),
+            ModelStreamEvent::StreamError { error, .. } => {
+                return Err(format!("memory extraction stream failed: {error}"));
+            }
+            _ => {}
+        }
+    }
+    Ok(text)
+}
+
+#[cfg(feature = "memory-provider-registry")]
+fn parse_extraction_output(raw: &str) -> Result<harness_memory::ExtractionOutput, String> {
+    if let Ok(output) = serde_json::from_str::<harness_memory::ExtractionOutput>(raw) {
+        return Ok(output);
+    }
+
+    let trimmed = raw.trim();
+    let fenced = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .and_then(|value| value.strip_suffix("```"))
+        .map(str::trim);
+    if let Some(json) = fenced {
+        if let Ok(output) = serde_json::from_str::<harness_memory::ExtractionOutput>(json) {
+            return Ok(output);
+        }
+    }
+
+    let Some(start) = trimmed.find('{') else {
+        return Err("memory extraction output did not contain JSON".to_owned());
+    };
+    let Some(end) = trimmed.rfind('}') else {
+        return Err("memory extraction output did not contain a complete JSON object".to_owned());
+    };
+    serde_json::from_str::<harness_memory::ExtractionOutput>(&trimmed[start..=end])
+        .map_err(|error| format!("parse memory extraction output: {error}"))
+}
+
+#[cfg(feature = "memory-provider-registry")]
+impl MemoryExtractionRuntime {
+    fn spawn(
+        workspace_root: PathBuf,
+        tenant_id: TenantId,
+        extractor: Arc<dyn MemoryExtractor>,
+        observer: Option<Arc<Observer>>,
+    ) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            let db_path = workspace_root
+                .join(".jyowo")
+                .join("runtime")
+                .join("memory")
+                .join("memory.sqlite3");
+            let db_path = db_path.to_string_lossy().to_string();
+            while !worker_stop.load(Ordering::SeqCst) {
+                if let Err(error) =
+                    poll_memory_extraction_once(&db_path, tenant_id, Arc::clone(&extractor))
+                {
+                    record_memory_extraction_poll_error(observer.as_deref(), &error);
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        });
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+#[cfg(feature = "memory-provider-registry")]
+impl Drop for MemoryExtractionRuntime {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+#[cfg(feature = "memory-provider-registry")]
+fn poll_memory_extraction_once(
+    db_path: &str,
+    tenant_id: TenantId,
+    extractor: Arc<dyn MemoryExtractor>,
+) -> Result<(), String> {
+    let settings = harness_memory::settings::MemorySettingsStore::open(db_path)?;
+    let global = settings.get_global(tenant_id)?;
+    let inbox = harness_memory::MemoryInbox::open(db_path, tenant_id)?;
+    let worker = harness_memory::ExtractionWorker::open(
+        db_path,
+        harness_memory::ExtractionWorkerConfig::default(),
+        harness_memory::MemoryPolicyEngine::new(global),
+        inbox,
+        extractor,
+    )?;
+    worker
+        .poll_and_process("sdk-memory-extraction-worker", true, u64::MAX, false)
+        .map(|_| ())
+}
+
+#[cfg(feature = "memory-provider-registry")]
+fn record_memory_extraction_poll_error(observer: Option<&Observer>, error: &str) {
+    let Some(observer) = observer else {
+        return;
+    };
+    let rules = memory_extraction_redact_rules();
+    let redacted = observer.redactor.redact(error, &rules);
+    let redacted = default_hook_redactor().redact(&redacted, &rules);
+    let attrs = SpanAttributes::new()
+        .with(
+            "component",
+            AttributeValue::String("memory_extraction_runtime".to_owned()),
+        )
+        .with("outcome", AttributeValue::String("error".to_owned()));
+    let mut span = observer.start_span("memory.extraction.poll", attrs);
+    span.add_event(
+        "memory.extraction.poll.error",
+        SpanAttributes::new().with("error", AttributeValue::String(redacted.clone())),
+    );
+    span.set_status(SpanStatus::Error(redacted));
+    span.end();
 }
 
 #[async_trait]
@@ -437,6 +702,29 @@ impl Harness {
                 }
             };
 
+        #[cfg(feature = "memory-provider-registry")]
+        let memory_extractor = extras.memory_extractor.take().unwrap_or_else(|| {
+            let extraction_redactor = observer
+                .as_ref()
+                .map(|observer| Arc::clone(&observer.redactor))
+                .unwrap_or_else(default_hook_redactor);
+            Arc::new(ModelBackedMemoryExtractor::new(
+                Arc::clone(&builder.model.0),
+                builder.options.model_id.clone(),
+                builder.model.0.default_protocol(),
+                extraction_redactor,
+            ))
+        });
+        #[cfg(feature = "memory-provider-registry")]
+        let memory_extraction_runtime = Some({
+            MemoryExtractionRuntime::spawn(
+                builder.options.workspace_root.clone(),
+                builder.options.tenant_policy.id,
+                Arc::clone(&memory_extractor),
+                observer.as_ref().map(Arc::clone),
+            )
+        });
+
         Ok(Self {
             inner: Arc::new(HarnessInner {
                 options: builder.options,
@@ -453,8 +741,8 @@ impl Harness {
                 tool_registry,
                 hook_registry,
                 memory_providers: extras.memory_providers,
-                #[cfg(feature = "memory-consolidation")]
-                consolidation_hook: extras.consolidation_hook.take(),
+                #[cfg(feature = "memory-provider-registry")]
+                _memory_extraction_runtime: memory_extraction_runtime,
                 #[cfg(feature = "memory-builtin")]
                 builtin_memory: extras.builtin_memory.take(),
                 blob_store: extras.blob_store.take(),
@@ -492,5 +780,149 @@ impl Harness {
                 provider_continuation_store: extras.provider_continuation_store.take(),
             }),
         })
+    }
+}
+
+#[cfg(all(test, feature = "memory-provider-registry"))]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    use harness_observability::{Span, SpanEvent, TraceCarrier, TraceContext, TraceId, Tracer};
+
+    #[test]
+    fn memory_extraction_excerpt_uses_default_redactor_after_noop_redactor() {
+        let redacted = redact_memory_extraction_excerpt(
+            "token sk-abcdefghijklmnopqrstuvwxyz should not reach memory extraction",
+            &harness_contracts::NoopRedactor,
+        );
+
+        assert!(!redacted.contains("sk-abcdefghijklmnopqrstuvwxyz"));
+        assert!(redacted.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn memory_extraction_poll_error_records_redacted_telemetry() {
+        let tracer = Arc::new(RecordingTracer::default());
+        let observer = Observer::builder()
+            .with_tracer(tracer.clone())
+            .with_redactor(Arc::new(harness_contracts::NoopRedactor))
+            .build()
+            .expect("observer");
+
+        record_memory_extraction_poll_error(
+            Some(&observer),
+            "open queue failed with token sk-abcdefghijklmnopqrstuvwxyz",
+        );
+
+        let spans = tracer.spans.lock().expect("spans");
+        assert_eq!(spans.len(), 1);
+        let span = &spans[0];
+        assert_eq!(span.name, "memory.extraction.poll");
+        assert!(matches!(span.status, SpanStatus::Error(_)));
+        assert!(!span.status_text().contains("sk-abcdefghijklmnopqrstuvwxyz"));
+        assert!(span.status_text().contains("[REDACTED]"));
+        let error_event = span
+            .events
+            .iter()
+            .find(|event| event.name == "memory.extraction.poll.error")
+            .expect("poll error event");
+        let error = match error_event.attrs.attrs.get("error") {
+            Some(AttributeValue::String(error)) => error,
+            _ => panic!("error attribute"),
+        };
+        assert!(!error.contains("sk-abcdefghijklmnopqrstuvwxyz"));
+        assert!(error.contains("[REDACTED]"));
+    }
+
+    struct RecordingTracer {
+        spans: Arc<Mutex<Vec<RecordedSpan>>>,
+    }
+
+    impl Default for RecordingTracer {
+        fn default() -> Self {
+            Self {
+                spans: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl Tracer for RecordingTracer {
+        fn start_span(&self, name: &str, attrs: SpanAttributes) -> Box<dyn Span> {
+            Box::new(RecordingSpan {
+                target: Arc::clone(&self.spans),
+                name: name.to_owned(),
+                attrs,
+                events: Vec::new(),
+                status: SpanStatus::Unset,
+                context: TraceContext::new(
+                    TraceId::new("00000000000000000000000000000001"),
+                    harness_observability::SpanId::new("0000000000000001"),
+                    None,
+                ),
+            })
+        }
+
+        fn inject_context(&self, _carrier: &mut dyn TraceCarrier) {}
+
+        fn extract_context(&self, carrier: &dyn TraceCarrier) -> Option<TraceContext> {
+            TraceContext::extract(carrier)
+        }
+    }
+
+    struct RecordingSpan {
+        target: Arc<Mutex<Vec<RecordedSpan>>>,
+        name: String,
+        attrs: SpanAttributes,
+        events: Vec<SpanEvent>,
+        status: SpanStatus,
+        context: TraceContext,
+    }
+
+    impl Span for RecordingSpan {
+        fn context(&self) -> &TraceContext {
+            &self.context
+        }
+
+        fn set_attribute(&mut self, key: &str, value: AttributeValue) {
+            self.attrs.attrs.insert(key.to_owned(), value);
+        }
+
+        fn add_event(&mut self, name: &str, attrs: SpanAttributes) {
+            self.events.push(SpanEvent {
+                name: name.to_owned(),
+                attrs,
+            });
+        }
+
+        fn set_status(&mut self, status: SpanStatus) {
+            self.status = status;
+        }
+
+        fn end(self: Box<Self>) {
+            self.target.lock().expect("spans").push(RecordedSpan {
+                name: self.name,
+                attrs: self.attrs,
+                events: self.events,
+                status: self.status,
+            });
+        }
+    }
+
+    struct RecordedSpan {
+        name: String,
+        #[allow(dead_code)]
+        attrs: SpanAttributes,
+        events: Vec<SpanEvent>,
+        status: SpanStatus,
+    }
+
+    impl RecordedSpan {
+        fn status_text(&self) -> &str {
+            match &self.status {
+                SpanStatus::Error(error) => error,
+                SpanStatus::Unset | SpanStatus::Ok => "",
+            }
+        }
     }
 }

@@ -176,6 +176,12 @@ desktop typecheck, lint, test, build, Knip
 Rust format check, workspace check, workspace tests
 ```
 
+The memory architecture policy must scan Rust, Tauri, frontend memory UI, and
+relevant Cargo manifests. It must fail legacy `external-slot` feature wiring,
+single external-provider slots, production `InMemoryMemoryProvider::new(`,
+label-only memory reference rendering, forbidden raw trace field names, and
+runtime `DREAMS.md` semantics outside migration-only allowlists.
+
 ## AI Agent Rules
 
 When an AI agent performs development tasks:

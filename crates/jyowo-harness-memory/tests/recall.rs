@@ -15,9 +15,9 @@ use harness_contracts::{
     MemoryVisibility, MemoryVisibilityClass, RunId, SessionId, TenantId,
 };
 use harness_memory::{
-    FailMode, MemoryKindFilter, MemoryLifecycle, MemoryListScope, MemoryManager, MemoryMetadata,
-    MemoryProviderDescriptor, MemoryQuery, MemoryRecord, MemoryStore, MemorySummary,
-    MemoryVisibilityFilter, RecallPolicy,
+    FailMode, MemoryEventSink, MemoryKindFilter, MemoryLifecycle, MemoryListScope, MemoryManager,
+    MemoryMetadata, MemoryOperationPolicy, MemoryProviderDescriptor, MemoryQuery, MemoryRecord,
+    MemoryStore, MemorySummary, MemoryVisibilityFilter, RecallPolicy,
 };
 
 #[cfg(feature = "threat-scanner")]
@@ -287,7 +287,7 @@ async fn recall_fans_out_to_all_readable_providers() {
 
 #[tokio::test]
 async fn upsert_uses_one_policy_selected_writable_provider() {
-    let manager = MemoryManager::new();
+    let manager = MemoryManager::new().with_event_sink(Arc::new(NoopSink));
     let writable_a = Arc::new(CountingProvider::ok_with_id("writable-a", Vec::new()).priority(10));
     let read_only = Arc::new(CountingProvider::ok_with_id("read-only", Vec::new()).read_only());
     let writable_b = Arc::new(CountingProvider::ok_with_id("writable-b", Vec::new()).priority(100));
@@ -297,11 +297,25 @@ async fn upsert_uses_one_policy_selected_writable_provider() {
     manager.register_provider(read_only.clone()).unwrap();
     manager.register_provider(writable_b.clone()).unwrap();
 
-    manager.upsert(record.clone(), None).await.unwrap();
+    manager
+        .upsert_with_policy(record.clone(), None, &explicit_user_policy(&record))
+        .await
+        .unwrap();
 
     assert_eq!(writable_a.upserts(), 0);
     assert_eq!(read_only.upserts(), 0);
     assert_eq!(writable_b.upserts(), 1);
+}
+
+struct NoopSink;
+
+#[async_trait]
+impl MemoryEventSink for NoopSink {
+    async fn emit(&self, _event: harness_contracts::Event) {}
+
+    async fn emit_required(&self, _event: harness_contracts::Event) -> Result<(), MemoryError> {
+        Ok(())
+    }
 }
 
 #[tokio::test]
@@ -807,6 +821,41 @@ fn thread_settings(session_id: SessionId) -> MemoryThreadSettings {
     }
 }
 
+fn explicit_user_policy(record: &MemoryRecord) -> MemoryOperationPolicy {
+    let session_id = match record.visibility {
+        MemoryVisibility::Private { session_id } => session_id,
+        _ => SessionId::new(),
+    };
+    MemoryOperationPolicy {
+        thread: thread_settings(session_id),
+        actor: harness_contracts::MemoryActor::User {
+            user_label: Some("user-1".to_owned()),
+        },
+        permission: harness_contracts::MemoryPermissionContext {
+            explicit_user_instruction: true,
+            include_raw_content: false,
+            action_plan_id: Some(harness_contracts::ActionPlanId::new()),
+            authorization_ticket_id: Some(harness_contracts::AuthorizationTicketId::new()),
+            non_interactive_policy_grant: false,
+        },
+        evidence: harness_contracts::MemoryEvidence {
+            source: record.metadata.source.clone(),
+            origin: harness_contracts::MemoryEvidenceOrigin::UserMessage {
+                session_id,
+                run_id: RunId::new(),
+                message_id: harness_contracts::MessageId::new(),
+            },
+            content_hash: harness_contracts::ContentHash(
+                blake3::hash(record.content.as_bytes()).into(),
+            ),
+            session_id: Some(session_id),
+            run_id: None,
+            message_id: None,
+            tool_use_id: None,
+        },
+    }
+}
+
 fn record(content: &str) -> MemoryRecord {
     record_with_id_and_score(MemoryId::new(), content, 1.0)
 }
@@ -833,6 +882,7 @@ fn record_with_id_and_score(id: MemoryId, content: &str, recall_score: f32) -> M
             access_count: 0,
             last_accessed_at: None,
             recall_score,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },

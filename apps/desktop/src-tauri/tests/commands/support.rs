@@ -241,14 +241,72 @@ pub(crate) fn test_memory_record(session_id: SessionId, content: &str) -> Memory
             tags: Vec::new(),
             source: MemorySource::UserInput,
             confidence: 1.0,
+            evidence: None,
             access_count: 0,
             last_accessed_at: None,
             recall_score: 1.0,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },
         created_at: now(),
         updated_at: now(),
+    }
+}
+
+pub(crate) struct RawExportMemoryProvider {
+    inner: Arc<InMemoryMemoryProvider>,
+}
+
+impl RawExportMemoryProvider {
+    pub(crate) fn new(inner: Arc<InMemoryMemoryProvider>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl MemoryStore for RawExportMemoryProvider {
+    fn provider_id(&self) -> &str {
+        self.inner.provider_id()
+    }
+
+    async fn recall(
+        &self,
+        query: MemoryQuery,
+    ) -> Result<Vec<MemoryRecord>, harness_contracts::MemoryError> {
+        self.inner.recall(query).await
+    }
+
+    async fn get(&self, id: MemoryId) -> Result<MemoryRecord, harness_contracts::MemoryError> {
+        self.inner.get(id).await
+    }
+
+    async fn upsert(
+        &self,
+        record: MemoryRecord,
+    ) -> Result<MemoryId, harness_contracts::MemoryError> {
+        self.inner.upsert(record).await
+    }
+
+    async fn forget(&self, id: MemoryId) -> Result<(), harness_contracts::MemoryError> {
+        self.inner.forget(id).await
+    }
+
+    async fn list(
+        &self,
+        scope: MemoryListScope,
+    ) -> Result<Vec<MemorySummary>, harness_contracts::MemoryError> {
+        self.inner.list(scope).await
+    }
+}
+
+impl MemoryLifecycle for RawExportMemoryProvider {}
+
+impl MemoryProvider for RawExportMemoryProvider {
+    fn descriptor(&self) -> MemoryProviderDescriptor {
+        let mut descriptor = self.inner.descriptor();
+        descriptor.supports_raw_content_export = true;
+        descriptor
     }
 }
 
@@ -577,7 +635,7 @@ pub(crate) async fn runtime_state_with_harness_for_workspace(
 }
 
 pub(crate) async fn runtime_state_with_memory_provider(
-    provider: Arc<InMemoryMemoryProvider>,
+    provider: Arc<dyn MemoryProvider>,
 ) -> DesktopRuntimeState {
     let workspace = unique_workspace("memory-provider");
     std::fs::create_dir_all(&workspace).unwrap();

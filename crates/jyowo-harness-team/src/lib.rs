@@ -26,17 +26,21 @@ use futures::StreamExt;
 use harness_contracts::{
     AgentId, AgentMessageRoutedEvent, AgentMessageSentEvent, BlobMeta, BlobRef, BlobRetention,
     BlobStore, ContentHash, CorrelationId, EngineError, EngineFailedEvent, Event,
-    InteractivityLevel, JournalOffset, MemberLeaveReason, MemoryError, MemoryId, MemoryKind,
-    MemorySource, MemoryUpsertedEvent, MemoryVisibility, MemoryWriteAction, Message, MessageId,
-    MessagePart, MessageRole, ModelRef, PermissionMode, Recipient, RoutingPolicyKind, RunId,
-    SessionId, StalledAction, TakesEffect, TeamCreatedEvent, TeamId, TeamMemberJoinedEvent,
-    TeamMemberLeftEvent, TeamMemberStalledEvent, TeamTerminatedEvent, TeamTerminationReason,
-    TeamTurnCompletedEvent, TenantId, TopologyKind, TranscriptRef, TurnInput, UsageSnapshot,
+    InteractivityLevel, JournalOffset, MemberLeaveReason, MemoryActor, MemoryError, MemoryEvidence,
+    MemoryEvidenceOrigin, MemoryGlobalSettings, MemoryId, MemoryKind, MemoryPermissionContext,
+    MemoryProviderDurability, MemoryProviderKind, MemoryProviderSelectionPolicy,
+    MemoryProviderTrust, MemorySource, MemoryThreadMode, MemoryThreadSettings, MemoryVisibility,
+    MemoryVisibilityClass, Message, MessageId, MessagePart, MessageRole, ModelRef, PermissionMode,
+    Recipient, RoutingPolicyKind, RunId, SessionId, StalledAction, TeamCreatedEvent, TeamId,
+    TeamMemberJoinedEvent, TeamMemberLeftEvent, TeamMemberStalledEvent, TeamTerminatedEvent,
+    TeamTerminationReason, TeamTurnCompletedEvent, TenantId, TopologyKind, TranscriptRef,
+    TurnInput, UsageSnapshot,
 };
 use harness_journal::{AppendMetadata, EventStore, ReplayCursor};
 use harness_memory::{
-    MemoryLifecycle, MemoryListScope, MemoryMetadata, MemoryQuery, MemoryRecord, MemoryStore,
-    MemorySummary, MemoryVisibilityFilter,
+    MemoryEventSink, MemoryLifecycle, MemoryListScope, MemoryManager, MemoryMetadata,
+    MemoryOperationPolicy, MemoryPolicyEngine, MemoryProviderDescriptor, MemoryQuery, MemoryRecord,
+    MemoryStore, MemorySummary, MemoryVisibilityFilter,
 };
 use harness_model::{AuxExecutor, AuxModelProvider, AuxTask, ModelProtocol, ModelRequest};
 use harness_session::{Session, SessionOptions};
@@ -271,6 +275,7 @@ pub struct TeamMemberEngineConfig {
     pub model_ref: Option<ModelRef>,
     pub toolset: TeamToolsetSelector,
     pub tool_blocklist: HashSet<String>,
+    pub memory_mode: MemoryThreadMode,
     pub permission_mode: PermissionMode,
     pub interactivity: InteractivityLevel,
     pub sandbox_policy: TeamSandboxPolicy,
@@ -286,6 +291,7 @@ impl Default for TeamMemberEngineConfig {
             model_ref: None,
             toolset: TeamToolsetSelector::InheritAll,
             tool_blocklist: HashSet::new(),
+            memory_mode: MemoryThreadMode::ReadWrite,
             permission_mode: PermissionMode::Default,
             interactivity: InteractivityLevel::NoInteractive,
             sandbox_policy: TeamSandboxPolicy::Inherit,
@@ -2650,6 +2656,7 @@ impl TeamMemberRunRequest {
             team_id: self.team_id,
             agent_id: self.agent_id,
             session_id: self.session_id,
+            run_id: self.run_id,
             correlation_id: self.correlation_id,
         }
     }
@@ -3828,6 +3835,7 @@ pub struct TeamMemoryWriteContext {
     team_id: TeamId,
     agent_id: AgentId,
     session_id: SessionId,
+    run_id: RunId,
     correlation_id: CorrelationId,
 }
 
@@ -3837,10 +3845,15 @@ pub struct SharedMemory {
     team_id: TeamId,
     write_policy: SharedWritePolicy,
     roles: HashMap<AgentId, String>,
-    entries: Arc<Mutex<Vec<MemoryRecord>>>,
+    provider: Arc<TeamSharedMemoryProvider>,
     writes_by_agent: Arc<Mutex<HashMap<AgentId, usize>>>,
     event_store: Option<Arc<dyn EventStore>>,
     journal: Option<TeamJournalContext>,
+}
+
+struct TeamSharedMemoryProvider {
+    provider_id: String,
+    records: Mutex<Vec<MemoryRecord>>,
 }
 
 impl std::fmt::Debug for SharedMemory {
@@ -3859,12 +3872,16 @@ impl std::fmt::Debug for SharedMemory {
 impl SharedMemory {
     #[must_use]
     pub fn new(team_id: TeamId, provider_id: impl Into<String>) -> Self {
+        let provider_id = provider_id.into();
         Self {
-            provider_id: provider_id.into(),
+            provider_id: provider_id.clone(),
             team_id,
             write_policy: SharedWritePolicy::Unrestricted,
             roles: HashMap::new(),
-            entries: Arc::new(Mutex::new(Vec::new())),
+            provider: Arc::new(TeamSharedMemoryProvider {
+                provider_id,
+                records: Mutex::new(Vec::new()),
+            }),
             writes_by_agent: Arc::new(Mutex::new(HashMap::new())),
             event_store: None,
             journal: None,
@@ -3896,10 +3913,8 @@ impl SharedMemory {
 
     async fn write_for_agent(
         &self,
-        agent_id: AgentId,
-        session_id: harness_contracts::SessionId,
+        context: TeamMemoryWriteContext,
         value: impl Into<String>,
-        correlation_id: CorrelationId,
     ) -> Result<MemoryId, TeamError> {
         let (event_store, journal) = match (&self.event_store, self.journal) {
             (Some(event_store), Some(journal)) => (event_store, journal),
@@ -3909,9 +3924,25 @@ impl SharedMemory {
                 ));
             }
         };
-        self.ensure_write_allowed(agent_id).await?;
+        self.ensure_write_allowed(context.agent_id).await?;
         let now = Utc::now();
         let content = value.into();
+        let evidence = MemoryEvidence {
+            source: MemorySource::SubagentDerived {
+                child_session: context.session_id,
+            },
+            origin: MemoryEvidenceOrigin::SubagentOutput {
+                parent_session_id: journal.session_id,
+                child_session_id: context.session_id,
+                run_id: context.run_id,
+                agent_id: Some(context.agent_id),
+            },
+            content_hash: hash_content(content.as_bytes()),
+            session_id: Some(context.session_id),
+            run_id: Some(context.run_id),
+            message_id: None,
+            tool_use_id: None,
+        };
         let record = MemoryRecord {
             id: MemoryId::new(),
             tenant_id: journal.tenant_id,
@@ -3922,11 +3953,13 @@ impl SharedMemory {
             content,
             metadata: MemoryMetadata {
                 tags: Vec::new(),
-                source: MemorySource::AgentDerived,
+                source: evidence.source.clone(),
                 confidence: 1.0,
+                evidence: Some(evidence.clone()),
                 access_count: 0,
                 last_accessed_at: None,
                 recall_score: 1.0,
+                recall_score_breakdown: None,
                 ttl: None,
                 redacted_segments: 0,
             },
@@ -3934,33 +3967,44 @@ impl SharedMemory {
             updated_at: now,
         };
         let memory_id = record.id;
-        event_store
-            .append_with_metadata(
-                journal.tenant_id,
-                session_id,
-                AppendMetadata {
-                    correlation_id,
-                    ..AppendMetadata::default()
-                },
-                &[Event::MemoryUpserted(MemoryUpsertedEvent {
-                    session_id,
-                    run_id: None,
-                    memory_id,
-                    kind: record.kind.clone(),
-                    visibility: record.visibility.clone(),
-                    action: MemoryWriteAction::Upsert,
+        let manager = self.memory_manager_for_write(
+            journal,
+            Arc::clone(event_store),
+            context.session_id,
+            context.correlation_id,
+        )?;
+        let policy = MemoryOperationPolicy {
+            thread: MemoryThreadSettings {
+                session_id: context.session_id,
+                use_memories: None,
+                generate_memories: None,
+                memory_mode: MemoryThreadMode::ReadWrite,
+            },
+            actor: MemoryActor::Subagent {
+                child_session_id: context.session_id,
+                agent_id: Some(context.agent_id),
+            },
+            permission: MemoryPermissionContext {
+                explicit_user_instruction: false,
+                include_raw_content: false,
+                action_plan_id: None,
+                authorization_ticket_id: None,
+                non_interactive_policy_grant: true,
+            },
+            evidence,
+        };
+        manager
+            .upsert_with_policy_and_provider_selection(
+                record,
+                Some(context.run_id),
+                &policy,
+                &MemoryProviderSelectionPolicy::RequireProvider {
                     provider_id: self.provider_id.clone(),
-                    source: record.metadata.source.clone(),
-                    content_hash: hash_content(record.content.as_bytes()),
-                    bytes_written: record.content.len() as u64,
-                    takes_effect: TakesEffect::CurrentSession,
-                    at: Utc::now(),
-                })],
+                },
             )
             .await
             .map_err(|error| TeamError::Journal(error.to_string()))?;
-        self.upsert_record_unchecked(record).await?;
-        self.commit_write(agent_id).await;
+        self.commit_write(context.agent_id).await;
         Ok(memory_id)
     }
 
@@ -3979,13 +4023,7 @@ impl SharedMemory {
                 ));
             }
         }
-        self.write_for_agent(
-            context.agent_id,
-            context.session_id,
-            value,
-            context.correlation_id,
-        )
-        .await
+        self.write_for_agent(context, value).await
     }
 
     async fn ensure_write_allowed(&self, agent_id: AgentId) -> Result<(), TeamError> {
@@ -4022,14 +4060,180 @@ impl SharedMemory {
         }
     }
 
-    async fn upsert_record_unchecked(&self, record: MemoryRecord) -> Result<MemoryId, TeamError> {
-        let mut entries = self.entries.lock().await;
-        if let Some(existing) = entries.iter_mut().find(|entry| entry.id == record.id) {
-            *existing = record.clone();
+    fn memory_manager_for_write(
+        &self,
+        journal: TeamJournalContext,
+        event_store: Arc<dyn EventStore>,
+        session_id: SessionId,
+        correlation_id: CorrelationId,
+    ) -> Result<MemoryManager, TeamError> {
+        let manager = MemoryManager::new()
+            .with_policy_engine(MemoryPolicyEngine::new(MemoryGlobalSettings {
+                use_memories: true,
+                generate_memories: true,
+                disable_generation_when_external_context_used: false,
+                retention_days: None,
+                max_memory_bytes: 10_000_000,
+                max_recall_records_per_turn: 20,
+                max_recall_chars_per_turn: 50_000,
+            }))
+            .with_event_sink(Arc::new(TeamMemoryEventSink {
+                tenant_id: journal.tenant_id,
+                session_id,
+                correlation_id,
+                event_store,
+            }));
+        let provider: Arc<dyn harness_memory::MemoryProvider> = self.provider.clone();
+        manager
+            .register_provider(provider)
+            .map_err(|error| TeamError::Journal(error.to_string()))?;
+        Ok(manager)
+    }
+}
+
+#[async_trait]
+impl MemoryEventSink for TeamMemoryEventSink {
+    async fn emit(&self, event: Event) {
+        let _ = self
+            .event_store
+            .append_with_metadata(
+                self.tenant_id,
+                self.session_id,
+                AppendMetadata {
+                    correlation_id: self.correlation_id,
+                    ..AppendMetadata::default()
+                },
+                &[event],
+            )
+            .await;
+    }
+
+    async fn emit_required(&self, event: Event) -> Result<(), MemoryError> {
+        self.event_store
+            .append_with_metadata(
+                self.tenant_id,
+                self.session_id,
+                AppendMetadata {
+                    correlation_id: self.correlation_id,
+                    ..AppendMetadata::default()
+                },
+                &[event],
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| MemoryError::Message(error.to_string()))
+    }
+}
+
+struct TeamMemoryEventSink {
+    tenant_id: TenantId,
+    session_id: SessionId,
+    correlation_id: CorrelationId,
+    event_store: Arc<dyn EventStore>,
+}
+
+#[async_trait]
+impl MemoryStore for TeamSharedMemoryProvider {
+    fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
+    async fn recall(&self, query: MemoryQuery) -> Result<Vec<MemoryRecord>, MemoryError> {
+        let records = self.records.lock().await;
+        Ok(records
+            .iter()
+            .filter(|record| record.tenant_id == query.tenant_id)
+            .filter(|record| memory_record_visible(record, &query.visibility_filter))
+            .take(query.max_records as usize)
+            .cloned()
+            .collect())
+    }
+
+    async fn get(&self, id: MemoryId) -> Result<MemoryRecord, MemoryError> {
+        let records = self.records.lock().await;
+        records
+            .iter()
+            .find(|record| record.id == id)
+            .cloned()
+            .ok_or(MemoryError::NotFound(id))
+    }
+
+    async fn upsert(&self, record: MemoryRecord) -> Result<MemoryId, MemoryError> {
+        let id = record.id;
+        let mut records = self.records.lock().await;
+        if let Some(existing) = records.iter_mut().find(|existing| existing.id == id) {
+            *existing = record;
         } else {
-            entries.push(record.clone());
+            records.push(record);
         }
-        Ok(record.id)
+        Ok(id)
+    }
+
+    async fn forget(&self, id: MemoryId) -> Result<(), MemoryError> {
+        let mut records = self.records.lock().await;
+        let before = records.len();
+        records.retain(|record| record.id != id);
+        if records.len() == before {
+            return Err(MemoryError::NotFound(id));
+        }
+        Ok(())
+    }
+
+    async fn list(&self, scope: MemoryListScope) -> Result<Vec<MemorySummary>, MemoryError> {
+        let records = self.records.lock().await;
+        Ok(records
+            .iter()
+            .filter(|record| match &scope {
+                MemoryListScope::All => true,
+                MemoryListScope::ByKind(kind) => &record.kind == kind,
+                MemoryListScope::ByVisibility(visibility) => &record.visibility == visibility,
+                MemoryListScope::ForActor(actor) => {
+                    record.tenant_id == actor.tenant_id
+                        && harness_memory::visibility_matches(&record.visibility, actor)
+                }
+            })
+            .map(|record| MemorySummary {
+                id: record.id,
+                provider_id: Some(self.provider_id.clone()),
+                kind: record.kind.clone(),
+                visibility: record.visibility.clone(),
+                content_preview: harness_memory::content_preview(&record.content),
+                content_hash: hash_content(record.content.as_bytes()),
+                metadata: record.metadata.clone(),
+                expires_at: record
+                    .metadata
+                    .ttl
+                    .and_then(|ttl| chrono::Duration::from_std(ttl).ok())
+                    .map(|ttl| record.created_at + ttl),
+                deleted: false,
+                updated_at: record.updated_at,
+            })
+            .collect())
+    }
+}
+
+impl MemoryLifecycle for TeamSharedMemoryProvider {}
+
+impl harness_memory::MemoryProvider for TeamSharedMemoryProvider {
+    fn descriptor(&self) -> MemoryProviderDescriptor {
+        MemoryProviderDescriptor {
+            provider_id: self.provider_id.clone(),
+            provider_kind: MemoryProviderKind::Team,
+            priority: 0,
+            trust_level: MemoryProviderTrust::Team,
+            tenant_scope: None,
+            workspace_scope: None,
+            durability: MemoryProviderDurability::Ephemeral,
+            readable: true,
+            writable: true,
+            allowed_visibility: vec![MemoryVisibilityClass::Team],
+            supports_evidence: true,
+            supports_raw_content_export: false,
+            timeout_ms: 5000,
+            max_records_per_recall: 50,
+            max_chars_per_recall: 100_000,
+            max_bytes_per_record: 1024 * 1024,
+        }
     }
 }
 
@@ -4040,14 +4244,11 @@ impl MemoryStore for SharedMemory {
     }
 
     async fn recall(&self, query: MemoryQuery) -> Result<Vec<MemoryRecord>, MemoryError> {
-        let entries = self.entries.lock().await;
-        Ok(entries
-            .iter()
-            .filter(|record| record.tenant_id == query.tenant_id)
-            .filter(|record| memory_record_visible(record, &query.visibility_filter))
-            .take(query.max_records as usize)
-            .cloned()
-            .collect())
+        self.provider.recall(query).await
+    }
+
+    async fn get(&self, id: MemoryId) -> Result<MemoryRecord, MemoryError> {
+        self.provider.get(id).await
     }
 
     async fn upsert(&self, record: MemoryRecord) -> Result<MemoryId, MemoryError> {
@@ -4065,33 +4266,17 @@ impl MemoryStore for SharedMemory {
     }
 
     async fn list(&self, scope: MemoryListScope) -> Result<Vec<MemorySummary>, MemoryError> {
-        let entries = self.entries.lock().await;
-        Ok(entries
-            .iter()
-            .filter(|record| match &scope {
-                MemoryListScope::All => true,
-                MemoryListScope::ByKind(kind) => &record.kind == kind,
-                MemoryListScope::ByVisibility(visibility) => &record.visibility == visibility,
-                MemoryListScope::ForActor(actor) => {
-                    record.tenant_id == actor.tenant_id
-                        && harness_memory::visibility_matches(&record.visibility, actor)
-                }
-            })
-            .map(|record| MemorySummary {
-                id: record.id,
-                kind: record.kind.clone(),
-                visibility: record.visibility.clone(),
-                content_preview: harness_memory::content_preview(&record.content),
-                metadata: record.metadata.clone(),
-                updated_at: record.updated_at,
-            })
-            .collect())
+        self.provider.list(scope).await
     }
 }
 
 impl MemoryLifecycle for SharedMemory {}
 
-impl harness_memory::MemoryProvider for SharedMemory {}
+impl harness_memory::MemoryProvider for SharedMemory {
+    fn descriptor(&self) -> MemoryProviderDescriptor {
+        self.provider.descriptor()
+    }
+}
 
 fn memory_record_visible(record: &MemoryRecord, filter: &MemoryVisibilityFilter) -> bool {
     match filter {
@@ -4110,8 +4295,28 @@ fn hash_content(bytes: &[u8]) -> ContentHash {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_contracts::NoopRedactor;
-    use harness_journal::InMemoryEventStore;
+    use futures::stream::{self, BoxStream};
+    use harness_contracts::{EventId, ForkReason, JournalError, NoopRedactor};
+    use harness_journal::{
+        EventEnvelope, InMemoryEventStore, PrunePolicy, PruneReport, SessionFilter,
+        SessionSnapshot, SessionSummary,
+    };
+
+    fn memory_write_context(
+        team_id: TeamId,
+        agent_id: AgentId,
+        session_id: SessionId,
+        correlation_id: CorrelationId,
+    ) -> TeamMemoryWriteContext {
+        TeamMemoryWriteContext {
+            tenant_id: TenantId::SINGLE,
+            team_id,
+            agent_id,
+            session_id,
+            run_id: RunId::new(),
+            correlation_id,
+        }
+    }
 
     #[tokio::test]
     async fn shared_memory_internal_write_enforces_policy_and_journals() {
@@ -4134,13 +4339,19 @@ mod tests {
 
         assert!(matches!(
             memory
-                .write_for_agent(worker, session_id, "hidden", correlation_id)
+                .write_from_context(
+                    memory_write_context(team_id, worker, session_id, correlation_id),
+                    "hidden",
+                )
                 .await
                 .unwrap_err(),
             TeamError::SharedMemoryWriteDenied
         ));
         memory
-            .write_for_agent(coordinator, session_id, "shared fact", correlation_id)
+            .write_from_context(
+                memory_write_context(team_id, coordinator, session_id, correlation_id),
+                "shared fact",
+            )
             .await
             .unwrap();
 
@@ -4203,13 +4414,19 @@ mod tests {
 
         assert!(matches!(
             memory
-                .write_for_agent(coder, session_id, "coder fact", CorrelationId::new())
+                .write_from_context(
+                    memory_write_context(team_id, coder, session_id, CorrelationId::new()),
+                    "coder fact",
+                )
                 .await
                 .unwrap_err(),
             TeamError::SharedMemoryWriteDenied
         ));
         memory
-            .write_for_agent(reviewer, session_id, "reviewer fact", CorrelationId::new())
+            .write_from_context(
+                memory_write_context(team_id, reviewer, session_id, CorrelationId::new()),
+                "reviewer fact",
+            )
             .await
             .unwrap();
 
@@ -4223,15 +4440,150 @@ mod tests {
                 store,
             );
         quota_memory
-            .write_for_agent(coder, session_id, "first fact", CorrelationId::new())
+            .write_from_context(
+                memory_write_context(team_id, coder, session_id, CorrelationId::new()),
+                "first fact",
+            )
             .await
             .unwrap();
         assert!(matches!(
             quota_memory
-                .write_for_agent(coder, session_id, "second fact", CorrelationId::new())
+                .write_from_context(
+                    memory_write_context(team_id, coder, session_id, CorrelationId::new()),
+                    "second fact",
+                )
                 .await
                 .unwrap_err(),
             TeamError::SharedMemoryWriteDenied
         ));
+    }
+
+    #[tokio::test]
+    async fn shared_memory_internal_write_fails_closed_when_journal_append_fails() {
+        let team_id = TeamId::new();
+        let agent_id = AgentId::new();
+        let session_id = SessionId::new();
+        let correlation_id = CorrelationId::new();
+        let memory = SharedMemory::new(team_id, "team-shared").with_journal(
+            TeamJournalContext {
+                tenant_id: TenantId::SINGLE,
+                session_id,
+            },
+            Arc::new(FailingAppendEventStore),
+        );
+
+        assert!(matches!(
+            memory
+                .write_from_context(
+                    memory_write_context(team_id, agent_id, session_id, correlation_id),
+                    "uncommitted fact",
+                )
+                .await
+                .unwrap_err(),
+            TeamError::Journal(_)
+        ));
+
+        let recalled = memory
+            .recall(MemoryQuery {
+                text: "uncommitted".to_owned(),
+                kind_filter: None,
+                visibility_filter: MemoryVisibilityFilter::EffectiveFor(
+                    harness_contracts::MemoryActorContext {
+                        tenant_id: TenantId::SINGLE,
+                        user_id: None,
+                        team_id: Some(team_id),
+                        session_id: Some(session_id),
+                    },
+                ),
+                max_records: 8,
+                min_similarity: 0.0,
+                tenant_id: TenantId::SINGLE,
+                session_id: Some(session_id),
+                deadline: None,
+            })
+            .await
+            .unwrap();
+        assert!(recalled.is_empty());
+    }
+
+    struct FailingAppendEventStore;
+
+    #[async_trait]
+    impl EventStore for FailingAppendEventStore {
+        async fn append(
+            &self,
+            _tenant: TenantId,
+            _session_id: SessionId,
+            _events: &[Event],
+        ) -> Result<JournalOffset, JournalError> {
+            Err(JournalError::Message("append failed".to_owned()))
+        }
+
+        async fn read_envelopes(
+            &self,
+            _tenant: TenantId,
+            _session_id: SessionId,
+            _cursor: ReplayCursor,
+        ) -> Result<BoxStream<'static, EventEnvelope>, JournalError> {
+            Ok(Box::pin(stream::iter(Vec::new())))
+        }
+
+        async fn query_after(
+            &self,
+            _tenant: TenantId,
+            _after: Option<EventId>,
+            _limit: usize,
+        ) -> Result<Vec<EventEnvelope>, JournalError> {
+            Ok(Vec::new())
+        }
+
+        async fn snapshot(
+            &self,
+            _tenant: TenantId,
+            _session_id: SessionId,
+        ) -> Result<Option<SessionSnapshot>, JournalError> {
+            Ok(None)
+        }
+
+        async fn save_snapshot(
+            &self,
+            _tenant: TenantId,
+            _snapshot: SessionSnapshot,
+        ) -> Result<(), JournalError> {
+            Ok(())
+        }
+
+        async fn compact_link(
+            &self,
+            _parent: SessionId,
+            _child: SessionId,
+            _reason: ForkReason,
+        ) -> Result<(), JournalError> {
+            Ok(())
+        }
+
+        async fn delete_session(
+            &self,
+            _tenant: TenantId,
+            _session_id: SessionId,
+        ) -> Result<bool, JournalError> {
+            Ok(false)
+        }
+
+        async fn list_sessions(
+            &self,
+            _tenant: TenantId,
+            _filter: SessionFilter,
+        ) -> Result<Vec<SessionSummary>, JournalError> {
+            Ok(Vec::new())
+        }
+
+        async fn prune(
+            &self,
+            _tenant: TenantId,
+            _policy: PrunePolicy,
+        ) -> Result<PruneReport, JournalError> {
+            Ok(PruneReport::default())
+        }
     }
 }

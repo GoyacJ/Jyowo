@@ -138,6 +138,148 @@ fn conversation_turn_request_includes_prior_session_messages() {
 }
 
 #[test]
+fn session_end_worker_processes_durable_memory_extraction_job() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-memory-extraction-enqueue");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text(
+                        "remember: this workspace uses durable memory extraction".to_owned(),
+                    ),
+                },
+                ModelStreamEvent::MessageStop,
+            ]],
+        ));
+        let harness = Harness::builder()
+            .with_workspace_root(&workspace)
+            .with_model_arc(model)
+            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_sandbox(NoopSandbox::new())
+            .with_memory_extractor(harness_memory::HeuristicMemoryExtractor)
+            .build()
+            .await
+            .expect("harness should build");
+        let session = harness
+            .create_session(SessionOptions::new(&workspace).with_session_id(session_id))
+            .await
+            .expect("session should be created");
+        session
+            .run_turn("extract at session end")
+            .await
+            .expect("turn should run");
+        session
+            .end(EndReason::Completed)
+            .await
+            .expect("session should end");
+
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        let inbox = harness_memory::MemoryInbox::open(
+            &memory_db_path(&workspace).to_string_lossy(),
+            TenantId::SINGLE,
+        )
+        .expect("inbox should open");
+        let candidates = inbox
+            .list(Some(harness_contracts::MemoryCandidateState::Proposed))
+            .expect("candidates should list");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].evidence.session_id, Some(session_id));
+        assert!(candidates[0]
+            .proposed_record
+            .content
+            .contains("durable memory extraction"));
+    });
+}
+
+#[test]
+fn session_end_external_context_policy_blocks_memory_extraction_enqueue() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-memory-extraction-external-block");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let run_id = RunId::new();
+        let settings = harness_memory::settings::MemorySettingsStore::open(
+            &memory_db_path(&workspace).to_string_lossy(),
+        )
+        .expect("settings should open");
+        let mut global = harness_memory::settings::default_global_settings();
+        global.disable_generation_when_external_context_used = true;
+        settings
+            .update_global(TenantId::SINGLE, global)
+            .expect("settings should update");
+        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("remember: should not be extracted".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ]],
+        ));
+        let harness = Harness::builder()
+            .with_workspace_root(&workspace)
+            .with_model_arc(model)
+            .with_store_arc(store)
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+        let session = harness
+            .create_session(SessionOptions::new(&workspace).with_session_id(session_id))
+            .await
+            .expect("session should be created");
+        harness
+            .event_store()
+            .append(
+                TenantId::SINGLE,
+                session_id,
+                &[Event::ContextPatchApplied(
+                    harness_contracts::ContextPatchAppliedEvent {
+                        session_id,
+                        run_id,
+                        source: ContextPatchSource::KnowledgeRetrieval {
+                            provider_id: "external-kb".to_owned(),
+                            knowledge_base_ids: vec!["kb".to_owned()],
+                            reference_chunk_count: 1,
+                        },
+                        lifecycle: harness_contracts::ContextPatchLifecycle::Transient,
+                        body_bytes: 32,
+                        at: harness_contracts::now(),
+                    },
+                )],
+            )
+            .await
+            .expect("context event should append");
+        session
+            .run_turn("external context should block generation")
+            .await
+            .expect("turn should run");
+        session
+            .end(EndReason::Completed)
+            .await
+            .expect("session should end");
+
+        let queue = harness_memory::ExtractionJobQueue::open(
+            &memory_db_path(&workspace).to_string_lossy(),
+            harness_memory::ExtractionJobConfig::default(),
+        )
+        .expect("queue should open");
+
+        assert!(queue
+            .lease_next("test")
+            .expect("lease should succeed")
+            .is_none());
+    });
+}
+
+#[test]
 fn conversation_session_budget_uses_model_window_and_trigger_ratio() {
     block_on(async {
         let workspace = unique_workspace("sdk-conversation-context-budget");
@@ -192,6 +334,14 @@ fn conversation_session_budget_uses_model_window_and_trigger_ratio() {
                     && exceeded.max == 15
         )));
     });
+}
+
+fn memory_db_path(workspace: &std::path::Path) -> std::path::PathBuf {
+    workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("memory")
+        .join("memory.sqlite3")
 }
 
 #[test]
@@ -748,9 +898,110 @@ fn conversation_turn_hydrates_memory_references_before_model_request() {
 
         let requests = model.requests().await;
         let text = request_text(&requests[0]);
-        assert!(text.contains("[memory-reference id="));
+        assert!(text.contains("<memory-context>"));
+        assert!(text.contains("reference|memory"), "{text}");
         assert!(text.contains("Stored memory content from runtime."));
         assert!(!text.contains("frontend supplied content must be ignored"));
+    });
+}
+
+#[test]
+fn conversation_turn_fails_closed_for_invalid_memory_reference_id() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-memory-reference-invalid-id");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![vec![ModelStreamEvent::MessageStop]],
+        ));
+        let harness = Harness::builder()
+            .with_model_arc(model.clone())
+            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("harness should build");
+
+        harness
+            .open_or_create_conversation_session(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+            )
+            .await
+            .expect("session should open");
+        let error = harness
+            .submit_conversation_turn(conversation_turn_request(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+                ConversationTurnInput {
+                    client_message_id: None,
+                    prompt: "use this memory".to_owned(),
+                    context_references: vec![ConversationContextReference::Memory {
+                        id: "not-a-memory-id".to_owned(),
+                        label: "Untrusted label".to_owned(),
+                        resolved_content: None,
+                    }],
+                    attachments: Vec::new(),
+                },
+                None,
+                None,
+                None,
+            ))
+            .await
+            .expect_err("invalid memory reference should fail before model request");
+
+        assert!(error.to_string().contains("invalid memory reference id"));
+        assert!(model.requests().await.is_empty());
+    });
+}
+
+#[test]
+fn conversation_turn_fails_closed_for_missing_memory_reference() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-conversation-memory-reference-missing-id");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = SessionId::new();
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![vec![ModelStreamEvent::MessageStop]],
+        ));
+        let harness = Harness::builder()
+            .with_model_arc(model.clone())
+            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_sandbox(NoopSandbox::new())
+            .with_memory_provider_arc(Arc::new(InMemoryMemoryProvider::new("test-memory")))
+            .build()
+            .await
+            .expect("harness should build");
+
+        harness
+            .open_or_create_conversation_session(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+            )
+            .await
+            .expect("session should open");
+        let missing_id = MemoryId::new();
+        let error = harness
+            .submit_conversation_turn(conversation_turn_request(
+                SessionOptions::new(&workspace).with_session_id(session_id),
+                ConversationTurnInput {
+                    client_message_id: None,
+                    prompt: "use this memory".to_owned(),
+                    context_references: vec![ConversationContextReference::Memory {
+                        id: missing_id.to_string(),
+                        label: "Missing memory label".to_owned(),
+                        resolved_content: None,
+                    }],
+                    attachments: Vec::new(),
+                },
+                None,
+                None,
+                None,
+            ))
+            .await
+            .expect_err("missing memory reference should fail before model request");
+
+        assert!(error.to_string().contains("memory not found"));
+        assert!(model.requests().await.is_empty());
     });
 }
 

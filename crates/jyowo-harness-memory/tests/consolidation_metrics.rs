@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_contracts::{
     EndReason, Event, MemdirFileTag, MemoryActorContext, MemoryError, MemoryId, MemoryKind,
-    MemorySessionCtx, MemorySource, MemoryVisibility, MemoryWriteAction, SessionId,
+    MemorySessionCtx, MemorySource, MemoryVisibility, MemoryWriteAction, RunId, SessionId,
     SessionSummaryView, TenantId, ThreatAction, ThreatCategory, UsageSnapshot,
 };
 use harness_memory::{
@@ -27,7 +27,7 @@ use harness_memory::{
 };
 
 #[tokio::test]
-async fn consolidation_hook_runs_on_session_end_and_emits_event() {
+async fn consolidation_hook_runs_when_invoked_explicitly_and_emits_event() {
     let events = Arc::new(Events::default());
     let metrics = Arc::new(Metrics::default());
     let promoted = MemoryId::new();
@@ -41,7 +41,7 @@ async fn consolidation_hook_runs_on_session_end_and_emits_event() {
         .with_consolidation_hook(hook.clone());
 
     manager
-        .on_session_end(&session_ctx(), &session_summary())
+        .run_consolidation(&session_ctx(), &session_summary())
         .await
         .unwrap();
 
@@ -83,6 +83,7 @@ async fn memory_metrics_cover_recall_degraded_threat_memdir_and_overflow() {
         .unwrap();
 
     let root = tempfile::tempdir().unwrap();
+    let events = Arc::new(Events::default());
     let scanner = MemoryThreatScanner::from_patterns(vec![ThreatPattern::new(
         "warn-memory",
         "warn-me",
@@ -93,6 +94,8 @@ async fn memory_metrics_cover_recall_degraded_threat_memdir_and_overflow() {
     .unwrap()]);
     BuiltinMemory::at(root.path(), TenantId::SINGLE)
         .with_metrics_sink(metrics.clone())
+        .with_event_sink(events)
+        .with_event_scope(SessionId::new(), Some(RunId::new()))
         .with_threat_scanner(Arc::new(scanner))
         .append_section(MemdirFile::Memory, "threat", "warn-me")
         .await
@@ -163,8 +166,11 @@ async fn memory_metrics_cover_spec_recall_and_memdir_lock_metrics() {
         .unwrap();
 
     let root = tempfile::tempdir().unwrap();
+    let events = Arc::new(Events::default());
     let memory = BuiltinMemory::at(root.path(), TenantId::SINGLE)
         .with_metrics_sink(metrics.clone())
+        .with_event_sink(events)
+        .with_event_scope(SessionId::new(), Some(RunId::new()))
         .with_concurrency_policy(harness_memory::MemdirConcurrencyPolicy {
             lock_timeout: Duration::from_millis(25),
             retry_max: 1,
@@ -250,6 +256,11 @@ impl Events {
 impl MemoryEventSink for Events {
     async fn emit(&self, event: Event) {
         self.events.lock().unwrap().push(event);
+    }
+
+    async fn emit_required(&self, event: Event) -> Result<(), MemoryError> {
+        self.events.lock().unwrap().push(event);
+        Ok(())
     }
 }
 
@@ -372,9 +383,11 @@ fn record(content: &str) -> MemoryRecord {
             tags: Vec::new(),
             source: MemorySource::UserInput,
             confidence: 1.0,
+            evidence: None,
             access_count: 0,
             last_accessed_at: None,
             recall_score: 1.0,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },

@@ -436,6 +436,7 @@ fn engine_config_from_profile(profile: &AgentProfile) -> TeamMemberEngineConfig 
         }),
         toolset,
         tool_blocklist: blocklist,
+        memory_mode: memory_mode_from_profile(profile.memory_scope),
         permission_mode: harness_contracts::PermissionMode::Default,
         interactivity: harness_contracts::InteractivityLevel::NoInteractive,
         sandbox_policy: TeamSandboxPolicy::Inherit,
@@ -446,5 +447,21 @@ fn engine_config_from_profile(profile: &AgentProfile) -> TeamMemberEngineConfig 
         )),
         quota: None,
         token_budget: harness_team::TokenBudget::default(),
+    }
+}
+
+fn memory_mode_from_profile(
+    scope: harness_contracts::AgentProfileMemoryScope,
+) -> harness_contracts::MemoryThreadMode {
+    match scope {
+        harness_contracts::AgentProfileMemoryScope::None => {
+            harness_contracts::MemoryThreadMode::Off
+        }
+        harness_contracts::AgentProfileMemoryScope::ReadOnly => {
+            harness_contracts::MemoryThreadMode::ReadOnly
+        }
+        harness_contracts::AgentProfileMemoryScope::ReadWrite => {
+            harness_contracts::MemoryThreadMode::ReadWrite
+        }
     }
 }

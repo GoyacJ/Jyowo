@@ -5,7 +5,9 @@
 
 use chrono::Utc;
 use harness_contracts::*;
-use harness_memory::local::{LocalMemoryOptions, LocalMemoryProvider, MemoryEmbeddingProvider};
+use harness_memory::local::{
+    ranking, LocalMemoryOptions, LocalMemoryProvider, MemoryEmbeddingProvider,
+};
 use harness_memory::{
     MemoryKindFilter, MemoryListScope, MemoryQuery, MemoryStore, MemoryVisibilityFilter,
 };
@@ -41,6 +43,7 @@ fn make_record(id: MemoryId, tenant: TenantId, content: &str) -> harness_memory:
             access_count: 0,
             last_accessed_at: None,
             recall_score: 0.0,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },
@@ -76,6 +79,22 @@ fn make_query(tenant: TenantId, text: &str) -> MemoryQuery {
         session_id: None,
         deadline: None,
     }
+}
+
+#[test]
+fn local_ranking_uses_fixed_weights_when_vector_is_missing() {
+    let score = ranking::compute_final_score(&ranking::RankScore {
+        lexical_score: 0.8,
+        vector_score: None,
+        confidence_score: 1.0,
+        recency_score: 1.0,
+        access_score: 1.0,
+        source_trust_score: 1.0,
+        explicit_selection_boost: 1.0,
+        final_score: 0.0,
+    });
+
+    assert!((score - 0.61).abs() < 0.000_001);
 }
 
 fn embedding_state(db_path: &std::path::Path, memory_id: MemoryId) -> String {
@@ -902,6 +921,7 @@ async fn visibility_filter_prevents_unauthorized_access() {
             access_count: 0,
             last_accessed_at: None,
             recall_score: 0.0,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },

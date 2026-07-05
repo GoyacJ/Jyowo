@@ -18,6 +18,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 3,
         sql: include_str!("migrations/V3__memory_records_fts_triggers.sql"),
     },
+    Migration {
+        version: 4,
+        sql: include_str!("migrations/V4__model_request_previews.sql"),
+    },
 ];
 
 struct Migration {
@@ -30,6 +34,16 @@ struct Migration {
 /// Creates the `schema_version` table if it doesn't exist, then applies
 /// any migrations with a version greater than the current max.
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    if let Err(error) = run_locked(conn) {
+        let _ = conn.execute_batch("ROLLBACK");
+        return Err(error);
+    }
+    conn.execute_batch("COMMIT")?;
+    Ok(())
+}
+
+fn run_locked(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (
             version INTEGER PRIMARY KEY,

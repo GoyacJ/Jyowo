@@ -29,7 +29,9 @@ type Story = StoryObj<typeof meta>
 export const UserPreference: Story = {
   args: {
     item: {
+      contentHash: '0'.repeat(64),
       contentPreview: 'Prefers concise Chinese responses focused on repository facts.',
+      deleted: false,
       id: '01J00000000000000000000001',
       kind: 'user_preference',
       source: 'user_input',
@@ -43,8 +45,10 @@ export const UserPreference: Story = {
 export const PrivateLongPreview: Story = {
   args: {
     item: {
+      contentHash: '1'.repeat(64),
       contentPreview:
         'Local workspace policy requires redaction before logs, traces, screenshots, support bundles, and frontend state. The preview clamps to keep the card height stable in dense lists.',
+      deleted: false,
       id: '01J00000000000000000000002',
       kind: 'project_fact',
       source: 'agent_derived',
@@ -58,7 +62,9 @@ export const PrivateLongPreview: Story = {
 export const ReferenceMemory: Story = {
   args: {
     item: {
+      contentHash: '2'.repeat(64),
       contentPreview: 'Conversation-first UI remains the primary product surface.',
+      deleted: false,
       id: '01J00000000000000000000003',
       kind: 'reference',
       source: 'consolidated',

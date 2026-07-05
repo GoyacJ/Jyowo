@@ -3,7 +3,10 @@ use super::*;
 #[tokio::test]
 async fn memory_commands_list_inspect_update_delete_and_export_visible_items() {
     let provider = Arc::new(InMemoryMemoryProvider::new("test"));
-    let state = runtime_state_with_memory_provider(provider.clone()).await;
+    let state = runtime_state_with_memory_provider(Arc::new(RawExportMemoryProvider::new(
+        provider.clone(),
+    )))
+    .await;
     let session_id = state.default_conversation_id();
     let visible = test_memory_record(session_id, "Prefers concise Chinese responses");
     provider.upsert(visible.clone()).await.unwrap();
@@ -44,9 +47,20 @@ async fn memory_commands_list_inspect_update_delete_and_export_visible_items() {
     .unwrap();
     assert_eq!(updated.item.content, "Prefers terse Chinese responses");
 
-    let exported = export_memory_items_with_runtime_state(&state)
-        .await
-        .unwrap();
+    let exported = export_memory_items_with_runtime_state(
+        ExportMemoryItemsRequest {
+            session_id: None,
+            scope: ExportMemoryItemsScope::Visible,
+            format: ExportMemoryItemsFormat::Json,
+            include_raw_content: false,
+            include_metadata: true,
+            include_hashes: true,
+            explicit_user_action: true,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
     assert_eq!(exported.format, "json");
     assert_eq!(exported.item_count, 1);
     assert!(exported.path.starts_with(".jyowo/runtime/exports/memory-"));
@@ -54,8 +68,123 @@ async fn memory_commands_list_inspect_update_delete_and_export_visible_items() {
         .expect("memory export file should be readable");
     assert!(export_content.contains("contentPreview"));
     assert!(export_content.contains("[redacted memory content]"));
+    assert!(export_content.contains("contentHash"));
+    assert!(export_content.contains("source"));
+    assert!(export_content.contains("tags"));
     assert!(!export_content.contains("\"content\""));
     assert!(!export_content.contains("Prefers terse Chinese responses"));
+    let exported_items: serde_json::Value =
+        serde_json::from_str(&export_content).expect("memory export should be valid json");
+    let expected_content_hash = blake3::hash("Prefers terse Chinese responses".as_bytes())
+        .to_hex()
+        .to_string();
+    assert_eq!(
+        exported_items
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("contentHash"))
+            .and_then(serde_json::Value::as_str),
+        Some(expected_content_hash.as_str())
+    );
+    let events = state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .expect("memory export audit events should be readable")
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().any(|event| {
+        matches!(event, Event::MemoryExported(exported)
+            if exported.item_count == 1
+                && exported.content_hashes.len() == 1
+                && exported.bytes_exported > 0)
+    }));
+
+    let raw_export = export_memory_items_with_runtime_state(
+        ExportMemoryItemsRequest {
+            session_id: None,
+            scope: ExportMemoryItemsScope::Visible,
+            format: ExportMemoryItemsFormat::Json,
+            include_raw_content: true,
+            include_metadata: true,
+            include_hashes: true,
+            explicit_user_action: true,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    assert!(raw_export.include_raw_content);
+    let raw_export_content = std::fs::read_to_string(state.workspace_root().join(&raw_export.path))
+        .expect("raw memory export file should be readable");
+    assert!(raw_export_content.contains("\"content\""));
+    assert!(raw_export_content.contains("Prefers terse Chinese responses"));
+    let raw_exported_items: serde_json::Value =
+        serde_json::from_str(&raw_export_content).expect("raw memory export should be valid json");
+    assert_eq!(
+        raw_exported_items
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("contentHash"))
+            .and_then(serde_json::Value::as_str),
+        Some(expected_content_hash.as_str())
+    );
+
+    let metadata_free_export = export_memory_items_with_runtime_state(
+        ExportMemoryItemsRequest {
+            session_id: None,
+            scope: ExportMemoryItemsScope::Visible,
+            format: ExportMemoryItemsFormat::Json,
+            include_raw_content: false,
+            include_metadata: false,
+            include_hashes: false,
+            explicit_user_action: true,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let metadata_free_content =
+        std::fs::read_to_string(state.workspace_root().join(&metadata_free_export.path))
+            .expect("metadata-free memory export file should be readable");
+    assert!(metadata_free_content.contains("contentPreview"));
+    assert!(!metadata_free_content.contains("contentHash"));
+    assert!(!metadata_free_content.contains("source"));
+    assert!(!metadata_free_content.contains("tags"));
+
+    let denied_export = export_memory_items_with_runtime_state(
+        ExportMemoryItemsRequest {
+            session_id: None,
+            scope: ExportMemoryItemsScope::Visible,
+            format: ExportMemoryItemsFormat::Json,
+            include_raw_content: false,
+            include_metadata: true,
+            include_hashes: true,
+            explicit_user_action: false,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied_export.code, "INVALID_PAYLOAD");
+
+    let denied_raw_export = export_memory_items_with_runtime_state(
+        ExportMemoryItemsRequest {
+            session_id: None,
+            scope: ExportMemoryItemsScope::Visible,
+            format: ExportMemoryItemsFormat::Json,
+            include_raw_content: true,
+            include_metadata: true,
+            include_hashes: true,
+            explicit_user_action: false,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied_raw_export.code, "INVALID_PAYLOAD");
 
     let deleted = delete_memory_item_with_runtime_state(
         DeleteMemoryItemRequest {

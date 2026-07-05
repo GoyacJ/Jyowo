@@ -16,9 +16,9 @@ use futures::stream::BoxStream;
 use crate::{
     AgentId, BlobMeta, BlobRef, BlobStore, CapabilityRouteKind, CorrelationId,
     DiagnosticsRawOutput, DiagnosticsRunRequest, Event, HookEventKind, InteractivityLevel,
-    OverflowMetadata, PermissionMode, RunId, SessionId, SkillId, SkillSourceKind, SubagentId,
-    TeamId, TenantId, ToolCapability, ToolError, ToolProfile, ToolSearchMode, ToolUseId,
-    TranscriptRef, TurnInput, UsageSnapshot,
+    MemoryId, OverflowMetadata, PermissionMode, RunId, SessionId, SkillId, SkillSourceKind,
+    SubagentId, TeamId, TenantId, ToolCapability, ToolError, ToolProfile, ToolSearchMode,
+    ToolUseId, TranscriptRef, TurnInput, UsageSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -659,6 +659,10 @@ pub enum ContextPatchSource {
     MemoryRecall {
         provider_id: String,
         turn: u32,
+    },
+    MemoryReference {
+        provider_id: String,
+        memory_ids: Vec<MemoryId>,
     },
     KnowledgeRetrieval {
         provider_id: String,

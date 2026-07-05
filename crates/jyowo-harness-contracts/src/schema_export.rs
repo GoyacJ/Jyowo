@@ -715,6 +715,11 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "memory_evidence", MemoryEvidence);
     insert_schema!(schemas, "memory_evidence_origin", MemoryEvidenceOrigin);
     insert_schema!(schemas, "memory_candidate", MemoryCandidate);
+    insert_schema!(
+        schemas,
+        "memory_candidate_operation",
+        MemoryCandidateOperation
+    );
     insert_schema!(schemas, "memory_candidate_state", MemoryCandidateState);
     insert_schema!(
         schemas,
@@ -740,6 +745,12 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "memory_thread_mode", MemoryThreadMode);
     insert_schema!(schemas, "memory_actor", MemoryActor);
     insert_schema!(schemas, "memory_provider_trust", MemoryProviderTrust);
+    insert_schema!(schemas, "memory_provider_kind", MemoryProviderKind);
+    insert_schema!(
+        schemas,
+        "memory_provider_durability",
+        MemoryProviderDurability
+    );
     insert_schema!(schemas, "memory_visibility_class", MemoryVisibilityClass);
     insert_schema!(
         schemas,

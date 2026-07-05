@@ -17,7 +17,10 @@ pub struct ResolvedMemoryReference {
 #[derive(Debug, Clone)]
 pub enum MemoryReferenceOutcome {
     /// Successfully resolved content, fenced as untrusted.
-    Hydrated { content: String },
+    Hydrated {
+        content: String,
+        provider_id: String,
+    },
     /// Reference could not be resolved.
     Failed { reason: String },
 }
@@ -41,7 +44,7 @@ pub struct FnMemoryResolver<F> {
 impl<F, Fut> FnMemoryResolver<F>
 where
     F: Fn(MemoryId) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<String, MemoryError>> + Send,
+    Fut: std::future::Future<Output = Result<(String, String), MemoryError>> + Send,
 {
     #[must_use]
     pub fn new(resolve_fn: F) -> Self {
@@ -53,7 +56,7 @@ where
 impl<F, Fut> ContextReferenceResolver for FnMemoryResolver<F>
 where
     F: Fn(MemoryId) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<String, MemoryError>> + Send,
+    Fut: std::future::Future<Output = Result<(String, String), MemoryError>> + Send,
 {
     async fn resolve_memory(
         &self,
@@ -61,10 +64,13 @@ where
         label: String,
     ) -> Result<ResolvedMemoryReference, MemoryError> {
         match (self.resolve_fn)(memory_id).await {
-            Ok(content) => Ok(ResolvedMemoryReference {
+            Ok((content, provider_id)) => Ok(ResolvedMemoryReference {
                 memory_id,
                 label,
-                outcome: MemoryReferenceOutcome::Hydrated { content },
+                outcome: MemoryReferenceOutcome::Hydrated {
+                    content,
+                    provider_id,
+                },
             }),
             Err(e) => Ok(ResolvedMemoryReference {
                 memory_id,
@@ -78,20 +84,6 @@ where
 }
 
 /// Fence memory content as untrusted context for injection into the model request.
-pub fn fence_memory_content(content: &str, memory_id: MemoryId) -> String {
-    let preview = truncate_for_context(content, 2000);
-    format!(
-        "[memory id={id}]\n{preview}\n[/memory id={id}]",
-        id = memory_id,
-    )
-}
-
-/// Truncate content to a maximum character count for context injection.
-fn truncate_for_context(content: &str, max_chars: usize) -> String {
-    if content.chars().count() <= max_chars {
-        content.to_owned()
-    } else {
-        let truncated: String = content.chars().take(max_chars - 3).collect();
-        format!("{truncated}...")
-    }
+pub fn fence_memory_content(content: &str, memory_id: MemoryId, provider_id: &str) -> String {
+    crate::wrap_memory_reference_context(content, memory_id, provider_id)
 }

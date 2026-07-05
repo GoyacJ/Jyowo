@@ -42,24 +42,6 @@ fn model_actor() -> MemoryActor {
     MemoryActor::Model
 }
 
-fn make_evidence_origin(source: MemorySource) -> MemoryEvidenceOrigin {
-    let sid = SessionId::new();
-    let rid = RunId::new();
-    let mid = MessageId::new();
-    match source {
-        MemorySource::UserInput => MemoryEvidenceOrigin::UserMessage {
-            session_id: sid,
-            run_id: rid,
-            message_id: mid,
-        },
-        _ => MemoryEvidenceOrigin::AssistantMessage {
-            session_id: sid,
-            run_id: rid,
-            message_id: mid,
-        },
-    }
-}
-
 fn make_evidence(source: MemorySource, origin: MemoryEvidenceOrigin) -> MemoryEvidence {
     MemoryEvidence {
         source,
@@ -75,6 +57,7 @@ fn make_evidence(source: MemorySource, origin: MemoryEvidenceOrigin) -> MemoryEv
 fn no_memory_permission() -> MemoryPermissionContext {
     MemoryPermissionContext {
         explicit_user_instruction: false,
+        include_raw_content: false,
         action_plan_id: None,
         authorization_ticket_id: None,
         non_interactive_policy_grant: false,
@@ -84,6 +67,7 @@ fn no_memory_permission() -> MemoryPermissionContext {
 fn explicit_memory_permission() -> MemoryPermissionContext {
     MemoryPermissionContext {
         explicit_user_instruction: true,
+        include_raw_content: false,
         action_plan_id: Some(ActionPlanId::new()),
         authorization_ticket_id: Some(AuthorizationTicketId::new()),
         non_interactive_policy_grant: false,
@@ -93,9 +77,40 @@ fn explicit_memory_permission() -> MemoryPermissionContext {
 fn action_plan_only_permission() -> MemoryPermissionContext {
     MemoryPermissionContext {
         explicit_user_instruction: false,
+        include_raw_content: false,
         action_plan_id: Some(ActionPlanId::new()),
         authorization_ticket_id: None,
         non_interactive_policy_grant: false,
+    }
+}
+
+fn authorization_ticket_only_permission() -> MemoryPermissionContext {
+    MemoryPermissionContext {
+        explicit_user_instruction: false,
+        include_raw_content: false,
+        action_plan_id: None,
+        authorization_ticket_id: Some(AuthorizationTicketId::new()),
+        non_interactive_policy_grant: false,
+    }
+}
+
+fn authorized_tool_permission() -> MemoryPermissionContext {
+    MemoryPermissionContext {
+        explicit_user_instruction: false,
+        include_raw_content: false,
+        action_plan_id: Some(ActionPlanId::new()),
+        authorization_ticket_id: Some(AuthorizationTicketId::new()),
+        non_interactive_policy_grant: false,
+    }
+}
+
+fn non_interactive_memory_permission() -> MemoryPermissionContext {
+    MemoryPermissionContext {
+        explicit_user_instruction: false,
+        include_raw_content: false,
+        action_plan_id: None,
+        authorization_ticket_id: None,
+        non_interactive_policy_grant: true,
     }
 }
 
@@ -271,6 +286,123 @@ fn action_plan_id_alone_does_not_grant_memory_write() {
     assert!(matches!(
         result,
         MemoryPolicyDecision::Deny {
+            reason: MemoryPolicyDenyReason::PermissionRequired
+        }
+    ));
+}
+
+#[test]
+fn authorization_ticket_id_alone_does_not_grant_memory_write() {
+    let engine = MemoryPolicyEngine::new(global_on());
+    let sid = SessionId::new();
+    let evidence = make_evidence(
+        MemorySource::ToolOutput,
+        MemoryEvidenceOrigin::BuiltinToolOutput {
+            tool_name: "memory".to_owned(),
+            tool_use_id: ToolUseId::new(),
+        },
+    );
+    let result = engine.evaluate_write(
+        &thread(sid, MemoryThreadMode::ReadWrite),
+        &model_actor(),
+        &evidence,
+        &authorization_ticket_only_permission(),
+        &MemoryVisibility::Tenant,
+    );
+    assert!(matches!(
+        result,
+        MemoryPolicyDecision::Deny {
+            reason: MemoryPolicyDenyReason::VisibilityEscalationDenied
+        }
+    ));
+}
+
+#[test]
+fn authorized_tool_ticket_and_action_plan_grant_memory_write() {
+    let engine = MemoryPolicyEngine::new(global_on());
+    let sid = SessionId::new();
+    let evidence = make_evidence(
+        MemorySource::ToolOutput,
+        MemoryEvidenceOrigin::BuiltinToolOutput {
+            tool_name: "memory".to_owned(),
+            tool_use_id: ToolUseId::new(),
+        },
+    );
+    let result = engine.evaluate_write(
+        &thread(sid, MemoryThreadMode::ReadWrite),
+        &model_actor(),
+        &evidence,
+        &authorized_tool_permission(),
+        &MemoryVisibility::Tenant,
+    );
+    assert_eq!(result, MemoryPolicyDecision::Allow);
+}
+
+#[test]
+fn non_interactive_grant_is_limited_to_matching_subagent_team_output() {
+    let engine = MemoryPolicyEngine::new(global_on());
+    let parent_session_id = SessionId::new();
+    let child_session_id = SessionId::new();
+    let agent_id = AgentId::new();
+    let team_id = TeamId::new();
+    let evidence = make_evidence(
+        MemorySource::SubagentDerived {
+            child_session: child_session_id,
+        },
+        MemoryEvidenceOrigin::SubagentOutput {
+            parent_session_id,
+            child_session_id,
+            run_id: RunId::new(),
+            agent_id: Some(agent_id),
+        },
+    );
+
+    let result = engine.evaluate_write(
+        &thread(child_session_id, MemoryThreadMode::ReadWrite),
+        &MemoryActor::Subagent {
+            child_session_id,
+            agent_id: Some(agent_id),
+        },
+        &evidence,
+        &non_interactive_memory_permission(),
+        &MemoryVisibility::Team { team_id },
+    );
+
+    assert!(matches!(result, MemoryPolicyDecision::Allow));
+}
+
+#[test]
+fn non_interactive_grant_does_not_authorize_mismatched_subagent_output() {
+    let engine = MemoryPolicyEngine::new(global_on());
+    let child_session_id = SessionId::new();
+    let evidence = make_evidence(
+        MemorySource::SubagentDerived {
+            child_session: child_session_id,
+        },
+        MemoryEvidenceOrigin::SubagentOutput {
+            parent_session_id: SessionId::new(),
+            child_session_id: SessionId::new(),
+            run_id: RunId::new(),
+            agent_id: Some(AgentId::new()),
+        },
+    );
+
+    let result = engine.evaluate_write(
+        &thread(child_session_id, MemoryThreadMode::ReadWrite),
+        &MemoryActor::Subagent {
+            child_session_id,
+            agent_id: Some(AgentId::new()),
+        },
+        &evidence,
+        &non_interactive_memory_permission(),
+        &MemoryVisibility::Team {
+            team_id: TeamId::new(),
+        },
+    );
+
+    assert!(matches!(
+        result,
+        MemoryPolicyDecision::CandidateOnly {
             reason: MemoryPolicyDenyReason::PermissionRequired
         }
     ));

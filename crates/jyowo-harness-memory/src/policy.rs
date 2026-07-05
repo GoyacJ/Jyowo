@@ -68,6 +68,41 @@ impl MemoryPolicyEngine {
         MemoryPolicyDecision::Allow
     }
 
+    /// Evaluate whether memory export is allowed.
+    pub fn evaluate_export(
+        &self,
+        thread: &MemoryThreadSettings,
+        _actor: &MemoryActor,
+        permission: &MemoryPermissionContext,
+    ) -> MemoryPolicyDecision {
+        if !self.global_settings.use_memories {
+            return MemoryPolicyDecision::Deny {
+                reason: MemoryPolicyDenyReason::GlobalUseDisabled,
+            };
+        }
+
+        if matches!(thread.memory_mode, MemoryThreadMode::Off) || thread.use_memories == Some(false)
+        {
+            return MemoryPolicyDecision::Deny {
+                reason: MemoryPolicyDenyReason::ThreadUseDisabled,
+            };
+        }
+
+        if !permission.explicit_user_instruction {
+            return MemoryPolicyDecision::Deny {
+                reason: MemoryPolicyDenyReason::PermissionRequired,
+            };
+        }
+
+        if permission.include_raw_content && permission.non_interactive_policy_grant {
+            return MemoryPolicyDecision::Deny {
+                reason: MemoryPolicyDenyReason::PermissionRequired,
+            };
+        }
+
+        MemoryPolicyDecision::Allow
+    }
+
     /// Evaluate whether a memory write (create/update) is allowed.
     ///
     /// Returns `CandidateOnly` when the write should be staged as a candidate
@@ -156,22 +191,26 @@ impl MemoryPolicyEngine {
             }
         }
 
-        // 7. Model-derived / external content → candidate by default
-        if !is_trusted_source(&evidence.source) && !has_memory_write_grant(permission) {
-            return MemoryPolicyDecision::CandidateOnly {
-                reason: MemoryPolicyDenyReason::MissingPolicy,
-            };
-        }
-
-        // 8. Subagent-derived → candidate by default
+        // 7. Subagent-derived → candidate by default.
+        // A non-interactive grant is valid only for audited team shared-memory
+        // writes where the subagent actor and evidence describe the same child.
         if matches!(actor, MemoryActor::Subagent { .. })
             || matches!(evidence.source, MemorySource::SubagentDerived { .. })
         {
-            if has_memory_write_grant(permission) {
+            if has_memory_write_grant(permission)
+                || has_scoped_subagent_team_grant(permission, actor, evidence, target_visibility)
+            {
                 return MemoryPolicyDecision::Allow;
             }
             return MemoryPolicyDecision::CandidateOnly {
                 reason: MemoryPolicyDenyReason::PermissionRequired,
+            };
+        }
+
+        // 8. Model-derived / external content → candidate by default
+        if !is_trusted_source(&evidence.source) && !has_memory_write_grant(permission) {
+            return MemoryPolicyDecision::CandidateOnly {
+                reason: MemoryPolicyDenyReason::MissingPolicy,
             };
         }
 
@@ -198,6 +237,7 @@ impl MemoryPolicyEngine {
         &self,
         thread: &MemoryThreadSettings,
         has_external_context: bool,
+        permission: &MemoryPermissionContext,
     ) -> MemoryPolicyDecision {
         if !self.global_settings.generate_memories {
             return MemoryPolicyDecision::Deny {
@@ -221,6 +261,12 @@ impl MemoryPolicyEngine {
             };
         }
 
+        if !has_memory_generation_grant(permission) {
+            return MemoryPolicyDecision::Deny {
+                reason: MemoryPolicyDenyReason::PermissionRequired,
+            };
+        }
+
         MemoryPolicyDecision::Allow
     }
 
@@ -238,10 +284,13 @@ impl MemoryPolicyEngine {
         }
 
         match thread.memory_mode {
-            MemoryThreadMode::Off
-            | MemoryThreadMode::ReadOnly
-            | MemoryThreadMode::CandidateOnly => {
+            MemoryThreadMode::Off | MemoryThreadMode::ReadOnly => {
                 return MemoryPolicyDecision::Deny {
+                    reason: MemoryPolicyDenyReason::ThreadUseDisabled,
+                };
+            }
+            MemoryThreadMode::CandidateOnly => {
+                return MemoryPolicyDecision::CandidateOnly {
                     reason: MemoryPolicyDenyReason::ThreadUseDisabled,
                 };
             }
@@ -271,8 +320,50 @@ fn is_external_context_source(source: &MemorySource) -> bool {
 
 fn has_memory_write_grant(permission: &MemoryPermissionContext) -> bool {
     permission.explicit_user_instruction
-        || permission.authorization_ticket_id.is_some()
-        || permission.non_interactive_policy_grant
+        || (permission.action_plan_id.is_some() && permission.authorization_ticket_id.is_some())
+}
+
+fn has_memory_generation_grant(permission: &MemoryPermissionContext) -> bool {
+    has_memory_write_grant(permission) || permission.non_interactive_policy_grant
+}
+
+fn has_scoped_subagent_team_grant(
+    permission: &MemoryPermissionContext,
+    actor: &MemoryActor,
+    evidence: &MemoryEvidence,
+    target_visibility: &MemoryVisibility,
+) -> bool {
+    if !permission.non_interactive_policy_grant
+        || !matches!(target_visibility, MemoryVisibility::Team { .. })
+    {
+        return false;
+    }
+
+    let MemoryActor::Subagent {
+        child_session_id: actor_child_session_id,
+        agent_id: actor_agent_id,
+    } = actor
+    else {
+        return false;
+    };
+    let MemorySource::SubagentDerived {
+        child_session: source_child_session_id,
+    } = &evidence.source
+    else {
+        return false;
+    };
+    let MemoryEvidenceOrigin::SubagentOutput {
+        child_session_id: origin_child_session_id,
+        agent_id: origin_agent_id,
+        ..
+    } = &evidence.origin
+    else {
+        return false;
+    };
+
+    actor_child_session_id == source_child_session_id
+        && actor_child_session_id == origin_child_session_id
+        && actor_agent_id == origin_agent_id
 }
 
 /// Check if the evidence origin indicates externally-retrieved content.

@@ -9,8 +9,8 @@ use harness_contracts::{
 use harness_hook::HookRegistry;
 use harness_journal::EventStore;
 use harness_mcp::{ElicitationHandler, StreamElicitationHandler};
-#[cfg(feature = "memory-consolidation")]
-use harness_memory::ConsolidationHook;
+#[cfg(feature = "memory-provider-registry")]
+use harness_memory::MemoryExtractor;
 use harness_memory::MemoryProvider;
 use harness_model::{AuxModelProvider, InferMiddleware, ModelProvider};
 use harness_observability::{Observer, Tracer};
@@ -40,8 +40,8 @@ pub(crate) struct BuilderExtras {
     pub(crate) tool_registry: Option<ToolRegistry>,
     pub(crate) hook_registry: Option<HookRegistry>,
     pub(crate) memory_providers: Vec<Arc<dyn MemoryProvider>>,
-    #[cfg(feature = "memory-consolidation")]
-    pub(crate) consolidation_hook: Option<Arc<dyn ConsolidationHook>>,
+    #[cfg(feature = "memory-provider-registry")]
+    pub(crate) memory_extractor: Option<Arc<dyn MemoryExtractor>>,
     #[cfg(feature = "memory-builtin")]
     pub(crate) builtin_memory: Option<BuiltinMemoryConfig>,
     pub(crate) blob_store: Option<Arc<dyn BlobStore>>,
@@ -251,19 +251,19 @@ impl<M, S, SB> HarnessBuilder<M, S, SB> {
         self
     }
 
-    #[cfg(feature = "memory-consolidation")]
+    #[cfg(feature = "memory-provider-registry")]
     #[must_use]
-    pub fn with_memory_consolidation_hook<H>(self, hook: H) -> Self
+    pub fn with_memory_extractor<E>(self, extractor: E) -> Self
     where
-        H: ConsolidationHook,
+        E: MemoryExtractor + 'static,
     {
-        self.with_memory_consolidation_hook_arc(Arc::new(hook))
+        self.with_memory_extractor_arc(Arc::new(extractor))
     }
 
-    #[cfg(feature = "memory-consolidation")]
+    #[cfg(feature = "memory-provider-registry")]
     #[must_use]
-    pub fn with_memory_consolidation_hook_arc(mut self, hook: Arc<dyn ConsolidationHook>) -> Self {
-        self.extras.consolidation_hook = Some(hook);
+    pub fn with_memory_extractor_arc(mut self, extractor: Arc<dyn MemoryExtractor>) -> Self {
+        self.extras.memory_extractor = Some(extractor);
         self
     }
 

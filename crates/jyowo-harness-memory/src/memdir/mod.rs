@@ -177,8 +177,8 @@ impl BuiltinMemory {
             .prepare_content_for_write(content, file::Edit::Append)
             .await?;
         let section_for_write = section.clone();
-        let outcome = spawn_memdir(move || {
-            file::write_section(
+        let result = spawn_memdir(move || {
+            file::write_section_with_previous(
                 &this,
                 file,
                 &section_for_write,
@@ -187,8 +187,15 @@ impl BuiltinMemory {
             )
         })
         .await?;
-        self.emit_write_event(file, section, file::Edit::Append, outcome.clone())
-            .await;
+        let outcome = result.outcome.clone();
+        if let Err(error) = self
+            .emit_write_event(file, section, file::Edit::Append, outcome.clone())
+            .await
+        {
+            self.rollback_memdir_write(file, result.previous_content)
+                .await?;
+            return Err(error);
+        }
         Ok(outcome)
     }
 
@@ -204,8 +211,8 @@ impl BuiltinMemory {
             .prepare_content_for_write(content, file::Edit::Replace)
             .await?;
         let section_for_write = section.clone();
-        let outcome = spawn_memdir(move || {
-            file::write_section(
+        let result = spawn_memdir(move || {
+            file::write_section_with_previous(
                 &this,
                 file,
                 &section_for_write,
@@ -214,8 +221,15 @@ impl BuiltinMemory {
             )
         })
         .await?;
-        self.emit_write_event(file, section, file::Edit::Replace, outcome.clone())
-            .await;
+        let outcome = result.outcome.clone();
+        if let Err(error) = self
+            .emit_write_event(file, section, file::Edit::Replace, outcome.clone())
+            .await
+        {
+            self.rollback_memdir_write(file, result.previous_content)
+                .await?;
+            return Err(error);
+        }
         Ok(outcome)
     }
 
@@ -227,12 +241,25 @@ impl BuiltinMemory {
         let this = self.clone();
         let section = section.to_owned();
         let section_for_write = section.clone();
-        let outcome = spawn_memdir(move || {
-            file::write_section(&this, file, &section_for_write, "", file::Edit::Delete)
+        let result = spawn_memdir(move || {
+            file::write_section_with_previous(
+                &this,
+                file,
+                &section_for_write,
+                "",
+                file::Edit::Delete,
+            )
         })
         .await?;
-        self.emit_write_event(file, section, file::Edit::Delete, outcome.clone())
-            .await;
+        let outcome = result.outcome.clone();
+        if let Err(error) = self
+            .emit_write_event(file, section, file::Edit::Delete, outcome.clone())
+            .await
+        {
+            self.rollback_memdir_write(file, result.previous_content)
+                .await?;
+            return Err(error);
+        }
         Ok(outcome)
     }
 
@@ -317,7 +344,7 @@ impl BuiltinMemory {
         section: String,
         edit: file::Edit,
         outcome: MemdirWriteOutcome,
-    ) {
+    ) -> Result<(), MemoryError> {
         let action = action_for_edit(edit, section);
         self.record_metric(MemoryMetric::MemdirWrite {
             file,
@@ -325,9 +352,12 @@ impl BuiltinMemory {
             bytes_written: outcome.bytes_written,
         });
         let (Some(sink), Some(scope)) = (&self.event_sink, self.event_scope) else {
-            return;
+            return Err(MemoryError::Provider {
+                provider: "audit".to_owned(),
+                source_message: "required memdir audit sink is not configured".to_owned(),
+            });
         };
-        sink.emit(Event::MemoryUpserted(MemoryUpsertedEvent {
+        sink.emit_required(Event::MemoryUpserted(MemoryUpsertedEvent {
             session_id: scope.session_id,
             run_id: scope.run_id,
             memory_id: MemoryId::new(),
@@ -341,7 +371,16 @@ impl BuiltinMemory {
             takes_effect: outcome.takes_effect,
             at: Utc::now(),
         }))
-        .await;
+        .await
+    }
+
+    async fn rollback_memdir_write(
+        &self,
+        file: MemdirFile,
+        previous_content: String,
+    ) -> Result<(), MemoryError> {
+        let this = self.clone();
+        spawn_memdir(move || file::restore_content(&this, file, &previous_content)).await
     }
 
     #[cfg(feature = "threat-scanner")]

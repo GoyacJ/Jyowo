@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use futures::executor::block_on;
 use harness_contracts::{
-    ActionPlanId, ContentHash, MemoryCandidateState, MemoryEvidence, MemoryEvidenceOrigin,
-    MemoryKind, MemoryMetadata, MemoryRecordDraft, MemorySource, MemoryThreadMode,
-    MemoryThreadSettings, MemoryVisibility, MessageId, NoopRedactor, RunId, SessionId, TenantId,
+    ActionPlanId, ContentHash, MemoryCandidateOperation, MemoryCandidateState, MemoryEvidence,
+    MemoryEvidenceOrigin, MemoryKind, MemoryMetadata, MemoryRecordDraft, MemorySource,
+    MemoryThreadMode, MemoryThreadSettings, MemoryVisibility, MessageId, NoopRedactor, RunId,
+    SessionId, TenantId,
 };
 use jyowo_harness_sdk::{prelude::*, testing::*};
 
@@ -86,6 +87,54 @@ fn memory_facade_merge_marks_candidates_merged() {
             merged_ids,
             std::collections::BTreeSet::from([first.id.to_string(), second.id.to_string()])
         );
+    });
+}
+
+#[test]
+fn memory_facade_merge_derives_evidence_from_candidates_not_request_payload() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-facade-merge-derives-evidence");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let harness = memory_harness(&workspace).await;
+        let session_id = SessionId::new();
+        let run_id = RunId::new();
+        let options = SessionOptions::new(&workspace).with_session_id(session_id);
+        let db_path = memory_db_path(&workspace);
+        let inbox = harness_memory::MemoryInbox::open(&db_path.to_string_lossy(), TenantId::SINGLE)
+            .expect("open memory inbox");
+        let candidate = inbox
+            .propose(
+                memory_draft("trusted candidate evidence"),
+                memory_evidence(session_id, run_id, 1),
+            )
+            .expect("propose candidate");
+        let mut forged_evidence = memory_evidence(session_id, run_id, 9);
+        forged_evidence.source = MemorySource::WebRetrieval;
+        forged_evidence.origin = MemoryEvidenceOrigin::WebRetrieval {
+            url_hash: ContentHash([9; 32]),
+            fetch_tool_use_id: None,
+        };
+
+        let merged = harness
+            .merge_memory_candidate(
+                options.clone(),
+                harness_contracts::MergeMemoryCandidateRequest {
+                    tenant_id: TenantId::SINGLE,
+                    candidate_ids: vec![candidate.id],
+                    merged_record: memory_draft("merged memory"),
+                    evidence: forged_evidence,
+                    action_plan_id: Some(ActionPlanId::new()),
+                },
+            )
+            .await
+            .expect("merge should ignore forged request evidence");
+
+        let item = harness
+            .get_memory_item(options, merged.memory_id)
+            .await
+            .expect("merged memory should exist");
+        assert_eq!(item.metadata.source, MemorySource::UserInput);
     });
 }
 
@@ -427,6 +476,133 @@ fn memory_facade_reject_rejects_non_proposed_candidate() {
             .expect("list promoted candidates");
         assert_eq!(promoted.len(), 1);
         assert_eq!(promoted[0].id, candidate.id);
+    });
+}
+
+#[test]
+fn memory_facade_approve_update_candidate_updates_existing_memory() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-facade-approve-update-candidate");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let harness = memory_harness(&workspace).await;
+        let session_id = SessionId::new();
+        let run_id = RunId::new();
+        let options = SessionOptions::new(&workspace).with_session_id(session_id);
+        let db_path = memory_db_path(&workspace);
+        let inbox = harness_memory::MemoryInbox::open(&db_path.to_string_lossy(), TenantId::SINGLE)
+            .expect("open memory inbox");
+        let seed = inbox
+            .propose(
+                memory_draft("original memory"),
+                memory_evidence(session_id, run_id, 1),
+            )
+            .expect("propose seed");
+        let approved = harness
+            .approve_memory_candidate(
+                options.clone(),
+                harness_contracts::ApproveMemoryCandidateRequest {
+                    tenant_id: TenantId::SINGLE,
+                    candidate_id: seed.id,
+                    action_plan_id: Some(ActionPlanId::new()),
+                },
+            )
+            .await
+            .expect("approval should create seed memory");
+        let update = inbox
+            .propose_with_operation(
+                MemoryCandidateOperation::Update {
+                    memory_id: approved.memory_id,
+                },
+                memory_draft("updated memory"),
+                memory_evidence(session_id, run_id, 2),
+            )
+            .expect("propose update");
+
+        let response = harness
+            .approve_memory_candidate(
+                options.clone(),
+                harness_contracts::ApproveMemoryCandidateRequest {
+                    tenant_id: TenantId::SINGLE,
+                    candidate_id: update.id,
+                    action_plan_id: Some(ActionPlanId::new()),
+                },
+            )
+            .await
+            .expect("approval should update existing memory");
+
+        assert_eq!(response.memory_id, approved.memory_id);
+        let item = harness
+            .get_memory_item(options.clone(), approved.memory_id)
+            .await
+            .expect("updated memory should exist");
+        assert_eq!(item.content, "updated memory");
+        let items = harness
+            .list_memory_items(options)
+            .await
+            .expect("list memory items");
+        assert_eq!(items.len(), 1);
+    });
+}
+
+#[test]
+fn memory_facade_approve_delete_candidate_deletes_existing_memory() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-facade-approve-delete-candidate");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let harness = memory_harness(&workspace).await;
+        let session_id = SessionId::new();
+        let run_id = RunId::new();
+        let options = SessionOptions::new(&workspace).with_session_id(session_id);
+        let db_path = memory_db_path(&workspace);
+        let inbox = harness_memory::MemoryInbox::open(&db_path.to_string_lossy(), TenantId::SINGLE)
+            .expect("open memory inbox");
+        let seed = inbox
+            .propose(
+                memory_draft("delete me"),
+                memory_evidence(session_id, run_id, 1),
+            )
+            .expect("propose seed");
+        let approved = harness
+            .approve_memory_candidate(
+                options.clone(),
+                harness_contracts::ApproveMemoryCandidateRequest {
+                    tenant_id: TenantId::SINGLE,
+                    candidate_id: seed.id,
+                    action_plan_id: Some(ActionPlanId::new()),
+                },
+            )
+            .await
+            .expect("approval should create seed memory");
+        let delete = inbox
+            .propose_with_operation(
+                MemoryCandidateOperation::Delete {
+                    memory_id: approved.memory_id,
+                },
+                memory_draft("delete me"),
+                memory_evidence(session_id, run_id, 2),
+            )
+            .expect("propose delete");
+
+        let response = harness
+            .approve_memory_candidate(
+                options.clone(),
+                harness_contracts::ApproveMemoryCandidateRequest {
+                    tenant_id: TenantId::SINGLE,
+                    candidate_id: delete.id,
+                    action_plan_id: Some(ActionPlanId::new()),
+                },
+            )
+            .await
+            .expect("approval should delete existing memory");
+
+        assert_eq!(response.memory_id, approved.memory_id);
+        let items = harness
+            .list_memory_items(options)
+            .await
+            .expect("list memory items");
+        assert!(items.is_empty());
     });
 }
 

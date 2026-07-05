@@ -68,13 +68,19 @@ pub async fn get_memory_item_with_runtime_state(
         ));
     };
     let options = state.conversation_session_options(state.default_conversation_id);
+    let summary = harness
+        .list_memory_items(options.clone())
+        .await
+        .ok()
+        .and_then(|items| items.into_iter().find(|item| item.id == id))
+        .ok_or_else(|| memory_operation_failed("Memory detail metadata could not be loaded."))?;
     let item = harness
         .get_memory_item(options, id)
         .await
         .map_err(|_| memory_operation_failed("Memory detail could not be loaded."))?;
 
     Ok(GetMemoryItemResponse {
-        item: memory_item_payload(item),
+        item: memory_item_payload_with_summary(item, &summary),
     })
 }
 
@@ -96,9 +102,15 @@ pub async fn update_memory_item_with_runtime_state(
         .update_memory_item_content(options, id, request.content, action_plan_id)
         .await
         .map_err(|_| memory_operation_failed("Memory item could not be saved."))?;
+    let summary = harness
+        .list_memory_items(state.conversation_session_options(state.default_conversation_id))
+        .await
+        .ok()
+        .and_then(|items| items.into_iter().find(|item| item.id == id))
+        .ok_or_else(|| memory_operation_failed("Memory item metadata could not be loaded."))?;
 
     Ok(UpdateMemoryItemResponse {
-        item: memory_item_payload(item),
+        item: memory_item_payload_with_summary(item, &summary),
     })
 }
 
@@ -126,6 +138,7 @@ pub async fn delete_memory_item_with_runtime_state(
 }
 
 pub async fn export_memory_items_with_runtime_state(
+    request: ExportMemoryItemsRequest,
     state: &DesktopRuntimeState,
 ) -> Result<ExportMemoryItemsResponse, CommandErrorPayload> {
     let Some(harness) = state.harness() else {
@@ -133,32 +146,31 @@ pub async fn export_memory_items_with_runtime_state(
             "Exporting memory requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id);
-    let records = harness
-        .export_memory_items(options)
+    let options = state
+        .conversation_session_options(request.session_id.unwrap_or(state.default_conversation_id));
+    let export = harness
+        .export_memory_items(
+            options,
+            request.scope.as_str(),
+            request.format.as_str(),
+            request.include_raw_content,
+            request.include_metadata,
+            request.include_hashes,
+            request.explicit_user_action,
+        )
         .await
-        .map_err(|_| memory_operation_failed("Memory export could not be prepared."))?;
-    let item_count = records.len().min(u32::MAX as usize) as u32;
-    let items = records
-        .into_iter()
-        .map(memory_item_summary_payload)
-        .collect::<Vec<_>>();
-    let content = serde_json::to_string_pretty(&items)
-        .map_err(|_| memory_operation_failed("Memory export could not be prepared."))?;
-    let exported_at = jyowo_harness_sdk::ext::now();
-    let file_name = format!("memory-{}.json", exported_at.format("%Y%m%dT%H%M%S%.3fZ"));
-    let relative_path = PathBuf::from(".jyowo")
-        .join("runtime")
-        .join("exports")
-        .join(file_name);
-    let export_path = state.workspace_root.join(&relative_path);
-    write_memory_export_file(&export_path, &content)?;
+        .map_err(memory_export_error)?;
 
     Ok(ExportMemoryItemsResponse {
-        exported_at: exported_at.to_rfc3339(),
-        format: "json",
-        item_count,
-        path: relative_path.to_string_lossy().into_owned(),
+        exported_at: export.exported_at.to_rfc3339(),
+        format: export.format,
+        scope: export.scope,
+        include_raw_content: export.include_raw_content,
+        include_metadata: export.include_metadata,
+        include_hashes: export.include_hashes,
+        item_count: export.item_count,
+        path: export.relative_path.to_string_lossy().into_owned(),
+        audit_hash: export.audit_hash,
     })
 }
 
@@ -251,7 +263,8 @@ pub async fn list_memory_recall_traces_with_runtime_state(
             "Listing memory recall traces requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id);
+    let options = state
+        .conversation_session_options(request.session_id.unwrap_or(state.default_conversation_id));
     harness
         .list_memory_recall_traces(options, request)
         .await
@@ -283,7 +296,7 @@ pub async fn get_model_request_preview_with_runtime_state(
             "Building model request preview requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id);
+    let options = state.conversation_session_options(request.session_id);
     harness
         .get_model_request_preview(options, request)
         .await
@@ -328,9 +341,14 @@ pub(crate) fn parse_optional_action_plan_id(
 
 pub(crate) fn memory_item_summary_payload(summary: MemorySummary) -> MemoryItemSummaryPayload {
     MemoryItemSummaryPayload {
+        content_hash: content_hash_payload(&summary.content_hash),
         content_preview: summary.content_preview,
+        deleted: summary.deleted,
+        expires_at: summary.expires_at.map(|at| at.to_rfc3339()),
         id: summary.id.to_string(),
         kind: memory_kind_payload(&summary.kind).to_owned(),
+        last_accessed_at: summary.metadata.last_accessed_at.map(|at| at.to_rfc3339()),
+        provider_id: summary.provider_id,
         source: memory_source_payload(&summary.metadata.source).to_owned(),
         tags: summary.metadata.tags,
         updated_at: summary.updated_at.to_rfc3339(),
@@ -338,19 +356,31 @@ pub(crate) fn memory_item_summary_payload(summary: MemorySummary) -> MemoryItemS
     }
 }
 
-pub(crate) fn memory_item_payload(record: MemoryRecord) -> MemoryItemPayload {
+pub(crate) fn memory_item_payload_with_summary(
+    record: MemoryRecord,
+    summary: &MemorySummary,
+) -> MemoryItemPayload {
     MemoryItemPayload {
         access_count: record.metadata.access_count,
         confidence: record.metadata.confidence,
         content: record.content,
+        content_hash: content_hash_payload(&summary.content_hash),
         created_at: record.created_at.to_rfc3339(),
+        deleted: summary.deleted,
+        expires_at: summary.expires_at.map(|at| at.to_rfc3339()),
         id: record.id.to_string(),
         kind: memory_kind_payload(&record.kind).to_owned(),
+        last_accessed_at: summary.metadata.last_accessed_at.map(|at| at.to_rfc3339()),
+        provider_id: summary.provider_id.clone(),
         source: memory_source_payload(&record.metadata.source).to_owned(),
         tags: record.metadata.tags,
         updated_at: record.updated_at.to_rfc3339(),
         visibility: memory_visibility_payload(&record.visibility).to_owned(),
     }
+}
+
+fn content_hash_payload(hash: &harness_contracts::ContentHash) -> String {
+    hash.0.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub(crate) fn memory_kind_payload(kind: &MemoryKind) -> &'static str {

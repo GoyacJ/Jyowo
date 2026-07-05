@@ -2767,6 +2767,7 @@ const memoryItemIdSchema = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/)
 const memoryCandidateIdSchema = memoryItemIdSchema
 const memoryTraceIdSchema = memoryItemIdSchema
 const tenantIdSchema = memoryItemIdSchema
+const teamIdSchema = memoryItemIdSchema
 const sessionIdSchema = memoryItemIdSchema
 const runIdSchema = memoryItemIdSchema
 const actionPlanIdSchema = memoryItemIdSchema
@@ -2800,9 +2801,14 @@ const memorySourceSchema = z.enum([
 
 const memoryItemSummarySchema = z
   .object({
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
     contentPreview: z.string(),
+    deleted: z.boolean(),
+    expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
     id: memoryItemIdSchema,
     kind: memoryKindSchema,
+    lastAccessedAt: z.string().datetime({ offset: true }).nullable().optional(),
+    providerId: z.string().min(1).nullable().optional(),
     source: memorySourceSchema,
     tags: z.array(z.string()),
     updatedAt: z.string().datetime({ offset: true }),
@@ -2815,9 +2821,14 @@ const memoryItemSchema = z
     accessCount: z.number().int().min(0),
     confidence: z.number().min(0).max(1),
     content: z.string(),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
     createdAt: z.string().datetime({ offset: true }),
+    deleted: z.boolean(),
+    expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
     id: memoryItemIdSchema,
     kind: memoryKindSchema,
+    lastAccessedAt: z.string().datetime({ offset: true }).nullable().optional(),
+    providerId: z.string().min(1).nullable().optional(),
     source: memorySourceSchema,
     tags: z.array(z.string()),
     updatedAt: z.string().datetime({ offset: true }),
@@ -2874,12 +2885,29 @@ const deleteMemoryItemResponseSchema = z
   })
   .strict()
 
+const exportMemoryItemsRequestSchema = z
+  .object({
+    explicitUserAction: z.boolean(),
+    format: z.literal('json'),
+    includeHashes: z.boolean(),
+    includeMetadata: z.boolean(),
+    includeRawContent: z.boolean(),
+    scope: z.literal('visible'),
+    sessionId: sessionIdSchema.optional(),
+  })
+  .strict()
+
 const exportMemoryItemsResponseSchema = z
   .object({
+    auditHash: z.string().regex(/^[0-9a-f]{64}$/),
     exportedAt: z.string().datetime({ offset: true }),
     format: z.literal('json'),
+    includeHashes: z.boolean(),
+    includeMetadata: z.boolean(),
+    includeRawContent: z.boolean(),
     itemCount: z.number().int().min(0),
     path: z.string().min(1),
+    scope: z.literal('visible'),
   })
   .strict()
 
@@ -2953,6 +2981,11 @@ const memoryCandidateStateSchema = z.enum([
   'proposed',
   'rejected',
 ])
+const memoryCandidateOperationSchema = z.union([
+  z.literal('create'),
+  z.object({ update: z.object({ memory_id: memoryItemIdSchema }).strict() }).strict(),
+  z.object({ delete: z.object({ memory_id: memoryItemIdSchema }).strict() }).strict(),
+])
 
 const contractMemoryKindSchema = z.union([
   memoryKindSchema,
@@ -2961,7 +2994,7 @@ const contractMemoryKindSchema = z.union([
 const contractMemoryVisibilitySchema = z.union([
   z.literal('tenant'),
   z.object({ private: z.object({ session_id: sessionIdSchema }).strict() }).strict(),
-  z.object({ team: z.object({ team_id: memoryItemIdSchema }).strict() }).strict(),
+  z.object({ team: z.object({ team_id: teamIdSchema }).strict() }).strict(),
   z.object({ user: z.object({ user_id: z.string().min(1) }).strict() }).strict(),
 ])
 const contractMemorySourceSchema = z.union([
@@ -3137,6 +3170,7 @@ const memoryCandidateListItemSchema = z
     evidence: memoryEvidenceSchema,
     expires_at: z.string().datetime({ offset: true }).nullable().optional(),
     id: memoryCandidateIdSchema,
+    operation: memoryCandidateOperationSchema,
     proposed_record: memoryRecordDraftSchema,
     state: memoryCandidateStateSchema,
   })
@@ -3362,10 +3396,14 @@ const memoryModelRequestPreviewSectionSchema = z
 const memoryModelRequestPreviewSchema = z
   .object({
     content_hash: contentHashSchema,
+    policy_decisions: z.array(z.string()).default([]),
     redacted_count: z.number().int().min(0),
     run_id: runIdSchema,
     sections: z.array(memoryModelRequestPreviewSectionSchema),
     session_id: sessionIdSchema,
+    token_estimate: z.number().int().min(0),
+    tool_names: z.array(z.string()).default([]),
+    trace_id: memoryTraceIdSchema.nullable().optional(),
   })
   .strict()
 const getModelRequestPreviewRequestSchema = z
@@ -3697,15 +3735,19 @@ export type UpdateMemoryItemRequest = z.infer<typeof updateMemoryItemRequestSche
 export type UpdateMemoryItemResponse = z.infer<typeof updateMemoryItemResponseSchema>
 export type DeleteMemoryItemRequest = z.infer<typeof deleteMemoryItemRequestSchema>
 export type DeleteMemoryItemResponse = z.infer<typeof deleteMemoryItemResponseSchema>
+export type ExportMemoryItemsRequest = z.infer<typeof exportMemoryItemsRequestSchema>
 export type ExportMemoryItemsResponse = z.infer<typeof exportMemoryItemsResponseSchema>
 type GetMemorySettingsRequest = z.input<typeof getMemorySettingsRequestSchema>
 export type UpdateMemorySettingsRequest = z.input<typeof updateMemorySettingsRequestSchema>
 export type GetMemorySettingsResponse = z.infer<typeof memorySettingsResponseSchema>
 export type UpdateMemorySettingsResponse = z.infer<typeof memorySettingsResponseSchema>
-type GetThreadMemorySettingsRequest = z.input<typeof getThreadMemorySettingsRequestSchema>
-type UpdateThreadMemorySettingsRequest = z.input<typeof updateThreadMemorySettingsRequestSchema>
-type GetThreadMemorySettingsResponse = z.infer<typeof threadMemorySettingsResponseSchema>
-type UpdateThreadMemorySettingsResponse = z.infer<typeof threadMemorySettingsResponseSchema>
+export type MemoryThreadMode = z.infer<typeof memoryThreadModeSchema>
+export type GetThreadMemorySettingsRequest = z.input<typeof getThreadMemorySettingsRequestSchema>
+export type UpdateThreadMemorySettingsRequest = z.input<
+  typeof updateThreadMemorySettingsRequestSchema
+>
+export type GetThreadMemorySettingsResponse = z.infer<typeof threadMemorySettingsResponseSchema>
+export type UpdateThreadMemorySettingsResponse = z.infer<typeof threadMemorySettingsResponseSchema>
 export type ListMemoryCandidatesRequest = z.input<typeof listMemoryCandidatesRequestSchema>
 export type ListMemoryCandidatesResponse = z.infer<typeof listMemoryCandidatesResponseSchema>
 export type ApproveMemoryCandidateRequest = z.input<typeof approveMemoryCandidateRequestSchema>
@@ -3776,7 +3818,7 @@ export interface CommandClient {
   listenSkillCatalogInstallProgress: (
     onProgress: (progress: SkillCatalogInstallProgressPayload) => void,
   ) => Promise<() => void>
-  exportMemoryItems: () => Promise<ExportMemoryItemsResponse>
+  exportMemoryItems: (request: ExportMemoryItemsRequest) => Promise<ExportMemoryItemsResponse>
   exportSupportBundle: (request: ExportSupportBundleRequest) => Promise<ExportSupportBundleResponse>
   getExecutionSettings: (
     request?: GetExecutionSettingsRequest,
@@ -4125,9 +4167,14 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, deleteSkillRequestSchema, { id })
       return parsePayload(command, deleteSkillResponseSchema, await invoke(command, args))
     },
-    async exportMemoryItems() {
+    async exportMemoryItems(request) {
       const command = 'export_memory_items'
-      return parsePayload(command, exportMemoryItemsResponseSchema, await invoke(command))
+      const args = parseArgs(command, exportMemoryItemsRequestSchema, request)
+      return parsePayload(
+        command,
+        exportMemoryItemsResponseSchema,
+        await invoke(command, { request: args }),
+      )
     },
     async exportSupportBundle(request) {
       const command = 'export_support_bundle'
@@ -5318,9 +5365,10 @@ export function deleteMemoryItem(
 }
 
 export function exportMemoryItems(
+  request: ExportMemoryItemsRequest,
   client: CommandClient = tauriCommandClient,
 ): Promise<ExportMemoryItemsResponse> {
-  return client.exportMemoryItems()
+  return client.exportMemoryItems(request)
 }
 
 export function getMemorySettings(

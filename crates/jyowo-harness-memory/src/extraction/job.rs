@@ -4,7 +4,7 @@
 //! Idempotency key: (tenant_id, session_id, run_id, evidence_hash, job_kind).
 
 use chrono::{DateTime, Duration, Utc};
-use harness_contracts::{RunId, SessionId, TenantId};
+use harness_contracts::{MessageId, RunId, SessionId, TenantId};
 use rusqlite::{Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -44,6 +44,12 @@ pub struct ExtractionJob {
     pub tenant_id: TenantId,
     pub session_id: SessionId,
     pub run_id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_message_id: Option<MessageId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_excerpt: Option<String>,
     pub evidence_hash: [u8; 32],
     pub job_kind: ExtractionJobKind,
     pub state: ExtractionJobState,

@@ -58,6 +58,7 @@ pub struct MemoryOperationPolicy {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryExportPreparation {
     pub summaries: Vec<MemorySummary>,
+    pub records: Vec<MemoryRecord>,
     pub event: MemoryExportedEvent,
 }
 
@@ -463,85 +464,6 @@ impl MemoryManager {
             .await
     }
 
-    pub async fn upsert(
-        &self,
-        record: MemoryRecord,
-        run_id: Option<RunId>,
-    ) -> Result<harness_contracts::MemoryId, MemoryError> {
-        let provider = self.write_provider_for_record(&record)?;
-        self.upsert_to_provider(provider, record, run_id).await
-    }
-
-    async fn upsert_to_provider(
-        &self,
-        provider: Arc<dyn MemoryProvider>,
-        mut record: MemoryRecord,
-        run_id: Option<RunId>,
-    ) -> Result<harness_contracts::MemoryId, MemoryError> {
-        let now = chrono::Utc::now();
-        record.updated_at = now;
-        let session_id = record
-            .visibility
-            .session_id()
-            .or_else(|| source_session_id(&record.metadata.source))
-            .unwrap_or_else(SessionId::new);
-        let metric_kind = record.kind.clone();
-        let metric_visibility = record.visibility.clone();
-
-        let provider_id = provider.provider_id().to_owned();
-        #[cfg(feature = "threat-scanner")]
-        let mut provider_record = record.clone();
-        #[cfg(not(feature = "threat-scanner"))]
-        let provider_record = record.clone();
-        #[cfg(feature = "threat-scanner")]
-        self.scan_record_before_write(
-            &mut provider_record,
-            session_id,
-            run_id,
-            Some(provider_id.clone()),
-        )
-        .await?;
-        let content_hash = content_hash(&provider_record.content);
-        let bytes_written = provider_record.content.len() as u64;
-        let target = MemoryWriteTarget {
-            kind: provider_record.kind.clone(),
-            visibility: provider_record.visibility.clone(),
-            destination: WriteDestination::External {
-                provider_id: provider_id.clone(),
-            },
-        };
-        let id = provider.upsert(provider_record.clone()).await?;
-        provider
-            .on_memory_write(MemoryWriteAction::Upsert, &target, content_hash.clone())
-            .await?;
-        if let Some(sink) = &self.event_sink {
-            sink.emit(Event::MemoryUpserted(MemoryUpsertedEvent {
-                session_id: provider_record
-                    .visibility
-                    .session_id()
-                    .or_else(|| source_session_id(&provider_record.metadata.source))
-                    .unwrap_or(session_id),
-                run_id,
-                memory_id: id,
-                kind: provider_record.kind.clone(),
-                visibility: provider_record.visibility.clone(),
-                action: MemoryWriteAction::Upsert,
-                provider_id,
-                source: provider_record.metadata.source.clone(),
-                content_hash: content_hash.clone(),
-                bytes_written,
-                takes_effect: TakesEffect::CurrentSession,
-                at: now,
-            }))
-            .await;
-        }
-        self.record_metric(MemoryMetric::Upsert {
-            kind: metric_kind,
-            visibility: metric_visibility,
-        });
-        Ok(id)
-    }
-
     async fn upsert_to_provider_required_audit(
         &self,
         provider: Arc<dyn MemoryProvider>,
@@ -645,7 +567,7 @@ impl MemoryManager {
             .list_for_actor_sources(actor)
             .await?
             .into_iter()
-            .map(|source| memory_summary_from_record(&source.record))
+            .map(|source| memory_summary_from_record(&source.record, Some(source.provider_id)))
             .collect())
     }
 
@@ -732,22 +654,6 @@ impl MemoryManager {
         Err(MemoryError::NotFound(id))
     }
 
-    pub async fn update_content_for_actor(
-        &self,
-        id: MemoryId,
-        actor: MemoryActorContext,
-        content: impl Into<String>,
-        run_id: Option<RunId>,
-    ) -> Result<MemoryRecord, MemoryError> {
-        let (provider, mut record) = self
-            .writable_provider_record_for_actor(id, actor.clone())
-            .await?;
-        record.content = content.into();
-        record.updated_at = chrono::Utc::now();
-        self.upsert_to_provider(provider, record, run_id).await?;
-        self.get_for_actor(id, actor).await
-    }
-
     pub async fn update_content_for_actor_with_policy(
         &self,
         id: MemoryId,
@@ -766,7 +672,7 @@ impl MemoryManager {
         self.get_for_actor(id, actor).await
     }
 
-    pub async fn forget_for_actor(
+    async fn forget_for_actor(
         &self,
         id: MemoryId,
         actor: MemoryActorContext,
@@ -870,6 +776,9 @@ impl MemoryManager {
     pub async fn prepare_export_for_actor(
         &self,
         actor: MemoryActorContext,
+        scope: impl Into<String>,
+        format: impl Into<String>,
+        include_raw_content: bool,
     ) -> Result<MemoryExportPreparation, MemoryError> {
         let providers = self.readable_providers()?;
         if providers.is_empty() {
@@ -878,6 +787,13 @@ impl MemoryManager {
         let mut records = Vec::new();
         let mut seen = HashSet::new();
         for provider in providers {
+            let descriptor = provider.descriptor();
+            if include_raw_content && !descriptor.supports_raw_content_export {
+                return Err(MemoryError::Provider {
+                    provider: descriptor.provider_id,
+                    source_message: "provider does not allow raw memory export".to_owned(),
+                });
+            }
             let summaries = provider
                 .list(MemoryListScope::ForActor(actor.clone()))
                 .await?;
@@ -911,6 +827,9 @@ impl MemoryManager {
             session_id: actor.session_id.unwrap_or_else(SessionId::new),
             tenant_id: actor.tenant_id,
             provider_id: self.provider_id().unwrap_or_else(|| "registry".to_owned()),
+            scope: scope.into(),
+            format: format.into(),
+            include_raw_content,
             item_count: records.len().min(u32::MAX as usize) as u32,
             content_hashes: records
                 .iter()
@@ -920,6 +839,8 @@ impl MemoryManager {
                 .iter()
                 .map(|record| record.content.len() as u64)
                 .sum(),
+            path: None,
+            audit_hash: None,
             at: chrono::Utc::now(),
         };
 
@@ -928,6 +849,7 @@ impl MemoryManager {
                 .iter()
                 .map(redacted_memory_summary_from_record)
                 .collect(),
+            records,
             event,
         })
     }
@@ -1007,8 +929,6 @@ impl MemoryManager {
             provider.on_session_end(ctx, summary).await?;
             provider.shutdown().await?;
         }
-        #[cfg(feature = "consolidation")]
-        self.run_consolidation(ctx, summary).await?;
         Ok(())
     }
 
@@ -1184,12 +1104,7 @@ impl MemoryManager {
                     )),
                 ));
             } else {
-                let run = recall_provider_with_deadline(
-                    provider,
-                    provider_query.clone(),
-                    provider_deadline,
-                )
-                .await;
+                let run = recall_provider_without_runtime(provider, provider_query.clone()).await;
                 recall_results.push((provider_id, descriptor, provider_query.max_records, run));
             }
         }
@@ -1866,19 +1781,27 @@ fn source_session_id(source: &MemorySource) -> Option<SessionId> {
     }
 }
 
-fn memory_summary_from_record(record: &MemoryRecord) -> MemorySummary {
+fn memory_summary_from_record(record: &MemoryRecord, provider_id: Option<String>) -> MemorySummary {
     MemorySummary {
         id: record.id,
+        provider_id,
         kind: record.kind.clone(),
         visibility: record.visibility.clone(),
         content_preview: content_preview(&record.content),
+        content_hash: content_hash(&record.content),
         metadata: record.metadata.clone(),
+        expires_at: record
+            .metadata
+            .ttl
+            .and_then(|ttl| chrono::Duration::from_std(ttl).ok())
+            .map(|ttl| record.created_at + ttl),
+        deleted: false,
         updated_at: record.updated_at,
     }
 }
 
 fn redacted_memory_summary_from_record(record: &MemoryRecord) -> MemorySummary {
-    let mut summary = memory_summary_from_record(record);
+    let mut summary = memory_summary_from_record(record, None);
     summary.content_preview = "[redacted memory content]".to_owned();
     summary
 }
@@ -1966,6 +1889,18 @@ async fn recall_provider_with_deadline(
     }
 }
 
+async fn recall_provider_without_runtime(
+    provider: Arc<dyn MemoryProvider>,
+    query: MemoryQuery,
+) -> ProviderRecallRun {
+    let started = Instant::now();
+    ProviderRecallRun {
+        result: provider.recall(query).await,
+        timed_out: false,
+        latency_ms: elapsed_ms(started),
+    }
+}
+
 async fn wait_for_recall_result(
     mut receiver: watch::Receiver<Option<RecallResult>>,
 ) -> RecallResult {
@@ -2050,14 +1985,18 @@ fn apply_provider_budgets(
 }
 
 fn score_breakdown(record: &MemoryRecord) -> MemoryScoreBreakdown {
+    if let Some(score) = &record.metadata.recall_score_breakdown {
+        return score.clone();
+    }
+
     let final_score = record.metadata.recall_score;
     MemoryScoreBreakdown {
-        lexical_score: final_score,
+        lexical_score: 0.0,
         vector_score: None,
-        confidence_score: record.metadata.confidence,
+        confidence_score: 0.0,
         recency_score: 0.0,
-        access_score: (record.metadata.access_count as f32).min(1.0),
-        source_trust_score: 1.0,
+        access_score: 0.0,
+        source_trust_score: 0.0,
         explicit_selection_boost: 0.0,
         final_score,
     }

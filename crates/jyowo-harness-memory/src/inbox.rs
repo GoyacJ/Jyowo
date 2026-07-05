@@ -9,9 +9,9 @@ use std::sync::Mutex;
 
 use chrono::Utc;
 use harness_contracts::{
-    ContentHash, MemoryCandidate, MemoryCandidateId, MemoryCandidateState, MemoryEvidence,
-    MemoryEvidenceOrigin, MemoryKind, MemoryMetadata, MemoryRecordDraft, MemorySource,
-    MemoryVisibility, TenantId,
+    ContentHash, MemoryCandidate, MemoryCandidateId, MemoryCandidateOperation,
+    MemoryCandidateState, MemoryEvidence, MemoryEvidenceOrigin, MemoryKind, MemoryMetadata,
+    MemoryRecordDraft, MemorySource, MemoryVisibility, TenantId,
 };
 use rusqlite::Connection;
 
@@ -48,6 +48,15 @@ impl MemoryInbox {
         draft: MemoryRecordDraft,
         evidence: MemoryEvidence,
     ) -> Result<MemoryCandidate, String> {
+        self.propose_with_operation(MemoryCandidateOperation::Create, draft, evidence)
+    }
+
+    pub fn propose_with_operation(
+        &self,
+        operation: MemoryCandidateOperation,
+        draft: MemoryRecordDraft,
+        evidence: MemoryEvidence,
+    ) -> Result<MemoryCandidate, String> {
         let conn = self.conn.lock().map_err(|e| format!("inbox lock: {e}"))?;
 
         let now = Utc::now();
@@ -55,6 +64,7 @@ impl MemoryInbox {
             id: MemoryCandidateId::new(),
             tenant_id: self.tenant_id,
             state: MemoryCandidateState::Proposed,
+            operation,
             proposed_record: draft,
             evidence,
             created_at: now,
@@ -147,6 +157,7 @@ impl MemoryInbox {
             id: MemoryCandidateId::new(),
             tenant_id: self.tenant_id,
             state: MemoryCandidateState::Proposed,
+            operation: MemoryCandidateOperation::Create,
             proposed_record: draft,
             evidence,
             created_at: now,

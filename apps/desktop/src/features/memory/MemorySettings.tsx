@@ -61,6 +61,19 @@ export function MemorySettings() {
       settings: { ...settings, [key]: value },
     })
   }
+  const handleLimitChange = (
+    key: 'max_memory_bytes' | 'max_recall_chars_per_turn' | 'max_recall_records_per_turn',
+    value: string,
+  ) => {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return
+    }
+    updateMutation.mutate({
+      tenantId: DEFAULT_MEMORY_TENANT_ID,
+      settings: { ...settings, [key]: Math.trunc(parsed) },
+    })
+  }
 
   return (
     <div className="space-y-4 p-4">
@@ -109,7 +122,10 @@ export function MemorySettings() {
               id="max-records"
               type="number"
               value={settings.max_recall_records_per_turn}
-              disabled
+              min={1}
+              onChange={(event) =>
+                handleLimitChange('max_recall_records_per_turn', event.target.value)
+              }
             />
           </div>
           <div className="space-y-2">
@@ -118,12 +134,21 @@ export function MemorySettings() {
               id="max-chars"
               type="number"
               value={settings.max_recall_chars_per_turn}
-              disabled
+              min={1}
+              onChange={(event) =>
+                handleLimitChange('max_recall_chars_per_turn', event.target.value)
+              }
             />
           </div>
           <div className="space-y-2">
             <Label htmlFor="max-bytes">{t('maxMemoryBytes')}</Label>
-            <Input id="max-bytes" type="number" value={settings.max_memory_bytes} disabled />
+            <Input
+              id="max-bytes"
+              min={1}
+              onChange={(event) => handleLimitChange('max_memory_bytes', event.target.value)}
+              type="number"
+              value={settings.max_memory_bytes}
+            />
           </div>
         </CardContent>
       </Card>

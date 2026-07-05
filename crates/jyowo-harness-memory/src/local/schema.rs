@@ -37,8 +37,4 @@ pub const EMBEDDING_STATE_FAILED: &str = "failed";
 pub const EMBEDDING_STATE_DISABLED: &str = "disabled";
 
 /// PRAGMA statements applied on every connection open.
-pub const CONNECTION_PRAGMAS: &[&str] = &[
-    "PRAGMA foreign_keys = ON",
-    "PRAGMA journal_mode = WAL",
-    "PRAGMA busy_timeout = 5000",
-];
+pub const CONNECTION_PRAGMAS: &[&str] = &["PRAGMA busy_timeout = 5000", "PRAGMA foreign_keys = ON"];

@@ -101,6 +101,22 @@ impl MemorySettingsStore {
         }
     }
 
+    pub fn current_memory_bytes(&self, tenant_id: TenantId) -> Result<u64, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("settings lock: {e}"))?;
+        conn.query_row(
+            "SELECT COALESCE(SUM(length(content)), 0)
+             FROM memory_records
+             WHERE tenant_id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![tenant_id.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|bytes| bytes.max(0) as u64)
+        .map_err(|error| format!("read memory byte usage: {error}"))
+    }
+
     pub fn update_thread(
         &self,
         tenant_id: TenantId,

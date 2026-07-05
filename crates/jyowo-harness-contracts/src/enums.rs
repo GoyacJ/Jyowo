@@ -1144,6 +1144,25 @@ pub enum MemoryProviderTrust {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+pub enum MemoryProviderKind {
+    Local,
+    Team,
+    Subagent,
+    Plugin,
+    External,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryProviderDurability {
+    Durable,
+    Ephemeral,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum MemoryVisibilityClass {
     Private,
     User,
@@ -1177,7 +1196,7 @@ pub enum MemoryProviderSelectionPolicy {
 
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "action", rename_all = "snake_case")]
 pub enum MemoryToolAction {
     Search(MemorySearchRequest),
     Read(MemoryReadRequest),

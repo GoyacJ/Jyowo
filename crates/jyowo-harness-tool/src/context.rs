@@ -5,8 +5,8 @@ use std::sync::{
 };
 
 use harness_contracts::{
-    AgentId, CapabilityRegistry, CorrelationId, PermissionActorSource, Redactor, RunId,
-    RunModelSnapshot, SessionId, TenantId, ToolCapability, ToolError, ToolUseId,
+    AgentId, CapabilityRegistry, CorrelationId, MemoryThreadSettings, PermissionActorSource,
+    Redactor, RunId, RunModelSnapshot, SessionId, TenantId, ToolCapability, ToolError, ToolUseId,
 };
 use harness_sandbox::SandboxBackend;
 
@@ -31,6 +31,7 @@ pub struct ToolContext {
     pub tenant_id: TenantId,
     pub model: Option<RunModelSnapshot>,
     pub model_config_id: Option<String>,
+    pub memory_thread_settings: Option<MemoryThreadSettings>,
     pub correlation_id: CorrelationId,
     pub agent_id: AgentId,
     pub subagent_depth: u8,

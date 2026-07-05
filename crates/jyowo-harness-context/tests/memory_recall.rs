@@ -10,13 +10,14 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_context::{ContextEngine, ContextSessionView};
 use harness_contracts::{
-    Event, MemoryError, MemoryId, MemoryKind, MemorySource, MemoryVisibility, Message, MessageId,
-    MessagePart, MessageRole, RunId, SessionId, TenantId, ToolDescriptor, ToolResult,
-    ToolResultEnvelope, TurnInput,
+    Event, MemoryError, MemoryId, MemoryKind, MemorySource, MemoryThreadMode, MemoryThreadSettings,
+    MemoryVisibility, Message, MessageId, MessagePart, MessageRole, RunId, SessionId, TenantId,
+    ToolDescriptor, ToolResult, ToolResultEnvelope, TurnInput,
 };
 use harness_memory::{
-    BuiltinMemory, FailMode, MemoryLifecycle, MemoryListScope, MemoryManager, MemoryMetadata,
-    MemoryQuery, MemoryRecord, MemoryStore, MemorySummary, RecallPolicy, RecallTriggerStrategy,
+    BuiltinMemory, FailMode, MemoryEventSink, MemoryLifecycle, MemoryListScope, MemoryManager,
+    MemoryMetadata, MemoryQuery, MemoryRecord, MemoryStore, MemorySummary, RecallPolicy,
+    RecallTriggerStrategy,
 };
 use tokio::sync::Mutex;
 
@@ -79,6 +80,30 @@ async fn assemble_recalls_at_most_once_per_turn() {
     assert!(user_text(first.messages.last().unwrap()).contains("<memory-context>"));
     assert!(!user_text(second.messages.last().unwrap()).contains("<memory-context>"));
     assert_eq!(provider.calls(), 1);
+}
+
+#[tokio::test]
+async fn assemble_skips_recall_when_thread_memory_is_off() {
+    let manager = MemoryManager::new();
+    let provider = Arc::new(CountingProvider::ok(vec![record("must not recall")]));
+    manager.register_provider(provider.clone()).unwrap();
+    let engine = ContextEngine::builder()
+        .with_memory_manager(Arc::new(manager))
+        .build()
+        .unwrap();
+    let session = TestSession::default().with_memory_mode(MemoryThreadMode::Off);
+
+    let prompt = engine
+        .assemble(&session, &turn_input(11, "policy off?"))
+        .await
+        .unwrap();
+
+    assert_eq!(provider.calls(), 0);
+    assert_eq!(user_text(prompt.messages.last().unwrap()), "policy off?");
+    assert!(prompt
+        .events
+        .iter()
+        .any(|event| matches!(event, Event::MemoryRecallSkipped(_))));
 }
 
 #[tokio::test]
@@ -156,7 +181,9 @@ async fn assemble_fail_opens_even_when_memory_policy_surfaces_errors() {
 #[tokio::test]
 async fn assemble_does_not_reread_memdir_at_runtime() {
     let root = tempfile::tempdir().unwrap();
-    let builtin = BuiltinMemory::at(root.path(), TenantId::SINGLE);
+    let builtin = BuiltinMemory::at(root.path(), TenantId::SINGLE)
+        .with_event_sink(Arc::new(NoopMemoryEventSink))
+        .with_event_scope(SessionId::new(), None);
     builtin
         .append_section(
             harness_memory::MemdirFile::Memory,
@@ -181,6 +208,18 @@ async fn assemble_does_not_reread_memdir_at_runtime() {
 
     assert_eq!(prompt.system.as_deref(), Some("frozen memdir snapshot"));
     assert!(!format!("{:?}", prompt.messages).contains("new disk fact"));
+}
+
+struct NoopMemoryEventSink;
+
+#[async_trait]
+impl MemoryEventSink for NoopMemoryEventSink {
+    async fn emit(&self, _event: Event) {}
+
+    async fn emit_required(&self, event: Event) -> Result<(), MemoryError> {
+        self.emit(event).await;
+        Ok(())
+    }
 }
 
 #[tokio::test]
@@ -274,6 +313,52 @@ async fn memory_recalled_event_uses_provider_and_policy_metadata() {
     assert_eq!(recalled.provider_id, "counting");
     assert_eq!(recalled.deadline_used_ms, 123);
     assert_eq!(recalled.min_similarity, 0.72);
+}
+
+#[tokio::test]
+async fn memory_recalled_event_links_to_real_recall_trace() {
+    let manager = Arc::new(MemoryManager::new());
+    manager
+        .register_provider(Arc::new(CountingProvider::ok(vec![record(
+            "traceable fact",
+        )])))
+        .unwrap();
+    let trace_collector = manager.trace_collector();
+    let engine = ContextEngine::builder()
+        .with_memory_manager(Arc::clone(&manager))
+        .build()
+        .unwrap();
+    let session = TestSession::default();
+
+    let prompt = engine
+        .assemble(&session, &turn_input(9, "trace this?"))
+        .await
+        .unwrap();
+
+    let recalled = prompt
+        .events
+        .iter()
+        .find_map(|event| match event {
+            Event::MemoryRecalled(recalled) => Some(recalled),
+            _ => None,
+        })
+        .expect("memory recall event");
+    let trace_id = recalled.trace_id.expect("trace id");
+    let trace = trace_collector
+        .get(session.tenant_id(), trace_id)
+        .expect("stored recall trace");
+
+    assert_eq!(trace.trace_id, trace_id);
+    assert_eq!(trace.session_id, session.session_id().unwrap());
+    assert_eq!(trace.run_id, recalled.run_id);
+    assert_eq!(trace.turn, recalled.turn);
+    assert_eq!(trace.query_text_hash, recalled.query_text_hash);
+    assert_eq!(trace.provider_results.len(), 1);
+    assert_eq!(trace.provider_results[0].provider_id, "counting");
+    assert_eq!(trace.provider_results[0].returned_count, 1);
+    assert_eq!(trace.candidates.len(), 1);
+    assert_eq!(trace.injected.len(), 1);
+    assert_eq!(trace.injected_chars, recalled.injected_chars);
 }
 
 #[tokio::test]
@@ -387,6 +472,41 @@ async fn after_turn_reuses_current_run_and_turn_for_tool_result_recall() {
         .expect("active memory recall event");
     assert_eq!(recalled.run_id, run_id);
     assert_eq!(recalled.turn, 21);
+}
+
+#[tokio::test]
+async fn after_turn_skips_tool_result_recall_when_thread_memory_is_off() {
+    let manager = MemoryManager::new().with_recall_policy(RecallPolicy {
+        trigger: RecallTriggerStrategy::OnQuestionMark,
+        ..RecallPolicy::default()
+    });
+    let provider = Arc::new(CountingProvider::ok(vec![record("must not recall")]));
+    manager.register_provider(provider.clone()).unwrap();
+    let engine = ContextEngine::builder()
+        .with_memory_manager(Arc::new(manager))
+        .build()
+        .unwrap();
+    let session = TestSession::default().with_memory_mode(MemoryThreadMode::Off);
+
+    engine
+        .after_turn(
+            &session,
+            &[ToolResultEnvelope {
+                result: ToolResult::Text("需要查阅历史: disabled?".to_owned()),
+                usage: None,
+                is_error: false,
+                overflow: None,
+            }],
+        )
+        .await
+        .unwrap();
+    let prompt = engine
+        .assemble(&session, &turn_input(31, "continue"))
+        .await
+        .unwrap();
+
+    assert_eq!(provider.calls(), 0);
+    assert!(!user_text(prompt.messages.last().unwrap()).contains("<memory-context>"));
 }
 
 struct CountingProvider {
@@ -527,6 +647,7 @@ impl harness_memory::MemoryProvider for LifecycleOrderProvider {}
 struct TestSession {
     system: Option<String>,
     session_id: SessionId,
+    memory_thread_settings: Option<MemoryThreadSettings>,
 }
 
 impl Default for TestSession {
@@ -534,7 +655,20 @@ impl Default for TestSession {
         Self {
             system: None,
             session_id: SessionId::new(),
+            memory_thread_settings: None,
         }
+    }
+}
+
+impl TestSession {
+    fn with_memory_mode(mut self, mode: MemoryThreadMode) -> Self {
+        self.memory_thread_settings = Some(MemoryThreadSettings {
+            session_id: self.session_id,
+            use_memories: None,
+            generate_memories: None,
+            memory_mode: mode,
+        });
+        self
     }
 }
 
@@ -557,6 +691,10 @@ impl ContextSessionView for TestSession {
 
     fn tools_snapshot(&self) -> Vec<ToolDescriptor> {
         Vec::new()
+    }
+
+    fn memory_thread_settings(&self) -> Option<MemoryThreadSettings> {
+        self.memory_thread_settings.clone()
     }
 }
 
@@ -601,9 +739,11 @@ fn record(content: &str) -> MemoryRecord {
             tags: Vec::new(),
             source: MemorySource::UserInput,
             confidence: 1.0,
+            evidence: None,
             access_count: 0,
             last_accessed_at: None,
             recall_score: 1.0,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },

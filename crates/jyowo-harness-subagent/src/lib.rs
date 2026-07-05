@@ -1693,8 +1693,16 @@ impl DefaultSubagentRunner {
         parent: &ParentContext,
         child_session_id: SessionId,
     ) -> Result<(Vec<Message>, bool), SubagentError> {
+        match &spec.memory_scope {
+            SubagentMemoryScope::Empty
+            | SubagentMemoryScope::ReadOnly
+            | SubagentMemoryScope::ReadWrite
+            | SubagentMemoryScope::CandidateOnly => return Ok((Vec::new(), true)),
+            SubagentMemoryScope::Inherit => return Ok((Vec::new(), false)),
+            SubagentMemoryScope::Subset { .. } => {}
+        }
         let SubagentMemoryScope::Subset { selectors } = &spec.memory_scope else {
-            return Ok((Vec::new(), false));
+            unreachable!("subset already matched");
         };
         let resolver = self.memory_scope_resolver.as_ref().ok_or_else(|| {
             SubagentError::Engine(
@@ -2477,6 +2485,7 @@ pub mod testing {
             parent_run: None,
             model: None,
             model_config_id: None,
+            memory_thread_settings: None,
             actor_source: harness_contracts::PermissionActorSource::ParentRun,
         }
     }

@@ -177,7 +177,8 @@ pub use contracts::{
     DeleteMcpServerRequest, DeleteMcpServerResponse, DeleteMemoryItemRequest,
     DeleteMemoryItemResponse, DeleteProviderCapabilityRouteRequest,
     DeleteProviderCapabilityRouteResponse, DeleteSkillRequest, DeleteSkillResponse,
-    EvalCasePayload, EvalLastRunPayload, ExportMemoryItemsResponse, ExportSupportBundleRequest,
+    EvalCasePayload, EvalLastRunPayload, ExportMemoryItemsFormat, ExportMemoryItemsRequest,
+    ExportMemoryItemsResponse, ExportMemoryItemsScope, ExportSupportBundleRequest,
     ExportSupportBundleResponse, GetArtifactMediaPreviewRequest, GetArtifactMediaPreviewResponse,
     GetAttachmentMediaPreviewRequest, GetAttachmentMediaPreviewResponse, GetBackgroundAgentRequest,
     GetBackgroundAgentResponse, GetContextSnapshotRequest, GetContextSnapshotResponse,
@@ -1404,11 +1405,12 @@ pub async fn delete_memory_item(
 
 #[tauri::command]
 pub async fn export_memory_items(
+    request: ExportMemoryItemsRequest,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ExportMemoryItemsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     let _memory_guard = runtime_state.memory_lock.lock().await;
-    export_memory_items_with_runtime_state(&*runtime_state).await
+    export_memory_items_with_runtime_state(request, &*runtime_state).await
 }
 
 #[tauri::command(rename_all = "camelCase")]

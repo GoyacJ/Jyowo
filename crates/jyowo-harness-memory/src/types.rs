@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    MemoryActorContext, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId, TenantId,
+    ContentHash, MemoryActorContext, MemoryEvidence, MemoryId, MemoryKind, MemoryProviderId,
+    MemoryScoreBreakdown, MemorySource, MemoryVisibility, SessionId, TenantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -50,10 +51,14 @@ pub struct MemoryRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemorySummary {
     pub id: MemoryId,
+    pub provider_id: Option<MemoryProviderId>,
     pub kind: MemoryKind,
     pub visibility: MemoryVisibility,
     pub content_preview: String,
+    pub content_hash: ContentHash,
     pub metadata: MemoryMetadata,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub deleted: bool,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -70,10 +75,14 @@ pub enum MemoryListScope {
 pub struct MemoryMetadata {
     pub tags: Vec<String>,
     pub source: MemorySource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<MemoryEvidence>,
     pub confidence: f32,
     pub access_count: u32,
     pub last_accessed_at: Option<DateTime<Utc>>,
     pub recall_score: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recall_score_breakdown: Option<MemoryScoreBreakdown>,
     pub ttl: Option<Duration>,
     pub redacted_segments: u32,
 }

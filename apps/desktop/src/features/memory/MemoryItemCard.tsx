@@ -24,6 +24,13 @@ export function MemoryItemCard({ item, onDelete, onInspect }: MemoryItemCardProp
           <div className="flex flex-wrap gap-2 text-muted-foreground text-xs">
             <span>{item.visibility}</span>
             <span>{item.kind}</span>
+            {item.providerId ? <span>{item.providerId}</span> : null}
+            {item.expiresAt ? <span>{t('expiresAt', { value: item.expiresAt })}</span> : null}
+            {item.lastAccessedAt ? (
+              <span>{t('lastAccessedAt', { value: item.lastAccessedAt })}</span>
+            ) : null}
+            {item.deleted ? <span>{t('deleted')}</span> : null}
+            <span>{t('contentHash', { value: item.contentHash.slice(0, 12) })}</span>
             {item.tags.map((tag) => (
               <span key={tag}>{tag}</span>
             ))}

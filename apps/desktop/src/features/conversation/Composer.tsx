@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Paperclip, Send, Shield, X } from 'lucide-react'
+import { Check, ChevronDown, Database, Paperclip, Send, Shield, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -9,6 +9,7 @@ import type {
   ContextReference,
   ConversationModelCapability,
   ListReferenceCandidatesResponse,
+  MemoryThreadMode,
   PermissionMode,
   StartRunRequest,
 } from '@/shared/tauri/commands'
@@ -58,6 +59,9 @@ type ComposerProps = {
   permissionMode?: PermissionMode
   autoModeAvailable?: boolean
   onPermissionModeChange?: (mode: PermissionMode) => void
+  memoryMode?: MemoryThreadMode
+  memoryModeDisabled?: boolean
+  onMemoryModeChange?: (mode: MemoryThreadMode) => void
 }
 
 const attachmentInputModalities: AttachmentInputModality[] = ['image', 'video', 'file']
@@ -98,6 +102,9 @@ export function Composer({
   permissionMode,
   autoModeAvailable = false,
   onPermissionModeChange,
+  memoryMode,
+  memoryModeDisabled = false,
+  onMemoryModeChange,
 }: ComposerProps) {
   const { t } = useTranslation(['common', 'conversation'])
   const [draft, setDraft] = useState<ComposerDraft>(emptyDraft)
@@ -269,6 +276,9 @@ export function Composer({
             }
             onPermissionModeChange?.(nextMode)
           }}
+          memoryMode={memoryMode}
+          memoryModeDisabled={memoryModeDisabled}
+          onMemoryModeChange={onMemoryModeChange}
           onSelectReference={addContextReference}
         />
         <div className="flex items-center gap-2">
@@ -335,6 +345,9 @@ function ComposerToolbar({
   onListReferenceCandidates,
   onModelConfigChange,
   onPermissionModeChange,
+  memoryMode,
+  memoryModeDisabled,
+  onMemoryModeChange,
   onSelectReference,
 }: {
   disabled: boolean
@@ -348,6 +361,9 @@ function ComposerToolbar({
   onListReferenceCandidates?: () => Promise<ListReferenceCandidatesResponse>
   onModelConfigChange?: (modelConfigId: string) => void
   onPermissionModeChange: (mode: PermissionMode) => void
+  memoryMode?: MemoryThreadMode
+  memoryModeDisabled: boolean
+  onMemoryModeChange?: (mode: MemoryThreadMode) => void
   onSelectReference: (reference: ContextReference) => void
 }) {
   const { t } = useTranslation('conversation')
@@ -361,6 +377,13 @@ function ComposerToolbar({
           permissionMode={permissionMode}
           onPermissionModeChange={onPermissionModeChange}
         />
+        {memoryMode ? (
+          <ComposerMemoryModeMenu
+            disabled={disabled || memoryModeDisabled || !onMemoryModeChange}
+            memoryMode={memoryMode}
+            onMemoryModeChange={(nextMode) => onMemoryModeChange?.(nextMode)}
+          />
+        ) : null}
         <AttachmentPicker disabled={disabled || !supportsAttachments} onAttachFile={onAttachFile} />
         <ReferencePicker
           disabled={disabled}
@@ -385,6 +408,68 @@ function ComposerToolbar({
         ) : null}
       </div>
     </TooltipProvider>
+  )
+}
+
+const composerMemoryModeOptions = [
+  { value: 'read_write', labelKey: 'composer.memoryMode.readWrite' },
+  { value: 'read_only', labelKey: 'composer.memoryMode.readOnly' },
+  { value: 'candidate_only', labelKey: 'composer.memoryMode.candidateOnly' },
+  { value: 'off', labelKey: 'composer.memoryMode.off' },
+] as const satisfies ReadonlyArray<{
+  value: MemoryThreadMode
+  labelKey: string
+}>
+
+function ComposerMemoryModeMenu({
+  disabled,
+  memoryMode,
+  onMemoryModeChange,
+}: {
+  disabled: boolean
+  memoryMode: MemoryThreadMode
+  onMemoryModeChange: (mode: MemoryThreadMode) => void
+}) {
+  const { t } = useTranslation('conversation')
+  const selectedOption =
+    composerMemoryModeOptions.find((option) => option.value === memoryMode) ??
+    composerMemoryModeOptions[0]
+  const selectedLabel = t(selectedOption.labelKey)
+
+  return (
+    <DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <button
+              aria-label={t('composer.memoryMode.ariaLabel', { mode: selectedLabel })}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2 font-medium text-foreground text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={disabled}
+              type="button"
+            >
+              <Database className="size-3.5" />
+              <span className="max-w-[8rem] truncate">{selectedLabel}</span>
+              <ChevronDown className="size-3.5 opacity-70" />
+            </button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{t('composer.memoryMode.tooltip')}</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="start" className="w-56">
+        {composerMemoryModeOptions.map((option) => (
+          <DropdownMenuItem
+            className="items-center gap-3 py-2"
+            key={option.value}
+            onSelect={() => onMemoryModeChange(option.value)}
+          >
+            <Check
+              className={cn('size-3.5', option.value === memoryMode ? 'opacity-100' : 'opacity-0')}
+            />
+            <span>{t(option.labelKey)}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 

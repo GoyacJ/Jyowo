@@ -25,9 +25,16 @@ pub struct MemoryExportedEvent {
     pub session_id: SessionId,
     pub tenant_id: TenantId,
     pub provider_id: String,
+    pub scope: String,
+    pub format: String,
+    pub include_raw_content: bool,
     pub item_count: u32,
     pub content_hashes: Vec<ContentHash>,
     pub bytes_exported: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_hash: Option<String>,
     pub at: DateTime<Utc>,
 }
 

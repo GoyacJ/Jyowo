@@ -14,7 +14,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     deleteMemoryItem: () => Promise.reject(error),
     uninstallPlugin: () => Promise.reject(error),
     deleteSkill: () => Promise.reject(error),
-    exportMemoryItems: () => Promise.reject(error),
+    exportMemoryItems: (_request) => Promise.reject(error),
     exportSupportBundle: () => Promise.reject(error),
     getContextSnapshot: () => Promise.reject(error),
     getBackgroundAgent: () => Promise.reject(error),

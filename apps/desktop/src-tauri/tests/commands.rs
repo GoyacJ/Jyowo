@@ -22,6 +22,7 @@ use harness_contracts::{
     WorkspaceAccess,
 };
 use harness_journal::ReplayCursor;
+use harness_memory::{MemoryListScope, MemoryProviderDescriptor, MemoryQuery};
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
 use harness_tool::BuiltinToolset;
 use image::codecs::{gif::GifEncoder, jpeg::JpegEncoder, webp::WebPEncoder};
@@ -82,14 +83,15 @@ use jyowo_desktop_shell::commands::{
     DeleteMcpServerRequest, DeleteMemoryItemRequest, DeleteProviderCapabilityRouteRequest,
     DeleteSkillRequest, DesktopConversationMetadataStore, DesktopExecutionSettingsStore,
     DesktopMcpDiagnosticStore, DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore,
-    DesktopRuntimeState, DesktopSkillStore, ExportSupportBundleRequest,
-    GetArtifactMediaPreviewRequest, GetAttachmentMediaPreviewRequest, GetBackgroundAgentRequest,
-    GetContextSnapshotRequest, GetConversationRequest, GetExecutionSettingsRequest,
-    GetMcpServerConfigRequest, GetMemoryItemRequest, GetProviderConfigApiKeyRequest,
-    GetSkillDetailRequest, GetSkillFileRequest, ImportSkillRequest, ListActivityRequest,
-    ListArtifactsRequest, ListBackgroundAgentsRequest, ListReferenceCandidatesRequest,
-    McpDiagnosticRecord, McpDiagnosticSeverity, McpDiagnosticStore, McpHeaderEnvRecord,
-    McpNameValueRecord, McpServerConfigRecord, McpServerStore, McpServerTransportConfig,
+    DesktopRuntimeState, DesktopSkillStore, ExportMemoryItemsFormat, ExportMemoryItemsRequest,
+    ExportMemoryItemsScope, ExportSupportBundleRequest, GetArtifactMediaPreviewRequest,
+    GetAttachmentMediaPreviewRequest, GetBackgroundAgentRequest, GetContextSnapshotRequest,
+    GetConversationRequest, GetExecutionSettingsRequest, GetMcpServerConfigRequest,
+    GetMemoryItemRequest, GetProviderConfigApiKeyRequest, GetSkillDetailRequest,
+    GetSkillFileRequest, ImportSkillRequest, ListActivityRequest, ListArtifactsRequest,
+    ListBackgroundAgentsRequest, ListReferenceCandidatesRequest, McpDiagnosticRecord,
+    McpDiagnosticSeverity, McpDiagnosticStore, McpHeaderEnvRecord, McpNameValueRecord,
+    McpServerConfigRecord, McpServerStore, McpServerTransportConfig,
     PageConversationTimelineRequest, PageConversationWorktreeDirection,
     PageConversationWorktreeRequest, PermissionDecision, ProviderCapabilityRouteStore,
     ProviderConfigRecord, ProviderModelDescriptorRecord, ProviderModelLifecycleRecord,
@@ -109,14 +111,15 @@ use jyowo_harness_sdk::ext::{
     BlobRetention, BlobStore, BudgetMetric, Decision, DecisionScope, DeferPolicy, DeltaChunk,
     Event, EventStore, FallbackPolicy, InteractivityLevel, McpConnection, McpError, McpRegistry,
     McpServerId, McpServerScope, McpServerSource, McpServerSpec, McpToolDescriptor, McpToolResult,
-    MemoryId, MemoryKind, MemoryMetadata, MemoryRecord, MemorySource, MemoryStore,
-    MemoryVisibility, Message, MessagePart, MessageRole, ModelError, OverflowAction,
-    PermissionCheck, PermissionContext, PermissionMode, PermissionRequest, PermissionSubject,
-    ProviderCredentialResolveContext, ProviderRestriction, RedactPatternSet, RedactRules,
-    RedactScope, Redactor, RequestId, ResultBudget, RuleSnapshot, RunId, SessionId, Severity,
-    StreamBrokerConfig, TenantId, ThinkingDelta, Tool, ToolCapability, ToolContext, ToolDescriptor,
-    ToolError, ToolEvent, ToolGroup, ToolProfile, ToolProperties, ToolRegistry, ToolResult,
-    ToolStream, ToolUseId, TransportChoice, TrustLevel, UsageSnapshot, ValidationError,
+    MemoryId, MemoryKind, MemoryLifecycle, MemoryMetadata, MemoryProvider, MemoryRecord,
+    MemorySource, MemoryStore, MemorySummary, MemoryVisibility, Message, MessagePart, MessageRole,
+    ModelError, OverflowAction, PermissionCheck, PermissionContext, PermissionMode,
+    PermissionRequest, PermissionSubject, ProviderCredentialResolveContext, ProviderRestriction,
+    RedactPatternSet, RedactRules, RedactScope, Redactor, RequestId, ResultBudget, RuleSnapshot,
+    RunId, SessionId, Severity, StreamBrokerConfig, TenantId, ThinkingDelta, Tool, ToolCapability,
+    ToolContext, ToolDescriptor, ToolError, ToolEvent, ToolGroup, ToolProfile, ToolProperties,
+    ToolRegistry, ToolResult, ToolStream, ToolUseId, TransportChoice, TrustLevel, UsageSnapshot,
+    ValidationError,
 };
 use jyowo_harness_sdk::ext::{ContentDelta, ModelStreamEvent};
 use jyowo_harness_sdk::testing::{

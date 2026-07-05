@@ -9,6 +9,8 @@ use std::time::Duration;
 
 #[cfg(feature = "provider-registry")]
 use chrono::Utc;
+#[cfg(all(feature = "builtin", feature = "provider-registry"))]
+use harness_contracts::{Event, MemoryError, RunId};
 #[cfg(feature = "provider-registry")]
 use harness_contracts::{
     MemoryActorContext, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId, TenantId,
@@ -24,7 +26,7 @@ use harness_memory::InMemoryMemoryProvider;
 #[cfg(all(feature = "builtin", feature = "provider-registry"))]
 use harness_memory::MemoryManager;
 #[cfg(all(feature = "builtin", feature = "provider-registry"))]
-use harness_memory::{BuiltinMemory, MemdirFile};
+use harness_memory::{BuiltinMemory, MemdirFile, MemoryEventSink};
 
 #[cfg(feature = "provider-registry")]
 #[tokio::test]
@@ -174,7 +176,7 @@ async fn in_memory_provider_list_returns_bounded_content_preview() {
 #[tokio::test]
 async fn builtin_memdir_does_not_participate_in_external_recall() {
     let root = tempfile::tempdir().unwrap();
-    let builtin = BuiltinMemory::at(root.path(), TenantId::SINGLE);
+    let builtin = audited_builtin(root.path());
     builtin
         .append_section(MemdirFile::Memory, "profile", "prefers concise answers")
         .await
@@ -212,7 +214,7 @@ async fn builtin_memdir_does_not_participate_in_external_recall() {
 #[tokio::test]
 async fn memory_manager_holds_builtin_memory_snapshot() {
     let root = tempfile::tempdir().unwrap();
-    let builtin = BuiltinMemory::at(root.path(), TenantId::SINGLE);
+    let builtin = audited_builtin(root.path());
     builtin
         .append_section(MemdirFile::Memory, "profile", "manager-owned fact")
         .await
@@ -228,6 +230,26 @@ async fn memory_manager_holds_builtin_memory_snapshot() {
         .await
         .unwrap();
     assert!(snapshot.memory.contains("manager-owned fact"));
+}
+
+#[cfg(all(feature = "builtin", feature = "provider-registry"))]
+fn audited_builtin(root: &std::path::Path) -> BuiltinMemory {
+    BuiltinMemory::at(root, TenantId::SINGLE)
+        .with_event_sink(Arc::new(TestAuditSink))
+        .with_event_scope(SessionId::new(), Some(RunId::new()))
+}
+
+#[cfg(all(feature = "builtin", feature = "provider-registry"))]
+struct TestAuditSink;
+
+#[cfg(all(feature = "builtin", feature = "provider-registry"))]
+#[async_trait::async_trait]
+impl MemoryEventSink for TestAuditSink {
+    async fn emit(&self, _event: Event) {}
+
+    async fn emit_required(&self, _event: Event) -> Result<(), MemoryError> {
+        Ok(())
+    }
 }
 
 #[cfg(feature = "provider-registry")]
@@ -281,9 +303,11 @@ fn record(tenant_id: TenantId, visibility: MemoryVisibility, content: &str) -> M
             tags: Vec::new(),
             source: MemorySource::UserInput,
             confidence: 1.0,
+            evidence: None,
             access_count: 0,
             last_accessed_at: None,
             recall_score: 1.0,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },

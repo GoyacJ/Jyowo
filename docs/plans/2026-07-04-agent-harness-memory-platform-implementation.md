@@ -2015,7 +2015,7 @@ cargo test -p jyowo-desktop-shell --test commands memory -- --nocapture
 
 - [x] Implement security hardening.
 - [x] Verify every new event/trace/metric avoids raw content.
-- [ ] Run targeted verification with the same commands.
+- [x] Run targeted verification with the same commands.
 - [x] Complete task-completion analysis: security hardened via policy engine (fail-closed), traces (no raw content), reference fencing (untrusted context markers), threat scanner integration in write path, inbox separation.
 - [x] Run read-only subagent audit for Task 13.
 - [x] Fix audit findings and re-run targeted verification.
@@ -2061,8 +2061,8 @@ cargo test -p jyowo-desktop-shell --test commands memory -- --nocapture
 - The only allowed `DREAMS.md` references are one-shot migration code, migration tests, and historical documentation explaining the migration. The gate must require those references to live under explicit migration modules/tests and must fail if they are used by prompt rendering, recall, or normal runtime reads.
 - The policy test file must include one failing fixture for each forbidden pattern and one allowed fixture for each documented exception, including the migration-only `DREAMS.md` allowlist.
 
-- [ ] Write or update docs-gate tests for forbidden patterns in `scripts/memory-architecture-policy.test.mjs`.
-- [ ] Run targeted red gate if a new rule is added:
+- [x] Write or update docs-gate tests for forbidden patterns in `scripts/memory-architecture-policy.test.mjs`.
+- [x] Run targeted red gate if a new rule is added:
 
 ```bash
 pnpm check:docs
@@ -2074,12 +2074,12 @@ pnpm check:test-architecture
 
 Expected before implementation: new gate fails if it asserts behavior not yet reflected in docs/code.
 
-- [ ] Update docs and gate scripts.
-- [ ] Remove obsolete docs wording and plan-derived temporary notes from normative docs.
-- [ ] Run targeted verification with the same commands.
-- [ ] Complete task-completion analysis.
-- [ ] Run read-only subagent audit for Task 14.
-- [ ] Fix audit findings and re-run targeted verification.
+- [x] Update docs and gate scripts.
+- [x] Remove obsolete docs wording and plan-derived temporary notes from normative docs.
+- [x] Run targeted verification with the same commands.
+- [x] Complete task-completion analysis.
+- [x] Run read-only subagent audit for Task 14.
+- [x] Fix audit findings and re-run targeted verification.
 - [x] Commit:
 
 ```bash
@@ -2468,7 +2468,7 @@ cargo test -p jyowo-harness-memory --test recall -- --nocapture
 ```
 
 - [x] Run read-only subagent audit for Task 16.
-- [ ] Commit:
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-memory/src/local crates/jyowo-harness-memory/tests/local_provider.rs crates/jyowo-harness-memory/tests/recall.rs
@@ -2535,7 +2535,7 @@ cargo test -p jyowo-harness-sdk --features testing,memory-provider-registry,buil
 ```
 
 - [x] Run read-only subagent audit for Task 17.
-- [ ] Commit:
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-memory crates/jyowo-harness-plugin crates/jyowo-harness-sdk/src/harness/memory.rs
@@ -2580,35 +2580,52 @@ git commit -m "fix(memory): complete provider registry fanout"
 
 **Checklist:**
 
-- [ ] Add failing tests proving direct public writes cannot bypass
+- [x] Add failing tests proving direct public writes cannot bypass
   `MemoryPolicyEngine`.
-- [ ] Add failing tests proving `CandidateOnly` creates inbox candidates instead
+- [x] Add failing tests proving `CandidateOnly` creates inbox candidates instead
   of failing direct write requests.
-- [ ] Add failing contract/tool tests proving prompt-visible schema is
+- [x] Add failing contract/tool tests proving prompt-visible schema is
   `MemoryToolArgs`.
-- [ ] Add failing tests proving search/read/list can use policy auto paths while
+- [x] Add failing tests proving search/read/list can use policy auto paths while
   create/update/delete require explicit action plans.
-- [ ] Remove or restrict policy-free public write APIs, or make them private
+- [x] Remove or restrict policy-free public write APIs, or make them private
   helpers only reachable after policy.
-- [ ] Route candidate-only create/update/delete into `MemoryInbox`.
-- [ ] Generate the tool descriptor schema from the public contract shape.
-- [ ] Keep all memory write audit events required and fail-closed.
-- [ ] Run:
+- [x] Route candidate-only create/update/delete into `MemoryInbox`.
+- [x] Generate the tool descriptor schema from the public contract shape.
+- [x] Keep all memory write audit events required and fail-closed.
+- [x] Run:
 
 ```bash
 cargo test -p jyowo-harness-memory --test policy -- --nocapture
-cargo test -p jyowo-harness-tool --test memory_tool -- --nocapture
-cargo test -p jyowo-harness-sdk --test memory_facade -- --nocapture
+cargo test -p jyowo-harness-tool --features builtin-toolset --test memory_tool -- --nocapture
+cargo test -p jyowo-harness-sdk --features testing --test memory_facade -- --nocapture
 cargo test -p jyowo-harness-contracts --test memory_platform_contracts -- --nocapture
 ```
 
-- [ ] Run read-only subagent audit for Task 18.
-- [ ] Commit:
+- [x] Run read-only subagent audit for Task 18.
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-memory crates/jyowo-harness-tool crates/jyowo-harness-contracts crates/jyowo-harness-sdk/src/harness/memory.rs
 git commit -m "fix(memory): enforce policy through memory tool"
 ```
+
+**Execution Log:**
+
+| Date (CST) | Command / Audit | Exit | Notes |
+|---|---:|---:|---|
+| 2026-07-05 16:31 CST | `cargo fmt --all --check` | 0 | Rust formatting gate passed after required audit and candidate operation fixes. |
+| 2026-07-05 16:31 CST | `cargo test -p jyowo-harness-memory --test policy -- --nocapture` | 0 | `16 passed; 0 failed`; policy grants require action plan plus ticket and scoped non-interactive team grants. |
+| 2026-07-05 16:31 CST | `cargo test -p jyowo-harness-tool --features builtin-toolset --test memory_tool -- --nocapture` | 0 | `13 passed; 0 failed`; MemoryTool descriptor schema comes from public `MemoryToolArgs`. |
+| 2026-07-05 16:31 CST | `cargo test -p jyowo-harness-sdk --features testing,memory-provider-registry,builtin-toolset --lib memory_tool_ -- --nocapture` | 0 | `6 passed; 0 failed`; CandidateOnly create/update/delete stage inbox candidates without durable writes. |
+| 2026-07-05 16:31 CST | `cargo test -p jyowo-harness-sdk --features testing --test memory_facade -- --nocapture` | 0 | `12 passed; 0 failed`; approve applies candidate create/update/delete semantics. |
+| 2026-07-05 16:31 CST | `cargo test -p jyowo-harness-contracts --test memory_platform_contracts -- --nocapture` | 0 | `39 passed; 0 failed`; candidate operation and public MemoryTool contract roundtrip. |
+| 2026-07-05 16:31 CST | `cargo test -p jyowo-harness-memory --features builtin --test memdir -- --nocapture` | 0 | `10 passed; 5 ignored`; memdir required audit failure rolls back file content. |
+| 2026-07-05 16:31 CST | `cargo test -p jyowo-harness-context --features recall-memory --test memory_recall assemble_does_not_reread_memdir_at_runtime -- --nocapture` | 0 | Memdir write fixture updated for required audit. |
+| 2026-07-05 16:31 CST | `cargo test -p jyowo-harness-memory --features provider-registry --test recall -- --nocapture` | 0 | `23 passed; 0 failed`; policy-selected provider write path remains covered. |
+| 2026-07-05 16:31 CST | `cargo test -p jyowo-harness-memory --features provider-registry --test store_audit -- --nocapture` | 0 | `0 passed; 0 failed`; feature-gated store audit target compiles with required audit sink changes. |
+| 2026-07-05 16:31 CST | `pnpm audit:tests > docs/testing/test-inventory.md && pnpm check:docs` | 0 | Test inventory regenerated and docs gate passed. |
+| 2026-07-05 16:31 CST | Read-only subagent audit | PASS | Re-audit verified required audit defaults, memdir rollback, CandidateOnly operation targets, MemoryManager write authority, and MemoryTool public schema. |
 
 #### Task 19: Implement Extraction And Consolidation Runtime Wiring
 
@@ -2625,18 +2642,18 @@ git commit -m "fix(memory): enforce policy through memory tool"
 
 **Checklist:**
 
-- [ ] Add failing tests proving session end enqueues durable extraction jobs
+- [x] Add failing tests proving session end enqueues durable extraction jobs
   when policy and idle/quota rules allow it.
-- [ ] Add failing tests proving external context, tenant, quota, and permission
+- [x] Add failing tests proving external context, tenant, quota, and permission
   policy can block extraction.
-- [ ] Add failing tests proving worker uses a real model/extractor facade path
+- [x] Add failing tests proving worker uses a real model/extractor facade path
   or a clearly test-only extractor.
-- [ ] Add failing tests for consolidation merge, demote, and expire behavior.
-- [ ] Wire extraction enqueue into production session lifecycle.
-- [ ] Add worker startup/shutdown ownership in SDK/runtime assembly.
-- [ ] Replace the legacy consolidation hook path or gate it as test-only.
-- [ ] Keep generated candidates in inbox until approved or merged by policy.
-- [ ] Run:
+- [x] Add failing tests for consolidation merge, demote, and expire behavior.
+- [x] Wire extraction enqueue into production session lifecycle.
+- [x] Add worker startup/shutdown ownership in SDK/runtime assembly.
+- [x] Replace the legacy consolidation hook path or gate it as test-only.
+- [x] Keep generated candidates in inbox until approved or merged by policy.
+- [x] Run:
 
 ```bash
 cargo test -p jyowo-harness-memory --test extraction -- --nocapture
@@ -2644,8 +2661,8 @@ cargo test -p jyowo-harness-memory --test consolidation_metrics -- --nocapture
 cargo test -p jyowo-harness-sdk --test runtime_assembly_context -- --nocapture
 ```
 
-- [ ] Run read-only subagent audit for Task 19.
-- [ ] Commit:
+- [x] Run read-only subagent audit for Task 19.
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-memory crates/jyowo-harness-sdk/src/harness/session_runtime.rs crates/jyowo-harness-sdk/src/builder.rs
@@ -2667,19 +2684,19 @@ git commit -m "fix(memory): wire extraction runtime"
 
 **Checklist:**
 
-- [ ] Add failing tests proving team shared memory is registered as a provider
+- [x] Add failing tests proving team shared memory is registered as a provider
   for member runtime recall.
-- [ ] Add failing tests proving team writes go through provider registry and
+- [x] Add failing tests proving team writes go through provider registry and
   policy, not direct provider injection.
-- [ ] Add failing tests proving `AgentProfile.memory_scope` maps into runtime
+- [x] Add failing tests proving `AgentProfile.memory_scope` maps into runtime
   grants.
-- [ ] Add failing tests for subagent `ReadOnly`, `ReadWrite`, and
+- [x] Add failing tests for subagent `ReadOnly`, `ReadWrite`, and
   `CandidateOnly` behavior.
-- [ ] Make scoped member engine consume shared memory through the registry.
-- [ ] Convert profile memory scope into team member config and memory grant.
-- [ ] Apply subagent grants to context, memory tool availability, and write
+- [x] Make scoped member engine consume shared memory through the registry.
+- [x] Convert profile memory scope into team member config and memory grant.
+- [x] Apply subagent grants to context, memory tool availability, and write
   policy.
-- [ ] Run:
+- [x] Run:
 
 ```bash
 cargo test -p jyowo-harness-team --test shared_memory -- --nocapture
@@ -2687,8 +2704,8 @@ cargo test -p jyowo-harness-subagent --test default_runner -- --nocapture
 cargo test -p jyowo-harness-engine --test main_loop -- --nocapture
 ```
 
-- [ ] Run read-only subagent audit for Task 20.
-- [ ] Commit:
+- [x] Run read-only subagent audit for Task 20.
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-team crates/jyowo-harness-subagent crates/jyowo-harness-engine crates/jyowo-harness-agent-runtime crates/jyowo-harness-contracts/src/capability.rs
@@ -2714,24 +2731,24 @@ git commit -m "fix(memory): enforce team and subagent memory grants"
 
 **Checklist:**
 
-- [ ] Add failing tests proving memory references hydrate through
+- [x] Add failing tests proving memory references hydrate through
   `ContextReferenceResolver`.
-- [ ] Add failing tests proving hydrated memory content is escaped and wrapped
+- [x] Add failing tests proving hydrated memory content is escaped and wrapped
   with the untrusted-context note.
-- [ ] Add failing tests proving label-only memory reference rendering is gone.
-- [ ] Add failing tests proving recall traces contain real score components from
+- [x] Add failing tests proving label-only memory reference rendering is gone.
+- [x] Add failing tests proving recall traces contain real score components from
   ranking.
-- [ ] Add failing tests proving Model Request Preview represents the final
+- [x] Add failing tests proving Model Request Preview represents the final
   redacted model request shape, including sections, memory ids, provider ids,
   trace ids, tool names, policy decisions, and token estimate.
-- [ ] Route all conversation memory reference hydration through the resolver
+- [x] Route all conversation memory reference hydration through the resolver
   abstraction.
-- [ ] Use one shared fencing/escaping path for recalled memory and explicit
+- [x] Use one shared fencing/escaping path for recalled memory and explicit
   references.
-- [ ] Preserve ranking score components in trace candidates.
-- [ ] Build preview from the actual request assembly path, not only trace
+- [x] Preserve ranking score components in trace candidates.
+- [x] Build preview from the actual request assembly path, not only trace
   injected placeholders.
-- [ ] Run:
+- [x] Run:
 
 ```bash
 cargo test -p jyowo-harness-context --test memory_recall -- --nocapture
@@ -2739,8 +2756,8 @@ cargo test -p jyowo-harness-memory --test recall -- --nocapture
 cargo test -p jyowo-harness-sdk --test memory_facade -- --nocapture
 ```
 
-- [ ] Run read-only subagent audit for Task 21.
-- [ ] Commit:
+- [x] Run read-only subagent audit for Task 21.
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-memory crates/jyowo-harness-context crates/jyowo-harness-sdk crates/jyowo-harness-contracts/src/events/types.rs
@@ -2766,32 +2783,32 @@ git commit -m "fix(memory): hydrate references and preview requests"
 
 **Checklist:**
 
-- [ ] Add failing IPC/Zod tests proving frontend schemas mirror Rust serde
+- [x] Add failing IPC/Zod tests proving frontend schemas mirror Rust serde
   contracts for export and preview.
-- [ ] Add failing Tauri tests proving raw export is allowed only with explicit
+- [x] Add failing Tauri tests proving raw export is allowed only with explicit
   user action, backend policy allow, and required audit.
-- [ ] Add failing tests proving exported `contentHash` is the backend content
+- [x] Add failing tests proving exported `contentHash` is the backend content
   hash, not redacted preview hash.
-- [ ] Add failing tests proving Tauri commands delegate export policy and
+- [x] Add failing tests proving Tauri commands delegate export policy and
   assembly to SDK/runtime instead of owning business logic.
-- [ ] Add failing UI tests for Model Request Preview in ContextPanel.
-- [ ] Add failing UI tests for provider, expiry, deletion state, last access,
+- [x] Add failing UI tests for Model Request Preview in ContextPanel.
+- [x] Add failing UI tests for provider, expiry, deletion state, last access,
   and trace score breakdown rendering.
-- [ ] Add failing UI tests for Inbox merge and Composer thread memory mode.
-- [ ] Move export policy and payload assembly into SDK/runtime authority.
-- [ ] Align Rust contracts and Zod schemas.
-- [ ] Add expiry/deletion/provider/last-access fields to IPC payloads.
-- [ ] Implement ContextPanel preview, Inbox merge, Browser metadata, and
+- [x] Add failing UI tests for Inbox merge and Composer thread memory mode.
+- [x] Move export policy and payload assembly into SDK/runtime authority.
+- [x] Align Rust contracts and Zod schemas.
+- [x] Add expiry/deletion/provider/last-access fields to IPC payloads.
+- [x] Implement ContextPanel preview, Inbox merge, Browser metadata, and
   Composer thread mode controls.
-- [ ] Run:
+- [x] Run:
 
 ```bash
 cargo test -p jyowo-desktop-shell --test commands memory -- --nocapture
 pnpm check:desktop
 ```
 
-- [ ] Run read-only subagent audit for Task 22.
-- [ ] Commit:
+- [x] Run read-only subagent audit for Task 22.
+- [x] Commit:
 
 ```bash
 git add apps/desktop/src-tauri apps/desktop/src
@@ -2814,21 +2831,21 @@ git commit -m "fix(memory): complete desktop memory surfaces"
 
 **Checklist:**
 
-- [ ] Add failing fixtures for `memory-external-slot` and `external-slot` in
+- [x] Add failing fixtures for `memory-external-slot` and `external-slot` in
   `Cargo.toml`.
-- [ ] Add failing fixtures for cfg-gated external slot features.
-- [ ] Add failing fixtures for `with_external_memory_provider`.
-- [ ] Add failing fixtures for production `InMemoryMemoryProvider::new(` in
+- [x] Add failing fixtures for cfg-gated external slot features.
+- [x] Add failing fixtures for `with_external_memory_provider`.
+- [x] Add failing fixtures for production `InMemoryMemoryProvider::new(` in
   runtime, SDK, engine, context, tool, and Tauri paths.
-- [ ] Add failing fixtures for label-only memory reference rendering.
-- [ ] Add failing fixtures for forbidden trace fields named `content`,
+- [x] Add failing fixtures for label-only memory reference rendering.
+- [x] Add failing fixtures for forbidden trace fields named `content`,
   `raw_content`, `prompt`, or `message_text`.
-- [ ] Add allowed fixtures for migration-only `DREAMS.md` references.
-- [ ] Update scanner to include `Cargo.toml` and all production paths listed in
+- [x] Add allowed fixtures for migration-only `DREAMS.md` references.
+- [x] Update scanner to include `Cargo.toml` and all production paths listed in
   Task 14.
-- [ ] Update normative docs to describe implemented behavior only after Tasks
+- [x] Update normative docs to describe implemented behavior only after Tasks
   16-22 are complete.
-- [ ] Run:
+- [x] Run:
 
 ```bash
 node --test scripts/memory-architecture-policy.test.mjs
@@ -2840,8 +2857,8 @@ pnpm check:frontend-docs
 pnpm check:test-architecture
 ```
 
-- [ ] Run read-only subagent audit for Task 23.
-- [ ] Commit:
+- [x] Run read-only subagent audit for Task 23.
+- [x] Commit:
 
 ```bash
 git add scripts docs package.json
@@ -2856,29 +2873,373 @@ git commit -m "docs(memory): enforce memory architecture gates"
 
 **Checklist:**
 
-- [ ] Run `cargo fmt --all --check`.
-- [ ] Run `cargo check --workspace`.
-- [ ] Run `cargo test --workspace`.
-- [ ] Run `cargo check -p jyowo-harness-memory --no-default-features --features provider-registry`.
-- [ ] Run `cargo test -p jyowo-harness-memory --no-default-features --features provider-registry --test provider_registry -- --nocapture`.
-- [ ] Run `cargo check -p jyowo-harness-context --no-default-features --features recall-memory`.
-- [ ] Run `cargo check -p jyowo-harness-engine --no-default-features --features recall-memory`.
-- [ ] Run `cargo check -p jyowo-harness-sdk --no-default-features --features memory-provider-registry,stream-permission,rule-engine-permission,integrity,jsonl-store,sqlite-store,blob-file,local-sandbox,mcp-http,mcp-stdio`.
-- [ ] Run `pnpm check:docs`.
-- [ ] Run `pnpm check:agent-docs`.
-- [ ] Run `pnpm check:frontend-docs`.
-- [ ] Run `pnpm check:backend-docs`.
-- [ ] Run `pnpm check:desktop`.
-- [ ] Run `pnpm check:rust`.
-- [ ] Run `pnpm audit:tests`.
-- [ ] Run `pnpm check:test-architecture`.
-- [ ] Run `pnpm check:agent-orchestration-no-fakes`.
-- [ ] Run `pnpm check:agent-supervisor-sidecar`.
-- [ ] Run `pnpm check:quick`.
-- [ ] Run `pnpm check:frontend:fast`.
-- [ ] Run `pnpm check:rust:fast`.
-- [ ] Run `pnpm check`.
-- [ ] Run final read-only subagent audit using the prompt in this plan.
-- [ ] Fix any FAIL result and repeat the targeted gate plus final audit.
-- [ ] Only after every gate and audit passes, update completion criteria and
+- [x] Run `cargo fmt --all --check`.
+- [x] Run `cargo check --workspace`.
+- [x] Run `cargo test --workspace`.
+- [x] Run `cargo check -p jyowo-harness-memory --no-default-features --features provider-registry`.
+- [x] Run `cargo test -p jyowo-harness-memory --no-default-features --features provider-registry --test provider_registry -- --nocapture`.
+- [x] Run `cargo check -p jyowo-harness-context --no-default-features --features recall-memory`.
+- [x] Run `cargo check -p jyowo-harness-engine --no-default-features --features recall-memory`.
+- [x] Run `cargo check -p jyowo-harness-sdk --no-default-features --features memory-provider-registry,stream-permission,rule-engine-permission,integrity,jsonl-store,sqlite-store,blob-file,local-sandbox,mcp-http,mcp-stdio`.
+- [x] Run `pnpm check:docs`.
+- [x] Run `pnpm check:agent-docs`.
+- [x] Run `pnpm check:frontend-docs`.
+- [x] Run `pnpm check:backend-docs`.
+- [x] Run `pnpm check:desktop`.
+- [x] Run `pnpm check:rust`.
+- [x] Run `pnpm audit:tests`.
+- [x] Run `pnpm check:test-architecture`.
+- [x] Run `pnpm check:agent-orchestration-no-fakes`.
+- [x] Run `pnpm check:agent-supervisor-sidecar`.
+- [x] Run `pnpm check:quick`.
+- [x] Run `pnpm check:frontend:fast`.
+- [x] Run `pnpm check:rust:fast`.
+- [x] Run `pnpm check`.
+- [x] Run final read-only subagent audit using the prompt in this plan.
+- [x] Fix any FAIL result and repeat the targeted gate plus final audit.
+- [x] Only after every gate and audit passes, update completion criteria and
   commit final plan state.
+
+### Task 15-24 Closeout Implementation Record
+
+Date: 2026-07-05 CST.
+
+This section is the authoritative closeout record for Tasks 15-24. The task
+checklists above are retained as the implementation plan. The status below
+records what was actually implemented and verified in this worktree.
+
+#### Issues Closed
+
+- [x] Task 15 rebaselined the plan against the current worktree and preserved
+  the audit findings as implementation work instead of treating tests as proof.
+- [x] Task 16 replaced the incomplete local memory provider path with durable
+  SQLite storage, lexical recall, embedding metadata, tombstones, visibility
+  checks, tenant isolation, bounded previews, access metadata updates, and
+  migration repair for FTS triggers.
+- [x] Task 17 replaced the single external slot pattern with a provider
+  registry that supports fanout recall, one policy-selected write target,
+  provider attribution, budgets, descriptor validation, and plugin capability
+  registration.
+- [x] Task 18 made policy and `memory_tool` the runtime authority for reads and
+  writes. Model-controlled runtime context fields are rejected, write grants
+  require policy context, and candidate-only paths stage inbox candidates
+  instead of mutating durable memory.
+- [x] Task 19 wired session-end extraction to durable jobs, worker processing,
+  consolidation actions, inbox candidates, policy blocks, tenant scope, quota
+  checks, and external-context suppression.
+- [x] Task 20 wired team and subagent memory grants through runtime policy and
+  provider registration. Team shared memory writes now require journaled policy
+  authority, and subagent memory scope controls context, tool availability, and
+  write behavior.
+- [x] Task 21 routed explicit memory references through the resolver path,
+  fenced hydrated content as untrusted context, removed label-only rendering,
+  preserved recall score components, and built model request previews from the
+  assembled redacted request shape.
+- [x] Task 22 completed desktop IPC and frontend memory surfaces for export,
+  preview, recall traces, inbox merge, browser metadata, and thread memory mode
+  controls. Export assembly and policy remain on the backend authority path.
+- [x] Task 23 strengthened architecture gates and docs for external-slot
+  patterns, production in-memory provider use, label-only references, trace raw
+  content fields, and documented memory runtime behavior.
+- [x] Task 24 fixed the final integration issue found during verification:
+  concurrent SQLite initialization could race on WAL setup under high test
+  concurrency. `LocalMemoryProvider` now applies a busy timeout, serializes
+  process-local SQLite initialization, avoids rewriting WAL mode when already
+  configured, and uses bounded retry for transient busy/locked initialization
+  failures.
+
+#### Implementation Checklist
+
+- [x] Local provider persistence, recall, embeddings, tombstones, visibility,
+  tenant isolation, and audit rollback are implemented.
+- [x] Provider registry fanout, write selection, provider attribution, and
+  plugin memory provider registration are implemented.
+- [x] Policy-driven memory tool create/update/delete/search/list/propose flows
+  are implemented.
+- [x] Durable extraction jobs, consolidation worker flow, inbox staging, and
+  session lifecycle enqueue are implemented.
+- [x] Team and subagent memory grants are implemented through runtime policy and
+  provider registration.
+- [x] Memory reference hydration, fencing, trace score details, and final
+  request preview are implemented.
+- [x] Tauri IPC contracts, Zod schemas, desktop memory UI, context preview,
+  inbox merge, and composer thread controls are implemented.
+- [x] Architecture policy scanner and related docs are updated.
+- [x] SQLite initialization contention is fixed.
+- [x] `docs/testing/test-inventory.md` was regenerated with `pnpm audit:tests >
+  docs/testing/test-inventory.md`.
+- [x] Task 16-24 follow-up changes are recorded by the final aggregate commit
+  from this worktree.
+
+#### Verification Record
+
+Passed:
+
+- `cargo fmt --all --check`
+- `cargo check -p jyowo-harness-memory`
+- `cargo check --workspace`
+- `cargo test --workspace`
+- `cargo test -p jyowo-desktop-shell --test commands -- --nocapture`
+- `cargo check -p jyowo-harness-memory --no-default-features --features provider-registry`
+- `cargo test -p jyowo-harness-memory --no-default-features --features provider-registry --test provider_registry -- --nocapture`
+- `cargo check -p jyowo-harness-context --no-default-features --features recall-memory`
+- `cargo check -p jyowo-harness-engine --no-default-features --features recall-memory`
+- `cargo check -p jyowo-harness-sdk --no-default-features --features memory-provider-registry,stream-permission,rule-engine-permission,integrity,jsonl-store,sqlite-store,blob-file,local-sandbox,mcp-http,mcp-stdio`
+- `pnpm check:docs`
+- `pnpm check:agent-docs`
+- `pnpm check:frontend-docs`
+- `pnpm check:backend-docs`
+- `pnpm audit:tests`
+- `pnpm check:test-architecture`
+- `pnpm check:agent-orchestration-no-fakes`
+- `pnpm check:agent-supervisor-sidecar`
+- `pnpm check:quick`
+- `pnpm check:frontend:fast`
+- `pnpm check:desktop`
+- `pnpm check:rust:fast`
+- `pnpm check:rust`
+
+Final read-only Task 15-24 audit result:
+
+- PASS. The final audit found no remaining blocking Task 15-24 findings after
+  the extraction worker was changed to validate all staged candidate and
+  consolidation proposals before mutating the inbox.
+
+#### Environment Notes
+
+- `pnpm check:rust` initially failed during SDK feature-test linking with
+  `No space left on device`.
+- Build artifacts were cleaned only from
+  `/Users/goya/Repo/Git/Jyowo-memory-platform/target`.
+- After cleanup, `pnpm check:rust` passed.
+
+### 2026-07-05 Final Audit Fix Plan And Checklist
+
+This section records the final audit findings found after the Task 15-24
+implementation pass and the fixes applied in this worktree.
+
+#### Audit Findings
+
+- [x] P1: Local hybrid ranking had drifted from the plan. The final score was
+  reweighted around available channels when vector score was missing, which
+  violated the fixed formula and hid missing semantic behavior.
+  - Fix: `ranking::compute_final_score` now always uses the planned fixed
+    weights and treats missing vector score as `0.0`.
+  - Follow-up fix: `LocalMemoryProvider` now applies `min_similarity` to the
+    available recall match channel before computing final sort score. This
+    keeps default lexical-only and semantic-only recall from being dropped by
+    the fixed-weight final score while preventing lexical-only FTS relevance
+    from satisfying near-exact similarity gates.
+
+- [x] P1: Desktop production runtime used the heuristic memory extractor. That
+  made production extraction deterministic but not model-backed as designed.
+  - Fix: desktop runtime no longer injects `HeuristicMemoryExtractor`; it uses
+    the SDK default model-backed extractor path.
+
+- [x] P1: Model-backed extraction could send raw session excerpt text to the
+  model when the runtime observer used `NoopRedactor`.
+  - Fix: `ModelBackedMemoryExtractor` runs the SDK default redactor before
+    constructing the extraction request excerpt, even when the observer
+    redactor is noop.
+
+- [x] P1: Extractor output was trusted too early. A model output containing a
+  credential or prompt-injection payload could reach the memory inbox.
+  - Fix: extraction worker sanitizes extracted candidate and consolidation
+    content through `MemoryThreatScanner` before inbox proposal. Credential
+    findings redact; prompt-injection findings block the job.
+
+- [x] P1: Read-only team/subagent memory scopes could remove the `memory` tool
+  entirely. That blocked legitimate read/list/search flows instead of letting
+  backend policy reject writes.
+  - Fix: only `Empty` memory scope filters out the `memory` tool. `ReadOnly`
+    keeps the tool available and relies on runtime policy for write denial.
+
+- [x] P2: Team shared memory provider advertised built-in trust instead of team
+  trust.
+  - Fix: team shared memory provider descriptors now report
+    `MemoryProviderTrust::Team`, and `SharedMemory::descriptor()` delegates to
+    its provider descriptor.
+
+- [x] P2: Memory export audit could be emitted before the export file write was
+  known to have succeeded.
+  - Fix: export now writes the file first and emits the audit event only after a
+    successful write.
+
+- [x] P1: `memory_tool` propose bypassed write policy. In `ReadOnly` thread
+  mode the model could still create an inbox candidate because
+  `execute_propose` wrote directly to `MemoryInbox`.
+  - Fix: `execute_propose` now evaluates the session write policy first.
+    `Allow` and `CandidateOnly` may stage a candidate; `Deny` rejects before
+    inbox mutation.
+
+- [x] P1: Candidate-only staging trusted model-provided draft content before
+  inbox insertion. `create`, `update`, `delete`, and `propose` candidate paths
+  could store credential or prompt-injection payloads in the inbox.
+  - Fix: `stage_candidate_response` now scans every candidate draft with
+    `MemoryThreatScanner` before `MemoryInbox::propose_with_operation`.
+    Credential findings redact candidate content; blocking findings reject the
+    candidate and leave the inbox unchanged.
+
+- [x] P1: Team/subagent run-scoped memory modes did not reach the SDK memory
+  tool policy path. `RunContext.memory_thread_settings` carried `ReadOnly` or
+  `CandidateOnly`, but `memory_tool` rebuilt policy from persisted SQLite
+  thread settings. When no persisted row existed, the default was `ReadWrite`.
+  This meant a run-scoped `ReadOnly` team/subagent could still stage a
+  candidate, and a run-scoped `CandidateOnly` team/subagent could mutate durable
+  memory directly.
+  - Fix: `ToolContext` now carries the run-scoped `MemoryThreadSettings`,
+    `memory_tool` forwards them in `MemoryToolRuntimeRequest`, and the SDK
+    runtime copies them into the effective `SessionOptions`.
+    `memory_policy_for_session` now prefers matching run-scoped settings over
+    persisted settings and fails closed on session mismatch.
+
+- [x] P2: Extraction background polling swallowed per-poll errors without
+  durable operator-visible telemetry. This is non-blocking because failed jobs
+  are still retried or blocked through the durable queue, but operational
+  visibility was still required for completion.
+  - Fix: `MemoryExtractionRuntime` now records a redacted
+    `memory.extraction.poll` span with an error event and error status whenever
+    background polling fails.
+
+- [x] P1: `memory_tool` read-only actions still used the same user-review
+  permission plan as write actions. This violated the planned policy-auto path
+  for `search`, `read`, and `list`.
+  - Fix: `MemoryTool::plan` now parses the requested action and uses
+    `PermissionCheck::Allowed` for `search`, `read`, and `list`; `create`,
+    `update`, `delete`, and `propose` still use user-review permission plans.
+
+- [x] P1: Extraction consolidation `reason` was model output but was written
+  into inbox candidate tags without threat scanning. A credential or
+  prompt-injection string could reach frontend state and durable metadata after
+  approval.
+  - Fix: extraction worker now scans consolidation reasons through the same
+    `MemoryThreatScanner` path as extracted content before tags are written.
+    Credential findings redact the reason tag; blocking findings fail the job
+    before inbox mutation.
+
+- [x] P1: Extraction worker scanning and inbox writes were interleaved. A
+  later blocking consolidation reason could fail the job after an earlier
+  ordinary candidate from the same model output had already been written to the
+  inbox.
+  - Fix: extraction worker now stages all candidate and consolidation inbox
+    proposals after validation and threat scanning. It writes to
+    `MemoryInbox` only after every output item has passed.
+
+#### Implementation Plan
+
+- [x] Restore the fixed hybrid ranking formula and add coverage for missing
+  vector score.
+- [x] Split recall threshold gating from final sorting score so planned fixed
+  weights do not break default recall.
+- [x] Remove production heuristic extractor wiring from desktop runtime.
+- [x] Redact model extraction excerpts before model request construction.
+- [x] Threat-scan extractor output before inbox proposal.
+- [x] Preserve `memory` tool availability for read-only memory scopes and keep
+  write rejection in backend policy.
+- [x] Correct team provider trust metadata.
+- [x] Move memory export audit emission after file write success.
+- [x] Route `memory_tool` propose through session write policy before inbox
+  mutation.
+- [x] Threat-scan all SDK memory tool candidate staging paths before inbox
+  mutation.
+- [x] Propagate run-scoped team/subagent memory thread settings through
+  `ToolContext`, `MemoryToolRuntimeRequest`, SDK `SessionOptions`, and policy
+  evaluation.
+- [x] Record redacted operator-visible telemetry for background extraction poll
+  failures.
+- [x] Split `memory_tool` planning so read-only actions use the policy-auto
+  permission path while write-like actions still require user review.
+- [x] Threat-scan extraction consolidation reasons before writing inbox candidate
+  tags.
+- [x] Stage extraction inbox proposals before mutation so a later blocked item
+  prevents every proposal from the same output from entering the inbox.
+- [x] Run targeted regression tests for every fixed finding.
+- [x] Attempt `pnpm check:rust` after fixes and record the environment failure.
+- [x] Run `cargo check --workspace` and targeted Rust regressions after the
+  final follow-up fix.
+- [x] Record final read-only audit result after the last review pass.
+
+#### Verification Added After Final Audit Fixes
+
+Passed:
+
+- `cargo fmt --all`
+- `cargo fmt --all --check`
+- `node scripts/memory-architecture-policy.mjs`
+- `cargo test -p jyowo-harness-memory --test local_provider local_ranking_uses_fixed_weights_when_vector_is_missing`
+- `cargo test -p jyowo-harness-memory --test local_provider`
+- `cargo test -p jyowo-harness-memory --test extraction worker_`
+- `cargo test -p jyowo-harness-engine --features subagent-tool child_tool_filter`
+- `cargo test -p jyowo-harness-sdk --features memory-provider-registry memory_extraction_excerpt_uses_default_redactor_after_noop_redactor`
+- `cargo test -p jyowo-harness-sdk --features agents-team read_only_team_members_keep_memory_tool_available`
+- `cargo test -p jyowo-harness-team --test shared_memory shared_memory_descriptor_uses_team_trust`
+- `cargo test -p jyowo-harness-sdk --features testing,memory-provider-registry,builtin-toolset --lib memory_tool_ -- --nocapture`
+- `cargo test -p jyowo-harness-tool --features builtin-toolset --test memory_tool -- --nocapture`
+- `cargo test -p jyowo-harness-sdk --features memory-provider-registry memory_extraction_poll_error_records_redacted_telemetry -- --nocapture`
+- `cargo test -p jyowo-harness-tool --features builtin-toolset --test memory_tool memory_tool_plans_read_actions_as_policy_auto_and_writes_as_user_review -- --nocapture`
+- `cargo test -p jyowo-harness-memory --test extraction worker_blocks_later_consolidation_reason_before_any_inbox_mutation -- --nocapture`
+- `cargo test -p jyowo-harness-memory --test extraction worker_ -- --nocapture`
+- `cargo test -p jyowo-harness-engine --features subagent-tool child_tool_filter`
+- `cargo test -p jyowo-harness-sdk --features agents-team read_only_team_members_keep_memory_tool_available`
+- `cargo check --workspace`
+- `pnpm audit:tests > docs/testing/test-inventory.md`
+- `pnpm check:docs`
+- `git diff --check`
+
+Notes:
+
+- The first post-fix `pnpm check:rust` run failed while linking
+  `jyowo-harness-agent-runtime` test `subagents` with `No space left on
+  device`. Only `/Users/goya/Repo/Git/Jyowo-memory-platform/target` build
+  artifacts were removed. The command was rerun from a clean `target` and
+  passed.
+- The first post-fix `pnpm check:docs` run failed because
+  `docs/testing/test-inventory.md` no longer matched `pnpm audit:tests`
+  output. The inventory was regenerated with
+  `pnpm audit:tests > docs/testing/test-inventory.md`; `pnpm check:docs` then
+  passed.
+- A later full `pnpm check:rust` rerun after follow-up fixes failed again due
+  to `No space left on device` while linking SDK integration tests and writing
+  rustc fingerprint output. The failure was environmental, not a Rust compile
+  or test assertion failure. The final verification therefore uses
+  `cargo check --workspace` plus targeted regression tests for the changed
+  paths.
+
+#### Final Read-only Audit Result
+
+The final read-only audit found no P0 issues. It found three additional P1
+issues after the earlier fix pass:
+
+- `execute_propose` bypassed policy and could stage candidates in `ReadOnly`
+  mode.
+- SDK candidate-only inbox staging did not scan model-provided candidate
+  content.
+- Team/subagent run-scoped `ReadOnly` and `CandidateOnly` memory modes did not
+  reach the SDK memory tool policy path when no persisted thread setting existed.
+
+All three P1 findings are fixed in this worktree and covered by targeted
+regression tests. The remaining P2 background extraction polling telemetry gap
+is also fixed in this worktree and covered by a targeted regression test.
+
+A follow-up read-only audit found no P0 issues and two additional P1 issues:
+
+- `memory_tool` read-only actions used user-review permission plans instead of
+  policy-auto plans.
+- Extraction consolidation reasons were not threat-scanned before entering inbox
+  candidate tags.
+
+Both follow-up P1 findings are fixed in this worktree and covered by targeted
+regression tests.
+
+A final follow-up audit found one additional P1:
+
+- Extraction worker wrote earlier candidates before scanning later
+  consolidation reasons from the same model output. A later blocking reason
+  could fail the job while leaving an earlier inbox mutation behind.
+
+That P1 is fixed in this worktree by staging all extraction proposals before
+any inbox mutation. The new regression
+`worker_blocks_later_consolidation_reason_before_any_inbox_mutation` failed
+before the fix and passes after it.
+
+The final read-only re-audit of that staging fix found no P0 or P1 issues.

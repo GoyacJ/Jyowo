@@ -105,6 +105,13 @@ export function AppShell({ children }: { children: ReactNode }) {
               contextSnapshot.error ? getCommandErrorMessage(contextSnapshot.error) : undefined
             }
             loading={contextSnapshot.isLoading}
+            modelRequestPreview={contextSnapshot.modelRequestPreview}
+            modelRequestPreviewError={
+              contextSnapshot.modelRequestPreviewError
+                ? getCommandErrorMessage(contextSnapshot.modelRequestPreviewError)
+                : undefined
+            }
+            modelRequestPreviewLoading={contextSnapshot.modelRequestPreviewLoading}
             onClose={() => setContextPanelCollapsed(true)}
             onDecisionSelect={(decision) => {
               if (decision.requestId) {

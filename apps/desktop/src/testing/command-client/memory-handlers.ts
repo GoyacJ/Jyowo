@@ -38,6 +38,7 @@ export function createMemoryCommandHandlers(
           evidence: defaultMemoryEvidence(),
           expires_at: null,
           id: request.candidateId,
+          operation: 'create',
           proposed_record: defaultMemoryDraft(),
           state: 'promoted',
           tenant_id: request.tenantId ?? DEFAULT_MEMORY_TENANT_ID,
@@ -50,7 +51,7 @@ export function createMemoryCommandHandlers(
       await wait(state.options.delayMs)
       return { id: request.id, status: 'deleted' }
     },
-    async exportMemoryItems() {
+    async exportMemoryItems(_request) {
       await wait(state.options.delayMs)
       return state.options.memoryExport ?? fixtureMemoryExport
     },
@@ -88,10 +89,14 @@ export function createMemoryCommandHandlers(
       return {
         preview: {
           content_hash: defaultContentHash(),
+          policy_decisions: [],
           redacted_count: 0,
           run_id: request.runId,
           sections: [],
           session_id: request.sessionId,
+          token_estimate: 0,
+          tool_names: [],
+          trace_id: request.traceId,
         },
       }
     },
@@ -133,6 +138,7 @@ export function createMemoryCommandHandlers(
           evidence: defaultMemoryEvidence(),
           expires_at: null,
           id: request.candidateId,
+          operation: 'create',
           proposed_record: defaultMemoryDraft(),
           state: 'rejected',
           tenant_id: request.tenantId ?? DEFAULT_MEMORY_TENANT_ID,

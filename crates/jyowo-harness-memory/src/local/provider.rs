@@ -6,12 +6,16 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::thread;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use harness_contracts::{MemoryError, MemoryId, MemoryKind, MemoryVisibility, TenantId};
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+use harness_contracts::{
+    MemoryError, MemoryId, MemoryKind, MemoryScoreBreakdown, MemoryVisibility, TenantId,
+};
+use rusqlite::{Connection, Error as SqliteError, ErrorCode, Transaction, TransactionBehavior};
 use tokio::sync::Mutex;
 
 use crate::local::embedding::{
@@ -24,6 +28,11 @@ use crate::{
     content_preview, visibility_matches, MemoryKindFilter, MemoryLifecycle, MemoryListScope,
     MemoryMetadata, MemoryQuery, MemoryRecord, MemoryStore, MemorySummary, MemoryVisibilityFilter,
 };
+
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const SQLITE_INIT_RETRY_ATTEMPTS: usize = 50;
+const SQLITE_INIT_RETRY_DELAY: Duration = Duration::from_millis(100);
+static SQLITE_INIT_LOCK: StdMutex<()> = StdMutex::new(());
 
 /// Options for opening a local memory provider.
 #[derive(Clone)]
@@ -76,15 +85,23 @@ impl LocalMemoryProvider {
 
         let conn = Connection::open(db_path)
             .map_err(|e| MemoryError::Message(format!("failed to open sqlite database: {e}")))?;
+        conn.busy_timeout(SQLITE_BUSY_TIMEOUT)
+            .map_err(|e| MemoryError::Message(format!("failed to set sqlite busy timeout: {e}")))?;
+
+        let _init_guard = SQLITE_INIT_LOCK
+            .lock()
+            .map_err(|_| MemoryError::Message("sqlite init lock poisoned".to_owned()))?;
 
         // Apply PRAGMAs
         for pragma in schema::CONNECTION_PRAGMAS {
-            conn.execute_batch(pragma)
+            retry_sqlite_init(|| conn.execute_batch(pragma))
                 .map_err(|e| MemoryError::Message(format!("failed to set pragma: {e}")))?;
         }
+        ensure_wal_journal_mode(&conn)
+            .map_err(|e| MemoryError::Message(format!("failed to set sqlite journal mode: {e}")))?;
 
         // Run migrations
-        migrations::run(&conn)
+        retry_sqlite_init(|| migrations::run(&conn))
             .map_err(|e| MemoryError::Message(format!("migration failed: {e}")))?;
 
         Ok(Self {
@@ -93,6 +110,45 @@ impl LocalMemoryProvider {
             options,
         })
     }
+}
+
+fn ensure_wal_journal_mode(conn: &Connection) -> Result<(), SqliteError> {
+    let current_mode: String =
+        retry_sqlite_init(|| conn.query_row("PRAGMA journal_mode", [], |row| row.get(0)))?;
+    if current_mode.eq_ignore_ascii_case("wal") {
+        return Ok(());
+    }
+
+    let updated_mode: String =
+        retry_sqlite_init(|| conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0)))?;
+    if updated_mode.eq_ignore_ascii_case("wal") {
+        Ok(())
+    } else {
+        Err(SqliteError::ExecuteReturnedResults)
+    }
+}
+
+fn retry_sqlite_init<T, F>(mut operation: F) -> Result<T, SqliteError>
+where
+    F: FnMut() -> Result<T, SqliteError>,
+{
+    for attempt in 1..=SQLITE_INIT_RETRY_ATTEMPTS {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error) if sqlite_locked_or_busy(&error) && attempt < SQLITE_INIT_RETRY_ATTEMPTS => {
+                thread::sleep(SQLITE_INIT_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("sqlite init retry loop returns on final attempt");
+}
+
+fn sqlite_locked_or_busy(error: &SqliteError) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    )
 }
 
 #[async_trait]
@@ -172,6 +228,7 @@ impl MemoryStore for LocalMemoryProvider {
 
         let mut results: Vec<MemoryRecord> = candidates
             .into_values()
+            .filter(|candidate| recall_match_score(candidate) >= query.min_similarity)
             .map(|candidate| {
                 let mut record = row_to_memory_record(&candidate.row)?;
                 let mut score = RankScore {
@@ -186,12 +243,10 @@ impl MemoryStore for LocalMemoryProvider {
                 };
                 score.final_score = ranking::compute_final_score(&score);
                 record.metadata.recall_score = score.final_score;
+                record.metadata.recall_score_breakdown = Some(rank_score_breakdown(&score));
                 Ok(record)
             })
-            .collect::<Result<Vec<_>, MemoryError>>()?
-            .into_iter()
-            .filter(|record| record.metadata.recall_score >= query.min_similarity)
-            .collect();
+            .collect::<Result<Vec<_>, MemoryError>>()?;
 
         results.sort_by(|a, b| {
             b.metadata
@@ -500,7 +555,7 @@ impl MemoryStore for LocalMemoryProvider {
             .into_iter()
             .map(|row| {
                 let record = row_to_memory_record(&row)?;
-                Ok(list_scope_filter(&record, &scope))
+                Ok(list_scope_filter(&record, &scope, self.provider_id()))
             })
             .collect::<Result<Vec<_>, MemoryError>>()?
             .into_iter()
@@ -513,7 +568,33 @@ impl MemoryStore for LocalMemoryProvider {
 
 impl MemoryLifecycle for LocalMemoryProvider {}
 
-impl crate::MemoryProvider for LocalMemoryProvider {}
+impl crate::MemoryProvider for LocalMemoryProvider {
+    fn descriptor(&self) -> crate::MemoryProviderDescriptor {
+        crate::MemoryProviderDescriptor {
+            provider_id: self.provider_id().to_owned(),
+            provider_kind: harness_contracts::MemoryProviderKind::Local,
+            priority: 0,
+            trust_level: harness_contracts::MemoryProviderTrust::BuiltIn,
+            tenant_scope: None,
+            workspace_scope: None,
+            durability: harness_contracts::MemoryProviderDurability::Durable,
+            readable: true,
+            writable: true,
+            allowed_visibility: vec![
+                harness_contracts::MemoryVisibilityClass::Private,
+                harness_contracts::MemoryVisibilityClass::User,
+                harness_contracts::MemoryVisibilityClass::Team,
+                harness_contracts::MemoryVisibilityClass::Tenant,
+            ],
+            supports_evidence: true,
+            supports_raw_content_export: true,
+            timeout_ms: 5000,
+            max_records_per_recall: self.options.max_records_per_recall,
+            max_chars_per_recall: 100_000,
+            max_bytes_per_record: 1024 * 1024,
+        }
+    }
+}
 
 // ── SQL row helpers ──
 
@@ -521,6 +602,17 @@ struct CandidateRow {
     row: MemoryRecordRow,
     lexical_score: f32,
     vector_score: Option<f32>,
+}
+
+fn recall_match_score(candidate: &CandidateRow) -> f32 {
+    // FTS5 rank is a lexical relevance signal, not calibrated semantic
+    // similarity. Keep lexical-only matches from satisfying near-exact
+    // `min_similarity` gates while still letting normal recall floors work.
+    let lexical_similarity = candidate.lexical_score.min(0.95);
+    candidate
+        .vector_score
+        .unwrap_or(0.0)
+        .max(lexical_similarity)
 }
 
 #[derive(Clone)]
@@ -666,6 +758,19 @@ fn row_to_memory_record(row: &MemoryRecordRow) -> Result<MemoryRecord, MemoryErr
             .parse()
             .map_err(|e| MemoryError::Message(format!("invalid updated_at: {e}")))?,
     })
+}
+
+fn rank_score_breakdown(score: &RankScore) -> MemoryScoreBreakdown {
+    MemoryScoreBreakdown {
+        lexical_score: score.lexical_score,
+        vector_score: score.vector_score,
+        confidence_score: score.confidence_score,
+        recency_score: score.recency_score,
+        access_score: score.access_score,
+        source_trust_score: score.source_trust_score,
+        explicit_selection_boost: score.explicit_selection_boost,
+        final_score: score.final_score,
+    }
 }
 
 fn upsert_embedding(
@@ -896,7 +1001,11 @@ fn kind_filter_matches_record(row: &MemoryRecordRow, filter: Option<&MemoryKindF
     }
 }
 
-fn list_scope_filter(record: &MemoryRecord, scope: &MemoryListScope) -> Option<MemorySummary> {
+fn list_scope_filter(
+    record: &MemoryRecord,
+    scope: &MemoryListScope,
+    provider_id: &str,
+) -> Option<MemorySummary> {
     let matches = match scope {
         MemoryListScope::All => true,
         MemoryListScope::ByKind(kind) => &record.kind == kind,
@@ -908,10 +1017,20 @@ fn list_scope_filter(record: &MemoryRecord, scope: &MemoryListScope) -> Option<M
     if matches {
         Some(MemorySummary {
             id: record.id,
+            provider_id: Some(provider_id.to_owned()),
             kind: record.kind.clone(),
             visibility: record.visibility.clone(),
             content_preview: content_preview(&record.content),
+            content_hash: harness_contracts::ContentHash(
+                *blake3::hash(record.content.as_bytes()).as_bytes(),
+            ),
             metadata: record.metadata.clone(),
+            expires_at: record
+                .metadata
+                .ttl
+                .and_then(|ttl| chrono::Duration::from_std(ttl).ok())
+                .map(|ttl| record.created_at + ttl),
+            deleted: false,
             updated_at: record.updated_at,
         })
     } else {

@@ -4007,9 +4007,13 @@ describe('CommandClient', () => {
         return {
           items: [
             {
+              contentHash: '0'.repeat(64),
               contentPreview: 'Prefers concise Chinese responses',
+              deleted: false,
               id: '01HZ0000000000000000000001',
               kind: 'user_preference',
+              lastAccessedAt: null,
+              providerId: 'local',
               source: 'user_input',
               tags: ['tone'],
               updatedAt: '2026-06-17T00:00:00.000Z',
@@ -4025,9 +4029,13 @@ describe('CommandClient', () => {
             accessCount: 0,
             confidence: 1,
             content: 'Prefers concise Chinese responses',
+            contentHash: '0'.repeat(64),
             createdAt: '2026-06-17T00:00:00.000Z',
+            deleted: false,
             id: '01HZ0000000000000000000001',
             kind: 'user_preference',
+            lastAccessedAt: null,
+            providerId: 'local',
             source: 'user_input',
             tags: ['tone'],
             updatedAt: '2026-06-17T00:00:00.000Z',
@@ -4044,10 +4052,15 @@ describe('CommandClient', () => {
       }
 
       return {
+        auditHash: '0'.repeat(64),
         exportedAt: '2026-06-17T00:00:00.000Z',
         format: 'json',
+        includeHashes: true,
+        includeMetadata: true,
+        includeRawContent: false,
         itemCount: 1,
         path: '.jyowo/runtime/exports/memory-20260617T000000.000Z.json',
+        scope: 'visible',
       }
     })
     const client = createInvokeCommandClient(invoke)
@@ -4074,11 +4087,24 @@ describe('CommandClient', () => {
       id: '01HZ0000000000000000000001',
       status: 'deleted',
     })
-    await expect(exportMemoryItems(client)).resolves.toEqual({
+    const exportRequest = {
+      explicitUserAction: true,
+      format: 'json' as const,
+      includeHashes: true,
+      includeMetadata: true,
+      includeRawContent: false as const,
+      scope: 'visible' as const,
+    }
+    await expect(exportMemoryItems(exportRequest, client)).resolves.toEqual({
+      auditHash: '0'.repeat(64),
       exportedAt: '2026-06-17T00:00:00.000Z',
       format: 'json',
+      includeHashes: true,
+      includeMetadata: true,
+      includeRawContent: false,
       itemCount: 1,
       path: '.jyowo/runtime/exports/memory-20260617T000000.000Z.json',
+      scope: 'visible',
     })
 
     expect(invoke).toHaveBeenCalledWith('list_memory_items')
@@ -4094,7 +4120,7 @@ describe('CommandClient', () => {
       actionPlanId,
       id: '01HZ0000000000000000000001',
     })
-    expect(invoke).toHaveBeenCalledWith('export_memory_items')
+    expect(invoke).toHaveBeenCalledWith('export_memory_items', { request: exportRequest })
     expect(invoke).not.toHaveBeenCalledWith('execute', expect.anything())
   })
 
@@ -4122,6 +4148,7 @@ describe('CommandClient', () => {
       },
       expires_at: null,
       id: candidateId,
+      operation: 'create' as const,
       proposed_record: {
         content: 'Candidate memory entry',
         expires_at: null,
@@ -4138,6 +4165,7 @@ describe('CommandClient', () => {
       evidence: candidate.evidence,
       expires_at: candidate.expires_at,
       id: candidate.id,
+      operation: candidate.operation,
       proposed_record: candidate.proposed_record,
       state: candidate.state,
     }
@@ -4221,6 +4249,7 @@ describe('CommandClient', () => {
     }
     const preview = {
       content_hash: contentHash,
+      policy_decisions: ['Allow'],
       redacted_count: 1,
       run_id: runId,
       sections: [
@@ -4232,6 +4261,9 @@ describe('CommandClient', () => {
         },
       ],
       session_id: sessionId,
+      token_estimate: 4,
+      tool_names: ['memory'],
+      trace_id: traceId,
     }
     const invoke = vi.fn(async (command: string) => {
       if (command === 'get_memory_settings' || command === 'update_memory_settings') {
@@ -4316,6 +4348,9 @@ describe('CommandClient', () => {
     await expect(
       getModelRequestPreview({ runId, sessionId, tenantId, traceId }, client),
     ).resolves.toHaveProperty('preview.sections.0.memory_ids.0', memoryId)
+    await expect(
+      getModelRequestPreview({ runId, sessionId, tenantId, traceId }, client),
+    ).resolves.toHaveProperty('preview.trace_id', traceId)
 
     expect(invoke).toHaveBeenCalledWith('get_memory_settings', {
       request: { tenant_id: tenantId },

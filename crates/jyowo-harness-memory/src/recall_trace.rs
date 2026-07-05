@@ -10,8 +10,8 @@ use std::sync::Mutex;
 use chrono::Utc;
 use harness_contracts::{
     ContentHash, MemoryCandidateTrace, MemoryDropReason, MemoryDroppedTrace, MemoryId,
-    MemoryInjectedTrace, MemoryProviderTrace, MemoryRecallTrace, MemoryTraceId, RunId, SessionId,
-    TenantId,
+    MemoryInjectedTrace, MemoryModelRequestPreview, MemoryProviderTrace, MemoryRecallTrace,
+    MemoryTraceId, RunId, SessionId, TenantId,
 };
 use rusqlite::Connection;
 
@@ -182,6 +182,16 @@ impl MemoryRecallTraceCollector {
         }
     }
 
+    pub fn add_model_request_preview(
+        &self,
+        tenant_id: TenantId,
+        preview: MemoryModelRequestPreview,
+    ) {
+        if let Ok(conn) = self.conn.lock() {
+            let _ = insert_model_request_preview(&conn, tenant_id, &preview);
+        }
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.conn
@@ -234,6 +244,21 @@ impl MemoryRecallTraceCollector {
             .lock()
             .ok()
             .and_then(|conn| get_trace(&conn, tenant_id, trace_id).ok().flatten())
+    }
+
+    #[must_use]
+    pub fn get_model_request_preview(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+        run_id: RunId,
+        trace_id: Option<MemoryTraceId>,
+    ) -> Option<MemoryModelRequestPreview> {
+        self.conn.lock().ok().and_then(|conn| {
+            get_model_request_preview(&conn, tenant_id, session_id, run_id, trace_id)
+                .ok()
+                .flatten()
+        })
     }
 
     /// List trace summaries without full detail (for IPC listing).
@@ -314,6 +339,77 @@ fn insert_trace(conn: &Connection, trace: &MemoryRecallTrace) -> Result<(), Stri
     Ok(())
 }
 
+fn insert_model_request_preview(
+    conn: &Connection,
+    tenant_id: TenantId,
+    preview: &MemoryModelRequestPreview,
+) -> Result<(), String> {
+    let preview_json =
+        serde_json::to_string(preview).map_err(|e| format!("serialize request preview: {e}"))?;
+    let trace_id = preview
+        .trace_id
+        .map(|trace_id| trace_id.to_string())
+        .unwrap_or_default();
+    conn.execute(
+        "INSERT INTO memory_model_request_previews
+           (tenant_id, session_id, run_id, trace_id, preview_json, at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(tenant_id, session_id, run_id, trace_id) DO UPDATE SET
+           preview_json = excluded.preview_json,
+           at = excluded.at",
+        rusqlite::params![
+            tenant_id.to_string(),
+            preview.session_id.to_string(),
+            preview.run_id.to_string(),
+            trace_id,
+            preview_json,
+            Utc::now().to_rfc3339(),
+        ],
+    )
+    .map_err(|e| format!("write request preview: {e}"))?;
+    Ok(())
+}
+
+fn get_model_request_preview(
+    conn: &Connection,
+    tenant_id: TenantId,
+    session_id: SessionId,
+    run_id: RunId,
+    trace_id: Option<MemoryTraceId>,
+) -> Result<Option<MemoryModelRequestPreview>, String> {
+    let result = if let Some(trace_id) = trace_id {
+        conn.query_row(
+            "SELECT preview_json FROM memory_model_request_previews
+             WHERE tenant_id = ?1 AND session_id = ?2 AND run_id = ?3 AND trace_id = ?4",
+            rusqlite::params![
+                tenant_id.to_string(),
+                session_id.to_string(),
+                run_id.to_string(),
+                trace_id.to_string(),
+            ],
+            decode_model_request_preview_row,
+        )
+    } else {
+        conn.query_row(
+            "SELECT preview_json FROM memory_model_request_previews
+             WHERE tenant_id = ?1 AND session_id = ?2 AND run_id = ?3
+             ORDER BY at DESC LIMIT 1",
+            rusqlite::params![
+                tenant_id.to_string(),
+                session_id.to_string(),
+                run_id.to_string(),
+            ],
+            decode_model_request_preview_row,
+        )
+    };
+
+    match result {
+        Ok(preview) => Ok(Some(preview)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(format!("read request preview: {error}")),
+    }
+}
+
 fn get_trace(
     conn: &Connection,
     tenant_id: TenantId,
@@ -378,6 +474,15 @@ fn list_traces(
 fn decode_trace_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecallTrace> {
     let json: String = row.get(0)?;
     serde_json::from_str::<MemoryRecallTrace>(&json).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })
+}
+
+fn decode_model_request_preview_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<MemoryModelRequestPreview> {
+    let json: String = row.get(0)?;
+    serde_json::from_str::<MemoryModelRequestPreview>(&json).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
     })
 }

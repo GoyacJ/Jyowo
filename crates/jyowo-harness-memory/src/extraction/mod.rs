@@ -13,7 +13,10 @@ pub use job::{
     JobId,
 };
 pub use schema::{
-    ExtractedCandidate, ExtractedConsolidation, ExtractionMemoryKind, ExtractionOutput,
-    ExtractionVisibility,
+    ExtractedCandidate, ExtractedConsolidation, ExtractedConsolidationAction, ExtractionMemoryKind,
+    ExtractionOutput, ExtractionVisibility,
 };
-pub use worker::{ExtractionRunOutcome, ExtractionWorker, ExtractionWorkerConfig};
+pub use worker::{
+    ExtractionRunOutcome, ExtractionWorker, ExtractionWorkerConfig, HeuristicMemoryExtractor,
+    MemoryExtractor,
+};

@@ -65,6 +65,9 @@ pub(super) struct MemorySessionSummaryState {
     pub(super) turn_count: u32,
     pub(super) tool_use_count: u32,
     pub(super) final_assistant_text: Option<String>,
+    pub(super) final_assistant_message_id: Option<MessageId>,
+    pub(super) final_assistant_run_id: Option<RunId>,
+    pub(super) has_external_context: bool,
 }
 
 pub(super) struct ConversationDeletionGuardEventStore {
@@ -356,7 +359,7 @@ impl LifecycleHookEventStore {
                     );
                 }
                 Event::SessionEnded(ended) => {
-                    self.call_memory_session_end(ended).await;
+                    self.call_memory_session_end(ended).await?;
                     output.extend(
                         self.dispatch_lifecycle_hook(HookEvent::SessionEnd {
                             session_id: ended.session_id,
@@ -524,13 +527,24 @@ impl LifecycleHookEventStore {
         while let Some(envelope) = stream.next().await {
             record_memory_summary_event(&mut state, &envelope.payload);
         }
+        if state.final_assistant_text.is_none() {
+            state.final_assistant_text = fallback.final_assistant_text;
+            state.final_assistant_message_id = fallback.final_assistant_message_id;
+            state.final_assistant_run_id = fallback.final_assistant_run_id;
+        }
+        state.turn_count = state.turn_count.max(fallback.turn_count);
+        state.tool_use_count = state.tool_use_count.max(fallback.tool_use_count);
+        state.has_external_context |= fallback.has_external_context;
         state
     }
 
     #[cfg(feature = "memory-provider-registry")]
-    async fn call_memory_session_end(&self, ended: &harness_contracts::SessionEndedEvent) {
+    async fn call_memory_session_end(
+        &self,
+        ended: &harness_contracts::SessionEndedEvent,
+    ) -> Result<(), harness_contracts::JournalError> {
         let Some(memory) = &self.memory_manager else {
-            return;
+            return Ok(());
         };
         let summary_state = self.memory_summary_state().await;
         let ctx = harness_contracts::MemorySessionCtx {
@@ -547,11 +561,143 @@ impl LifecycleHookEventStore {
             usage: ended.final_usage.clone(),
             final_assistant_text: summary_state.final_assistant_text.as_deref(),
         };
-        let _ = memory.on_session_end(&ctx, &summary).await;
+        self.enqueue_session_end_extraction(ended, &summary_state)?;
+        memory
+            .on_session_end(&ctx, &summary)
+            .await
+            .map_err(memory_journal_error)?;
+        Ok(())
     }
 
     #[cfg(not(feature = "memory-provider-registry"))]
-    async fn call_memory_session_end(&self, _ended: &harness_contracts::SessionEndedEvent) {}
+    async fn call_memory_session_end(
+        &self,
+        _ended: &harness_contracts::SessionEndedEvent,
+    ) -> Result<(), harness_contracts::JournalError> {
+        Ok(())
+    }
+
+    #[cfg(feature = "memory-provider-registry")]
+    fn enqueue_session_end_extraction(
+        &self,
+        ended: &harness_contracts::SessionEndedEvent,
+        summary_state: &MemorySessionSummaryState,
+    ) -> Result<(), harness_contracts::JournalError> {
+        let Some(message_id) = summary_state.final_assistant_message_id else {
+            return Ok(());
+        };
+        let Some(run_id) = summary_state.final_assistant_run_id else {
+            return Ok(());
+        };
+        let Some(text) = summary_state.final_assistant_text.as_deref() else {
+            return Ok(());
+        };
+        if text.trim().is_empty() {
+            return Ok(());
+        }
+        let settings_store = harness_memory::settings::MemorySettingsStore::open(
+            &self
+                .workspace_root
+                .join(".jyowo")
+                .join("runtime")
+                .join("memory")
+                .join("memory.sqlite3")
+                .to_string_lossy(),
+        )
+        .map_err(|error| {
+            harness_contracts::JournalError::Message(format!(
+                "open memory extraction settings failed: {error}"
+            ))
+        })?;
+        let global = settings_store
+            .get_global(ended.tenant_id)
+            .map_err(|error| {
+                harness_contracts::JournalError::Message(format!(
+                    "read memory extraction settings failed: {error}"
+                ))
+            })?;
+        if global.max_memory_bytes == 0 {
+            return Ok(());
+        }
+        let current_memory_bytes = settings_store
+            .current_memory_bytes(ended.tenant_id)
+            .map_err(|error| {
+                harness_contracts::JournalError::Message(format!(
+                    "read memory extraction quota failed: {error}"
+                ))
+            })?;
+        if current_memory_bytes >= global.max_memory_bytes {
+            return Ok(());
+        }
+        let thread = settings_store
+            .get_thread(ended.tenant_id, ended.session_id)
+            .map_err(|error| {
+                harness_contracts::JournalError::Message(format!(
+                    "read memory extraction thread settings failed: {error}"
+                ))
+            })?;
+        let permission = harness_contracts::MemoryPermissionContext {
+            explicit_user_instruction: false,
+            include_raw_content: false,
+            action_plan_id: None,
+            authorization_ticket_id: None,
+            non_interactive_policy_grant: true,
+        };
+        let decision = harness_memory::MemoryPolicyEngine::new(global).evaluate_generation(
+            &thread,
+            summary_state.has_external_context,
+            &permission,
+        );
+        if !matches!(decision, harness_contracts::MemoryPolicyDecision::Allow) {
+            return Ok(());
+        }
+        let memory_db_path = self
+            .workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("memory")
+            .join("memory.sqlite3");
+        let queue = harness_memory::ExtractionJobQueue::open(
+            &memory_db_path.to_string_lossy(),
+            harness_memory::ExtractionJobConfig::default(),
+        )
+        .map_err(|error| {
+            harness_contracts::JournalError::Message(format!(
+                "enqueue memory extraction queue open failed: {error}"
+            ))
+        })?;
+        let hash = blake3::hash(text.as_bytes());
+        queue
+            .enqueue(harness_memory::ExtractionJob {
+                job_id: format!("session-end-{}-{}", ended.session_id, hash.to_hex()),
+                tenant_id: ended.tenant_id,
+                session_id: ended.session_id,
+                run_id,
+                source_message_id: Some(message_id),
+                source_user_id: self.user_id.clone(),
+                source_excerpt: Some(text.to_owned()),
+                evidence_hash: *hash.as_bytes(),
+                job_kind: harness_memory::ExtractionJobKind::MemoryExtraction,
+                state: harness_memory::ExtractionJobState::Queued,
+                attempt_count: 0,
+                lease_owner: None,
+                lease_expires_at: None,
+                next_attempt_at: None,
+                created_at: harness_contracts::now(),
+                updated_at: harness_contracts::now(),
+            })
+            .map(|_| ())
+            .map_err(|error| {
+                harness_contracts::JournalError::Message(format!(
+                    "enqueue memory extraction failed: {error}"
+                ))
+            })
+    }
+}
+
+#[cfg(feature = "memory-provider-registry")]
+fn memory_journal_error(error: harness_contracts::MemoryError) -> harness_contracts::JournalError {
+    harness_contracts::JournalError::Message(format!("memory session end failed: {error}"))
 }
 
 pub(super) fn subagent_status_from_reason(

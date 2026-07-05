@@ -1,3 +1,5 @@
+#[cfg(feature = "recall-memory")]
+use harness_contracts::MemoryThreadSettings;
 use harness_contracts::{
     ConfigHash, CorrelationId, InteractivityLevel, Message, PermissionActorSource, PermissionMode,
     RunId, RunModelSnapshot, SessionId, SnapshotId, TeamId, TenantId, TurnInput,
@@ -55,6 +57,8 @@ pub struct RunContext {
     pub effective_config_hash: ConfigHash,
     pub started_from_scope_set: Vec<String>,
     pub context_seed: Vec<Message>,
+    #[cfg(feature = "recall-memory")]
+    pub memory_thread_settings: Option<MemoryThreadSettings>,
     pub model: Option<RunModelSnapshot>,
     pub model_config_id: Option<String>,
 }
@@ -88,6 +92,8 @@ impl RunContext {
             effective_config_hash: ConfigHash([0; 32]),
             started_from_scope_set: Vec::new(),
             context_seed: Vec::new(),
+            #[cfg(feature = "recall-memory")]
+            memory_thread_settings: None,
             model: None,
             model_config_id: None,
         }
@@ -184,6 +190,13 @@ impl RunContext {
     #[must_use]
     pub fn with_context_seed(mut self, context_seed: Vec<Message>) -> Self {
         self.context_seed = context_seed;
+        self
+    }
+
+    #[cfg(feature = "recall-memory")]
+    #[must_use]
+    pub fn with_memory_thread_settings(mut self, settings: Option<MemoryThreadSettings>) -> Self {
+        self.memory_thread_settings = settings;
         self
     }
 

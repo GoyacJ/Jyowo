@@ -11,8 +11,9 @@ use futures::stream;
 use harness_contracts::{
     ActionPlanId, DecisionScope, MemoryId, MemoryKind, MemoryMetadata, MemoryPermissionContext,
     MemoryPolicyDenyReason, MemoryProviderSelectionPolicy, MemoryRedactionSummary,
-    MemoryTakesEffect, MemoryToolDenial, MemoryToolResponse, MemoryToolState, PermissionSubject,
-    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    MemoryTakesEffect, MemoryThreadSettings, MemoryToolArgs, MemoryToolDenial, MemoryToolResponse,
+    MemoryToolState, PermissionSubject, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError,
+    ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use schemars::JsonSchema;
@@ -38,6 +39,7 @@ pub struct MemoryToolRuntimeRequest {
     pub run_id: harness_contracts::RunId,
     pub tool_use_id: harness_contracts::ToolUseId,
     pub workspace_root: PathBuf,
+    pub memory_thread_settings: Option<MemoryThreadSettings>,
 }
 
 #[async_trait]
@@ -151,7 +153,7 @@ impl Default for MemoryTool {
 }
 
 fn generated_memory_tool_schema() -> Value {
-    serde_json::to_value(schemars::schema_for!(MemoryToolRuntimeAction))
+    serde_json::to_value(schemars::schema_for!(MemoryToolArgs))
         .unwrap_or_else(|_| json!({"type": "object"}))
 }
 
@@ -167,20 +169,25 @@ impl Tool for MemoryTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        // All memory tool actions require permission planning for safety.
-        // Read-only actions (search/read/list) may be auto-authorized by policy.
-        super::generic_action_plan(
-            &self.descriptor,
-            input,
-            ctx,
+        let action = parse_action(input)?;
+        let permission = if matches!(
+            action,
+            MemoryToolRuntimeAction::Search { .. }
+                | MemoryToolRuntimeAction::Read { .. }
+                | MemoryToolRuntimeAction::List { .. }
+        ) {
+            PermissionCheck::Allowed
+        } else {
             PermissionCheck::AskUser {
                 subject: PermissionSubject::ToolInvocation {
                     tool: self.descriptor.name.clone(),
                     input: input.clone(),
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
-            },
-        )
+            }
+        };
+
+        super::generic_action_plan(&self.descriptor, input, ctx, permission)
     }
 
     async fn execute_authorized(
@@ -300,6 +307,7 @@ async fn execute_runtime(
             action,
             permission_context: MemoryPermissionContext {
                 explicit_user_instruction: false,
+                include_raw_content: false,
                 action_plan_id: Some(authorized.action_plan().plan_id),
                 authorization_ticket_id: Some(authorized.ticket().ticket_id),
                 non_interactive_policy_grant: false,
@@ -310,6 +318,7 @@ async fn execute_runtime(
             run_id: ctx.run_id,
             tool_use_id: ctx.tool_use_id,
             workspace_root: ctx.workspace_root.clone(),
+            memory_thread_settings: ctx.memory_thread_settings.clone(),
         })
         .await
 }

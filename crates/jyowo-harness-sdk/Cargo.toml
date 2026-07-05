@@ -82,6 +82,8 @@ memory-provider-registry = [
   "jyowo-harness-memory/provider-registry",
   "jyowo-harness-memory/threat-scanner",
   "jyowo-harness-context/recall-memory",
+  "jyowo-harness-engine/recall-memory",
+  "jyowo-harness-session/recall-memory",
 ]
 memory-consolidation = [
   "memory-provider-registry",

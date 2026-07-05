@@ -164,6 +164,7 @@ fn tool_ctx(cap_registry: CapabilityRegistry) -> ToolContext {
         parent_run: None,
         model: None,
         model_config_id: None,
+        memory_thread_settings: None,
         actor_source: harness_contracts::PermissionActorSource::ParentRun,
     }
 }

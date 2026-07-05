@@ -1,6 +1,8 @@
 import { ChevronDown, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import type { GetModelRequestPreviewResponse } from '@/shared/tauri/commands'
+
 import { ContextSection } from './ContextSection'
 import { type ContextFileReference, FileReferenceList } from './FileReferenceList'
 import { NextActionList } from './NextActionList'
@@ -25,6 +27,9 @@ type ContextPanelProps = {
   context: WorkspaceContext | null
   errorMessage?: string
   loading?: boolean
+  modelRequestPreview?: GetModelRequestPreviewResponse['preview'] | null
+  modelRequestPreviewError?: string
+  modelRequestPreviewLoading?: boolean
   onAddFile?: () => void
   onClose?: () => void
   onDecisionSelect?: (decision: ContextDecision) => void
@@ -36,6 +41,9 @@ export function ContextPanel({
   context,
   errorMessage,
   loading = false,
+  modelRequestPreview,
+  modelRequestPreviewError,
+  modelRequestPreviewLoading = false,
   onAddFile,
   onClose,
   onDecisionSelect,
@@ -69,6 +77,9 @@ export function ContextPanel({
       ) : context ? (
         <ContextPanelContent
           context={context}
+          modelRequestPreview={modelRequestPreview}
+          modelRequestPreviewError={modelRequestPreviewError}
+          modelRequestPreviewLoading={modelRequestPreviewLoading}
           onAddFile={onAddFile}
           onDecisionSelect={onDecisionSelect}
           onNextAction={onNextAction}
@@ -102,12 +113,18 @@ function ErrorContextPanel({ message }: { message: string }) {
 
 function ContextPanelContent({
   context,
+  modelRequestPreview,
+  modelRequestPreviewError,
+  modelRequestPreviewLoading,
   onAddFile,
   onDecisionSelect,
   onNextAction,
   onShowAllFiles,
 }: {
   context: WorkspaceContext
+  modelRequestPreview?: GetModelRequestPreviewResponse['preview'] | null
+  modelRequestPreviewError?: string
+  modelRequestPreviewLoading?: boolean
   onAddFile?: () => void
   onDecisionSelect?: (decision: ContextDecision) => void
   onNextAction?: (action: string) => void
@@ -159,6 +176,14 @@ function ContextPanelContent({
         {context.activeArtifact ? <ActiveArtifactThumbnail title={context.activeArtifact} /> : null}
       </ContextSection>
 
+      <ContextSection title={t('modelRequestPreview')}>
+        <ModelRequestPreview
+          errorMessage={modelRequestPreviewError}
+          loading={modelRequestPreviewLoading}
+          preview={modelRequestPreview}
+        />
+      </ContextSection>
+
       <ContextSection title={t('decisionsNeeded')}>
         {context.decisions.length > 0 ? (
           <div className="space-y-2">
@@ -192,6 +217,97 @@ function ContextPanelContent({
       </ContextSection>
     </div>
   )
+}
+
+function ModelRequestPreview({
+  errorMessage,
+  loading,
+  preview,
+}: {
+  errorMessage?: string
+  loading?: boolean
+  preview?: GetModelRequestPreviewResponse['preview'] | null
+}) {
+  const { t } = useTranslation('context')
+
+  if (loading) {
+    return <p className="text-muted-foreground text-sm">{t('modelRequestPreviewLoading')}</p>
+  }
+
+  if (errorMessage) {
+    return <p className="text-destructive text-sm">{errorMessage}</p>
+  }
+
+  if (!preview) {
+    return <p className="text-muted-foreground text-sm">{t('modelRequestPreviewEmpty')}</p>
+  }
+
+  return (
+    <div className="space-y-3 rounded-md border border-border bg-surface p-3">
+      <div className="grid grid-cols-2 gap-2 text-muted-foreground text-xs">
+        <div>
+          {t('previewSections')}: {preview.sections.length}
+        </div>
+        <div>
+          {t('previewTokens')}: {preview.token_estimate}
+        </div>
+        <div>
+          {t('previewRedacted')}: {preview.redacted_count}
+        </div>
+        <div className="truncate">
+          {t('previewTrace')}: {preview.trace_id ?? t('none')}
+        </div>
+      </div>
+      {preview.tool_names.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {preview.tool_names.map((toolName) => (
+            <span
+              className="rounded-md border border-border bg-background px-2 py-0.5 font-mono text-xs"
+              key={toolName}
+            >
+              {toolName}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {preview.policy_decisions.length > 0 ? (
+        <div className="text-muted-foreground text-xs">
+          {t('previewPolicy')}: {preview.policy_decisions.join(', ')}
+        </div>
+      ) : null}
+      {preview.sections.length > 0 ? (
+        <div className="space-y-2">
+          {preview.sections.map((section, index) => (
+            <div className="rounded-md border border-border bg-background p-2" key={index}>
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="truncate font-medium">{formatPreviewSource(section.source)}</span>
+                <span className="font-mono text-muted-foreground">
+                  {section.provider_id ?? t('none')}
+                </span>
+              </div>
+              <div className="mt-1 text-muted-foreground text-xs">
+                {t('previewMemoryIds')}: {section.memory_ids.join(', ')}
+              </div>
+              <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-xs">
+                {section.redacted_content}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-muted-foreground text-xs">{t('modelRequestPreviewNoMemory')}</p>
+      )}
+    </div>
+  )
+}
+
+function formatPreviewSource(
+  source: GetModelRequestPreviewResponse['preview']['sections'][number]['source'],
+) {
+  if (typeof source === 'string') {
+    return source
+  }
+  return Object.keys(source)[0] ?? 'memory'
 }
 
 function ActiveArtifactThumbnail({ title }: { title: string }) {

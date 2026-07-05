@@ -287,6 +287,7 @@ async fn try_execute(
         parent_run: None,
         model: None,
         model_config_id: None,
+        memory_thread_settings: None,
         actor_source: harness_contracts::PermissionActorSource::ParentRun,
     };
     tool.validate(&input, &ctx).await.unwrap();

@@ -7,7 +7,7 @@ use harness_contracts::{MemoryId, MemoryKind};
 use serde::{Deserialize, Serialize};
 
 /// Model output from an extraction run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExtractionOutput {
     /// New memory candidates discovered.
     #[serde(default)]
@@ -66,9 +66,21 @@ pub enum ExtractionVisibility {
 pub struct ExtractedConsolidation {
     /// ID of the memory to update.
     pub memory_id: MemoryId,
+    /// Consolidation action requested by the extractor.
+    #[serde(default)]
+    pub action: ExtractedConsolidationAction,
     /// New content (replaces existing).
     pub content: String,
     /// Reason for consolidation.
     #[serde(default)]
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtractedConsolidationAction {
+    #[default]
+    Merge,
+    Demote,
+    Expire,
 }

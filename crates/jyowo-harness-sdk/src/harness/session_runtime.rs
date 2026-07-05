@@ -1,3 +1,5 @@
+#[cfg(feature = "memory-provider-registry")]
+use super::memory::memory_thread_settings_for_session;
 use super::*;
 
 pub(super) struct SdkSessionState {
@@ -20,6 +22,10 @@ impl Harness {
         let limit_permit = self.inner.session_limits.try_acquire()?;
         #[cfg(feature = "memory-provider-registry")]
         self.activate_plugins(&options).await?;
+        #[cfg(feature = "memory-provider-registry")]
+        {
+            options.memory_thread_settings = Some(memory_thread_settings_for_session(&options)?);
+        }
         #[cfg(feature = "memory-provider-registry")]
         let memory_manager = self.memory_manager_for_session(&options).await?;
         let pending_session_events = Arc::new(PendingSessionEvents::default());
@@ -544,7 +550,26 @@ impl Harness {
             session_id: options.session_id,
             tenant_id: options.tenant_id,
         };
+        #[cfg(any(
+            feature = "tool-search",
+            feature = "agents-team",
+            feature = "agents-subagent"
+        ))]
         let mut tools = ToolPool::assemble(
+            &tool_registry_snapshot,
+            &tool_filter,
+            &run_options.tool_search,
+            &model_profile,
+            &schema_context,
+        )
+        .await
+        .map_err(HarnessError::Tool)?;
+        #[cfg(not(any(
+            feature = "tool-search",
+            feature = "agents-team",
+            feature = "agents-subagent"
+        )))]
+        let tools = ToolPool::assemble(
             &tool_registry_snapshot,
             &tool_filter,
             &run_options.tool_search,
@@ -690,6 +715,12 @@ impl Harness {
         }
         if let Some(observer) = &self.inner.observer {
             builder = builder.with_observer(Arc::clone(observer));
+        }
+        #[cfg(feature = "memory-provider-registry")]
+        {
+            builder = builder.with_model_request_preview_sink(
+                self.model_request_preview_sink_for_session(options),
+            );
         }
         builder = builder.with_model_middlewares(self.inner.model_middlewares.clone());
         let engine = builder.build().map_err(HarnessError::from)?;
@@ -942,6 +973,10 @@ fn apply_explicit_session_options(options: &mut SessionOptions, explicit: &Sessi
     if explicit.context_compression_trigger_ratio != 0.8 {
         options.context_compression_trigger_ratio = explicit.context_compression_trigger_ratio;
     }
+    #[cfg(feature = "memory-provider-registry")]
+    if explicit.memory_thread_settings.is_some() {
+        options.memory_thread_settings = explicit.memory_thread_settings.clone();
+    }
     options.session_id = explicit.session_id;
 }
 
@@ -1008,6 +1043,8 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
                 ctx.started_from_scope_set,
             )
             .with_context_seed(ctx.context_seed.clone());
+        #[cfg(feature = "memory-provider-registry")]
+        let run_ctx = run_ctx.with_memory_thread_settings(ctx.memory_thread_settings.clone());
         let run_ctx = if let Some(model) = ctx.model.clone() {
             run_ctx.with_model_snapshot(model)
         } else {
