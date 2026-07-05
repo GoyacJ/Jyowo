@@ -476,7 +476,7 @@ async fn tool_result_history_hint_enqueues_memory_recall_for_next_engine_iterati
         ..RecallPolicy::default()
     });
     manager
-        .set_external(memory)
+        .register_provider(memory)
         .expect("memory manager should install provider");
     let context = ContextEngine::builder()
         .with_memory_manager(Arc::new(manager))
@@ -1856,6 +1856,9 @@ impl MemoryStore for StaticMemoryProvider {
 impl MemoryLifecycle for StaticMemoryProvider {}
 
 #[cfg(feature = "recall-memory")]
+impl harness_memory::MemoryProvider for StaticMemoryProvider {}
+
+#[cfg(feature = "recall-memory")]
 fn memory_record(content: &str) -> MemoryRecord {
     MemoryRecord {
         id: harness_contracts::MemoryId::new(),
@@ -1867,9 +1870,11 @@ fn memory_record(content: &str) -> MemoryRecord {
             tags: Vec::new(),
             source: harness_contracts::MemorySource::UserInput,
             confidence: 1.0,
+            evidence: None,
             access_count: 0,
             last_accessed_at: None,
             recall_score: 1.0,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },

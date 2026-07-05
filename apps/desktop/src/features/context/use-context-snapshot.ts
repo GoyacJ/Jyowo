@@ -4,6 +4,7 @@ import {
   type GetContextSnapshotRequest,
   type GetContextSnapshotResponse,
   getContextSnapshot,
+  getModelRequestPreview,
 } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 
@@ -31,11 +32,26 @@ export function useContextSnapshot(
     queryKey: contextSnapshotQueryKeys.detail(request),
     queryFn: () => getContextSnapshot(request, commandClient),
   })
+  const previewQuery = useQuery({
+    enabled: Boolean((options.enabled ?? true) && request.conversationId && request.runId),
+    queryKey: [...contextSnapshotQueryKeys.detail(request), 'model-request-preview'],
+    queryFn: () =>
+      getModelRequestPreview(
+        {
+          runId: request.runId ?? '',
+          sessionId: request.conversationId ?? '',
+        },
+        commandClient,
+      ),
+  })
 
   return {
     context: contextQuery.data ? toWorkspaceContext(contextQuery.data) : null,
     error: contextQuery.error,
     isLoading: contextQuery.isLoading,
+    modelRequestPreview: previewQuery.data?.preview ?? null,
+    modelRequestPreviewError: previewQuery.error,
+    modelRequestPreviewLoading: previewQuery.isLoading,
   }
 }
 

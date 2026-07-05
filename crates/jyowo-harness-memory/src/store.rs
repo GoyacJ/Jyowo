@@ -17,5 +17,13 @@ pub trait MemoryStore: Send + Sync + 'static {
 
     async fn forget(&self, id: MemoryId) -> Result<(), MemoryError>;
 
+    async fn rollback_uncommitted_upsert(&self, id: MemoryId) -> Result<(), MemoryError> {
+        self.forget(id).await
+    }
+
+    async fn rollback_uncommitted_forget(&self, record: MemoryRecord) -> Result<(), MemoryError> {
+        self.upsert(record).await.map(|_| ())
+    }
+
     async fn list(&self, scope: MemoryListScope) -> Result<Vec<MemorySummary>, MemoryError>;
 }

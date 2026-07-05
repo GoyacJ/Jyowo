@@ -1,6 +1,6 @@
 #![cfg(not(any(
     feature = "builtin",
-    feature = "external-slot",
+    feature = "provider-registry",
     feature = "threat-scanner"
 )))]
 
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use harness_contracts::{
-    MemoryActor, MemoryError, MemoryId, MemoryKind, MemorySessionCtx, MemoryVisibility,
+    MemoryActorContext, MemoryError, MemoryId, MemoryKind, MemorySessionCtx, MemoryVisibility,
     MessageView, SessionId, TeamId, TenantId,
 };
 use harness_memory::{
@@ -45,6 +45,8 @@ impl MemoryStore for MinimalProvider {
 
 impl MemoryLifecycle for MinimalProvider {}
 
+impl harness_memory::MemoryProvider for MinimalProvider {}
+
 fn assert_provider(_: &dyn MemoryProvider) {}
 
 #[tokio::test]
@@ -67,7 +69,7 @@ async fn no_default_core_provider_contract_stays_available() {
 fn no_default_core_types_keep_visibility_and_preview_contracts() {
     let session_id = SessionId::new();
     let team_id = TeamId::new();
-    let actor = MemoryActor {
+    let actor = MemoryActorContext {
         tenant_id: TenantId::SINGLE,
         user_id: Some("user-1".to_owned()),
         team_id: Some(team_id),
@@ -100,7 +102,7 @@ fn query() -> MemoryQuery {
         kind_filter: Some(MemoryKindFilter::OnlyKinds(BTreeSet::from([
             MemoryKind::UserPreference,
         ]))),
-        visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActor {
+        visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActorContext {
             tenant_id: TenantId::SINGLE,
             user_id: Some("user-1".to_owned()),
             team_id: None,

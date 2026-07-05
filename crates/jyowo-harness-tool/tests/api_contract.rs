@@ -110,6 +110,7 @@ async fn tool_context_retrieves_capabilities_and_reports_missing_handles() {
         parent_run: None,
         model: None,
         model_config_id: None,
+        memory_thread_settings: None,
         actor_source: harness_contracts::PermissionActorSource::ParentRun,
     };
 
@@ -165,6 +166,7 @@ fn tool_ctx(cap_registry: CapabilityRegistry) -> ToolContext {
         parent_run: None,
         model: None,
         model_config_id: None,
+        memory_thread_settings: None,
         actor_source: harness_contracts::PermissionActorSource::ParentRun,
     }
 }
@@ -280,6 +282,7 @@ async fn action_plan_propagates_actor_source_from_context() {
         parent_run: None,
         model: None,
         model_config_id: None,
+        memory_thread_settings: None,
         actor_source: PermissionActorSource::Subagent {
             subagent_id: harness_contracts::SubagentId::new(),
             parent_session_id: SessionId::new(),

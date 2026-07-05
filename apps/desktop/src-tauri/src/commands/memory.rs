@@ -29,6 +29,7 @@ use super::stores::*;
 #[allow(unused_imports)]
 use super::validation::*;
 use super::*;
+use harness_contracts::ActionPlanId;
 
 pub async fn list_memory_items_with_runtime_state(
     state: &DesktopRuntimeState,
@@ -67,13 +68,19 @@ pub async fn get_memory_item_with_runtime_state(
         ));
     };
     let options = state.conversation_session_options(state.default_conversation_id);
+    let summary = harness
+        .list_memory_items(options.clone())
+        .await
+        .ok()
+        .and_then(|items| items.into_iter().find(|item| item.id == id))
+        .ok_or_else(|| memory_operation_failed("Memory detail metadata could not be loaded."))?;
     let item = harness
         .get_memory_item(options, id)
         .await
         .map_err(|_| memory_operation_failed("Memory detail could not be loaded."))?;
 
     Ok(GetMemoryItemResponse {
-        item: memory_item_payload(item),
+        item: memory_item_payload_with_summary(item, &summary),
     })
 }
 
@@ -82,6 +89,7 @@ pub async fn update_memory_item_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<UpdateMemoryItemResponse, CommandErrorPayload> {
     let id = parse_memory_id(&request.id)?;
+    let action_plan_id = parse_optional_action_plan_id(request.action_plan_id.as_deref())?;
     ensure_non_empty("content", &request.content)?;
     ensure_max_bytes("content", &request.content, MAX_MEMORY_CONTENT_BYTES)?;
     let Some(harness) = state.harness() else {
@@ -91,12 +99,18 @@ pub async fn update_memory_item_with_runtime_state(
     };
     let options = state.conversation_session_options(state.default_conversation_id);
     let item = harness
-        .update_memory_item_content(options, id, request.content)
+        .update_memory_item_content(options, id, request.content, action_plan_id)
         .await
         .map_err(|_| memory_operation_failed("Memory item could not be saved."))?;
+    let summary = harness
+        .list_memory_items(state.conversation_session_options(state.default_conversation_id))
+        .await
+        .ok()
+        .and_then(|items| items.into_iter().find(|item| item.id == id))
+        .ok_or_else(|| memory_operation_failed("Memory item metadata could not be loaded."))?;
 
     Ok(UpdateMemoryItemResponse {
-        item: memory_item_payload(item),
+        item: memory_item_payload_with_summary(item, &summary),
     })
 }
 
@@ -105,6 +119,7 @@ pub async fn delete_memory_item_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<DeleteMemoryItemResponse, CommandErrorPayload> {
     let id = parse_memory_id(&request.id)?;
+    let action_plan_id = parse_optional_action_plan_id(request.action_plan_id.as_deref())?;
     let Some(harness) = state.harness() else {
         return Err(runtime_unavailable(
             "Deleting memory requires the runtime memory facade.",
@@ -112,7 +127,7 @@ pub async fn delete_memory_item_with_runtime_state(
     };
     let options = state.conversation_session_options(state.default_conversation_id);
     harness
-        .delete_memory_item(options, id)
+        .delete_memory_item(options, id, action_plan_id)
         .await
         .map_err(|_| memory_operation_failed("Memory item could not be deleted."))?;
 
@@ -123,6 +138,7 @@ pub async fn delete_memory_item_with_runtime_state(
 }
 
 pub async fn export_memory_items_with_runtime_state(
+    request: ExportMemoryItemsRequest,
     state: &DesktopRuntimeState,
 ) -> Result<ExportMemoryItemsResponse, CommandErrorPayload> {
     let Some(harness) = state.harness() else {
@@ -130,33 +146,161 @@ pub async fn export_memory_items_with_runtime_state(
             "Exporting memory requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id);
-    let records = harness
-        .export_memory_items(options)
+    let options = state
+        .conversation_session_options(request.session_id.unwrap_or(state.default_conversation_id));
+    let export = harness
+        .export_memory_items(
+            options,
+            request.scope.as_str(),
+            request.format.as_str(),
+            request.include_raw_content,
+            request.include_metadata,
+            request.include_hashes,
+            request.explicit_user_action,
+        )
         .await
-        .map_err(|_| memory_operation_failed("Memory export could not be prepared."))?;
-    let item_count = records.len().min(u32::MAX as usize) as u32;
-    let items = records
-        .into_iter()
-        .map(memory_item_payload)
-        .collect::<Vec<_>>();
-    let content = serde_json::to_string_pretty(&items)
-        .map_err(|_| memory_operation_failed("Memory export could not be prepared."))?;
-    let exported_at = jyowo_harness_sdk::ext::now();
-    let file_name = format!("memory-{}.json", exported_at.format("%Y%m%dT%H%M%S%.3fZ"));
-    let relative_path = PathBuf::from(".jyowo")
-        .join("runtime")
-        .join("exports")
-        .join(file_name);
-    let export_path = state.workspace_root.join(&relative_path);
-    write_memory_export_file(&export_path, &content)?;
+        .map_err(memory_export_error)?;
 
     Ok(ExportMemoryItemsResponse {
-        exported_at: exported_at.to_rfc3339(),
-        format: "json",
-        item_count,
-        path: relative_path.to_string_lossy().into_owned(),
+        exported_at: export.exported_at.to_rfc3339(),
+        format: export.format,
+        scope: export.scope,
+        include_raw_content: export.include_raw_content,
+        include_metadata: export.include_metadata,
+        include_hashes: export.include_hashes,
+        item_count: export.item_count,
+        path: export.relative_path.to_string_lossy().into_owned(),
+        audit_hash: export.audit_hash,
     })
+}
+
+pub async fn list_memory_candidates_with_runtime_state(
+    request: ListMemoryCandidatesRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ListMemoryCandidatesResponse, CommandErrorPayload> {
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Listing memory candidates requires the runtime memory facade.",
+        ));
+    };
+    let options = state.conversation_session_options(state.default_conversation_id);
+    harness
+        .list_memory_candidates(options, request)
+        .await
+        .map_err(|_| memory_operation_failed("Memory candidates could not be loaded."))
+}
+
+pub async fn approve_memory_candidate_with_runtime_state(
+    request: ApproveMemoryCandidateRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ApproveMemoryCandidateResponse, CommandErrorPayload> {
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Approving memory candidates requires the runtime memory facade.",
+        ));
+    };
+    let options = state.conversation_session_options(state.default_conversation_id);
+    harness
+        .approve_memory_candidate(options, request)
+        .await
+        .map_err(|_| memory_operation_failed("Memory candidate could not be approved."))
+}
+
+pub async fn reject_memory_candidate_with_runtime_state(
+    request: RejectMemoryCandidateRequest,
+    state: &DesktopRuntimeState,
+) -> Result<RejectMemoryCandidateResponse, CommandErrorPayload> {
+    ensure_non_empty("reason", &request.reason)?;
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Rejecting memory candidates requires the runtime memory facade.",
+        ));
+    };
+    let options = state.conversation_session_options(state.default_conversation_id);
+    harness
+        .reject_memory_candidate(options, request)
+        .await
+        .map_err(|_| memory_operation_failed("Memory candidate could not be rejected."))
+}
+
+pub async fn merge_memory_candidate_with_runtime_state(
+    request: MergeMemoryCandidateRequest,
+    state: &DesktopRuntimeState,
+) -> Result<MergeMemoryCandidateResponse, CommandErrorPayload> {
+    if request.candidate_ids.len() < 2 {
+        return Err(invalid_payload(
+            "candidate_ids must contain at least two candidates".to_owned(),
+        ));
+    }
+    let distinct_candidate_ids = request
+        .candidate_ids
+        .iter()
+        .map(ToString::to_string)
+        .collect::<std::collections::HashSet<_>>();
+    if distinct_candidate_ids.len() != request.candidate_ids.len() {
+        return Err(invalid_payload(
+            "candidate_ids must contain distinct candidates".to_owned(),
+        ));
+    }
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Merging memory candidates requires the runtime memory facade.",
+        ));
+    };
+    let options = state.conversation_session_options(state.default_conversation_id);
+    harness
+        .merge_memory_candidate(options, request)
+        .await
+        .map_err(|_| memory_operation_failed("Memory candidates could not be merged."))
+}
+
+pub async fn list_memory_recall_traces_with_runtime_state(
+    request: ListMemoryRecallTracesRequest,
+    state: &DesktopRuntimeState,
+) -> Result<ListMemoryRecallTracesResponse, CommandErrorPayload> {
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Listing memory recall traces requires the runtime memory facade.",
+        ));
+    };
+    let options = state
+        .conversation_session_options(request.session_id.unwrap_or(state.default_conversation_id));
+    harness
+        .list_memory_recall_traces(options, request)
+        .await
+        .map_err(|_| memory_operation_failed("Memory recall traces could not be loaded."))
+}
+
+pub async fn get_memory_recall_trace_with_runtime_state(
+    request: GetMemoryRecallTraceRequest,
+    state: &DesktopRuntimeState,
+) -> Result<GetMemoryRecallTraceResponse, CommandErrorPayload> {
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Loading memory recall traces requires the runtime memory facade.",
+        ));
+    };
+    let options = state.conversation_session_options(state.default_conversation_id);
+    harness
+        .get_memory_recall_trace(options, request)
+        .await
+        .map_err(|_| memory_operation_failed("Memory recall trace could not be loaded."))
+}
+
+pub async fn get_model_request_preview_with_runtime_state(
+    request: GetModelRequestPreviewRequest,
+    state: &DesktopRuntimeState,
+) -> Result<GetModelRequestPreviewResponse, CommandErrorPayload> {
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Building model request preview requires the runtime memory facade.",
+        ));
+    };
+    let options = state.conversation_session_options(request.session_id);
+    harness
+        .get_model_request_preview(options, request)
+        .await
+        .map_err(|_| memory_operation_failed("Model request preview could not be built."))
 }
 
 pub(crate) fn parse_memory_id(value: &str) -> Result<MemoryId, CommandErrorPayload> {
@@ -174,11 +318,37 @@ pub(crate) fn parse_memory_id(value: &str) -> Result<MemoryId, CommandErrorPaylo
     Ok(id)
 }
 
+pub(crate) fn parse_action_plan_id(value: &str) -> Result<ActionPlanId, CommandErrorPayload> {
+    ensure_non_empty("actionPlanId", value)?;
+    let value = value.trim();
+    let id = ActionPlanId::parse(value)
+        .map_err(|_| invalid_payload("actionPlanId must be a valid action plan id".to_owned()))?;
+
+    if id.to_string() != value {
+        return Err(invalid_payload(
+            "actionPlanId must be a canonical action plan id".to_owned(),
+        ));
+    }
+
+    Ok(id)
+}
+
+pub(crate) fn parse_optional_action_plan_id(
+    value: Option<&str>,
+) -> Result<Option<ActionPlanId>, CommandErrorPayload> {
+    value.map(parse_action_plan_id).transpose()
+}
+
 pub(crate) fn memory_item_summary_payload(summary: MemorySummary) -> MemoryItemSummaryPayload {
     MemoryItemSummaryPayload {
+        content_hash: content_hash_payload(&summary.content_hash),
         content_preview: summary.content_preview,
+        deleted: summary.deleted,
+        expires_at: summary.expires_at.map(|at| at.to_rfc3339()),
         id: summary.id.to_string(),
         kind: memory_kind_payload(&summary.kind).to_owned(),
+        last_accessed_at: summary.metadata.last_accessed_at.map(|at| at.to_rfc3339()),
+        provider_id: summary.provider_id,
         source: memory_source_payload(&summary.metadata.source).to_owned(),
         tags: summary.metadata.tags,
         updated_at: summary.updated_at.to_rfc3339(),
@@ -186,19 +356,31 @@ pub(crate) fn memory_item_summary_payload(summary: MemorySummary) -> MemoryItemS
     }
 }
 
-pub(crate) fn memory_item_payload(record: MemoryRecord) -> MemoryItemPayload {
+pub(crate) fn memory_item_payload_with_summary(
+    record: MemoryRecord,
+    summary: &MemorySummary,
+) -> MemoryItemPayload {
     MemoryItemPayload {
         access_count: record.metadata.access_count,
         confidence: record.metadata.confidence,
         content: record.content,
+        content_hash: content_hash_payload(&summary.content_hash),
         created_at: record.created_at.to_rfc3339(),
+        deleted: summary.deleted,
+        expires_at: summary.expires_at.map(|at| at.to_rfc3339()),
         id: record.id.to_string(),
         kind: memory_kind_payload(&record.kind).to_owned(),
+        last_accessed_at: summary.metadata.last_accessed_at.map(|at| at.to_rfc3339()),
+        provider_id: summary.provider_id.clone(),
         source: memory_source_payload(&record.metadata.source).to_owned(),
         tags: record.metadata.tags,
         updated_at: record.updated_at.to_rfc3339(),
         visibility: memory_visibility_payload(&record.visibility).to_owned(),
     }
+}
+
+fn content_hash_payload(hash: &harness_contracts::ContentHash) -> String {
+    hash.0.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub(crate) fn memory_kind_payload(kind: &MemoryKind) -> &'static str {

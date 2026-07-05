@@ -111,7 +111,7 @@ struct PluginRegistryInner {
     recent_events: BTreeMap<PluginId, Vec<PluginRecentEvent>>,
     warnings: BTreeMap<PluginId, Vec<PluginWarning>>,
     slots: CapabilitySlotManager,
-    memory_provider: Option<Arc<dyn harness_memory::MemoryProvider>>,
+    memory_providers: BTreeMap<String, Arc<dyn harness_memory::MemoryProvider>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -138,7 +138,7 @@ struct ActivatedPlugin {
     plugin: Arc<dyn Plugin>,
     slots: Vec<CapabilitySlot>,
     registrations: CapabilityRegistrations,
-    memory_provider: Option<Arc<dyn harness_memory::MemoryProvider>>,
+    memory_providers: Vec<Arc<dyn harness_memory::MemoryProvider>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -531,7 +531,7 @@ impl PluginRegistry {
             return Err(error);
         }
 
-        let memory_provider = activation.memory_provider();
+        let memory_providers = activation.memory_providers();
         let registrations = CapabilityRegistrations::from_state(&activation);
         let activation_warnings = capability_warnings(
             &discovered.record.manifest.capabilities,
@@ -539,8 +539,10 @@ impl PluginRegistry {
             &result.occupied_slots,
         );
         let mut inner = self.inner.write();
-        if memory_provider.is_some() {
-            inner.memory_provider = memory_provider.clone();
+        for provider in &memory_providers {
+            inner
+                .memory_providers
+                .insert(provider.provider_id().to_owned(), Arc::clone(provider));
         }
         if !activation_warnings.is_empty() {
             inner
@@ -555,7 +557,7 @@ impl PluginRegistry {
                 plugin,
                 slots: result.occupied_slots,
                 registrations,
-                memory_provider,
+                memory_providers,
             },
         );
         inner
@@ -639,8 +641,8 @@ impl PluginRegistry {
             for slot in &activated.slots {
                 inner.slots.release(slot, id);
             }
-            if activated.memory_provider.is_some() {
-                inner.memory_provider = None;
+            for provider in &activated.memory_providers {
+                inner.memory_providers.remove(provider.provider_id());
             }
         }
 
@@ -805,7 +807,16 @@ impl PluginRegistry {
     }
 
     pub fn registered_memory_provider(&self) -> Option<Arc<dyn harness_memory::MemoryProvider>> {
-        self.inner.read().memory_provider.clone()
+        self.inner.read().memory_providers.values().next().cloned()
+    }
+
+    pub fn registered_memory_providers(&self) -> Vec<Arc<dyn harness_memory::MemoryProvider>> {
+        self.inner
+            .read()
+            .memory_providers
+            .values()
+            .cloned()
+            .collect()
     }
 
     pub fn activation_context_for_test(
@@ -1028,8 +1039,14 @@ impl PluginRegistry {
     fn occupy_slots(&self, id: &PluginId, slots: &[CapabilitySlot]) -> Result<(), PluginError> {
         let mut inner = self.inner.write();
         for slot in slots {
+            if matches!(slot, CapabilitySlot::MemoryProvider) {
+                continue;
+            }
             if let Err(error) = inner.slots.try_occupy(slot.clone(), id) {
                 for occupied in slots {
+                    if matches!(occupied, CapabilitySlot::MemoryProvider) {
+                        continue;
+                    }
                     inner.slots.release(occupied, id);
                     if occupied == slot {
                         break;
@@ -1544,7 +1561,7 @@ fn product_capabilities_for(
             kind: PluginRuntimeCapabilityKind::MemoryProvider,
             name: Some(memory.name.clone()),
             destructive: None,
-            registered: activated.is_some_and(|plugin| plugin.memory_provider.is_some()),
+            registered: activated.is_some_and(|plugin| !plugin.memory_providers.is_empty()),
         });
     }
     if let Some(coordinator) = &manifest.capabilities.coordinator_strategy {

@@ -266,6 +266,7 @@ Current Tauri commands:
 
 ```text
 add_project
+approve_memory_candidate
 archive_background_agent
 cancel_background_agent
 cancel_run
@@ -298,11 +299,15 @@ get_conversation_diff_patch
 get_conversation_inspector_item
 get_execution_settings
 get_memory_item
+get_memory_recall_trace
+get_memory_settings
 get_model_usage_summary
+get_model_request_preview
 get_mcp_server_config
 get_plugin_detail
 get_provider_config_api_key
 get_replay_timeline
+get_thread_memory_settings
 get_skill_catalog_entry
 get_skill_catalog_file
 get_skill_detail
@@ -323,7 +328,9 @@ list_reference_candidates
 list_model_provider_catalog
 list_mcp_diagnostics
 list_mcp_servers
+list_memory_candidates
 list_memory_items
+list_memory_recall_traces
 list_plugins
 list_provider_capability_route_options
 list_provider_capability_routes
@@ -336,6 +343,7 @@ page_conversation_timeline
 page_conversation_worktree
 probe_provider_config
 refresh_official_quota
+reject_memory_candidate
 pause_background_agent
 resolve_permission
 request_provider_config_api_key_reveal
@@ -346,6 +354,7 @@ run_eval_case
 save_automation
 save_agent_profile
 save_browser_mcp_preset
+merge_memory_candidate
 save_mcp_server
 save_provider_capability_route
 save_provider_settings
@@ -365,6 +374,8 @@ unsubscribe_conversation_events
 unsubscribe_mcp_diagnostics
 uninstall_plugin
 update_memory_item
+update_memory_settings
+update_thread_memory_settings
 reload_plugin
 set_plugin_enabled
 update_plugin_config
@@ -408,12 +419,12 @@ delete_provider_capability_route(
   provider_id: String
 ) -> Result<DeleteProviderCapabilityRouteResponse, CommandErrorPayload>
 delete_skill(id: String) -> Result<DeleteSkillResponse, CommandErrorPayload>
-export_memory_items() -> Result<ExportMemoryItemsResponse, CommandErrorPayload>
 export_conversation_evidence(
   conversation_id: String,
   kind: String,
   ref_id: String
 ) -> Result<ExportConversationEvidenceResponse, CommandErrorPayload>
+export_memory_items(request: ExportMemoryItemsRequest) -> Result<ExportMemoryItemsResponse, CommandErrorPayload>
 export_support_bundle(
   conversation_id: Option<String>,
   run_id: Option<String>
@@ -466,6 +477,9 @@ get_conversation_inspector_item(
 ) -> Result<ConversationInspectorItemResponse, CommandErrorPayload>
 get_execution_settings(workspace_path?: string) -> Result<GetExecutionSettingsResponse, CommandErrorPayload>
 get_memory_item(id: String) -> Result<GetMemoryItemResponse, CommandErrorPayload>
+get_memory_settings(
+  request: GetMemorySettingsRequest
+) -> Result<GetMemorySettingsResponse, CommandErrorPayload>
 get_model_usage_summary() -> Result<GetModelUsageSummaryResponse, CommandErrorPayload>
 get_mcp_server_config(id: String) -> Result<GetMcpServerConfigResponse, CommandErrorPayload>
 get_plugin_detail(plugin_id: PluginId) -> Result<GetPluginDetailResponse, CommandErrorPayload>
@@ -477,6 +491,9 @@ get_replay_timeline(
   conversation_id: Option<String>,
   run_id: Option<String>
 ) -> Result<ReplayTimelineResponse, CommandErrorPayload>
+get_thread_memory_settings(
+  request: GetThreadMemorySettingsRequest
+) -> Result<GetThreadMemorySettingsResponse, CommandErrorPayload>
 get_skill_detail(id: String) -> Result<GetSkillDetailResponse, CommandErrorPayload>
 get_skill_file(
   id: String,
@@ -665,6 +682,12 @@ update_memory_item(
   content: String,
   id: String
 ) -> Result<UpdateMemoryItemResponse, CommandErrorPayload>
+update_memory_settings(
+  request: UpdateMemorySettingsRequest
+) -> Result<UpdateMemorySettingsResponse, CommandErrorPayload>
+update_thread_memory_settings(
+  request: UpdateThreadMemorySettingsRequest
+) -> Result<UpdateThreadMemorySettingsResponse, CommandErrorPayload>
 reload_plugin(plugin_id: PluginId) -> Result<PluginOperationResult, CommandErrorPayload>
 set_plugin_enabled(
   plugin_id: PluginId,
@@ -768,14 +791,32 @@ must contain severity, time, server id, event type, and summary only. They must
 not contain raw MCP event payloads, raw OAuth data, raw `Authorization` or
 `Cookie` headers, secret-like values, or private absolute paths.
 
-`list_memory_items`, `get_memory_item`, `update_memory_item`,
-`delete_memory_item`, and `export_memory_items` must go through the SDK Memory
-facade. They must enforce tenant and actor visibility before returning,
-editing, deleting, or exporting records. Delete and export operations must emit
-audit events that contain hashes and counts, not raw memory content.
+`get_memory_settings`, `update_memory_settings`, `get_thread_memory_settings`,
+`update_thread_memory_settings`, `list_memory_candidates`,
+`approve_memory_candidate`, `reject_memory_candidate`,
+`merge_memory_candidate`, `list_memory_recall_traces`,
+`get_memory_recall_trace`, `get_model_request_preview`, `list_memory_items`,
+`get_memory_item`, `update_memory_item`, `delete_memory_item`, and
+`export_memory_items` must go through the SDK Memory facade. They must enforce
+tenant and actor visibility before returning, editing, deleting, exporting,
+approving, merging, tracing, previewing, or applying settings. Settings
+commands are IPC boundaries only; effective policy is recomputed in Rust.
+Candidate approval and merge must be authorized by Rust policy before durable
+state changes. Delete and export operations must emit audit events that contain
+hashes and counts, not raw memory content.
 `export_memory_items` writes the JSON export under `.jyowo/runtime/exports` and
-returns only the relative path, item count, format, and timestamp over IPC; raw
-export content must not cross into frontend state.
+returns only the relative path, item count, format, flags, audit hash, and
+timestamp over IPC. Raw export requires explicit user action, Rust policy allow,
+provider raw-export support, and required audit emission. Export content must
+not cross into frontend state.
+
+The memory architecture policy gate runs in `pnpm check:backend-docs`. It fails
+production paths that return fake memory results, route runtime behavior through
+the old single external provider slot, retain `external-slot` feature aliases,
+select production `InMemoryMemoryProvider`, store Memory state in production
+`Mutex<HashMap>`, keep static memory settings, bypass `min_similarity`, render
+label-only memory references, put raw content fields in memory trace contracts,
+use `DREAMS.md` as runtime memory, or use frontend `as any` in Memory UI.
 
 `list_agent_profiles`, `save_agent_profile`, and `delete_agent_profile` must go
 through the SDK agent-runtime facade and `jyowo-harness-agent-runtime` profile

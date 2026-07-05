@@ -73,6 +73,7 @@ impl ToolRegistryBuilder {
                     )?;
                     registry.register(Box::<crate::builtin::SendMessageTool>::default())?;
                     registry.register(Box::<crate::builtin::TodoTool>::default())?;
+                    registry.register(Box::<crate::builtin::MemoryTool>::default())?;
                     registry.register(Box::<crate::builtin::TaskStopTool>::default())?;
                     registry.register(Box::<crate::builtin::SkillsListTool>::default())?;
                     registry.register(Box::<crate::builtin::SkillsViewTool>::default())?;

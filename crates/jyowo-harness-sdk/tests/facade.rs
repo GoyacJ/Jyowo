@@ -147,6 +147,11 @@ fn harness_builder_accepts_full_facade_dependencies_and_overrides() {
                 .provider_id(),
             "second-memory"
         );
+        let memory_items = harness
+            .list_memory_items(SessionOptions::new(&workspace))
+            .await
+            .expect("all configured memory providers should be registered");
+        assert!(memory_items.is_empty());
         assert!(harness.blob_store().is_some());
         assert!(harness.skill_loader().is_some());
         assert!(harness.mcp_config().is_some());

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
+  type DeleteMemoryItemRequest,
   exportMemoryItems,
   getMemoryItem,
   listMemoryItems,
@@ -48,7 +49,7 @@ export function MemoryBrowser() {
     },
   })
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => commandClient.deleteMemoryItem(id),
+    mutationFn: (request: DeleteMemoryItemRequest) => commandClient.deleteMemoryItem(request),
     onSuccess: async (response) => {
       setDeleteCandidateId(null)
       if (selectedId === response.id) {
@@ -59,7 +60,18 @@ export function MemoryBrowser() {
     },
   })
   const exportMutation = useMutation({
-    mutationFn: () => exportMemoryItems(commandClient),
+    mutationFn: () =>
+      exportMemoryItems(
+        {
+          explicitUserAction: true,
+          format: 'json',
+          includeHashes: true,
+          includeMetadata: true,
+          includeRawContent: false,
+          scope: 'visible',
+        },
+        commandClient,
+      ),
     onSuccess: (response) => {
       setExportMessage(t('exportSaved', { count: response.itemCount, path: response.path }))
     },
@@ -96,7 +108,7 @@ export function MemoryBrowser() {
       return
     }
 
-    await deleteMutation.mutateAsync(deleteCandidateId)
+    await deleteMutation.mutateAsync({ id: deleteCandidateId })
   }
 
   return (
@@ -184,6 +196,27 @@ export function MemoryBrowser() {
                   <div className="text-muted-foreground">
                     {t('visibility', { visibility: selectedItem.visibility })}
                   </div>
+                  {selectedItem.providerId ? (
+                    <div className="text-muted-foreground">
+                      {t('provider', { provider: selectedItem.providerId })}
+                    </div>
+                  ) : null}
+                  <div className="break-all text-muted-foreground">
+                    {t('contentHash', { value: selectedItem.contentHash })}
+                  </div>
+                  {selectedItem.expiresAt ? (
+                    <div className="text-muted-foreground">
+                      {t('expiresAt', { value: selectedItem.expiresAt })}
+                    </div>
+                  ) : null}
+                  {selectedItem.lastAccessedAt ? (
+                    <div className="text-muted-foreground">
+                      {t('lastAccessedAt', { value: selectedItem.lastAccessedAt })}
+                    </div>
+                  ) : null}
+                  {selectedItem.deleted ? (
+                    <div className="text-muted-foreground">{t('deleted')}</div>
+                  ) : null}
                 </div>
 
                 <label className="block space-y-2 text-sm">

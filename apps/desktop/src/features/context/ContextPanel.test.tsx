@@ -116,6 +116,40 @@ describe('ContextPanel', () => {
     expect(onNextAction).toHaveBeenCalledWith('Run app')
   })
 
+  it('renders backend model request preview metadata', () => {
+    render(
+      <ContextPanel
+        context={readyContext}
+        modelRequestPreview={{
+          content_hash: Array.from({ length: 32 }, () => 1),
+          policy_decisions: ['Allow'],
+          redacted_count: 1,
+          run_id: '01HZ0000000000000000000002',
+          sections: [
+            {
+              memory_ids: ['01HZ0000000000000000000001'],
+              provider_id: 'local',
+              redacted_content: '[redacted memory context: hash=..., chars=128]',
+              source: 'external_retrieval',
+            },
+          ],
+          session_id: '01HZ0000000000000000000003',
+          token_estimate: 42,
+          tool_names: ['memory.search'],
+          trace_id: '01HZ0000000000000000000004',
+        }}
+      />,
+    )
+
+    const panel = screen.getByRole('complementary', { name: 'Context' })
+    expect(within(panel).getByRole('region', { name: 'Model request preview' })).toBeInTheDocument()
+    expect(within(panel).getByText('memory.search')).toBeInTheDocument()
+    expect(within(panel).getByText('local')).toBeInTheDocument()
+    expect(within(panel).getByText(/01HZ0000000000000000000001/)).toBeInTheDocument()
+    expect(within(panel).getByText(/Allow/)).toBeInTheDocument()
+    expect(within(panel).getByText(/\[redacted memory context/)).toBeInTheDocument()
+  })
+
   it('does not show a hardcoded file count for empty context files', () => {
     render(<ContextPanel context={{ ...readyContext, files: [], totalFileCount: 0 }} />)
 

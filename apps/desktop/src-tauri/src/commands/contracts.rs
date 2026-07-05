@@ -1014,20 +1014,29 @@ pub struct GetMemoryItemRequest {
 pub struct UpdateMemoryItemRequest {
     pub id: String,
     pub content: String,
+    #[serde(default)]
+    pub action_plan_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DeleteMemoryItemRequest {
     pub id: String,
+    #[serde(default)]
+    pub action_plan_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryItemSummaryPayload {
+    pub content_hash: String,
     pub content_preview: String,
+    pub deleted: bool,
+    pub expires_at: Option<String>,
     pub id: String,
     pub kind: String,
+    pub last_accessed_at: Option<String>,
+    pub provider_id: Option<String>,
     pub source: String,
     pub tags: Vec<String>,
     pub updated_at: String,
@@ -1040,9 +1049,14 @@ pub struct MemoryItemPayload {
     pub access_count: u32,
     pub confidence: f32,
     pub content: String,
+    pub content_hash: String,
     pub created_at: String,
+    pub deleted: bool,
+    pub expires_at: Option<String>,
     pub id: String,
     pub kind: String,
+    pub last_accessed_at: Option<String>,
+    pub provider_id: Option<String>,
     pub source: String,
     pub tags: Vec<String>,
     pub updated_at: String,
@@ -1074,13 +1088,59 @@ pub struct DeleteMemoryItemResponse {
     pub status: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportMemoryItemsScope {
+    Visible,
+}
+
+impl ExportMemoryItemsScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Visible => "visible",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportMemoryItemsFormat {
+    Json,
+}
+
+impl ExportMemoryItemsFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ExportMemoryItemsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    pub scope: ExportMemoryItemsScope,
+    pub format: ExportMemoryItemsFormat,
+    pub include_raw_content: bool,
+    pub include_metadata: bool,
+    pub include_hashes: bool,
+    pub explicit_user_action: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportMemoryItemsResponse {
     pub exported_at: String,
-    pub format: &'static str,
+    pub format: String,
+    pub scope: String,
+    pub include_raw_content: bool,
+    pub include_metadata: bool,
+    pub include_hashes: bool,
     pub item_count: u32,
     pub path: String,
+    pub audit_hash: String,
 }
 
 pub trait PermissionResolver: Send + Sync {

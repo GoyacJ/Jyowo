@@ -1,7 +1,7 @@
 #![cfg(feature = "builtin")]
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::thread;
@@ -23,7 +23,7 @@ use parking_lot::Mutex;
 #[tokio::test]
 async fn memdir_writes_sections_atomically_and_reports_next_session_effect() {
     let root = tempfile::tempdir().unwrap();
-    let memory = BuiltinMemory::at(root.path(), TenantId::SINGLE);
+    let memory = audited_memory(root.path());
 
     let append = memory
         .append_section(MemdirFile::Memory, "profile", "prefers concise answers")
@@ -63,7 +63,7 @@ async fn memdir_writes_sections_atomically_and_reports_next_session_effect() {
 #[tokio::test]
 async fn memdir_is_tenant_scoped_and_ignores_tmp_files() {
     let root = tempfile::tempdir().unwrap();
-    let single = BuiltinMemory::at(root.path(), TenantId::SINGLE);
+    let single = audited_memory(root.path());
     let shared = BuiltinMemory::at(root.path(), TenantId::SHARED);
 
     single
@@ -85,7 +85,7 @@ async fn memdir_is_tenant_scoped_and_ignores_tmp_files() {
 #[tokio::test]
 async fn memdir_enforces_limits_and_creates_replace_snapshots() {
     let root = tempfile::tempdir().unwrap();
-    let memory = BuiltinMemory::at(root.path(), TenantId::SINGLE)
+    let memory = audited_memory(root.path())
         .with_limits(18, 8)
         .with_snapshot_strategy(SnapshotStrategy::BeforeEachReplace);
 
@@ -111,13 +111,11 @@ async fn memdir_enforces_limits_and_creates_replace_snapshots() {
 #[tokio::test]
 async fn memdir_lock_contention_times_out_without_blocking_forever() {
     let root = tempfile::tempdir().unwrap();
-    let memory = BuiltinMemory::at(root.path(), TenantId::SINGLE).with_concurrency_policy(
-        MemdirConcurrencyPolicy {
-            lock_timeout: Duration::from_millis(25),
-            retry_max: 1,
-            retry_jitter_ms: 1..=1,
-        },
-    );
+    let memory = audited_memory(root.path()).with_concurrency_policy(MemdirConcurrencyPolicy {
+        lock_timeout: Duration::from_millis(25),
+        retry_max: 1,
+        retry_jitter_ms: 1..=1,
+    });
     memory.read_all().await.unwrap();
 
     let lock_path = root
@@ -149,7 +147,7 @@ async fn memdir_write_emits_memory_upserted_without_raw_content() {
     let session_id = SessionId::new();
     let run_id = RunId::new();
     let sink = Arc::new(RecordingSink::default());
-    let memory = BuiltinMemory::at(root.path(), TenantId::SINGLE)
+    let memory = audited_memory(root.path())
         .with_event_sink(sink.clone())
         .with_event_scope(session_id, Some(run_id));
 
@@ -181,7 +179,7 @@ async fn memdir_write_can_record_after_reload_takes_effect() {
     let session_id = SessionId::new();
     let child_session_id = SessionId::new();
     let sink = Arc::new(RecordingSink::default());
-    let memory = BuiltinMemory::at(root.path(), TenantId::SINGLE)
+    let memory = audited_memory(root.path())
         .with_event_sink(sink.clone())
         .with_event_scope(session_id, None)
         .with_write_takes_effect(TakesEffect::AfterReloadWith {
@@ -206,6 +204,28 @@ async fn memdir_write_can_record_after_reload_takes_effect() {
             session_id: child_session_id
         })
     }));
+}
+
+#[tokio::test]
+async fn memdir_write_rolls_back_when_required_audit_fails() {
+    let root = tempfile::tempdir().unwrap();
+    let memory = audited_memory(root.path());
+    memory
+        .append_section(MemdirFile::Memory, "profile", "stable")
+        .await
+        .unwrap();
+
+    let failing = BuiltinMemory::at(root.path(), TenantId::SINGLE)
+        .with_event_sink(Arc::new(FailingRequiredSink))
+        .with_event_scope(SessionId::new(), None);
+    let error = failing
+        .replace_section(MemdirFile::Memory, "profile", "should rollback")
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, MemoryError::Provider { provider, .. } if provider == "audit"));
+    let snapshot = memory.read_all().await.unwrap();
+    assert_eq!(snapshot.memory, "§ profile\nstable\n");
 }
 
 #[test]
@@ -239,7 +259,7 @@ fn memory_context_fence_escapes_special_tokens_and_sanitizes_input() {
 #[ignore = "manual stress: cargo test -p jyowo-harness-memory --all-features --test memdir memdir_manual_stress_1000_append_100_replace -- --ignored --nocapture"]
 async fn memdir_manual_stress_1000_append_100_replace() {
     let root = tempfile::tempdir().unwrap();
-    let memory = BuiltinMemory::at(root.path(), TenantId::SINGLE).with_limits(256_000, 8_000);
+    let memory = audited_memory(root.path()).with_limits(256_000, 8_000);
 
     for index in 0..1000 {
         memory
@@ -281,7 +301,7 @@ fn memdir_cross_process_1000_append_100_replace_default_ci() {
     assert!(even.wait().unwrap().success());
     assert!(odd.wait().unwrap().success());
 
-    let memory = BuiltinMemory::at(root.path(), TenantId::SINGLE);
+    let memory = audited_memory(root.path());
     let snapshot = tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(async { memory.read_all().await.unwrap() });
@@ -297,7 +317,7 @@ fn memdir_abandoned_tmp_after_killed_writer_is_ignored() {
     let exe = std::env::current_exe().unwrap();
     let ready = root.path().join("tmp-writer-ready");
 
-    let memory = BuiltinMemory::at(root.path(), TenantId::SINGLE);
+    let memory = audited_memory(root.path());
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         memory
             .append_section(MemdirFile::Memory, "stable", "kept")
@@ -329,7 +349,7 @@ fn memdir_manual_cross_process_lock_serializes_writes() {
     assert!(left.wait().unwrap().success());
     assert!(right.wait().unwrap().success());
 
-    let memory = BuiltinMemory::at(root.path(), TenantId::SINGLE);
+    let memory = audited_memory(root.path());
     let snapshot = tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(async { memory.read_all().await.unwrap() });
@@ -346,7 +366,7 @@ fn memdir_cross_process_child_append_helper() {
     let root = PathBuf::from(std::env::var("JYOWO_MEMDIR_ROOT").unwrap());
     let section = std::env::var("JYOWO_MEMDIR_SECTION").unwrap();
     let content = std::env::var("JYOWO_MEMDIR_CONTENT").unwrap();
-    let memory = BuiltinMemory::at(root, TenantId::SINGLE)
+    let memory = audited_memory(&root)
         .with_limits(256_000, 8_000)
         .with_concurrency_policy(MemdirConcurrencyPolicy {
             lock_timeout: Duration::from_secs(30),
@@ -372,7 +392,7 @@ fn memdir_cross_process_bulk_child_helper() {
         .unwrap()
         .parse::<usize>()
         .unwrap();
-    let memory = BuiltinMemory::at(root, TenantId::SINGLE)
+    let memory = audited_memory(&root)
         .with_limits(256_000, 8_000)
         .with_concurrency_policy(MemdirConcurrencyPolicy {
             lock_timeout: Duration::from_secs(30),
@@ -424,10 +444,18 @@ fn memdir_tmp_writer_child_helper() {
     }
 }
 
+fn audited_memory(root: &Path) -> BuiltinMemory {
+    BuiltinMemory::at(root, TenantId::SINGLE)
+        .with_event_sink(Arc::new(RecordingSink::default()))
+        .with_event_scope(SessionId::new(), None)
+}
+
 #[derive(Default)]
 struct RecordingSink {
     events: Mutex<Vec<Event>>,
 }
+
+struct FailingRequiredSink;
 
 fn spawn_memdir_child(
     exe: &std::path::Path,
@@ -497,6 +525,23 @@ impl MemoryEventSink for RecordingSink {
     async fn emit(&self, event: Event) {
         self.events.lock().push(event);
     }
+
+    async fn emit_required(&self, event: Event) -> Result<(), MemoryError> {
+        self.emit(event).await;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl MemoryEventSink for FailingRequiredSink {
+    async fn emit(&self, _event: Event) {}
+
+    async fn emit_required(&self, _event: Event) -> Result<(), MemoryError> {
+        Err(MemoryError::Provider {
+            provider: "audit".to_owned(),
+            source_message: "append failed".to_owned(),
+        })
+    }
 }
 
 fn record(content: &str) -> MemoryRecord {
@@ -512,9 +557,11 @@ fn record(content: &str) -> MemoryRecord {
             tags: Vec::new(),
             source: MemorySource::UserInput,
             confidence: 1.0,
+            evidence: None,
             access_count: 0,
             last_accessed_at: None,
             recall_score: 0.0,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },

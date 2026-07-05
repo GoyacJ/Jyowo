@@ -18,6 +18,7 @@ default = []
 workspace-bootstrap = []
 hot-reload-fork = []
 steering = []
+recall-memory = ["jyowo-harness-context/recall-memory"]
 
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }

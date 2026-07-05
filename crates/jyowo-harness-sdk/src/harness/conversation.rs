@@ -1,4 +1,17 @@
+#[cfg(feature = "memory-provider-registry")]
+use super::memory::memory_actor_from_options;
 use super::*;
+
+struct HydratedConversationInput {
+    input: ConversationTurnInput,
+    memory_patches: Vec<HydratedMemoryPatch>,
+}
+
+struct HydratedMemoryPatch {
+    memory_id: MemoryId,
+    provider_id: String,
+    fence: String,
+}
 
 fn render_conversation_turn_prompt(
     input: &ConversationTurnInput,
@@ -25,7 +38,8 @@ fn render_conversation_turn_prompt(
             input
                 .context_references
                 .iter()
-                .map(render_context_reference),
+                .map(render_context_reference)
+                .filter(|line| !line.is_empty()),
         );
     }
 
@@ -113,12 +127,14 @@ fn render_context_reference(reference: &ConversationContextReference) -> String 
                 sanitize_context_line(id)
             )
         }
-        ConversationContextReference::Memory { id, label } => {
-            format!(
-                "- memory: {} ({})",
-                sanitize_context_line(label),
-                sanitize_context_line(id)
-            )
+        ConversationContextReference::Memory {
+            resolved_content, ..
+        } => {
+            if let Some(content) = resolved_content {
+                content.clone()
+            } else {
+                String::new()
+            }
         }
         ConversationContextReference::Skill { id, label } => {
             format!(
@@ -159,6 +175,121 @@ fn sanitize_context_line(value: &str) -> String {
 }
 
 impl Harness {
+    async fn hydrate_memory_references(
+        &self,
+        mut input: ConversationTurnInput,
+        options: &SessionOptions,
+    ) -> Result<HydratedConversationInput, HarnessError> {
+        #[cfg(not(feature = "memory-provider-registry"))]
+        let _ = options;
+        #[cfg(feature = "memory-provider-registry")]
+        let mut memory_patches = Vec::new();
+        #[cfg(not(feature = "memory-provider-registry"))]
+        let memory_patches = Vec::new();
+        #[cfg(feature = "memory-provider-registry")]
+        let resolver = {
+            let harness = self.clone();
+            let options = options.clone();
+            harness_memory::FnMemoryResolver::new(move |memory_id| {
+                let harness = harness.clone();
+                let options = options.clone();
+                async move {
+                    let manager =
+                        harness
+                            .memory_manager_for_browser(&options)
+                            .await
+                            .map_err(|error| match error {
+                                HarnessError::Memory(error) => error,
+                                other => harness_contracts::MemoryError::Message(other.to_string()),
+                            })?;
+                    manager
+                        .get_for_actor_with_provider(memory_id, memory_actor_from_options(&options))
+                        .await
+                        .map(|source| (source.record.content, source.provider_id))
+                }
+            })
+        };
+
+        for reference in &mut input.context_references {
+            let ConversationContextReference::Memory {
+                resolved_content, ..
+            } = reference
+            else {
+                continue;
+            };
+            *resolved_content = None;
+
+            #[cfg(feature = "memory-provider-registry")]
+            {
+                let ConversationContextReference::Memory {
+                    id: memory_reference_id,
+                    label: memory_reference_label,
+                    ..
+                } = reference
+                else {
+                    continue;
+                };
+                let redactor = self.hook_redactor();
+                let redact_rules = RedactRules {
+                    scope: RedactScope::All,
+                    ..RedactRules::default()
+                };
+                let memory_id = MemoryId::parse(memory_reference_id).map_err(|error| {
+                    HarnessError::Memory(harness_contracts::MemoryError::Message(format!(
+                        "invalid memory reference id: {memory_reference_id}: {error}"
+                    )))
+                })?;
+                let resolved = harness_memory::ContextReferenceResolver::resolve_memory(
+                    &resolver,
+                    memory_id,
+                    memory_reference_label.clone(),
+                )
+                .await
+                .map_err(HarnessError::Memory)?;
+                match resolved.outcome {
+                    harness_memory::MemoryReferenceOutcome::Hydrated {
+                        content,
+                        provider_id,
+                    } => {
+                        let redacted = redactor.redact(&content, &redact_rules);
+                        memory_patches.push(HydratedMemoryPatch {
+                            memory_id,
+                            fence: harness_memory::fence_memory_content(
+                                &redacted,
+                                memory_id,
+                                &provider_id,
+                            ),
+                            provider_id,
+                        });
+                    }
+                    harness_memory::MemoryReferenceOutcome::Failed { reason } => {
+                        return Err(HarnessError::Memory(
+                            harness_contracts::MemoryError::Message(format!(
+                                "memory reference could not be resolved: {reason}"
+                            )),
+                        ));
+                    }
+                }
+            }
+
+            #[cfg(not(feature = "memory-provider-registry"))]
+            {
+                return Err(HarnessError::Memory(
+                    harness_contracts::MemoryError::ExternalProviderNotConfigured,
+                ));
+            }
+        }
+
+        input
+            .context_references
+            .retain(|reference| !matches!(reference, ConversationContextReference::Memory { .. }));
+
+        Ok(HydratedConversationInput {
+            input,
+            memory_patches,
+        })
+    }
+
     pub async fn open_or_create_conversation_session(
         &self,
         options: SessionOptions,
@@ -343,18 +474,36 @@ impl Harness {
             .clone()
             .unwrap_or_else(|| self.inner.options.model_id.clone());
         let model_snapshot = snapshot_for_supported_model(self.inner.model.as_ref(), &model_id)?;
+        let hydrated = self
+            .hydrate_memory_references(request.input, &options)
+            .await?;
         let parts = conversation_turn_parts(
-            &request.input,
+            &hydrated.input,
             &model_snapshot.conversation_capability.input_modalities,
         );
         let session = self
             .resume_sdk_session_from_projection(options.clone(), &run_options, projection)
             .await?;
+        for patch in hydrated.memory_patches {
+            session
+                .push_context_patch(harness_contracts::ContextPatchRequest {
+                    tenant_id: options.tenant_id,
+                    session_id: options.session_id,
+                    run_id: RunId::new(),
+                    source: harness_contracts::ContextPatchSource::MemoryReference {
+                        provider_id: patch.provider_id,
+                        memory_ids: vec![patch.memory_id],
+                    },
+                    body: patch.fence,
+                    lifecycle: harness_contracts::ContextPatchLifecycle::Transient,
+                })
+                .await?;
+        }
         session
             .run_turn_parts_with_client_message_id_attachments_permission_mode_and_actor_source(
                 parts,
-                request.input.client_message_id.clone(),
-                request.input.attachments.clone(),
+                hydrated.input.client_message_id.clone(),
+                hydrated.input.attachments.clone(),
                 Some(run_options.permission_mode),
                 request
                     .permission_actor_source

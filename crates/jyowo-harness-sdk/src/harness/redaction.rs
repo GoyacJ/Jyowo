@@ -62,12 +62,12 @@ fn business_event_redact_rules() -> RedactRules {
 }
 
 #[cfg(feature = "observability-redactor")]
-fn default_hook_redactor() -> Arc<dyn Redactor> {
+pub(super) fn default_hook_redactor() -> Arc<dyn Redactor> {
     Arc::new(DefaultRedactor::default())
 }
 
 #[cfg(not(feature = "observability-redactor"))]
-fn default_hook_redactor() -> Arc<dyn Redactor> {
+pub(super) fn default_hook_redactor() -> Arc<dyn Redactor> {
     Arc::new(MinimalHookRedactor)
 }
 

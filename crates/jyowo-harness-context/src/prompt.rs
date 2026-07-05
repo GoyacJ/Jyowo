@@ -1,3 +1,5 @@
+#[cfg(feature = "recall-memory")]
+use harness_contracts::MemoryThreadSettings;
 use harness_contracts::{Event, Message, SessionId, TeamId, TenantId, ToolDescriptor};
 use harness_model::{CacheBreakpoint, PromptCacheStyle};
 
@@ -32,6 +34,11 @@ pub trait ContextSessionView: Send + Sync {
     fn system(&self) -> Option<String>;
     fn messages(&self) -> Vec<Message>;
     fn tools_snapshot(&self) -> Vec<ToolDescriptor>;
+
+    #[cfg(feature = "recall-memory")]
+    fn memory_thread_settings(&self) -> Option<MemoryThreadSettings> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

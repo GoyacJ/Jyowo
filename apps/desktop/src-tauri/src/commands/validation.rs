@@ -375,6 +375,7 @@ pub(crate) async fn validate_context_references(
                 ConversationContextReference::Memory {
                     id: id.clone(),
                     label: label.clone(),
+                    resolved_content: None,
                 }
             }
             ContextReferencePayload::Skill { id, label } => {

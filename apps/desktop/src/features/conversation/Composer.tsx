@@ -9,6 +9,7 @@ import type {
   ContextReference,
   ConversationModelCapability,
   ListReferenceCandidatesResponse,
+  MemoryThreadMode,
   PermissionMode,
   StartRunRequest,
 } from '@/shared/tauri/commands'
@@ -57,6 +58,9 @@ type ComposerProps = {
   permissionMode?: PermissionMode
   autoModeAvailable?: boolean
   onPermissionModeChange?: (mode: PermissionMode) => void
+  memoryMode?: MemoryThreadMode
+  memoryModeDisabled?: boolean
+  onMemoryModeChange?: (mode: MemoryThreadMode) => void
 }
 
 const attachmentInputModalities: AttachmentInputModality[] = ['image', 'video', 'file']
@@ -92,6 +96,9 @@ export function Composer({
   permissionMode,
   autoModeAvailable = false,
   onPermissionModeChange,
+  memoryMode,
+  memoryModeDisabled = false,
+  onMemoryModeChange,
 }: ComposerProps) {
   const { t } = useTranslation(['common', 'conversation'])
   const [draft, setDraft] = useState<ComposerDraft>(() =>
@@ -459,6 +466,9 @@ export function Composer({
           onModelConfigChange={onModelConfigChange}
           permissionMode={selectedPermissionMode}
           autoModeAvailable={autoModeAvailable}
+          memoryMode={memoryMode}
+          memoryModeDisabled={memoryModeDisabled}
+          onMemoryModeChange={onMemoryModeChange}
           onPermissionModeChange={(nextMode) => {
             if (permissionMode === undefined) {
               setLocalPermissionMode(nextMode)

@@ -5,7 +5,7 @@ pub use harness_contracts::{
     CredentialPoolSharedAcrossTenantsEvent, Decision, DecisionId, DecisionScope, DeferPolicy,
     DeltaChunk, EndReason, Event, EventId, ExecuteCodeStepInvokedEvent, FallbackPolicy, ForkReason,
     HookEventKind, HookOutcomeSummary, HookTriggeredEvent, InteractivityLevel, JournalError,
-    JournalOffset, ManifestOriginRef, McpServerId, McpServerSource, MemoryActor,
+    JournalOffset, ManifestOriginRef, McpServerId, McpServerSource, MemoryActorContext,
     MemoryExportedEvent, MemoryId, MemoryKind, MemorySource, MemoryThreatDetectedEvent,
     MemoryVisibility, Message, MessageContent, MessagePart, MessageRole, ModelError, ModelRef,
     OverflowAction, PermissionError, PermissionMode, PermissionRequestSuppressedEvent,

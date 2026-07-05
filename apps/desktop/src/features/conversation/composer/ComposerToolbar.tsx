@@ -1,9 +1,9 @@
-import { Check, ChevronDown, Paperclip, Shield } from 'lucide-react'
+import { Check, ChevronDown, Database, Paperclip, Shield } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/shared/lib/utils'
-import type { ContextReference, PermissionMode } from '@/shared/tauri/commands'
+import type { ContextReference, MemoryThreadMode, PermissionMode } from '@/shared/tauri/commands'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -21,6 +21,8 @@ export function ComposerToolbar({
   modelConfigId,
   modelConfigs,
   permissionMode,
+  memoryMode,
+  memoryModeDisabled,
   referenceActiveIndex,
   referenceGroups,
   referenceLoading,
@@ -29,6 +31,7 @@ export function ComposerToolbar({
   supportsAttachments,
   onAttachFile,
   onModelConfigChange,
+  onMemoryModeChange,
   onPermissionModeChange,
   onReferenceOpenChange,
   onReferenceSearchChange,
@@ -41,6 +44,8 @@ export function ComposerToolbar({
   modelConfigId?: string
   modelConfigs: Array<{ id: string; label: string }>
   permissionMode: PermissionMode
+  memoryMode?: MemoryThreadMode
+  memoryModeDisabled: boolean
   referenceActiveIndex: number
   referenceGroups: ReferenceComboboxGroup[]
   referenceLoading: boolean
@@ -49,6 +54,7 @@ export function ComposerToolbar({
   supportsAttachments: boolean
   onAttachFile: () => void
   onModelConfigChange?: (modelConfigId: string) => void
+  onMemoryModeChange?: (mode: MemoryThreadMode) => void
   onPermissionModeChange: (mode: PermissionMode) => void
   onReferenceOpenChange: (open: boolean) => void
   onReferenceSearchChange: (search: string) => void
@@ -66,6 +72,13 @@ export function ComposerToolbar({
           permissionMode={permissionMode}
           onPermissionModeChange={onPermissionModeChange}
         />
+        {memoryMode ? (
+          <ComposerMemoryModeMenu
+            disabled={disabled || memoryModeDisabled || !onMemoryModeChange}
+            memoryMode={memoryMode}
+            onMemoryModeChange={(nextMode) => onMemoryModeChange?.(nextMode)}
+          />
+        ) : null}
         <AttachmentPicker disabled={disabled || !supportsAttachments} onAttachFile={onAttachFile} />
         <ReferenceCombobox
           activeIndex={referenceActiveIndex}
@@ -107,6 +120,68 @@ export function ComposerToolbar({
         ) : null}
       </div>
     </TooltipProvider>
+  )
+}
+
+const composerMemoryModeOptions = [
+  { value: 'read_write', labelKey: 'composer.memoryMode.readWrite' },
+  { value: 'read_only', labelKey: 'composer.memoryMode.readOnly' },
+  { value: 'candidate_only', labelKey: 'composer.memoryMode.candidateOnly' },
+  { value: 'off', labelKey: 'composer.memoryMode.off' },
+] as const satisfies ReadonlyArray<{
+  value: MemoryThreadMode
+  labelKey: string
+}>
+
+function ComposerMemoryModeMenu({
+  disabled,
+  memoryMode,
+  onMemoryModeChange,
+}: {
+  disabled: boolean
+  memoryMode: MemoryThreadMode
+  onMemoryModeChange: (mode: MemoryThreadMode) => void
+}) {
+  const { t } = useTranslation('conversation')
+  const selectedOption =
+    composerMemoryModeOptions.find((option) => option.value === memoryMode) ??
+    composerMemoryModeOptions[0]
+  const selectedLabel = t(selectedOption.labelKey)
+
+  return (
+    <DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <button
+              aria-label={t('composer.memoryMode.ariaLabel', { mode: selectedLabel })}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2 font-medium text-foreground text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={disabled}
+              type="button"
+            >
+              <Database className="size-3.5" />
+              <span className="max-w-[8rem] truncate">{selectedLabel}</span>
+              <ChevronDown className="size-3.5 opacity-70" />
+            </button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{t('composer.memoryMode.tooltip')}</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="start" className="w-56">
+        {composerMemoryModeOptions.map((option) => (
+          <DropdownMenuItem
+            className="items-center gap-3 py-2"
+            key={option.value}
+            onSelect={() => onMemoryModeChange(option.value)}
+          >
+            <Check
+              className={cn('size-3.5', option.value === memoryMode ? 'opacity-100' : 'opacity-0')}
+            />
+            <span>{t(option.labelKey)}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 

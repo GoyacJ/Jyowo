@@ -14,8 +14,11 @@ pub trait MemoryEventSink: Send + Sync + 'static {
     async fn emit(&self, event: Event);
 
     async fn emit_required(&self, event: Event) -> Result<(), MemoryError> {
-        self.emit(event).await;
-        Ok(())
+        let _ = event;
+        Err(MemoryError::Provider {
+            provider: "audit".to_owned(),
+            source_message: "required audit sink is not implemented".to_owned(),
+        })
     }
 }
 
@@ -93,7 +96,7 @@ pub enum MemoryRecallMetricOutcome {
 pub struct ConsolidationOutcome {
     pub promoted: Vec<MemoryId>,
     pub demoted: Vec<MemoryId>,
-    pub draft_dreams: String,
+    pub inbox_candidates_created: u32,
 }
 
 #[cfg(feature = "consolidation")]
@@ -166,6 +169,55 @@ pub trait MemoryLifecycle: Send + Sync + 'static {
     }
 }
 
-pub trait MemoryProvider: MemoryStore + MemoryLifecycle {}
+pub trait MemoryProvider: MemoryStore + MemoryLifecycle {
+    fn descriptor(&self) -> MemoryProviderDescriptor {
+        MemoryProviderDescriptor {
+            provider_id: self.provider_id().to_owned(),
+            provider_kind: MemoryProviderKind::Local,
+            priority: 0,
+            trust_level: MemoryProviderTrust::BuiltIn,
+            tenant_scope: None,
+            workspace_scope: None,
+            durability: MemoryProviderDurability::Durable,
+            readable: true,
+            writable: true,
+            allowed_visibility: vec![
+                MemoryVisibilityClass::Private,
+                MemoryVisibilityClass::User,
+                MemoryVisibilityClass::Team,
+                MemoryVisibilityClass::Tenant,
+            ],
+            supports_evidence: true,
+            supports_raw_content_export: false,
+            timeout_ms: 5000,
+            max_records_per_recall: 50,
+            max_chars_per_recall: 100_000,
+            max_bytes_per_record: 1024 * 1024,
+        }
+    }
+}
 
-impl<T: MemoryStore + MemoryLifecycle> MemoryProvider for T {}
+use harness_contracts::{
+    MemoryProviderDurability, MemoryProviderKind, MemoryProviderTrust, MemoryVisibilityClass,
+    TenantId, WorkspaceId,
+};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryProviderDescriptor {
+    pub provider_id: String,
+    pub provider_kind: MemoryProviderKind,
+    pub priority: i32,
+    pub trust_level: MemoryProviderTrust,
+    pub tenant_scope: Option<TenantId>,
+    pub workspace_scope: Option<WorkspaceId>,
+    pub durability: MemoryProviderDurability,
+    pub readable: bool,
+    pub writable: bool,
+    pub allowed_visibility: Vec<MemoryVisibilityClass>,
+    pub supports_evidence: bool,
+    pub supports_raw_content_export: bool,
+    pub timeout_ms: u32,
+    pub max_records_per_recall: u32,
+    pub max_chars_per_recall: u32,
+    pub max_bytes_per_record: u64,
+}

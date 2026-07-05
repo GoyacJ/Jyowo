@@ -7,7 +7,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 #[cfg(feature = "recall-memory")]
-use harness_contracts::MemoryActor;
+use harness_contracts::MemoryActorContext;
 #[cfg(feature = "recall-memory")]
 use harness_contracts::RunId;
 use harness_contracts::{
@@ -19,7 +19,8 @@ use harness_contracts::{
 };
 #[cfg(feature = "recall-memory")]
 use harness_contracts::{
-    MemoryRecallDegradedEvent, MemoryRecallDegradedReason, MessageView, UserMessageView,
+    MemoryActor, MemoryRecallDegradedEvent, MemoryRecallDegradedReason, MessageView,
+    UserMessageView,
 };
 #[cfg(feature = "recall-memory")]
 use harness_memory::{
@@ -103,6 +104,29 @@ impl ContextEngine {
             #[cfg(feature = "recall-memory")]
             memory_manager: self.memory_manager.clone(),
         }
+    }
+
+    #[cfg(feature = "recall-memory")]
+    #[must_use]
+    pub fn clone_with_budget_and_memory_manager(
+        &self,
+        budget: TokenBudget,
+        memory_manager: Option<Arc<MemoryManager>>,
+    ) -> Self {
+        Self {
+            providers: self.providers.clone(),
+            budget,
+            cache_policy: self.cache_policy.clone(),
+            state: self.state.clone(),
+            turn_counter: self.turn_counter.clone(),
+            memory_manager,
+        }
+    }
+
+    #[cfg(feature = "recall-memory")]
+    #[must_use]
+    pub fn memory_manager(&self) -> Option<Arc<MemoryManager>> {
+        self.memory_manager.clone()
     }
 
     pub fn compact_stage_order() -> &'static [ContextStageId] {
@@ -868,6 +892,14 @@ impl ContextEngine {
         let run_id = identity.run_id;
         let turn = identity.turn;
         let recall_policy = memory_manager.recall_policy();
+        let thread = session.memory_thread_settings().unwrap_or_else(|| {
+            harness_memory::settings::default_thread_settings(
+                session.session_id().unwrap_or_else(SessionId::new),
+            )
+        });
+        let actor = MemoryActor::User {
+            user_label: session.user_id(),
+        };
         if !memory_manager.has_external() {
             return (
                 Vec::new(),
@@ -886,7 +918,7 @@ impl ContextEngine {
         let query = MemoryQuery {
             text: user_text.clone(),
             kind_filter: Some(MemoryKindFilter::Any),
-            visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActor {
+            visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActorContext {
                 tenant_id: session.tenant_id(),
                 user_id: session.user_id(),
                 team_id: session.team_id(),
@@ -899,10 +931,12 @@ impl ContextEngine {
             deadline: None,
         };
 
-        match memory_manager
-            .recall_once_per_turn_outcome(turn, query)
-            .await
-        {
+        let recall_result = memory_manager
+            .recall_once_per_turn_outcome_with_policy_and_trace(
+                turn, run_id, query, &thread, &actor,
+            )
+            .await;
+        match recall_result.outcome {
             MemoryRecallOutcome::Skipped => (
                 Vec::new(),
                 vec![Event::MemoryRecallSkipped(
@@ -948,6 +982,7 @@ impl ContextEngine {
                                 as u32,
                             min_similarity: recall_policy.min_similarity,
                             kinds_returned,
+                            trace_id: recall_result.trace_id,
                             at: harness_contracts::now(),
                         },
                     )],
@@ -991,10 +1026,18 @@ impl ContextEngine {
         let run_id = identity.run_id;
         let turn = identity.turn;
         let recall_policy = memory_manager.recall_policy();
+        let thread = session.memory_thread_settings().unwrap_or_else(|| {
+            harness_memory::settings::default_thread_settings(
+                session.session_id().unwrap_or_else(SessionId::new),
+            )
+        });
+        let actor = MemoryActor::User {
+            user_label: session.user_id(),
+        };
         let query = MemoryQuery {
             text: hint_text.clone(),
             kind_filter: Some(MemoryKindFilter::Any),
-            visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActor {
+            visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActorContext {
                 tenant_id: session.tenant_id(),
                 user_id: session.user_id(),
                 team_id: session.team_id(),
@@ -1007,10 +1050,12 @@ impl ContextEngine {
             deadline: Some(Duration::from_millis(200)),
         };
 
-        match memory_manager
-            .recall_once_per_turn_outcome(turn, query)
-            .await
-        {
+        let recall_result = memory_manager
+            .recall_once_per_turn_outcome_with_policy_and_trace(
+                turn, run_id, query, &thread, &actor,
+            )
+            .await;
+        match recall_result.outcome {
             MemoryRecallOutcome::Recalled(records) if records.is_empty() => Ok(()),
             MemoryRecallOutcome::Recalled(records) => {
                 let fence = harness_memory::wrap_memory_context(&records);
@@ -1038,6 +1083,7 @@ impl ContextEngine {
                         deadline_used_ms: 200,
                         min_similarity: recall_policy.min_similarity,
                         kinds_returned,
+                        trace_id: recall_result.trace_id,
                         at: harness_contracts::now(),
                     }),
                 )
@@ -1198,7 +1244,7 @@ fn context_patch_from_request(request: ContextPatchRequest) -> (ContextPatch, Op
     let body_bytes = request.body.len() as u64;
     let lifecycle = context_lifecycle(request.lifecycle);
     match request.source {
-        ContextPatchSource::MemoryRecall { .. } => (
+        ContextPatchSource::MemoryRecall { .. } | ContextPatchSource::MemoryReference { .. } => (
             ContextPatch::MemoryRecall {
                 fence: request.body,
                 lifecycle,

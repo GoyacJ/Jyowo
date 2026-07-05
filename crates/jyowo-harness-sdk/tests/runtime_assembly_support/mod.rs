@@ -422,9 +422,11 @@ pub fn memory_record(session_id: SessionId, content: &str) -> MemoryRecord {
             tags: Vec::new(),
             source: MemorySource::UserInput,
             confidence: 1.0,
+            evidence: None,
             access_count: 0,
             last_accessed_at: None,
             recall_score: 1.0,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },
@@ -444,9 +446,11 @@ pub fn memory_record_with_visibility(visibility: MemoryVisibility, content: &str
             tags: Vec::new(),
             source: MemorySource::UserInput,
             confidence: 1.0,
+            evidence: None,
             access_count: 0,
             last_accessed_at: None,
             recall_score: 1.0,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },
@@ -515,6 +519,8 @@ impl MemoryLifecycle for InitializingMemoryProvider {
     }
 }
 
+impl harness_memory::MemoryProvider for InitializingMemoryProvider {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EndedMemorySnapshot {
     pub user_id: Option<String>,
@@ -582,6 +588,8 @@ impl MemoryLifecycle for EndingMemoryProvider {
     }
 }
 
+impl harness_memory::MemoryProvider for EndingMemoryProvider {}
+
 #[cfg(feature = "memory-consolidation")]
 pub struct RecordingConsolidationHook {
     pub calls: AtomicUsize,
@@ -614,7 +622,7 @@ impl ConsolidationHook for RecordingConsolidationHook {
         Ok(ConsolidationOutcome {
             promoted: vec![self.promoted],
             demoted: Vec::new(),
-            draft_dreams: "sdk dream".to_owned(),
+            inbox_candidates_created: 1,
         })
     }
 }
@@ -1171,3 +1179,5 @@ impl harness_memory::MemoryStore for SdkPluginMemoryProvider {
 }
 
 impl harness_memory::MemoryLifecycle for SdkPluginMemoryProvider {}
+
+impl harness_memory::MemoryProvider for SdkPluginMemoryProvider {}

@@ -286,8 +286,8 @@ fn compiled_features() -> Vec<&'static str> {
     );
     push_feature(
         &mut features,
-        "memory-external-slot",
-        cfg!(feature = "memory-external-slot"),
+        "memory-provider-registry",
+        cfg!(feature = "memory-provider-registry"),
     );
     push_feature(
         &mut features,

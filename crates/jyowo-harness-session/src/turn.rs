@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use harness_context::{ContextEngine, ContextSessionView};
+#[cfg(feature = "recall-memory")]
+use harness_contracts::MemoryThreadSettings;
 use harness_contracts::{
     AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobStore, CapabilityRegistry,
     CausationId, ConversationAttachmentReference, CorrelationId, DeltaChunk, DenyReason, EndReason,
@@ -144,6 +146,8 @@ pub(crate) async fn run_turn(
         session_id: session.session_id(),
         user_id: session.options().user_id.clone(),
         team_id: session.options().team_id,
+        #[cfg(feature = "recall-memory")]
+        memory_thread_settings: session.options().memory_thread_settings.clone(),
         system: runtime.system_prompt.clone(),
         messages: projection.messages.clone(),
         tools: runtime
@@ -330,6 +334,10 @@ pub(crate) async fn run_turn(
                 parent_run: None,
                 model: session.turn_model_snapshot(),
                 model_config_id: session.turn_model_config_id(),
+                #[cfg(feature = "recall-memory")]
+                memory_thread_settings: session.options().memory_thread_settings.clone(),
+                #[cfg(not(feature = "recall-memory"))]
+                memory_thread_settings: None,
                 actor_source: permission_actor_source,
             },
             blob_store: runtime.blob_store.clone(),
@@ -441,6 +449,10 @@ async fn authorize_tool_calls(
                 parent_run: None,
                 model: session.turn_model_snapshot(),
                 model_config_id: session.turn_model_config_id(),
+                #[cfg(feature = "recall-memory")]
+                memory_thread_settings: session.options().memory_thread_settings.clone(),
+                #[cfg(not(feature = "recall-memory"))]
+                memory_thread_settings: None,
                 actor_source: permission_actor_source.clone(),
             };
             tool.validate(&call.input, &tool_ctx)
@@ -582,6 +594,8 @@ struct TurnContextView {
     session_id: SessionId,
     user_id: Option<String>,
     team_id: Option<TeamId>,
+    #[cfg(feature = "recall-memory")]
+    memory_thread_settings: Option<MemoryThreadSettings>,
     system: Option<String>,
     messages: Vec<Message>,
     tools: Vec<ToolDescriptor>,
@@ -614,6 +628,11 @@ impl ContextSessionView for TurnContextView {
 
     fn tools_snapshot(&self) -> Vec<ToolDescriptor> {
         self.tools.clone()
+    }
+
+    #[cfg(feature = "recall-memory")]
+    fn memory_thread_settings(&self) -> Option<MemoryThreadSettings> {
+        self.memory_thread_settings.clone()
     }
 }
 

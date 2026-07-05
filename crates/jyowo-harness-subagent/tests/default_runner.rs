@@ -561,6 +561,34 @@ async fn memory_scope_subset_uses_registered_resolver() {
 }
 
 #[tokio::test]
+async fn memory_scope_empty_resolves_without_resolver() {
+    let workspace = tempfile::tempdir().unwrap();
+    let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let child = Arc::new(RecordingChildRunner::default());
+    let runner = DefaultSubagentRunner::new(
+        child.clone(),
+        store,
+        workspace.path(),
+        harness_subagent::DelegationPolicy::default(),
+    );
+    let parent = ParentContext::for_test(0);
+    let mut spec = SubagentSpec::minimal("reviewer", "inspect");
+    spec.memory_scope = SubagentMemoryScope::Empty;
+
+    runner
+        .spawn(spec, test_input("inspect"), parent)
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+
+    let request = child.request.lock().await.clone().unwrap();
+    assert!(request.memory_scope_resolved);
+    assert!(request.context_seed.is_empty());
+}
+
+#[tokio::test]
 async fn default_runner_terminates_failed_child_runs() {
     let workspace = tempfile::tempdir().unwrap();
     let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));

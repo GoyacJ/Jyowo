@@ -1,7 +1,7 @@
 #![cfg(all(
     feature = "builtin",
     feature = "consolidation",
-    feature = "external-slot",
+    feature = "provider-registry",
     feature = "threat-scanner"
 ))]
 
@@ -15,8 +15,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_contracts::{
-    EndReason, Event, MemdirFileTag, MemoryActor, MemoryError, MemoryId, MemoryKind,
-    MemorySessionCtx, MemorySource, MemoryVisibility, MemoryWriteAction, SessionId,
+    EndReason, Event, MemdirFileTag, MemoryActorContext, MemoryError, MemoryId, MemoryKind,
+    MemorySessionCtx, MemorySource, MemoryVisibility, MemoryWriteAction, RunId, SessionId,
     SessionSummaryView, TenantId, ThreatAction, ThreatCategory, UsageSnapshot,
 };
 use harness_memory::{
@@ -27,7 +27,7 @@ use harness_memory::{
 };
 
 #[tokio::test]
-async fn consolidation_hook_runs_on_session_end_and_emits_event() {
+async fn consolidation_hook_runs_when_invoked_explicitly_and_emits_event() {
     let events = Arc::new(Events::default());
     let metrics = Arc::new(Metrics::default());
     let promoted = MemoryId::new();
@@ -41,7 +41,7 @@ async fn consolidation_hook_runs_on_session_end_and_emits_event() {
         .with_consolidation_hook(hook.clone());
 
     manager
-        .on_session_end(&session_ctx(), &session_summary())
+        .run_consolidation(&session_ctx(), &session_summary())
         .await
         .unwrap();
 
@@ -51,7 +51,7 @@ async fn consolidation_hook_runs_on_session_end_and_emits_event() {
         Event::MemoryConsolidationRan(ran)
             if ran.hook_id == "test-consolidation"
                 && ran.promoted == vec![promoted]
-                && ran.draft_dreams_chars == 11
+                && ran.inbox_candidates_created == 2
     )));
     assert!(metrics.metrics().iter().any(|metric| matches!(
         metric,
@@ -65,7 +65,7 @@ async fn memory_metrics_cover_recall_degraded_threat_memdir_and_overflow() {
     let metrics = Arc::new(Metrics::default());
     let manager = MemoryManager::new().with_metrics_sink(metrics.clone());
     manager
-        .set_external(Arc::new(StaticProvider::ok(vec![record("recall hit")])))
+        .register_provider(Arc::new(StaticProvider::ok(vec![record("recall hit")])))
         .unwrap();
     manager
         .recall(query(Duration::from_millis(200)))
@@ -75,7 +75,7 @@ async fn memory_metrics_cover_recall_degraded_threat_memdir_and_overflow() {
 
     let degraded = MemoryManager::new().with_metrics_sink(metrics.clone());
     degraded
-        .set_external(Arc::new(StaticProvider::err("provider down")))
+        .register_provider(Arc::new(StaticProvider::err("provider down")))
         .unwrap();
     degraded
         .recall(query(Duration::from_millis(200)))
@@ -83,6 +83,7 @@ async fn memory_metrics_cover_recall_degraded_threat_memdir_and_overflow() {
         .unwrap();
 
     let root = tempfile::tempdir().unwrap();
+    let events = Arc::new(Events::default());
     let scanner = MemoryThreatScanner::from_patterns(vec![ThreatPattern::new(
         "warn-memory",
         "warn-me",
@@ -93,6 +94,8 @@ async fn memory_metrics_cover_recall_degraded_threat_memdir_and_overflow() {
     .unwrap()]);
     BuiltinMemory::at(root.path(), TenantId::SINGLE)
         .with_metrics_sink(metrics.clone())
+        .with_event_sink(events)
+        .with_event_scope(SessionId::new(), Some(RunId::new()))
         .with_threat_scanner(Arc::new(scanner))
         .append_section(MemdirFile::Memory, "threat", "warn-me")
         .await
@@ -146,7 +149,7 @@ async fn memory_metrics_cover_spec_recall_and_memdir_lock_metrics() {
 
     let recalled = MemoryManager::new().with_metrics_sink(metrics.clone());
     recalled
-        .set_external(Arc::new(StaticProvider::ok(vec![record("recall hit")])))
+        .register_provider(Arc::new(StaticProvider::ok(vec![record("recall hit")])))
         .unwrap();
     recalled
         .recall(query(Duration::from_millis(200)))
@@ -155,7 +158,7 @@ async fn memory_metrics_cover_spec_recall_and_memdir_lock_metrics() {
 
     let empty = MemoryManager::new().with_metrics_sink(metrics.clone());
     empty
-        .set_external(Arc::new(StaticProvider::ok(Vec::new())))
+        .register_provider(Arc::new(StaticProvider::ok(Vec::new())))
         .unwrap();
     empty
         .recall(query(Duration::from_millis(200)))
@@ -163,8 +166,11 @@ async fn memory_metrics_cover_spec_recall_and_memdir_lock_metrics() {
         .unwrap();
 
     let root = tempfile::tempdir().unwrap();
+    let events = Arc::new(Events::default());
     let memory = BuiltinMemory::at(root.path(), TenantId::SINGLE)
         .with_metrics_sink(metrics.clone())
+        .with_event_sink(events)
+        .with_event_scope(SessionId::new(), Some(RunId::new()))
         .with_concurrency_policy(harness_memory::MemdirConcurrencyPolicy {
             lock_timeout: Duration::from_millis(25),
             retry_max: 1,
@@ -251,6 +257,11 @@ impl MemoryEventSink for Events {
     async fn emit(&self, event: Event) {
         self.events.lock().unwrap().push(event);
     }
+
+    async fn emit_required(&self, event: Event) -> Result<(), MemoryError> {
+        self.events.lock().unwrap().push(event);
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -290,7 +301,7 @@ impl ConsolidationHook for TestConsolidationHook {
         Ok(ConsolidationOutcome {
             promoted: vec![self.promoted],
             demoted: Vec::new(),
-            draft_dreams: "dream draft".to_owned(),
+            inbox_candidates_created: 2,
         })
     }
 }
@@ -338,13 +349,15 @@ impl MemoryStore for StaticProvider {
 
 impl MemoryLifecycle for StaticProvider {}
 
+impl harness_memory::MemoryProvider for StaticProvider {}
+
 fn query(deadline: Duration) -> MemoryQuery {
     MemoryQuery {
         text: "recall?".to_owned(),
         kind_filter: Some(MemoryKindFilter::OnlyKinds(BTreeSet::from([
             MemoryKind::UserPreference,
         ]))),
-        visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActor {
+        visibility_filter: MemoryVisibilityFilter::EffectiveFor(MemoryActorContext {
             tenant_id: TenantId::SINGLE,
             user_id: None,
             team_id: None,
@@ -370,9 +383,11 @@ fn record(content: &str) -> MemoryRecord {
             tags: Vec::new(),
             source: MemorySource::UserInput,
             confidence: 1.0,
+            evidence: None,
             access_count: 0,
             last_accessed_at: None,
             recall_score: 1.0,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },

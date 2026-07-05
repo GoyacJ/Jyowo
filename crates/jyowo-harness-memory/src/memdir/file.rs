@@ -19,6 +19,11 @@ pub(crate) enum Edit {
     Delete,
 }
 
+pub(crate) struct MemdirWriteResult {
+    pub(crate) outcome: MemdirWriteOutcome,
+    pub(crate) previous_content: String,
+}
+
 pub(crate) fn read_all(memory: &BuiltinMemory) -> Result<MemdirSnapshot, MemoryError> {
     ensure_layout(memory)?;
 
@@ -34,13 +39,13 @@ pub(crate) fn read_all(memory: &BuiltinMemory) -> Result<MemdirSnapshot, MemoryE
     })
 }
 
-pub(crate) fn write_section(
+pub(crate) fn write_section_with_previous(
     memory: &BuiltinMemory,
     file: MemdirFile,
     section: &str,
     content: &str,
     edit: Edit,
-) -> Result<MemdirWriteOutcome, MemoryError> {
+) -> Result<MemdirWriteResult, MemoryError> {
     ensure_layout(memory)?;
     let path = path_for(memory, file);
     let lock_started = Instant::now();
@@ -72,13 +77,29 @@ pub(crate) fn write_section(
     write_atomic(&path, &next)?;
     memory.record_memdir_bytes(file, next.len() as u64);
 
-    Ok(MemdirWriteOutcome {
-        bytes_written: next.len() as u64,
-        previous_hash: hash(previous.as_bytes()),
-        new_hash: hash(next.as_bytes()),
-        snapshot_path,
-        takes_effect: memory.write_takes_effect(),
+    Ok(MemdirWriteResult {
+        outcome: MemdirWriteOutcome {
+            bytes_written: next.len() as u64,
+            previous_hash: hash(previous.as_bytes()),
+            new_hash: hash(next.as_bytes()),
+            snapshot_path,
+            takes_effect: memory.write_takes_effect(),
+        },
+        previous_content: previous,
     })
+}
+
+pub(crate) fn restore_content(
+    memory: &BuiltinMemory,
+    file: MemdirFile,
+    content: &str,
+) -> Result<(), MemoryError> {
+    ensure_layout(memory)?;
+    let path = path_for(memory, file);
+    let _lock = LockedFile::acquire(&lock_path_for(memory, file), memory.concurrency())?;
+    write_atomic(&path, content)?;
+    memory.record_memdir_bytes(file, content.len() as u64);
+    Ok(())
 }
 
 fn content_for_edit<'a>(
@@ -280,7 +301,6 @@ fn lock_path_for(memory: &BuiltinMemory, file: MemdirFile) -> PathBuf {
 fn file_name(file: MemdirFile) -> &'static str {
     match file {
         MemdirFile::User => "USER.md",
-        MemdirFile::Dreams => "DREAMS.md",
         _ => "MEMORY.md",
     }
 }
@@ -288,7 +308,6 @@ fn file_name(file: MemdirFile) -> &'static str {
 fn file_stem(file: MemdirFile) -> &'static str {
     match file {
         MemdirFile::User => "USER",
-        MemdirFile::Dreams => "DREAMS",
         _ => "MEMORY",
     }
 }

@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    MemoryActor, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId, TenantId,
+    ContentHash, MemoryActorContext, MemoryEvidence, MemoryId, MemoryKind, MemoryProviderId,
+    MemoryScoreBreakdown, MemorySource, MemoryVisibility, SessionId, TenantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +32,7 @@ pub enum MemoryKindFilter {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryVisibilityFilter {
-    EffectiveFor(MemoryActor),
+    EffectiveFor(MemoryActorContext),
     Exact(MemoryVisibility),
 }
 
@@ -50,10 +51,14 @@ pub struct MemoryRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemorySummary {
     pub id: MemoryId,
+    pub provider_id: Option<MemoryProviderId>,
     pub kind: MemoryKind,
     pub visibility: MemoryVisibility,
     pub content_preview: String,
+    pub content_hash: ContentHash,
     pub metadata: MemoryMetadata,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub deleted: bool,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -63,17 +68,21 @@ pub enum MemoryListScope {
     All,
     ByKind(MemoryKind),
     ByVisibility(MemoryVisibility),
-    ForActor(MemoryActor),
+    ForActor(MemoryActorContext),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryMetadata {
     pub tags: Vec<String>,
     pub source: MemorySource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<MemoryEvidence>,
     pub confidence: f32,
     pub access_count: u32,
     pub last_accessed_at: Option<DateTime<Utc>>,
     pub recall_score: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recall_score_breakdown: Option<MemoryScoreBreakdown>,
     pub ttl: Option<Duration>,
     pub redacted_segments: u32,
 }
@@ -91,7 +100,7 @@ pub fn content_preview(content: &str) -> String {
     preview
 }
 
-pub fn visibility_matches(visibility: &MemoryVisibility, actor: &MemoryActor) -> bool {
+pub fn visibility_matches(visibility: &MemoryVisibility, actor: &MemoryActorContext) -> bool {
     match visibility {
         MemoryVisibility::Private { session_id } => actor.session_id.as_ref() == Some(session_id),
         MemoryVisibility::User { user_id } => actor.user_id.as_deref() == Some(user_id),

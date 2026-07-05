@@ -168,6 +168,8 @@ define_scopes! {
     SteeringScope => SteeringId,
     ArtifactRevisionScope => ArtifactRevisionId,
     PermissionOptionScope => PermissionOptionId,
+    MemoryTraceScope => MemoryTraceId,
+    MemoryCandidateScope => MemoryCandidateId,
 }
 
 impl TenantId {

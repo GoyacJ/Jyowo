@@ -839,7 +839,20 @@ pub(crate) async fn build_desktop_harness(
         )
         .with_mcp_config(mcp_config)
         .with_plugin_registry(plugin_registry)
-        .with_memory_provider(InMemoryMemoryProvider::new("desktop-memory"))
+        .with_memory_provider(
+            harness_memory::local::LocalMemoryProvider::open(
+                &workspace_root
+                    .join(".jyowo")
+                    .join("runtime")
+                    .join("memory")
+                    .join("memory.sqlite3")
+                    .to_string_lossy(),
+                TenantId::SINGLE,
+            )
+            .map_err(|e| {
+                runtime_init_failed(format!("memory provider initialization failed: {e}"))
+            })?,
+        )
         .with_skill_loader(skill_loader)
         .with_permission_authority_arc(authorization_service.permission_authority())
         .with_authorization_service_arc(authorization_service)

@@ -1833,7 +1833,43 @@ async fn activation_rejects_slots_not_declared_by_manifest() {
 }
 
 #[tokio::test]
-async fn slot_conflicts_reject_second_activation_and_deactivate_releases_slot() {
+async fn memory_provider_deactivate_releases_registration_and_is_idempotent() {
+    let first = memory_plugin("memory-one");
+    let registry = PluginRegistry::builder()
+        .with_config(PluginConfig {
+            allow_project_plugins: true,
+            ..PluginConfig::default()
+        })
+        .with_source(DiscoverySource::Project("/workspace".into()))
+        .with_manifest_loader(Arc::new(StaticManifestLoader::new(vec![first.clone()])))
+        .with_runtime_loader(Arc::new(CountingRuntimeLoader::new(Arc::new(
+            MemoryRegisteringPlugin::new(first, "memory-one-provider"),
+        ))))
+        .build()
+        .unwrap();
+
+    registry.discover().await.unwrap();
+    registry.activate(&plugin_id("memory-one")).await.unwrap();
+    assert_eq!(
+        registry
+            .registered_memory_provider()
+            .expect("memory provider")
+            .provider_id(),
+        "memory-one-provider"
+    );
+
+    registry.deactivate(&plugin_id("memory-one")).await.unwrap();
+    assert!(registry.registered_memory_provider().is_none());
+    registry.deactivate(&plugin_id("memory-one")).await.unwrap();
+
+    assert_eq!(
+        registry.state(&plugin_id("memory-one")).unwrap(),
+        harness_plugin::PluginLifecycleState::Deactivated
+    );
+}
+
+#[tokio::test]
+async fn multiple_memory_provider_plugins_can_register_together() {
     let first = memory_plugin("memory-one");
     let second = memory_plugin("memory-two");
     let registry = PluginRegistry::builder()
@@ -1847,40 +1883,35 @@ async fn slot_conflicts_reject_second_activation_and_deactivate_releases_slot() 
             second.clone(),
         ])))
         .with_runtime_loader(Arc::new(MultiRuntimeLoader::new(vec![
-            Arc::new(ResultPlugin::new(
-                first.clone(),
-                PluginActivationResult {
-                    occupied_slots: vec![CapabilitySlot::MemoryProvider],
-                    ..PluginActivationResult::default()
-                },
-            )),
-            Arc::new(ResultPlugin::new(
-                second.clone(),
-                PluginActivationResult {
-                    occupied_slots: vec![CapabilitySlot::MemoryProvider],
-                    ..PluginActivationResult::default()
-                },
-            )),
+            Arc::new(MemoryRegisteringPlugin::new(first, "memory-one-provider")),
+            Arc::new(MemoryRegisteringPlugin::new(second, "memory-two-provider")),
         ])))
         .build()
         .unwrap();
 
     registry.discover().await.unwrap();
     registry.activate(&plugin_id("memory-one")).await.unwrap();
-    let error = registry
-        .activate(&plugin_id("memory-two"))
-        .await
-        .unwrap_err();
-    assert!(matches!(error, PluginError::SlotOccupied { .. }));
+    registry.activate(&plugin_id("memory-two")).await.unwrap();
+
+    let mut provider_ids = registry
+        .registered_memory_providers()
+        .into_iter()
+        .map(|provider| provider.provider_id().to_owned())
+        .collect::<Vec<_>>();
+    provider_ids.sort();
+    assert_eq!(
+        provider_ids,
+        vec!["memory-one-provider", "memory-two-provider"]
+    );
 
     registry.deactivate(&plugin_id("memory-one")).await.unwrap();
-    registry.activate(&plugin_id("memory-two")).await.unwrap();
-    registry.deactivate(&plugin_id("memory-two")).await.unwrap();
-    registry.deactivate(&plugin_id("memory-two")).await.unwrap();
-
     assert_eq!(
-        registry.state(&plugin_id("memory-two")).unwrap(),
-        harness_plugin::PluginLifecycleState::Deactivated
+        registry
+            .registered_memory_providers()
+            .into_iter()
+            .map(|provider| provider.provider_id().to_owned())
+            .collect::<Vec<_>>(),
+        vec!["memory-two-provider"]
     );
 }
 
@@ -2395,6 +2426,20 @@ struct RegisteringPlugin {
     manifest: PluginManifest,
 }
 
+struct MemoryRegisteringPlugin {
+    manifest: PluginManifest,
+    provider_id: String,
+}
+
+impl MemoryRegisteringPlugin {
+    fn new(record: ManifestRecord, provider_id: &str) -> Self {
+        Self {
+            manifest: record.manifest,
+            provider_id: provider_id.to_owned(),
+        }
+    }
+}
+
 impl RegisteringPlugin {
     fn new(record: ManifestRecord) -> Self {
         Self {
@@ -2437,7 +2482,7 @@ impl Plugin for RegisteringPlugin {
         ctx.memory
             .as_ref()
             .expect("memory handle")
-            .register(Arc::new(FakeMemoryProvider))
+            .register(Arc::new(FakeMemoryProvider::new("registered-memory")))
             .await?;
 
         Ok(PluginActivationResult {
@@ -2446,6 +2491,33 @@ impl Plugin for RegisteringPlugin {
             registered_skills: vec!["registered-skill".to_owned()],
             registered_mcp: vec![mcp_id],
             occupied_slots: vec![CapabilitySlot::MemoryProvider],
+        })
+    }
+
+    async fn deactivate(&self) -> Result<(), PluginError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Plugin for MemoryRegisteringPlugin {
+    fn manifest(&self) -> &PluginManifest {
+        &self.manifest
+    }
+
+    async fn activate(
+        &self,
+        ctx: PluginActivationContext,
+    ) -> Result<PluginActivationResult, PluginError> {
+        ctx.memory
+            .as_ref()
+            .expect("memory handle")
+            .register(Arc::new(FakeMemoryProvider::new(&self.provider_id)))
+            .await?;
+
+        Ok(PluginActivationResult {
+            occupied_slots: vec![CapabilitySlot::MemoryProvider],
+            ..PluginActivationResult::default()
         })
     }
 
@@ -2968,7 +3040,15 @@ impl HookHandler for TrustDeclaringHook {
     }
 }
 
-struct FakeMemoryProvider;
+struct FakeMemoryProvider {
+    id: String,
+}
+
+impl FakeMemoryProvider {
+    fn new(id: &str) -> Self {
+        Self { id: id.to_owned() }
+    }
+}
 
 #[derive(Default)]
 struct CapabilityMetrics {
@@ -2992,7 +3072,7 @@ impl PluginMetricsSink for CapabilityMetrics {
 #[async_trait]
 impl MemoryStore for FakeMemoryProvider {
     fn provider_id(&self) -> &str {
-        "registered-memory"
+        &self.id
     }
 
     async fn recall(&self, _query: MemoryQuery) -> Result<Vec<MemoryRecord>, MemoryError> {
@@ -3013,6 +3093,8 @@ impl MemoryStore for FakeMemoryProvider {
 }
 
 impl MemoryLifecycle for FakeMemoryProvider {}
+
+impl harness_memory::MemoryProvider for FakeMemoryProvider {}
 
 fn mcp_spec(id: &str) -> McpServerSpec {
     McpServerSpec::new(

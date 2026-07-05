@@ -14,7 +14,9 @@ import { MemoryBrowser } from './MemoryBrowser'
 const memoryItems: ListMemoryItemsResponse = {
   items: [
     {
+      contentHash: '0'.repeat(64),
       contentPreview: 'Prefers concise Chinese responses',
+      deleted: false,
       id: '01HZ0000000000000000000001',
       kind: 'user_preference',
       source: 'user_input',
@@ -23,7 +25,9 @@ const memoryItems: ListMemoryItemsResponse = {
       visibility: 'tenant',
     },
     {
+      contentHash: '1'.repeat(64),
       contentPreview: 'Project uses Tauri and React',
+      deleted: false,
       id: '01HZ0000000000000000000002',
       kind: 'project_fact',
       source: 'agent_derived',
@@ -62,10 +66,15 @@ describe('MemoryBrowser', () => {
     renderMemoryBrowser(
       createTestCommandClient({
         memoryExport: {
+          auditHash: '0'.repeat(64),
           exportedAt: '2026-06-17T00:00:00.000Z',
           format: 'json',
+          includeHashes: true,
+          includeMetadata: true,
+          includeRawContent: false,
           itemCount: 0,
           path: '.jyowo/runtime/exports/memory-empty.json',
+          scope: 'visible',
         },
         memoryItems: { items: [] },
       }),
@@ -89,7 +98,9 @@ describe('MemoryBrowser', () => {
             accessCount: 2,
             confidence: 0.9,
             content: 'Prefers concise Chinese responses',
+            contentHash: '0'.repeat(64),
             createdAt: '2026-06-17T00:00:00.000Z',
+            deleted: false,
             id: '01HZ0000000000000000000001',
             kind: 'user_preference',
             source: 'user_input',
@@ -120,7 +131,9 @@ describe('MemoryBrowser', () => {
   it('keeps long memory lists stable', async () => {
     const longList: ListMemoryItemsResponse = {
       items: Array.from({ length: 24 }, (_, index) => ({
+        contentHash: String(index).repeat(64).slice(0, 64).padEnd(64, '0'),
         contentPreview: `Memory item ${index + 1}`,
+        deleted: false,
         id: `01HZ00000000000000000000${String(index + 1).padStart(2, '0')}`,
         kind: 'reference',
         source: 'imported',
@@ -143,7 +156,9 @@ describe('MemoryBrowser', () => {
         accessCount: 0,
         confidence: 1,
         content: 'Prefers concise Chinese responses',
+        contentHash: '0'.repeat(64),
         createdAt: '2026-06-17T00:00:00.000Z',
+        deleted: false,
         id: '01HZ0000000000000000000001',
         kind: 'user_preference',
         source: 'user_input',
@@ -157,7 +172,9 @@ describe('MemoryBrowser', () => {
         accessCount: 0,
         confidence: 1,
         content: 'Prefers terse Chinese responses',
+        contentHash: '0'.repeat(64),
         createdAt: '2026-06-17T00:00:00.000Z',
+        deleted: false,
         id: '01HZ0000000000000000000001',
         kind: 'user_preference',
         source: 'user_input',
@@ -212,15 +229,24 @@ describe('MemoryBrowser', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm memory deletion' }))
 
-    await waitFor(() => expect(deleteMemoryItem).toHaveBeenCalledWith('01HZ0000000000000000000001'))
+    await waitFor(() =>
+      expect(deleteMemoryItem).toHaveBeenCalledWith({
+        id: '01HZ0000000000000000000001',
+      }),
+    )
   })
 
   it('exports visible memory items through the backend', async () => {
     const exportMemoryItems = vi.fn().mockResolvedValue({
+      auditHash: '1'.repeat(64),
       exportedAt: '2026-06-17T00:00:00.000Z',
       format: 'json',
+      includeHashes: true,
+      includeMetadata: true,
+      includeRawContent: false,
       itemCount: 2,
       path: '.jyowo/runtime/exports/memory-export.json',
+      scope: 'visible',
     })
     const client = {
       ...createTestCommandClient({ memoryItems }),
@@ -231,7 +257,16 @@ describe('MemoryBrowser', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Export memory items' }))
 
-    await waitFor(() => expect(exportMemoryItems).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(exportMemoryItems).toHaveBeenCalledWith({
+        explicitUserAction: true,
+        format: 'json',
+        includeHashes: true,
+        includeMetadata: true,
+        includeRawContent: false,
+        scope: 'visible',
+      }),
+    )
     expect(
       await screen.findByText(
         'Export saved: 2 memory items to .jyowo/runtime/exports/memory-export.json.',

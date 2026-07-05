@@ -6,8 +6,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BudgetKind, BudgetMetric, HookOutcomeDiscriminant, InconsistentReason, MemoryActor, MemoryId,
-    MemoryVisibility, TenantId, ThreatAction, ThreatCategory, ToolCapability,
+    BudgetKind, BudgetMetric, HookOutcomeDiscriminant, InconsistentReason, MemoryActorContext,
+    MemoryId, MemoryVisibility, TenantId, ThreatAction, ThreatCategory, ToolCapability,
 };
 
 pub type Result<T, E = HarnessError> = std::result::Result<T, E>;
@@ -99,7 +99,7 @@ pub enum MemoryError {
     ConcurrentWriteLockFailed { retries: u32 },
     #[error("visibility violation: {actor:?} cannot access {visibility:?}")]
     VisibilityViolation {
-        actor: MemoryActor,
+        actor: MemoryActorContext,
         visibility: MemoryVisibility,
     },
     #[error("unsupported memory kind: {0}")]

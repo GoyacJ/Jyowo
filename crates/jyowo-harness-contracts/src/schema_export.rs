@@ -753,5 +753,195 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "engine_failed", EngineFailedEvent);
     insert_schema!(schemas, "unexpected_error", UnexpectedErrorEvent);
 
+    insert_schema!(schemas, "memory_trace_id", MemoryTraceId);
+    insert_schema!(schemas, "memory_candidate_id", MemoryCandidateId);
+    insert_schema!(schemas, "memory_record", MemoryRecord);
+    insert_schema!(schemas, "memory_record_draft", MemoryRecordDraft);
+    insert_schema!(schemas, "memory_evidence", MemoryEvidence);
+    insert_schema!(schemas, "memory_evidence_origin", MemoryEvidenceOrigin);
+    insert_schema!(schemas, "memory_candidate", MemoryCandidate);
+    insert_schema!(
+        schemas,
+        "memory_candidate_operation",
+        MemoryCandidateOperation
+    );
+    insert_schema!(schemas, "memory_candidate_state", MemoryCandidateState);
+    insert_schema!(
+        schemas,
+        "memory_candidate_list_item",
+        MemoryCandidateListItem
+    );
+    insert_schema!(schemas, "memory_score_breakdown", MemoryScoreBreakdown);
+    insert_schema!(schemas, "memory_recall_trace", MemoryRecallTrace);
+    insert_schema!(
+        schemas,
+        "memory_recall_trace_summary",
+        MemoryRecallTraceSummary
+    );
+    insert_schema!(schemas, "memory_provider_trace", MemoryProviderTrace);
+    insert_schema!(schemas, "memory_candidate_trace", MemoryCandidateTrace);
+    insert_schema!(schemas, "memory_injected_trace", MemoryInjectedTrace);
+    insert_schema!(schemas, "memory_dropped_trace", MemoryDroppedTrace);
+    insert_schema!(schemas, "memory_drop_reason", MemoryDropReason);
+    insert_schema!(schemas, "memory_policy_decision", MemoryPolicyDecision);
+    insert_schema!(schemas, "memory_policy_deny_reason", MemoryPolicyDenyReason);
+    insert_schema!(schemas, "memory_global_settings", MemoryGlobalSettings);
+    insert_schema!(schemas, "memory_thread_settings", MemoryThreadSettings);
+    insert_schema!(schemas, "memory_thread_mode", MemoryThreadMode);
+    insert_schema!(schemas, "memory_actor", MemoryActor);
+    insert_schema!(schemas, "memory_provider_trust", MemoryProviderTrust);
+    insert_schema!(schemas, "memory_provider_kind", MemoryProviderKind);
+    insert_schema!(
+        schemas,
+        "memory_provider_durability",
+        MemoryProviderDurability
+    );
+    insert_schema!(schemas, "memory_visibility_class", MemoryVisibilityClass);
+    insert_schema!(
+        schemas,
+        "memory_provider_descriptor",
+        MemoryProviderDescriptor
+    );
+    insert_schema!(
+        schemas,
+        "memory_provider_selection_policy",
+        MemoryProviderSelectionPolicy
+    );
+    insert_schema!(schemas, "memory_tool_args", MemoryToolArgs);
+    insert_schema!(schemas, "memory_tool_action", MemoryToolAction);
+    insert_schema!(schemas, "memory_tool_request", MemoryToolRequest);
+    insert_schema!(schemas, "memory_tool_response", MemoryToolResponse);
+    insert_schema!(schemas, "memory_tool_state", MemoryToolState);
+    insert_schema!(schemas, "memory_tool_record_view", MemoryToolRecordView);
+    insert_schema!(schemas, "memory_tool_denial", MemoryToolDenial);
+    insert_schema!(schemas, "memory_redaction_summary", MemoryRedactionSummary);
+    insert_schema!(schemas, "memory_takes_effect", MemoryTakesEffect);
+    insert_schema!(
+        schemas,
+        "memory_permission_context",
+        MemoryPermissionContext
+    );
+    insert_schema!(schemas, "memory_metadata", MemoryMetadata);
+    insert_schema!(
+        schemas,
+        "get_memory_settings_request",
+        GetMemorySettingsRequest
+    );
+    insert_schema!(
+        schemas,
+        "get_memory_settings_response",
+        GetMemorySettingsResponse
+    );
+    insert_schema!(
+        schemas,
+        "update_memory_settings_request",
+        UpdateMemorySettingsRequest
+    );
+    insert_schema!(
+        schemas,
+        "update_memory_settings_response",
+        UpdateMemorySettingsResponse
+    );
+    insert_schema!(
+        schemas,
+        "get_thread_memory_settings_request",
+        GetThreadMemorySettingsRequest
+    );
+    insert_schema!(
+        schemas,
+        "get_thread_memory_settings_response",
+        GetThreadMemorySettingsResponse
+    );
+    insert_schema!(
+        schemas,
+        "update_thread_memory_settings_request",
+        UpdateThreadMemorySettingsRequest
+    );
+    insert_schema!(
+        schemas,
+        "update_thread_memory_settings_response",
+        UpdateThreadMemorySettingsResponse
+    );
+    insert_schema!(
+        schemas,
+        "list_memory_candidates_request",
+        ListMemoryCandidatesRequest
+    );
+    insert_schema!(
+        schemas,
+        "list_memory_candidates_response",
+        ListMemoryCandidatesResponse
+    );
+    insert_schema!(
+        schemas,
+        "approve_memory_candidate_request",
+        ApproveMemoryCandidateRequest
+    );
+    insert_schema!(
+        schemas,
+        "approve_memory_candidate_response",
+        ApproveMemoryCandidateResponse
+    );
+    insert_schema!(
+        schemas,
+        "reject_memory_candidate_request",
+        RejectMemoryCandidateRequest
+    );
+    insert_schema!(
+        schemas,
+        "reject_memory_candidate_response",
+        RejectMemoryCandidateResponse
+    );
+    insert_schema!(
+        schemas,
+        "merge_memory_candidate_request",
+        MergeMemoryCandidateRequest
+    );
+    insert_schema!(
+        schemas,
+        "merge_memory_candidate_response",
+        MergeMemoryCandidateResponse
+    );
+    insert_schema!(
+        schemas,
+        "list_memory_recall_traces_request",
+        ListMemoryRecallTracesRequest
+    );
+    insert_schema!(
+        schemas,
+        "list_memory_recall_traces_response",
+        ListMemoryRecallTracesResponse
+    );
+    insert_schema!(
+        schemas,
+        "get_memory_recall_trace_request",
+        GetMemoryRecallTraceRequest
+    );
+    insert_schema!(
+        schemas,
+        "get_memory_recall_trace_response",
+        GetMemoryRecallTraceResponse
+    );
+    insert_schema!(
+        schemas,
+        "get_model_request_preview_request",
+        GetModelRequestPreviewRequest
+    );
+    insert_schema!(
+        schemas,
+        "get_model_request_preview_response",
+        GetModelRequestPreviewResponse
+    );
+    insert_schema!(
+        schemas,
+        "memory_model_request_preview",
+        MemoryModelRequestPreview
+    );
+    insert_schema!(
+        schemas,
+        "memory_model_request_preview_section",
+        MemoryModelRequestPreviewSection
+    );
+
     schemas
 }

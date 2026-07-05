@@ -1,8 +1,8 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import type { PermissionMode } from '@/shared/tauri/commands'
+import type { MemoryThreadMode, PermissionMode } from '@/shared/tauri/commands'
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { pickAttachmentPath } from '@/shared/tauri/file-dialog'
 import { useCommandClient } from '@/shared/tauri/react'
@@ -40,6 +40,32 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
       return commandClient.getExecutionSettings({ workspacePath: timeline.workspacePath })
     },
     queryKey: ['conversation-execution-settings', workspaceKey],
+  })
+  const threadMemorySettingsQuery = useQuery({
+    enabled: Boolean(timeline.conversation?.id),
+    queryFn: () =>
+      commandClient.getThreadMemorySettings({
+        sessionId: timeline.conversation?.id ?? '',
+      }),
+    queryKey: ['conversation-thread-memory-settings', timeline.conversation?.id ?? 'none'],
+  })
+  const updateThreadMemorySettingsMutation = useMutation({
+    mutationFn: (memoryMode: MemoryThreadMode) =>
+      commandClient.updateThreadMemorySettings({
+        settings: {
+          generate_memories:
+            threadMemorySettingsQuery.data?.settings.generate_memories ?? undefined,
+          memory_mode: memoryMode,
+          session_id: timeline.conversation?.id ?? '',
+          use_memories: threadMemorySettingsQuery.data?.settings.use_memories ?? undefined,
+        },
+      }),
+    onSuccess: (response) => {
+      queryClient.setQueryData(
+        ['conversation-thread-memory-settings', response.settings.session_id],
+        response,
+      )
+    },
   })
   useEffect(() => {
     composerPermissionModeDirtyRef.current = false
@@ -113,6 +139,7 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
     }`,
   }))
   const executionSettings = executionSettingsQuery.data
+  const threadMemorySettings = threadMemorySettingsQuery.data?.settings
   const composerPermissionModeReady =
     Boolean(executionSettings) &&
     (composerPermissionModeDirtyRef.current ||
@@ -191,6 +218,13 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
           onPermissionModeChange={(nextMode) => {
             composerPermissionModeDirtyRef.current = true
             setComposerPermissionMode(nextMode)
+          }}
+          memoryMode={threadMemorySettings?.memory_mode}
+          memoryModeDisabled={
+            threadMemorySettingsQuery.isLoading || updateThreadMemorySettingsMutation.isPending
+          }
+          onMemoryModeChange={(nextMode) => {
+            updateThreadMemorySettingsMutation.mutate(nextMode)
           }}
           onPickAttachmentPath={pickAttachmentPath}
           onSubmit={submitMessage}

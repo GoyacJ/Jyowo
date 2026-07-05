@@ -1,4 +1,4 @@
-#![cfg(feature = "external-slot")]
+#![cfg(feature = "provider-registry")]
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use chrono::Utc;
 use harness_contracts::{
-    MemoryActor, MemoryError, MemoryId, MemoryKind, MemorySource, MemoryVisibility, SessionId,
-    TenantId,
+    MemoryActorContext, MemoryError, MemoryId, MemoryKind, MemorySource, MemoryVisibility,
+    SessionId, TenantId,
 };
 use harness_memory::{
     InMemoryMemoryProvider, MemoryKindFilter, MemoryListScope, MemoryManager, MemoryMetadata,
@@ -16,22 +16,34 @@ use harness_memory::{
 use tokio::sync::Barrier;
 
 #[test]
-fn memory_manager_accepts_only_one_external_provider() {
+fn memory_manager_registers_multiple_providers_through_registry() {
     let manager = MemoryManager::new();
 
     assert!(!manager.has_external());
     manager
-        .set_external(Arc::new(InMemoryMemoryProvider::new("first")))
+        .register_provider(Arc::new(InMemoryMemoryProvider::new("first")))
         .unwrap();
 
     assert!(manager.has_external());
-    assert_eq!(manager.external().unwrap().provider_id(), "first");
 
+    manager
+        .register_provider(Arc::new(InMemoryMemoryProvider::new("second")))
+        .unwrap();
+    let registry = manager.provider_registry().expect("registry");
+    let ids = registry
+        .providers()
+        .map(|provider| provider.provider_id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        ids,
+        BTreeSet::from(["first".to_owned(), "second".to_owned()])
+    );
+
+    // Duplicate ID is rejected
     let error = manager
-        .set_external(Arc::new(InMemoryMemoryProvider::new("second")))
+        .register_provider(Arc::new(InMemoryMemoryProvider::new("first")))
         .unwrap_err();
-    assert!(matches!(error, MemoryError::ExternalSlotOccupied));
-    assert_eq!(manager.external().unwrap().provider_id(), "first");
+    assert!(matches!(error, MemoryError::Message(_)));
 }
 
 #[tokio::test]
@@ -192,8 +204,8 @@ fn query(tenant_id: TenantId, session_id: SessionId, max_records: u32) -> Memory
     }
 }
 
-fn actor(tenant_id: TenantId, session_id: SessionId) -> MemoryActor {
-    MemoryActor {
+fn actor(tenant_id: TenantId, session_id: SessionId) -> MemoryActorContext {
+    MemoryActorContext {
         tenant_id,
         user_id: Some("user-1".to_owned()),
         team_id: None,
@@ -213,9 +225,11 @@ fn record(tenant_id: TenantId, visibility: MemoryVisibility, content: &str) -> M
             tags: Vec::new(),
             source: MemorySource::UserInput,
             confidence: 1.0,
+            evidence: None,
             access_count: 0,
             last_accessed_at: None,
             recall_score: 1.0,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },

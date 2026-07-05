@@ -782,6 +782,7 @@ fn orchestrator_ctx_with_interrupt(
             parent_run: None,
             model: None,
             model_config_id: None,
+            memory_thread_settings: None,
             actor_source: harness_contracts::PermissionActorSource::ParentRun,
         },
         blob_store: None,

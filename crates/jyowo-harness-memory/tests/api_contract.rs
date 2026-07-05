@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use harness_contracts::{
-    MemoryActor, MemoryError, MemoryId, MemoryKind, MemorySessionCtx, MemoryVisibility,
+    MemoryActorContext, MemoryError, MemoryId, MemoryKind, MemorySessionCtx, MemoryVisibility,
     MessageView, SessionId, TenantId,
 };
 use harness_memory::*;
@@ -33,6 +33,8 @@ impl MemoryStore for NoopMemory {
 }
 
 impl MemoryLifecycle for NoopMemory {}
+
+impl harness_memory::MemoryProvider for NoopMemory {}
 
 fn dyn_safe(_: &dyn MemoryStore, _: &dyn MemoryLifecycle, _: &dyn MemoryProvider) {}
 
@@ -82,8 +84,8 @@ fn query(session_id: Option<SessionId>) -> MemoryQuery {
     }
 }
 
-fn actor(session_id: Option<SessionId>) -> MemoryActor {
-    MemoryActor {
+fn actor(session_id: Option<SessionId>) -> MemoryActorContext {
+    MemoryActorContext {
         tenant_id: TenantId::SINGLE,
         user_id: Some("user-1".to_owned()),
         team_id: None,

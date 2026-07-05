@@ -3,7 +3,7 @@ use harness_contracts::{
     RunId, SessionId, TeamId, TenantId, TurnInput,
 };
 use harness_journal::InMemoryEventStore;
-use harness_memory::{MemoryMetadata, MemoryRecord, MemoryStore};
+use harness_memory::{MemoryMetadata, MemoryProvider, MemoryRecord, MemoryStore};
 use harness_team::{SharedMemory, TeamMemberEngineConfig, TeamMemberRunRequest};
 use std::sync::Arc;
 
@@ -60,6 +60,21 @@ async fn shared_memory_requires_runtime_context_for_public_writes() {
     assert_eq!(memory.provider_id(), "team-shared");
 }
 
+#[test]
+fn shared_memory_descriptor_uses_team_trust() {
+    let memory = SharedMemory::new(TeamId::new(), "team-shared");
+    let descriptor = memory.descriptor();
+
+    assert_eq!(
+        descriptor.provider_kind,
+        harness_contracts::MemoryProviderKind::Team
+    );
+    assert_eq!(
+        descriptor.trust_level,
+        harness_contracts::MemoryProviderTrust::Team
+    );
+}
+
 fn record(team_id: TeamId, tenant_id: TenantId) -> MemoryRecord {
     let now = chrono::Utc::now();
     MemoryRecord {
@@ -72,9 +87,11 @@ fn record(team_id: TeamId, tenant_id: TenantId) -> MemoryRecord {
             tags: Vec::new(),
             source: harness_contracts::MemorySource::AgentDerived,
             confidence: 1.0,
+            evidence: None,
             access_count: 0,
             last_accessed_at: None,
             recall_score: 1.0,
+            recall_score_breakdown: None,
             ttl: None,
             redacted_segments: 0,
         },

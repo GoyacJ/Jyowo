@@ -36,11 +36,12 @@ async fn engine_calls_memory_lifecycle_at_turn_start() {
     let run_id = harness_contracts::RunId::new();
     let provider = Arc::new(RecordingMemoryProvider::default());
     let manager = MemoryManager::new();
-    manager.set_external(provider.clone()).unwrap();
+    manager.register_provider(provider.clone()).unwrap();
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
     let engine = Engine::builder()
         .with_engine_id(EngineId::new("memory-lifecycle-test"))
-        .with_event_store(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_event_store(store.clone())
         .with_context(
             ContextEngine::builder()
                 .with_memory_manager(Arc::new(manager))
@@ -150,6 +151,8 @@ impl MemoryLifecycle for RecordingMemoryProvider {
         Ok(())
     }
 }
+
+impl harness_memory::MemoryProvider for RecordingMemoryProvider {}
 
 struct StopModel;
 

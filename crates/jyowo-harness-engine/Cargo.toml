@@ -20,7 +20,8 @@ parallel-tools = []
 steering = ["jyowo-harness-session/steering"]
 recall-memory = [
     "jyowo-harness-context/recall-memory",
-    "jyowo-harness-memory/external-slot",
+    "jyowo-harness-memory/provider-registry",
+    "jyowo-harness-session/recall-memory",
 ]
 programmatic-tool-calling = [
     "jyowo-harness-sandbox/code-runtime",

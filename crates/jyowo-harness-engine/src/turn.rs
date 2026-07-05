@@ -6,19 +6,22 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use futures::{stream, StreamExt};
 use harness_context::{ContextSessionView, TokenBudget};
+#[cfg(feature = "recall-memory")]
+use harness_contracts::MemoryThreadSettings;
 use harness_contracts::{
     ArtifactCreatedEvent, ArtifactRevisionId, ArtifactSource, ArtifactStatus,
-    AssistantMessageCompletedEvent, BlobRef, BudgetKind, CausationId, ContextPatchLifecycle,
-    ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource, ConversationAttachmentReference,
-    CorrelationId, DenyReason, EndReason, Event, EventId, FallbackPolicy, HookContextPatchEvent,
-    HookEventKind, HookFailedEvent, HookOutcomeInconsistentEvent, HookOutcomeSummary,
-    HookReturnedUnsupportedEvent, HookRewroteInputEvent, HookTriggeredEvent, Message,
-    MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole, ModelError, ModelRef,
-    PermissionMode, PricingSnapshotId, RedactRules, Redactor, RequestId, RunEndedEvent, RunId,
-    RunModelSnapshot, RunStartedEvent, SessionId, TeamId, TenantId, ToolDescriptor, ToolError,
-    ToolErrorPayload, ToolResult, ToolResultPart, ToolUseCompletedEvent, ToolUseDeniedEvent,
-    ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, TrustLevel, TurnInput,
-    UsageAccumulatedEvent, UsageSnapshot,
+    AssistantMessageCompletedEvent, BlobRef, BudgetKind, CausationId, ContentHash,
+    ContextPatchLifecycle, ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource,
+    ConversationAttachmentReference, CorrelationId, DenyReason, EndReason, Event, EventId,
+    FallbackPolicy, HookContextPatchEvent, HookEventKind, HookFailedEvent,
+    HookOutcomeInconsistentEvent, HookOutcomeSummary, HookReturnedUnsupportedEvent,
+    HookRewroteInputEvent, HookTriggeredEvent, MemoryId, MemoryModelRequestPreview,
+    MemoryModelRequestPreviewSection, MemorySource, MemoryTraceId, Message, MessageContent,
+    MessageId, MessageMetadata, MessagePart, MessageRole, ModelError, ModelRef, PermissionMode,
+    PricingSnapshotId, RedactRules, Redactor, RequestId, RunEndedEvent, RunId, RunModelSnapshot,
+    RunStartedEvent, SessionId, TeamId, TenantId, ToolDescriptor, ToolError, ToolErrorPayload,
+    ToolResult, ToolResultPart, ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent,
+    ToolUseId, ToolUseRequestedEvent, TrustLevel, TurnInput, UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_execution::{AuthorizationContext, ExecutionError};
 use harness_hook::{
@@ -197,6 +200,8 @@ pub(crate) async fn run_turn(
             session_id: session.session_id,
             user_id: ctx.user_id.clone(),
             team_id: ctx.team_id,
+            #[cfg(feature = "recall-memory")]
+            memory_thread_settings: ctx.memory_thread_settings.clone(),
             system: engine.system_prompt.clone(),
             messages: working_messages.clone(),
             tools: prompt_visible_tools_for_model(engine),
@@ -303,7 +308,6 @@ pub(crate) async fn run_turn(
             )
             .await?;
         }
-
         if append_interrupt_if_cancelled(engine, &session, &mut emitted, &ctx, usage.clone())
             .await?
         {
@@ -314,6 +318,17 @@ pub(crate) async fn run_turn(
             finalize_run_error(engine, &session, &mut emitted, ctx.run_id, &error).await?;
             return Err(engine_error(error));
         }
+
+        record_model_request_preview(
+            engine,
+            session.tenant_id,
+            session.session_id,
+            ctx.run_id,
+            &request,
+            final_model_request_token_estimate(&request),
+            latest_memory_trace_id(&assembled.events),
+        )
+        .await;
 
         append_user_message_if_needed(
             engine,
@@ -805,6 +820,7 @@ pub(crate) async fn run_turn(
                         tenant_id: session.tenant_id,
                         model: ctx.model.clone(),
                         model_config_id: ctx.model_config_id.clone(),
+                        memory_thread_settings: run_context_memory_thread_settings(&ctx),
                         correlation_id,
                         agent_id: harness_contracts::AgentId::from_u128(1),
                         subagent_depth: ctx.subagent_depth,
@@ -950,6 +966,8 @@ pub(crate) async fn run_turn(
             session_id: session.session_id,
             user_id: ctx.user_id.clone(),
             team_id: ctx.team_id,
+            #[cfg(feature = "recall-memory")]
+            memory_thread_settings: ctx.memory_thread_settings.clone(),
             system: engine.system_prompt.clone(),
             messages: context_messages,
             tools: prompt_visible_tools_for_model(engine),
@@ -1355,6 +1373,7 @@ async fn authorize_tool_calls(
                 tenant_id: session.tenant_id,
                 model: ctx.model.clone(),
                 model_config_id: ctx.model_config_id.clone(),
+                memory_thread_settings: run_context_memory_thread_settings(ctx),
                 correlation_id,
                 agent_id: harness_contracts::AgentId::from_u128(1),
                 subagent_depth: ctx.subagent_depth,
@@ -1890,6 +1909,20 @@ fn prompt_visible_tools_for_model(engine: &Engine) -> Vec<ToolDescriptor> {
     prompt_visible_tools(&engine.tools)
 }
 
+fn run_context_memory_thread_settings(
+    ctx: &RunContext,
+) -> Option<harness_contracts::MemoryThreadSettings> {
+    #[cfg(feature = "recall-memory")]
+    {
+        ctx.memory_thread_settings.clone()
+    }
+    #[cfg(not(feature = "recall-memory"))]
+    {
+        let _ = ctx;
+        None
+    }
+}
+
 fn model_request_tools(
     engine: &Engine,
     tools_snapshot: Vec<ToolDescriptor>,
@@ -2091,6 +2124,8 @@ struct TurnContextView {
     session_id: harness_contracts::SessionId,
     user_id: Option<String>,
     team_id: Option<TeamId>,
+    #[cfg(feature = "recall-memory")]
+    memory_thread_settings: Option<MemoryThreadSettings>,
     system: Option<String>,
     messages: Vec<Message>,
     tools: Vec<ToolDescriptor>,
@@ -2123,6 +2158,11 @@ impl ContextSessionView for TurnContextView {
 
     fn tools_snapshot(&self) -> Vec<ToolDescriptor> {
         self.tools.clone()
+    }
+
+    #[cfg(feature = "recall-memory")]
+    fn memory_thread_settings(&self) -> Option<MemoryThreadSettings> {
+        self.memory_thread_settings.clone()
     }
 }
 
@@ -2584,6 +2624,187 @@ fn message_text(message: &Message) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn final_model_request_token_estimate(request: &ModelRequest) -> u64 {
+    let mut chars = request.system.as_deref().map(str::len).unwrap_or_default();
+    for message in &request.messages {
+        for part in &message.parts {
+            chars += match part {
+                MessagePart::Text(text) => text.len(),
+                MessagePart::Image { .. } => 512,
+                MessagePart::Video { .. } | MessagePart::File { .. } => 0,
+                MessagePart::ToolUse { input, .. } => input.to_string().len(),
+                MessagePart::ToolResult { content, .. } => format!("{content:?}").len(),
+                MessagePart::Thinking(thinking) => {
+                    thinking.text.as_deref().map(str::len).unwrap_or(0)
+                }
+                _ => 0,
+            };
+        }
+    }
+    std::cmp::max(1, chars.div_ceil(4) as u64)
+}
+
+async fn record_model_request_preview(
+    engine: &Engine,
+    _tenant_id: TenantId,
+    session_id: SessionId,
+    run_id: RunId,
+    request: &ModelRequest,
+    token_estimate: u64,
+    trace_id: Option<MemoryTraceId>,
+) {
+    let Some(sink) = &engine.model_request_preview_sink else {
+        return;
+    };
+    let preview =
+        model_request_preview_from_request(session_id, run_id, request, token_estimate, trace_id);
+    let _ = sink.record_model_request_preview(preview).await;
+}
+
+fn model_request_preview_from_request(
+    session_id: SessionId,
+    run_id: RunId,
+    request: &ModelRequest,
+    token_estimate: u64,
+    trace_id: Option<MemoryTraceId>,
+) -> MemoryModelRequestPreview {
+    let mut sections = Vec::new();
+    if let Some(system) = request.system.as_deref() {
+        sections.push(MemoryModelRequestPreviewSection {
+            source: MemorySource::Imported,
+            provider_id: None,
+            memory_ids: Vec::new(),
+            redacted_content: format!("[redacted system section: chars={}]", system.len()),
+        });
+    }
+    for message in &request.messages {
+        let text = message_text(message);
+        if text.contains("<memory-context>") {
+            let memory_references = memory_references_from_memory_context(&text);
+            let provider_id = memory_context_provider_id(&memory_references);
+            sections.push(MemoryModelRequestPreviewSection {
+                source: MemorySource::ExternalRetrieval,
+                provider_id,
+                memory_ids: memory_references
+                    .iter()
+                    .map(|reference| reference.memory_id)
+                    .collect(),
+                redacted_content: format!(
+                    "[redacted memory context message: role={:?}, chars={}]",
+                    message.role,
+                    text.len()
+                ),
+            });
+        }
+    }
+    let mut tool_names = request
+        .tools
+        .as_ref()
+        .map(|tools| {
+            tools
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    tool_names.sort();
+    tool_names.dedup();
+    let redacted_count = sections.len() as u32;
+    let content_hash = model_request_preview_hash(&sections, &tool_names, token_estimate);
+    MemoryModelRequestPreview {
+        session_id,
+        run_id,
+        trace_id,
+        sections,
+        redacted_count,
+        token_estimate,
+        tool_names,
+        policy_decisions: Vec::new(),
+        content_hash,
+    }
+}
+
+fn latest_memory_trace_id(events: &[Event]) -> Option<MemoryTraceId> {
+    events.iter().rev().find_map(|event| match event {
+        Event::MemoryRecalled(event) => event.trace_id,
+        _ => None,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct MemoryContextReference {
+    memory_id: MemoryId,
+    provider_id: Option<String>,
+}
+
+fn memory_references_from_memory_context(text: &str) -> Vec<MemoryContextReference> {
+    let mut references = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("## [reference|memory|") else {
+            continue;
+        };
+        let Some(header) = rest.strip_suffix(']') else {
+            continue;
+        };
+        let parts = header.split('|').collect::<Vec<_>>();
+        let Some(id_text) = parts.first().copied() else {
+            continue;
+        };
+        if let Ok(id) = MemoryId::parse(id_text) {
+            let provider_id = (parts.get(1) == Some(&"provider"))
+                .then(|| parts.get(2).map(|value| (*value).to_owned()))
+                .flatten()
+                .filter(|value| !value.is_empty());
+            references.push(MemoryContextReference {
+                memory_id: id,
+                provider_id,
+            });
+        }
+    }
+    references.sort_by_key(|reference| reference.memory_id.to_string());
+    references.dedup_by_key(|reference| reference.memory_id);
+    references
+}
+
+fn memory_context_provider_id(references: &[MemoryContextReference]) -> Option<String> {
+    let mut provider_ids = references
+        .iter()
+        .filter_map(|reference| reference.provider_id.as_deref())
+        .collect::<Vec<_>>();
+    provider_ids.sort_unstable();
+    provider_ids.dedup();
+    match provider_ids.as_slice() {
+        [provider_id] => Some((*provider_id).to_owned()),
+        _ => None,
+    }
+}
+
+fn model_request_preview_hash(
+    sections: &[MemoryModelRequestPreviewSection],
+    tool_names: &[String],
+    token_estimate: u64,
+) -> ContentHash {
+    let mut hasher = blake3::Hasher::new();
+    for section in sections {
+        hasher.update(format!("{:?}", section.source).as_bytes());
+        if let Some(provider_id) = &section.provider_id {
+            hasher.update(provider_id.as_bytes());
+        }
+        for memory_id in &section.memory_ids {
+            hasher.update(memory_id.to_string().as_bytes());
+        }
+        hasher.update(section.redacted_content.as_bytes());
+    }
+    for tool_name in tool_names {
+        hasher.update(tool_name.as_bytes());
+    }
+    hasher.update(&token_estimate.to_be_bytes());
+    let hash = hasher.finalize();
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(hash.as_bytes());
+    ContentHash(bytes)
 }
 
 fn next_turn_index(messages: &[Message]) -> u32 {

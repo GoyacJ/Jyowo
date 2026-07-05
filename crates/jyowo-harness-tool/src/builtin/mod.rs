@@ -14,6 +14,8 @@ mod glob;
 mod grep;
 #[cfg(feature = "builtin-toolset")]
 mod list_dir;
+#[cfg(feature = "builtin-toolset")]
+mod memory;
 #[cfg(feature = "minimax-tools")]
 mod minimax;
 #[cfg(feature = "builtin-toolset")]
@@ -56,6 +58,12 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 #[cfg(feature = "builtin-toolset")]
 pub use list_dir::ListDirTool;
+#[cfg(feature = "builtin-toolset")]
+pub use memory::{
+    memory_tool_runtime_capability, MemoryTool, MemoryToolDraft, MemoryToolRuntimeAction,
+    MemoryToolRuntimeCap, MemoryToolRuntimeRequest, MemoryToolVisibility,
+    MEMORY_TOOL_RUNTIME_CAPABILITY,
+};
 #[cfg(feature = "minimax-tools")]
 pub use minimax::{
     MiniMaxAnthropicCountTokensTool, MiniMaxAnthropicMessagesTool,

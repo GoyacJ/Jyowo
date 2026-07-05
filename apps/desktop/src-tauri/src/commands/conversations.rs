@@ -543,12 +543,17 @@ fn safe_background_context_reference(
                 label: safe_redacted_string(label, redactor),
             }
         }
-        ConversationContextReference::Memory { id, label } => {
-            ConversationContextReference::Memory {
-                id: safe_redacted_string(id, redactor),
-                label: safe_redacted_string(label, redactor),
-            }
-        }
+        ConversationContextReference::Memory {
+            id,
+            label,
+            resolved_content,
+        } => ConversationContextReference::Memory {
+            id: safe_redacted_string(id, redactor),
+            label: safe_redacted_string(label, redactor),
+            resolved_content: resolved_content
+                .as_ref()
+                .map(|content| safe_redacted_string(content, redactor)),
+        },
         ConversationContextReference::Skill { id, label } => ConversationContextReference::Skill {
             id: safe_redacted_string(id, redactor),
             label: safe_redacted_string(label, redactor),

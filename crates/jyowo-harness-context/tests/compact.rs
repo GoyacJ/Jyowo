@@ -444,7 +444,7 @@ async fn emergency_compact_prompt_adds_pre_compress_memory_facts_to_compact_inpu
     )]));
     let manager = MemoryManager::new();
     manager
-        .set_external(Arc::new(PreCompressProvider {
+        .register_provider(Arc::new(PreCompressProvider {
             facts: "provider fact before compact".to_owned(),
         }))
         .unwrap();
@@ -591,6 +591,9 @@ impl MemoryLifecycle for PreCompressProvider {
         Ok(Some(self.facts.clone()))
     }
 }
+
+#[cfg(feature = "recall-memory")]
+impl harness_memory::MemoryProvider for PreCompressProvider {}
 
 impl RecordingAuxProvider {
     fn with_responses(responses: Vec<Result<String, ModelError>>) -> Self {

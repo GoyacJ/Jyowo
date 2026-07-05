@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+#[cfg(feature = "recall-memory")]
+use harness_contracts::MemoryThreadSettings;
 use harness_contracts::{
     ConfigHash, ContextPatchRequest, ContextPatchSinkCap, ConversationAttachmentReference,
     DeferredToolsDeltaAttachment, EndReason, Event, InteractivityLevel, Message, MessageId,
@@ -43,6 +45,8 @@ pub struct SessionTurnContext {
     pub interactivity: InteractivityLevel,
     pub pending_deferred_tools_delta: Option<DeferredToolsDeltaAttachment>,
     pub context_seed: Vec<Message>,
+    #[cfg(feature = "recall-memory")]
+    pub memory_thread_settings: Option<MemoryThreadSettings>,
     pub model: Option<RunModelSnapshot>,
     pub model_config_id: Option<String>,
     #[cfg(feature = "steering")]
@@ -117,6 +121,9 @@ pub struct SessionOptions {
     pub max_iterations: u32,
     #[serde(default = "default_context_compression_trigger_ratio")]
     pub context_compression_trigger_ratio: f32,
+    #[cfg(feature = "recall-memory")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_thread_settings: Option<MemoryThreadSettings>,
 }
 
 impl SessionOptions {
@@ -139,6 +146,8 @@ impl SessionOptions {
             system_prompt_addendum: None,
             max_iterations: 0,
             context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
+            #[cfg(feature = "recall-memory")]
+            memory_thread_settings: None,
         }
     }
 
@@ -529,6 +538,8 @@ impl Session {
                 interactivity: self.options.interactivity,
                 pending_deferred_tools_delta,
                 context_seed: projection.messages.clone(),
+                #[cfg(feature = "recall-memory")]
+                memory_thread_settings: self.options.memory_thread_settings.clone(),
                 user_id: self.options.user_id.clone(),
                 team_id: self.options.team_id,
                 model: self.turn_model_snapshot.clone(),

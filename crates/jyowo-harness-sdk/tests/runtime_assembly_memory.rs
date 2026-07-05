@@ -479,62 +479,6 @@ fn default_session_end_passes_identity_and_real_summary_to_memory_provider() {
 }
 
 #[test]
-#[cfg(feature = "memory-consolidation")]
-fn default_session_runs_memory_consolidation_hook_on_session_end() {
-    tokio_runtime().block_on(async {
-        let workspace = unique_workspace("sdk-memory-consolidation");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let session_id = SessionId::new();
-        let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
-        let tracer = Arc::new(RecordingAnyTracer::default());
-        let observer = Arc::new(
-            Observer::builder()
-                .with_tracer(tracer.clone())
-                .build()
-                .expect("observer should build"),
-        );
-        let hook = Arc::new(RecordingConsolidationHook::default());
-
-        let harness = Harness::builder()
-            .with_model(
-                TestModelProvider::default().with_events(vec![ModelStreamEvent::MessageStop]),
-            )
-            .with_store_arc(store.clone())
-            .with_sandbox(NoopSandbox::new())
-            .with_memory_consolidation_hook_arc(hook.clone())
-            .with_observer(observer)
-            .build()
-            .await
-            .expect("harness should build");
-
-        let session = harness
-            .create_session(SessionOptions::new(&workspace).with_session_id(session_id))
-            .await
-            .expect("session should be created");
-        session.run_turn("consolidate").await.unwrap();
-        session.end(EndReason::Completed).await.unwrap();
-
-        assert_eq!(hook.calls.load(Ordering::SeqCst), 1);
-        let events: Vec<_> = store
-            .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
-            .await
-            .expect("events should be readable")
-            .collect()
-            .await;
-        assert!(events.iter().any(|event| matches!(
-            event,
-            Event::MemoryConsolidationRan(ran)
-                if ran.hook_id == "sdk-consolidation"
-                    && ran.promoted == vec![hook.promoted]
-        )));
-        assert!(tracer
-            .spans()
-            .iter()
-            .any(|span| span.name == "memory.consolidation.ran"));
-    });
-}
-
-#[test]
 fn default_session_records_external_memory_metrics_to_observer() {
     tokio_runtime().block_on(async {
         let workspace = unique_workspace("sdk-memory-observer-external");
@@ -581,18 +525,20 @@ fn default_session_records_external_memory_metrics_to_observer() {
             .any(|span| span.name == "memory.external.configured"));
         let recall = spans
             .iter()
-            .find(|span| span.name == "memory.recall")
-            .expect("recall metric should be recorded");
-        assert_eq!(
-            string_attr(&recall.attrs, "provider_id"),
-            Some("memory-observer")
-        );
+            .find(|span| {
+                span.name == "memory.recall"
+                    && string_attr(&span.attrs, "provider_id") == Some("memory-observer")
+            })
+            .expect("external provider recall metric should be recorded");
         assert_eq!(string_attr(&recall.attrs, "outcome"), Some("recalled"));
         assert_eq!(int_attr(&recall.attrs, "returned_count"), Some(1));
         let hit_rate = spans
             .iter()
-            .find(|span| span.name == "memory.recall.hit_rate")
-            .expect("recall hit-rate metric should be recorded");
+            .find(|span| {
+                span.name == "memory.recall.hit_rate"
+                    && string_attr(&span.attrs, "provider_id") == Some("memory-observer")
+            })
+            .expect("external provider recall hit-rate metric should be recorded");
         assert_eq!(bool_attr(&hit_rate.attrs, "hit"), Some(true));
     });
 }
