@@ -2,6 +2,7 @@ pub mod agent_supervisor;
 pub mod commands;
 pub mod project_registry;
 pub mod skill_catalog;
+pub mod storage_layout;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
