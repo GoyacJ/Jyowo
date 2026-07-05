@@ -491,6 +491,12 @@ pub enum ProcessStepDetail {
     Artifact {
         #[serde(rename = "artifactId")]
         artifact_id: String,
+        #[serde(
+            rename = "revisionId",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        revision_id: Option<String>,
         media: ArtifactMediaPreview,
     },
 }

@@ -905,6 +905,7 @@ const processStepDetailSchema = z.discriminatedUnion('type', [
     .object({
       type: z.literal('artifact'),
       artifactId: z.string().min(1),
+      revisionId: z.string().min(1).optional(),
       media: artifactMediaPreviewSchema,
     })
     .strict(),
@@ -1383,7 +1384,12 @@ const artifactListRevisionSchema = z
   .object({
     revisionId: z.string().min(1),
     contentRef: evidenceRefIdSchema.optional(),
+    kind: artifactDisplayTextSchema.min(1).optional(),
+    media: artifactMediaPreviewSchema.optional(),
     previewRef: evidenceRefIdSchema.optional(),
+    status: artifactStatusSchema.optional(),
+    summary: artifactDisplayTextSchema.optional(),
+    title: artifactDisplayTextSchema.min(1).optional(),
     updatedAt: z.string().datetime({ offset: true }),
   })
   .strict()
@@ -1418,6 +1424,7 @@ const getArtifactMediaPreviewRequestSchema = z
   .object({
     conversationId: z.string().min(1),
     artifactId: z.string().min(1),
+    revisionId: z.string().min(1).optional(),
   })
   .strict()
 
@@ -3442,6 +3449,7 @@ export type ProcessSegment = z.infer<typeof processSegmentSchema>
 export type ProcessStep = z.infer<typeof processStepSchema>
 export type ArtifactRevisionSummary = z.infer<typeof artifactRevisionSummarySchema>
 export type ArtifactSegment = z.infer<typeof artifactSegmentSchema>
+export type ArtifactListRevision = z.infer<typeof artifactListRevisionSchema>
 export type ChangeSetFile = z.infer<typeof changeSetFileSchema>
 export type ChangeSet = z.infer<typeof changeSetSchema>
 export type ReviewRequestSegment = z.infer<typeof reviewRequestSegmentSchema>

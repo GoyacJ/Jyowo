@@ -16,12 +16,12 @@ const artifactPreviewProps = vi.hoisted(
 )
 const validEvidenceContentHash = 'c'.repeat(64)
 
-vi.mock('./ArtifactPreview', async (importOriginal) => {
-  const original = await importOriginal<typeof import('./ArtifactPreview')>()
+vi.mock('@/shared/artifacts/ArtifactPreview', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@/shared/artifacts/ArtifactPreview')>()
 
   return {
     ...original,
-    ArtifactPreview: (props: import('./ArtifactPreview').ArtifactPreviewProps) => {
+    ArtifactPreview: (props: import('@/shared/artifacts/ArtifactPreview').ArtifactPreviewProps) => {
       artifactPreviewProps.push({
         content: props.content,
         imageDataUrl: props.imageDataUrl,
@@ -257,6 +257,7 @@ describe('ArtifactsPage', () => {
     expect(getArtifactMediaPreview).toHaveBeenCalledWith({
       artifactId: 'artifact-image',
       conversationId: 'conversation-001',
+      revisionId: 'revision-image',
     })
     expect(image).toHaveAttribute('src', expect.stringMatching(/^data:image\/png;base64,/))
     expect(artifactPreviewProps.at(-1)).toMatchObject({

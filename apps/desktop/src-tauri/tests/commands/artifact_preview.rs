@@ -69,6 +69,7 @@ async fn get_artifact_media_preview_with_runtime_state_returns_owned_image_data_
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-image".to_owned(),
+            revision_id: None,
         },
         &state,
     )
@@ -80,6 +81,147 @@ async fn get_artifact_media_preview_with_runtime_state_returns_owned_image_data_
     assert!(payload.data_url.starts_with("data:image/png;base64,"));
     assert!(!payload.data_url.contains(".jyowo"));
     assert!(!payload.data_url.contains("artifact-image"));
+}
+
+#[tokio::test]
+async fn get_artifact_media_preview_with_runtime_state_reads_selected_revision_blob() {
+    let state = runtime_state_with_harness().await;
+    let session_id = state.default_conversation_id();
+    open_conversation_session(&state, session_id).await;
+    let run_id = RunId::new();
+    let old_revision_id = ArtifactRevisionId::new();
+    let new_revision_id = ArtifactRevisionId::new();
+    let old_image_bytes = minimal_png();
+    let new_image_bytes = supported_preview_image_with_metadata("image/jpeg", &[]);
+    let old_image_size = old_image_bytes.len() as u64;
+    let new_image_size = new_image_bytes.len() as u64;
+    let old_hash = *blake3::hash(&old_image_bytes).as_bytes();
+    let new_hash = *blake3::hash(&new_image_bytes).as_bytes();
+    let old_revision_at = now();
+    let new_revision_at = old_revision_at;
+    let blob_store = FileBlobStore::open(
+        state
+            .workspace_root()
+            .join(".jyowo")
+            .join("runtime")
+            .join("blobs"),
+    )
+    .expect("blob store opens");
+    let old_blob_ref = blob_store
+        .put(
+            TenantId::SINGLE,
+            bytes::Bytes::from(old_image_bytes),
+            BlobMeta {
+                content_type: Some("image/png".to_owned()),
+                size: old_image_size,
+                content_hash: old_hash,
+                created_at: now(),
+                retention: BlobRetention::SessionScoped(session_id),
+            },
+        )
+        .await
+        .expect("old image blob writes");
+    let new_blob_ref = blob_store
+        .put(
+            TenantId::SINGLE,
+            bytes::Bytes::from(new_image_bytes),
+            BlobMeta {
+                content_type: Some("image/jpeg".to_owned()),
+                size: new_image_size,
+                content_hash: new_hash,
+                created_at: now(),
+                retention: BlobRetention::SessionScoped(session_id),
+            },
+        )
+        .await
+        .expect("new image blob writes");
+
+    state
+        .harness()
+        .expect("runtime harness should exist")
+        .event_store()
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                Event::ArtifactCreated(ArtifactCreatedEvent {
+                    revision_id: old_revision_id,
+                    artifact_id: "artifact-image-revisions".to_owned(),
+                    at: old_revision_at,
+                    blob_ref: Some(old_blob_ref),
+                    content_hash: Some(old_hash.to_vec()),
+                    kind: "image".to_owned(),
+                    preview: Some("old image".to_owned()),
+                    run_id,
+                    session_id,
+                    source: ArtifactSource::Tool,
+                    source_message_id: None,
+                    source_tool_use_id: Some(ToolUseId::new()),
+                    status: ArtifactStatus::Ready,
+                    title: "old image".to_owned(),
+                }),
+                Event::ArtifactUpdated(ArtifactUpdatedEvent {
+                    revision_id: new_revision_id,
+                    artifact_id: "artifact-image-revisions".to_owned(),
+                    at: new_revision_at,
+                    blob_ref: Some(new_blob_ref),
+                    content_hash: Some(new_hash.to_vec()),
+                    kind: Some("image".to_owned()),
+                    preview: Some("new image".to_owned()),
+                    run_id,
+                    session_id,
+                    source: ArtifactSource::Tool,
+                    source_message_id: None,
+                    source_tool_use_id: Some(ToolUseId::new()),
+                    status: Some(ArtifactStatus::Ready),
+                    title: Some("new image".to_owned()),
+                }),
+            ],
+        )
+        .await
+        .expect("artifact revision events should append");
+
+    let payload = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-image-revisions".to_owned(),
+            revision_id: Some(old_revision_id.to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("old revision image preview should load");
+
+    assert_eq!(payload.mime_type, "image/png");
+    assert!(payload.data_url.starts_with("data:image/png;base64,"));
+
+    let new_payload = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-image-revisions".to_owned(),
+            revision_id: Some(new_revision_id.to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("new revision image preview should load");
+
+    assert_ne!(new_payload.data_url, payload.data_url);
+    assert_ne!(new_payload.size_bytes, payload.size_bytes);
+
+    let latest_payload = get_artifact_media_preview_with_runtime_state(
+        GetArtifactMediaPreviewRequest {
+            conversation_id: session_id.to_string(),
+            artifact_id: "artifact-image-revisions".to_owned(),
+            revision_id: None,
+        },
+        &state,
+    )
+    .await
+    .expect("latest revision image preview should load when revision is omitted");
+
+    assert_eq!(latest_payload.data_url, new_payload.data_url);
+    assert_eq!(latest_payload.size_bytes, new_payload.size_bytes);
 }
 
 #[tokio::test]
@@ -101,6 +243,7 @@ async fn get_artifact_media_preview_with_runtime_state_accepts_image_mime_artifa
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-image-mime-kind".to_owned(),
+            revision_id: None,
         },
         &state,
     )
@@ -134,6 +277,7 @@ async fn get_artifact_media_preview_with_runtime_state_falls_back_to_detected_im
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-image-unsafe-mime".to_owned(),
+            revision_id: None,
         },
         &state,
     )
@@ -165,6 +309,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_safe_non_image_mi
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-image-text-mime".to_owned(),
+            revision_id: None,
         },
         &state,
     )
@@ -240,6 +385,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_cross_session_blo
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-image".to_owned(),
+            revision_id: None,
         },
         &state,
     )
@@ -259,6 +405,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_missing_artifact(
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "missing-artifact".to_owned(),
+            revision_id: None,
         },
         &state,
     )
@@ -287,6 +434,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_not_ready_artifac
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-running".to_owned(),
+            revision_id: None,
         },
         &state,
     )
@@ -316,6 +464,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_non_image_artifac
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-file".to_owned(),
+            revision_id: None,
         },
         &state,
     )
@@ -349,6 +498,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_svg_image_blob() 
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-svg".to_owned(),
+            revision_id: None,
         },
         &state,
     )
@@ -384,6 +534,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_mislabeled_image_
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-mislabeled".to_owned(),
+            revision_id: None,
         },
         &state,
     )
@@ -415,6 +566,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_too_large_image_b
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-large".to_owned(),
+            revision_id: None,
         },
         &state,
     )
@@ -451,6 +603,7 @@ async fn get_artifact_media_preview_with_runtime_state_strips_png_text_metadata(
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-png-metadata".to_owned(),
+            revision_id: None,
         },
         &state,
     )
@@ -489,6 +642,7 @@ async fn get_artifact_media_preview_with_runtime_state_strips_jpeg_exif_metadata
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-jpeg-metadata".to_owned(),
+            revision_id: None,
         },
         &state,
     )
@@ -527,6 +681,7 @@ async fn get_artifact_media_preview_with_runtime_state_strips_gif_comment_metada
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-gif-metadata".to_owned(),
+            revision_id: None,
         },
         &state,
     )

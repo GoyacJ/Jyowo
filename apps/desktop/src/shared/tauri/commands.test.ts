@@ -1959,6 +1959,7 @@ describe('CommandClient', () => {
         {
           conversationId: 'conversation-001',
           artifactId: 'artifact-image-001',
+          revisionId: 'revision-image-001',
         },
         client,
       ),
@@ -1970,6 +1971,7 @@ describe('CommandClient', () => {
     expect(invoke).toHaveBeenCalledWith('get_artifact_media_preview', {
       conversationId: 'conversation-001',
       artifactId: 'artifact-image-001',
+      revisionId: 'revision-image-001',
     })
 
     const unsafeClient = createInvokeCommandClient(

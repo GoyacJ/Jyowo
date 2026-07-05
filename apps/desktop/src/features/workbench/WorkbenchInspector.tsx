@@ -6,16 +6,15 @@ import { CommandExecutionView } from '@/features/conversation/evidence/CommandEx
 import { DecisionPanel } from '@/features/conversation/evidence/DecisionPanel'
 import { DiffPane } from '@/features/conversation/evidence/DiffPane'
 import { ToolInvocationCard } from '@/features/conversation/evidence/ToolInvocationCard'
-import { ArtifactImagePreview } from '@/features/conversation/timeline/artifact-segment-view'
 import { useUiStore } from '@/shared/state/ui-store'
 import type { WorkbenchSelection } from '@/shared/state/workbench-selection'
 import type {
-  ArtifactSegment,
   ConversationInspectorItem,
   ConversationInspectorSelection,
 } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
+import { ArtifactPane } from './artifacts/ArtifactPane'
 
 type InspectorPaneRendererProps = {
   selection: WorkbenchSelection
@@ -80,15 +79,23 @@ function InspectorPaneRenderer({ selection }: InspectorPaneRendererProps) {
     )
   }
 
-  return <InspectorItemView conversationId={selection.conversationId} item={item} />
+  return (
+    <InspectorItemView
+      conversationId={selection.conversationId}
+      item={item}
+      selection={selection}
+    />
+  )
 }
 
 function InspectorItemView({
   conversationId,
   item,
+  selection,
 }: {
   conversationId: string
   item: Exclude<ConversationInspectorItem, { kind: 'empty' }>
+  selection: Exclude<WorkbenchSelection, { kind: 'context' }>
 }) {
   const { t } = useTranslation('conversation')
 
@@ -148,87 +155,14 @@ function InspectorItemView({
         </div>
       )
     case 'artifact':
-      return <ArtifactInspectorPane conversationId={conversationId} segment={item.segment} />
-  }
-}
-
-function ArtifactInspectorPane({
-  conversationId,
-  segment,
-}: {
-  conversationId: string
-  segment: ArtifactSegment
-}) {
-  const { t } = useTranslation('conversation')
-  const commandClient = useCommandClient()
-  const revision = segment.revision
-  const contentQuery = useQuery({
-    enabled: revision.contentRef !== undefined,
-    queryKey: ['workbench-inspector-artifact-content', conversationId, revision.contentRef],
-    queryFn: () =>
-      commandClient.getArtifactRevisionContent({
-        conversationId,
-        contentRef: revision.contentRef ?? '',
-      }),
-  })
-
-  return (
-    <div className="grid gap-3 p-3">
-      <section className="grid gap-1 rounded-md border border-border px-3 py-2">
-        <div className="font-medium text-sm">{segment.title}</div>
-        {segment.summary ? (
-          <p className="text-muted-foreground text-sm">{segment.summary}</p>
-        ) : null}
-        <p className="text-muted-foreground text-xs">
-          {revision.kind} · {revision.status} · {revision.revisionId}
-        </p>
-      </section>
-
-      {revision.media?.kind === 'image' ? (
-        <ArtifactImagePreview
-          artifactId={segment.artifactId}
+      return (
+        <ArtifactPane
           conversationId={conversationId}
-          title={segment.title}
+          initialRevisionId={selection.kind === 'artifact' ? selection.revisionId : undefined}
+          segment={item.segment}
         />
-      ) : null}
-
-      {revision.contentRef ? (
-        contentQuery.isPending ? (
-          <InspectorState
-            description={t('inspector.artifactLoadingDescription', 'Fetching artifact content.')}
-            title={t('inspector.artifactLoading', 'Loading artifact content')}
-          />
-        ) : contentQuery.isError ? (
-          <InspectorState
-            description={t(
-              'inspector.artifactErrorDescription',
-              'The artifact content could not be loaded.',
-            )}
-            title={t('inspector.artifactError', 'Artifact content failed to load')}
-          />
-        ) : (
-          <div className="overflow-hidden rounded-md border border-border bg-code-background">
-            <pre className="max-h-[520px] overflow-auto p-3 whitespace-pre-wrap font-mono text-xs leading-5">
-              <code>{contentQuery.data.content}</code>
-            </pre>
-            {contentQuery.data.truncated ? (
-              <div className="border-border border-t px-3 py-2 text-muted-foreground text-xs">
-                {t('inspector.artifactContentTruncated', 'Artifact content page truncated')}
-              </div>
-            ) : null}
-          </div>
-        )
-      ) : (
-        <InspectorState
-          description={t(
-            'inspector.artifactNoContentDescription',
-            'This artifact revision does not expose a content reference.',
-          )}
-          title={t('inspector.artifactNoContent', 'Artifact content unavailable')}
-        />
-      )}
-    </div>
-  )
+      )
+  }
 }
 
 function inspectorSelectionFromWorkbenchSelection(

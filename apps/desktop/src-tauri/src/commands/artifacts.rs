@@ -46,7 +46,13 @@ pub async fn get_artifact_media_preview_with_runtime_state(
     ensure_non_empty("conversationId", &request.conversation_id)?;
     ensure_non_empty("artifactId", &request.artifact_id)?;
     let session_id = parse_session_id(&request.conversation_id)?;
-    let record = find_artifact_media_record(state, session_id, &request.artifact_id).await?;
+    let record = find_artifact_media_record(
+        state,
+        session_id,
+        &request.artifact_id,
+        request.revision_id.as_deref(),
+    )
+    .await?;
     if !matches!(
         record.status,
         Some(jyowo_harness_sdk::ext::ArtifactStatus::Ready)
@@ -204,6 +210,7 @@ pub(crate) async fn find_artifact_media_record(
     state: &DesktopRuntimeState,
     session_id: SessionId,
     artifact_id: &str,
+    revision_id: Option<&str>,
 ) -> Result<ArtifactMediaRecord, CommandErrorPayload> {
     let Some(harness) = state.harness() else {
         return Err(runtime_unavailable(
@@ -220,6 +227,8 @@ pub(crate) async fn find_artifact_media_record(
 
     let mut after_event_id = None;
     let mut record: Option<ArtifactMediaRecord> = None;
+    let mut current_kind: Option<String> = None;
+    let mut current_status: Option<jyowo_harness_sdk::ext::ArtifactStatus> = None;
     loop {
         let page = harness
             .page_conversation_events(ConversationEventsPageRequest {
@@ -237,30 +246,46 @@ pub(crate) async fn find_artifact_media_record(
             match envelope.payload {
                 Event::ArtifactCreated(event) => {
                     if event.session_id == session_id && event.artifact_id == artifact_id {
-                        record = Some(ArtifactMediaRecord {
-                            blob_ref: event.blob_ref,
-                            kind: Some(event.kind),
-                            status: Some(event.status),
-                        });
+                        let event_revision_id = event.revision_id.to_string();
+                        current_kind = Some(event.kind.clone());
+                        current_status = Some(event.status);
+                        if artifact_revision_media_candidate_matches(
+                            revision_id,
+                            &event_revision_id,
+                        ) {
+                            record = Some(ArtifactMediaRecord {
+                                blob_ref: event.blob_ref,
+                                kind: Some(event.kind),
+                                status: Some(event.status),
+                            });
+                        }
                     }
                 }
                 Event::ArtifactUpdated(event) => {
                     if event.session_id != session_id || event.artifact_id != artifact_id {
                         continue;
                     }
-                    let entry = record.get_or_insert_with(|| ArtifactMediaRecord {
-                        blob_ref: None,
-                        kind: None,
-                        status: None,
-                    });
-                    if let Some(blob_ref) = event.blob_ref {
-                        entry.blob_ref = Some(blob_ref);
-                    }
-                    if let Some(kind) = event.kind {
-                        entry.kind = Some(kind);
-                    }
-                    if let Some(status) = event.status {
-                        entry.status = Some(status);
+                    let event_revision_id = event.revision_id.to_string();
+                    let event_kind = event.kind.or_else(|| current_kind.clone());
+                    let event_status = event.status.or(current_status);
+                    current_kind = event_kind.clone();
+                    current_status = event_status;
+
+                    if artifact_revision_media_candidate_matches(revision_id, &event_revision_id) {
+                        let entry = record.get_or_insert_with(|| ArtifactMediaRecord {
+                            blob_ref: None,
+                            kind: None,
+                            status: None,
+                        });
+                        if let Some(blob_ref) = event.blob_ref {
+                            entry.blob_ref = Some(blob_ref);
+                        }
+                        if let Some(kind) = event_kind {
+                            entry.kind = Some(kind);
+                        }
+                        if let Some(status) = event_status {
+                            entry.status = Some(status);
+                        }
                     }
                 }
                 _ => {}
@@ -271,6 +296,16 @@ pub(crate) async fn find_artifact_media_record(
     }
 
     record.ok_or_else(|| not_found("artifact not found".to_owned()))
+}
+
+fn artifact_revision_media_candidate_matches(
+    requested_revision_id: Option<&str>,
+    event_revision_id: &str,
+) -> bool {
+    match requested_revision_id {
+        Some(requested_revision_id) => requested_revision_id == event_revision_id,
+        None => true,
+    }
 }
 
 pub(crate) async fn find_attachment_media_record(
@@ -859,26 +894,38 @@ pub(crate) fn project_artifact_event(
             if !artifacts_by_id.contains_key(&artifact_id) {
                 order.push(artifact_id.clone());
             }
+            let title = public_text_display(event.title, redactor);
+            let kind = public_text_display(event.kind, redactor);
+            let preview = event.preview.map(|preview| {
+                truncate_utf8(
+                    public_text_display(preview, redactor),
+                    MAX_ARTIFACT_PREVIEW_BYTES,
+                )
+            });
+            let media = artifact_media_payload(event.blob_ref.as_ref(), &kind);
             artifacts_by_id.insert(
                 artifact_id.clone(),
                 ArtifactSummaryPayload {
                     action_label: "Open".to_owned(),
                     description: artifact_description_from_source(event.source),
                     id: artifact_id,
-                    kind: public_text_display(event.kind, redactor),
-                    preview: event.preview.map(|preview| {
-                        truncate_utf8(
-                            public_text_display(preview, redactor),
-                            MAX_ARTIFACT_PREVIEW_BYTES,
-                        )
-                    }),
-                    revisions: vec![artifact_revision_payload(event.revision_id, event.at)],
+                    kind: kind.clone(),
+                    preview: preview.clone(),
+                    revisions: vec![artifact_revision_payload(
+                        event.revision_id,
+                        event.at,
+                        kind.clone(),
+                        artifact_status_label(event.status),
+                        title.clone(),
+                        preview.clone(),
+                        media,
+                    )],
                     source_message_id: event
                         .source_message_id
                         .map(|message_id| message_id.to_string()),
                     source_run_id: event.run_id.to_string(),
                     status: artifact_status_label(event.status),
-                    title: public_text_display(event.title, redactor),
+                    title,
                     updated_at: Some(event.at.to_rfc3339()),
                 },
             );
@@ -893,12 +940,14 @@ pub(crate) fn project_artifact_event(
             if let Some(kind) = event.kind {
                 artifact.kind = public_text_display(kind, redactor);
             }
+            let revision_kind = artifact.kind.clone();
             if let Some(preview) = event.preview {
                 artifact.preview = Some(truncate_utf8(
                     public_text_display(preview, redactor),
                     MAX_ARTIFACT_PREVIEW_BYTES,
                 ));
             }
+            let revision_summary = artifact.preview.clone();
             if let Some(source_message_id) = event.source_message_id {
                 artifact.source_message_id = Some(source_message_id.to_string());
             }
@@ -909,7 +958,22 @@ pub(crate) fn project_artifact_event(
             if let Some(title) = event.title {
                 artifact.title = public_text_display(title, redactor);
             }
-            upsert_artifact_revision(artifact, event.revision_id, event.at);
+            let revision_status = artifact.status;
+            let revision_title = artifact.title.clone();
+            let revision_media = event
+                .blob_ref
+                .as_ref()
+                .and_then(|blob_ref| artifact_media_payload(Some(blob_ref), &revision_kind));
+            upsert_artifact_revision(
+                artifact,
+                event.revision_id,
+                event.at,
+                revision_kind,
+                revision_status,
+                revision_title,
+                revision_summary,
+                revision_media,
+            );
             artifact.updated_at = Some(event.at.to_rfc3339());
         }
         _ => {}
@@ -919,11 +983,21 @@ pub(crate) fn project_artifact_event(
 pub(crate) fn artifact_revision_payload(
     revision_id: harness_contracts::ArtifactRevisionId,
     updated_at: DateTime<Utc>,
+    kind: String,
+    status: &'static str,
+    title: String,
+    summary: Option<String>,
+    media: Option<Value>,
 ) -> ArtifactRevisionPayload {
     ArtifactRevisionPayload {
         revision_id: revision_id.to_string(),
         content_ref: None,
+        kind,
+        media,
         preview_ref: None,
+        status,
+        summary,
+        title,
         updated_at: updated_at.to_rfc3339(),
     }
 }
@@ -932,6 +1006,11 @@ pub(crate) fn upsert_artifact_revision(
     artifact: &mut ArtifactSummaryPayload,
     revision_id: harness_contracts::ArtifactRevisionId,
     updated_at: DateTime<Utc>,
+    kind: String,
+    status: &'static str,
+    title: String,
+    summary: Option<String>,
+    media: Option<Value>,
 ) {
     let revision_id = revision_id.to_string();
     if let Some(revision) = artifact
@@ -940,13 +1019,25 @@ pub(crate) fn upsert_artifact_revision(
         .find(|revision| revision.revision_id == revision_id)
     {
         revision.updated_at = updated_at.to_rfc3339();
+        revision.kind = kind;
+        revision.status = status;
+        revision.title = title;
+        revision.summary = summary;
+        if media.is_some() {
+            revision.media = media;
+        }
         return;
     }
 
     artifact.revisions.push(ArtifactRevisionPayload {
         revision_id,
         content_ref: None,
+        kind,
+        media,
         preview_ref: None,
+        status,
+        summary,
+        title,
         updated_at: updated_at.to_rfc3339(),
     });
 }

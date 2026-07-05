@@ -511,6 +511,7 @@ export function imageProcessTurn(): ConversationTurn {
               detail: {
                 type: 'artifact',
                 artifactId: 'artifact-image-001',
+                revisionId: 'revision-image-001',
                 media: {
                   kind: 'image',
                   mimeType: 'image/png',

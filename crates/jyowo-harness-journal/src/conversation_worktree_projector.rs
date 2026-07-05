@@ -1167,7 +1167,7 @@ impl ProjectionState<'_> {
         if is_ready_image_artifact(status, media.as_ref()) {
             self.remove_artifact_segment(&event.run_id, &artifact_id);
             self.remove_redacted_text_segments(&event.run_id);
-            self.append_artifact_process_step(event, artifact_id, title, media);
+            self.append_artifact_process_step(event, artifact_id, revision_id, title, media);
             return;
         }
         let assistant = self.assistant_work(event, event_ref.clone());
@@ -1234,6 +1234,7 @@ impl ProjectionState<'_> {
         &mut self,
         event: &ConversationTimelineEvent,
         artifact_id: String,
+        revision_id: String,
         title: Option<String>,
         media: Option<ArtifactMediaPreview>,
     ) {
@@ -1248,7 +1249,11 @@ impl ProjectionState<'_> {
             ProcessStepStatus::Complete,
             title.unwrap_or_else(|| "生成的 Artifact".to_owned()),
             None,
-            Some(ProcessStepDetail::Artifact { artifact_id, media }),
+            Some(ProcessStepDetail::Artifact {
+                artifact_id,
+                revision_id: Some(revision_id),
+                media,
+            }),
         );
     }
 
@@ -2410,6 +2415,7 @@ impl ProjectionState<'_> {
             process.steps.iter().find_map(|step| match &step.detail {
                 Some(ProcessStepDetail::Artifact {
                     artifact_id: step_artifact_id,
+                    revision_id: _,
                     media,
                 }) if step_artifact_id == artifact_id => {
                     Some((step.title.as_str().to_owned(), media.clone()))

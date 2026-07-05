@@ -1,12 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-
+import { ArtifactPreview } from '@/shared/artifacts/ArtifactPreview'
 import type { ListArtifactsResponse } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
-
 import { ArtifactHistory } from './ArtifactHistory'
-import { ArtifactPreview } from './ArtifactPreview'
 
 const artifactsQueryKey = ['artifacts'] as const
 const artifactContentMissingError = 'artifact content reference missing'
@@ -174,6 +172,7 @@ function ArtifactPreviewLoader({
       return commandClient.getArtifactMediaPreview({
         artifactId: artifact.id,
         conversationId,
+        revisionId: revision?.revisionId,
       })
     },
     queryKey: ['artifact-media-preview', conversationId, artifact?.id, revision?.revisionId],

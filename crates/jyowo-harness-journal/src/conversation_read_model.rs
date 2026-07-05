@@ -3488,10 +3488,14 @@ fn artifact_segment_matches_selection(
             artifact_id,
             revision_id,
         } => {
-            artifact_id
-                .as_ref()
-                .is_none_or(|artifact_id| &segment.artifact_id == artifact_id)
-                && &segment.revision.revision_id == revision_id
+            if let Some(artifact_id) = artifact_id {
+                // The worktree projection keeps one current segment per artifact.
+                // The inspector opens that artifact pane; the pane resolves the requested revision
+                // from the artifact list without fetching this current segment's content first.
+                &segment.artifact_id == artifact_id
+            } else {
+                &segment.revision.revision_id == revision_id
+            }
         }
         ConversationInspectorSelection::EvidenceRef { evidence_ref_id } => {
             segment.revision.content_ref.as_ref() == Some(evidence_ref_id)

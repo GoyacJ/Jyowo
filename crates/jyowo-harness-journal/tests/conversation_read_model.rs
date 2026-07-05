@@ -2091,6 +2091,90 @@ async fn sqlite_conversation_inspector_finds_items_outside_first_worktree_page()
     assert!(matches!(missing, ConversationInspectorItem::Empty));
 }
 
+#[tokio::test]
+async fn sqlite_conversation_inspector_artifact_revision_selection_opens_artifact_pane() {
+    let root = temp_root("inspector-artifact-revision");
+    let store = SqliteConversationReadModelStore::open(root.join("read-model.sqlite"))
+        .await
+        .expect("store opens");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let old_revision_id = ArtifactRevisionId::new();
+    let new_revision_id = ArtifactRevisionId::new();
+    let envelopes = vec![
+        envelope(
+            tenant_id,
+            session_id,
+            0,
+            Event::ArtifactCreated(ArtifactCreatedEvent {
+                revision_id: old_revision_id,
+                artifact_id: "artifact-revisions".to_owned(),
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                blob_ref: None,
+                content_hash: None,
+                kind: "document".to_owned(),
+                preview: Some("Old revision".to_owned()),
+                run_id,
+                session_id,
+                source: ArtifactSource::Assistant,
+                source_message_id: None,
+                source_tool_use_id: None,
+                status: ArtifactStatus::Ready,
+                title: "Revisioned artifact".to_owned(),
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            1,
+            Event::ArtifactUpdated(ArtifactUpdatedEvent {
+                revision_id: new_revision_id,
+                artifact_id: "artifact-revisions".to_owned(),
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(1),
+                blob_ref: None,
+                content_hash: None,
+                kind: Some("document".to_owned()),
+                preview: Some("New revision".to_owned()),
+                run_id,
+                session_id,
+                source: ArtifactSource::Assistant,
+                source_message_id: None,
+                source_tool_use_id: None,
+                status: Some(ArtifactStatus::Ready),
+                title: Some("Revisioned artifact".to_owned()),
+            }),
+        ),
+    ];
+
+    store
+        .apply_envelopes(tenant_id, session_id, &envelopes, None)
+        .await
+        .expect("projection applies");
+
+    let item = store
+        .conversation_inspector_item_with_evidence(
+            tenant_id,
+            session_id,
+            ConversationInspectorSelection::ArtifactRevision {
+                artifact_id: Some("artifact-revisions".to_owned()),
+                revision_id: old_revision_id.to_string(),
+            },
+            evidence_store(),
+        )
+        .await
+        .expect("inspector item loads")
+        .item;
+
+    match item {
+        ConversationInspectorItem::Artifact { segment } => {
+            assert_eq!(segment.artifact_id, "artifact-revisions");
+            assert_eq!(segment.revision.revision_id, new_revision_id.to_string());
+        }
+        other => panic!("expected artifact inspector item, got {other:?}"),
+    }
+}
+
 fn worktree_page_contains_command(page: &ConversationWorktreePage, expected_command: &str) -> bool {
     page.turns.iter().any(|turn| {
         turn.assistant.as_ref().is_some_and(|assistant| {

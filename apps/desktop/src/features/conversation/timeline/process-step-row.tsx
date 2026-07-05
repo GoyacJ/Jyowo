@@ -95,7 +95,11 @@ export function ProcessStepRow({
             </p>
           ) : null}
           {detail && detailOpen ? (
-            <ProcessStepDetailView conversationId={conversationId} step={step} />
+            <ProcessStepDetailView
+              artifactRevisionIdsByArtifactId={artifactRevisionIdsByArtifactId}
+              conversationId={conversationId}
+              step={step}
+            />
           ) : null}
         </>
       )}
@@ -104,9 +108,11 @@ export function ProcessStepRow({
 }
 
 function ProcessStepDetailView({
+  artifactRevisionIdsByArtifactId,
   conversationId,
   step,
 }: {
+  artifactRevisionIdsByArtifactId: Record<string, string>
   conversationId: string
   step: ProcessStep
 }) {
@@ -158,6 +164,7 @@ function ProcessStepDetailView({
             <ArtifactImagePreview
               artifactId={detail.artifactId}
               conversationId={conversationId}
+              revisionId={detail.revisionId ?? artifactRevisionIdsByArtifactId[detail.artifactId]}
               title={step.title}
             />
           ) : null}
@@ -229,15 +236,15 @@ function getInspectorSelection(
         conversationId,
         changeSetId: detail.id,
       }
-    case 'artifact':
+    case 'artifact': {
+      const revisionId = detail.revisionId ?? artifactRevisionIdsByArtifactId[detail.artifactId]
       return {
         kind: 'artifact',
         conversationId,
         artifactId: detail.artifactId,
-        ...(artifactRevisionIdsByArtifactId[detail.artifactId]
-          ? { revisionId: artifactRevisionIdsByArtifactId[detail.artifactId] }
-          : {}),
+        ...(revisionId ? { revisionId } : {}),
       }
+    }
     case 'activity':
     case 'tool':
       return null

@@ -200,9 +200,11 @@ async fn page_conversation_worktree_with_runtime_state_returns_safe_turn_tree() 
         .find_map(|segment| match segment {
             harness_contracts::AssistantSegment::Process(process) => {
                 process.steps.iter().find_map(|step| match &step.detail {
-                    Some(harness_contracts::ProcessStepDetail::Artifact { artifact_id, media }) => {
-                        Some((step, artifact_id, media))
-                    }
+                    Some(harness_contracts::ProcessStepDetail::Artifact {
+                        artifact_id,
+                        media,
+                        ..
+                    }) => Some((step, artifact_id, media)),
                     _ => None,
                 })
             }

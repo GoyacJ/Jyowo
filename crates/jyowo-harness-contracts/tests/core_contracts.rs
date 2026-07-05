@@ -532,6 +532,7 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                                 body: None,
                                 detail: Some(ProcessStepDetail::Artifact {
                                     artifact_id: "artifact-1".to_owned(),
+                                    revision_id: None,
                                     media: ArtifactMediaPreview {
                                         kind: ArtifactMediaKind::Image,
                                         mime_type: "image/png".to_owned(),

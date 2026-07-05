@@ -60,9 +60,40 @@ describe('ConversationTimeline', () => {
       {
         conversationId: 'conversation-image',
         artifactId: 'artifact-image-001',
+        revisionId: 'revision-image-001',
       },
     ])
     expect(document.body.textContent ?? '').not.toContain('[REDACTED]')
+  })
+
+  it('uses the process artifact revision id before artifact segment fallbacks', async () => {
+    const turn = imageProcessTurn()
+    const process = turn.assistant?.segments.find((segment) => segment.kind === 'process')
+    const artifactStep = process?.steps?.find((step) => step.kind === 'artifact')
+    if (artifactStep?.detail?.type === 'artifact') {
+      artifactStep.detail.revisionId = 'revision-image-process-old'
+    }
+    const artifact = turn.assistant?.segments.find((segment) => segment.kind === 'artifact')
+    if (artifact?.kind === 'artifact') {
+      artifact.revision.revisionId = 'revision-image-latest'
+    }
+    const getArtifactMediaPreview = vi.fn<CommandClient['getArtifactMediaPreview']>(async () => ({
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+      mimeType: 'image/png',
+      sizeBytes: 68,
+    }))
+
+    renderTimelineWithClient(<ConversationTimeline title="Image flow" turns={[turn]} />, {
+      ...createTestCommandClient(),
+      getArtifactMediaPreview,
+    })
+
+    await screen.findByRole('img', { name: 'Generated image' })
+    expect(getArtifactMediaPreview).toHaveBeenCalledWith({
+      conversationId: 'conversation-image',
+      artifactId: 'artifact-image-001',
+      revisionId: 'revision-image-process-old',
+    })
   })
 
   it('renders historical attachments before the user message without fetching blob content', () => {

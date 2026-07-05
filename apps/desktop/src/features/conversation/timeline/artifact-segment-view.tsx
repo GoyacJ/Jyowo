@@ -50,6 +50,7 @@ export function ArtifactSegmentView({
         <ArtifactImagePreview
           artifactId={segment.artifactId}
           conversationId={conversationId}
+          revisionId={segment.revision.revisionId}
           title={segment.title}
         />
       ) : null}
@@ -60,20 +61,23 @@ export function ArtifactSegmentView({
 export function ArtifactImagePreview({
   artifactId,
   conversationId,
+  revisionId,
   title,
 }: {
   artifactId: string
   conversationId: string
+  revisionId?: string
   title: string
 }) {
   const { t } = useTranslation('conversation')
   const commandClient = useCommandClient()
   const previewQuery = useQuery({
-    queryKey: ['conversation-artifact-preview', conversationId, artifactId],
+    queryKey: ['conversation-artifact-preview', conversationId, artifactId, revisionId],
     queryFn: () =>
       commandClient.getArtifactMediaPreview({
         conversationId,
         artifactId,
+        revisionId,
       }),
   })
 

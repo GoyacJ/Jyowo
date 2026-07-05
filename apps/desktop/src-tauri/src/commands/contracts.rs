@@ -33,6 +33,7 @@ use harness_contracts::{
     ModelUsageBucket, ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow,
     ProviderProbeErrorKind, ProviderProbeSnapshot, ProviderProbeStatus, UsageSnapshot,
 };
+use serde_json::Value;
 
 pub type ConversationEventBatchEmitter =
     Arc<dyn Fn(ConversationEventBatchPayload) -> Result<(), String> + Send + Sync>;
@@ -1875,8 +1876,15 @@ pub struct ArtifactRevisionPayload {
     pub revision_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_ref: Option<String>,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_ref: Option<String>,
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub title: String,
     pub updated_at: String,
 }
 
@@ -1918,6 +1926,8 @@ pub struct ListArtifactsResponse {
 pub struct GetArtifactMediaPreviewRequest {
     pub conversation_id: String,
     pub artifact_id: String,
+    #[serde(default)]
+    pub revision_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

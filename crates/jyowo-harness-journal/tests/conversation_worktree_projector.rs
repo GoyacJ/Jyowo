@@ -2128,10 +2128,16 @@ fn ready_image_artifact_projects_process_step_without_duplicate_artifact_segment
         .iter()
         .find(|step| step.kind == ProcessStepKind::Artifact)
         .expect("artifact step exists");
-    let Some(ProcessStepDetail::Artifact { artifact_id, media }) = &artifact_step.detail else {
+    let Some(ProcessStepDetail::Artifact {
+        artifact_id,
+        revision_id,
+        media,
+    }) = &artifact_step.detail
+    else {
         panic!("artifact step should include artifact detail");
     };
     assert_eq!(artifact_id, "artifact-image");
+    assert_eq!(revision_id.as_deref(), Some("revision-2"));
     assert_eq!(media.kind, ArtifactMediaKind::Image);
     assert_eq!(media.mime_type, "image/png");
 }
@@ -2325,10 +2331,16 @@ fn ready_image_artifact_update_uses_existing_media_without_duplicate_artifact_se
         .expect("artifact step exists");
 
     assert_eq!(artifact_step.title.as_str(), "Generated image");
-    let Some(ProcessStepDetail::Artifact { artifact_id, media }) = &artifact_step.detail else {
+    let Some(ProcessStepDetail::Artifact {
+        artifact_id,
+        revision_id,
+        media,
+    }) = &artifact_step.detail
+    else {
         panic!("artifact step should include artifact detail");
     };
     assert_eq!(artifact_id, "artifact-image");
+    assert_eq!(revision_id.as_deref(), Some("revision-3"));
     assert_eq!(media.kind, ArtifactMediaKind::Image);
     assert_eq!(media.mime_type, "image/png");
 }
