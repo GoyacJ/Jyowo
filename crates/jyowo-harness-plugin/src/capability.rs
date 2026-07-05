@@ -124,7 +124,7 @@ pub(crate) struct CapabilityRegistrationState {
     hooks: Mutex<BTreeSet<String>>,
     mcp: Mutex<BTreeSet<String>>,
     skills: Mutex<BTreeSet<String>>,
-    memory_provider: Mutex<Option<Arc<dyn harness_memory::MemoryProvider>>>,
+    memory_providers: Mutex<BTreeMap<String, Arc<dyn harness_memory::MemoryProvider>>>,
     coordinator_registered: Mutex<bool>,
 }
 
@@ -145,12 +145,12 @@ impl CapabilityRegistrationState {
         sorted_strings(&self.skills)
     }
 
-    pub(crate) fn memory_provider(&self) -> Option<Arc<dyn harness_memory::MemoryProvider>> {
-        self.memory_provider.lock().clone()
+    pub(crate) fn memory_providers(&self) -> Vec<Arc<dyn harness_memory::MemoryProvider>> {
+        self.memory_providers.lock().values().cloned().collect()
     }
 
     pub(crate) fn memory_registered(&self) -> bool {
-        self.memory_provider.lock().is_some()
+        !self.memory_providers.lock().is_empty()
     }
 
     pub(crate) fn coordinator_registered(&self) -> bool {
@@ -516,13 +516,14 @@ impl MemoryProviderRegistration for ScopedMemoryProviderRegistration {
         &self,
         provider: Arc<dyn harness_memory::MemoryProvider>,
     ) -> Result<(), RegistrationError> {
-        let mut registered = self.state.memory_provider.lock();
-        if registered.is_some() {
+        let mut registered = self.state.memory_providers.lock();
+        let provider_id = provider.provider_id().to_owned();
+        if registered.contains_key(&provider_id) {
             return Err(RegistrationError::DuplicateSlot {
                 slot: CapabilitySlot::MemoryProvider,
             });
         }
-        *registered = Some(provider);
+        registered.insert(provider_id, provider);
         Ok(())
     }
 }

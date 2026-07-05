@@ -9,7 +9,7 @@
 | Storybook files | 13 |
 | Playwright spec files | 4 |
 | Rust test files | 325 |
-| Rust `#[test]` / `#[tokio::test]` count | 2342 |
+| Rust `#[test]` / `#[tokio::test]` count | 2353 |
 | Script policy test files | 9 |
 
 ## Largest Test Files by Line Count
@@ -17,7 +17,7 @@
 | File | Lines | Kind |
 |---|---|---|
 | apps/desktop/src/shared/tauri/commands.test.ts | 5732 | frontend |
-| crates/jyowo-harness-plugin/tests/registry.rs | 3088 | rust |
+| crates/jyowo-harness-plugin/tests/registry.rs | 3168 | rust |
 | crates/jyowo-harness-journal/tests/conversation_read_model.rs | 2862 | rust |
 | crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs | 2831 | rust |
 | crates/jyowo-harness-engine/tests/subagent_tool_feature.rs | 2373 | rust |
@@ -50,7 +50,7 @@
 ## Files Over 1200 Lines (hard fail)
 
 - apps/desktop/src/shared/tauri/commands.test.ts (5732 lines)
-- crates/jyowo-harness-plugin/tests/registry.rs (3088 lines)
+- crates/jyowo-harness-plugin/tests/registry.rs (3168 lines)
 - crates/jyowo-harness-journal/tests/conversation_read_model.rs (2862 lines)
 - crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs (2831 lines)
 - crates/jyowo-harness-engine/tests/subagent_tool_feature.rs (2373 lines)
@@ -97,6 +97,7 @@
 - crates/jyowo-harness-execution/tests/authorization_flow.rs (889 lines)
 - apps/desktop/src-tauri/tests/commands/activity_redaction.rs (888 lines)
 - crates/jyowo-harness-tool/tests/minimax_tools.rs (864 lines)
+- crates/jyowo-harness-memory/tests/recall.rs (843 lines)
 - crates/jyowo-harness-mcp/tests/core.rs (822 lines)
 
 ## Disallowed or Suspect Names

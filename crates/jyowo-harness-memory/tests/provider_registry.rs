@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use harness_contracts::{
-    MemoryError, MemoryId, MemoryProviderTrust, MemoryVisibilityClass, TenantId,
+    MemoryError, MemoryId, MemoryProviderDurability, MemoryProviderKind, MemoryProviderTrust,
+    MemoryVisibility, MemoryVisibilityClass, TeamId,
 };
 use harness_memory::{
     MemoryLifecycle, MemoryListScope, MemoryProvider, MemoryProviderDescriptor,
@@ -18,8 +19,17 @@ fn make_dummy_provider(id: &str, priority: i32) -> DummyProvider {
 struct DummyProvider {
     id: String,
     priority: i32,
+    provider_kind: MemoryProviderKind,
+    trust_level: MemoryProviderTrust,
     readable: bool,
     writable: bool,
+    allowed_visibility: Vec<MemoryVisibilityClass>,
+    timeout_ms: u32,
+    max_records_per_recall: u32,
+    max_chars_per_recall: u32,
+    max_bytes_per_record: u64,
+    supports_evidence: bool,
+    durability: MemoryProviderDurability,
     records: tokio::sync::Mutex<Vec<MemoryRecord>>,
 }
 
@@ -28,18 +38,62 @@ impl DummyProvider {
         Self {
             id: id.to_owned(),
             priority,
+            provider_kind: MemoryProviderKind::Local,
+            trust_level: MemoryProviderTrust::BuiltIn,
             readable: true,
             writable: true,
+            allowed_visibility: vec![
+                MemoryVisibilityClass::Private,
+                MemoryVisibilityClass::User,
+                MemoryVisibilityClass::Tenant,
+            ],
+            timeout_ms: 5000,
+            max_records_per_recall: 10,
+            max_chars_per_recall: 10000,
+            max_bytes_per_record: 1024 * 1024,
+            supports_evidence: true,
+            durability: MemoryProviderDurability::Durable,
             records: tokio::sync::Mutex::new(Vec::new()),
         }
     }
 
-    fn read_only(id: &str, priority: i32) -> Self {
-        Self {
-            readable: false,
-            writable: false,
-            ..Self::new(id, priority)
-        }
+    fn invalid_budget(mut self) -> Self {
+        self.max_records_per_recall = 0;
+        self
+    }
+
+    fn no_capability(mut self) -> Self {
+        self.readable = false;
+        self.writable = false;
+        self
+    }
+
+    fn no_evidence(mut self) -> Self {
+        self.supports_evidence = false;
+        self
+    }
+
+    fn ephemeral(mut self) -> Self {
+        self.durability = MemoryProviderDurability::Ephemeral;
+        self
+    }
+
+    fn allowed_visibility(mut self, allowed_visibility: Vec<MemoryVisibilityClass>) -> Self {
+        self.allowed_visibility = allowed_visibility;
+        self
+    }
+
+    fn plugin_trusted(mut self) -> Self {
+        self.provider_kind = MemoryProviderKind::Plugin;
+        self.trust_level = MemoryProviderTrust::Plugin;
+        self
+    }
+
+    fn team_trusted(mut self) -> Self {
+        self.provider_kind = MemoryProviderKind::Team;
+        self.trust_level = MemoryProviderTrust::Team;
+        self.durability = MemoryProviderDurability::Ephemeral;
+        self
     }
 }
 
@@ -90,19 +144,21 @@ impl MemoryProvider for DummyProvider {
     fn descriptor(&self) -> MemoryProviderDescriptor {
         MemoryProviderDescriptor {
             provider_id: self.id.clone(),
+            provider_kind: self.provider_kind,
             priority: self.priority,
-            trust_level: MemoryProviderTrust::BuiltIn,
+            trust_level: self.trust_level,
+            tenant_scope: None,
+            workspace_scope: None,
+            durability: self.durability,
             readable: self.readable,
             writable: self.writable,
-            allowed_visibility: vec![
-                MemoryVisibilityClass::Private,
-                MemoryVisibilityClass::User,
-                MemoryVisibilityClass::Tenant,
-            ],
-            timeout_ms: 5000,
-            max_records_per_recall: 10,
-            max_chars_per_recall: 10000,
-            max_bytes_per_record: 1024 * 1024,
+            allowed_visibility: self.allowed_visibility.clone(),
+            supports_evidence: self.supports_evidence,
+            supports_raw_content_export: false,
+            timeout_ms: self.timeout_ms,
+            max_records_per_recall: self.max_records_per_recall,
+            max_chars_per_recall: self.max_chars_per_recall,
+            max_bytes_per_record: self.max_bytes_per_record,
         }
     }
 }
@@ -137,6 +193,35 @@ fn registry_duplicate_id_is_error() {
 }
 
 #[test]
+fn registry_rejects_invalid_provider_descriptors() {
+    let mut registry = MemoryProviderRegistry::new();
+
+    let no_capability = registry.register(Arc::new(
+        make_dummy_provider("no-capability", 100).no_capability(),
+    ));
+    assert!(
+        matches!(no_capability, Err(MemoryError::Message(message)) if message.contains("readable or writable"))
+    );
+
+    let invalid_budget = registry.register(Arc::new(
+        make_dummy_provider("invalid-budget", 100).invalid_budget(),
+    ));
+    assert!(
+        matches!(invalid_budget, Err(MemoryError::Message(message)) if message.contains("max_records_per_recall"))
+    );
+
+    let no_evidence = registry.register(Arc::new(
+        make_dummy_provider("no-evidence", 100).no_evidence(),
+    ));
+    assert!(
+        matches!(no_evidence, Err(MemoryError::Message(message)) if message.contains("support evidence"))
+    );
+
+    let ephemeral = registry.register(Arc::new(make_dummy_provider("ephemeral", 100).ephemeral()));
+    assert!(matches!(ephemeral, Err(MemoryError::Message(message)) if message.contains("durable")));
+}
+
+#[test]
 fn registry_write_target_selects_writable_provider() {
     let mut registry = MemoryProviderRegistry::new();
     let rw = Arc::new(make_dummy_provider("writable-p1", 50));
@@ -147,6 +232,104 @@ fn registry_write_target_selects_writable_provider() {
     assert!(!targets.is_empty());
     // Default descriptor marks providers as writable
     assert_eq!(targets[0].provider_id, "writable-p1");
+}
+
+#[test]
+fn registry_selects_one_write_target_by_policy_order() {
+    let mut registry = MemoryProviderRegistry::new();
+    registry
+        .register(Arc::new(make_dummy_provider("low", 10)))
+        .expect("register low");
+    registry
+        .register(Arc::new(make_dummy_provider("high", 100)))
+        .expect("register high");
+    registry
+        .register(Arc::new(make_dummy_provider("mid", 50)))
+        .expect("register mid");
+
+    let target = registry
+        .select_write_provider()
+        .expect("policy should select one target");
+
+    assert_eq!(target.provider_id(), "high");
+}
+
+#[test]
+fn registry_selects_write_target_by_record_visibility_before_priority() {
+    let mut registry = MemoryProviderRegistry::new();
+    registry
+        .register(Arc::new(
+            make_dummy_provider("high-user", 100)
+                .allowed_visibility(vec![MemoryVisibilityClass::User]),
+        ))
+        .expect("register high user provider");
+    registry
+        .register(Arc::new(
+            make_dummy_provider("low-team", 10)
+                .allowed_visibility(vec![MemoryVisibilityClass::Team]),
+        ))
+        .expect("register low team provider");
+
+    let target = registry
+        .select_write_provider_for_visibility(&MemoryVisibility::Team {
+            team_id: TeamId::new(),
+        })
+        .expect("team write target");
+
+    assert_eq!(target.provider_id(), "low-team");
+}
+
+#[test]
+fn registry_fails_closed_when_no_provider_supports_record_visibility() {
+    let mut registry = MemoryProviderRegistry::new();
+    registry
+        .register(Arc::new(
+            make_dummy_provider("user-only", 100)
+                .allowed_visibility(vec![MemoryVisibilityClass::User]),
+        ))
+        .expect("register user provider");
+
+    let target = registry.select_write_provider_for_visibility(&MemoryVisibility::Team {
+        team_id: TeamId::new(),
+    });
+
+    assert!(target.is_none());
+}
+
+#[test]
+fn registry_write_selection_allows_plugin_provider_when_descriptor_allows_write() {
+    let mut registry = MemoryProviderRegistry::new();
+    registry
+        .register(Arc::new(
+            make_dummy_provider("plugin-memory", 100).plugin_trusted(),
+        ))
+        .expect("register plugin provider");
+
+    let target = registry
+        .select_write_provider_for_visibility(&MemoryVisibility::Tenant)
+        .expect("plugin write target");
+
+    assert_eq!(target.provider_id(), "plugin-memory");
+}
+
+#[test]
+fn registry_write_selection_allows_team_provider_when_visibility_matches() {
+    let mut registry = MemoryProviderRegistry::new();
+    registry
+        .register(Arc::new(
+            make_dummy_provider("team-memory", 100)
+                .team_trusted()
+                .allowed_visibility(vec![MemoryVisibilityClass::Team]),
+        ))
+        .expect("register team provider");
+
+    let target = registry
+        .select_write_provider_for_visibility(&MemoryVisibility::Team {
+            team_id: TeamId::new(),
+        })
+        .expect("team write target");
+
+    assert_eq!(target.provider_id(), "team-memory");
 }
 
 #[test]

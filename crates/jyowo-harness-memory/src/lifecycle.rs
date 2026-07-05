@@ -170,15 +170,22 @@ pub trait MemoryProvider: MemoryStore + MemoryLifecycle {
     fn descriptor(&self) -> MemoryProviderDescriptor {
         MemoryProviderDescriptor {
             provider_id: self.provider_id().to_owned(),
+            provider_kind: MemoryProviderKind::Local,
             priority: 0,
             trust_level: MemoryProviderTrust::BuiltIn,
+            tenant_scope: None,
+            workspace_scope: None,
+            durability: MemoryProviderDurability::Durable,
             readable: true,
             writable: true,
             allowed_visibility: vec![
                 MemoryVisibilityClass::Private,
                 MemoryVisibilityClass::User,
+                MemoryVisibilityClass::Team,
                 MemoryVisibilityClass::Tenant,
             ],
+            supports_evidence: true,
+            supports_raw_content_export: false,
             timeout_ms: 5000,
             max_records_per_recall: 50,
             max_chars_per_recall: 100_000,
@@ -187,16 +194,25 @@ pub trait MemoryProvider: MemoryStore + MemoryLifecycle {
     }
 }
 
-use harness_contracts::{MemoryProviderTrust, MemoryVisibilityClass};
+use harness_contracts::{
+    MemoryProviderDurability, MemoryProviderKind, MemoryProviderTrust, MemoryVisibilityClass,
+    TenantId, WorkspaceId,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryProviderDescriptor {
     pub provider_id: String,
+    pub provider_kind: MemoryProviderKind,
     pub priority: i32,
     pub trust_level: MemoryProviderTrust,
+    pub tenant_scope: Option<TenantId>,
+    pub workspace_scope: Option<WorkspaceId>,
+    pub durability: MemoryProviderDurability,
     pub readable: bool,
     pub writable: bool,
     pub allowed_visibility: Vec<MemoryVisibilityClass>,
+    pub supports_evidence: bool,
+    pub supports_raw_content_export: bool,
     pub timeout_ms: u32,
     pub max_records_per_recall: u32,
     pub max_chars_per_recall: u32,

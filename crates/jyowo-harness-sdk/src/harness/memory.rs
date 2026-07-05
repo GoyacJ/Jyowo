@@ -1,10 +1,14 @@
 use super::*;
 
 #[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
-use harness_contracts::ToolError;
+use harness_contracts::{
+    MemoryRedactionSummary, MemoryTakesEffect, MemoryToolRecordView, MemoryToolResponse,
+    MemoryToolState, ToolError,
+};
 #[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
 use harness_tool::builtin::{
-    memory_tool_runtime_capability, MemoryToolRuntimeCap, MemoryToolRuntimeRequest,
+    memory_tool_runtime_capability, MemoryToolDraft, MemoryToolRuntimeAction, MemoryToolRuntimeCap,
+    MemoryToolRuntimeRequest, MemoryToolVisibility,
 };
 
 impl Harness {
@@ -212,14 +216,28 @@ impl Harness {
     }
 
     #[cfg(feature = "memory-provider-registry")]
-    pub async fn export_memory_items(
+    pub async fn prepare_memory_export(
         &self,
         options: SessionOptions,
-    ) -> Result<Vec<harness_memory::MemorySummary>, HarnessError> {
+    ) -> Result<harness_memory::MemoryExportPreparation, HarnessError> {
         self.enforce_tenant(&options)?;
         let manager = self.memory_manager_for_browser(&options).await?;
         manager
-            .export_for_actor(memory_actor_from_options(&options))
+            .prepare_export_for_actor(memory_actor_from_options(&options))
+            .await
+            .map_err(HarnessError::Memory)
+    }
+
+    #[cfg(feature = "memory-provider-registry")]
+    pub async fn emit_memory_export_audit(
+        &self,
+        options: SessionOptions,
+        event: harness_contracts::MemoryExportedEvent,
+    ) -> Result<(), HarnessError> {
+        self.enforce_tenant(&options)?;
+        let manager = self.memory_manager_for_browser(&options).await?;
+        manager
+            .emit_export_audit(event)
             .await
             .map_err(HarnessError::Memory)
     }
@@ -452,16 +470,11 @@ impl Harness {
         let actor = harness_contracts::MemoryActor::User {
             user_label: options.user_id.clone(),
         };
-        let policy = harness_memory::MemoryOperationPolicy {
-            thread,
-            actor,
-            permission,
-            evidence: request.evidence.clone(),
-        };
         let inbox = memory_inbox_for_session(&options)?;
         let candidates = inbox
             .list(None)
             .map_err(harness_contracts::MemoryError::Message)?;
+        let mut selected_candidates = Vec::with_capacity(request.candidate_ids.len());
         for candidate_id in &request.candidate_ids {
             let Some(candidate) = candidates
                 .iter()
@@ -487,7 +500,16 @@ impl Harness {
                     )),
                 ));
             }
+            selected_candidates.push(candidate.clone());
         }
+        let evidence =
+            merged_candidate_evidence(&selected_candidates, &request.merged_record.content);
+        let policy = harness_memory::MemoryOperationPolicy {
+            thread,
+            actor,
+            permission,
+            evidence: evidence.clone(),
+        };
 
         let manager = self.memory_manager_for_browser(&options).await?;
         let now = chrono::Utc::now();
@@ -499,7 +521,8 @@ impl Harness {
             content: request.merged_record.content.clone(),
             metadata: harness_memory::MemoryMetadata {
                 tags: std::mem::take(&mut request.merged_record.metadata.tags),
-                source: request.evidence.source.clone(),
+                source: evidence.source.clone(),
+                evidence: Some(evidence.clone()),
                 confidence: request.merged_record.metadata.source_trust.clamp(0.0, 1.0) as f32,
                 access_count: 0,
                 last_accessed_at: None,
@@ -511,7 +534,7 @@ impl Harness {
             updated_at: now,
         };
         let memory_id = manager
-            .upsert_with_policy(record, request.evidence.run_id, &policy)
+            .upsert_with_policy(record, evidence.run_id, &policy)
             .await
             .map_err(HarnessError::Memory)?;
         for candidate_id in &request.candidate_ids {
@@ -607,26 +630,16 @@ impl Harness {
                 super::memory_preview::ModelRequestPreviewBuilder::new(),
             ));
         };
-        let manager = self.memory_manager_for_browser(&options).await?;
-        let actor = memory_actor_from_options(&options);
-        let redactor = self.hook_redactor();
-        let redact_rules = RedactRules {
-            scope: RedactScope::All,
-            ..RedactRules::default()
-        };
         let mut builder = super::memory_preview::ModelRequestPreviewBuilder::new();
         for injected in trace.injected {
-            let Ok(record) = manager
-                .get_for_actor(injected.memory_id, actor.clone())
-                .await
-            else {
-                continue;
-            };
             builder = builder.add_section(
-                record.metadata.source,
+                harness_contracts::MemorySource::ExternalRetrieval,
                 Some(injected.provider_id),
-                vec![record.id],
-                redactor.redact(&record.content, &redact_rules),
+                vec![injected.memory_id],
+                format!(
+                    "[redacted memory context: hash={:?}, chars={}]",
+                    injected.content_hash, injected.injected_chars
+                ),
             );
         }
         Ok(super::memory_preview::build_preview_response(
@@ -672,18 +685,19 @@ impl Harness {
                 self.inner
                     .plugin_registry
                     .as_ref()
-                    .and_then(harness_plugin::PluginRegistry::registered_memory_provider)
+                    .and_then(|registry| registry.registered_memory_providers().into_iter().next())
             })
     }
 
     #[cfg(feature = "memory-provider-registry")]
     fn effective_memory_providers(&self) -> Vec<Arc<dyn MemoryProvider>> {
         let mut providers = self.inner.memory_providers.clone();
-        if let Some(provider) = self
+        for provider in self
             .inner
             .plugin_registry
             .as_ref()
-            .and_then(harness_plugin::PluginRegistry::registered_memory_provider)
+            .map(harness_plugin::PluginRegistry::registered_memory_providers)
+            .unwrap_or_default()
         {
             if !providers
                 .iter()
@@ -705,7 +719,10 @@ struct SdkMemoryToolRuntime {
 #[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
 #[async_trait]
 impl MemoryToolRuntimeCap for SdkMemoryToolRuntime {
-    async fn execute(&self, request: MemoryToolRuntimeRequest) -> Result<Value, ToolError> {
+    async fn execute(
+        &self,
+        request: MemoryToolRuntimeRequest,
+    ) -> Result<MemoryToolResponse, ToolError> {
         let mut options = self.options.clone();
         options.tenant_id = request.tenant_id;
         options.session_id = request.session_id;
@@ -714,17 +731,16 @@ impl MemoryToolRuntimeCap for SdkMemoryToolRuntime {
             .enforce_tenant(&options)
             .map_err(memory_tool_error)?;
 
-        match request.action.as_str() {
-            "search" => self.execute_search(&options, &request).await,
-            "read" => self.execute_read(&options, &request).await,
-            "create" => self.execute_create(&options, &request).await,
-            "update" => self.execute_update(&options, &request).await,
-            "delete" => self.execute_delete(&options, &request).await,
-            "list" => self.execute_list(&options, &request).await,
-            "propose" => self.execute_propose(&options, &request).await,
-            other => Err(ToolError::Validation(format!(
-                "unknown memory action: {other}"
-            ))),
+        match &request.action {
+            MemoryToolRuntimeAction::Search { .. } => self.execute_search(&options, &request).await,
+            MemoryToolRuntimeAction::Read { .. } => self.execute_read(&options, &request).await,
+            MemoryToolRuntimeAction::Create { .. } => self.execute_create(&options, &request).await,
+            MemoryToolRuntimeAction::Update { .. } => self.execute_update(&options, &request).await,
+            MemoryToolRuntimeAction::Delete { .. } => self.execute_delete(&options, &request).await,
+            MemoryToolRuntimeAction::List { .. } => self.execute_list(&options, &request).await,
+            MemoryToolRuntimeAction::Propose { .. } => {
+                self.execute_propose(&options, &request).await
+            }
         }
     }
 }
@@ -735,23 +751,25 @@ impl SdkMemoryToolRuntime {
         &self,
         options: &SessionOptions,
         request: &MemoryToolRuntimeRequest,
-    ) -> Result<Value, ToolError> {
+    ) -> Result<MemoryToolResponse, ToolError> {
+        let MemoryToolRuntimeAction::Search {
+            query,
+            max_records,
+            visibility,
+        } = &request.action
+        else {
+            return Err(ToolError::Validation("expected search action".to_owned()));
+        };
         let manager = self.memory_manager(options).await?;
-        let query = required_str(&request.input, "query")?.to_owned();
-        let max_records = request
-            .input
-            .get("max_records")
-            .and_then(Value::as_u64)
-            .unwrap_or(10)
-            .clamp(1, 50) as u32;
+        let max_records = (*max_records).clamp(1, 50);
         let (engine, thread) = memory_policy_for_session(options).map_err(memory_tool_error)?;
         let _ = engine;
-        let records = manager
-            .recall_with_policy(
+        let sources = manager
+            .recall_with_policy_sources(
                 harness_memory::MemoryQuery {
                     text: query.clone(),
                     kind_filter: None,
-                    visibility_filter: memory_visibility_filter(options, &request.input)?,
+                    visibility_filter: memory_visibility_filter(options, visibility.as_ref())?,
                     max_records,
                     min_similarity: 0.0,
                     tenant_id: request.tenant_id,
@@ -763,47 +781,59 @@ impl SdkMemoryToolRuntime {
             )
             .await
             .map_err(memory_error)?;
-        let memory_ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
-        let record_views = records
+        let memory_ids = sources
             .iter()
-            .map(memory_tool_record_view)
+            .map(|source| source.record.id)
             .collect::<Vec<_>>();
-        Ok(json!({
-            "action": "search",
-            "state": "completed",
-            "query": query,
-            "max_records": max_records,
-            "records": record_views,
-            "memory_ids": memory_ids
-        }))
+        let record_views = sources
+            .iter()
+            .map(|source| memory_tool_record_view(&source.record, &source.provider_id))
+            .collect::<Vec<_>>();
+        Ok(memory_tool_response(
+            "search",
+            MemoryToolState::Completed,
+            memory_ids,
+            Vec::new(),
+            record_views,
+            request.permission_context.action_plan_id,
+            MemoryTakesEffect::CurrentTurn,
+        ))
     }
 
     async fn execute_read(
         &self,
         options: &SessionOptions,
         request: &MemoryToolRuntimeRequest,
-    ) -> Result<Value, ToolError> {
+    ) -> Result<MemoryToolResponse, ToolError> {
+        let MemoryToolRuntimeAction::Read { memory_id } = &request.action else {
+            return Err(ToolError::Validation("expected read action".to_owned()));
+        };
         let manager = self.memory_manager(options).await?;
-        let memory_id = parse_memory_id(&request.input)?;
-        let record = manager
-            .get_for_actor(memory_id, memory_actor_from_options(options))
+        let source = manager
+            .get_for_actor_with_provider(*memory_id, memory_actor_from_options(options))
             .await
             .map_err(memory_error)?;
-        Ok(json!({
-            "action": "read",
-            "state": "completed",
-            "memory_id": memory_id,
-            "record": memory_tool_record_view(&record)
-        }))
+        Ok(memory_tool_response(
+            "read",
+            MemoryToolState::Completed,
+            vec![*memory_id],
+            Vec::new(),
+            vec![memory_tool_record_view(&source.record, &source.provider_id)],
+            request.permission_context.action_plan_id,
+            MemoryTakesEffect::CurrentTurn,
+        ))
     }
 
     async fn execute_create(
         &self,
         options: &SessionOptions,
         request: &MemoryToolRuntimeRequest,
-    ) -> Result<Value, ToolError> {
+    ) -> Result<MemoryToolResponse, ToolError> {
+        let MemoryToolRuntimeAction::Create { draft } = &request.action else {
+            return Err(ToolError::Validation("expected create action".to_owned()));
+        };
         let manager = self.memory_manager(options).await?;
-        let draft = memory_draft_from_value(options, required_value(&request.input, "draft")?)?;
+        let draft = memory_draft_from_tool(options, draft)?;
         let evidence = memory_evidence_from_tool(request, &draft.content);
         let policy = self
             .memory_operation_policy(
@@ -814,28 +844,35 @@ impl SdkMemoryToolRuntime {
             )
             .await?;
         let memory_id = manager
-            .upsert_with_policy(
+            .upsert_with_policy_and_provider_selection(
                 memory_record_from_tool_draft(request.tenant_id, &draft),
                 Some(request.run_id),
                 &policy,
+                &request.provider_policy,
             )
             .await
             .map_err(memory_error)?;
-        Ok(json!({
-            "action": "create",
-            "state": "created",
-            "memory_id": memory_id
-        }))
+        Ok(memory_tool_response(
+            "create",
+            MemoryToolState::Completed,
+            vec![memory_id],
+            Vec::new(),
+            Vec::new(),
+            request.permission_context.action_plan_id,
+            MemoryTakesEffect::NextTurn,
+        ))
     }
 
     async fn execute_update(
         &self,
         options: &SessionOptions,
         request: &MemoryToolRuntimeRequest,
-    ) -> Result<Value, ToolError> {
+    ) -> Result<MemoryToolResponse, ToolError> {
+        let MemoryToolRuntimeAction::Update { memory_id, draft } = &request.action else {
+            return Err(ToolError::Validation("expected update action".to_owned()));
+        };
         let manager = self.memory_manager(options).await?;
-        let memory_id = parse_memory_id(&request.input)?;
-        let draft = memory_draft_from_value(options, required_value(&request.input, "draft")?)?;
+        let draft = memory_draft_from_tool(options, draft)?;
         let evidence = memory_evidence_from_tool(request, &draft.content);
         let policy = self
             .memory_operation_policy(
@@ -847,7 +884,7 @@ impl SdkMemoryToolRuntime {
             .await?;
         let record = manager
             .update_content_for_actor_with_policy(
-                memory_id,
+                *memory_id,
                 memory_actor_from_options(options),
                 draft.content,
                 Some(request.run_id),
@@ -855,21 +892,30 @@ impl SdkMemoryToolRuntime {
             )
             .await
             .map_err(memory_error)?;
-        Ok(json!({
-            "action": "update",
-            "state": "updated",
-            "memory_id": memory_id,
-            "record": memory_tool_record_view(&record)
-        }))
+        let source = manager
+            .get_for_actor_with_provider(record.id, memory_actor_from_options(options))
+            .await
+            .map_err(memory_error)?;
+        Ok(memory_tool_response(
+            "update",
+            MemoryToolState::Completed,
+            vec![*memory_id],
+            Vec::new(),
+            vec![memory_tool_record_view(&source.record, &source.provider_id)],
+            request.permission_context.action_plan_id,
+            MemoryTakesEffect::NextTurn,
+        ))
     }
 
     async fn execute_delete(
         &self,
         options: &SessionOptions,
         request: &MemoryToolRuntimeRequest,
-    ) -> Result<Value, ToolError> {
+    ) -> Result<MemoryToolResponse, ToolError> {
+        let MemoryToolRuntimeAction::Delete { memory_id, reason } = &request.action else {
+            return Err(ToolError::Validation("expected delete action".to_owned()));
+        };
         let manager = self.memory_manager(options).await?;
-        let memory_id = parse_memory_id(&request.input)?;
         let policy = self
             .memory_operation_policy(
                 options,
@@ -880,69 +926,85 @@ impl SdkMemoryToolRuntime {
             .await?;
         manager
             .forget_for_actor_with_policy(
-                memory_id,
+                *memory_id,
                 memory_actor_from_options(options),
                 Some(request.run_id),
                 &policy,
             )
             .await
             .map_err(memory_error)?;
-        Ok(json!({
-            "action": "delete",
-            "state": "forgotten",
-            "memory_id": memory_id,
-            "reason": request.input.get("reason").and_then(Value::as_str).unwrap_or("not specified")
-        }))
+        let _ = reason;
+        Ok(memory_tool_response(
+            "delete",
+            MemoryToolState::Completed,
+            vec![*memory_id],
+            Vec::new(),
+            Vec::new(),
+            request.permission_context.action_plan_id,
+            MemoryTakesEffect::NextTurn,
+        ))
     }
 
     async fn execute_list(
         &self,
         options: &SessionOptions,
         request: &MemoryToolRuntimeRequest,
-    ) -> Result<Value, ToolError> {
+    ) -> Result<MemoryToolResponse, ToolError> {
+        let MemoryToolRuntimeAction::List { limit, .. } = &request.action else {
+            return Err(ToolError::Validation("expected list action".to_owned()));
+        };
         let manager = self.memory_manager(options).await?;
-        let limit = request
-            .input
-            .get("limit")
-            .and_then(Value::as_u64)
-            .unwrap_or(20)
-            .clamp(1, 100) as usize;
-        let mut records = manager
-            .list_for_actor(memory_actor_from_options(options))
+        let limit = (*limit).clamp(1, 100) as usize;
+        let actor = memory_actor_from_options(options);
+        let mut sources = manager
+            .list_for_actor_sources(actor)
             .await
             .map_err(memory_error)?;
-        records.truncate(limit);
-        let record_views = records
+        sources.truncate(limit);
+        let memory_ids = sources
             .iter()
-            .map(memory_tool_summary_view)
+            .map(|source| source.record.id)
             .collect::<Vec<_>>();
-        Ok(json!({
-            "action": "list",
-            "state": "completed",
-            "limit": limit,
-            "records": record_views
-        }))
+        let record_views = sources
+            .iter()
+            .map(|source| memory_tool_record_view(&source.record, &source.provider_id))
+            .collect::<Vec<_>>();
+        Ok(memory_tool_response(
+            "list",
+            MemoryToolState::Completed,
+            memory_ids,
+            Vec::new(),
+            record_views,
+            request.permission_context.action_plan_id,
+            MemoryTakesEffect::CurrentTurn,
+        ))
     }
 
     async fn execute_propose(
         &self,
         options: &SessionOptions,
         request: &MemoryToolRuntimeRequest,
-    ) -> Result<Value, ToolError> {
+    ) -> Result<MemoryToolResponse, ToolError> {
+        let MemoryToolRuntimeAction::Propose { draft } = &request.action else {
+            return Err(ToolError::Validation("expected propose action".to_owned()));
+        };
         let inbox = memory_inbox_for_session(options).map_err(memory_tool_error)?;
-        let draft = memory_draft_from_value(options, required_value(&request.input, "draft")?)?;
+        let draft = memory_draft_from_tool(options, draft)?;
         let candidate = inbox
             .propose(
                 draft.clone(),
                 memory_evidence_from_tool(request, &draft.content),
             )
             .map_err(|error| ToolError::Internal(error.to_string()))?;
-        Ok(json!({
-            "action": "propose",
-            "state": "candidate_created",
-            "candidate_id": candidate.id,
-            "candidate": memory_tool_candidate_view(&candidate)
-        }))
+        Ok(memory_tool_response(
+            "propose",
+            MemoryToolState::CandidateCreated,
+            Vec::new(),
+            vec![candidate.id],
+            Vec::new(),
+            request.permission_context.action_plan_id,
+            MemoryTakesEffect::Never,
+        ))
     }
 
     async fn memory_manager(
@@ -973,110 +1035,44 @@ impl SdkMemoryToolRuntime {
 }
 
 #[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
-fn required_value<'a>(input: &'a Value, field: &str) -> Result<&'a Value, ToolError> {
-    input
-        .get(field)
-        .ok_or_else(|| ToolError::Validation(format!("{field} is required")))
-}
-
-#[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
-fn required_str<'a>(input: &'a Value, field: &str) -> Result<&'a str, ToolError> {
-    required_value(input, field)?
-        .as_str()
-        .ok_or_else(|| ToolError::Validation(format!("{field} must be a string")))
-}
-
-#[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
-fn parse_memory_id(input: &Value) -> Result<harness_contracts::MemoryId, ToolError> {
-    required_str(input, "memory_id")?
-        .parse()
-        .map_err(|error| ToolError::Validation(format!("invalid memory_id: {error}")))
-}
-
-#[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
-fn memory_draft_from_value(
+fn memory_draft_from_tool(
     options: &SessionOptions,
-    value: &Value,
+    draft: &MemoryToolDraft,
 ) -> Result<harness_contracts::MemoryRecordDraft, ToolError> {
-    let kind = match required_str(value, "kind")? {
-        "user_preference" => harness_contracts::MemoryKind::UserPreference,
-        "feedback" => harness_contracts::MemoryKind::Feedback,
-        "project_fact" => harness_contracts::MemoryKind::ProjectFact,
-        "reference" => harness_contracts::MemoryKind::Reference,
-        "agent_self_note" => harness_contracts::MemoryKind::AgentSelfNote,
-        other => harness_contracts::MemoryKind::Custom(other.to_owned()),
-    };
-    let visibility = memory_visibility_from_value(options, required_str(value, "visibility")?)?;
-    let content = required_str(value, "content")?.to_owned();
-    let metadata = memory_metadata_from_value(value.get("metadata"));
     Ok(harness_contracts::MemoryRecordDraft {
-        kind,
-        visibility,
-        content,
-        metadata,
+        kind: draft.kind.clone(),
+        visibility: memory_visibility_from_tool(options, &draft.visibility)?,
+        content: draft.content.clone(),
+        metadata: draft.metadata.clone(),
         expires_at: None,
     })
 }
 
 #[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
-fn memory_visibility_from_value(
+fn memory_visibility_from_tool(
     options: &SessionOptions,
-    value: &str,
+    value: &MemoryToolVisibility,
 ) -> Result<harness_contracts::MemoryVisibility, ToolError> {
     match value {
-        "tenant" => Ok(harness_contracts::MemoryVisibility::Tenant),
-        "user" => options
+        MemoryToolVisibility::Tenant => Ok(harness_contracts::MemoryVisibility::Tenant),
+        MemoryToolVisibility::User => options
             .user_id
             .clone()
             .map(|user_id| harness_contracts::MemoryVisibility::User { user_id })
             .ok_or_else(|| {
                 ToolError::Validation("user visibility requires a session user_id".to_owned())
             }),
-        other => Err(ToolError::Validation(format!(
-            "unsupported memory visibility: {other}"
-        ))),
-    }
-}
-
-#[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
-fn memory_metadata_from_value(value: Option<&Value>) -> harness_contracts::MemoryMetadata {
-    let Some(value) = value else {
-        return harness_contracts::MemoryMetadata {
-            ttl: None,
-            tags: Vec::new(),
-            source_trust: 0.5,
-        };
-    };
-    let tags = value
-        .get("tags")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let source_trust = value
-        .get("source_trust")
-        .and_then(Value::as_f64)
-        .unwrap_or(0.5);
-    harness_contracts::MemoryMetadata {
-        ttl: None,
-        tags,
-        source_trust,
     }
 }
 
 #[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
 fn memory_visibility_filter(
     options: &SessionOptions,
-    input: &Value,
+    visibility: Option<&MemoryToolVisibility>,
 ) -> Result<harness_memory::MemoryVisibilityFilter, ToolError> {
-    match input.get("visibility").and_then(Value::as_str) {
+    match visibility {
         Some(value) => Ok(harness_memory::MemoryVisibilityFilter::Exact(
-            memory_visibility_from_value(options, value)?,
+            memory_visibility_from_tool(options, value)?,
         )),
         None => Ok(harness_memory::MemoryVisibilityFilter::EffectiveFor(
             memory_actor_from_options(options),
@@ -1099,6 +1095,7 @@ fn memory_record_from_tool_draft(
         metadata: harness_memory::MemoryMetadata {
             tags: draft.metadata.tags.clone(),
             source: harness_contracts::MemorySource::ToolOutput,
+            evidence: None,
             confidence: draft.metadata.source_trust.clamp(0.0, 1.0) as f32,
             access_count: 0,
             last_accessed_at: None,
@@ -1112,73 +1109,52 @@ fn memory_record_from_tool_draft(
 }
 
 #[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
-fn memory_tool_record_view(record: &harness_memory::MemoryRecord) -> Value {
-    json!({
-        "id": record.id,
-        "kind": &record.kind,
-        "visibility": &record.visibility,
-        "content_preview": redacted_memory_content_preview(),
-        "metadata": memory_tool_metadata_view(&record.metadata),
-        "created_at": record.created_at,
-        "updated_at": record.updated_at
-    })
-}
-
-#[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
-fn memory_tool_summary_view(summary: &harness_memory::MemorySummary) -> Value {
-    json!({
-        "id": summary.id,
-        "kind": &summary.kind,
-        "visibility": &summary.visibility,
-        "content_preview": redacted_memory_content_preview(),
-        "metadata": memory_tool_metadata_view(&summary.metadata),
-        "updated_at": summary.updated_at
-    })
-}
-
-#[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
-fn memory_tool_candidate_view(candidate: &harness_contracts::MemoryCandidate) -> Value {
-    json!({
-        "id": candidate.id,
-        "state": &candidate.state,
-        "proposed_record": {
-            "kind": &candidate.proposed_record.kind,
-            "visibility": &candidate.proposed_record.visibility,
-            "content_preview": redacted_memory_content_preview(),
-            "metadata": &candidate.proposed_record.metadata,
-            "expires_at": candidate.proposed_record.expires_at
-        },
-        "evidence": {
-            "source": &candidate.evidence.source,
-            "origin": &candidate.evidence.origin,
-            "content_hash": candidate.evidence.content_hash,
-            "session_id": candidate.evidence.session_id,
-            "run_id": candidate.evidence.run_id,
-            "message_id": candidate.evidence.message_id,
-            "tool_use_id": candidate.evidence.tool_use_id
-        },
-        "created_at": candidate.created_at,
-        "updated_at": candidate.updated_at
-    })
-}
-
-#[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
-fn memory_tool_metadata_view(metadata: &harness_memory::MemoryMetadata) -> Value {
-    json!({
-        "tags": &metadata.tags,
-        "source": &metadata.source,
-        "confidence": metadata.confidence,
-        "access_count": metadata.access_count,
-        "last_accessed_at": metadata.last_accessed_at,
-        "recall_score": metadata.recall_score,
-        "ttl": metadata.ttl,
-        "redacted_segments": metadata.redacted_segments
-    })
+fn memory_tool_record_view(
+    record: &harness_memory::MemoryRecord,
+    provider_id: &str,
+) -> MemoryToolRecordView {
+    MemoryToolRecordView {
+        memory_id: record.id,
+        provider_id: provider_id.to_owned(),
+        kind: record.kind.clone(),
+        visibility: record.visibility.clone(),
+        redacted_content: Some(redacted_memory_content_preview().to_owned()),
+        content_hash: content_hash(&record.content),
+        score: None,
+    }
 }
 
 #[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
 fn redacted_memory_content_preview() -> &'static str {
     "[redacted memory content]"
+}
+
+#[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
+fn memory_tool_response(
+    action: &str,
+    state: MemoryToolState,
+    memory_ids: Vec<harness_contracts::MemoryId>,
+    candidate_ids: Vec<harness_contracts::MemoryCandidateId>,
+    records: Vec<MemoryToolRecordView>,
+    action_plan_id: Option<harness_contracts::ActionPlanId>,
+    takes_effect: MemoryTakesEffect,
+) -> MemoryToolResponse {
+    MemoryToolResponse {
+        action: action.to_owned(),
+        state,
+        memory_ids,
+        candidate_ids,
+        redaction: MemoryRedactionSummary {
+            redacted_count: records.len().min(u32::MAX as usize) as u32,
+            dropped_count: 0,
+        },
+        records,
+        next_cursor: None,
+        action_plan_id,
+        denial: None,
+        trace_id: None,
+        takes_effect,
+    }
 }
 
 #[cfg(all(feature = "memory-provider-registry", feature = "builtin-toolset"))]
@@ -1198,6 +1174,263 @@ fn memory_evidence_from_tool(
         message_id: None,
         tool_use_id: Some(request.tool_use_id),
     }
+}
+
+#[cfg(all(
+    test,
+    feature = "memory-provider-registry",
+    feature = "builtin-toolset"
+))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_tool_response_preserves_action_plan_id() {
+        let action_plan_id = harness_contracts::ActionPlanId::new();
+        let response = memory_tool_response(
+            "create",
+            MemoryToolState::Completed,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Some(action_plan_id),
+            MemoryTakesEffect::NextTurn,
+        );
+
+        assert_eq!(response.action_plan_id, Some(action_plan_id));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "testing")]
+    async fn memory_tool_search_preserves_per_record_provider_ids() {
+        let workspace = unique_test_workspace("sdk-memory-tool-provider-ids");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = harness_contracts::SessionId::new();
+        let options = SessionOptions::new(&workspace).with_session_id(session_id);
+        let harness = Harness::builder()
+            .with_workspace_root(&workspace)
+            .with_model(crate::testing::TestModelProvider::default())
+            .with_store(crate::testing::InMemoryEventStore::new(Arc::new(
+                harness_contracts::NoopRedactor,
+            )))
+            .with_sandbox(crate::testing::NoopSandbox::new())
+            .with_memory_provider(TestMemoryProvider::new("first", "first memory"))
+            .with_memory_provider(TestMemoryProvider::new("second", "second memory"))
+            .build()
+            .await
+            .unwrap();
+        let runtime = SdkMemoryToolRuntime {
+            harness,
+            options: options.clone(),
+        };
+
+        let response = runtime
+            .execute(MemoryToolRuntimeRequest {
+                action: MemoryToolRuntimeAction::Search {
+                    query: "memory".to_owned(),
+                    max_records: 10,
+                    visibility: None,
+                },
+                permission_context: harness_contracts::MemoryPermissionContext {
+                    explicit_user_instruction: false,
+                    action_plan_id: None,
+                    authorization_ticket_id: None,
+                    non_interactive_policy_grant: false,
+                },
+                provider_policy: harness_contracts::MemoryProviderSelectionPolicy::PolicySelected,
+                tenant_id: options.tenant_id,
+                session_id,
+                run_id: harness_contracts::RunId::new(),
+                tool_use_id: harness_contracts::ToolUseId::new(),
+                workspace_root: workspace,
+            })
+            .await
+            .unwrap();
+
+        let mut provider_ids = response
+            .records
+            .into_iter()
+            .map(|record| record.provider_id)
+            .collect::<Vec<_>>();
+        provider_ids.sort();
+        assert_eq!(provider_ids, vec!["first", "second"]);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "testing")]
+    async fn memory_tool_create_respects_required_provider_policy() {
+        let workspace = unique_test_workspace("sdk-memory-tool-required-provider");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = harness_contracts::SessionId::new();
+        let first = Arc::new(TestMemoryProvider::new("first", "first memory"));
+        let second = Arc::new(TestMemoryProvider::new("second", "second memory"));
+        let options = SessionOptions::new(&workspace).with_session_id(session_id);
+        let harness = Harness::builder()
+            .with_workspace_root(&workspace)
+            .with_model(crate::testing::TestModelProvider::default())
+            .with_store(crate::testing::InMemoryEventStore::new(Arc::new(
+                harness_contracts::NoopRedactor,
+            )))
+            .with_sandbox(crate::testing::NoopSandbox::new())
+            .with_memory_provider_arc(first.clone())
+            .with_memory_provider_arc(second.clone())
+            .build()
+            .await
+            .unwrap();
+        let runtime = SdkMemoryToolRuntime {
+            harness,
+            options: options.clone(),
+        };
+
+        runtime
+            .execute(MemoryToolRuntimeRequest {
+                action: MemoryToolRuntimeAction::Create {
+                    draft: MemoryToolDraft {
+                        kind: harness_contracts::MemoryKind::UserPreference,
+                        visibility: MemoryToolVisibility::Tenant,
+                        content: "write to required provider".to_owned(),
+                        metadata: harness_contracts::MemoryMetadata {
+                            ttl: None,
+                            tags: Vec::new(),
+                            source_trust: 1.0,
+                        },
+                    },
+                },
+                permission_context: harness_contracts::MemoryPermissionContext {
+                    explicit_user_instruction: false,
+                    action_plan_id: Some(harness_contracts::ActionPlanId::new()),
+                    authorization_ticket_id: Some(harness_contracts::AuthorizationTicketId::new()),
+                    non_interactive_policy_grant: false,
+                },
+                provider_policy:
+                    harness_contracts::MemoryProviderSelectionPolicy::RequireProvider {
+                        provider_id: "second".to_owned(),
+                    },
+                tenant_id: options.tenant_id,
+                session_id,
+                run_id: harness_contracts::RunId::new(),
+                tool_use_id: harness_contracts::ToolUseId::new(),
+                workspace_root: workspace,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(first.upserts(), 0);
+        assert_eq!(second.upserts(), 1);
+    }
+
+    #[cfg(feature = "testing")]
+    fn unique_test_workspace(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "jyowo-{name}-{}-{}",
+            std::process::id(),
+            harness_contracts::SessionId::new()
+        ))
+    }
+
+    #[cfg(feature = "testing")]
+    struct TestMemoryProvider {
+        provider_id: String,
+        record: harness_memory::MemoryRecord,
+        upserts: std::sync::atomic::AtomicUsize,
+    }
+
+    #[cfg(feature = "testing")]
+    impl TestMemoryProvider {
+        fn new(provider_id: &str, content: &str) -> Self {
+            let now = chrono::Utc::now();
+            Self {
+                provider_id: provider_id.to_owned(),
+                record: harness_memory::MemoryRecord {
+                    id: harness_contracts::MemoryId::new(),
+                    tenant_id: harness_contracts::TenantId::SINGLE,
+                    kind: harness_contracts::MemoryKind::UserPreference,
+                    visibility: harness_contracts::MemoryVisibility::Tenant,
+                    content: content.to_owned(),
+                    metadata: harness_memory::MemoryMetadata {
+                        tags: Vec::new(),
+                        source: harness_contracts::MemorySource::UserInput,
+                        evidence: None,
+                        confidence: 1.0,
+                        access_count: 0,
+                        last_accessed_at: None,
+                        recall_score: 1.0,
+                        ttl: None,
+                        redacted_segments: 0,
+                    },
+                    created_at: now,
+                    updated_at: now,
+                },
+                upserts: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn upserts(&self) -> usize {
+            self.upserts.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[cfg(feature = "testing")]
+    #[async_trait::async_trait]
+    impl harness_memory::MemoryStore for TestMemoryProvider {
+        fn provider_id(&self) -> &str {
+            &self.provider_id
+        }
+
+        async fn recall(
+            &self,
+            _query: harness_memory::MemoryQuery,
+        ) -> Result<Vec<harness_memory::MemoryRecord>, harness_contracts::MemoryError> {
+            Ok(vec![self.record.clone()])
+        }
+
+        async fn get(
+            &self,
+            id: harness_contracts::MemoryId,
+        ) -> Result<harness_memory::MemoryRecord, harness_contracts::MemoryError> {
+            if self.record.id == id {
+                Ok(self.record.clone())
+            } else {
+                Err(harness_contracts::MemoryError::NotFound(id))
+            }
+        }
+
+        async fn upsert(
+            &self,
+            record: harness_memory::MemoryRecord,
+        ) -> Result<harness_contracts::MemoryId, harness_contracts::MemoryError> {
+            self.upserts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(record.id)
+        }
+
+        async fn forget(
+            &self,
+            _id: harness_contracts::MemoryId,
+        ) -> Result<(), harness_contracts::MemoryError> {
+            Ok(())
+        }
+
+        async fn list(
+            &self,
+            _scope: harness_memory::MemoryListScope,
+        ) -> Result<Vec<harness_memory::MemorySummary>, harness_contracts::MemoryError> {
+            Ok(vec![harness_memory::MemorySummary {
+                id: self.record.id,
+                kind: self.record.kind.clone(),
+                visibility: self.record.visibility.clone(),
+                content_preview: harness_memory::content_preview(&self.record.content),
+                metadata: self.record.metadata.clone(),
+                updated_at: self.record.updated_at,
+            }])
+        }
+    }
+
+    #[cfg(feature = "testing")]
+    impl harness_memory::MemoryLifecycle for TestMemoryProvider {}
+
+    #[cfg(feature = "testing")]
+    impl harness_memory::MemoryProvider for TestMemoryProvider {}
 }
 
 #[cfg(feature = "memory-provider-registry")]
@@ -1264,11 +1497,21 @@ fn memory_policy_for_session(
 }
 
 #[cfg(feature = "memory-provider-registry")]
+pub(super) fn memory_thread_settings_for_session(
+    options: &SessionOptions,
+) -> Result<harness_contracts::MemoryThreadSettings, HarnessError> {
+    let store = memory_settings_store_for_session(options)?;
+    store
+        .get_thread(options.tenant_id, options.session_id)
+        .map_err(|error| HarnessError::Memory(harness_contracts::MemoryError::Message(error)))
+}
+
+#[cfg(feature = "memory-provider-registry")]
 fn manual_user_memory_permission(
     action_plan_id: Option<harness_contracts::ActionPlanId>,
 ) -> harness_contracts::MemoryPermissionContext {
     harness_contracts::MemoryPermissionContext {
-        explicit_user_instruction: action_plan_id.is_some(),
+        explicit_user_instruction: true,
         action_plan_id,
         authorization_ticket_id: None,
         non_interactive_policy_grant: false,
@@ -1289,6 +1532,30 @@ fn ensure_distinct_memory_candidates(
         ));
     }
     Ok(())
+}
+
+#[cfg(feature = "memory-provider-registry")]
+fn merged_candidate_evidence(
+    candidates: &[harness_contracts::MemoryCandidate],
+    merged_content: &str,
+) -> harness_contracts::MemoryEvidence {
+    let Some(first) = candidates.first() else {
+        return harness_contracts::MemoryEvidence {
+            source: harness_contracts::MemorySource::AgentDerived,
+            origin: harness_contracts::MemoryEvidenceOrigin::Imported {
+                importer: "memory-candidate-merge".to_owned(),
+                import_id: "empty-candidate-set".to_owned(),
+            },
+            content_hash: content_hash(merged_content),
+            session_id: None,
+            run_id: None,
+            message_id: None,
+            tool_use_id: None,
+        };
+    };
+    let mut evidence = first.evidence.clone();
+    evidence.content_hash = content_hash(merged_content);
+    evidence
 }
 
 #[cfg(feature = "memory-provider-registry")]
@@ -1386,6 +1653,7 @@ fn memory_record_from_candidate(
         metadata: harness_memory::MemoryMetadata {
             tags: candidate.proposed_record.metadata.tags.clone(),
             source: candidate.evidence.source.clone(),
+            evidence: Some(candidate.evidence.clone()),
             confidence: candidate
                 .proposed_record
                 .metadata

@@ -10,12 +10,17 @@ use futures::StreamExt;
 use harness_contracts::*;
 use harness_tool::{
     builtin::{
-        memory_tool_runtime_capability, MemoryTool, MemoryToolRuntimeCap, MemoryToolRuntimeRequest,
+        memory_tool_runtime_capability, MemoryTool, MemoryToolRuntimeAction, MemoryToolRuntimeCap,
+        MemoryToolRuntimeRequest,
     },
     AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken, Tool,
     ToolContext, ToolRegistry,
 };
 use serde_json::{json, Value};
+
+const MEM_READ: &str = "01J00000000000000000000000";
+const MEM_UPDATE: &str = "01J00000000000000000000001";
+const MEM_DELETE: &str = "01J00000000000000000000002";
 
 fn make_tool() -> MemoryTool {
     MemoryTool::default()
@@ -154,11 +159,17 @@ async fn memory_tool_fails_closed_without_runtime_capability() {
     let ToolResult::Structured(value) = result else {
         panic!("expected structured denial");
     };
-    assert_eq!(value["state"], "denied");
-    assert!(value["error"]
+    assert_eq!(value["action"], "search");
+    assert_eq!(value["state"]["denied"]["reason"], "missing_policy");
+    assert_eq!(value["denial"]["reason"], "missing_policy");
+    assert!(value["denial"]["safe_message"]
         .as_str()
         .unwrap()
         .contains("jyowo.memory.tool_runtime"));
+    assert_eq!(value["takes_effect"], "never");
+    assert_eq!(value["memory_ids"], json!([]));
+    assert_eq!(value["candidate_ids"], json!([]));
+    assert_eq!(value["records"], json!([]));
 }
 
 #[tokio::test]
@@ -174,21 +185,21 @@ async fn memory_tool_delegates_read_actions_to_runtime() {
     .await;
     assert!(search["records"][0].get("content").is_none());
     assert_eq!(
-        search["records"][0]["content_preview"],
+        search["records"][0]["redacted_content"],
         "[redacted memory content]"
     );
-    assert_eq!(search["memory_ids"], json!(["mem-search"]));
+    assert_eq!(search["memory_ids"].as_array().unwrap().len(), 1);
 
     let read = execute_structured(
         &MemoryTool::default(),
-        json!({ "action": "read", "memory_id": "mem-read" }),
+        json!({ "action": "read", "memory_id": MEM_READ }),
         ctx.clone(),
     )
     .await;
-    assert_eq!(read["record"]["id"], "mem-read");
-    assert!(read["record"].get("content").is_none());
+    assert_eq!(read["memory_ids"], json!([MEM_READ]));
+    assert!(read["records"][0].get("content").is_none());
     assert_eq!(
-        read["record"]["content_preview"],
+        read["records"][0]["redacted_content"],
         "[redacted memory content]"
     );
 
@@ -200,13 +211,13 @@ async fn memory_tool_delegates_read_actions_to_runtime() {
     .await;
     assert!(list["records"][0].get("content").is_none());
     assert_eq!(
-        list["records"][0]["content_preview"],
+        list["records"][0]["redacted_content"],
         "[redacted memory content]"
     );
 
     let calls = runtime.calls.lock().unwrap();
     assert!(calls.iter().any(|call| call == "search:rust:2"));
-    assert!(calls.iter().any(|call| call == "read:mem-read"));
+    assert!(calls.iter().any(|call| call == &format!("read:{MEM_READ}")));
     assert!(calls.iter().any(|call| call == "list:3"));
 }
 
@@ -226,26 +237,26 @@ async fn memory_tool_delegates_write_actions_to_runtime() {
         ctx.clone(),
     )
     .await;
-    assert_eq!(create["state"], "created");
-    assert_eq!(create["memory_id"], "mem-create");
+    assert_eq!(create["state"], "completed");
+    assert_eq!(create["memory_ids"].as_array().unwrap().len(), 1);
 
     let update = execute_structured(
         &MemoryTool::default(),
-        json!({ "action": "update", "memory_id": "mem-update", "draft": draft.clone() }),
+        json!({ "action": "update", "memory_id": MEM_UPDATE, "draft": draft.clone() }),
         ctx.clone(),
     )
     .await;
-    assert_eq!(update["state"], "updated");
-    assert_eq!(update["memory_id"], "mem-update");
+    assert_eq!(update["state"], "completed");
+    assert_eq!(update["memory_ids"], json!([MEM_UPDATE]));
 
     let delete = execute_structured(
         &MemoryTool::default(),
-        json!({ "action": "delete", "memory_id": "mem-delete", "reason": "stale" }),
+        json!({ "action": "delete", "memory_id": MEM_DELETE, "reason": "stale" }),
         ctx.clone(),
     )
     .await;
-    assert_eq!(delete["state"], "forgotten");
-    assert_eq!(delete["memory_id"], "mem-delete");
+    assert_eq!(delete["state"], "completed");
+    assert_eq!(delete["memory_ids"], json!([MEM_DELETE]));
 
     let propose = execute_structured(
         &MemoryTool::default(),
@@ -254,12 +265,16 @@ async fn memory_tool_delegates_write_actions_to_runtime() {
     )
     .await;
     assert_eq!(propose["state"], "candidate_created");
-    assert_eq!(propose["candidate_id"], "candidate-propose");
+    assert_eq!(propose["candidate_ids"].as_array().unwrap().len(), 1);
 
     let calls = runtime.calls.lock().unwrap();
     assert!(calls.iter().any(|call| call == "create"));
-    assert!(calls.iter().any(|call| call == "update:mem-update"));
-    assert!(calls.iter().any(|call| call == "delete:mem-delete:stale"));
+    assert!(calls
+        .iter()
+        .any(|call| call == &format!("update:{MEM_UPDATE}")));
+    assert!(calls
+        .iter()
+        .any(|call| call == &format!("delete:{MEM_DELETE}:stale")));
     assert!(calls.iter().any(|call| call == "propose"));
 }
 
@@ -282,7 +297,7 @@ async fn memory_tool_requires_update_id_and_draft_visibility() {
         )
         .await
         .unwrap_err();
-    assert!(missing_id.to_string().contains("memory_id is required"));
+    assert!(missing_id.to_string().contains("memory_id"));
 
     let missing_visibility = tool
         .validate(
@@ -297,9 +312,7 @@ async fn memory_tool_requires_update_id_and_draft_visibility() {
         )
         .await
         .unwrap_err();
-    assert!(missing_visibility
-        .to_string()
-        .contains("visibility is required"));
+    assert!(missing_visibility.to_string().contains("visibility"));
 }
 
 #[derive(Default)]
@@ -309,90 +322,150 @@ struct FakeMemoryRuntime {
 
 #[async_trait]
 impl MemoryToolRuntimeCap for FakeMemoryRuntime {
-    async fn execute(&self, request: MemoryToolRuntimeRequest) -> Result<Value, ToolError> {
+    async fn execute(
+        &self,
+        request: MemoryToolRuntimeRequest,
+    ) -> Result<MemoryToolResponse, ToolError> {
         assert_eq!(request.tenant_id, TenantId::SINGLE);
+        assert_eq!(
+            request.provider_policy,
+            harness_contracts::MemoryProviderSelectionPolicy::PolicySelected
+        );
         assert!(request.session_id.to_string().len() > 10);
         assert!(request.run_id.to_string().len() > 10);
-        match request.action.as_str() {
-            "search" => {
-                let query = request.input["query"].as_str().unwrap();
-                let max_records = request.input["max_records"].as_u64().unwrap();
+        match request.action {
+            MemoryToolRuntimeAction::Search {
+                query, max_records, ..
+            } => {
                 self.calls
                     .lock()
                     .unwrap()
                     .push(format!("search:{query}:{max_records}"));
-                Ok(json!({
-                    "action": "search",
-                    "state": "completed",
-                    "query": query,
-                    "max_records": max_records,
-                    "records": [{"id": "mem-search", "content": "runtime search result"}],
-                    "memory_ids": ["mem-search"]
-                }))
+                Ok(fake_response(
+                    "search",
+                    MemoryToolState::Completed,
+                    vec![MemoryId::new()],
+                    Vec::new(),
+                    vec![fake_record(MemoryId::new())],
+                    MemoryTakesEffect::CurrentTurn,
+                ))
             }
-            "read" => {
-                let memory_id = request.input["memory_id"].as_str().unwrap();
+            MemoryToolRuntimeAction::Read { memory_id } => {
                 self.calls.lock().unwrap().push(format!("read:{memory_id}"));
-                Ok(json!({
-                    "action": "read",
-                    "state": "completed",
-                    "memory_id": memory_id,
-                    "record": {"id": memory_id, "content": "runtime read result"}
-                }))
+                Ok(fake_response(
+                    "read",
+                    MemoryToolState::Completed,
+                    vec![memory_id],
+                    Vec::new(),
+                    vec![fake_record(memory_id)],
+                    MemoryTakesEffect::CurrentTurn,
+                ))
             }
-            "list" => {
-                let limit = request.input["limit"].as_u64().unwrap();
+            MemoryToolRuntimeAction::List { limit, .. } => {
                 self.calls.lock().unwrap().push(format!("list:{limit}"));
-                Ok(json!({
-                    "action": "list",
-                    "state": "completed",
-                    "limit": limit,
-                    "records": [{"id": "mem-list", "content": "runtime list result"}]
-                }))
+                let memory_id = MemoryId::new();
+                Ok(fake_response(
+                    "list",
+                    MemoryToolState::Completed,
+                    vec![memory_id],
+                    Vec::new(),
+                    vec![fake_record(memory_id)],
+                    MemoryTakesEffect::CurrentTurn,
+                ))
             }
-            "create" => {
+            MemoryToolRuntimeAction::Create { .. } => {
+                assert!(!request.permission_context.explicit_user_instruction);
                 self.calls.lock().unwrap().push("create".to_owned());
-                Ok(json!({
-                    "action": "create",
-                    "state": "created",
-                    "memory_id": "mem-create"
-                }))
+                Ok(fake_response(
+                    "create",
+                    MemoryToolState::Completed,
+                    vec![MemoryId::new()],
+                    Vec::new(),
+                    Vec::new(),
+                    MemoryTakesEffect::NextTurn,
+                ))
             }
-            "update" => {
-                let memory_id = request.input["memory_id"].as_str().unwrap();
+            MemoryToolRuntimeAction::Update { memory_id, .. } => {
+                assert!(!request.permission_context.explicit_user_instruction);
                 self.calls
                     .lock()
                     .unwrap()
                     .push(format!("update:{memory_id}"));
-                Ok(json!({
-                    "action": "update",
-                    "state": "updated",
-                    "memory_id": memory_id
-                }))
+                Ok(fake_response(
+                    "update",
+                    MemoryToolState::Completed,
+                    vec![memory_id],
+                    Vec::new(),
+                    vec![fake_record(memory_id)],
+                    MemoryTakesEffect::NextTurn,
+                ))
             }
-            "delete" => {
-                let memory_id = request.input["memory_id"].as_str().unwrap();
-                let reason = request.input["reason"].as_str().unwrap();
+            MemoryToolRuntimeAction::Delete { memory_id, reason } => {
+                assert!(!request.permission_context.explicit_user_instruction);
                 self.calls
                     .lock()
                     .unwrap()
                     .push(format!("delete:{memory_id}:{reason}"));
-                Ok(json!({
-                    "action": "delete",
-                    "state": "forgotten",
-                    "memory_id": memory_id
-                }))
+                Ok(fake_response(
+                    "delete",
+                    MemoryToolState::Completed,
+                    vec![memory_id],
+                    Vec::new(),
+                    Vec::new(),
+                    MemoryTakesEffect::NextTurn,
+                ))
             }
-            "propose" => {
+            MemoryToolRuntimeAction::Propose { .. } => {
+                assert!(!request.permission_context.explicit_user_instruction);
                 self.calls.lock().unwrap().push("propose".to_owned());
-                Ok(json!({
-                    "action": "propose",
-                    "state": "candidate_created",
-                    "candidate_id": "candidate-propose"
-                }))
+                Ok(fake_response(
+                    "propose",
+                    MemoryToolState::CandidateCreated,
+                    Vec::new(),
+                    vec![MemoryCandidateId::new()],
+                    Vec::new(),
+                    MemoryTakesEffect::Never,
+                ))
             }
-            _ => unreachable!(),
         }
+    }
+}
+
+fn fake_response(
+    action: &str,
+    state: MemoryToolState,
+    memory_ids: Vec<MemoryId>,
+    candidate_ids: Vec<MemoryCandidateId>,
+    records: Vec<MemoryToolRecordView>,
+    takes_effect: MemoryTakesEffect,
+) -> MemoryToolResponse {
+    MemoryToolResponse {
+        action: action.to_owned(),
+        state,
+        memory_ids,
+        candidate_ids,
+        records,
+        next_cursor: None,
+        action_plan_id: None,
+        denial: None,
+        redaction: MemoryRedactionSummary {
+            redacted_count: 1,
+            dropped_count: 0,
+        },
+        trace_id: None,
+        takes_effect,
+    }
+}
+
+fn fake_record(memory_id: MemoryId) -> MemoryToolRecordView {
+    MemoryToolRecordView {
+        memory_id,
+        provider_id: "fake".to_owned(),
+        kind: MemoryKind::ProjectFact,
+        visibility: MemoryVisibility::Tenant,
+        redacted_content: Some("[redacted memory content]".to_owned()),
+        content_hash: ContentHash([7u8; 32]),
+        score: None,
     }
 }
 

@@ -2506,39 +2506,62 @@ git commit -m "fix(memory): complete local hybrid recall provider"
 
 **Checklist:**
 
-- [ ] Add a failing test proving slow provider fanout does not block faster
+- [x] Add a failing test proving slow provider fanout does not block faster
   providers beyond the global recall deadline.
-- [ ] Add a failing test proving final merged records are reranked globally by
+- [x] Add a failing test proving final merged records are reranked globally by
   score after dedupe.
-- [ ] Add failing tests for per-provider `max_chars_per_recall` and
+- [x] Add failing tests for per-provider `max_chars_per_recall` and
   `max_bytes_per_record`.
-- [ ] Add failing tests proving record views and traces carry per-record source
+- [x] Add failing tests proving record views and traces carry per-record source
   provider ids.
-- [ ] Add a failing test for multiple plugin memory providers in one registry.
-- [ ] Add a failing test for writable plugin/team provider selection when policy
+- [x] Add a failing test for multiple plugin memory providers in one registry.
+- [x] Add a failing test for writable plugin/team provider selection when policy
   allows it.
-- [ ] Implement concurrent provider recall with bounded deadlines and
+- [x] Implement concurrent provider recall with bounded deadlines and
   deterministic degraded outcomes.
-- [ ] Preserve provider id per record through dedupe, trace, SDK facade, and
+- [x] Preserve provider id per record through dedupe, trace, SDK facade, and
   frontend payloads.
-- [ ] Enforce provider record, char, and byte budgets before global merge.
-- [ ] Replace plugin singleton storage with a collection keyed by provider id.
-- [ ] Make registry write selection respect provider descriptors and policy
+- [x] Enforce provider record, char, and byte budgets before global merge.
+- [x] Replace plugin singleton storage with a collection keyed by provider id.
+- [x] Make registry write selection respect provider descriptors and policy
   instead of hard-coding only built-in durable providers.
-- [ ] Run:
+- [x] Run:
 
 ```bash
-cargo test -p jyowo-harness-memory --test provider_registry -- --nocapture
-cargo test -p jyowo-harness-memory --test recall -- --nocapture
+cargo test -p jyowo-harness-memory --features provider-registry --test provider_registry -- --nocapture
+cargo test -p jyowo-harness-memory --features provider-registry --test recall -- --nocapture
+cargo test -p jyowo-harness-plugin --test registry -- --nocapture
+cargo test -p jyowo-harness-sdk --features testing,memory-provider-registry,builtin-toolset --lib memory_tool_ -- --nocapture
 ```
 
-- [ ] Run read-only subagent audit for Task 17.
+- [x] Run read-only subagent audit for Task 17.
 - [ ] Commit:
 
 ```bash
 git add crates/jyowo-harness-memory crates/jyowo-harness-plugin crates/jyowo-harness-sdk/src/harness/memory.rs
 git commit -m "fix(memory): complete provider registry fanout"
 ```
+
+**Execution log:**
+
+| Date | Command | Exit | Evidence |
+|---|---|---:|---|
+| 2026-07-05 14:18 CST | `cargo test -p jyowo-harness-memory --features provider-registry --test recall -- --nocapture` | 101 | Red tests failed for missing global rerank/dedupe and provider char/byte budget enforcement. |
+| 2026-07-05 14:28 CST | `cargo test -p jyowo-harness-memory --features provider-registry --test provider_registry registry_write_selection_allows -- --nocapture` | 101 | Red tests failed because writable provider selection still hard-coded BuiltIn trust and rejected plugin/team providers. |
+| 2026-07-05 14:36 CST | `cargo fmt --all --check` | 0 | Rust formatting gate passed. |
+| 2026-07-05 14:36 CST | `cargo test -p jyowo-harness-memory --features provider-registry --test recall -- --nocapture` | 0 | `21 passed; 0 failed`; covers fanout, global rerank/dedupe, provider budgets, source attribution, and traces. |
+| 2026-07-05 14:36 CST | `cargo test -p jyowo-harness-memory --features provider-registry --test provider_registry -- --nocapture` | 0 | `12 passed; 0 failed`; covers plugin/team writable provider selection and descriptor validation. |
+| 2026-07-05 14:36 CST | `cargo test -p jyowo-harness-plugin --test registry -- --nocapture` | 0 | `51 passed; 0 failed`; covers multiple plugin memory provider registration and deactivation cleanup. |
+| 2026-07-05 14:38 CST | `cargo test -p jyowo-harness-sdk --features testing,memory-provider-registry,builtin-toolset --lib memory_tool_search_preserves_per_record_provider_ids -- --nocapture` | 0 | SDK MemoryTool search response preserved per-record provider ids. |
+| 2026-07-05 14:38 CST | `cargo test -p jyowo-harness-memory --test provider_registry -- --nocapture` | 0 | `12 passed; 0 failed` under the default feature set. |
+| 2026-07-05 14:38 CST | `cargo test -p jyowo-harness-memory --test recall -- --nocapture` | 0 | Command passed; this target currently has `0` active tests without `provider-registry`. |
+| 2026-07-05 15:10 CST | `cargo test -p jyowo-harness-memory --features provider-registry --test recall -- --nocapture` | 0 | `23 passed; 0 failed`; added cross-provider content/source/evidence dedupe coverage. |
+| 2026-07-05 15:10 CST | `cargo test -p jyowo-harness-memory --features provider-registry --test provider_registry -- --nocapture` | 0 | `12 passed; 0 failed`; registry provider selection still passes after dedupe fix. |
+| 2026-07-05 15:10 CST | `cargo test -p jyowo-harness-plugin --test registry -- --nocapture` | 0 | `51 passed; 0 failed`; plugin provider collection behavior still passes. |
+| 2026-07-05 15:10 CST | `cargo test -p jyowo-harness-sdk --features testing,memory-provider-registry,builtin-toolset --lib memory_tool_ -- --nocapture` | 0 | `3 passed; 0 failed`; SDK MemoryTool provider attribution and provider policy tests pass. |
+| 2026-07-05 15:10 CST | `cargo fmt --all --check` | 0 | Rust formatting gate passed after audit fixes. |
+| 2026-07-05 15:10 CST | `pnpm check:docs` | 0 | Docs gate passed after regenerating `docs/testing/test-inventory.md`. |
+| 2026-07-05 15:12 CST | Read-only subagent audit | PASS | Re-audit verified dedupe key, provider selection policy, team provider durability, feature-enabled plan commands, and docs gate evidence. |
 
 #### Task 18: Make Policy And MemoryTool The Runtime Authority
 

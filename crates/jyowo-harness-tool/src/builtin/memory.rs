@@ -9,10 +9,14 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DecisionScope, PermissionSubject, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError,
-    ToolGroup, ToolResult,
+    ActionPlanId, DecisionScope, MemoryId, MemoryKind, MemoryMetadata, MemoryPermissionContext,
+    MemoryPolicyDenyReason, MemoryProviderSelectionPolicy, MemoryRedactionSummary,
+    MemoryTakesEffect, MemoryToolDenial, MemoryToolResponse, MemoryToolState, PermissionSubject,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
@@ -26,9 +30,9 @@ pub fn memory_tool_runtime_capability() -> ToolCapability {
 
 #[derive(Debug, Clone)]
 pub struct MemoryToolRuntimeRequest {
-    pub action: String,
-    pub input: Value,
-    pub permission_context: harness_contracts::MemoryPermissionContext,
+    pub action: MemoryToolRuntimeAction,
+    pub permission_context: MemoryPermissionContext,
+    pub provider_policy: MemoryProviderSelectionPolicy,
     pub tenant_id: harness_contracts::TenantId,
     pub session_id: harness_contracts::SessionId,
     pub run_id: harness_contracts::RunId,
@@ -38,7 +42,88 @@ pub struct MemoryToolRuntimeRequest {
 
 #[async_trait]
 pub trait MemoryToolRuntimeCap: Send + Sync + 'static {
-    async fn execute(&self, request: MemoryToolRuntimeRequest) -> Result<Value, ToolError>;
+    async fn execute(
+        &self,
+        request: MemoryToolRuntimeRequest,
+    ) -> Result<MemoryToolResponse, ToolError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum MemoryToolRuntimeAction {
+    Search {
+        query: String,
+        #[serde(default = "default_search_limit")]
+        max_records: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        visibility: Option<MemoryToolVisibility>,
+    },
+    Read {
+        memory_id: MemoryId,
+    },
+    Create {
+        draft: MemoryToolDraft,
+    },
+    Update {
+        memory_id: MemoryId,
+        draft: MemoryToolDraft,
+    },
+    Delete {
+        memory_id: MemoryId,
+        #[serde(default = "default_delete_reason")]
+        reason: String,
+    },
+    List {
+        #[serde(default = "default_list_limit")]
+        limit: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        visibility: Option<MemoryToolVisibility>,
+        #[serde(default)]
+        include_expired: bool,
+        #[serde(default)]
+        include_deleted: bool,
+    },
+    Propose {
+        draft: MemoryToolDraft,
+    },
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryToolVisibility {
+    User,
+    Tenant,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryToolDraft {
+    pub kind: MemoryKind,
+    pub visibility: MemoryToolVisibility,
+    pub content: String,
+    #[serde(default = "default_memory_metadata")]
+    pub metadata: MemoryMetadata,
+}
+
+fn default_search_limit() -> u32 {
+    10
+}
+
+fn default_list_limit() -> u32 {
+    20
+}
+
+fn default_delete_reason() -> String {
+    "not specified".to_owned()
+}
+
+fn default_memory_metadata() -> MemoryMetadata {
+    MemoryMetadata {
+        ttl: None,
+        tags: Vec::new(),
+        source_trust: 0.5,
+    }
 }
 
 #[derive(Clone)]
@@ -59,89 +144,15 @@ impl Default for MemoryTool {
                 true,   // destructive (delete action)
                 64_000, // budget limit
                 vec![memory_tool_runtime_capability()],
-                memory_tool_schema(),
+                generated_memory_tool_schema(),
             ),
         }
     }
 }
 
-fn memory_tool_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["action"],
-        "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["search", "read", "create", "update", "delete", "list", "propose"],
-                "description": "The memory action to perform."
-            },
-            "query": {
-                "type": "string",
-                "description": "Search query text (for search action)."
-            },
-            "max_records": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 50,
-                "default": 10,
-                "description": "Maximum records to return (for search/list actions)."
-            },
-            "memory_id": {
-                "type": "string",
-                "description": "Memory record ID (for read/update/delete actions)."
-            },
-            "reason": {
-                "type": "string",
-                "description": "Reason for deletion (for delete action)."
-            },
-            "draft": {
-                "type": "object",
-                "description": "Memory record draft (for create/update/propose actions).",
-                "required": ["kind", "visibility", "content"],
-                "properties": {
-                    "kind": {
-                        "type": "string",
-                        "enum": ["user_preference", "feedback", "project_fact", "reference", "agent_self_note"]
-                    },
-                    "visibility": {
-                        "type": "string",
-                        "enum": ["user", "tenant"],
-                        "description": "Visibility scope: user or tenant."
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Memory content text."
-                    }
-                }
-            },
-            "visibility": {
-                "type": "string",
-                "enum": ["user", "tenant"],
-                "description": "Filter by visibility (for search/list actions)."
-            },
-            "include_expired": {
-                "type": "boolean",
-                "default": false,
-                "description": "Include expired records (for list action)."
-            },
-            "include_deleted": {
-                "type": "boolean",
-                "default": false,
-                "description": "Include deleted records (for list action)."
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 100,
-                "default": 20,
-                "description": "Maximum records to return (for list action)."
-            },
-            "cursor": {
-                "type": "string",
-                "description": "Pagination cursor from previous response."
-            }
-        }
-    })
+fn generated_memory_tool_schema() -> Value {
+    serde_json::to_value(schemars::schema_for!(MemoryToolRuntimeAction))
+        .unwrap_or_else(|_| json!({"type": "object"}))
 }
 
 #[async_trait]
@@ -151,36 +162,7 @@ impl Tool for MemoryTool {
     }
 
     async fn validate(&self, input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
-        let action = input
-            .get("action")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ValidationError::from("action is required"))?;
-
-        match action {
-            "search" => {
-                require_field(input, "query")?;
-            }
-            "read" | "delete" => {
-                require_field(input, "memory_id")?;
-            }
-            "update" => {
-                require_field(input, "memory_id")?;
-                require_field(input, "draft")?;
-                let draft = input.get("draft").unwrap();
-                require_field(draft, "kind")?;
-                require_field(draft, "visibility")?;
-                require_field(draft, "content")?;
-            }
-            "create" | "propose" => {
-                require_field(input, "draft")?;
-                let draft = input.get("draft").unwrap();
-                require_field(draft, "kind")?;
-                require_field(draft, "visibility")?;
-                require_field(draft, "content")?;
-            }
-            "list" => {} // no required fields beyond action
-            _ => return Err(ValidationError::from(format!("unknown action: {action}"))),
-        }
+        parse_action(input).map_err(|error| ValidationError::from(error.to_string()))?;
         Ok(())
     }
 
@@ -206,37 +188,76 @@ impl Tool for MemoryTool {
         authorized: AuthorizedToolInput,
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
-        let input = authorized.raw_input().clone();
-        let action = input
-            .get("action")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-
-        let result = match action {
-            "search" => execute_search(&input, &ctx, &authorized).await,
-            "read" => execute_read(&input, &ctx, &authorized).await,
-            "create" => execute_create(&input, &ctx, &authorized).await,
-            "update" => execute_update(&input, &ctx, &authorized).await,
-            "delete" => execute_delete(&input, &ctx, &authorized).await,
-            "list" => execute_list(&input, &ctx, &authorized).await,
-            "propose" => execute_propose(&input, &ctx, &authorized).await,
-            _ => Err(ToolError::Validation(format!("unknown action: {action}"))),
-        };
+        let action = parse_action(authorized.raw_input())?;
+        let result = execute_runtime(action.clone(), &ctx, &authorized).await;
 
         match result {
-            Ok(mut value) => {
+            Ok(response) => {
+                let mut value = serde_json::to_value(response).map_err(|error| {
+                    ToolError::Internal(format!("serialize memory tool response: {error}"))
+                })?;
                 sanitize_memory_tool_output(&mut value);
                 Ok(Box::pin(stream::iter([ToolEvent::Final(
                     ToolResult::Structured(value),
                 )])))
             }
-            Err(e) => Ok(Box::pin(stream::iter([ToolEvent::Final(
-                ToolResult::Structured(json!({
-                    "error": e.to_string(),
-                    "state": "denied"
-                })),
-            )]))),
+            Err(error) => {
+                let mut value = serde_json::to_value(denied_memory_tool_response(
+                    &action,
+                    error,
+                    Some(authorized.action_plan().plan_id),
+                ))
+                .map_err(|error| {
+                    ToolError::Internal(format!("serialize memory tool denial: {error}"))
+                })?;
+                sanitize_memory_tool_output(&mut value);
+                Ok(Box::pin(stream::iter([ToolEvent::Final(
+                    ToolResult::Structured(value),
+                )])))
+            }
         }
+    }
+}
+
+fn denied_memory_tool_response(
+    action: &MemoryToolRuntimeAction,
+    error: ToolError,
+    action_plan_id: Option<ActionPlanId>,
+) -> MemoryToolResponse {
+    let safe_message = error.to_string();
+    MemoryToolResponse {
+        action: memory_tool_action_name(action).to_owned(),
+        state: MemoryToolState::Denied {
+            reason: MemoryPolicyDenyReason::MissingPolicy,
+        },
+        memory_ids: Vec::new(),
+        candidate_ids: Vec::new(),
+        records: Vec::new(),
+        next_cursor: None,
+        action_plan_id,
+        denial: Some(MemoryToolDenial {
+            reason: MemoryPolicyDenyReason::MissingPolicy,
+            safe_message,
+            action_plan_id,
+        }),
+        redaction: MemoryRedactionSummary {
+            redacted_count: 0,
+            dropped_count: 0,
+        },
+        trace_id: None,
+        takes_effect: MemoryTakesEffect::Never,
+    }
+}
+
+fn memory_tool_action_name(action: &MemoryToolRuntimeAction) -> &'static str {
+    match action {
+        MemoryToolRuntimeAction::Search { .. } => "search",
+        MemoryToolRuntimeAction::Read { .. } => "read",
+        MemoryToolRuntimeAction::Create { .. } => "create",
+        MemoryToolRuntimeAction::Update { .. } => "update",
+        MemoryToolRuntimeAction::Delete { .. } => "delete",
+        MemoryToolRuntimeAction::List { .. } => "list",
+        MemoryToolRuntimeAction::Propose { .. } => "propose",
     }
 }
 
@@ -268,154 +289,22 @@ fn sanitize_memory_tool_output(value: &mut Value) {
     }
 }
 
-async fn execute_search(
-    input: &Value,
-    ctx: &ToolContext,
-    authorized: &AuthorizedToolInput,
-) -> Result<Value, ToolError> {
-    let query = input["query"].as_str().unwrap_or("");
-    let max_records = input
-        .get("max_records")
-        .and_then(Value::as_u64)
-        .unwrap_or(10) as u32;
-
-    execute_runtime(
-        "search",
-        json!({
-            "query": query,
-            "max_records": max_records,
-            "visibility": input.get("visibility").cloned().unwrap_or(Value::Null)
-        }),
-        ctx,
-        authorized,
-    )
-    .await
-}
-
-async fn execute_read(
-    input: &Value,
-    ctx: &ToolContext,
-    authorized: &AuthorizedToolInput,
-) -> Result<Value, ToolError> {
-    let memory_id = input["memory_id"].as_str().unwrap_or("");
-    execute_runtime(
-        "read",
-        json!({
-            "memory_id": memory_id
-        }),
-        ctx,
-        authorized,
-    )
-    .await
-}
-
-async fn execute_create(
-    input: &Value,
-    ctx: &ToolContext,
-    authorized: &AuthorizedToolInput,
-) -> Result<Value, ToolError> {
-    execute_runtime(
-        "create",
-        json!({
-            "draft": input["draft"].clone()
-        }),
-        ctx,
-        authorized,
-    )
-    .await
-}
-
-async fn execute_update(
-    input: &Value,
-    ctx: &ToolContext,
-    authorized: &AuthorizedToolInput,
-) -> Result<Value, ToolError> {
-    let memory_id = input["memory_id"].as_str().unwrap_or("");
-    execute_runtime(
-        "update",
-        json!({
-            "memory_id": memory_id,
-            "draft": input["draft"].clone()
-        }),
-        ctx,
-        authorized,
-    )
-    .await
-}
-
-async fn execute_delete(
-    input: &Value,
-    ctx: &ToolContext,
-    authorized: &AuthorizedToolInput,
-) -> Result<Value, ToolError> {
-    let memory_id = input["memory_id"].as_str().unwrap_or("");
-    let reason = input["reason"].as_str().unwrap_or("not specified");
-    execute_runtime(
-        "delete",
-        json!({
-            "memory_id": memory_id,
-            "reason": reason
-        }),
-        ctx,
-        authorized,
-    )
-    .await
-}
-
-async fn execute_list(
-    input: &Value,
-    ctx: &ToolContext,
-    authorized: &AuthorizedToolInput,
-) -> Result<Value, ToolError> {
-    let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(20) as u32;
-    execute_runtime(
-        "list",
-        json!({
-            "limit": limit,
-            "cursor": input.get("cursor").cloned().unwrap_or(Value::Null),
-            "visibility": input.get("visibility").cloned().unwrap_or(Value::Null),
-            "include_expired": input.get("include_expired").and_then(Value::as_bool).unwrap_or(false),
-            "include_deleted": input.get("include_deleted").and_then(Value::as_bool).unwrap_or(false)
-        }),
-        ctx,
-        authorized,
-    )
-    .await
-}
-
-async fn execute_propose(
-    input: &Value,
-    ctx: &ToolContext,
-    authorized: &AuthorizedToolInput,
-) -> Result<Value, ToolError> {
-    execute_runtime(
-        "propose",
-        json!({
-            "draft": input["draft"].clone()
-        }),
-        ctx,
-        authorized,
-    )
-    .await
-}
-
 async fn execute_runtime(
-    action: &str,
-    input: Value,
+    action: MemoryToolRuntimeAction,
     ctx: &ToolContext,
     authorized: &AuthorizedToolInput,
-) -> Result<Value, ToolError> {
+) -> Result<MemoryToolResponse, ToolError> {
     let runtime = ctx.capability::<dyn MemoryToolRuntimeCap>(memory_tool_runtime_capability())?;
     runtime
         .execute(MemoryToolRuntimeRequest {
-            action: action.to_owned(),
-            input,
-            permission_context: harness_contracts::MemoryPermissionContext {
-                explicit_user_instruction: true,
+            action,
+            permission_context: MemoryPermissionContext {
+                explicit_user_instruction: false,
                 action_plan_id: Some(authorized.action_plan().plan_id),
                 authorization_ticket_id: Some(authorized.ticket().ticket_id),
                 non_interactive_policy_grant: false,
             },
+            provider_policy: MemoryProviderSelectionPolicy::PolicySelected,
             tenant_id: ctx.tenant_id,
             session_id: ctx.session_id,
             run_id: ctx.run_id,
@@ -425,9 +314,7 @@ async fn execute_runtime(
         .await
 }
 
-fn require_field(input: &Value, field: &str) -> Result<(), ValidationError> {
-    if input.get(field).is_none() {
-        return Err(ValidationError::from(format!("{field} is required")));
-    }
-    Ok(())
+fn parse_action(input: &Value) -> Result<MemoryToolRuntimeAction, ToolError> {
+    serde_json::from_value(input.clone())
+        .map_err(|error| ToolError::Validation(format!("invalid memory tool input: {error}")))
 }
